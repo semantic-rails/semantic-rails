@@ -124,10 +124,9 @@ def frontends(runtime_factory, monkeypatch):
                         "request_id": "transport-parity",
                         "verbosity": "full",
                         "query": {
-                            "version": 1,
                             "select": [
                                 {
-                                    "expression": {"measure": "measure.jaffle.order_count"},
+                                    "expression": "measure.jaffle.order_count",
                                     "as": "orders",
                                 }
                             ],
@@ -247,8 +246,7 @@ def test_serve_preserves_trusted_visibility_and_environment(
     )
 
     class Resolver:
-        def resolve(self, headers, *, payload=None, request_id=""):
-            assert payload is None
+        def resolve(self, headers, *, request_id=""):
             return RequestContext(
                 request_id=request_id, actor="trusted", audience="ops", environment=environment
             )
@@ -260,14 +258,7 @@ def test_serve_preserves_trusted_visibility_and_environment(
         "method": "tools/call",
         "params": {
             "name": "discover",
-            "arguments": {
-                "terms": "",
-                "verbosity": "full",
-                "policy_context": {
-                    "audience": "internal",
-                    "environment": "production",
-                },
-            },
+            "arguments": {"terms": "", "verbosity": "full"},
         },
     }
     try:

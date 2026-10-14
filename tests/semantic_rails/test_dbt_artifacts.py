@@ -218,78 +218,84 @@ def test_unattached_relationship_uses_manifest_target_identity_not_dependency_or
     assert suggestion["foreign_keys"][0]["references"]["dbt_unique_id"] == customers.unique_id
 
 
-@pytest.mark.parametrize("target_kind", ["model", "source"])
-def test_unattached_relationship_can_resolve_model_or_source_target(
-    target: Path, target_kind: str
+CUSTOMERS = "model.shop_dbt.dim_customers"
+ORDERS = "model.shop_dbt.fct_orders"
+FEED = "source.shop_dbt.raw.customer_feed"
+
+
+def _to_source(manifest: dict[str, Any], test: dict[str, Any]) -> None:
+    manifest["sources"][FEED] = {
+        "unique_id": FEED,
+        "resource_type": "source",
+        "name": "customer_feed",
+        "database": "warehouse",
+        "schema": "main",
+        "identifier": "raw_customers",
+        "columns": {"customer_id": {"name": "customer_id"}},
+    }
+    test["test_metadata"]["kwargs"]["to"] = "source('raw', 'customer_feed')"
+    test["depends_on"]["nodes"] = [FEED, ORDERS]
+
+
+def _to_qualified_ref(manifest: dict[str, Any], test: dict[str, Any]) -> None:
+    manifest["nodes"]["model.other.dim_customers"] = {
+        **manifest["nodes"][CUSTOMERS],
+        "unique_id": "model.other.dim_customers",
+    }
+    test["test_metadata"]["kwargs"]["to"] = "ref('shop_dbt', 'dim_customers')"
+    test["depends_on"]["nodes"] = [CUSTOMERS, ORDERS]
+
+
+def _depends(*nodes: str):
+    def mutate(manifest: dict[str, Any], test: dict[str, Any]) -> None:
+        test["depends_on"]["nodes"] = list(nodes)
+
+    return mutate
+
+
+def _attached_beside_other_dependencies(manifest: dict[str, Any], test: dict[str, Any]) -> None:
+    test["attached_node"] = ORDERS
+    test["depends_on"]["nodes"] = [CUSTOMERS, "model.shop_dbt.dim_stores"]
+
+
+def _repeated(manifest: dict[str, Any], test: dict[str, Any]) -> None:
+    test["depends_on"]["nodes"] = [ORDERS, CUSTOMERS, ORDERS]
+    manifest["nodes"]["test.shop_dbt.relationships_duplicate"] = json.loads(json.dumps(test))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "to", "quiet"),
+    [
+        (_depends(CUSTOMERS, ORDERS), CUSTOMERS, CUSTOMERS),
+        (_to_source, FEED, FEED),
+        (_to_qualified_ref, CUSTOMERS, "model.other.dim_customers"),
+        (_depends(ORDERS), CUSTOMERS, CUSTOMERS),
+        (_attached_beside_other_dependencies, CUSTOMERS, CUSTOMERS),
+        # A repeated dependency and a repeated test still make one link.
+        (_repeated, CUSTOMERS, CUSTOMERS),
+    ],
+    ids=[
+        "model",
+        "source",
+        "qualified-ref",
+        "single-dependency",
+        "explicit-attachment",
+        "repeated",
+    ],
+)
+def test_a_relationship_test_links_its_child_once(
+    target: Path, mutate, to: str, quiet: str
 ) -> None:
     path, manifest, _, test = _relationship_manifest(target)
     test.pop("attached_node")
-    if target_kind == "source":
-        source_id = "source.shop_dbt.raw.customer_feed"
-        manifest["sources"][source_id] = {
-            "unique_id": source_id,
-            "resource_type": "source",
-            "name": "customer_feed",
-            "database": "warehouse",
-            "schema": "main",
-            "identifier": "raw_customers",
-            "columns": {"customer_id": {"name": "customer_id"}},
-        }
-        test["test_metadata"]["kwargs"]["to"] = "source('raw', 'customer_feed')"
-    else:
-        source_id = "model.shop_dbt.dim_customers"
-    test["depends_on"]["nodes"] = [source_id, "model.shop_dbt.fct_orders"]
+    mutate(manifest, test)
     path.write_text(json.dumps(manifest), encoding="utf-8")
 
     project = load_dbt_artifacts(target)
+
     assert project.warnings == []
-    assert any(fk["to"] == source_id for fk in project.find("fct_orders").foreign_keys)
-    assert project.relations[source_id].foreign_keys == []
-
-
-def test_unattached_relationship_uses_package_qualified_ref_when_names_repeat(target: Path) -> None:
-    path, manifest, _, test = _relationship_manifest(target)
-    duplicate = dict(manifest["nodes"]["model.shop_dbt.dim_customers"])
-    duplicate["unique_id"] = "model.other.dim_customers"
-    manifest["nodes"][duplicate["unique_id"]] = duplicate
-    test.pop("attached_node")
-    test["test_metadata"]["kwargs"]["to"] = "ref('shop_dbt', 'dim_customers')"
-    test["depends_on"]["nodes"] = [
-        "model.shop_dbt.dim_customers",
-        "model.shop_dbt.fct_orders",
-    ]
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    project = load_dbt_artifacts(target)
-    assert project.warnings == []
-    assert any(
-        fk["to"] == "model.shop_dbt.dim_customers" for fk in project.find("fct_orders").foreign_keys
-    )
-    assert project.relations["model.other.dim_customers"].foreign_keys == []
-
-
-def test_unattached_single_dependency_and_explicit_attachment_are_preserved(target: Path) -> None:
-    path, manifest, test_id, test = _relationship_manifest(target)
-    test.pop("attached_node")
-    test["depends_on"]["nodes"] = ["model.shop_dbt.fct_orders"]
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    assert any(
-        fk["to"] == "model.shop_dbt.dim_customers"
-        for fk in load_dbt_artifacts(target).find("fct_orders").foreign_keys
-    )
-
-    manifest["nodes"][test_id]["attached_node"] = "model.shop_dbt.fct_orders"
-    manifest["nodes"][test_id]["depends_on"]["nodes"] = [
-        "model.shop_dbt.dim_customers",
-        "model.shop_dbt.dim_stores",
-    ]
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    project = load_dbt_artifacts(target)
-    assert project.warnings == []
-    assert any(
-        fk["to"] == "model.shop_dbt.dim_customers" for fk in project.find("fct_orders").foreign_keys
-    )
-    assert project.find("dim_customers").foreign_keys == []
+    assert [fk["to"] for fk in project.find("fct_orders").foreign_keys].count(to) == 1
+    assert project.relations[quiet].foreign_keys == []
 
 
 def test_unresolved_explicit_attachment_is_reported_without_dependency_fallback(
@@ -340,34 +346,6 @@ def test_unattached_relationship_reports_unresolved_identity_without_a_false_fk(
         fk["to"] in {"model.shop_dbt.dim_customers", "model.other.dim_customers"}
         for relation in project.relations.values()
         for fk in relation.foreign_keys
-    )
-
-
-def test_duplicate_dependency_and_duplicate_relationship_test_do_not_duplicate_fk(
-    target: Path,
-) -> None:
-    path, manifest, test_id, test = _relationship_manifest(target)
-    test.pop("attached_node")
-    test["depends_on"]["nodes"] = [
-        "model.shop_dbt.fct_orders",
-        "model.shop_dbt.dim_customers",
-        "model.shop_dbt.fct_orders",
-    ]
-    duplicate = json.loads(json.dumps(test))
-    manifest["nodes"][f"{test_id}_duplicate"] = duplicate
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    project = load_dbt_artifacts(target)
-    assert project.warnings == []
-    assert (
-        len(
-            [
-                fk
-                for fk in project.find("fct_orders").foreign_keys
-                if fk["to"] == "model.shop_dbt.dim_customers"
-            ]
-        )
-        == 1
     )
 
 
@@ -700,10 +678,7 @@ def test_a_suggested_draft_runs_against_the_dbt_warehouse(tmp_path: Path, target
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.shop.customer_count"}, "as": "customers"}
-                ],
+                "select": [{"expression": "measure.shop.customer_count", "as": "customers"}],
                 "limit": 5,
             }
         )["rows"]

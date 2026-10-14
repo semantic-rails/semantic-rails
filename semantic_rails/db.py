@@ -50,7 +50,7 @@ from .db_parts.base import (
 )
 from .db_parts.common import materialized_duckdb_result, session_time_zone, set_duckdb_time_zone
 from .db_parts.duckdb_confinement import confine_duckdb, confinement_directory, require_inside
-from .db_parts.duckdb_setup import configure_duckdb_connection
+from .db_parts.duckdb_setup import connect_duckdb
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
@@ -172,18 +172,12 @@ class Database:
                     "duckdb is not installed. Add it to your environment dependencies."
                 )
             return cls(
-                conn=configure_duckdb_connection(duckdb.connect(db_path, read_only=read_only)),
+                conn=connect_duckdb(db_path, read_only=read_only),
                 engine=engine,
             )
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return cls(conn=conn, engine="sqlite")
-
-    @classmethod
-    def connect_in_memory(cls) -> Database:
-        if duckdb is None:
-            raise RuntimeError("duckdb is not installed. Add it to your environment dependencies.")
-        return cls(conn=configure_duckdb_connection(duckdb.connect(":memory:")), engine="duckdb")
 
     def execute(self, sql: str, params: Iterable[Any] | None = None) -> None:
         cur = self.conn.cursor()

@@ -1092,7 +1092,8 @@ def create_architect_mcp_server(
             "an existing model. An existing dimension, time or measure given only label, "
             "description, synonyms or meta keeps its other fields; given anything else it is "
             "rewritten, and dropped_fields lists what that drops. replace: true rewrites the "
-            "model from the arguments, keeping only its id, entities and calendar_id, and lists "
+            "model from the arguments, keeping only its id, entities, calendar_id and "
+            "zero_through (how far its tables are loaded), and lists "
             "what it drops in dropped_fields. Relationships go through upsert_relationship."
         ),
     )
@@ -1419,8 +1420,8 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Preview query", open_world=True),
         description=(
             "Run a semantic query on the package's warehouse, as the query server's execute "
-            "does, and return at most max_rows rows (1-200), with truncated and total_row_count "
-            "when there are more. Values are real warehouse data."
+            "does, and return at most max_rows rows (1-200); truncated is true when there are more, "
+            "which are not counted (total_row_count null). Values are real warehouse data."
         ),
     )
     def preview_query(

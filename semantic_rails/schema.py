@@ -70,20 +70,16 @@ class PackageMeta:
 
 
 ENTITY_KIND_REGULAR = "regular"
-ENTITY_KIND_TIME = "time"
-
-MODEL_KIND_MODEL = "model"
-MODEL_KIND_FACT = "fact"
 
 
 @dataclass(frozen=True)
 class EntityConfig:
     id: str
     table: str
-    primary_key: str
+    # Empty for a row-grain model: its rows have no declared key, and every stored row counts.
+    key_columns: list[str] = field(default_factory=list)
     kind: str = ENTITY_KIND_REGULAR
     relation_id: str = ""
-    key: list[str] = field(default_factory=list)
     identifiers: list[str] = field(default_factory=list)
     key_roles: dict[str, str] = field(default_factory=dict)
     foreign_keys: dict[str, list[str]] = field(default_factory=dict)
@@ -103,6 +99,32 @@ class EntityConfig:
     bridge: bool = False
     # The dimension (on the entity's own model, not its key) that names one row in an answer.
     display: str = ""
+    # A row-grain entity's model (its rows have no key, so it names nothing else).
+    model: str = ""
+
+    @property
+    def is_row_grain(self) -> bool:
+        return not self.key_columns
+
+    @property
+    def key(self) -> list[str]:
+        """The key columns. A row-grain model has none, so a read that must tell its rows apart
+        refuses here instead of reading an empty key."""
+        if not self.key_columns:
+            model = self.model or self.id
+            raise SemanticLayerError(
+                "ROW_GRAIN_UNSUPPORTED",
+                f"'{self.label or model}' is row grain (no key), and this needs to tell its rows "
+                "apart (a count of them as entities, a segment, a predicate, a conversion or a "
+                "stock). Count its rows, sum its values, or group by its or its parents' "
+                f"columns; or declare a key on {model} if its rows have one.",
+                details={"model": model, "entity": self.id},
+            )
+        return list(self.key_columns)
+
+    @property
+    def primary_key(self) -> str:
+        return self.key[0]
 
 
 @dataclass(frozen=True)
@@ -121,6 +143,9 @@ class DimensionConfig:
     filterable: bool = True
     groupable: bool = True
     value_domain: str = ""
+    # Values the source writes for "unknown" (``''``, ``'XX'``): read as NULL wherever the
+    # dimension is read, so grouping, ``missing`` and ``not`` treat them as unknown.
+    unknown_values: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -209,6 +234,21 @@ class MeasureExternalDiscontinuity:
 
 
 @dataclass(frozen=True)
+class ZeroThrough:
+    """How far a table counts as loaded, so its empty periods read 0 up to there (a model's or
+    the project's ``zero_through``; ``data``, the last row, is no record). ``now``: through the
+    request's ``now``. ``loaded``: through ``MAX(column)`` of ``relation``, the date or
+    timestamp a load records as complete."""
+
+    kind: str  # "now" | "loaded"
+    name: str = ""  # "<model>.<field>", as the package declares it
+    relation: str = ""
+    column: str = ""
+    data_type: str = ""  # "date" | "timestamp"
+    timezone: str = "UTC"  # the zone a naive timestamp column is stored in
+
+
+@dataclass(frozen=True)
 class MeasureConfig:
     id: str
     entity: str
@@ -216,7 +256,6 @@ class MeasureConfig:
     expr: SemanticExpr
     default_aggregation: str
     allowed_aggregations: list[str]
-    source_relation: str = ""
     invalid_aggregations: list[str] = field(default_factory=list)
     measure_class: str = "additive"
     accumulation: AccumulationConfig = field(default_factory=AccumulationConfig)
@@ -250,6 +289,8 @@ class MeasureConfig:
     # False when authored ``publish: false`` and no metric aggregates it whole; a metric that
     # filters it then makes it a building block (``config_parts.measure_governance``).
     publish: bool = True
+    # Its model's declared loaded edge; None is the last row (``data``).
+    zero_through: ZeroThrough | None = None
 
 
 @dataclass(frozen=True)

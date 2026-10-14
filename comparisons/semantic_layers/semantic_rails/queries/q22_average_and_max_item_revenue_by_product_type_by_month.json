@@ -1,5 +1,4 @@
 {
-  "version": 1,
   "select": [
     {
       "expression": {
@@ -27,8 +26,8 @@
   },
   "order_by": [
     {
-      "field": "temporal_role.jaffle_order_time__month",
-      "direction": "ASC"
+      "field": "period",
+      "direction": "asc"
     }
   ]
 }

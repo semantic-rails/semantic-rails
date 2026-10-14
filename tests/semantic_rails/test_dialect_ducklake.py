@@ -2,9 +2,8 @@
 
 Three layers, no network and no live warehouse:
 
-- dialect rendering: DuckLake IS DuckDB SQL — the dialect subclasses
-  DuckDbDialect with zero overrides, and every portable rendering hook
-  must keep emitting the DuckDB forms verbatim;
+- dialect: DuckLake IS DuckDB SQL — the dialect subclasses DuckDbDialect
+  with zero overrides (the DuckDB forms are pinned in the MotherDuck tests);
 - adapter: option normalization, secret/unknown-option rejection,
   missing-env errors, redacted error envelopes, and the exact
   INSTALL/LOAD/ATTACH/USE bootstrap (driver faked via sys.modules);
@@ -15,7 +14,6 @@ Three layers, no network and no live warehouse:
 from __future__ import annotations
 
 import os
-import sys
 import types
 from dataclasses import replace
 from types import SimpleNamespace
@@ -26,6 +24,7 @@ import pytest
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config, repo_root, resolve_repo_path
 from semantic_rails.db import create_warehouse_adapter
+from semantic_rails.db_parts import duckdb_setup
 from semantic_rails.db_parts.ducklake import DuckLakeAdapter, create_adapter
 from semantic_rails.dialects import (
     DuckDbDialect,
@@ -34,28 +33,14 @@ from semantic_rails.dialects import (
     warehouse_connector,
 )
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
-from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta
-from semantic_rails.sql_ast import SqlIdentifier, SqlLiteral
-
-# ---------------------------------------------------------------------------
-# Dialect rendering — DuckLake must render exactly like DuckDB.
-# ---------------------------------------------------------------------------
-
-X = SqlIdentifier(["x"])
-Y = SqlIdentifier(["y"])
-
-
-def _dialect() -> DuckLakeDialect:
-    dialect = dialect_for_warehouse("ducklake")
-    assert isinstance(dialect, DuckLakeDialect)
-    return dialect
 
 
 def test_ducklake_dialect_is_duckdb_subclass_with_no_overrides():
-    dialect = _dialect()
-    assert isinstance(dialect, DuckDbDialect)
+    dialect = dialect_for_warehouse("ducklake")
+    assert isinstance(dialect, DuckLakeDialect) and isinstance(dialect, DuckDbDialect)
     assert dialect.name == "ducklake"
     # Contract: DuckLake is DuckDB SQL over an attached catalog — the
     # dialect class must not override any rendering hook.
@@ -64,57 +49,6 @@ def test_ducklake_dialect_is_duckdb_subclass_with_no_overrides():
     }
     assert overridden - {"name"} == set()
 
-
-def test_ducklake_percentile_and_median_render_duckdb_forms():
-    dialect = _dialect()
-    assert render_expr(dialect.percentile_cont(X, 0.95)) == "QUANTILE_CONT(x, 0.95)"
-    assert render_expr(dialect.median(X)) == "MEDIAN(x)"
-
-
-def test_ducklake_first_last_value_render_arg_min_max():
-    dialect = _dialect()
-    assert render_expr(dialect.first_value(X, Y)) == "arg_min(x, y)"
-    assert render_expr(dialect.last_value(X, Y)) == "arg_max(x, y)"
-
-
-def test_ducklake_date_functions_render_duckdb_forms():
-    dialect = _dialect()
-    assert render_expr(dialect.date_trunc("week", X)) == "DATE_TRUNC('week', CAST(x AS TIMESTAMP))"
-    assert (
-        render_expr(dialect.date_diff("day", X, Y))
-        == "DATE_DIFF('day', CAST(x AS TIMESTAMP), CAST(y AS TIMESTAMP))"
-    )
-    # Cover the units the compiler actually emits (windows / offsets /
-    # conversion lookbacks): boundary-crossing semantics are DuckDB's own.
-    for unit in ("day", "week", "month", "quarter", "year", "hour", "minute", "second"):
-        assert render_expr(dialect.date_diff(unit, X, Y)).startswith(f"DATE_DIFF('{unit}'")
-        assert render_expr(dialect.date_add(unit, SqlLiteral(3), X)) == (
-            f"DATE_ADD(x, INTERVAL (3) {unit.upper()})"
-        )
-
-
-def test_ducklake_null_safe_eq_and_conditional_aggregate_render_portable_forms():
-    dialect = _dialect()
-    assert render_expr(dialect.null_safe_eq(X, Y)) == "x IS NOT DISTINCT FROM y"
-    condition = dialect.null_safe_eq(X, Y)
-    assert (
-        render_expr(dialect.conditional_aggregate("count", condition, None))
-        == "COUNT(CASE WHEN x IS NOT DISTINCT FROM y THEN 1 END)"
-    )
-    assert (
-        render_expr(dialect.conditional_aggregate("sum", condition, Y))
-        == "SUM(CASE WHEN x IS NOT DISTINCT FROM y THEN y END)"
-    )
-
-
-def test_ducklake_timestamp_and_capabilities_match_duckdb():
-    dialect = _dialect()
-    assert dialect.timestamp_type_name() == "TIMESTAMP"
-    assert render_expr(dialect.timestamp_cast(X)) == "CAST(x AS TIMESTAMP)"
-    assert dialect.capabilities() == DuckDbDialect().capabilities()
-
-
-def test_ducklake_registry_entry():
     connector = warehouse_connector("ducklake")
     assert connector is not None
     assert connector.connection_kinds == ("ducklake_native",)
@@ -172,7 +106,7 @@ class FakeConnection:
 def _install_fake_duckdb(monkeypatch: pytest.MonkeyPatch, log: dict[str, Any]) -> None:
     module = types.ModuleType("duckdb")
     module.connect = lambda *args, **kwargs: FakeConnection(log)
-    monkeypatch.setitem(sys.modules, "duckdb", module)
+    monkeypatch.setattr(duckdb_setup, "duckdb", module)
 
 
 def test_adapter_normalizes_options():
@@ -198,7 +132,7 @@ def test_adapter_rejects_unknown_and_literal_secret_options():
     assert "hunter2" not in str(exc.value)
 
 
-def test_adapter_reports_missing_env_without_connecting(
+def test_adapter_reports_missing_env_and_catalog_without_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ):
     log: dict[str, Any] = {}
@@ -220,15 +154,12 @@ def test_adapter_reports_missing_env_without_connecting(
         "SR_DUCKLAKE_CATALOG_PATH",
         "SR_DUCKLAKE_DATA_PATH",
     ]
-    assert "setup_sql" not in log  # never connected
 
-
-def test_adapter_requires_catalog_path():
-    adapter = DuckLakeAdapter({"schema": "main"})
     with pytest.raises(SemanticLayerError) as exc:
-        adapter._resolve_paths()
+        DuckLakeAdapter({"schema": "main"}).query("select 1")
     assert exc.value.code == "INVALID_CONFIG"
     assert "catalog_path" in str(exc.value)
+    assert "setup_sql" not in log  # never connected
 
 
 def test_adapter_bootstrap_attaches_and_uses_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path):
@@ -341,7 +272,7 @@ def test_create_adapter_entry_point_and_factory(monkeypatch: pytest.MonkeyPatch,
     with pytest.raises(SemanticLayerError) as exc:
         create_adapter(replace(package, connection=ConnectionSpec(kind="duckdb_native")))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "Unsupported DuckLake connection kind" in str(exc.value)
+    assert exc.value.details["connection_kind"] == "duckdb_native"
 
 
 # ---------------------------------------------------------------------------
@@ -381,10 +312,13 @@ def test_ducklake_compiles_entire_conformance_battery():
     duckdb_registry = Registry(duckdb_config)
 
     for case in battery:
-        compiled = compile_query(config, registry, case.payload)
+        query, _ = read_call(case.payload, config=config)
+        # Coverage SQL caps at the request's now: pin it so both compilations read one instant.
+        query = {**query, "policy_context": {"now": "2026-10-09T00:00:00Z"}}
+        compiled = compile_query(config, registry, query)
         sql = compiled["sql"]
         assert sql and sql.strip(), f"{case.name}: empty SQL for ducklake"
         # DuckLake is DuckDB SQL: the compiled text must be identical to
         # the DuckDB reference compilation for every battery case.
-        reference_sql = compile_query(duckdb_config, duckdb_registry, case.payload)["sql"]
+        reference_sql = compile_query(duckdb_config, duckdb_registry, query)["sql"]
         assert sql == reference_sql, f"{case.name}: ducklake SQL diverged from duckdb"

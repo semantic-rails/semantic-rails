@@ -57,9 +57,9 @@ FROM leaf_1 AS base
 )
 SELECT
   base.g1 AS "dimension.jaffle_store_name",
-  base.t AS "temporal_role.jaffle_order_time__month",
-  base.m1 AS qualifying_revenue_usd
+  base.t AS "period",
+  base.m1 AS "qualifying_revenue_usd"
 FROM guarded_base AS base
 ORDER BY
-  t ASC,
-  g1 ASC
+  t ASC NULLS LAST,
+  g1 ASC NULLS LAST

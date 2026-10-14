@@ -14,6 +14,7 @@ from typing import Any, Protocol
 import yaml
 
 from .. import architect_introspection as introspection
+from .. import operators
 from ..architect_service import ArchitectMutation, ArchitectProject
 from ..cli.common import _quote, _ref_label, _runtime_from_ref, _title
 from ..cli.output import _authoring_error_messages, _authoring_warning_messages
@@ -1244,21 +1245,25 @@ def _operand_id(node: Any) -> str:
 
 
 def _single_value_filter(predicate: dict[str, Any]) -> dict[str, Any] | None:
-    """The one `field IN/NOT IN [values]` clause this wizard writes, if that is all there is."""
+    """The one `field is/not [values]` clause this wizard writes, if that is all there is,
+    in its word (`is` / `not`) whichever alias the file uses."""
 
     clauses = predicate.get("all")
     clause = clauses[0] if isinstance(clauses, list) and len(clauses) == 1 else None
-    if (
+    if not (
         isinstance(clause, dict)
         and set(clause) == {"field", "op", "value"}
         and isinstance(clause["field"], str)
-        and clause["op"] in {"IN", "NOT IN"}
         and isinstance(clause["value"], list)
         and clause["value"]
         and all(type(value) in {str, int, float, bool} for value in clause["value"])
     ):
-        return clause
-    return None
+        return None
+    try:
+        word = operators.operator_word(clause["op"])
+    except SemanticLayerError:
+        return None
+    return {**clause, "op": word} if word in {"is", "not"} else None
 
 
 def _time_recipe(
@@ -1434,8 +1439,8 @@ def _row_filter(
     previous = list(saved["value"]) if saved and field_id == saved["field"] else []
     op = _author_choice(
         "Keep the rows where it",
-        [("IN", "is one of"), ("NOT IN", "is not one of")],
-        default=str(saved["op"]) if saved and previous else "IN",
+        [("is", "is one of"), ("not", "is not one of")],
+        default=str(saved["op"]) if saved and previous else "is",
     )
     domain = [
         (value.value, value.label)

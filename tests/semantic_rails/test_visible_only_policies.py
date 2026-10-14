@@ -33,7 +33,7 @@ from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.policies import enforce_query_policies
-from semantic_rails.request_context import RequestContext
+from semantic_rails.request_context import RequestContext, context_from_policy_context
 from semantic_rails.runtime import Runtime, runtime_request_scope
 from semantic_rails.schema import SemanticPolicyConfig
 from semantic_rails.visible_view import hidden_object_ids
@@ -109,29 +109,29 @@ CONTEXTS = {
     "finance_and_support": ({"roles": ["finance", "support"]}, True),
 }
 BY_STORE = {
-    "select": [{"expression": {"metric": REVENUE_METRIC}, "as": "revenue"}],
+    "select": [{"expression": REVENUE_METRIC, "as": "revenue"}],
     "group_by": [STORE],
 }
-
-
-def _threshold(input_: dict[str, Any]) -> dict[str, Any]:
-    predicate = {"kind": "metric_predicate", "entity": "entity.jaffle_customer"}
-    predicate |= {"scope_mode": "entity_only", "input": input_, "op": ">=", "value": 100}
-    return {"expression": predicate, "op": "=", "value": True}
+# Customers with at least 100 in revenue, over every row of the customer.
+BIG_CUSTOMERS = {
+    "entity": "entity.jaffle_customer",
+    "having": [{"field": REVENUE, "op": "gte", "value": 100}],
+    "over": "all_time",
+}
 
 
 # Every way to read revenue without naming the policy's objects as a catalog would.
 BYPASSES = {
     "guessed_id": BY_STORE,
-    "derived_metric": {"select": [{"expression": {"metric": AOV}, "as": "aov"}]},
-    "raw_measure": {"select": [{"expression": {"measure": REVENUE}, "as": "revenue"}]},
+    "derived_metric": {"select": [{"expression": AOV, "as": "aov"}]},
+    "raw_measure": {"select": [{"expression": REVENUE, "as": "revenue"}]},
     "inline_expression": {
         "select": [
             {
                 "expression": {
                     "kind": "arithmetic",
                     "op": "multiply",
-                    "left": {"measure": REVENUE},
+                    "left": REVENUE,
                     "right": {"kind": "literal", "value": 2},
                 },
                 "as": "doubled",
@@ -139,12 +139,12 @@ BYPASSES = {
         ]
     },
     "metric_filter": {
-        "select": [{"expression": {"metric": CUSTOMERS}, "as": "customers"}],
-        "metric_filters": [_threshold({"measure": REVENUE})],
+        "select": [{"expression": CUSTOMERS, "as": "customers"}],
+        "where": [BIG_CUSTOMERS],
     },
     "rank_by_it": {
         **BY_STORE,
-        "order_by": [{"field": "revenue", "direction": "DESC"}],
+        "order_by": [{"field": "revenue", "direction": "desc"}],
         "limit": 3,
     },
     "conditional_raw_value": {
@@ -188,8 +188,8 @@ BYPASSES = {
         "group_by": [STORE],
     },
     "restricted_dimension_filter": {
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-        "where": [{"field": RESTRICTED_DIMENSION, "op": "=", "value": True}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "where": [{"field": RESTRICTED_DIMENSION, "op": "is", "value": True}],
     },
 }
 
@@ -224,21 +224,24 @@ def _engine(package: Path, *policies: dict[str, Any]) -> Runtime:
     return Runtime.from_config(replace(config, semantic_policies=rows), source_path=str(package))
 
 
-def _with(query: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    return {**query, "policy_context": context}
-
-
-def _refusals(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, dict[str, Any], str]]:
-    """The code, details and message of validate, compile, execute and MCP execute."""
-    report = engine.validate(query)
+def _refusals(
+    engine: Runtime, query: dict[str, Any], context: dict[str, Any]
+) -> list[tuple[str, dict[str, Any], str]]:
+    """The code, details and message of validate, compile, execute and MCP execute, each
+    asked by ``context``."""
+    report = engine.validate(query, context=context)
     assert report["ok"] is False, report
     issue = report["errors"][0]
     outcomes = [(issue["code"], issue.get("details", {}), issue["message"])]
     for call in (engine.compile, engine.query):
         with pytest.raises(SemanticLayerError) as exc:
-            call(query)
+            call(query, context=context)
         outcomes.append((exc.value.code, exc.value.details, str(exc.value)))
-    tool = SemanticLayerMCPAdapter(engine).call_tool("execute", {"query": query, "mode": "run"})
+    tool = SemanticLayerMCPAdapter(engine).call_tool(
+        "execute",
+        {"query": query, "mode": "run"},
+        request_context=context_from_policy_context(context),
+    )
     assert tool["ok"] is False, tool
     for payload in (report, tool):
         for field in ("sql", "rendered_sql", "sql_plan", "rows"):
@@ -293,7 +296,7 @@ SURFACES: dict[str, Callable[[Runtime, dict[str, Any]], Any]] = {
     "valid_values": lambda engine, context: valid_values_payload(
         engine,
         dimension_id=STORE,
-        query=_with(BY_STORE, context),
+        query=engine.engine_payload(BY_STORE, context=context),
         allow_live_query=True,
         include_counts=True,
     ),
@@ -341,10 +344,14 @@ def test_cards_of_visible_objects_name_revenue_only_for_finance(engine, roles, e
 @pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
 def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eligible):
     root = copy_package_config(tmp_path, "jaffle_shop")
-    # Keep only regular models in this catalog fixture.
+    # Keep the precomputed series out of this catalog fixture.
     (root / "models" / "core" / "daily_metrics.yml").unlink()
     (root / "models" / "core" / "monthly_metrics.yml").unlink()
     (root / "metrics" / "core" / "time_series_metrics.yml").unlink()
+    graph = yaml.safe_load((root / "graph.yml").read_text())
+    for name in ("daily_metrics", "monthly_metrics"):
+        del graph["graph"]["entities"][name]
+    _write(root / "graph.yml", graph)
     path = root / "metrics" / "core" / "core_metrics.yml"
     data = yaml.safe_load(path.read_text())
     keys = ("preferred_companion_metrics",)
@@ -389,7 +396,7 @@ def test_intent_subjects_name_revenue_only_for_finance(engine, name):
 @pytest.mark.parametrize("name", CONTEXTS)
 def test_every_query_reading_revenue_is_refused_outside_finance(engine, package, bypass, name):
     context, eligible = CONTEXTS[name]
-    query = _with(BYPASSES[bypass], context)
+    query = BYPASSES[bypass]
     runtime = (
         _engine(
             package,
@@ -400,7 +407,7 @@ def test_every_query_reading_revenue_is_refused_outside_finance(engine, package,
     )
     try:
         if eligible:
-            assert runtime.validate(query)["ok"] is True
+            assert runtime.validate(query, context=context)["ok"] is True
             return
         hidden = hidden_object_ids(runtime._config, roles=context.get("roles", []))
         hidden_names = hidden | {
@@ -417,7 +424,7 @@ def test_every_query_reading_revenue_is_refused_outside_finance(engine, package,
         }
         # A restricted object the query names is unknown; raw columns name none and are denied.
         named = hidden & set(re.findall(r"[\w.]+", json.dumps(query)))
-        for code, details, message in _refusals(runtime, query):
+        for code, details, message in _refusals(runtime, query, context):
             assert code == ("OBJECT_NOT_FOUND" if named else "POLICY_DENIED")
             # Only the caller's own ids and visible suggestions may be named.
             suggested = set(details.get("closest_matches", []))
@@ -438,7 +445,7 @@ def test_every_query_reading_revenue_is_refused_outside_finance(engine, package,
 
 @pytest.mark.parametrize("name", [name for name, (_, eligible) in CONTEXTS.items() if eligible])
 def test_finance_gets_the_reference_number(engine, package, name):
-    rows = engine.query(_with(BY_STORE, CONTEXTS[name][0]))["rows"]
+    rows = engine.query(BY_STORE, context=CONTEXTS[name][0])["rows"]
     assert sorted((row[STORE], round(float(row["revenue"]), 2)) for row in rows) == _reference(
         package
     )
@@ -455,7 +462,7 @@ def test_conditional_raw_columns_match_reference_when_unrestricted(package, bypa
         else "COUNT(CASE WHEN o.order_total_cents > 0 THEN 1 END)"
     )
     try:
-        rows = opened(runtime).query(_with(BYPASSES[bypass], context))["rows"]
+        rows = opened(runtime).query(BYPASSES[bypass], context=context)["rows"]
         with duckdb.connect(str(package / "jaffle_shop.duckdb"), read_only=True) as con:
             expected = con.execute(
                 f"SELECT s.store_name, {value} FROM jaffle_order o "
@@ -475,14 +482,20 @@ def test_raw_conditional_aggregate_cannot_bypass_gate_without_binding(engine, by
         "blocked_objects": [],
         "policy_effects": [],
         "policy_violations": [],
+        "recovery_hints": [
+            {
+                "code": "FIX_QUERY_CALL",
+                "message": "Select a measure or metric in place of the aggregate.",
+            }
+        ],
     }
 
 
 @pytest.mark.parametrize("name", CONTEXTS)
 def test_a_near_miss_never_suggests_revenue_outside_finance(engine, name):
     context, eligible = CONTEXTS[name]
-    typo = {"select": [{"expression": {"metric": "metric.sales.revenu"}, "as": "revenue"}]}
-    report = engine.validate(_with(typo, context))
+    typo = {"select": [{"expression": "metric.sales.revenu", "as": "revenue"}]}
+    report = engine.validate(typo, context=context)
     assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
     assert (REVENUE_METRIC in _mentions(report)) is eligible
 
@@ -506,9 +519,9 @@ def test_a_segment_over_revenue_is_refused_outside_finance(engine, operation, na
 
 
 def test_unrelated_objects_stay_queryable(engine):
-    query = {"select": [{"expression": {"metric": CUSTOMERS}, "as": "customers"}]}
+    query = {"select": [{"expression": CUSTOMERS, "as": "customers"}]}
     for context, _ in CONTEXTS.values():
-        assert engine.query(_with(query, context))["rows"]
+        assert engine.query(query, context=context)["rows"]
 
 
 # name -> (extra policy fields, policy_context, eligible)
@@ -563,7 +576,7 @@ def test_scoping_separates_applicability_from_eligibility(package, name):
             with pytest.raises(SemanticLayerError) as exc:
                 hidden_object_ids(runtime._config, environment=context["environment"])
             assert exc.value.code == "INVALID_QUERY"
-            assert {code for code, _, _ in _refusals(runtime, _with(BY_STORE, context))} == {
+            assert {code for code, _, _ in _refusals(runtime, BY_STORE, context)} == {
                 "INVALID_QUERY"
             }
             return
@@ -575,11 +588,12 @@ def test_scoping_separates_applicability_from_eligibility(package, name):
         )
         assert bool(set(RESTRICTED) & hidden) is not visible
         assert set(RESTRICTED) <= hidden or not set(RESTRICTED) & hidden
-        query = _with(BY_STORE, context)
         if visible:
-            assert runtime.validate(query)["ok"] is True
+            assert runtime.validate(BY_STORE, context=context)["ok"] is True
         else:
-            assert {code for code, _, _ in _refusals(runtime, query)} == {"OBJECT_NOT_FOUND"}
+            assert {code for code, _, _ in _refusals(runtime, BY_STORE, context)} == {
+                "OBJECT_NOT_FOUND"
+            }
     finally:
         runtime.close()
 
@@ -608,8 +622,7 @@ def test_explicit_restrictions_still_apply_to_eligible_contexts(package, action)
     restriction |= {"object_ids": [REVENUE], "roles": ["finance"]}
     runtime = _engine(package, FINANCE_ONLY, restriction)
     try:
-        query = _with(BY_STORE, {"roles": ["finance"]})
-        for code, details, _ in _refusals(runtime, query):
+        for code, details, _ in _refusals(runtime, BY_STORE, {"roles": ["finance"]}):
             # Hidden from finance, the metric reading revenue is unknown; denied, it is refused.
             assert code == ("OBJECT_NOT_FOUND" if action == "hidden" else "POLICY_DENIED")
             if action == "deny":
@@ -623,8 +636,8 @@ def test_the_query_gate_reads_every_bound_object_not_policy_matches(engine, monk
     """Forcing the per-policy effects to report nothing still refuses a restricted read: the
     caller's view has no such object to bind."""
     monkeypatch.setattr("semantic_rails.policies.query_policy_effects", lambda *a, **k: [])
-    query = {"select": [{"expression": {"metric": AOV}, "as": "aov"}]}
-    codes = {code for code, _, _ in _refusals(engine, _with(query, {"roles": ["support"]}))}
+    query = {"select": [{"expression": AOV, "as": "aov"}]}
+    codes = {code for code, _, _ in _refusals(engine, query, {"roles": ["support"]})}
     assert codes == {"OBJECT_NOT_FOUND"}
     assert enforce_query_policies(engine.package_config, [AOV], roles=["finance"]) == []
 
@@ -633,7 +646,7 @@ def test_the_query_gate_reads_every_bound_object_not_policy_matches(engine, monk
     ("roles", "eligible"), [([], False), (["writer"], False), (["reader"], True)]
 )
 @pytest.mark.parametrize("restricted", [route.OWNER, route.OWNER_ROUTE[0]])
-def test_route_notes_offer_a_restricted_waypoint_only_to_its_roles(
+def test_route_switches_offer_a_restricted_waypoint_only_to_its_roles(
     tmp_path, monkeypatch, restricted, roles, eligible
 ):
     monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
@@ -647,13 +660,11 @@ def test_route_notes_offer_a_restricted_waypoint_only_to_its_roles(
     )
     config = replace(load_package_config(str(package)), semantic_policies=[policy])
     runtime = Runtime.from_config(config, source_path=str(package))
-    query = {
-        **route.BALANCE_BY_DISTRICT,
-        "route_decisions": [{**route.DIAMOND_ROW, "relationship_path": route.BRANCH_ROUTE}],
-        "policy_context": {"roles": roles},
-    }
+    query = route._routed(
+        route.BALANCE_BY_DISTRICT, {**route.DIAMOND_ROW, "relationship_path": route.BRANCH_ROUTE}
+    )
     try:
-        out = runtime.query(query)
+        out = runtime.query(query, context={"roles": roles})
     finally:
         runtime.close()
     assert route._rows(out, ["dimension.bank_district_name", "v"]) == route._gold(route.BY_BRANCH)
@@ -661,7 +672,8 @@ def test_route_notes_offer_a_restricted_waypoint_only_to_its_roles(
     disclosed = [
         object_id for object_id in [route.OWNER, *route.OWNER_ROUTE] if object_id in json.dumps(out)
     ]
-    assert bool(details["route_alternatives"]) is eligible
+    # The other route goes through the restricted waypoint: offered only to its roles.
+    assert bool(details.get("other_routes")) is eligible
     assert bool(disclosed) is eligible
 
 
@@ -678,10 +690,12 @@ def test_a_restricted_dimension_takes_its_values_and_domain_with_it(package, rol
         )
         assert (STORE in json.dumps(found)) is eligible
         if eligible:
-            assert valid_values_payload(runtime, dimension_id=STORE, query=_with({}, context))
+            assert valid_values_payload(
+                runtime, dimension_id=STORE, query={"policy_context": context}
+            )
             return
         with pytest.raises(SemanticLayerError) as exc:
-            valid_values_payload(runtime, dimension_id=STORE, query=_with({}, context))
+            valid_values_payload(runtime, dimension_id=STORE, query={"policy_context": context})
         assert exc.value.code == "OBJECT_NOT_FOUND"
     finally:
         runtime.close()
@@ -698,12 +712,11 @@ def test_a_metric_grant_does_not_widen_visible_only(engine, roles, eligible):
     catalog = json.dumps(catalog_payload(engine, policy_context=context))
     assert CUSTOMERS in catalog
     assert (REVENUE_METRIC in _mentions(json.loads(catalog))) is eligible
-    query = _with(BY_STORE, context)
     if eligible:
-        assert engine.query(query)["rows"]
+        assert engine.query(BY_STORE, context=context)["rows"]
         return
     with pytest.raises(SemanticLayerError) as exc:
-        engine.query(query)
+        engine.query(BY_STORE, context=context)
     assert exc.value.code == "RESOURCE_ACCESS_DENIED"
 
 

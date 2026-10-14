@@ -105,7 +105,7 @@
                 "type": "string"
               },
               "expression": {
-                "$ref": "query_ir.v1.json#/$defs/SelectExpression"
+                "$ref": "query.v2.json#/$defs/Expression"
               },
               "value_type": {
                 "type": "string"
@@ -116,7 +116,7 @@
             "$ref": "#/$defs/Hash"
           },
           "query_template": {
-            "$ref": "query_ir.v1.json"
+            "$ref": "query.v2.json"
           }
         }
       }
@@ -156,11 +156,11 @@
       ],
       "properties": {
         "schema_id": {
-          "const": "https://semantic-rails.com/schemas/query_ir.v1.json"
+          "const": "https://semantic-rails.com/schemas/query.v2.json"
         },
         "version": {
           "type": "integer",
-          "const": 1
+          "const": 2
         },
         "runtime_validation_required": {
           "const": true

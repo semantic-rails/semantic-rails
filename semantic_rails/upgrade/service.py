@@ -19,7 +19,7 @@ from uuid import uuid4
 import yaml
 
 from ..architect_transactions import ProjectFileUpdate, ProjectTransaction
-from ..errors import SemanticLayerError
+from ..errors import SemanticLayerError, refusal_text
 from ..package_snapshot import LoadedPackageSnapshot, json_fingerprint, load_package_snapshot
 from ..route_census import route_census
 from ..runtime import Runtime
@@ -40,6 +40,10 @@ class _State:
 
 def _query_key(file: str, path: YamlPath) -> str:
     return f"{file}:{'.'.join(map(str, path))}"
+
+
+# Every stage compiles at one instant, so a window's SQL compares by what it means.
+_COMPARED_AT = "2026-01-01T00:00:00Z"
 
 
 def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mapping) -> _State:
@@ -63,14 +67,25 @@ def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mappin
                 if Path(file).parts[0] not in {"examples", "tests"}:
                     continue
                 try:
-                    sql = str(runtime.compile(dict(query))["rendered_sql"])
+                    sql = str(runtime.compile(dict(query), now=_COMPARED_AT)["rendered_sql"])
                     queries[_query_key(file, path)] = ("sql", relative(sql))
                 except Exception as exc:  # noqa: BLE001 - every failure is compared evidence
                     code = getattr(exc, "code", type(exc).__name__)
-                    queries[_query_key(file, path)] = ("error", code, relative(str(exc)))
+                    text, hint = refusal_text(str(exc), getattr(exc, "details", {}))
+                    reason = f"{text} Hint: {hint}" if hint else text
+                    queries[_query_key(file, path)] = ("error", code, relative(reason))
         finally:
             runtime.close()
     return _State(snapshot, None, queries)
+
+
+def _refused_examples(state: _State) -> list[str]:
+    """Each example the staged package refuses, with the refusal's path, message and hint."""
+    return [
+        f"Example {key} does not compile ({outcome[1]}): {outcome[2]}"
+        for key, outcome in state.queries.items()
+        if key.startswith("examples/") and outcome[0] == "error"
+    ]
 
 
 def _children(node: Any, part: str) -> list[Any]:
@@ -239,7 +254,7 @@ def upgrade_project(
             "revision": revision,
             "rules": [],
             "changes": [],
-            "next_actions": [],
+            "next_actions": _refused_examples(unchanged),
         }
     hits = {rule.id: [f for f in result.findings if f.rule == rule.id] for rule in rules}
     mechanical = [rule for rule in rules if any(f.edits and not f.options for f in hits[rule.id])]
@@ -383,11 +398,7 @@ def upgrade_project(
                 "project_status lists them in route_census.undecided): record each as a "
                 "graph.path_preferences row, which record_route_decision writes."
             )
-        next_actions.extend(
-            f"Example {key} does not compile: {outcome[1]}."
-            for key, outcome in final.queries.items()
-            if key.startswith("examples/") and outcome[0] == "error"
-        )
+        next_actions.extend(_refused_examples(final))
 
     preview = dry_run or bool(result.pending)
     outcome = transaction.apply(

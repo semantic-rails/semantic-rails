@@ -20,6 +20,7 @@ from ..dialects import (
     POSTGRES_CONNECTION_OPTIONS,
     SNOWFLAKE_ADBC_CONNECTION_OPTIONS,
     backslash_escaped_string_literal,
+    dialect_for_warehouse,
     snowflake_adbc_connect_errors,
 )
 from ..errors import SemanticLayerError, query_execution_error
@@ -28,7 +29,6 @@ from ..sql_preparation import (
     check_postgres_parameters,
     check_snowflake_parameters,
     checked_parameter_values,
-    prepare_query,
 )
 from .base import (
     QueryRows,
@@ -366,7 +366,9 @@ class AdbcAdapter(WarehouseAdapter):
             cursor.execute("SELECT set_config('TimeZone', $1, false)", (zone,))
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+        return self.query_prepared(
+            dialect_for_warehouse(self.engine).prepare_query(sql), limits=limits
+        )
 
     def query_prepared(
         self,

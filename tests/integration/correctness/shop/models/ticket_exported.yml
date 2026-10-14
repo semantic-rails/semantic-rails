@@ -1,0 +1,10 @@
+# The same tickets loaded by a nightly whose last run reached Thursday 2024-11-14.
+model:
+  id: ticket_exported
+  relation: tickets
+  entities: {ticket_exported: {}}
+  zero_through: {loaded: ticket_exports.through_day}
+  times:
+    opened_at: {column: opened_at, kind: timestamp, class: event_time, default: true}
+  measures:
+    exported_tickets: {kind: entity_count, entity_key: ticket_id, accumulation: {kind: flow}}

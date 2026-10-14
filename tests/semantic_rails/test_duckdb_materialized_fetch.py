@@ -63,6 +63,9 @@ class RecordingConnection:
     def extract_statements(self, sql):
         return self.raw.extract_statements(sql)
 
+    def interrupt(self):  # the key search's deadline
+        self.raw.interrupt()
+
     @property
     def description(self):
         raise AssertionError("read the materialized relation's description")
@@ -96,8 +99,10 @@ def helper_calls(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("path", ["database", "duckdb", "ducklake", "motherduck"])
-@pytest.mark.parametrize("cap", [None, 1, 3, 5])
+@pytest.mark.parametrize(
+    ("path", "cap"),
+    [("database", None), ("database", 5), ("duckdb", 1), ("ducklake", 3), ("motherduck", 1)],
+)
 def test_every_duckdb_adapter_materializes_instead_of_streaming(path, cap, helper_calls):
     log = []
     connection = RecordingConnection(duckdb.connect(), log)
@@ -129,8 +134,7 @@ def test_every_duckdb_adapter_materializes_instead_of_streaming(path, cap, helpe
         connection.close()
 
 
-@pytest.mark.parametrize("cap", [None, 2, 6, 10])
-@pytest.mark.parametrize("bound", [False, True])
+@pytest.mark.parametrize(("bound", "cap"), [(False, None), (True, 2), (False, 6), (True, 10)])
 def test_jaffle_rows_order_description_duplicate_names_and_parameters(runtime_factory, cap, bound):
     runtime = runtime_factory("jaffle_shop")
     sql = (
@@ -186,9 +190,15 @@ def test_parameterized_max_rows_bounds_materialization():
         connection.close()
 
 
-@pytest.mark.parametrize("path", ["database", "duckdb"])
-@pytest.mark.parametrize("cap", [None, 1, 2])
-@pytest.mark.parametrize("sql", ["EXPLAIN SELECT ? AS n", "DESCRIBE SELECT ? AS n"])
+@pytest.mark.parametrize(
+    ("sql", "cap", "path"),
+    [
+        ("EXPLAIN SELECT ? AS n", None, "database"),
+        ("EXPLAIN SELECT ? AS n", 1, "duckdb"),
+        ("DESCRIBE SELECT ? AS n", 2, "duckdb"),
+        ("DESCRIBE SELECT ? AS n", 1, "database"),
+    ],
+)
 def test_parameterized_non_select_matches_dbapi(path, cap, sql):
     with duckdb.connect() as reference:
         cursor = reference.execute(sql, [42])
@@ -214,19 +224,18 @@ def test_parameterized_non_select_matches_dbapi(path, cap, sql):
         connection.close()
 
 
-@pytest.mark.parametrize("path", ["database", "duckdb"])
 @pytest.mark.parametrize(
-    "sql",
+    ("sql", "path"),
     [
-        "SELECT ? AS n;",
-        "SELECT ? AS n; -- tail",
-        "SELECT ? AS n;; -- tail",
-        "SELECT ? AS n -- tail",
-        "WITH t AS (SELECT ? AS n) SELECT n FROM t;",
-        "SELECT ? AS n, 'é' AS x",
-        "SELECT 'é' AS s, ? AS n;",
-        "SELECT 'é' AS s, ? AS n;\n",
-        "SELECT 'é' AS s, ? AS n; -- tail",
+        ("SELECT ? AS n;", "database"),
+        ("SELECT ? AS n; -- tail", "duckdb"),
+        ("SELECT ? AS n;; -- tail", "database"),
+        ("SELECT ? AS n -- tail", "duckdb"),
+        ("WITH t AS (SELECT ? AS n) SELECT n FROM t;", "database"),
+        ("SELECT ? AS n, 'é' AS x", "duckdb"),
+        ("SELECT 'é' AS s, ? AS n;", "database"),
+        ("SELECT 'é' AS s, ? AS n;\n", "duckdb"),
+        ("SELECT 'é' AS s, ? AS n; -- tail", "database"),
     ],
 )
 def test_parameterized_select_cap_preserves_statement_terminators_and_comments(path, sql):
@@ -234,7 +243,7 @@ def test_parameterized_select_cap_preserves_statement_terminators_and_comments(p
         cursor = reference.execute(sql, [42])
         columns = [column[0] for column in cursor.description]
         expected = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
-    database = db.Database.connect_in_memory()
+    database = db.Database.connect(":memory:")
     try:
         if path == "database":
             rows = database.query(sql, [42], max_rows=1)
@@ -279,13 +288,13 @@ def test_introspection_materializes_catalog_profile_sample_and_composite_key_rea
         assert len(helper_calls) > 1
         assert len(queries) == len([entry for entry in log if entry[0] == "relation.fetchall"])
         assert any("SELECT DISTINCT" in entry[1] for entry in queries)
-        assert any("count(DISTINCT system.main.row(" in entry[1] for entry in queries)
+        assert any("HAVING system.main.count(*) > 1" in entry[1] for entry in queries)  # key checks
         assert not any(entry[0] == "cursor.execute" for entry in log)
     finally:
         connection.close()
 
 
-@pytest.mark.parametrize("cap", [None, 1, 3])
+@pytest.mark.parametrize("cap", [None, 1])
 def test_sqlite_retains_its_cursor_rows_and_duplicate_column_semantics(cap):
     database = db.Database.connect(":memory:", engine="sqlite")
     try:

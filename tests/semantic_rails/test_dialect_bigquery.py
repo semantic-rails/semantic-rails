@@ -24,6 +24,7 @@ from semantic_rails.db_parts.bigquery import (
 )
 from semantic_rails.dialects import BigQueryDialect, dialect_for_warehouse, warehouse_connector
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr, render_select
 from semantic_rails.schema import ConnectionSpec, PackageMeta, SeedSpec
@@ -37,7 +38,7 @@ from semantic_rails.sql_ast import (
     SqlSelect,
     SqlTableRef,
 )
-from semantic_rails.sql_preparation import _bigquery_compat_sql, _safe_field_name
+from semantic_rails.sql_preparation import _safe_field_name, bigquery_compat_sql
 
 DIALECT = BigQueryDialect()
 
@@ -47,198 +48,92 @@ def _col(*parts: str) -> SqlIdentifier:
 
 
 # ---------------------------------------------------------------------------
-# (a) Rendering — one assertion per overridden dialect method.
+# (a) Rendering — every overridden dialect method.
 # ---------------------------------------------------------------------------
 
 
-def test_registry_returns_bigquery_dialect():
+def test_registry_returns_bigquery_dialect_rendering_googlesql_forms():
     assert isinstance(dialect_for_warehouse("bigquery"), BigQueryDialect)
     connector = warehouse_connector("bigquery")
     assert connector is not None
     assert connector.connection_kinds == ("bigquery_native",)
     assert connector.adapter == "semantic_rails.db_parts.bigquery:create_adapter"
 
-
-def test_date_trunc_reverses_args_and_uses_datetime_trunc():
-    sql = render_expr(DIALECT.date_trunc("day", _col("t", "created_at")))
-    assert sql == "DATETIME_TRUNC(t.created_at, DAY)"
-
-
-def test_date_trunc_week_maps_to_isoweek_for_duckdb_parity():
-    sql = render_expr(DIALECT.date_trunc("week", _col("t", "created_at")))
-    assert sql == "DATETIME_TRUNC(t.created_at, ISOWEEK)"
-
-
-@pytest.mark.parametrize("grain", ["month", "quarter", "year", "hour", "minute", "second"])
-def test_date_trunc_passes_other_grains_through(grain: str):
-    sql = render_expr(DIALECT.date_trunc(grain, _col("t", "ts")))
-    assert sql == f"DATETIME_TRUNC(t.ts, {grain.upper()})"
-
-
-def test_date_diff_puts_end_first():
-    sql = render_expr(DIALECT.date_diff("day", _col("s", "started_at"), _col("e", "ended_at")))
-    assert sql == "DATETIME_DIFF(e.ended_at, s.started_at, DAY)"
-
-
-@pytest.mark.parametrize("unit", ["day", "week", "month", "quarter", "year", "hour"])
-def test_date_diff_supports_compiler_units(unit: str):
-    sql = render_expr(DIALECT.date_diff(unit, _col("a"), _col("b")))
-    assert sql == f"DATETIME_DIFF(b, a, {unit.upper()})"
-
-
-@pytest.mark.parametrize(
-    "unit,start,end,expected",
-    [
-        pytest.param("day", "2024-01-01 23:00:00", "2024-01-03 01:00:00", 2, id="midnight"),
-        pytest.param("day", "2024-01-03 01:00:00", "2024-01-01 23:00:00", -2, id="reversed"),
-        pytest.param("day", None, "2024-01-03 01:00:00", None, id="null-start"),
-        pytest.param("day", "2024-01-01 23:00:00", None, None, id="null-end"),
-        pytest.param("day", None, None, None, id="null-both"),
-        pytest.param("month", "2024-01-31 23:00:00", "2024-02-01 01:00:00", 1, id="month"),
-        pytest.param("quarter", "2024-03-31 23:00:00", "2024-04-01 01:00:00", 1, id="quarter"),
-        pytest.param("year", "2023-12-31 23:00:00", "2024-01-01 01:00:00", 1, id="year"),
-        pytest.param("hour", "2024-01-01 23:59:00", "2024-01-02 00:01:00", 1, id="hour"),
-        pytest.param("minute", "2024-01-01 23:59:59", "2024-01-02 00:00:01", 1, id="minute"),
-    ],
-)
-def test_authored_date_diff_normalizes_timestamp_columns(unit, start, end, expected):
-    # A typed CTE exercises physical TIMESTAMP endpoints, including typed NULLs.
-    # BigQuery's unwrapped TIMESTAMP overload counts elapsed units instead.
-    endpoints = SqlCte(
-        "endpoints",
-        SqlSelect(
-            select=[
-                SqlField(SqlCast(SqlLiteral(start), "TIMESTAMP"), "opened_at"),
-                SqlField(SqlCast(SqlLiteral(end), "TIMESTAMP"), "closed_at"),
-            ]
-        ),
-    )
-    args = [SqlLiteral(unit), _col("e", "opened_at"), _col("e", "closed_at")]
-    query = SqlSelect(
-        ctes=[endpoints],
-        select=[SqlField(DIALECT.scalar_call("DATE_DIFF", args), "delta")],
-        from_table=SqlTableRef("endpoints", "e"),
-    )
-    sql = render_select(query)
-    assert (
-        f"DATETIME_DIFF(CAST(e.closed_at AS DATETIME), CAST(e.opened_at AS DATETIME), {unit.upper()}) AS delta"
-        in sql
-    )
-    # Execute only the DuckDB reference, never substitute it for BigQuery execution.
-    reference = replace(
-        query,
-        select=[SqlField(dialect_for_warehouse("duckdb").scalar_call("DATE_DIFF", args), "delta")],
-    )
-    with duckdb.connect() as conn:
-        assert conn.execute(render_select(reference)).fetchall() == [(expected,)]
-
-
-def test_authored_date_diff_normalizes_datetime_columns():
-    endpoints = SqlCte(
-        "endpoints",
-        SqlSelect(
-            select=[
-                SqlField(SqlCast(SqlLiteral("2024-01-01 23:00:00"), "DATETIME"), "opened_at"),
-                SqlField(SqlCast(SqlLiteral("2024-01-03 01:00:00"), "DATETIME"), "closed_at"),
-            ]
-        ),
-    )
-    args = [SqlLiteral("day"), _col("e", "opened_at"), _col("e", "closed_at")]
-    query = SqlSelect(
-        ctes=[endpoints],
-        select=[SqlField(DIALECT.scalar_call("DATE_DIFF", args), "delta")],
-        from_table=SqlTableRef("endpoints", "e"),
-    )
-    sql = render_select(query)
-    assert "CAST('2024-01-01 23:00:00' AS DATETIME) AS opened_at" in sql
-    assert "CAST('2024-01-03 01:00:00' AS DATETIME) AS closed_at" in sql
-    assert (
-        "DATETIME_DIFF(CAST(e.closed_at AS DATETIME), CAST(e.opened_at AS DATETIME), DAY) AS delta"
-        in sql
-    )
-
-
-def test_date_add_renders_parenthesized_interval():
-    # BigQuery accepts DATETIME_ADD(dt, INTERVAL (7) DAY) — the
-    # parenthesized form the SqlInterval node renders.
-    sql = render_expr(DIALECT.date_add("day", SqlLiteral(7), _col("t", "d")))
-    assert sql == "DATETIME_ADD(t.d, INTERVAL (7) DAY)"
-
-
-def test_date_add_supports_month_unit():
-    sql = render_expr(DIALECT.date_add("month", SqlLiteral(1), _col("t", "d")))
-    assert sql == "DATETIME_ADD(t.d, INTERVAL (1) MONTH)"
-
-
-def _exact_percentile_sql(column: str, p: str) -> str:
-    """The exact linear-interpolation form percentile_cont lowers to:
-    v[FLOOR(h)] + (h - FLOOR(h)) * (v[CEIL(h)] - v[FLOOR(h)]) with
-    h = p * (COUNT(x) - 1) over ARRAY_AGG(x ORDER BY x ASC)."""
-    h = f"{p} * (COUNT({column}) - 1)"
-    arr = f"(ARRAY_AGG({column} ORDER BY {column} ASC))"
-    lo = f"{arr}[OFFSET(CAST(FLOOR({h}) AS BIGINT))]"
-    hi = f"{arr}[OFFSET(CAST(CEIL({h}) AS BIGINT))]"
-    return f"{lo} + ({h} - FLOOR({h})) * ({hi} - {lo})"
-
-
-def test_percentile_cont_is_exact_linear_interpolation():
-    # APPROX_QUANTILES returns existing elements (no interpolation) and
-    # deviated from the DuckDB reference live; the dialect rebuilds the
-    # exact QUANTILE_CONT definition from ARRAY_AGG + COUNT instead.
-    sql = render_expr(DIALECT.percentile_cont(_col("x"), 0.95))
-    assert sql == _exact_percentile_sql("x", "0.95")
-    assert "APPROX_QUANTILES" not in sql
-
-
-def test_percentile_cont_p80_form():
-    sql = render_expr(DIALECT.percentile_cont(_col("x"), 0.8))
-    assert sql == _exact_percentile_sql("x", "0.8")
-
-
-def test_median_is_percentile_50():
-    sql = render_expr(DIALECT.median(_col("x")))
-    assert sql == _exact_percentile_sql("x", "0.5")
-    assert sql == render_expr(DIALECT.percentile_cont(_col("x"), 0.5))
-
-
-def test_first_value_uses_array_agg_order_limit_offset():
-    sql = render_expr(DIALECT.first_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x ORDER BY o ASC LIMIT 1))[OFFSET(0)]"
-
-
-def test_last_value_orders_descending():
-    sql = render_expr(DIALECT.last_value(_col("x"), _col("o")))
-    assert sql == "(ARRAY_AGG(x ORDER BY o DESC LIMIT 1))[OFFSET(0)]"
-
-
-def test_null_safe_eq_pairs_joinable_equality_with_exact_predicate():
-    # BigQuery rejects FULL OUTER JOINs without a plain field-equality
-    # conjunct, so null_safe_eq mirrors the Postgres dialect: a text-
-    # normalized equality (the conjunct the planner requires) AND the
-    # exact IS NOT DISTINCT FROM predicate (the filter).
-    sql = render_expr(DIALECT.null_safe_eq(_col("a"), _col("b")))
-    assert sql == (
-        "COALESCE(CAST(a AS STRING), '__sr_null__') = "
-        "COALESCE(CAST(b AS STRING), '__sr_null__') "
-        "AND a IS NOT DISTINCT FROM b"
-    )
-
-
-def test_conditional_aggregate_count_uses_native_countif():
     condition = SqlBinary(_col("a"), "=", _col("b"))
-    sql = render_expr(DIALECT.conditional_aggregate("count", condition, None))
-    assert sql == "COUNTIF(a = b)"
+    rendered = [
+        (DIALECT.date_trunc("day", _col("t", "created_at")), "DATETIME_TRUNC(t.created_at, DAY)"),
+        (
+            DIALECT.date_trunc("week", _col("t", "created_at")),
+            "DATETIME_TRUNC(t.created_at, ISOWEEK)",
+        ),
+        (
+            DIALECT.date_diff("day", _col("s", "started_at"), _col("e", "ended_at")),
+            "DATETIME_DIFF(e.ended_at, s.started_at, DAY)",
+        ),
+        (
+            DIALECT.date_add("day", SqlLiteral(7), _col("t", "d")),
+            "DATETIME_ADD(t.d, INTERVAL (7) DAY)",
+        ),
+        (
+            DIALECT.date_add("month", SqlLiteral(1), _col("t", "d")),
+            "DATETIME_ADD(t.d, INTERVAL (1) MONTH)",
+        ),
+        (
+            DIALECT.first_value(_col("x"), _col("o")),
+            "(ARRAY_AGG(CASE WHEN (o IS NULL) THEN NULL ELSE x END IGNORE NULLS"
+            " ORDER BY o ASC LIMIT 1))[SAFE_OFFSET(0)]",
+        ),
+        (
+            DIALECT.last_value(_col("x"), _col("o")),
+            "(ARRAY_AGG(CASE WHEN (o IS NULL) THEN NULL ELSE x END IGNORE NULLS"
+            " ORDER BY o DESC LIMIT 1))[SAFE_OFFSET(0)]",
+        ),
+        # Retain the joinable clause as well as the exact NULL predicate.
+        (
+            DIALECT.null_safe_eq(_col("a"), _col("b")),
+            "COALESCE(CAST(a AS STRING), '__sr_null__') = COALESCE(CAST(b AS STRING), '__sr_null__') AND a IS NOT DISTINCT FROM b",
+        ),
+        # APPROX_QUANTILES returns existing elements (no interpolation) and
+        # deviated from the DuckDB reference live; the dialect rebuilds the
+        # exact QUANTILE_CONT definition from ARRAY_AGG + COUNT instead.
+        (DIALECT.percentile_cont(_col("x"), 0.95), _exact_percentile_sql("x", "0.95")),
+        (DIALECT.median(_col("x")), _exact_percentile_sql("x", "0.5")),
+        (DIALECT.conditional_aggregate("count", condition, None), "COUNTIF(a = b)"),
+        (
+            DIALECT.conditional_aggregate("sum", condition, _col("v")),
+            "SUM(CASE WHEN a = b THEN v END)",
+        ),
+        (
+            DIALECT.conditional_aggregate("count", condition, _col("v")),
+            "COUNT(CASE WHEN a = b THEN v END)",
+        ),
+    ]
+    for grain in ["month", "quarter", "year", "hour", "minute", "second"]:
+        rendered.append(
+            (DIALECT.date_trunc(grain, _col("t", "ts")), f"DATETIME_TRUNC(t.ts, {grain.upper()})")
+        )
+    for unit in ["day", "week", "month", "quarter", "year", "hour"]:
+        rendered.append(
+            (DIALECT.date_diff(unit, _col("a"), _col("b")), f"DATETIME_DIFF(b, a, {unit.upper()})")
+        )
+    # BigQuery reference, conversion functions: CAST AS TIMESTAMP takes a DATE, a DATETIME
+    # (read in UTC) or a TIMESTAMP; timestamp functions: TIMESTAMP(x, zone) takes a STRING,
+    # DATE or DATETIME, never a TIMESTAMP; datetime functions: DATETIME(timestamp, zone).
+    # https://cloud.google.com/bigquery/docs/reference/standard-sql/conversion_functions#cast_as_timestamp
+    # https://cloud.google.com/bigquery/docs/reference/standard-sql/timestamp_functions#timestamp
+    # https://cloud.google.com/bigquery/docs/reference/standard-sql/datetime_functions#datetime
+    for storage_zone, converted in [
+        # Stored in UTC: a DATETIME, a DATE or an instant (TIMESTAMP) column alike.
+        ("UTC", "DATETIME(CAST(t.ts AS TIMESTAMP), 'America/New_York')"),
+        # Wall time stored in another zone is a DATETIME or a DATE.
+        ("Europe/Berlin", "DATETIME(TIMESTAMP(t.ts, 'Europe/Berlin'), 'America/New_York')"),
+    ]:
+        rendered.append(
+            (DIALECT.convert_timezone(storage_zone, "America/New_York", _col("t", "ts")), converted)
+        )
+    for expr, expected in rendered:
+        assert render_expr(expr) == expected
 
-
-def test_conditional_aggregate_other_shapes_fall_back_to_case():
-    condition = SqlBinary(_col("a"), "=", _col("b"))
-    sql = render_expr(DIALECT.conditional_aggregate("sum", condition, _col("v")))
-    assert sql == "SUM(CASE WHEN a = b THEN v END)"
-    counted = render_expr(DIALECT.conditional_aggregate("count", condition, _col("v")))
-    assert counted == "COUNT(CASE WHEN a = b THEN v END)"
-
-
-def test_timestamp_type_is_datetime_and_cast_is_identity():
     assert DIALECT.timestamp_type_name() == "DATETIME"
     # CAST(x AS DATETIME) is not representable in the SQL AST — the
     # dialect relies on BigQuery's implicit DATE/string-literal ->
@@ -246,8 +141,6 @@ def test_timestamp_type_is_datetime_and_cast_is_identity():
     expr = _col("t", "ts")
     assert DIALECT.timestamp_cast(expr) is expr
 
-
-def test_capabilities_flag_exact_percentiles_and_array_agg_nulls():
     caps = DIALECT.capabilities()
     assert caps["timestamp_type"] == "DATETIME"
     assert caps["conditional_aggregate_native"] is True
@@ -261,20 +154,111 @@ def test_capabilities_flag_exact_percentiles_and_array_agg_nulls():
     assert "NULL" in caps["first_last_value_method"]
 
 
+def test_authored_date_diff_normalizes_timestamp_and_datetime_columns():
+    # A typed CTE exercises physical TIMESTAMP endpoints, including typed NULLs.
+    # BigQuery's unwrapped TIMESTAMP overload counts elapsed units instead.
+    for unit, start, end, expected, column_type in [
+        ("day", "2024-01-01 23:00:00", "2024-01-03 01:00:00", 2, "TIMESTAMP"),
+        ("day", "2024-01-03 01:00:00", "2024-01-01 23:00:00", -2, "TIMESTAMP"),
+        ("day", None, "2024-01-03 01:00:00", None, "TIMESTAMP"),
+        ("day", "2024-01-01 23:00:00", None, None, "TIMESTAMP"),
+        ("day", None, None, None, "TIMESTAMP"),
+        ("month", "2024-01-31 23:00:00", "2024-02-01 01:00:00", 1, "TIMESTAMP"),
+        ("quarter", "2024-03-31 23:00:00", "2024-04-01 01:00:00", 1, "TIMESTAMP"),
+        ("year", "2023-12-31 23:00:00", "2024-01-01 01:00:00", 1, "TIMESTAMP"),
+        ("hour", "2024-01-01 23:59:00", "2024-01-02 00:01:00", 1, "TIMESTAMP"),
+        ("minute", "2024-01-01 23:59:59", "2024-01-02 00:00:01", 1, "TIMESTAMP"),
+        ("day", "2024-01-01 23:00:00", "2024-01-03 01:00:00", 2, "DATETIME"),
+    ]:
+        endpoints = SqlCte(
+            "endpoints",
+            SqlSelect(
+                select=[
+                    SqlField(SqlCast(SqlLiteral(start), column_type), "opened_at"),
+                    SqlField(SqlCast(SqlLiteral(end), column_type), "closed_at"),
+                ]
+            ),
+        )
+        args = [SqlLiteral(unit), _col("e", "opened_at"), _col("e", "closed_at")]
+        query = SqlSelect(
+            ctes=[endpoints],
+            select=[SqlField(DIALECT.scalar_call("DATE_DIFF", args), "delta")],
+            from_table=SqlTableRef("endpoints", "e"),
+        )
+        assert (
+            f"DATETIME_DIFF(CAST(e.closed_at AS DATETIME), CAST(e.opened_at AS DATETIME), {unit.upper()}) AS delta"
+            in render_select(query)
+        )
+        # Execute only the DuckDB reference, never substitute it for BigQuery execution.
+        reference = replace(
+            query,
+            select=[
+                SqlField(dialect_for_warehouse("duckdb").scalar_call("DATE_DIFF", args), "delta")
+            ],
+        )
+        with duckdb.connect() as conn:
+            assert conn.execute(render_select(reference)).fetchall() == [(expected,)]
+
+
+def _exact_percentile_sql(column: str, p: str) -> str:
+    """The exact linear-interpolation form percentile_cont lowers to:
+    v[FLOOR(h)] + (h - FLOOR(h)) * (v[CEIL(h)] - v[FLOOR(h)]) with
+    h = p * (COUNT(x) - 1) over ARRAY_AGG(x IGNORE NULLS ORDER BY x ASC); NULLs are left
+    out, and a group without a value reads NULL (SAFE_OFFSET of a negative position)."""
+    h = f"{p} * (COUNT({column}) - 1)"
+    arr = f"(ARRAY_AGG({column} IGNORE NULLS ORDER BY {column} ASC))"
+    lo = f"{arr}[SAFE_OFFSET(CAST(FLOOR({h}) AS BIGINT))]"
+    hi = f"{arr}[SAFE_OFFSET(CAST(CEIL({h}) AS BIGINT))]"
+    return f"{lo} + ({h} - FLOOR({h})) * ({hi} - {lo})"
+
+
+def test_a_window_to_now_on_a_utc_stored_clock_never_reads_its_column_as_wall_time():
+    """The column_timezone the refusal's hint asks for (UTC for a TIMESTAMP column) compiles to
+    SQL a TIMESTAMP column accepts: the column never enters TIMESTAMP(x, zone), and the cutoff
+    at now compares the stored value with now in UTC."""
+    from semantic_rails.runtime import Runtime
+
+    role_id = "temporal_role.jaffle_order_time"
+    config = _bigquery_config(
+        load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
+    )
+    roles = [
+        replace(role, timezone="America/New_York", column_timezone="UTC")
+        if role.id == role_id
+        else role
+        for role in config.temporal_roles
+    ]
+    config = replace(config, aggregate_relations=[], temporal_roles=roles)
+    runtime = Runtime.from_config(
+        config, source_path="configs/semantic_rails/jaffle_shop", package_id="jaffle_shop"
+    )
+    try:
+        sql = runtime.compile(
+            {
+                "select": ["measure.jaffle.order_count"],
+                "time": {"temporal_role": role_id, "this": "day", "grain": "day"},
+            },
+            now="2026-11-01T05:30:00Z",
+        )["rendered_sql"]
+    finally:
+        runtime.close()
+    assert "DATETIME(CAST(jaffle_order.ordered_at AS TIMESTAMP), 'America/New_York')" in sql
+    assert "jaffle_order.ordered_at < '2026-11-01T05:30:00'" in sql
+    assert re.search(r"TIMESTAMP\(\s*jaffle_order\.ordered_at", sql) is None
+
+
 # ---------------------------------------------------------------------------
 # (b) GoogleSQL compatibility pass — backtick re-quoting + field-name
-# legalization (BigQuery rejected both live; see _bigquery_compat_sql).
+# legalization (BigQuery rejected both live; see bigquery_compat_sql).
 # ---------------------------------------------------------------------------
 
 
-def test_compat_sql_requotes_identifiers_with_backticks():
+def test_compat_sql_requotes_identifiers_and_legalizes_field_names():
     sql = 'SELECT t.x AS "plain_alias" FROM "jaffle_order" AS t'
-    rewritten, alias_map = _bigquery_compat_sql(sql)
+    rewritten, alias_map = bigquery_compat_sql(sql)
     assert rewritten == "SELECT t.x AS `plain_alias` FROM `jaffle_order` AS t"
     assert alias_map == {}  # legal names need no row-key mapping
 
-
-def test_compat_sql_legalizes_dotted_aliases_consistently():
     # BigQuery field names may not contain '.' (even backticked, even
     # with flexible column names) — every reference must rewrite to the
     # SAME legal name so alias definition and ORDER BY stay consistent.
@@ -282,7 +266,7 @@ def test_compat_sql_legalizes_dotted_aliases_consistently():
         'SELECT t.name AS "dimension.jaffle_store_name" FROM jaffle_store AS t '
         'ORDER BY "dimension.jaffle_store_name" ASC'
     )
-    rewritten, alias_map = _bigquery_compat_sql(sql)
+    rewritten, alias_map = bigquery_compat_sql(sql)
     assert '"' not in rewritten
     assert "dimension.jaffle_store_name" not in rewritten
     assert len(alias_map) == 1
@@ -291,27 +275,22 @@ def test_compat_sql_legalizes_dotted_aliases_consistently():
     assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", safe)
     assert rewritten.count(f"`{safe}`") == 2
 
-
-def test_compat_sql_keeps_distinct_illegal_names_distinct():
-    sql = 'SELECT 1 AS "measure.a", 2 AS "measure.b"'
-    _, alias_map = _bigquery_compat_sql(sql)
+    # Distinct illegal names stay distinct.
+    _, alias_map = bigquery_compat_sql('SELECT 1 AS "measure.a", 2 AS "measure.b"')
     assert sorted(alias_map.values()) == ["measure.a", "measure.b"]
     assert len(set(alias_map)) == 2
     assert _safe_field_name("measure.a") != _safe_field_name("measure.b")
 
-
-def test_compat_sql_never_touches_string_literals():
-    sql = "SELECT 'keep \"this\" verbatim', 'it''s \"fine\"' AS \"metric.x\""
-    rewritten, _ = _bigquery_compat_sql(sql)
+    # String literals are never touched.
+    rewritten, _ = bigquery_compat_sql(
+        "SELECT 'keep \"this\" verbatim', 'it''s \"fine\"' AS \"metric.x\""
+    )
     assert "'keep \"this\" verbatim'" in rewritten
     assert "'it''s \"fine\"'" in rewritten
 
-
-def test_safe_field_name_is_deterministic_and_bounded():
-    name = "temporal_role.jaffle_order_time__month"
-    safe = _safe_field_name(name)
-    assert safe == _safe_field_name(name)
-    assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", safe)
+    # Safe names are deterministic and bounded.
+    assert _safe_field_name("period") == _safe_field_name("period")
+    assert re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", _safe_field_name("period"))
     assert len(_safe_field_name("x" * 1000)) <= 300  # BigQuery field limit
 
 
@@ -385,7 +364,7 @@ def _install_fake_bigquery(
     monkeypatch.setitem(sys.modules, "google.oauth2.service_account", service_account)
 
 
-def test_adapter_normalizes_connection_options():
+def test_adapter_normalizes_connection_options_and_rejects_unknown_or_secret_ones():
     adapter = BigQueryNativeAdapter(
         {"Project": " demo-project ", "dataset": "jaffle", "location": "EU"}
     )
@@ -396,20 +375,15 @@ def test_adapter_normalizes_connection_options():
     }
     assert adapter.supports_statement_timeout is True
 
-
-def test_adapter_rejects_unknown_options():
-    with pytest.raises(SemanticLayerError) as exc:
-        BigQueryNativeAdapter({"dataset": "jaffle", "compression": "snappy"})
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "unsupported package.connection option 'compression'" in str(exc.value)
-
-
-def test_adapter_rejects_literal_secret_options():
-    with pytest.raises(SemanticLayerError) as exc:
-        BigQueryNativeAdapter({"credentials": '{"type": "service_account"}'})
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "credentials" in str(exc.value)
-    assert "service_account" not in str(exc.value.details)
+    for options, named in [
+        ({"dataset": "jaffle", "compression": "snappy"}, "option 'compression'"),
+        ({"credentials": '{"type": "service_account"}'}, "credentials"),
+    ]:
+        with pytest.raises(SemanticLayerError) as exc:
+            BigQueryNativeAdapter(options)
+        assert exc.value.code == "INVALID_CONFIG"
+        assert named in str(exc.value)
+        assert "service_account" not in str(exc.value.details)
 
 
 def test_adapter_reports_missing_env_without_values(monkeypatch: pytest.MonkeyPatch):
@@ -435,46 +409,44 @@ def test_adapter_reports_missing_env_without_values(monkeypatch: pytest.MonkeyPa
     assert "sql" not in exc.value.details
 
 
-@pytest.mark.parametrize(
-    ("timeouts", "connect_timeout", "read_timeout"),
-    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
-)
-def test_adapter_query_defaults_dataset_and_maps_rows(
-    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
-):
-    captured: dict[str, Any] = {}
-    _install_fake_bigquery(
-        monkeypatch,
-        captured,
-        rows=[{"one": 1, "two": "x"}, {"one": 2, "two": "y"}],
-    )
+def test_adapter_query_defaults_dataset_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SR_BQ_TEST_PROJECT", "demo-project")
     monkeypatch.setenv("SR_BQ_TEST_CREDS", "/tmp/sa.json")
-    adapter = BigQueryNativeAdapter(
-        {
-            "project_env": "SR_BQ_TEST_PROJECT",
-            "credentials_file_env": "SR_BQ_TEST_CREDS",
-            "dataset": "jaffle",
-            **timeouts,
-        }
-    )
+    for timeouts, connect_timeout, read_timeout in [
+        ({}, 10, 65),
+        ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45),
+    ]:
+        captured: dict[str, Any] = {}
+        _install_fake_bigquery(
+            monkeypatch,
+            captured,
+            rows=[{"one": 1, "two": "x"}, {"one": 2, "two": "y"}],
+        )
+        adapter = BigQueryNativeAdapter(
+            {
+                "project_env": "SR_BQ_TEST_PROJECT",
+                "credentials_file_env": "SR_BQ_TEST_CREDS",
+                "dataset": "jaffle",
+                **timeouts,
+            }
+        )
 
-    rows = adapter.query("select 1", limits={"max_rows": 1, "statement_timeout_ms": 1500})
-    adapter.close()
+        rows = adapter.query("select 1", limits={"max_rows": 1, "statement_timeout_ms": 1500})
+        adapter.close()
 
-    assert rows == [{"one": 1, "two": "x"}]  # max_rows clip
-    assert captured["sql"] == "select 1"
-    assert captured["client_kwargs"]["project"] == "demo-project"
-    assert captured["credentials_path"] == "/tmp/sa.json"
-    job_config = captured["job_config"]
-    assert job_config.default_dataset == "demo-project.jaffle"
-    assert job_config.job_timeout_ms == 2000  # 1500ms rounds up to 2s
-    assert captured["closed"] is True
-    assert captured["query_timeout"] == connect_timeout
-    assert captured["result_timeout"] == read_timeout
+        assert rows == [{"one": 1, "two": "x"}]  # max_rows clip
+        assert captured["sql"] == "select 1"
+        assert captured["client_kwargs"]["project"] == "demo-project"
+        assert captured["credentials_path"] == "/tmp/sa.json"
+        job_config = captured["job_config"]
+        assert job_config.default_dataset == "demo-project.jaffle"
+        assert job_config.job_timeout_ms == 2000  # 1500ms rounds up to 2s
+        assert captured["closed"] is True
+        assert captured["query_timeout"] == connect_timeout
+        assert captured["result_timeout"] == read_timeout
 
 
-def test_adapter_query_maps_safe_aliases_back_to_contract_names(monkeypatch: pytest.MonkeyPatch):
+def test_adapter_maps_safe_aliases_back_and_falls_back_to_adc(monkeypatch: pytest.MonkeyPatch):
     # The compat pass renames illegal output fields; the adapter must
     # rename result-row keys BACK so callers see the contract aliases.
     captured: dict[str, Any] = {}
@@ -491,15 +463,7 @@ def test_adapter_query_maps_safe_aliases_back_to_contract_names(monkeypatch: pyt
     assert '"' not in captured["sql"]
     assert f"`{safe}`" in captured["sql"]
     assert "`n`" in captured["sql"]
-
-
-def test_adapter_falls_back_to_adc_without_credentials_options(monkeypatch: pytest.MonkeyPatch):
-    captured: dict[str, Any] = {}
-    _install_fake_bigquery(monkeypatch, captured, rows=[])
-    adapter = BigQueryNativeAdapter({"project": "demo-project", "dataset": "jaffle"})
-
-    adapter.query("select 1")
-
+    # Without credentials options the client uses application default credentials.
     assert "credentials" not in captured["client_kwargs"]
     assert "credentials_path" not in captured
 
@@ -536,7 +500,7 @@ def test_adapter_maps_missing_driver_to_missing_dependency(monkeypatch: pytest.M
     assert "semantic-rails[bigquery]" in str(exc.value)
 
 
-def test_create_adapter_factory_selects_bigquery_native(monkeypatch: pytest.MonkeyPatch):
+def test_create_adapter_factory_selects_bigquery_native_only():
     package = PackageMeta(
         package_id="bq_demo",
         name="bq_demo",
@@ -551,21 +515,11 @@ def test_create_adapter_factory_selects_bigquery_native(monkeypatch: pytest.Monk
     adapter = create_warehouse_adapter(package)
     assert isinstance(adapter, BigQueryNativeAdapter)
     assert adapter.options == {"project_env": "SR_BQ_TEST_PROJECT", "dataset": "jaffle"}
+    assert isinstance(create_adapter(package), BigQueryNativeAdapter)
 
-    direct = create_adapter(package)
-    assert isinstance(direct, BigQueryNativeAdapter)
-
-
-def test_create_adapter_rejects_other_kinds():
-    package = PackageMeta(
-        package_id="bq_demo",
-        name="bq_demo",
-        description="bigquery demo",
-        warehouse="bigquery",
-        connection=ConnectionSpec(kind="snowflake_cli", options={}),
-    )
+    other = replace(package, connection=ConnectionSpec(kind="snowflake_cli", options={}))
     with pytest.raises(SemanticLayerError) as exc:
-        create_adapter(package)
+        create_adapter(other)
     assert exc.value.code == "INVALID_CONFIG"
 
 
@@ -604,7 +558,8 @@ def test_jaffle_battery_compiles_for_bigquery():
 
     compiled: dict[str, str] = {}
     for case in load_battery():
-        sql = compile_query(config, registry, case.payload)["sql"]
+        query, _ = read_call(case.payload, config=config)
+        sql = compile_query(config, registry, query)["sql"]
         assert sql and sql.strip(), f"{case.name}: empty rendered SQL"
         compiled[case.name] = sql
 
@@ -641,33 +596,26 @@ def test_jaffle_battery_compiles_for_bigquery():
     assert "DATETIME_ADD(" in combined
     # Exact percentile lowering (ARRAY_AGG interpolation) is exercised
     # by the percentile battery cases.
-    assert "ORDER BY" in combined and "[OFFSET(CAST(FLOOR(" in combined
+    assert "IGNORE NULLS ORDER BY" in combined and "[SAFE_OFFSET(CAST(FLOOR(" in combined
 
 
-@pytest.mark.parametrize(
-    "prepared, timeout_ms, expected_wait, expected_server",
-    [
+def test_bigquery_server_deadline_and_long_request_wait(monkeypatch):
+    for prepared, timeout_ms, expected_wait, expected_server in [
         (False, None, 65, 65000),
         (True, None, 65, 65000),
         (False, 120000, 125, 120000),
         (True, 120000, 125, 120000),
-    ],
-)
-def test_bigquery_server_deadline_and_long_request_wait(
-    monkeypatch, prepared, timeout_ms, expected_wait, expected_server
-):
-    from semantic_rails.sql_preparation import prepare_query
-
-    log = {}
-    _install_fake_bigquery(monkeypatch, log)
-    adapter = BigQueryNativeAdapter()
-    limits = {} if timeout_ms is None else {"statement_timeout_ms": timeout_ms}
-    if prepared:
-        adapter.query_prepared(prepare_query("select 1", "bigquery"), limits=limits)
-    else:
-        adapter.query("select 1", limits=limits)
-    assert log["result_timeout"] == expected_wait
-    assert log["job_config"].job_timeout_ms == expected_server
+    ]:
+        log: dict[str, Any] = {}
+        _install_fake_bigquery(monkeypatch, log)
+        adapter = BigQueryNativeAdapter()
+        limits = {} if timeout_ms is None else {"statement_timeout_ms": timeout_ms}
+        if prepared:
+            adapter.query_prepared(DIALECT.prepare_query("select 1"), limits=limits)
+        else:
+            adapter.query("select 1", limits=limits)
+        assert log["result_timeout"] == expected_wait
+        assert log["job_config"].job_timeout_ms == expected_server
 
 
 def test_bigquery_cancels_timed_out_work_even_when_cancellation_fails(monkeypatch):

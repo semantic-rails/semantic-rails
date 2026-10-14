@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..ast import _time_spec_from_payload
-from ..errors import SemanticLayerError
-from ._base import _runtime_composition_terms
+import yaml
+
+from ..naming import last_token
+from ._base import _object_by_id, _runtime_composition_terms
+from .call import Call, QueryBuilder
 from .groupings import _requested_grouping_terms
 from .intent_ir import IntentIR
 from .time_windows import _time_window
@@ -26,15 +28,13 @@ _SUPPORTED_WINDOW_FORMS = (
     "'2017-04-03')",
     "one completed named month, quarter or half without a year (latest on or before now)",
     "a month and day without a year, optionally with a matching weekday (e.g. 'Wed Sept 30')",
-    "since a named month, month/day or quarter without a year (through the last complete day)",
+    "since a named month, month/day or quarter, or since a dated one (from that day on)",
     "all time / ever / in total / to date / since launch / since the beginning / since we started",
-    "explicit time.start / time.end ISO dates via partial_query",
+    "an explicit time window (last, this, or start / end ISO dates) in the plan tool's query",
 )
 
 
-def _pattern_dropped_start(
-    intent: str, query: dict[str, Any], partial_query: dict[str, Any] | None
-) -> str:
+def _pattern_dropped_start(intent: str, query: Call, partial_query: Call | None) -> str:
     """The question's window start a draft left out while keeping its end.
 
     The lookback retry records the start it drops; a pattern that bounds a
@@ -43,14 +43,10 @@ def _pattern_dropped_start(
 
     from .time_windows import _time_bounds_from_text  # noqa: WPS433
 
-    caller_time = (partial_query or {}).get("time")
-    if isinstance(caller_time, dict) and any(
-        caller_time.get(key) for key in ("start", "end", "range")
-    ):
+    if partial_query is not None and partial_query.time is not None and partial_query.time.window:
         return ""
     expected = _time_bounds_from_text(intent)
-    raw_time = query.get("time")
-    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
+    time = query.time.window if query.time is not None else {}
     if expected.get("start") and not time.get("start") and time.get("end") == expected.get("end"):
         return str(expected["start"])
     return ""
@@ -104,7 +100,7 @@ def _unconsumed_terms_why(terms: list[str]) -> dict[str, Any] | None:
             {
                 "kind": "state_missing_condition",
                 "message": (
-                    "Add the filter or limit to best.query_ir, or (plan resolves days and "
+                    "Add the filter or limit to best.query, or (plan resolves days and "
                     "coarser windows only) state an hour range as query.time start and end "
                     "ISO timestamps, then validate. Asking again without those words changes "
                     "the question."
@@ -143,7 +139,7 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
             {
                 "kind": "use_named_objects",
                 "message": (
-                    "Find what these words name with discover, add it to best.query_ir (a "
+                    "Find what these words name with discover, add it to best.query (a "
                     "group_by for a grouping, the select for a measure), then validate; or ask "
                     "the user what they mean. They name catalog objects, so asking again "
                     "without them changes the question."
@@ -153,15 +149,26 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
     }
 
 
-def _qualifying_entity_why(
-    runtime: Any, intent_ir: IntentIR, query: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Parsed qualifications remain held until their cohort and scope are proven."""
+def _qualifying_entity_why(runtime: Any, intent_ir: IntentIR, query: Call) -> dict[str, Any] | None:
+    """Parsed qualifications remain held until their cohort and scope are proven: an entity
+    filter, or a scoped aggregate's predicate, on the qualifying entity says over which rows
+    each entity's aggregate is taken."""
     # Entity discovery also fills this slot for ordinary entity mentions.
     # A cohort obligation needs a parsed qualification, not just that hint.
     if intent_ir.qualifying_entity is None or not (
         intent_ir.qualification_phrase or intent_ir.threshold is not None
     ):
+        return None
+    entity = intent_ir.qualifying_entity.id
+    scoped = [
+        predicate
+        for item in query.select
+        if isinstance(item.expression, dict)
+        for predicate in item.expression.get("predicates") or []
+    ]
+    if any(
+        row.entity == entity and row.match == "having" and row.over for row in query.entity_filters
+    ) or any(predicate.get("entity") == entity and predicate.get("over") for predicate in scoped):
         return None
     return {
         "code": "PLAN_INTENT_COVERAGE_GAP",
@@ -182,6 +189,77 @@ def _contraction_tail(question: str, term: str) -> bool:
     return bool(found) and all(
         re.search(r"[^\W_]['’]$", lowered[: match.start()]) for match in found
     )
+
+
+# A statistic a question asks of a measure: "median revenue", "latest MRR", "unique visitors".
+_STATISTICS = {"median": "median", "latest": "last_value", "unique": "count_distinct"}
+_STATISTIC_RE = re.compile(rf"\b({'|'.join(_STATISTICS)})\b")
+
+
+def _define_metric_why(
+    runtime: Any, question: str, query: Call, unconsumed: list[str]
+) -> dict[str, Any] | None:
+    """A statistic the question asks of a measure that reads at another one, and that no
+    metric defines (the draft selects the measure itself): plan holds with the metric's YAML
+    ready to paste, and the call that reads the measure at that statistic now when the
+    package allows it. Only when the statistic is the one word the draft leaves ``unconsumed``:
+    otherwise the subject itself is in doubt."""
+
+    words = sorted(set(_STATISTIC_RE.findall(question.lower())))
+    if not words or len(query.select) != 1 or not set(unconsumed) <= set(words):
+        return None
+    config = runtime._config
+    item = query.select[0]
+    measure = _object_by_id(config.measures, item.ref)
+    if measure is None:
+        return None
+    read_at = item.aggregation or measure.default_aggregation
+    asked = [word for word in words if _STATISTICS[word] != read_at]
+    if not asked:
+        return None
+    word = asked[0]
+    aggregation = _STATISTICS[word]
+    name = f"{word}_{last_token(measure.id)}"
+    metric = {
+        "label": f"{word.capitalize()} {measure.label or last_token(measure.id)}",
+        "kind": "aggregate",
+        **({"value_type": measure.value_type} if measure.value_type else {}),
+        **(
+            {"temporal_role": measure.default_temporal_role}
+            if measure.default_temporal_role
+            else {}
+        ),
+        "expression": {"kind": "aggregate", "measure": measure.id, "aggregation": aggregation},
+    }
+    details: dict[str, Any] = {
+        "measure": measure.id,
+        "aggregation": aggregation,
+        "yaml": yaml.safe_dump({"metrics": {name: metric}}, sort_keys=False),
+    }
+    if aggregation in (measure.allowed_aggregations or []):
+        override = {"kind": "measure", "measure": measure.id, "aggregation": aggregation}
+        components = QueryBuilder(config, query).selects([]).select(override, name).build()
+        details["components"] = {"call": components.to_call()}
+    return {
+        "code": "DEFINE_METRIC",
+        "message": (
+            f"No metric defines the {word} of {measure.label or measure.id}, which reads at "
+            f"{read_at}; plan doesn't answer with a statistic the package hasn't defined."
+        ),
+        "details": details,
+        "recovery_hints": [
+            {
+                "kind": "define_metric",
+                "message": (
+                    "Add details.yaml to the package's metrics, or send "
+                    "details.components.call to read the measure at that statistic now."
+                    if "components" in details
+                    else "Add details.yaml to the package's metrics; the measure doesn't "
+                    f"allow {aggregation} until its allowed_aggregations include it."
+                ),
+            }
+        ],
+    }
 
 
 def _dropped_value_why(
@@ -214,7 +292,7 @@ def _dropped_value_why(
                     '("s" in "what\'s"), so the question means the same without them.'
                     if filler
                     else "Find the values with valid_values, add the filter to "
-                    "best.query_ir, then validate; or ask the user what these words mean. "
+                    "best.query, then validate; or ask the user what these words mean. "
                     "Plan can't tell whether they change the question, so asking again "
                     "without them may answer another one."
                 ),
@@ -223,14 +301,14 @@ def _dropped_value_why(
     }
 
 
-def _time_assumptions(intent: str, query: dict[str, Any]) -> list[str]:
+def _time_assumptions(intent: str, query: Call) -> list[str]:
     """The reading plan took of an open end in the window the draft carries."""
 
     window = _time_window(intent)
-    time = query.get("time")
-    if not window.assumptions or (time is not None and not isinstance(time, dict)):
+    time = query.time.window if query.time is not None else {}
+    if not window.assumptions:
         return []
-    if any((time or {}).get(key) != window.bounds.get(key) for key in ("start", "end")):
+    if any(time.get(key) != window.bounds.get(key) for key in ("start", "end")):
         return []
     return list(window.assumptions)
 
@@ -248,76 +326,14 @@ def _start_dropped_why(start: Any) -> dict[str, Any] | None:
         "code": "TIME_WINDOW_START_DROPPED",
         "message": (
             f"The question's window starts {start}, but this metric looks back over earlier "
-            "periods, so the query can't bound time.start. best.query_ir returns every period "
+            "periods, so the query can't bound time.start. best.query returns every period "
             f"up to time.end; keep only the rows from {start} on."
         ),
         "details": {"path": "time.start", "requested_start": start},
         "recovery_hints": [
             {
                 "kind": "filter_rows_after_execution",
-                "message": f"Execute best.query_ir and keep the rows dated {start} or later.",
-            }
-        ],
-    }
-
-
-def _with_query_clock(
-    config: Any, query: dict[str, Any], partial_query: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    """The query with a relative window as the dates the caller's clock gives it.
-
-    Query IR carries no ``policy_context`` (the merge drops it), so a returned ``time.range``
-    would run on the executing caller's clock. With ``policy_context.now`` supplied, the range
-    becomes the bounds execution computes from that clock in the role's zone. None when they
-    can't be computed.
-    """
-
-    context = (partial_query or {}).get("policy_context")
-    time = query.get("time")
-    if not (
-        isinstance(context, dict)
-        and context.get("now") not in (None, "")
-        and isinstance(time, dict)
-        and time.get("range")
-    ):
-        return query
-    try:
-        spec = _time_spec_from_payload(time, policy_context=context, config=config)
-    except (SemanticLayerError, ValueError, OverflowError):
-        return None
-    if spec is None or not spec.start or not spec.end:
-        return None
-    bounded = {key: value for key, value in time.items() if key != "range"}
-    return {**query, "time": {**bounded, "start": spec.start, "end": spec.end}}
-
-
-def _unclocked_window_why(
-    config: Any, intent: str, query: dict[str, Any], partial_query: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    """Hold a draft whose relative window can't take the supplied clock."""
-
-    if _with_query_clock(config, query, partial_query) is not None:
-        return None
-    lowered = intent.lower()
-    return {
-        "code": "TIME_WINDOW_UNRESOLVED",
-        "message": (
-            "The draft's relative window could not be bounded on policy_context.now, so plan "
-            "returns no query: run on another clock it would answer a different question."
-        ),
-        "details": {
-            "path": "time.range",
-            "unresolved_phrases": [
-                lowered[low:high].strip() for (low, high), _bounds in _time_window(intent).windows
-            ],
-        },
-        "recovery_hints": [
-            {
-                "kind": "provide_explicit_bounds",
-                "message": (
-                    "Pass query.time.start and query.time.end (end-exclusive) in the plan "
-                    "tool's query argument instead of a relative window."
-                ),
+                "message": f"Execute best.query and keep the rows dated {start} or later.",
             }
         ],
     }
@@ -325,7 +341,7 @@ def _unclocked_window_why(
 
 def _unresolved_time_why(
     intent: str,
-    partial_query: dict[str, Any] | None,
+    partial_query: Call | None,
     consumed: tuple[tuple[int, int], ...] = (),
 ) -> dict[str, Any] | None:
     """Return a ``why`` envelope when the intent's time scope wasn't resolved.
@@ -342,19 +358,21 @@ def _unresolved_time_why(
     from .time_phrases import _FISCAL_RE  # noqa: WPS433
     from .time_windows import _MAX_TIME_TEXT  # noqa: WPS433
 
-    window = _time_window(intent, policy_context=(partial_query or {}).get("policy_context"))
+    window = _time_window(intent)
     read = {intent.lower()[low:high].strip() for low, high in consumed}
     phrases = [phrase for phrase in window.unresolved if phrase not in read]
     too_long = len(intent) > _MAX_TIME_TEXT
     if not phrases and not too_long:
         return None
-    caller_time = (partial_query or {}).get("time")
-    if isinstance(caller_time, dict) and not window.as_of:
-        # An unread suffix may supply either missing endpoint. Only a
-        # complete caller window can settle an overlong question's scope.
-        complete = caller_time.get("range") or (caller_time.get("start") and caller_time.get("end"))
-        if complete or (not too_long and any(caller_time.get(key) for key in ("start", "end"))):
-            return None
+    caller_time = partial_query.time if partial_query is not None else None
+    # An unread suffix may supply either missing endpoint. Only a complete caller window can
+    # settle an overlong question's scope.
+    if (
+        caller_time is not None
+        and not window.as_of
+        and (caller_time.named or (not too_long and (caller_time.start or caller_time.end)))
+    ):
+        return None
     hour_hint = (
         [
             {
@@ -419,7 +437,7 @@ def _unresolved_time_why(
                 "message": (
                     "Or pass a complete window in the plan tool's query argument: "
                     "set query.time.start and query.time.end (end-exclusive), or "
-                    "query.time.range.last with unit and value. Include the selected "
+                    "query.time.last with unit and value. Include the selected "
                     "temporal_role and grain in query.time; inspect the measure to choose them."
                 ),
             },
@@ -427,7 +445,7 @@ def _unresolved_time_why(
     }
 
 
-def _query_contains_conversion(runtime: Any, query: dict[str, Any]) -> bool:
+def _query_contains_conversion(runtime: Any, query: Call) -> bool:
     """True when any expression in the draft is conversion-shaped.
 
     Covers both ad-hoc ``kind: conversion`` IR and references to curated
@@ -443,18 +461,17 @@ def _query_contains_conversion(runtime: Any, query: dict[str, Any]) -> bool:
     }
 
     def _walk(node: Any) -> bool:
+        if isinstance(node, str):
+            return node in conversion_metric_ids
         if isinstance(node, dict):
             if str(node.get("kind", "")) == "conversion":
                 return True
-            metric_ref = str(node.get("metric", "") or node.get("metric_recipe", "") or "")
-            if metric_ref and metric_ref in conversion_metric_ids:
-                return True
             return any(_walk(value) for value in node.values())
-        if isinstance(node, list):
+        if isinstance(node, (list, tuple)):
             return any(_walk(item) for item in node)
         return False
 
-    return _walk(query if isinstance(query, dict) else {})
+    return any(_walk(item.expression) for item in query.select)
 
 
 # "converted to euros" is currency talk, not funnel talk — currencies
@@ -499,9 +516,7 @@ def _custom_conversion_operands_required(intent: str) -> bool:
     )
 
 
-def _conversion_intent_why(
-    runtime: Any, intent: str, query: dict[str, Any]
-) -> dict[str, Any] | None:
+def _conversion_intent_why(runtime: Any, intent: str, query: Call) -> dict[str, Any] | None:
     """Return a ``why`` envelope when a conversion ask got a non-conversion draft.
 
     External-agent feedback: the planner confidently returned AOV for
@@ -553,7 +568,7 @@ def _conversion_intent_why(
     return {
         "code": "CONVERSION_INTENT_UNREALIZED",
         "message": (
-            "The intent reads as a conversion/funnel question, but best.query_ir "
+            "The intent reads as a conversion/funnel question, but best.query "
             "does not encode the requested conversion operands — executing it as-is "
             "would answer a different question."
         ),

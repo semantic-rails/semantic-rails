@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 _DERIVATIVE_MARKERS = (
     "ratio",
@@ -63,8 +64,17 @@ def _candidate_measure_id(candidate: dict[str, Any]) -> str:
     selects = list(ir.get("select", []) or [])
     if not selects:
         return ""
-    expression = dict(selects[0].get("expression", {}) or {})
-    return str(expression.get("measure") or expression.get("metric") or "")
+    return _ref(selects[0])
+
+
+def _ref(item: Any) -> str:
+    """What a select item reads: an id string, or a kind object's measure or metric."""
+    if isinstance(item, str):
+        return item
+    expression = item.get("expression")
+    if isinstance(expression, str):
+        return expression
+    return str((expression or {}).get("measure") or (expression or {}).get("metric") or "")
 
 
 def _candidate_group_by(candidate: dict[str, Any]) -> list[str]:
@@ -77,29 +87,14 @@ def _has_derivative_marker(object_id: str) -> bool:
     return any(marker in lowered for marker in _DERIVATIVE_MARKERS)
 
 
-def test_monthly_revenue_returns_base_revenue_measure(runtime_factory) -> None:
-    """Plain "monthly revenue" should resolve to ``revenue_usd``, not
-    a MoM/growth/ratio derivative. Token "month" is consumed by the
-    time-grain extractor and must not contribute to candidate scoring.
-    """
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent="monthly revenue", limit=5)
-        top = _top_candidate(payload)
-        top_id = _candidate_measure_id(top)
-        assert top_id == "measure.jaffle.revenue_usd", (
-            f"expected revenue_usd at rank 0, got {top_id!r}"
-        )
-        assert not _has_derivative_marker(top_id), (
-            f"top candidate {top_id!r} matches a derivative marker"
-        )
-    finally:
-        runtime.close()
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 @pytest.mark.parametrize(
     ("intent", "expected_measure"),
     [
+        # "month" is consumed by the time-grain extractor and adds nothing to scoring.
+        pytest.param("monthly revenue", "measure.jaffle.revenue_usd", id="monthly-revenue"),
         pytest.param(
             "revenue by store last month", "measure.jaffle.revenue_usd", id="revenue-by-store"
         ),
@@ -111,20 +106,14 @@ def test_monthly_revenue_returns_base_revenue_measure(runtime_factory) -> None:
         ),
     ],
 )
-def test_revenue_intent_returns_base_measure(runtime_factory, intent, expected_measure) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent=intent, limit=5)
-        top = _top_candidate(payload)
-        top_id = _candidate_measure_id(top)
-        assert top_id == expected_measure, f"expected {expected_measure} at rank 0, got {top_id!r}"
-        assert "share" not in top_id.lower()
-        assert "ratio" not in top_id.lower()
-    finally:
-        runtime.close()
+def test_revenue_intent_returns_base_measure(runtime, intent, expected_measure) -> None:
+    payload = plan_candidate_envelope(runtime, intent=intent, limit=5)
+    top_id = _candidate_measure_id(_top_candidate(payload))
+    assert top_id == expected_measure, f"expected {expected_measure} at rank 0, got {top_id!r}"
+    assert not _has_derivative_marker(top_id)
 
 
-def test_orders_by_customer_status_groups_or_flags_assumption(runtime_factory) -> None:
+def test_orders_by_customer_status_groups_or_flags_assumption(runtime) -> None:
     """For "orders by customer status", either:
       (a) the top candidate's ``group_by`` includes a status-like
           dimension, or
@@ -138,120 +127,32 @@ def test_orders_by_customer_status_groups_or_flags_assumption(runtime_factory) -
     contract: the ranker must either surface a sensible status-like
     dimension or signal the gap explicitly.
     """
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent="orders by customer status", limit=5)
-        candidates = list(payload.get("candidates") or [])
-        if not candidates:
-            blocked = list(payload.get("blocked") or [])
-            assert any(
-                row.get("code") == "PLAN_FALLBACK_SEMANTIC_DRIFT"
-                and _status_like_dimensions(
-                    [str(item) for item in list(row.get("resolved_objects") or [])]
-                )
-                for row in blocked
-            ), (
-                "expected a status-like blocked candidate with semantic-drift diagnostics; "
-                f"blocked={blocked!r}"
-            )
-            return
-        top = _top_candidate(payload)
-        group_by = _candidate_group_by(top)
-        status_like = _status_like_dimensions(group_by)
-        if status_like:
-            return  # branch (a) — sensible grouping picked
-        # Branch (b) — assumption flag must mention the missing status dim.
-        payload_assumptions = [str(item).lower() for item in (payload.get("assumptions") or [])]
-        candidate_assumptions = [str(item).lower() for item in (top.get("assumptions") or [])]
-        all_assumptions = payload_assumptions + candidate_assumptions
-        assert any("status" in note for note in all_assumptions), (
-            "expected either a status-like group_by or an assumption noting "
-            f"the missing status dimension; group_by={group_by!r} "
-            f"assumptions={all_assumptions!r}"
-        )
-    finally:
-        runtime.close()
-
-
-def test_revenue_this_month_vs_last_month_uses_revenue_usd(runtime_factory) -> None:
-    """A "vs" comparison intent on plain revenue must reference
-    ``revenue_usd`` — never the ``drink_revenue_share`` mix metric.
-
-    The plan path may emit the comparison as:
-      (a) a ``comparison_bundle`` (categorical comparison branch),
-      (b) a same-query top candidate (inline period-shift draft), or
-      (c) a blocked entry that names the right measure (when a
-          validation rule rejects the windowed/period-shift IR).
-
-    In any of these paths the resolved measure must be the base
-    ``revenue_usd`` — never a ``share`` / ``ratio`` derivative.
-    """
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(
-            runtime,
-            intent="revenue this month vs last month",
-            limit=5,
-        )
-        bundle = list(payload.get("comparison_bundle") or [])
-        candidates = list(payload.get("candidates") or [])
+    payload = plan_candidate_envelope(runtime, intent="orders by customer status", limit=5)
+    candidates = list(payload.get("candidates") or [])
+    if not candidates:
         blocked = list(payload.get("blocked") or [])
-
-        observed_ids: set[str] = set()
-        for row in bundle:
-            patch = dict(row.get("query_patch") or {})
-            for sel in patch.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident = str(expr.get("measure") or expr.get("metric") or "")
-                if ident:
-                    observed_ids.add(ident)
-        for candidate in candidates[:1]:
-            ir = dict(candidate.get("candidate_ir") or {})
-            for sel in ir.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident = str(expr.get("measure") or expr.get("metric") or "")
-                if ident:
-                    observed_ids.add(ident)
-        # The first blocked entry is the canonical draft resolution
-        # when validation rejects it — read ``resolved_objects`` since
-        # the default ``compact`` verbosity strips ``candidate_ir`` from
-        # blocked rows.
-        for blocked_row in blocked[:1]:
-            for ident in blocked_row.get("resolved_objects") or []:
-                if ident:
-                    observed_ids.add(str(ident))
-            ir = dict(blocked_row.get("candidate_ir") or {})
-            for sel in ir.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident_ = str(expr.get("measure") or expr.get("metric") or "")
-                if ident_:
-                    observed_ids.add(ident_)
-
-        assert "measure.jaffle.revenue_usd" in observed_ids, (
-            f"expected revenue_usd to appear in comparison_bundle, top "
-            f"candidate, or first blocked; observed={sorted(observed_ids)!r}"
+        assert any(
+            row.get("code") == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+            and _status_like_dimensions(
+                [str(item) for item in list(row.get("resolved_objects") or [])]
+            )
+            for row in blocked
+        ), (
+            "expected a status-like blocked candidate with semantic-drift diagnostics; "
+            f"blocked={blocked!r}"
         )
-        # Top candidate must not be ONLY a share/ratio derivative.
-        if candidates:
-            top_ir = dict(candidates[0].get("candidate_ir") or {})
-            top_idents: set[str] = set()
-            for sel in top_ir.get("select") or []:
-                expr = dict(sel.get("expression") or {})
-                ident = str(expr.get("measure") or expr.get("metric") or "")
-                if ident:
-                    top_idents.add(ident)
-            non_derivative_top = {
-                ident for ident in top_idents if not _has_derivative_marker(ident)
-            }
-            # When share/ratio sneak through, we want at least one base
-            # measure ALSO present in the top candidate or surrounding
-            # context (candidates/bundle/blocked combined).
-            if not non_derivative_top:
-                non_derivative_any = {
-                    ident for ident in observed_ids if not _has_derivative_marker(ident)
-                }
-                assert non_derivative_any, (
-                    f"no base-measure reference anywhere; observed={sorted(observed_ids)!r}"
-                )
-    finally:
-        runtime.close()
+        return
+    top = _top_candidate(payload)
+    group_by = _candidate_group_by(top)
+    status_like = _status_like_dimensions(group_by)
+    if status_like:
+        return  # branch (a) — sensible grouping picked
+    # Branch (b) — assumption flag must mention the missing status dim.
+    payload_assumptions = [str(item).lower() for item in (payload.get("assumptions") or [])]
+    candidate_assumptions = [str(item).lower() for item in (top.get("assumptions") or [])]
+    all_assumptions = payload_assumptions + candidate_assumptions
+    assert any("status" in note for note in all_assumptions), (
+        "expected either a status-like group_by or an assumption noting "
+        f"the missing status dimension; group_by={group_by!r} "
+        f"assumptions={all_assumptions!r}"
+    )

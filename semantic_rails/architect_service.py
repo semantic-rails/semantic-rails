@@ -71,8 +71,9 @@ _REMOVABLE = ("model", "dimension", "time", "measure", "metric", "segment", "rel
 _PIN_ENDS = ("source_entity", "target_entity")
 _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
-# What upsert_model(replace=True) keeps from the model it rewrites.
-_KEPT_ON_REPLACE = ("id", "entities", "calendar_id")
+# What upsert_model(replace=True) keeps from the model it rewrites: its identity and how
+# its tables are bound (a calendar, and how far they are loaded).
+_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through")
 # Model blocks of named objects: dropped_fields names each object a replace drops.
 _MODEL_BLOCKS = ("dimensions", "times", "measures")
 
@@ -770,8 +771,8 @@ class ArchitectProject:
         """Create or update a model and its primary graph entity.
 
         Fields merge into an existing model; ``replace=True`` rewrites it from
-        the arguments, keeping only its ``id``, ``entities`` block and
-        ``calendar_id``, and reports what it dropped as ``dropped_fields``.
+        the arguments, keeping only its ``id``, ``entities`` block, ``calendar_id`` and
+        ``zero_through``, and reports what it dropped as ``dropped_fields``.
 
         ``calendar=True`` makes the entity the package calendar for
         ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
@@ -1017,11 +1018,7 @@ class ArchitectProject:
         Several models can be staged into one ``documents`` and committed as a
         single transaction; the returned facts describe this model's change.
         """
-        keys = _as_list(primary_key)
-        if not keys:
-            raise SemanticLayerError(
-                "INVALID_CONFIG", "primary_key must contain at least one column"
-            )
+        keys = _as_list(primary_key)  # none: a row-grain model, which lists only its parents
         requested_model = str(model_id or "").strip()
         requested_entity = str(entity_key or "").strip()
         existing_model = self._find_raw(raw["models"], requested_model)
@@ -1058,12 +1055,12 @@ class ArchitectProject:
         model, model_wrapper = self._model_for_update(
             model_doc, existing_model, model_slug=model_slug
         )
-        if str(model.get("kind") or "").strip().lower() == "fact":
-            # upsert_model manages entity models; a replace would also drop kind: fact.
+        if not keys and existing_entity is not None:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{model_slug!r} is a fact model; upsert_model manages entity models",
-                details={"model": model_slug},
+                f"primary_key [] makes {model_slug!r} row grain, but graph entity "
+                f"{entity_slug!r} exists; remove it first, or give its key",
+                details={"model": model_slug, "entity": entity_slug},
             )
         previous = model
         if replace:
@@ -1072,7 +1069,10 @@ class ArchitectProject:
             {
                 "id": model_slug,
                 "relation": relation,
-                "entities": {**dict(model.get("entities", {}) or {}), entity_slug: {}},
+                "entities": {
+                    **dict(model.get("entities", {}) or {}),
+                    **({entity_slug: {}} if keys else {}),
+                },
                 "description": description
                 or model.get("description", f"One row per {_title(entity_slug)}."),
             }
@@ -1138,7 +1138,10 @@ class ArchitectProject:
         elif calendar is False and was_calendar:
             desired_entity.pop("kind", None)
             desired_entity["allowed_as_root"] = True
-        entities[entity_slug] = desired_entity
+        if keys:
+            entities[entity_slug] = desired_entity
+        else:  # a row-grain model's graph entity is named after it, and never authored
+            entity_slug, desired_entity = model_slug, existing_spec
         graph["entities"] = entities
         graph_doc["graph"] = graph
         return {
@@ -1801,7 +1804,11 @@ class ArchitectProject:
                 for field_name in ("query", "metric_query", "expected_query"):
                     if field_name not in fields:
                         continue
-                    result = runtime.validate(deepcopy(fields[field_name]))
+                    result = runtime.validate(
+                        deepcopy(fields[field_name]),
+                        now=spec.get("now"),
+                        context=spec.get("context"),
+                    )
                     error = dict((result.get("errors") or [{}])[0])
                     code = str(error.get("code", "") or "")
                     if must_fail and (result.get("ok") or code != spec["code"]):
@@ -1975,7 +1982,7 @@ class ArchitectProject:
             raw["entities"], self._primary_entity_for_model(owner, raw["entities"])
         )
         if entity is None or str(entity.spec.get("model") or owner.key) != owner.key:
-            return  # a fact model, or a model without an entity of its own
+            return  # a model without an entity of its own (row grain)
         graph_doc = self._document(documents, entity.source_path)
         graph = dict(graph_doc.get("graph", {}) or {})
         entities = dict(graph.get("entities", {}) or {})
@@ -2617,14 +2624,8 @@ class ArchitectProject:
             if str(entity.spec.get("model", "") or "") == model.key:
                 return entity.key
         explicit = str(model.spec.get("entity", "") or "").strip()
-        if explicit:
-            return explicit
-        exposed = model.spec.get("entities", {}) or {}
-        if isinstance(exposed, dict):
-            keys = [str(key) for key in exposed if str(key) != "bridge"]
-            if keys:
-                return keys[0]
-        return model.key
+        # Else a same-named graph entity, or a row-grain model's own, named after it.
+        return explicit or model.key
 
     @staticmethod
     def _find_raw(rows: list[_RawObject], key: str) -> _RawObject | None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 
 
@@ -17,6 +19,13 @@ def _post_json_enveloped(runtime, path: str, payload: dict) -> tuple[dict, int]:
         return service.handle("POST", route, payload)
     except Exception as exc:  # noqa: BLE001 - mirrors transport wrappers.
         return service.exception_payload(exc, stage="http")
+
+
+@pytest.fixture()
+def runtime(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    yield runtime
+    runtime.close()
 
 
 def test_plan_route_returns_status_ok_for_realizable_intent(runtime_factory) -> None:
@@ -43,14 +52,14 @@ def test_plan_route_preserves_partial_query(runtime_factory) -> None:
             "/api/v1/plan",
             {
                 "intent": "revenue",
-                "query": {"version": 1, "group_by": ["dimension.jaffle_store_name"]},
+                "query": {"group_by": ["dimension.jaffle_store_name"]},
             },
         )
     finally:
         runtime.close()
     assert status == 200
     assert payload["status"] == "ok"
-    assert "dimension.jaffle_store_name" in payload["best"]["query_ir"]["group_by"]
+    assert "dimension.jaffle_store_name" in payload["best"]["query"]["group_by"]
 
 
 def test_plan_route_full_detail_returns_alternatives(runtime_factory) -> None:
@@ -69,30 +78,22 @@ def test_plan_route_full_detail_returns_alternatives(runtime_factory) -> None:
     assert "blocked" in payload
 
 
-def test_old_intent_routes_are_not_public(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        for route in (
-            "/api/v1/formulate",
-            "/api/v1/propose",
-            "/api/v1/parse-intent",
-            "/api/v1/expand",
-        ):
-            payload, status = _post_json(runtime, route, {"intent": "top stores by revenue"})
-            assert payload["ok"] is False
-            assert status == 404
-    finally:
-        runtime.close()
+def test_old_intent_routes_are_not_public(runtime) -> None:
+    for route in (
+        "/api/v1/formulate",
+        "/api/v1/propose",
+        "/api/v1/parse-intent",
+        "/api/v1/expand",
+    ):
+        payload, status = _post_json(runtime, route, {"intent": "top stores by revenue"})
+        assert payload["ok"] is False
+        assert status == 404
 
 
-def test_plan_route_rejects_missing_empty_or_non_string_intent(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        for body in ({}, {"intent": ""}, {"intent": "   "}, {"intent": 123}):
-            payload, status = _post_json_enveloped(runtime, "/api/v1/plan", body)
-            assert status == 400
-            assert payload["ok"] is False
-            assert payload["error"]["code"] == "INVALID_QUERY"
-            assert payload["error"]["details"]["path"] == "intent"
-    finally:
-        runtime.close()
+def test_plan_route_rejects_missing_empty_or_non_string_intent(runtime) -> None:
+    for body in ({}, {"intent": ""}, {"intent": "   "}, {"intent": 123}):
+        payload, status = _post_json_enveloped(runtime, "/api/v1/plan", body)
+        assert status == 400
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "INVALID_QUERY"
+        assert payload["error"]["details"]["path"] == "intent"

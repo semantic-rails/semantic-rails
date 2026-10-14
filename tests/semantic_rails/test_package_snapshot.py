@@ -10,6 +10,7 @@ import yaml
 
 from semantic_rails import config as config_module
 from semantic_rails.config import load_package_config, load_package_snapshot
+from semantic_rails.config_parts import package_rows
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.package_snapshot import capture_package_source
 from tests.semantic_rails.conftest import copy_package_config
@@ -49,12 +50,13 @@ def test_loaded_snapshot_is_isolated_from_sources_and_returned_views(tmp_path):
 def test_source_edit_during_parse_cannot_mix_loaded_views(tmp_path, monkeypatch):
     path = copy_package_config(tmp_path, "jaffle_shop")
     original = load_package_snapshot(path)
-    parse = config_module._parse_package
+    parse = package_rows._parse_package
 
     def parse_and_edit(raw, *, path):
         _rename_package(Path(path), "edited while parsing")
         return parse(raw, path=path)
 
+    monkeypatch.setattr(package_rows, "_parse_package", parse_and_edit)
     monkeypatch.setattr(config_module, "_parse_package", parse_and_edit)
     captured = load_package_snapshot(path)
     assert captured.config == original.config
@@ -107,7 +109,8 @@ def test_source_fingerprint_frames_names_and_contents():
 def test_runtime_manifest_and_reload_share_the_loaded_generation(tmp_path):
     import json
 
-    from semantic_rails.manifest import load_manifest, write_manifest
+    from semantic_rails.catalog_service import write_manifest
+    from semantic_rails.manifest import load_manifest
     from semantic_rails.runtime import Runtime
 
     path = copy_package_config(tmp_path, "jaffle_shop")
@@ -136,13 +139,13 @@ def test_runtime_manifest_and_reload_share_the_loaded_generation(tmp_path):
 def test_manifest_variants_remain_one_generation_if_source_changes(tmp_path, monkeypatch):
     import json
 
-    from semantic_rails import metadata
-    from semantic_rails.manifest import write_manifest
+    from semantic_rails import catalog_service
+    from semantic_rails.catalog_service import write_manifest
     from semantic_rails.runtime import Runtime
 
     path = copy_package_config(tmp_path, "jaffle_shop")
     runtime = Runtime.from_path(str(path))
-    original = metadata.catalog_payload
+    original = catalog_service.catalog_payload
     calls = []
 
     def catalog_and_edit(runtime, **kwargs):
@@ -150,7 +153,7 @@ def test_manifest_variants_remain_one_generation_if_source_changes(tmp_path, mon
         _rename_package(path, f"edited {len(calls)}")
         return original(runtime, **kwargs)
 
-    monkeypatch.setattr(metadata, "catalog_payload", catalog_and_edit)
+    monkeypatch.setattr(catalog_service, "catalog_payload", catalog_and_edit)
     try:
         payload = json.loads(write_manifest(runtime).read_text())
         assert len(calls) > 1
@@ -283,18 +286,14 @@ def test_in_memory_source_identity_and_table_binding_ignore_cache_order(tmp_path
     ]
     assert snapshots[0].source_fingerprint != snapshots[1].source_fingerprint
     assert snapshots[0].semantic_fingerprint == snapshots[1].semantic_fingerprint
-    query = {
-        "version": 1,
-        "select": [{"expression": {"measure": measure.id}, "as": "n"}],
-        "verbosity": "full",
-    }
+    query = {"select": [{"expression": measure.id, "as": "n"}]}
     cache = LruCompiledSqlCache()
     sql = []
     for snapshot in snapshots:
         runtime = Runtime.from_snapshot(snapshot)
         runtime.set_compile_cache(cache)
         try:
-            result = runtime.compile(query)
+            result = runtime.compile(query, verbosity="full")
             assert result["ok"] is True
             assert result["compile_stats"]["cache_hit"] is False
             sql.append(result["rendered_sql"])
@@ -327,7 +326,8 @@ def test_registered_snapshot_runtime_keeps_the_shared_asset_rule(tmp_path, monke
 
 def test_manifest_from_another_engine_version_is_ignored(tmp_path, monkeypatch):
     import semantic_rails
-    from semantic_rails.manifest import load_manifest, write_manifest
+    from semantic_rails.catalog_service import write_manifest
+    from semantic_rails.manifest import load_manifest
     from semantic_rails.runtime import Runtime
 
     path = copy_package_config(tmp_path, "jaffle_shop")

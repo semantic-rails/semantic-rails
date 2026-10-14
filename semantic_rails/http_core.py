@@ -21,20 +21,19 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from . import operations
 from .api_keys import api_key_auth_result
-from .catalog_service import resolve_catalog
 from .diagnostics import (
     enrich_expression_ast_error,
     enrich_object_not_found,
     enrich_path_not_found,
     exception_issue,
+    lean_issue,
 )
 from .dialects import dialect_for_warehouse
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError, query_execution_error
 from .http_request import (
     HTTPInputError,
-    _safe_request_context_payload,
-    authoritative_request_payload,
     clean_request_id,
     coerce_bool,
     coerce_int,
@@ -42,25 +41,18 @@ from .http_request import (
     header_value,
     issue,
     normalize_route,
-    policy_context_payload,
     public_api_route,
-    query_payload,
     request_id_from_parts,
     status_label,
 )
-from .metadata import (
-    build_options_payload,
-    discover_payload,
-    inspect_payload,
-    valid_values_payload,
-)
-from .metadata_parts.capabilities import _EXPRESSION_SHAPES, capabilities_payload
-from .planner import plan_payload
+from .metadata_parts.capabilities import capabilities_payload
+from .query_call import EXPRESSION_SHAPES
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
     request_context_payload,
 )
+from .request_payload import identity_claim_refusal, refuse_identity_claims
 from .runtime import Runtime
 
 __all__ = [
@@ -78,9 +70,7 @@ __all__ = [
     "header_value",
     "issue",
     "normalize_route",
-    "policy_context_payload",
     "public_api_route",
-    "query_payload",
     "request_id_from_parts",
     "status_label",
 ]
@@ -160,29 +150,69 @@ def cors_origin_header(request_origin: str | None) -> str:
     return ""
 
 
+# Options a REST call may set beside its query (``{"query": ..., "options": {...}}``).
+CALL_OPTIONS = ("now", "verbosity", "sql_profile")
+# Query parameters that would say who is asking; identity comes only from credentials.
+IDENTITY_PARAMS = ("environment", "audience")
+
+
+def call_options(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``options`` beside a REST call (``now``, ``verbosity``, ``sql_profile``)."""
+    options = payload.get("options") or {}
+    if not isinstance(options, Mapping):
+        raise SemanticLayerError(
+            "INVALID_QUERY", "options must be an object", details={"path": "options"}
+        )
+    unknown = sorted(set(options) - set(CALL_OPTIONS))
+    if unknown:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"options.{unknown[0]} is not a call option",
+            details={"path": f"options.{unknown[0]}", "supported_keys": list(CALL_OPTIONS)},
+        )
+    return {key: options[key] for key in CALL_OPTIONS if key in options}
+
+
+def call_arguments(payload: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """The call in a REST body and the options beside it.
+
+    The body is ``{"query": <call>, "options": {...}}``, or the call itself.
+    """
+    if "query" not in payload:
+        return {key: value for key, value in payload.items() if key != "request_id"}, {}
+    if not isinstance(payload["query"], Mapping):
+        raise HTTPInputError("Field 'query' must be a JSON object.")
+    extra = sorted(set(payload) - {"query", "options", "request_id"})
+    if extra:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{extra[0]} belongs in options or in the query",
+            details={"path": extra[0], "supported_keys": ["query", "options"]},
+        )
+    return payload["query"], call_options(payload)
+
+
+def _seed_call(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The partial call a metadata or plan route starts from (its ``query``)."""
+    seed = payload.get("query")
+    if seed is not None and not isinstance(seed, Mapping):
+        raise HTTPInputError("Field 'query' must be a JSON object.")
+    return dict(seed or {})
+
+
 class SemanticHTTPService:
     def __init__(self, runtime: Runtime, package_id: str | None = None) -> None:
         self.runtime = runtime
         self.package_id = package_id or runtime.package_id
 
     def request_context(
-        self,
-        headers: Mapping[str, Any] | None,
-        *,
-        payload: Mapping[str, Any] | None = None,
-        query_params: Mapping[str, Any] | None = None,
-        request_id: str,
+        self, headers: Mapping[str, Any] | None, *, request_id: str
     ) -> RequestContext:
         # Goes through the pluggable PolicyContextResolver so hosted
         # deployments can replace header-trusting with identity-derived
-        # policy context without forking. See
-        # `semantic_rails.request_context.PolicyContextResolver`.
-        resolver = get_policy_context_resolver()
-        return resolver.resolve(
-            headers,
-            payload=_safe_request_context_payload(payload, query_params),
-            request_id=request_id,
-        )
+        # policy context without forking. It reads credentials, never the body.
+        # See `semantic_rails.request_context.PolicyContextResolver`.
+        return get_policy_context_resolver().resolve(headers, request_id=request_id)
 
     def auth_ok(self, route: str, headers: Mapping[str, Any] | None) -> bool:
         deep_ready_check = route == "/ready" and coerce_bool(
@@ -291,21 +321,25 @@ class SemanticHTTPService:
         out.setdefault("api_version", API_VERSION)
         out.setdefault("request_id", request_id)
         out.setdefault("package_id", self.package_id)
-        out.setdefault("warnings", [])
         if "errors" not in out:
             error = out.get("error")
             if isinstance(error, dict):
                 out["errors"] = [error]
             elif error:
                 out["errors"] = [issue(str(error).upper(), str(error))]
-            else:
-                out["errors"] = []
         if "recovery_hints" not in out:
             recovery_hints: list[Any] = []
             for error in list(out.get("errors", []) or []):
                 if isinstance(error, dict):
                     recovery_hints.extend(list(error.get("recovery_hints", []) or []))
             out["recovery_hints"] = recovery_hints
+        # Errors, warnings and hints only when there are some, each without empty fields.
+        for key in ("errors", "warnings", "recovery_hints"):
+            issues = [lean_issue(item) for item in out.pop(key, None) or []]
+            if issues:
+                out[key] = issues
+        if isinstance(out.get("error"), dict):
+            out["error"] = lean_issue(out["error"])
         if started is not None:
             out.setdefault("timing_ms", round((time.perf_counter() - started) * 1000, 3))
         if request_context is not None:
@@ -386,7 +420,8 @@ class SemanticHTTPService:
                         self.runtime, policy_context=context.to_policy_context()
                     ),
                 }
-            catalog = resolve_catalog(
+            catalog = operations.run(
+                "catalog",
                 self.runtime,
                 view="summary",
                 verbosity="compact",
@@ -413,7 +448,7 @@ class SemanticHTTPService:
                 # ships (metadata_parts/capabilities.py), so the HTTP and MCP
                 # surfaces cannot drift apart — the examples there are
                 # parse-validated by tests/semantic_rails/test_mcp_tool_descriptions.py.
-                "expression_shapes": [dict(shape) for shape in _EXPRESSION_SHAPES],
+                "expression_shapes": [dict(shape) for shape in EXPRESSION_SHAPES],
             }
 
     def handle(
@@ -426,21 +461,38 @@ class SemanticHTTPService:
         query_params: Mapping[str, Any] | None = None,
         context: RequestContext | None = None,
     ) -> tuple[dict[str, Any], int]:
+        """Answer one request as ``context``: who is asking, resolved from credentials.
+
+        A transport passes the context it resolved; a trusted local caller passes its own or
+        none. A request that says who is asking is refused, never stripped.
+        """
         method = method.upper()
         payload = dict(payload or {})
         query_params = dict(query_params or {})
+        remote = context is not None
+        claimed = next((key for key in IDENTITY_PARAMS if key in query_params), None)
+        if claimed is not None:
+            raise identity_claim_refusal(claimed, remote=remote)
+        refuse_identity_claims(payload, remote=remote)
+        policy_context = context.to_policy_context() if context is not None else {}
         if method == "GET":
             return self._handle_get(
-                route, query_params=query_params, headers=headers, context=context
+                route,
+                query_params=query_params,
+                headers=headers,
+                context=context,
+                policy_context=policy_context,
             )
         if method == "POST":
-            # A transport-resolved RequestContext is the entire authority:
-            # strip caller claims first, then inject only the resolver result.
-            # Direct/local calls with context=None retain body context support.
-            payload = authoritative_request_payload(payload, context)
-            policy_context = policy_context_payload(payload, context)
             return self._handle_post(route, payload, policy_context=policy_context)
         return self.not_found_payload(), 404
+
+    def _seed(self, payload: Mapping[str, Any], policy_context: dict[str, Any]) -> Any:
+        """A metadata route's ``query`` seed in the engine's form, with the caller's identity."""
+        seed = _seed_call(payload)
+        if not seed and not policy_context:
+            return None
+        return self.runtime.engine_seed({**seed, "policy_context": policy_context})
 
     def _handle_get(
         self,
@@ -449,6 +501,7 @@ class SemanticHTTPService:
         query_params: Mapping[str, Any],
         headers: Mapping[str, Any] | None,
         context: RequestContext | None,
+        policy_context: dict[str, Any],
     ) -> tuple[dict[str, Any], int]:
         if route == "/health":
             return self.health_payload(), 200
@@ -458,15 +511,11 @@ class SemanticHTTPService:
         if route == "/capabilities":
             return self.capabilities_payload(context), 200
         if route == "/catalog":
-            policy_context = {
-                "environment": str(query_params.get("environment", "")),
-                "audience": str(query_params.get("audience", "")),
-            }
-            policy_context = policy_context_payload({"policy_context": policy_context}, context)
             return {
                 "ok": True,
                 "package_id": self.package_id,
-                "catalog": resolve_catalog(
+                "catalog": operations.run(
+                    "catalog",
                     self.runtime,
                     view=str(query_params.get("view", "summary")),
                     verbosity=str(query_params.get("verbosity", "compact")),
@@ -489,7 +538,8 @@ class SemanticHTTPService:
             return {
                 "ok": True,
                 "package_id": self.package_id,
-                "catalog": resolve_catalog(
+                "catalog": operations.run(
+                    "catalog",
                     self.runtime,
                     view=str(payload.get("view", "summary")),
                     verbosity=str(payload.get("verbosity", "compact")),
@@ -502,13 +552,12 @@ class SemanticHTTPService:
         if route == "/discover":
             return {
                 "ok": True,
-                **discover_payload(
+                **operations.run(
+                    "discover",
                     self.runtime,
                     terms=str(payload.get("terms", "")),
                     kinds=coerce_string_list(payload.get("kinds"), field="kinds"),
-                    partial_query=query_payload(payload)
-                    if payload.get("query") or payload.get("policy_context")
-                    else None,
+                    partial_query=self._seed(payload, policy_context),
                     stage=str(payload.get("stage", "")),
                     verbosity=str(payload.get("verbosity", "compact")),
                     limit=coerce_int(payload.get("limit"), 10, field="limit", minimum=1),
@@ -518,21 +567,23 @@ class SemanticHTTPService:
         if route == "/inspect":
             return {
                 "ok": True,
-                **inspect_payload(
+                **operations.run(
+                    "inspect",
                     self.runtime,
                     object_id=str(payload.get("object_id", "")),
-                    partial_query=query_payload(payload)
-                    if payload.get("query") or payload.get("policy_context")
-                    else None,
+                    partial_query=self._seed(payload, policy_context),
                     verbosity=str(payload.get("verbosity", "compact")),
                 ),
             }, 200
         if route == "/build-options":
             return {
                 "ok": True,
-                **build_options_payload(
+                **operations.run(
+                    "build-options",
                     self.runtime,
-                    partial_query=query_payload(payload),
+                    partial_query=self.runtime.engine_seed(
+                        {**_seed_call(payload), "policy_context": policy_context}
+                    ),
                     focus_terms=str(payload.get("focus_terms", "")),
                     focus_object_id=str(payload.get("focus_object_id", "")),
                     step=str(payload.get("step", "")),
@@ -545,43 +596,50 @@ class SemanticHTTPService:
         if route == "/plan":
             return {
                 "ok": True,
-                **plan_payload(
+                **operations.run(
+                    "plan",
                     self.runtime,
                     intent=payload.get("intent"),
-                    # Plan is an intent envelope, never a flat Query IR.
-                    # Keep trusted context even when no query seed was supplied.
-                    partial_query=query_payload({**payload, "query": payload.get("query")}),
+                    # Plan is an intent envelope: the seed call is its query.
+                    partial_query={**_seed_call(payload), "policy_context": policy_context},
+                    now=call_options(payload).get("now"),
                     detail=str(payload.get("detail", "best") or "best"),
                     limit=coerce_int(payload.get("limit"), 3, field="limit", minimum=1),
                 ),
             }, 200
-        if route == "/validate":
-            return {"ok": True, **self.runtime.validate(query_payload(payload))}, 200
-        if route == "/compile":
-            return {"ok": True, **self.runtime.compile(query_payload(payload))}, 200
-        if route == "/query":
-            return {"ok": True, **self.runtime.query(query_payload(payload))}, 200
+        if route in {"/validate", "/compile", "/query"}:
+            call, options = call_arguments(payload)
+            answer = operations.run(
+                route.lstrip("/"), self.runtime, query=call, context=policy_context, **options
+            )
+            return {"ok": True, **answer}, 200
         if route == "/segment-validate":
             return {
                 "ok": True,
-                **self.runtime.segment_validate(
-                    str(payload.get("segment_id", "")),
+                **operations.run(
+                    "segment-validate",
+                    self.runtime,
+                    segment_id=str(payload.get("segment_id", "")),
                     policy_context=policy_context,
                 ),
             }, 200
         if route == "/segment-explain":
             return {
                 "ok": True,
-                **self.runtime.segment_explain(
-                    str(payload.get("segment_id", "")),
+                **operations.run(
+                    "segment-explain",
+                    self.runtime,
+                    segment_id=str(payload.get("segment_id", "")),
                     policy_context=policy_context,
                 ),
             }, 200
         if route == "/segment-preview":
             return {
                 "ok": True,
-                **self.runtime.segment_preview(
-                    str(payload.get("segment_id", "")),
+                **operations.run(
+                    "segment-preview",
+                    self.runtime,
+                    segment_id=str(payload.get("segment_id", "")),
                     limit=int(payload.get("limit", 50)),
                     policy_context=policy_context,
                 ),
@@ -589,12 +647,11 @@ class SemanticHTTPService:
         if route == "/valid-values":
             return {
                 "ok": True,
-                **valid_values_payload(
+                **operations.run(
+                    "valid-values",
                     self.runtime,
                     dimension_id=str(payload.get("dimension_id", "")),
-                    query=query_payload(payload)
-                    if payload.get("query") or payload.get("policy_context")
-                    else None,
+                    query=self._seed(payload, policy_context),
                     search=str(payload.get("search", "")),
                     limit=coerce_int(payload.get("limit"), 100, field="limit", minimum=1),
                     offset=coerce_int(payload.get("offset"), 0, field="offset", minimum=0),

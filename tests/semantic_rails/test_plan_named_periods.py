@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import date
 from pathlib import Path
 from shutil import copytree
+from typing import Any
 
 import duckdb
 import pytest
 
+from semantic_rails.clock import parse_now, resolve_window
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.call import WINDOW_KEYS, Call
 from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.runtime import Runtime
 
@@ -23,6 +27,11 @@ INSERT INTO events VALUES (1, 'signup', 'customer', '2026-09-02'),
 CREATE TABLE account_day (account_id VARCHAR, day DATE, mrr DOUBLE);
 INSERT INTO account_day VALUES ('a', '2026-10-04', 99), ('b', '2026-10-04', 500);
 """
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 @pytest.fixture(scope="module")
@@ -124,22 +133,26 @@ ANSWER_CASES = [
     ("for Q3", "2026-07-01", "2026-10-01", 3),
     ("in December", "2025-12-01", "2026-01-01", 0),
     ("in the first half", "2026-01-01", "2026-07-01", 0),
-    ("since September", "2026-09-01", "2026-10-05", 3),
-    ("ever since September", "2026-09-01", "2026-10-05", 3),
-    ("since Sept 22", "2026-09-22", "2026-10-05", 2),
-    ("since Q3", "2026-07-01", "2026-10-05", 3),
+    ("since September", "2026-09-01", None, 3),
+    ("ever since September", "2026-09-01", None, 3),
+    ("since Sept 22", "2026-09-22", None, 2),
+    ("since Q3", "2026-07-01", None, 3),
     ("on Wed Sept 30", "2026-09-30", "2026-10-01", 1),
     ("on September 1st", "2026-09-01", "2026-09-02", 0),
     ("on Sept 30", "2026-09-30", "2026-10-01", 1),
     ("in Sep", "2026-09-01", "2026-10-01", 3),
     ("for the third quarter", "2026-07-01", "2026-10-01", 3),
     ("in H1", "2026-01-01", "2026-07-01", 0),
-    ("since September 1st", "2026-09-01", "2026-10-05", 3),
-    ("since October", "2026-10-01", "2026-10-05", 0),
-    ("since Q4", "2026-10-01", "2026-10-05", 0),
+    ("since September 1st", "2026-09-01", None, 3),
+    ("since October", "2026-10-01", None, 0),
+    ("since Q4", "2026-10-01", None, 0),
     ("in September 2026", "2026-09-01", "2026-10-01", 3),
     ("in Q3 2026", "2026-07-01", "2026-10-01", 3),
     ("on September 30, 2026", "2026-09-30", "2026-10-01", 1),
+    # A period not over yet is read so far: its dates, with no rows after now.
+    ("in October", "2026-10-01", "2026-11-01", 0),
+    ("in Q4", "2026-10-01", "2027-01-01", 0),
+    ("in the second half", "2026-07-01", "2027-01-01", 3),
     ("have we had in total", None, None, 3),
     ("ever", None, None, 3),
     ("of all time", None, None, 3),
@@ -151,32 +164,45 @@ ANSWER_CASES = [
 ]
 
 
+def _column(query):
+    """The first output's column: its alias, or a plain reference's last segment."""
+    item = query["select"][0]
+    return item["as"] if isinstance(item, dict) else item.split(".")[-1]
+
+
 @pytest.mark.parametrize(("phrase", "start", "end", "expected"), ANSWER_CASES)
 def test_named_reading_matches_reference_sql(subscriptions, phrase, start, end, expected):
     intent = f"How many new accounts {phrase}?"
     plan = plan_payload(subscriptions, intent=intent, partial_query={"policy_context": NOW})
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     time = query.get("time", {})
     assert time.get("start") == start and time.get("end") == end
     reference = (
         "SELECT COUNT(DISTINCT event_id) FROM events WHERE kind='signup' AND segment='customer'"
     )
     if start:
-        reference += f" AND occurred_at >= DATE '{start}' AND occurred_at < DATE '{end}'"
+        reference += f" AND occurred_at >= DATE '{start}'"
+    if end:
+        reference += f" AND occurred_at < DATE '{end}'"
     with duckdb.connect(subscriptions.db_path, read_only=True) as connection:
         gold = connection.execute(reference).fetchone()[0]
     assert gold == expected
-    rows = subscriptions.query(query)["rows"]
-    assert sum(row[query["select"][0]["as"]] or 0 for row in rows) == gold
+    rows = subscriptions.query(query, now=NOW["now"])["rows"]
+    assert sum(row[_alias(query["select"][0])] or 0 for row in rows) == gold
     if start is None:
         assert "all time: no start date" in plan["assumptions"]
     elif "2026" not in phrase:
         assert any(start[:4] in assumption for assumption in plan["assumptions"])
+    # The reading records the exact span it read.
+    read = _time_window(intent, NOW)
+    assert read.spans
+    for low, high in read.spans:
+        assert intent[low:high].lower().strip() in phrase.lower()
 
 
-@pytest.mark.parametrize("phrase", ["in October", "in Q4", "in the second half", "on Thu Sept 30"])
+@pytest.mark.parametrize("phrase", ["on Thu Sept 30"])
 def test_ambiguous_reading_names_both_options(subscriptions, phrase):
     plan = plan_payload(
         subscriptions, intent=f"new accounts {phrase}", partial_query={"policy_context": NOW}
@@ -184,69 +210,55 @@ def test_ambiguous_reading_names_both_options(subscriptions, phrase):
     assert plan["status"] == "needs_clarification", plan.get("why")
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
     assert len(plan["why"]["details"]["possible_readings"]) == 2
-    assert not plan.get("best", {}).get("query_ir")
+    assert not plan.get("best", {}).get("query")
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
 
 
-@pytest.mark.parametrize(
-    "phrase", ["all time", "of all time", "ever", "since launch", "to date", "in total"]
-)
-def test_all_time_stock_stays_held(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions, intent=f"MRR {phrase}", partial_query={"policy_context": NOW}
-    )
-    assert plan["status"] != "ok"
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+ALL_TIME_DAY = {"temporal_role": "temporal_role.subscriptions_account_day_day", "grain": "day"}
+CALLER_WINDOW = {"start": "2026-09-22", "end": "2026-10-01"}
 
 
 @pytest.mark.parametrize(
-    "phrase",
+    ("question", "time"),
     [
-        "in early September",
-        "in late September",
-        "in mid-September",
-        "September and December",
-        "in September and Q3",
-        "from September to December",
-        "before September",
-        "as of September",
-        "in fiscal Q3",
-        "on Sept 31",
-        "on February 30",
-        "since early September",
-        "all time in September",
-        "ytd",
-        "mtd",
+        # An all-time stock stays held, even with a day grain forced on it.
+        *(
+            (f"MRR {phrase}", None)
+            for phrase in ["all time", "of all time", "ever", "since launch", "to date", "in total"]
+        ),
+        *((f"MRR {phrase}", ALL_TIME_DAY) for phrase in ["all time", "ever", "since launch"]),
+        # A caller's window can't silently bound all time.
+        *(
+            (f"new accounts {phrase}", CALLER_WINDOW)
+            for phrase in ["ever", "all time", "since launch"]
+        ),
+        # Unknown or several readings.
+        *(
+            (f"new accounts {phrase}", None)
+            for phrase in [
+                "in early September",
+                "in late September",
+                "in mid-September",
+                "September and December",
+                "in September and Q3",
+                "from September to December",
+                "before September",
+                "as of September",
+                "in fiscal Q3",
+                "on Sept 31",
+                "on February 30",
+                "since early September",
+                "all time in September",
+                "ytd",
+                "mtd",
+            ]
+        ),
     ],
 )
-def test_unknown_or_multiple_time_readings_are_not_executable(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions, intent=f"new accounts {phrase}", partial_query={"policy_context": NOW}
-    )
+def test_a_reading_plan_cannot_answer_is_not_executable(subscriptions, question, time):
+    partial = {"policy_context": NOW, **({"time": time} if time else {})}
+    plan = plan_payload(subscriptions, intent=question, partial_query=partial)
     assert plan["status"] != "ok", plan.get("best")
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
-
-
-@pytest.mark.parametrize("phrase", [row[0] for row in ANSWER_CASES])
-def test_reading_records_the_exact_span(phrase):
-    intent = f"new accounts {phrase}?"
-    read = _time_window(intent, NOW)
-    assert read.spans
-    for span in read.spans:
-        assert intent[span[0] : span[1]].lower().strip() in phrase.lower()
-
-
-@pytest.mark.parametrize("phrase", ["ever", "all time", "since launch"])
-def test_caller_cannot_silently_bound_all_time(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions,
-        intent=f"new accounts {phrase}",
-        partial_query={
-            "policy_context": NOW,
-            "time": {"start": "2026-09-22", "end": "2026-10-01"},
-        },
-    )
-    assert plan["status"] != "ok"
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
 
 
@@ -271,65 +283,50 @@ def test_period_to_date_is_not_read_as_all_time(phrase):
     assert not any(not bounds for _span, bounds in read.windows)
 
 
-@pytest.mark.parametrize("phrase", ["all time", "ever", "since launch"])
-def test_forced_day_grain_does_not_make_an_all_time_stock_ready(subscriptions, phrase):
-    plan = plan_payload(
-        subscriptions,
-        intent=f"MRR {phrase}",
-        partial_query={
-            "policy_context": NOW,
-            "time": {
-                "temporal_role": "temporal_role.subscriptions_account_day_day",
-                "grain": "day",
-            },
-        },
-    )
-    assert plan["status"] != "ok"
-    assert "execute" not in plan.get("next", {}).get("ready_for", [])
-
-
 def test_generated_bounded_draft_cannot_answer_all_time(subscriptions):
     from semantic_rails.planner.time_checks import _time_window_gaps
 
     query = {
-        "version": 1,
-        "select": [
-            {"as": "new_accounts", "expression": {"metric": "metric.subscriptions.new_accounts"}}
-        ],
+        "select": ["metric.subscriptions.new_accounts"],
         "time": {
             "temporal_role": "temporal_role.subscriptions_event_occurred_at",
             "grain": "month",
             "start": "2026-09-01",
             "end": "2026-10-01",
         },
-        "policy_context": NOW,
     }
-    [gap] = _time_window_gaps(subscriptions, "new accounts in total", query)
+    [gap] = _time_window_gaps(subscriptions, "new accounts in total", Call.from_call(query))
     assert gap.kind == "time_window_unrealized"
 
 
 def test_named_period_uses_the_reference_timezone():
     now = {"now": "2026-10-01T01:00:00Z"}
-    assert _time_window("new accounts in September", now, timezone="UTC").bounds == {
-        "start": "2026-09-01",
-        "end": "2026-10-01",
+    # UTC reads October 1 and New York September 30: September is 2026's in both, read so far
+    # in New York.
+    for zone in ("UTC", "America/New_York"):
+        read = _time_window("new accounts in September", now, timezone=zone)
+        assert read.bounds == {"start": "2026-09-01", "end": "2026-10-01"}
+        assert not read.readings
+    # October has begun in UTC, but not yet in New York, where the latest October is 2025's.
+    assert _time_window("new accounts in October", now, timezone="UTC").bounds == {
+        "start": "2026-10-01",
+        "end": "2026-11-01",
     }
-    local = _time_window("new accounts in September", now, timezone="America/New_York")
-    assert not local.bounds and len(local.readings) == 2
+    local = _time_window("new accounts in October", now, timezone="America/New_York")
+    assert local.bounds == {"start": "2025-10-01", "end": "2025-11-01"}
 
 
 @pytest.mark.parametrize(
-    ("phrase", "now"),
+    ("phrase", "now", "start", "end"),
     [
-        ("on October 5", NOW),
-        ("on February 29", {"now": "2024-02-29T06:00:00Z"}),
+        ("on October 5", NOW, "2026-10-05", "2026-10-06"),
+        ("on February 29", {"now": "2024-02-29T06:00:00Z"}, "2024-02-29", "2024-03-01"),
     ],
 )
-def test_current_named_day_clarification_has_no_reversed_range(phrase, now):
+def test_the_current_named_day_is_read_so_far_with_no_reversed_range(phrase, now, start, end):
     read = _time_window(f"new accounts {phrase}", now)
-    assert not read.bounds and len(read.readings) == 2
-    assert "not a complete day yet" in read.readings[0]
-    assert "to" in read.readings[1]
+    assert read.bounds == {"start": start, "end": end} and start < end
+    assert not read.readings
 
 
 SHOP_NOW = {"now": "2024-07-05T06:00:00Z"}
@@ -376,7 +373,7 @@ def test_excluded_period_never_becomes_a_positive_window(shop, phrase, start, en
         intent=intent,
         partial_query={
             "policy_context": SHOP_NOW,
-            "where": [{"field": "dimension.shop_customer_channel", "op": "!=", "value": "store"}],
+            "where": [{"field": "dimension.shop_customer_channel", "op": "not", "value": "store"}],
         },
     )
     assert plan["status"] == "low_confidence", plan
@@ -401,7 +398,7 @@ def test_exclusion_guard_covers_every_window_parser(phrase):
 
 def test_a_window_after_an_excluded_value_stays_positive():
     read = _time_window("signups excluding store last month", SHOP_NOW)
-    assert read.bounds == {"range": {"last": {"unit": "month", "value": 1}}}
+    assert read.bounds == {"last": {"unit": "month", "value": 1}}
     assert not read.excluded and not read.unresolved
 
 
@@ -419,86 +416,35 @@ def test_scoped_beginning_is_not_all_time(shop, phrase):
     assert not any(not bounds for _span, bounds in read.windows)
 
 
+SIGNUPS = ("signups", "DISTINCT customer_id", "signed_up_at")
+
+
 @pytest.mark.parametrize(
     ("intent", "table", "key", "clock", "start", "end", "expected"),
     [
-        (
-            "signups in total last month",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-06-01",
-            "2024-07-01",
-            2,
-        ),
-        (
-            "signups ever last month",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-06-01",
-            "2024-07-01",
-            2,
-        ),
-        (
-            "signups in  total last month",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-06-01",
-            "2024-07-01",
-            2,
-        ),
-        (
-            "orders in total in Q1 2024",
-            "orders",
-            "order_id",
-            "ordered_at",
-            "2024-01-01",
-            "2024-04-01",
-            3,
-        ),
-        (
-            "signups March 2",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-03-02",
-            "2024-03-03",
-            1,
-        ),
-        (
-            "signups Mon May 6",
-            "signups",
-            "DISTINCT customer_id",
-            "signed_up_at",
-            "2024-05-06",
-            "2024-05-07",
-            1,
-        ),
+        ("signups in total last month", *SIGNUPS, "2024-06-01", "2024-07-01", 2),
+        ("signups ever last month", *SIGNUPS, "2024-06-01", "2024-07-01", 2),
+        ("signups in  total last month", *SIGNUPS, "2024-06-01", "2024-07-01", 2),
+        ("orders in total in Q1 2024", "orders", "order_id", "ordered_at", "2024-01-01",
+         "2024-04-01", 3),
+        ("signups March 2", *SIGNUPS, "2024-03-02", "2024-03-03", 1),
+        ("signups Mon May 6", *SIGNUPS, "2024-05-06", "2024-05-07", 1),
     ],
-)
+)  # fmt: skip
 def test_bounded_reading_matches_shop_reference_sql(
     shop, intent, table, key, clock, start, end, expected
 ):
     plan = plan_payload(shop, intent=intent, partial_query={"policy_context": SHOP_NOW})
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     read = _time_window(intent, SHOP_NOW)
-    from semantic_rails.ast import _relative_range_bounds
-
-    bounds = read.bounds
-    if "range" in bounds:
-        bounds = _relative_range_bounds(bounds["range"], policy_context=SHOP_NOW)
-    assert bounds == {"start": start, "end": end}
-    time = query["time"]
-    carried = (
-        _relative_range_bounds(time["range"], policy_context=SHOP_NOW)
-        if "range" in time
-        else {"start": time["start"], "end": time["end"]}
-    )
-    assert carried == bounds
+    # The call carries the window the question states, in its own spelling: "last month" is
+    # ``last``, a named day or quarter its dates. Each reads the reference's days on the clock.
+    carried = {key: query["time"][key] for key in WINDOW_KEYS if key in query["time"]}
+    assert carried == read.bounds
+    window = resolve_window(carried, now=parse_now(SHOP_NOW["now"]))
+    assert (window.start, window.end) == (start, end)
     assert "all time: no start date" not in plan.get("assumptions", [])
     reference = (
         f"SELECT COUNT({key}) FROM {table} "
@@ -507,9 +453,9 @@ def test_bounded_reading_matches_shop_reference_sql(
     with duckdb.connect(shop.db_path, read_only=True) as connection:
         gold = connection.execute(reference).fetchone()[0]
     assert gold == expected
-    rows = shop.query(query)["rows"]
+    rows = shop.query(query, now=SHOP_NOW["now"])["rows"]
     # One bounded window is one row: an empty result can't pass as a zero.
-    assert [row[query["select"][0]["as"]] for row in rows] == [gold]
+    assert [row[_alias(query["select"][0])] for row in rows] == [gold]
     for word in ("ever", "in total", "in  total"):
         if word in intent:
             assert any(intent[start:end] == word for start, end in read.spans)
@@ -531,26 +477,9 @@ def test_explicit_all_time_still_conflicts_with_a_bounded_window(shop, phrase):
     [
         "revenue for customer April",
         "Jan's revenue",
-        "signups from the June promotion",
         "signups first half hour",
         "signups first quarter hour",
-        *[
-            f"signups from the {month} promotion"
-            for month in (
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December",
-            )
-        ],
+        *[f"signups from the {month} promotion" for month in calendar.month_name[1:]],
     ],
 )
 def test_non_time_month_or_fraction_does_not_resolve_a_window(intent):

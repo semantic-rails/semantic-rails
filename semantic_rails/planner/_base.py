@@ -8,7 +8,7 @@ need from this module and its siblings (``time_phrases``, ``time_windows``,
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -22,12 +22,13 @@ from ..config_parts.measure_governance import (
 from ..errors import SemanticLayerError
 from ..expressions import AggregateExpr, collect_object_references
 from ..naming import last_token as _last_token
+from .call import Call
 from .visibility import visible_dimensions, visible_object_ids
 
 
 @dataclass(frozen=True)
 class RuntimeCompositionDraft:
-    query: dict[str, Any]
+    query: Call
     resolved: list[dict[str, Any]]
     rationale: list[str]
     interpreted_intent: dict[str, Any]
@@ -38,6 +39,10 @@ class RuntimeCompositionDraft:
     # ``qualified_metric_rollup`` when no predicate metric resolves from
     # the qualification phrase).
     blocked_reason: dict[str, Any] = field(default_factory=dict)
+    # A question plan asks only once the draft is otherwise ready, with the same envelope plus
+    # ``details.clarification`` and ``details.options``: each option is another reading of the
+    # question, and the draft is the first. A draft another check holds keeps that hold.
+    ask: dict[str, Any] = field(default_factory=dict)
     # Confidence the pattern is the right match for this intent, on
     # [0, 1]. Used by the orchestrator's score-based selection to pick
     # between competing patterns. Defaults to 1.0 (the pattern is
@@ -46,31 +51,22 @@ class RuntimeCompositionDraft:
     score: float = 1.0
 
 
+# Words read as another word; a word not listed reads as itself.
 _TERM_SYNONYMS = {
     "geography": "geo",
     "geographic": "geo",
     "region": "geo",
     "regions": "geo",
-    "customer": "customer",
     "customers": "customer",
-    "store": "store",
     "stores": "store",
-    "order": "order",
     "orders": "order",
     "purchase": "order",
     "purchases": "order",
     "ordered": "order",
-    "session": "session",
     "sessions": "session",
-    "signup": "signup",
     "signups": "signup",
-    "adoption": "adoption",
     "activation": "adoption",
-    "funnel": "funnel",
     "funnels": "funnel",
-    "menu": "menu",
-    "inventory": "inventory",
-    "snapshot": "snapshot",
     "snapshots": "snapshot",
     "sent": "received",
     "send": "received",
@@ -109,10 +105,7 @@ _NUMBER_WORDS = {
 @lru_cache(maxsize=8192)
 def _cached_tokens(text: str) -> tuple[str, ...]:
     raw = "".join(ch.lower() if ch.isalnum() else " " for ch in str(text or ""))
-    out: list[str] = []
-    for token in raw.split():
-        out.append(_TERM_SYNONYMS.get(token, token))
-    return tuple(out)
+    return tuple(_TERM_SYNONYMS.get(token, token) for token in raw.split())
 
 
 def _tokens(text: str) -> tuple[str, ...]:
@@ -166,9 +159,10 @@ def _best(
     rows: Iterable[Any],
     terms: Iterable[str],
     *,
-    require_all: bool = False,
     exclude: Iterable[str] = (),
+    bonus: Callable[[Any], int] | None = None,
 ) -> Any | None:
+    """The row the terms score highest (``bonus`` adds to a matching row), ties by label, id."""
     term_list = [term for term in terms if term]
     excluded = set(exclude)
     ranked = []
@@ -176,9 +170,8 @@ def _best(
         if getattr(row, "id", "") in excluded:
             continue
         row_score = _score(row, term_list)
-        if require_all and row_score < len(set(term_list)):
-            continue
         if row_score > 0:
+            row_score += bonus(row) if bonus is not None else 0
             ranked.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
     ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
     return ranked[0][3] if ranked else None
@@ -208,8 +201,12 @@ _EXTRA_QUALIFIER_TERMS = (
 
 
 def _specificity_penalty(row: Any, terms: Iterable[str]) -> int:
+    """Two points per qualifier the row carries and the terms do not. A label's parenthetical
+    notes what the row covers ("Revenue (new and repeat types)") and qualifies nothing."""
+
     term_set = set(terms)
-    text = _object_text(row)
+    label = str(getattr(row, "label", "") or "")
+    text = _object_text(row).replace(label.lower(), re.sub(r"\s*\(.*?\)", "", label).lower())
     return sum(2 for item in _EXTRA_QUALIFIER_TERMS if item in text and item not in term_set)
 
 
@@ -225,6 +222,12 @@ def _entity(config: Any, terms: Iterable[str], *, exclude: Iterable[str] = ()) -
     return _best(config.entities, terms, exclude=exclude)
 
 
+def _account_entity(config: Any) -> Any | None:
+    """The account entity, never a parent account."""
+    exclude = [row.id for row in config.entities if "parent" in _object_text(row)]
+    return _entity(config, ["account"], exclude=exclude)
+
+
 def _measure(config: Any, terms: Iterable[str]) -> Any | None:
     return _best(config.measures, terms)
 
@@ -237,6 +240,32 @@ def _object_by_id(rows: Iterable[Any], object_id: str) -> Any | None:
     return next((row for row in rows if getattr(row, "id", "") == object_id), None)
 
 
+def _matching(options: list[list[Any]]) -> tuple[list[bool], dict[Any, int]]:
+    """Give each row one of its options, no option twice (augmenting paths): whether each row
+    got one, and the row that holds each option."""
+    owner: dict[Any, int] = {}
+
+    def assign(index: int, seen: set[Any]) -> bool:
+        for option in options[index]:
+            if option not in seen:
+                seen.add(option)
+                if option not in owner or assign(owner[option], seen):
+                    owner[option] = index
+                    return True
+        return False
+
+    return [assign(index, set()) for index in range(len(options))], owner
+
+
+def _grouped_dimensions(config: Any, query: Any) -> list[Any]:
+    """The dimensions a draft groups by, each once, in its order."""
+    return [
+        row
+        for item in dict.fromkeys(query.group_by)
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+
+
 def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[list[Any], Any]:
     """The rows sharing the ranking's top score, and the one the question names, if any.
 
@@ -247,7 +276,9 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     Cents, "item revenue" the reverse. A name missing only its "count" is
     nearly whole: "number of customers" names Customer count over Ordering
     customers. "revenue before tax" names neither Revenue nor Tax paid, so
-    the first by label stays a guess.
+    the first by label stays a guess. A label said whole but for its parenthetical is nearly
+    whole too: "revenue" names Revenue (new and repeat types) over Rolling revenue, and Active
+    stores over Active stores (all kinds).
     """
 
     matched = [(_score(row, terms), row) for row in rows]
@@ -263,8 +294,11 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
     for row in tied:
         names = [row.label, _last_token(row.id), *(getattr(row, "aliases", None) or [])]
         sets = [set(_tokens(name)) for name in names if _tokens(name)]
+        bare = set(_tokens(re.sub(r"\s*\(.*?\)", "", row.label)))
         whole = 2 if any(name <= words for name in sets) else 0
         if not whole and any(len(name) > 1 and name - {"count"} <= words for name in sets):
+            whole = 1
+        if not whole and bare and bare <= words:
             whole = 1
         fit[row.id] = (set().union(*sets) & words, whole)
 
@@ -277,65 +311,22 @@ def _tied_top(rows: Iterable[Any], terms: set[str], words: set[str]) -> tuple[li
 
 
 def _top(rows: Iterable[Any], terms: set[str], words: Iterable[str]) -> Any | None:
-    tied, named = _tied_top(rows, terms, set(words) or terms)
+    # The terms are words the question says too, wherever they stand in it.
+    tied, named = _tied_top(rows, terms, set(words) | terms)
     return named or next(iter(tied), None)
 
 
 def _preferred_measure(config: Any, terms: Iterable[str], words: Iterable[str] = ()) -> Any | None:
-    """The canonical measure for ``terms``, else the top-ranked one the question
-    names, else the first of those. ``words`` are the question's own words for
-    the measure, when ``terms`` keep only some of them."""
+    """The top-ranked measure the question names, else the first of those. ``words`` are the
+    question's own words for the measure, when ``terms`` keep only some of them."""
 
-    term_set = set(terms)
-    return _canonical_measure(config, term_set) or _top(config.measures, term_set, words)
-
-
-def _canonical_measure(config: Any, term_set: set[str]) -> Any | None:
-    preferred_ids: list[str] = []
-    if {"new", "customer", "order"} <= term_set:
-        preferred_ids.append("measure.jaffle.new_customer_order_count")
-    qualified_revenue_terms = {"delivered", "drink", "food", "cost", "tax"}
-    if "revenue" in term_set and not (term_set & qualified_revenue_terms):
-        preferred_ids.append("measure.jaffle.revenue_usd")
-    if "order" in term_set and len(term_set - {"order"}) == 0:
-        preferred_ids.append("measure.jaffle.order_count")
-    for measure_id in preferred_ids:
-        match = next((row for row in config.measures if row.id == measure_id), None)
-        if match is not None:
-            return match
-    return None
+    return _top(config.measures, set(terms), words)
 
 
 def _preferred_metric(config: Any, terms: Iterable[str], words: Iterable[str] = ()) -> Any | None:
     """``_preferred_measure`` for metrics."""
 
-    term_set = set(terms)
-    return _canonical_metric(config, term_set) or _top(config.metric_recipes, term_set, words)
-
-
-def _canonical_metric(config: Any, term_set: set[str]) -> Any | None:
-    preferred_ids: list[str] = []
-    if "aov" in term_set or {"average", "order", "value"} <= term_set:
-        preferred_ids.append("metric.sales.aov_usd")
-    if {"session", "order", "conversion"} <= term_set:
-        preferred_ids.append("metric.sales.session_to_order_conversion_rate_7d")
-    if {"signup", "adoption"} <= term_set or {"signup", "conversion"} <= term_set:
-        preferred_ids.append("metric.adoption.signup_to_send_conversion_rate_28d")
-    if {"month", "revenue", "growth"} <= term_set:
-        preferred_ids.append("metric.sales.month_over_month_revenue_growth")
-    if {"repeat", "customer", "order"} <= term_set:
-        preferred_ids.append("metric.sales.repeat_customer_orders")
-    if {"high", "value", "customer", "order"} <= term_set:
-        preferred_ids.append("metric.sales.high_value_customer_orders")
-    if "order" in term_set and len(term_set - {"order"}) == 0:
-        preferred_ids.append("metric.sales.orders")
-    if "revenue" in term_set:
-        preferred_ids.append("metric.sales.revenue_usd")
-    for metric_id in preferred_ids:
-        match = next((row for row in config.metric_recipes if row.id == metric_id), None)
-        if match is not None:
-            return match
-    return None
+    return _top(config.metric_recipes, set(terms), words)
 
 
 def _declared_name_forms(row: Any) -> list[str]:
@@ -461,35 +452,36 @@ def _balance_body(recipe: Any) -> AggregateExpr | None:
     return body if isinstance(body, AggregateExpr) and not body.window else None
 
 
-def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | None:
-    """The metric a one-select draft over a measure answers with instead.
+# A label's note that the measure counts every row: "Teams (all classes)".
+_EVERY_ROW_RE = re.compile(r"\(\s*all\b", re.IGNORECASE)
+
+
+def _governed_target(config: Any, focus: str, query: Call) -> Any | None:
+    """The governed metric a one-select draft over a measure answers with instead.
 
     The select reads a measure, or the metric that is its plain aggregate, and nothing else. A
     metric governs it when the metric is that measure's aggregate, at the same aggregation,
     through a filter (``governed_form``: bare or zero-filled; "Active stores" over "Active
     stores (all kinds)"). It is the answer when the question's target phrase ``focus`` names it
-    (``_said_name``), and names no other such metric as fully nor the measure more fully; or
-    when the measure is a building block and this metric alone governs it. Never when the
-    draft filters or groups by something its filter reads, or cuts by the measure itself:
-    "demo stores" asks for rows the governed metric leaves out.
+    (``_said_name``) and no other such metric as fully, or when it alone governs a measure that
+    is a building block or is named for every row;
+    never when the question names the measure beyond the metric's own names ("all kinds" asks
+    for every row), when the draft filters or groups by something the metric's filter reads,
+    or when it cuts by the measure itself: "demo stores" asks for rows the metric leaves out.
     """
 
-    select = list(query.get("select") or [])
-    expression = select[0].get("expression") if len(select) == 1 else None
-    if not isinstance(expression, dict):
+    if len(query.select) != 1 or not query.select[0].ref:
         return None
-    keys = set(expression)
-    if keys != {"metric"} and not ("measure" in keys and keys <= {"measure", "aggregation"}):
-        return None
-    plain = _object_by_id(config.metric_recipes, str(expression.get("metric", "")))
+    item = query.select[0]
+    plain = _object_by_id(config.metric_recipes, item.ref)
     whole = whole_aggregate(plain) if plain is not None else None
     if plain is not None and (whole is None or whole[2]):
         return None
-    measure_id, aggregation = whole[:2] if whole else (expression.get("measure"), "")
+    measure_id, aggregation = whole[:2] if whole else (item.ref, item.aggregation)
     measure = _object_by_id(config.measures, str(measure_id or ""))
     if measure is None:
         return None
-    aggregation = aggregation or expression.get("aggregation") or measure.default_aggregation
+    aggregation = aggregation or measure.default_aggregation
     governing = governing_metrics(config, measure.id)
     visible = set(visible_object_ids(config, (metric.id for metric in governing)))
     governing = [metric for metric in governing if metric.id in visible]
@@ -509,20 +501,28 @@ def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | No
     widest = [key for key in named if all(words <= named[key] for words in named.values())]
     if named:
         chosen = widest[0] if len(widest) == 1 else ""
-    elif measure.id in building_block_measures(config) and len(governing) == 1:
-        chosen = governing[0].id
+    elif measure.id in building_block_measures(config) or _EVERY_ROW_RE.search(measure.label):
+        # A building block, or a measure named for every row ("Teams (all classes)"), gives
+        # way to the one metric that filters it; a plain "Revenue" never to "Large order
+        # revenue".
+        chosen = next(iter(candidates)) if len(candidates) == 1 else ""
     else:
         chosen = ""
-    asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
-    if chosen not in candidates or not asked <= named.get(chosen, frozenset()):
+    if chosen not in candidates:
         return None
     metric, narrowing = candidates[chosen]
+    asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
+    own = {
+        _singular(word)
+        for name in _declared_name_forms(metric)
+        for word in re.findall(r"[^\W_]+", str(name).lower())
+    }
+    if asked - own:
+        return None
     try:
-        cuts = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
+        cuts = Call(group_by=query.group_by, where=query.where, having=query.having)
         drafted = {measure.id, getattr(plain, "id", measure.id)}
-        if (drafted | set(collect_object_references(narrowing, config))) & set(
-            collect_object_references(cuts, config)
-        ):
+        if (drafted | set(collect_object_references(narrowing, config))) & set(cuts.references()):
             return None
     except SemanticLayerError:
         return None
@@ -543,16 +543,10 @@ def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
 
 
 def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False) -> Any | None:
-    candidates = []
-    for row in visible_dimensions(config):
-        row_score = _score(row, terms)
-        if row_score <= 0:
-            continue
-        if prefer_parent and "parent" in _object_text(row):
-            row_score += 2
-        candidates.append((row_score, getattr(row, "label", ""), getattr(row, "id", ""), row))
-    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return candidates[0][3] if candidates else None
+    def parent_bonus(row: Any) -> int:
+        return 2 if "parent" in _object_text(row) else 0
+
+    return _best(visible_dimensions(config), terms, bonus=parent_bonus if prefer_parent else None)
 
 
 def _runtime_composition_terms(text: str) -> set[str]:

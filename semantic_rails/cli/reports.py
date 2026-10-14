@@ -18,7 +18,7 @@ from ..errors import SemanticLayerError
 from ..local_config import local_profile_report
 from ..package_tools import check_package_report, run_examples_report, run_package_tests_report
 from ..planner import plan_payload
-from ..runtime import Runtime, _normalize_query_limits
+from ..runtime import Runtime
 from .common import (
     _EXCLUDED_DISCOVERY_DIRS,
     _is_bundled_ref,
@@ -223,9 +223,8 @@ def ask_report(
             planned_limit = query.get("limit")
             if not isinstance(planned_limit, int) or isinstance(planned_limit, bool):
                 planned_limit = None
-            # The executor recognizes a planned row fence even when --limit is 0.
-            planned_row_limit = _normalize_query_limits(query.get("limits")).get("max_rows")
-            row_limit = min((cap for cap in (limit, planned_row_limit) if cap), default=0)
+            row_limit = limit
+            options: dict[str, Any] = {}
             if row_limit:
                 # Ask the warehouse for one row more than we show (keeping a smaller
                 # planned limit) and fence at `row_limit`: `truncated` is then exact and
@@ -233,11 +232,8 @@ def ask_report(
                 executable_query["limit"] = (
                     row_limit + 1 if planned_limit is None else min(planned_limit, row_limit + 1)
                 )
-                executable_query["limits"] = {
-                    **dict(executable_query.get("limits", {}) or {}),
-                    "max_rows": row_limit,
-                }
-            result = runtime.query(executable_query)
+                options["limits"] = {"max_rows": row_limit}
+            result = runtime.query(executable_query, **options)
             rows = list(result.get("rows", []) or [])
             out["result"] = {
                 "ok": bool(result.get("ok", True)),
@@ -246,7 +242,6 @@ def ask_report(
                 "row_count": result.get("row_count", len(rows)),
                 "row_limit": row_limit,
                 "planned_limit": planned_limit,
-                "planned_row_limit": planned_row_limit,
                 "truncated": bool(result.get("truncated", False)),
                 "output_columns": list(result.get("output_columns", []) or []),
                 "warnings": list(result.get("warnings", []) or []),
@@ -428,7 +423,7 @@ def _catalog_objects(catalog: dict[str, Any], *, selected: str) -> list[dict[str
 
 def _planned_query(plan: dict[str, Any]) -> dict[str, Any]:
     best = dict(plan.get("best", {}) or {})
-    query = best.get("query_ir")
+    query = best.get("query")
     return dict(query) if isinstance(query, dict) else {}
 
 

@@ -8,6 +8,8 @@ import json
 import re
 from typing import Any
 
+from .query_schema import query_call_schema_document
+
 PUBLIC_SCHEMA_BASE = "https://semantic-rails.com/schemas/"
 
 
@@ -65,11 +67,11 @@ def http_openapi_document() -> dict[str, Any]:
                         "schema": (
                             {
                                 "oneOf": [
-                                    {"$ref": "./query_ir.v1.json"},
+                                    {"$ref": "./query.v2.json"},
                                     {
                                         "type": "object",
                                         "properties": {
-                                            "query": {"$ref": "./query_ir.v1.json"},
+                                            "query": {"$ref": "./query.v2.json"},
                                             "request_id": {"type": "string"},
                                             "policy_context": {"type": "object"},
                                         },
@@ -240,6 +242,7 @@ def generated_artifacts() -> dict[str, dict[str, Any]]:
         "architect_mcp.v1.json": architect_mcp_manifest_document(),
         "http_api.v1.openapi.json": http_openapi_document(),
         "query_mcp.v2.json": query_mcp_manifest_document(),
+        "query.v2.json": query_call_schema_document(),
     }
 
 

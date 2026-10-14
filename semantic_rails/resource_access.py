@@ -15,14 +15,16 @@ from typing import Any
 
 from . import visible_view
 from .ast import child_groups, every_filter, normalize_query
+from .catalog_format import format_catalog_payload
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
-from .period_completeness import incomplete_period_why
 from .policies import enforce_query_policies, withheld_rank_order
 from .policy_rules import check_request_environment
+from .query_call import EXPRESSION_SHAPES
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
+from .runtime_parts.answer_warnings import granted_closing_day
 from .runtime_parts.responses import (
     apply_response_verbosity,
     resolve_sql_profile,
@@ -66,8 +68,6 @@ def _public_error(exc: SemanticLayerError) -> SemanticLayerError:
 
 
 def _capabilities(access: ResourceAccess) -> dict[str, Any]:
-    from .metadata_parts.capabilities import _EXPRESSION_SHAPES
-
     available = any(row["kind"] == "metric" for row in access.visible_rows())
     return {
         "package_id": access.config.package.package_id,
@@ -94,7 +94,7 @@ def _capabilities(access: ResourceAccess) -> dict[str, Any]:
             )
         ],
         "expression_shapes": [
-            dict(shape) for shape in _EXPRESSION_SHAPES if shape["name"] == "metric"
+            dict(shape) for shape in EXPRESSION_SHAPES if shape["name"] == "metric"
         ]
         if available
         else [],
@@ -198,8 +198,7 @@ class ResourceAccess:
             "sql_profile",
             "limits",
             "debug",
-            "explain",
-            "export",
+            "_call_notes",
         }
         if set(payload) - allowed_keys:
             raise access_denied()
@@ -232,8 +231,6 @@ class ResourceAccess:
             raise access_denied()
         references.update(requested_dimensions)
         if query.time is not None:
-            if "calendar_id" in dict(payload.get("time") or {}):
-                raise access_denied()
             role = query.time.temporal_role
             if role not in dimensions or role not in {row.id for row in self.config.temporal_roles}:
                 raise access_denied()
@@ -244,6 +241,19 @@ class ResourceAccess:
         if any(row.field not in output_names for row in query.order_by):
             raise access_denied()
         self._check_policies(references, payload)
+
+
+# The runtime's query operations run on the engine's form of a call (``Runtime.query`` reads
+# the caller's call and runs ``query_internal``); the gate names them by their public name.
+_OPERATION_NAMES = {
+    "validate_internal": "validate",
+    "compile_internal": "compile",
+    "query_internal": "query",
+}
+
+
+def _operation_name(operation: Callable[..., Any]) -> str:
+    return _OPERATION_NAMES.get(operation.__name__, operation.__name__)
 
 
 def _context_payload(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -268,8 +278,6 @@ _BUCKETS = {
 
 
 def _catalog(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
-    from .metadata import format_catalog_payload
-
     rows = access.visible_rows()
     kind, search = kwargs.get("kind", ""), str(kwargs.get("search", "")).lower()
     rows = [
@@ -315,7 +323,7 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         if terms and not overlap:
             continue
         starter = (
-            {"select": [{"expression": {"metric": row["id"]}, "as": "value"}]}
+            {"select": [{"expression": row["id"], "as": "value"}]}
             if row["kind"] == "metric"
             else {"group_by": [row["id"]]}
             if row["kind"] == "dimension"
@@ -344,10 +352,11 @@ def _restricted_plan(
     intent = kwargs.get("intent")
     if not isinstance(intent, str) or not intent.strip():
         raise access_denied()
-    partial = dict(kwargs.get("partial_query") or {})
-    partial.pop("policy_context", None)
-    partial.pop("request_context", None)
-    partial.pop("request_id", None)
+    partial = {
+        key: value
+        for key, value in dict(kwargs.get("partial_query") or {}).items()
+        if key not in {"policy_context", "request_context", "request_id"}
+    }
     # Restrict inference to exact, visible names/labels/IDs. More complex
     # composition stays unavailable until it retains invocation provenance.
     lowered = intent.lower()
@@ -375,8 +384,9 @@ def _restricted_plan(
             },
         }
     row = matches[0]
-    query = {"version": 1, **partial}
-    query.setdefault("select", [{"expression": {"metric": row["id"]}, "as": "value"}])
+    granted = [{"expression": row["id"], "as": "value"}]
+    call = {**partial}
+    call.setdefault("select", granted)
     dimensions = [
         candidate["id"]
         for candidate in rows
@@ -405,8 +415,12 @@ def _restricted_plan(
             },
         }
     if dimensions:
-        query.setdefault("group_by", dimensions)
-    if query["select"] != [{"expression": {"metric": row["id"]}, "as": "value"}]:
+        call.setdefault("group_by", dimensions)
+    try:
+        query = runtime.engine_seed(call, now=kwargs.get("now"))
+    except SemanticLayerError:
+        raise access_denied() from None
+    if call["select"] != granted:
         try:
             selected = normalize_query(query).select
         except SemanticLayerError:
@@ -417,25 +431,21 @@ def _restricted_plan(
             or selected[0].expression.metric_recipe != row["id"]
         ):
             raise access_denied()
-    validation = runtime.validate({**query, "policy_context": access.context.to_policy_context()})
+    validation = runtime.validate_internal(
+        {**query, "policy_context": access.context.to_policy_context()}
+    )
     if not validation.get("ok"):
         return {
             **base,
             "why": {"code": "NO_AUTHORIZED_PLAN", "message": "The requested plan is unavailable."},
         }
     best = {
-        "query_ir": query,
+        "query": call,
         "validation_ok": True,
         "pattern": "granted_metric",
         "resolved": [row],
         "rationale": ["Uses an explicitly granted metric."],
     }
-    # The caller's clock was dropped above, so the check reads the one execution uses.
-    period_why = incomplete_period_why(
-        runtime.package_config, query, policy_context=access.context.to_policy_context()
-    )
-    if period_why is not None:
-        return {**base, "status": "low_confidence", "best": best, "why": period_why}
     return {
         **base,
         "status": "ok",
@@ -448,6 +458,14 @@ _GRANTED_WARNING_KEYS = {
     # Coverage is read under the caller's row filters; measure IDs occur in both text
     # and details, so the whole warning is dropped unless every named measure is granted.
     "NO_DATA_YET": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
+    # answer_warnings._zero_after_last_row_notes: fixed text, measure IDs and their last rows'
+    # dates, read under the caller's row filters; dropped unless every named measure is granted.
+    "ZERO_AFTER_LAST_ROW": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
+    # answer_warnings._partial_data_warnings: fixed text, the answer's own data_through date
+    # and day counts; it names no object.
+    "PARTIAL_DATA": frozenset({"code", "severity", "stage", "message", "details"}),
     # runtime.py _no_data_in_scope_warnings: fixed text, caller output aliases,
     # and the warning's own object_ids; details contains only those output aliases.
     "NO_DATA_IN_SCOPE": frozenset(
@@ -475,6 +493,12 @@ _GRANTED_WARNING_KEYS = {
     "FILTERED_SERIES_BUCKETS_UNVERIFIED": frozenset(
         {"code", "severity", "stage", "message", "object_ids", "details"}
     ),
+    # answer_warnings.closing_day_disclosures: fixed text, the measure ID, its closing day and
+    # series counts, read under the caller's row filters; granted_closing_day names a measure
+    # that isn't granted by the granted outputs reading it, or drops the warning.
+    "BALANCE_SERIES_MISSING_ON_CLOSING_DAY": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
 }
 
 
@@ -497,7 +521,7 @@ def run_authorized_operation(
 ) -> Any:
     """The existing runtime request boundary calls this for shared operations. It pins the
     caller's visible view (``visible_view.request_view``) for the whole operation."""
-    name = operation.__name__
+    name = _operation_name(operation)
     payload = _context_payload(name, args, kwargs)
     try:
         check_request_environment(
@@ -526,7 +550,7 @@ def run_authorized_operation(
 def _run_in_view(
     operation: Callable[..., Any], runtime: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> Any:
-    name = operation.__name__
+    name = _operation_name(operation)
     payload = _context_payload(name, args, kwargs)
     if (payload.get("policy_context") or {}).get("metric_allowlist") is None:
         return operation(runtime, *args, **kwargs)
@@ -572,7 +596,8 @@ def _run_in_view(
                     "sql_profile",
                     # Fixed engine strings that name no objects.
                     "assumptions",
-                    "time_shape",
+                    "window",
+                    "observation_scope",
                     "withheld",
                     "warnings",
                 }
@@ -580,11 +605,33 @@ def _run_in_view(
             permitted = set(access.context.metric_allowlist or ()) | set(
                 access.context.dimension_allowlist or ()
             )
+            if result.get("clock") in permitted:
+                response["clock"] = result["clock"]
+            # A balance's closing day and counts stay with the granted outputs that read it;
+            # a measure not granted is named by them, never by its own id.
+            columns = result.get("output_columns", [])
+            if "assumptions" in response:
+                response["assumptions"] = [
+                    shown
+                    for row in response["assumptions"]
+                    if (shown := granted_closing_day(row, columns, permitted)) is not None
+                ]
             if "withheld" in result:
                 response["withheld"] = [
                     object_id for object_id in result["withheld"] if object_id in permitted
                 ]
-            response["warnings"] = _granted_warnings(result.get("warnings", []), permitted)
+            warnings = _granted_warnings(
+                [
+                    shown
+                    for row in result.get("warnings", [])
+                    if (shown := granted_closing_day(row, columns, permitted)) is not None
+                ],
+                permitted,
+            )
+            if warnings:
+                response["warnings"] = warnings
+            else:
+                response.pop("warnings", None)
             if resolve_verbosity(payload) == "minimal":
                 response = apply_response_verbosity(
                     response,
@@ -622,9 +669,7 @@ def _run_in_view(
             options = [
                 {
                     **row,
-                    "query_patch": {
-                        "select": [{"expression": {"metric": row["id"]}, "as": "value"}]
-                    },
+                    "query_patch": {"select": [{"expression": row["id"], "as": "value"}]},
                 }
                 for row in discovery["metrics"]
             ]

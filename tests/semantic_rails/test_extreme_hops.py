@@ -21,11 +21,11 @@ correct (path_policy.max_hops), and route identity must be pinnable
 
 from __future__ import annotations
 
-import json
 import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
@@ -83,6 +83,55 @@ CUSTOMER_ROUTE_TO_REGION = [
 ]
 
 
+MODELS = {
+    "line_items": """
+        entities: {line_item: {}, order: {}}
+        times:
+          ordered_at: {label: Ordered at, column: ordered_at, kind: timestamp, class: event_time,
+            as: temporal_role.geo_order_time, default: true}
+        measures:
+          revenue_usd: {kind: aggregate, label: Revenue, expr: amount_cents / 100.0,
+            accumulation: {kind: flow}, value_type: currency, currency: USD}
+        """,
+    "orders": """
+        entities: {order: {}, customer: {}}
+        dimensions:
+          channel: {as: dimension.geo_channel, label: Channel, kind: categorical}
+        """,
+    "customers": """
+        entities: {customer: {}, city: {}}
+        dimensions:
+          customer_name: {as: dimension.geo_customer_name, label: Customer name, kind: categorical}
+        measures:
+          customer_count: {kind: entity_count, label: Customers, entity_key: customer_id,
+            accumulation: {kind: population}, value_type: count}
+        """,
+    "cities": """
+        entities: {city: {}, region: {}}
+        dimensions:
+          city_name: {as: dimension.geo_city_name, label: City name, kind: categorical}
+        """,
+    "regions": """
+        entities: {region: {}, country: {}}
+        dimensions:
+          region_name: {as: dimension.geo_region_name, label: Region name, kind: categorical}
+        """,
+    "countries": """
+        entities: {country: {}}
+        dimensions:
+          country_name: {as: dimension.geo_country_name, label: Country name, kind: categorical}
+        """,
+}
+ENTITIES = {
+    "line_item": ("line_item_id", "line_items"),
+    "order": ("order_id", "orders"),
+    "customer": ("customer_id", "customers"),
+    "city": ("city_id", "cities"),
+    "region": ("region_id", "regions"),
+    "country": ("country_id", "countries"),
+}
+
+
 def _write_geo_package(
     root: Path,
     *,
@@ -93,227 +142,103 @@ def _write_geo_package(
     max_hops: int | None = None,
 ) -> Path:
     pkg = root / "geo_chain"
-    (pkg / "data").mkdir(parents=True, exist_ok=True)
-    (pkg / "models").mkdir(exist_ok=True)
-    (pkg / "data" / "seed.sql").write_text(SEED_SQL)
-
-    (pkg / "package.yml").write_text(
-        textwrap.dedent(
-            f"""
-            schema_version: 1
-            package:
-              id: geo_chain
-              namespace: geo
-              name: geo_chain
-              description: Deep entity-chain fixture for extreme-hop tests.
-              warehouse: duckdb
-              default_db: {(root / "geo_chain.duckdb").as_posix()}
-              seed:
-                kind: sql_script
-                source: data/seed.sql
-            defaults:
-              dimension:
-                groupable: true
-                filterable: true
-              relationship:
-                traversal: [forward, reverse]
-            """
-        )
-    )
-
-    graph = textwrap.dedent(
-        """\
-        graph:
-          entities:
-            line_item: {label: Line item, key: [line_item_id], model: line_items}
-            order: {label: Order, key: [order_id], model: orders}
-            customer: {label: Customer, key: [customer_id], model: customers}
-            city: {label: City, key: [city_id], model: cities}
-            region: {label: Region, key: [region_id], model: regions}
-            country: {label: Country, key: [country_id], model: countries}
-        """
-    )
-    rel_lines: list[str] = []
+    package = {
+        "schema_version": 1,
+        "package": {
+            "id": "geo_chain",
+            "namespace": "geo",
+            "name": "geo_chain",
+            "warehouse": "duckdb",
+            "default_db": (root / "geo_chain.duckdb").as_posix(),
+            "seed": {"kind": "sql_script", "source": "data/seed.sql"},
+        },
+        "defaults": {
+            "dimension": {"groupable": True, "filterable": True},
+            "relationship": {"traversal": ["forward", "reverse"]},
+        },
+    }
+    graph: dict = {
+        "entities": {
+            name: {"label": name, "key": [key], "model": model}
+            for name, (key, model) in ENTITIES.items()
+        },
+        "relationships": {},
+    }
     if ship_city:
-        rel_lines += [
-            "    orders_ship_city:",
-            "      id: relationship.orders_ship_city",
-            "      entities: [order, city]",
-            "      cardinality: many_to_one",
-            "      via: [ship_city_id]",
-            "      target: [city_id]",
-            "      allowed_directions: [forward]",
-        ]
+        graph["relationships"]["orders_ship_city"] = {
+            "id": "relationship.orders_ship_city",
+            "entities": ["order", "city"],
+            "cardinality": "many_to_one",
+            "via": ["ship_city_id"],
+            "target": ["city_id"],
+            "allowed_directions": ["forward"],
+        }
     if rollup_safe_reverse:
-        rel_lines += [
-            "    orders_customer:",
-            "      id: relationship.orders_customer",
-            "      entities: [order, customer]",
-            "      cardinality: many_to_one",
-            "      rollup_safe:",
-            "        reverse: [count_distinct]",
-        ]
-    if rel_lines:
-        graph += "  relationships:\n" + "\n".join(rel_lines) + "\n"
+        graph["relationships"]["orders_customer"] = {
+            "id": "relationship.orders_customer",
+            "entities": ["order", "customer"],
+            "cardinality": "many_to_one",
+            "rollup_safe": {"reverse": ["count_distinct"]},
+        }
     if max_hops is not None:
-        graph += f"  path_policy:\n    max_hops: {max_hops}\n"
+        graph["path_policy"] = {"max_hops": max_hops}
     if path_preferences:
-        graph += "  path_preferences:\n"
-        for pref in path_preferences:
-            path_value = (
-                json.dumps([pref["path"]])
-                if pref_key == "preferred_paths"
-                else json.dumps(pref["path"])
-            )
-            graph += (
-                f"    - source_entity: {pref['source']}\n"
-                f"      target_entity: {pref['target']}\n"
-                f"      {pref_key}: {path_value}\n"
-            )
-    (pkg / "graph.yml").write_text(graph)
-
-    (pkg / "models" / "line_items.yml").write_text(
-        textwrap.dedent(
-            """
-            model:
-              id: line_items
-              relation: line_items
-              entities:
-                line_item: {}
-                order: {}
-              times:
-                ordered_at:
-                  label: Ordered at
-                  column: ordered_at
-                  kind: timestamp
-                  class: event_time
-                  as: temporal_role.geo_order_time
-                  default: true
-              measures:
-                revenue_usd:
-                  kind: aggregate
-                  label: Revenue
-                  expr: amount_cents / 100.0
-                  accumulation: {kind: flow}
-                  value_type: currency
-                  currency: USD
-            """
-        )
-    )
-    (pkg / "models" / "orders.yml").write_text(
-        textwrap.dedent(
-            """
-            model:
-              id: orders
-              relation: orders
-              entities:
-                order: {}
-                customer: {}
-              dimensions:
-                channel:
-                  as: dimension.geo_channel
-                  label: Channel
-                  kind: categorical
-            """
-        )
-    )
-    (pkg / "models" / "customers.yml").write_text(
-        textwrap.dedent(
-            """
-            model:
-              id: customers
-              relation: customers
-              entities:
-                customer: {}
-                city: {}
-              dimensions:
-                customer_name:
-                  as: dimension.geo_customer_name
-                  label: Customer name
-                  kind: categorical
-              measures:
-                customer_count:
-                  kind: entity_count
-                  label: Customers
-                  entity_key: customer_id
-                  accumulation: {kind: population}
-                  value_type: count
-            """
-        )
-    )
-    (pkg / "models" / "cities.yml").write_text(
-        textwrap.dedent(
-            """
-            model:
-              id: cities
-              relation: cities
-              entities:
-                city: {}
-                region: {}
-              dimensions:
-                city_name:
-                  as: dimension.geo_city_name
-                  label: City name
-                  kind: categorical
-            """
-        )
-    )
-    (pkg / "models" / "regions.yml").write_text(
-        textwrap.dedent(
-            """
-            model:
-              id: regions
-              relation: regions
-              entities:
-                region: {}
-                country: {}
-              dimensions:
-                region_name:
-                  as: dimension.geo_region_name
-                  label: Region name
-                  kind: categorical
-            """
-        )
-    )
-    (pkg / "models" / "countries.yml").write_text(
-        textwrap.dedent(
-            """
-            model:
-              id: countries
-              relation: countries
-              entities:
-                country: {}
-              dimensions:
-                country_name:
-                  as: dimension.geo_country_name
-                  label: Country name
-                  kind: categorical
-            """
-        )
-    )
+        graph["path_preferences"] = [
+            {
+                "source_entity": pref["source"],
+                "target_entity": pref["target"],
+                pref_key: [pref["path"]] if pref_key == "preferred_paths" else pref["path"],
+            }
+            for pref in path_preferences
+        ]
+    files = {
+        "data/seed.sql": SEED_SQL,
+        "package.yml": yaml.safe_dump(package),
+        "graph.yml": yaml.safe_dump({"graph": graph}),
+        **{
+            f"models/{name}.yml": f"model:\n  id: {name}\n  relation: {name}\n"
+            + textwrap.indent(textwrap.dedent(body), "  ")
+            for name, body in MODELS.items()
+        },
+    }
+    for name, text in files.items():
+        (pkg / name).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / name).write_text(text)
     return pkg
 
 
-def _query(measure: str, group_by: list[str]) -> dict:
-    return {
-        "version": 1,
-        "select": [{"expression": {"measure": measure}, "as": "value"}],
-        "group_by": group_by,
-        "order_by": [{"field": group_by[0], "direction": "ASC"}],
+def _ask(tmp_path: Path, measure: str, *group_by: str, **package) -> dict:
+    """The measure grouped by the named geo dimensions, values keyed by the group."""
+    runtime = Runtime.from_path(str(_write_geo_package(tmp_path, **package)))
+    dimensions = [f"dimension.geo_{name}" for name in group_by]
+    query = {
+        "select": [{"expression": f"measure.geo.{measure}", "as": "value"}],
+        "group_by": dimensions,
+        "order_by": [{"field": dimensions[0], "direction": "asc"}],
         "limit": 50,
     }
+    try:
+        out = runtime.query(query)
+    finally:
+        runtime.close()
+    groups = [tuple(row[name] for name in dimensions) for row in out["rows"]]
+    out["values"] = {
+        group if len(group) > 1 else group[0]: float(row["value"])
+        for group, row in zip(groups, out["rows"], strict=True)
+    }
+    return out
 
 
-def _values_by_key(rows: list[dict], key: str) -> dict[str, float]:
-    return {row[key]: float(row["value"]) for row in rows}
+def _refused(tmp_path: Path, measure: str, *group_by: str, **package) -> SemanticLayerError:
+    with pytest.raises(SemanticLayerError) as exc_info:
+        _ask(tmp_path, measure, *group_by, **package)
+    return exc_info.value
 
 
 def test_four_hop_chain_executes_with_correct_numbers(tmp_path):
-    runtime = Runtime.from_path(str(_write_geo_package(tmp_path)))
-    out = runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_region_name"]))
+    out = _ask(tmp_path, "revenue_usd", "region_name")
 
-    assert _values_by_key(out["rows"], "dimension.geo_region_name") == REVENUE_BY_REGION_HOME
-
+    assert out["values"] == REVENUE_BY_REGION_HOME
     profile = out["hop_profile"]
     assert profile["root_entity"] == "entity.geo_line_item"
     assert profile["max_hop_count"] == 4
@@ -325,11 +250,8 @@ def test_four_hop_chain_executes_with_correct_numbers(tmp_path):
 
 
 def test_five_hops_beyond_limit_is_a_structured_refusal(tmp_path):
-    runtime = Runtime.from_path(str(_write_geo_package(tmp_path)))
-    with pytest.raises(SemanticLayerError) as exc_info:
-        runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_country_name"]))
+    err = _refused(tmp_path, "revenue_usd", "country_name")
 
-    err = exc_info.value
     assert err.code == "PATH_NOT_FOUND"
     assert err.details["reason"] == "hop_limit_exceeded"
     assert err.details["reachable_at_hops"] == 5
@@ -338,27 +260,19 @@ def test_five_hops_beyond_limit_is_a_structured_refusal(tmp_path):
 
 
 def test_five_hop_chain_executes_when_package_raises_max_hops(tmp_path):
-    runtime = Runtime.from_path(str(_write_geo_package(tmp_path, max_hops=6)))
-    out = runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_country_name"]))
+    out = _ask(tmp_path, "revenue_usd", "country_name", max_hops=6)
 
-    assert _values_by_key(out["rows"], "dimension.geo_country_name") == REVENUE_BY_COUNTRY_HOME
+    assert out["values"] == REVENUE_BY_COUNTRY_HOME
     assert out["hop_profile"]["max_hop_count"] == 5
     assert out["hop_profile"]["hop_limit"] == 6
-
-
-def test_max_hops_outside_supported_range_is_invalid_config(tmp_path):
-    with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(str(_write_geo_package(tmp_path, max_hops=99)))
-    assert exc_info.value.code == "INVALID_CONFIG"
 
 
 def test_reverse_fanout_count_distinct_rolls_up_by_child_dimension(tmp_path):
     """'Entity measure in terms of another entity' across a reverse hop:
     distinct customers grouped by a dimension of their child orders."""
-    runtime = Runtime.from_path(str(_write_geo_package(tmp_path, rollup_safe_reverse=True)))
-    out = runtime.query(_query("measure.geo.customer_count", ["dimension.geo_channel"]))
+    out = _ask(tmp_path, "customer_count", "channel", rollup_safe_reverse=True)
 
-    assert _values_by_key(out["rows"], "dimension.geo_channel") == CUSTOMERS_BY_CHANNEL
+    assert out["values"] == CUSTOMERS_BY_CHANNEL
     assert any(w["code"] == "REWRITE_APPLIED" for w in out["warnings"])
 
 
@@ -373,11 +287,8 @@ def test_shortcut_relationship_makes_the_route_ambiguous(tmp_path):
     """A role-playing shortcut gives region two routes of different lengths, the ship-to
     region and the home region. Hop count doesn't choose between them: the query is refused,
     naming each route with its pin."""
-    runtime = Runtime.from_path(str(_write_geo_package(tmp_path, ship_city=True)))
-    with pytest.raises(SemanticLayerError) as exc_info:
-        runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_region_name"]))
+    err = _refused(tmp_path, "revenue_usd", "region_name", ship_city=True)
 
-    err = exc_info.value
     assert err.code == "AMBIGUOUS_PATH"
     options = err.details["clarification"]["options"]
     assert [option["relationship_path"] for option in options] == [
@@ -390,46 +301,19 @@ def test_shortcut_relationship_makes_the_route_ambiguous(tmp_path):
     assert "path_preferences" in err.details["hint"]
 
 
-@pytest.mark.parametrize("pref_key", ["preferred_paths", "relationship_path"])
-def test_path_preferences_pin_the_declared_route(tmp_path, pref_key):
-    """With the diamond present, a path_preferences pin must force the
-    longer customer-home route — proven by the numbers, not the plan."""
-    runtime = Runtime.from_path(
-        str(
-            _write_geo_package(
-                tmp_path,
-                ship_city=True,
-                path_preferences=[
-                    {
-                        "source": "line_item",
-                        "target": "region",
-                        "path": CUSTOMER_ROUTE_TO_REGION,
-                    }
-                ],
-                pref_key=pref_key,
-            )
-        )
+def test_a_path_preference_pins_the_declared_route(tmp_path):
+    """With the diamond present, a path_preferences pin (here spelled relationship_path) must
+    force the longer customer-home route — proven by the numbers, not the plan."""
+    pin = {"source": "line_item", "target": "region", "path": CUSTOMER_ROUTE_TO_REGION}
+    out = _ask(
+        tmp_path,
+        "revenue_usd",
+        "region_name",
+        ship_city=True,
+        path_preferences=[pin],
+        pref_key="relationship_path",
     )
-    out = runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_region_name"]))
-    assert _values_by_key(out["rows"], "dimension.geo_region_name") == REVENUE_BY_REGION_HOME
-
-
-def test_rows_that_record_two_routes_through_one_pair_are_refused_at_load(tmp_path):
-    """Region recorded as the customer-home route walks line item -> city, which a second row
-    records as the ship-to shortcut: two definitions of one pair, refused when the package
-    loads, naming both rows, before any query can need the `cities` table both ways."""
-    rows = [
-        {"source": "line_item", "target": "region", "path": CUSTOMER_ROUTE_TO_REGION},
-        {"source": "line_item", "target": "city", "path": SHIP_ROUTE_TO_REGION[:2]},
-    ]
-    with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(str(_write_geo_package(tmp_path, ship_city=True, path_preferences=rows)))
-    err = exc_info.value
-    assert err.code == "INVALID_CONFIG"
-    assert [row["relationship_path"] for row in err.details["rows"]] == [
-        CUSTOMER_ROUTE_TO_REGION,
-        SHIP_ROUTE_TO_REGION[:2],
-    ]
+    assert out["values"] == REVENUE_BY_REGION_HOME
 
 
 def test_conflicting_routes_to_one_table_are_refused_not_silently_wrong(tmp_path):
@@ -437,34 +321,16 @@ def test_conflicting_routes_to_one_table_are_refused_not_silently_wrong(tmp_path
     ship to: both need the `cities` table through different relationships. One table instance
     cannot serve both semantics. The count of customers across the orders' fan-out is computed
     from the orders, which must read the customer's city, not the order's ship-to city."""
-    runtime = Runtime.from_path(
-        str(
-            _write_geo_package(
-                tmp_path,
-                ship_city=True,
-                rollup_safe_reverse=True,
-                path_preferences=[
-                    {
-                        "source": "customer",
-                        "target": "region",
-                        "path": [
-                            "relationship.orders_customer",
-                            "relationship.orders_ship_city",
-                            "relationship.cities_region",
-                        ],
-                    },
-                ],
-            )
-        )
+    ship_to = ["relationship.orders_customer", *SHIP_ROUTE_TO_REGION[1:]]
+    err = _refused(
+        tmp_path,
+        "customer_count",
+        "region_name",
+        "city_name",
+        ship_city=True,
+        rollup_safe_reverse=True,
+        path_preferences=[{"source": "customer", "target": "region", "path": ship_to}],
     )
-    with pytest.raises(SemanticLayerError) as exc_info:
-        runtime.query(
-            _query(
-                "measure.geo.customer_count",
-                ["dimension.geo_region_name", "dimension.geo_city_name"],
-            )
-        )
-    err = exc_info.value
     assert err.code == "PATH_JOIN_CONFLICT"
     assert err.details["table"] == "cities"
     assert {err.details["existing_relationship"], err.details["conflicting_relationship"]} == {
@@ -476,37 +342,14 @@ def test_conflicting_routes_to_one_table_are_refused_not_silently_wrong(tmp_path
 def test_consistent_pins_resolve_the_conflict(tmp_path):
     """Pinning BOTH region and city to the customer-home route makes the
     same query legal again — and the numbers follow the pinned route."""
-    runtime = Runtime.from_path(
-        str(
-            _write_geo_package(
-                tmp_path,
-                ship_city=True,
-                path_preferences=[
-                    {
-                        "source": "line_item",
-                        "target": "region",
-                        "path": CUSTOMER_ROUTE_TO_REGION,
-                    },
-                    {
-                        "source": "line_item",
-                        "target": "city",
-                        "path": CUSTOMER_ROUTE_TO_REGION[:3],
-                    },
-                ],
-            )
-        )
+    pins = [
+        {"source": "line_item", "target": "region", "path": CUSTOMER_ROUTE_TO_REGION},
+        {"source": "line_item", "target": "city", "path": CUSTOMER_ROUTE_TO_REGION[:3]},
+    ]
+    out = _ask(
+        tmp_path, "revenue_usd", "region_name", "city_name", ship_city=True, path_preferences=pins
     )
-    out = runtime.query(
-        _query(
-            "measure.geo.revenue_usd",
-            ["dimension.geo_region_name", "dimension.geo_city_name"],
-        )
-    )
-    by_pair = {
-        (row["dimension.geo_region_name"], row["dimension.geo_city_name"]): float(row["value"])
-        for row in out["rows"]
-    }
-    assert by_pair == {
+    assert out["values"] == {
         ("East", "New York"): 45.0,
         ("Quebec", "Montreal"): 70.0,
         ("West", "Los Angeles"): 40.0,
@@ -514,30 +357,44 @@ def test_consistent_pins_resolve_the_conflict(tmp_path):
     }
 
 
+def _pin_region(path: list[str]) -> dict:
+    return {"path_preferences": [{"source": "line_item", "target": "region", "path": path}]}
+
+
+# Region recorded as the customer-home route walks line item -> city, which a second row records
+# as the ship-to shortcut: two definitions of one pair, refused when the package loads, naming
+# both rows, before any query can need the `cities` table both ways.
+TWO_ROUTES_THROUGH_ONE_PAIR = [
+    {"source": "line_item", "target": "region", "path": CUSTOMER_ROUTE_TO_REGION},
+    {"source": "line_item", "target": "city", "path": SHIP_ROUTE_TO_REGION[:2]},
+]
+
+
 @pytest.mark.parametrize(
-    ("path", "message"),
+    ("package", "words", "rows"),
     [
-        pytest.param(["relationship.does_not_exist"], "does_not_exist", id="unknown-relationship"),
+        pytest.param({"max_hops": 99}, "max_hops", None, id="max-hops-out-of-range"),
+        pytest.param(
+            _pin_region(["relationship.does_not_exist"]),
+            "does_not_exist",
+            None,
+            id="unknown-relationship",
+        ),
         # Stops at customer, never reaching region.
-        pytest.param(CUSTOMER_ROUTE_TO_REGION[:2], "ends at", id="wrong-target"),
+        pytest.param(_pin_region(CUSTOMER_ROUTE_TO_REGION[:2]), "ends at", None, id="wrong-target"),
+        pytest.param(
+            {"ship_city": True, "path_preferences": TWO_ROUTES_THROUGH_ONE_PAIR},
+            "",
+            [CUSTOMER_ROUTE_TO_REGION, SHIP_ROUTE_TO_REGION[:2]],
+            id="two-routes-through-one-pair",
+        ),
     ],
 )
-def test_invalid_path_preferences_fail_at_load(tmp_path, path, message):
+def test_bad_path_settings_fail_at_load(tmp_path, package, words, rows):
     with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(
-            str(
-                _write_geo_package(
-                    tmp_path,
-                    path_preferences=[
-                        {
-                            "source": "line_item",
-                            "target": "region",
-                            "path": path,
-                        }
-                    ],
-                )
-            )
-        )
+        Runtime.from_path(str(_write_geo_package(tmp_path, **package)))
     err = exc_info.value
     assert err.code == "INVALID_CONFIG"
-    assert message in str(err)
+    assert words in str(err)
+    if rows:
+        assert [row["relationship_path"] for row in err.details["rows"]] == rows

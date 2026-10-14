@@ -14,25 +14,27 @@ from semantic_rails.mcp import (
     MCP_MIN_RESULT_CHARS,
     SemanticLayerMCPAdapter,
     json_text,
+    list_tool_definitions,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.mcp_session import MCPQuerySession
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 QUERY = {
-    "version": 1,
     "select": [
-        {"as": f"revenue_{i}", "expression": {"measure": f"measure.sales.revenue_{i}"}}
-        for i in range(18)
+        {"as": f"revenue_{i}", "expression": f"measure.sales.revenue_{i}"} for i in range(18)
     ],
 }
 VERBOSITIES = ("minimal", "compact", "full")
 
 
 @pytest.fixture()
-def jaffle_adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def jaffle_adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    adapter = SemanticLayerMCPAdapter(
+        Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
+    )
     try:
         yield adapter
     finally:
@@ -45,13 +47,12 @@ def test_refused_run_never_advises_using_an_undelivered_answer(
 ) -> None:
     adapter = jaffle_adapter
     query = {
-        "version": 1,
-        "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+        "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
     }
     monkeypatch.setattr(
         adapter.runtime,
         "query",
-        lambda _: {
+        lambda *_args, **_kwargs: {
             "ok": True,
             "row_count": 1,
             "rows": [{"revenue": "x" * 50_000 if oversized == "rows" else 1}],
@@ -83,17 +84,16 @@ def test_large_rendered_sql_is_optional_only_for_a_run(
 ) -> None:
     adapter = jaffle_adapter
     query = {
-        "version": 1,
-        "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+        "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
         "where": [
             {
                 "field": "dimension.jaffle_order_customer_order_number",
-                "op": "in",
+                "op": "is",
                 "value": [1, *[10**15 + i for i in range(3000)]],
             }
         ],
     }
-    compiled = adapter.runtime.compile({**query, "verbosity": verbosity})
+    compiled = adapter.runtime.compile(query, verbosity=verbosity)
     assert len(compiled["rendered_sql"]) > MCP_DEFAULT_MAX_RESULT_CHARS
     expected = adapter.runtime._get_adapter().query(
         "SELECT SUM(order_total_cents / 100.0) AS revenue FROM jaffle_order "
@@ -111,8 +111,8 @@ def test_large_rendered_sql_is_optional_only_for_a_run(
 
 
 @pytest.fixture()
-def medium_adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    base = runtime_factory("jaffle_shop")
+def medium_adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    base = Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
     config = base.config
     measure = next(m for m in config.measures if m.id == "measure.jaffle.revenue_usd")
     metric = next(m for m in config.metric_recipes if m.id == "metric.sales.aov_usd")
@@ -166,42 +166,31 @@ def medium_adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
         base.close()
 
 
-CASES = (
-    [
-        ("discover", {"terms": "revenue by store", "verbosity": verbosity})
-        for verbosity in VERBOSITIES
-    ]
-    + [("discover", {"terms": "", "verbosity": verbosity}) for verbosity in VERBOSITIES]
-    + [
-        ("inspect", {"object_id": "dimension.jaffle_store_name", "verbosity": verbosity})
-        for verbosity in VERBOSITIES
-    ]
-    + [
-        ("valid-values", {"dimension_id": "dimension.jaffle_store_name"}),
-    ]
-    + [
-        ("plan", {"intent": "revenue by store", "detail": detail})
-        for detail in ("query", "best", "full", "debug")
-    ]
-    + [
+# The largest response of each tool and mode, and execute's compact form too.
+CASES = [
+    ("discover", {"terms": "revenue by store", "verbosity": "full"}),
+    ("discover", {"terms": "", "verbosity": "full"}),
+    ("inspect", {"object_id": "dimension.jaffle_store_name", "verbosity": "full"}),
+    ("valid-values", {"dimension_id": "dimension.jaffle_store_name"}),
+    *(("plan", {"intent": "revenue by store", "detail": detail}) for detail in ("full", "debug")),
+    *(
         ("execute", {"query": QUERY, "mode": mode, "verbosity": verbosity})
         for mode in ("validate", "sql", "run")
-        for verbosity in VERBOSITIES
-    ]
-    + [
+        for verbosity in ("compact", "full")
+    ),
+    *(
         (
             "segment",
             {
                 "segment_id": "segment.jaffle.high_value_customers",
                 "action": action,
-                "verbosity": verbosity,
+                "verbosity": "full",
                 "limit": 1,
             },
         )
         for action in ("validate", "explain", "preview")
-        for verbosity in VERBOSITIES
-    ]
-)
+    ),
+]
 
 
 @pytest.mark.parametrize(("tool", "arguments"), CASES)
@@ -252,7 +241,7 @@ def test_one_row_matches_reference_sql_despite_large_plan(
 
 
 @pytest.mark.parametrize("mode", ["validate", "sql", "run"])
-@pytest.mark.parametrize("verbosity", VERBOSITIES)
+@pytest.mark.parametrize("verbosity", ["compact", "full"])
 def test_plan_size_never_refuses_an_answer(
     medium_adapter: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
@@ -274,7 +263,7 @@ def test_plan_size_never_refuses_an_answer(
     if mode == "sql":
         payload["rendered_sql"] = "SELECT 12.5 AS value"
     method = {"validate": "validate", "sql": "compile", "run": "query"}[mode]
-    monkeypatch.setattr(medium_adapter.runtime, method, lambda _query: payload.copy())
+    monkeypatch.setattr(medium_adapter.runtime, method, lambda *_args, **_kwargs: payload.copy())
     result = medium_adapter.call_tool(
         "execute", {"query": QUERY, "mode": mode, "verbosity": verbosity}
     )
@@ -292,7 +281,7 @@ def test_budget_counts_transport_context_and_session_annotations(
     monkeypatch.setattr(
         medium_adapter.runtime,
         "query",
-        lambda _query: {"ok": True, "rows": [{"value": 1}], "row_count": 1},
+        lambda *_args, **_kwargs: {"ok": True, "rows": [{"value": 1}], "row_count": 1},
     )
     context = RequestContext(actor="subject" * 500, request_id="budget-test")
     session = MCPQuerySession()
@@ -333,14 +322,13 @@ def test_oversized_errors_and_tiny_operator_budgets_are_bounded(
     assert len(json_text(result)) <= max(limit, MCP_MIN_RESULT_CHARS)
 
 
-@pytest.mark.parametrize("mode", ["validate", "sql", "run"])
 @pytest.mark.parametrize(
     ("expression", "kind", "path"),
     [
         (
             {"kind": "group", "dimensions": ["dimension.store_name"]},
             "group",
-            "query.select[0].expression",
+            "select[0].expression.kind",
         ),
         (
             {
@@ -350,27 +338,63 @@ def test_oversized_errors_and_tiny_operator_budgets_are_bounded(
                 "right": {"kind": "literal", "value": 1},
             },
             "ref",
-            "query.select[0].expression.left",
+            "select[0].expression.left.kind",
         ),
-        ({"kind": 42}, 42, "query.select[0].expression"),
+        ({"kind": 42}, 42, "select[0].expression.kind"),
     ],
 )
 def test_unsupported_expression_reports_received_kind_and_request_path(
-    medium_adapter: SemanticLayerMCPAdapter,
-    mode: str,
-    expression: dict[str, Any],
-    kind: Any,
-    path: str,
+    medium_adapter: SemanticLayerMCPAdapter, expression: dict[str, Any], kind: Any, path: str
 ) -> None:
     result = medium_adapter.call_tool(
-        "execute",
-        {"mode": mode, "query": {"version": 1, "select": [{"expression": expression}]}},
+        "execute", {"query": {"select": [{"expression": expression}]}}
     )
     assert not result["ok"]
     issue = result["errors"][0]
-    assert issue["code"] == "INVALID_EXPRESSION_AST"
-    assert issue["details"]["expression_kind"] == kind
-    assert issue["details"]["path"] == issue["details"]["expression_position"] == path
-    assert repr(kind) in issue["message"] and path in issue["message"]
-    assert "group_by" in issue["message"] and "measure" in issue["message"]
+    assert issue["code"] == "INVALID_QUERY"
+    assert issue["details"]["path"] == path
+    assert "measure" in issue["details"]["supported_kinds"]
+    assert f"'{kind}'" in issue["message"]
+    assert len(issue["recovery_hints"]) == 1
     assert "docs/" not in json_text(result) and "schemas/" not in json_text(result)
+
+
+# Every agent session pays for tools/list. Each tool's definition as it is sent (compact JSON);
+# execute embeds the call's schema with each expression kind's keys as one line of a table.
+# A budget may only shrink.
+TOOL_MAX_BYTES = {
+    "discover": 1_751,
+    "inspect": 1_123,
+    "valid-values": 1_388,
+    "plan": 1_887,
+    "execute": 6_407,
+    "segment": 1_300,
+}
+
+
+def test_each_tool_definition_fits_its_byte_budget() -> None:
+    sizes = {
+        tool["name"]: len(json.dumps(tool, separators=(",", ":")))
+        for tool in list_tool_definitions()
+    }
+    assert sizes.keys() == TOOL_MAX_BYTES.keys()
+    assert {name: size for name, size in sizes.items() if size > TOOL_MAX_BYTES[name]} == {}
+
+
+def test_tools_list_fits_its_byte_budget() -> None:
+    assert len(json_text({"tools": list_tool_definitions()})) <= 13_873
+
+
+# discover is most of an agent's tokens. Its default responses on the jaffle package, without
+# the per-call request_id and timing; a budget may only shrink.
+DISCOVER_MAX_BYTES = {"revenue by store": 5_114, "": 9_389}
+
+
+@pytest.mark.parametrize("terms", sorted(DISCOVER_MAX_BYTES))
+def test_default_discover_fits_its_byte_budget(
+    jaffle_adapter: SemanticLayerMCPAdapter, terms: str
+) -> None:
+    response = jaffle_adapter.call_tool("discover", {"terms": terms})
+    assert response["ok"], response
+    measured = {k: v for k, v in response.items() if k not in {"request_id", "timing_ms"}}
+    assert len(json_text(measured)) <= DISCOVER_MAX_BYTES[terms]

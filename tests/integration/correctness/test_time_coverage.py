@@ -7,7 +7,6 @@ import pytest
 from semantic_rails import runtime as runtime_module
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
-from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.result_helpers import typed_rows
@@ -18,7 +17,6 @@ from .test_correctness import (
     ORDERS,
     REFUNDS,
     REVENUE,
-    ROLE,
     SIGNUP_ROLE,
     STORE,
     _ask,
@@ -26,6 +24,8 @@ from .test_correctness import (
     _backend,
     _item,
 )
+
+STORE_B = {"all": [{"field": STORE, "op": "is", "value": "b"}]}
 
 
 @pytest.fixture
@@ -54,18 +54,13 @@ def test_loaded_buckets_use_the_whole_base_not_the_filtered_measure(
 ):
     backend = _backend(request, backend_name)
     # The measured value occurs only in November; February is loaded but has no order.
-    apple = {
-        "kind": "aggregate",
-        **REVENUE,
-        "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
-    }
+    apple = {"kind": "aggregate", "measure": REVENUE, "filter": STORE_B}
     query = _ask(
         "month",
         _item(apple, "v"),
         _item(AVERAGE, "avg"),
         start=bucket,
         end=f"{int(bucket[:4]) + 1}-01-01",
-        fill=True,
     )
     result = raw_runtime(variant).query(query)
     reference = f"""
@@ -96,11 +91,7 @@ def test_conditional_observation_requires_source_rows_even_when_nothing_matches(
 ):
     backend = _backend(request, backend_name)
     query = _ask(
-        "month",
-        _item({"measure": f"measure.shop.{measure}"}, "v"),
-        start="2024-02-01",
-        end="2024-03-01",
-        fill=True,
+        "month", _item(f"measure.shop.{measure}", "v"), start="2024-02-01", end="2024-03-01"
     )
     result = backend.runtimes["utc_implicit"].query(query)
     gold = backend.reference(
@@ -131,7 +122,6 @@ def test_placeholder_rows_do_not_extend_coverage(request, backend_name, tmp_path
                 _item(AVERAGE, "avg"),
                 start="2024-09-01",
                 end="2024-10-01",
-                fill=True,
             )
         )
         gold = _rows(
@@ -188,23 +178,24 @@ def changed_runtime(request, backend_name, tmp_path):
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize(
-    ("stamp", "fill"),
+    ("stamp", "bounded"),
     [("TIMESTAMP '2098-01-15'", True), ("NULL", False), ("TIMESTAMP '2098-01-15'", False)],
     ids=["after_coverage_edge", "null_time_key", "future_without_window"],
 )
-def test_populated_values_survive_coverage(changed_runtime, stamp, fill):
+def test_populated_values_survive_coverage(changed_runtime, stamp, bounded):
     rt = changed_runtime(
         insert=f"INSERT INTO orders (order_id, ordered_at, amount) VALUES (999, {stamp}, 100)"
     )
-    extra = {"fill": True, "start": "2098-01-01", "end": "2098-02-01"} if fill else {}
+    extra = {"start": "2098-01-01", "end": "2098-02-01"} if bounded else {}
     result = rt.query(_ask("month", _item(REVENUE, "v"), _item(ORDERS, "n"), **extra))
     gold = _rows(
         rt,
         "SELECT date_trunc('month', ordered_at), SUM(amount), COUNT(order_id) "
         "FROM orders WHERE order_id = 999 GROUP BY 1",
     )
-    got = [(r[f"{ROLE}__month"], r["v"], r["n"]) for r in typed_rows(result)]
-    _assert_rows(gold, [row for row in got if row[0] == gold[0][0]], "populated coverage")
+    got = [(r["period"], r["v"], r["n"]) for r in typed_rows(result)]
+    month = gold[0][0] and gold[0][0].date()
+    _assert_rows(gold, [row for row in got if row[0] == month], "populated coverage")
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -225,11 +216,7 @@ def test_recent_observation_uses_the_roles_current_instant(changed_runtime, vari
         f"SELECT date_trunc('day', {clock}), "
         f"date_trunc('day', {clock}) + INTERVAL '1 day' FROM orders WHERE order_id = 999",
     )[0]
-    apple = {
-        "kind": "aggregate",
-        **REVENUE,
-        "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
-    }
+    apple = {"kind": "aggregate", "measure": REVENUE, "filter": STORE_B}
     result = rt.query(
         _ask(
             "day",
@@ -238,7 +225,6 @@ def test_recent_observation_uses_the_roles_current_instant(changed_runtime, vari
             _item(apple, "b"),
             start=str(start),
             end=str(end),
-            fill=True,
         )
     )
     gold = _rows(
@@ -249,33 +235,15 @@ def test_recent_observation_uses_the_roles_current_instant(changed_runtime, vari
     )
     _assert_rows(
         gold,
-        [(r[f"{ROLE}__day"], r["v"], r["n"], r["b"]) for r in typed_rows(result)],
+        [(r["period"], r["v"], r["n"], r["b"]) for r in typed_rows(result)],
         "recent observation",
     )
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("fill", [True, False])
-def test_a_fiscal_quarter_is_refused_before_any_sql_runs(raw_runtime, fill):
-    # Authored non-default calendars are not supported in this release.
-    query = _ask(
-        "quarter",
-        _item(REVENUE, "v"),
-        start="2024-05-01",
-        end="2024-11-01",
-        calendar_id="fiscal",
-        fill=fill,
-    )
-    with pytest.raises(SemanticLayerError) as refused:
-        raw_runtime("utc_authored").query(query)
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["reason"] == "calendar_not_supported_yet"
-
-
-@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("expressions", [(REVENUE,), (REVENUE, ORDERS)])
 def test_routed_values_survive_shorter_raw_retention(changed_runtime, expressions, monkeypatch):
-    from semantic_rails.compiler_parts import sql_lowering
+    from semantic_rails.compiler_parts import lowering_common
 
     rt = changed_runtime(
         insert="DELETE FROM orders WHERE ordered_at < TIMESTAMP '2024-01-01'", routed=True
@@ -284,13 +252,11 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
     def no_shadow(*args):
         pytest.fail("A routed plan must not lower or record a shadow raw leaf")
 
-    monkeypatch.setattr(sql_lowering, "record_leaf_scope", no_shadow)
+    monkeypatch.setattr(lowering_common, "record_leaf_scope", no_shadow)
+    # An open window routes; a named one bounds its zeros by the base's loaded data instead.
     result = rt.query(
         _ask(
-            "month",
-            *[_item(expr, f"v{i}") for i, expr in enumerate(expressions)],
-            start="2023-11-01",
-            end="2023-12-01",
+            "month", *[_item(expr, f"v{i}") for i, expr in enumerate(expressions)], end="2023-12-01"
         )
     )
     assert "FROM orders_monthly" in result["rendered_sql"]
@@ -309,15 +275,15 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 def test_filled_monthly_answers_match_with_and_without_rollups(request, backend_name, raw_runtime):
     backend = _backend(request, backend_name)
-    query = _ask("month", _item(REVENUE, "v"), start="2023-10-01", end="2024-09-01", fill=True)
+    query = _ask("month", _item(REVENUE, "v"), start="2023-10-01", end="2024-09-01")
     routed = backend.runtimes["utc_authored"].query(query)
     raw = raw_runtime("utc_authored").query(query)
 
     def key(row):
-        return str(row[f"{ROLE}__month"])
+        return row["period"]
 
     assert sorted(routed["rows"], key=key) == sorted(raw["rows"], key=key)
-    october = next(r for r in routed["rows"] if str(r[f"{ROLE}__month"]).startswith("2023-10-01"))
+    october = next(r for r in routed["rows"] if r["period"] == "2023-10-01")
     assert october["v"] is None
     assert "FROM orders_monthly" not in routed["rendered_sql"]
 
@@ -326,10 +292,9 @@ def test_filled_monthly_answers_match_with_and_without_rollups(request, backend_
 @pytest.mark.parametrize("hours", [-1, 1], ids=["past", "future"])
 @pytest.mark.parametrize("expression", [REVENUE, ORDERS], ids=["sum", "count"])
 @pytest.mark.parametrize("scope", ["dataset", "query"])
-@pytest.mark.parametrize("fill", [False, True], ids=["unfilled", "filled"])
-@pytest.mark.parametrize("bounded", [True, False], ids=["bounded", "unbounded"])
+@pytest.mark.parametrize("window", ["named", "filled", "open"])
 def test_aware_coverage_cutoff_ignores_the_session_zone(
-    changed_runtime, backend_name, hours, expression, scope, fill, bounded
+    changed_runtime, backend_name, hours, expression, scope, window
 ):
     rt = changed_runtime(
         "tz_implicit",
@@ -345,16 +310,13 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(
         "FROM orders WHERE order_id = 999",
     )[0]
     options = {
-        **({"start": str(start), "end": str(end)} if bounded else {}),
-        **({"fill": True} if fill else {}),
-    }
+        "named": {"start": str(start), "end": str(end)},
+        "filled": {"fill": True},
+        "open": {},
+    }[window]
     # Order 999 has no store, so only its own bucket holds it: store b reads 0 there exactly
     # where the bucket is loaded, filled or not, and NULL after the last loaded timestamp.
-    store_b = {
-        "kind": "aggregate",
-        **expression,
-        "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
-    }
+    store_b = {"kind": "aggregate", "measure": expression, "filter": STORE_B}
     gold = _rows(
         rt,
         "SELECT CASE WHEN ordered_at_tz <= CURRENT_TIMESTAMP THEN 0 END "
@@ -363,17 +325,17 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(
 
     def bucket_values(query):
         rows = typed_rows(rt.query({**query, "observation_scope": scope}))
-        return [r["v"] for r in rows if str(r[f"{ROLE}__day"])[:10] == str(start)[:10]]
+        return [r["v"] for r in rows if str(r["period"]) == str(start)[:10]]
 
     assert bucket_values(_ask("day", _item(store_b, "v"), **options)) == [r[0] for r in gold]
-    if fill and bounded:
+    if window == "named":
         query = _ask("day", _item(expression, "v"), **options)
-        query["where"] = [{"field": STORE, "op": "=", "value": "b"}]
+        query["where"] = STORE_B["all"]
         assert bucket_values(query) == [r[0] for r in gold]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_filled_query_executes_one_warehouse_statement(raw_runtime, monkeypatch):
+def test_filled_query_executes_one_answer_statement(raw_runtime, monkeypatch):
     rt = raw_runtime("utc_implicit")
     original = runtime_module._adapter_query
     calls = []
@@ -383,10 +345,11 @@ def test_filled_query_executes_one_warehouse_statement(raw_runtime, monkeypatch)
         return original(*args, **kwargs)
 
     monkeypatch.setattr(runtime_module, "_adapter_query", query)
-    result = rt.query(
-        _ask("month", _item(REVENUE, "v"), start="2024-01-01", end="2024-03-01", fill=True)
-    )
-    assert len(calls) == 1 and result["row_count"] == 2
+    result = rt.query(_ask("month", _item(REVENUE, "v"), start="2024-01-01", end="2024-03-01"))
+    # Beside the answer, one read of the coverage it used gives the window's data_through.
+    answers = [sql for sql in calls if "guarded_base" in sql]
+    assert len(answers) == 1 and len(calls) == 2 and result["row_count"] == 2
+    assert result["window"]["data_through"] == "2024-08-01"
 
 
 # 2024-01-31 22:00 in Los Angeles is 2024-02-01 06:00 UTC.
@@ -402,24 +365,19 @@ def _in_los_angeles(rt, backend_name, *queries):
     _rows(rt, f"{setting} = 'America/Los_Angeles'")
     return [
         [(str(row[0])[:10], *row[1:]) for row in _rows(rt, compiled["sql"])]
-        for compiled in (compile_query(rt.config, Registry(rt.config), q) for q in queries)
+        for compiled in (
+            compile_query(rt.config, Registry(rt.config), rt.engine_payload(q)) for q in queries
+        )
     ]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("variant", ["tz_authored", "tz_implicit"])
-def test_filled_and_unfilled_buckets_share_the_windows_frame(
-    changed_runtime, backend_name, variant
-):
+def test_named_window_buckets_share_the_windows_frame(changed_runtime, backend_name, variant):
     rt = changed_runtime(variant, EDGE_ORDER)
     window = {"start": "2024-01-01", "end": "2024-02-01"}
-    plain, filled = _in_los_angeles(
-        rt,
-        backend_name,
-        _ask("month", _item(REVENUE, "v"), **window),
-        _ask("month", _item(REVENUE, "v"), **window, fill=True),
-    )
-    assert plain == filled == [("2024-01-01", 70)]
+    (named,) = _in_los_angeles(rt, backend_name, _ask("month", _item(REVENUE, "v"), **window))
+    assert named == [("2024-01-01", 70)]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -439,18 +397,18 @@ def test_a_secondary_zone_aware_role_keeps_its_populated_value(changed_runtime):
     rt = changed_runtime(
         insert="ALTER TABLE signups ALTER COLUMN signed_up_at TYPE TIMESTAMPTZ "
         "USING signed_up_at AT TIME ZONE 'UTC'; "
-        "INSERT INTO signups VALUES (999, TIMESTAMPTZ '2024-03-01 02:00:00+00', 'web')",
+        "INSERT INTO signups (customer_id, signed_up_at, channel) "
+        "VALUES (999, TIMESTAMPTZ '2024-03-01 02:00:00+00', 'web')",
         zones={SIGNUP_ROLE: "America/New_York"},
     )
     result = rt.query(
         _ask(
             "day",
             _item(REVENUE, "v"),
-            _item({"measure": "measure.shop.signup_count"}, "n"),
+            _item("measure.shop.signup_count", "n"),
             start="2024-03-01",
             end="2024-03-02",
-            fill=True,
         )
     )
-    rows = [(str(r[f"{ROLE}__day"])[:10], r["v"], r["n"]) for r in typed_rows(result)]
+    rows = [(str(r["period"]), r["v"], r["n"]) for r in typed_rows(result)]
     assert rows == [("2024-03-01", 8, 1)]

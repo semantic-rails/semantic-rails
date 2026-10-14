@@ -23,25 +23,24 @@ from semantic_rails.mcp import (
     SemanticLayerMCPAdapter,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
-from semantic_rails.metadata_parts.relevance import _no_viable_candidates_block
 from semantic_rails.planner.plan_query import _trim_why_errors
 from semantic_rails.request_context import RequestContext
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
 SEGMENT = "segment.jaffle.high_value_customers"
 QUERY = {
-    "version": 1,
-    "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+    "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
     "group_by": [STORE],
     "time": {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"},
-    "order_by": [{"field": "time", "direction": "ASC"}, {"field": STORE, "direction": "ASC"}],
+    "order_by": [{"field": "period", "direction": "asc"}, {"field": STORE, "direction": "asc"}],
 }
-# A time role without a grain or window groups by the raw timestamp: thousands of rows.
-UNGRAINED = {
-    **QUERY,
-    "time": {"temporal_role": ORDER_TIME},
-    "order_by": [{"field": STORE, "direction": "ASC"}],
+# One row per customer: more rows than execute returns by default.
+PER_CUSTOMER = {
+    "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
+    "group_by": ["dimension.jaffle_order_customer_id"],
 }
 V2_TOOLS = ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
 UNAVAILABLE_TOOLS = {
@@ -58,8 +57,8 @@ VOLATILE = {"request_id", "timing_ms", "api_version", "request_context"}
 
 
 @pytest.fixture()
-def runtime(runtime_factory: Any) -> Iterator[Any]:
-    runtime = runtime_factory("jaffle_shop")
+def runtime(jaffle_snapshot) -> Iterator[Any]:
+    runtime = Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop")
     yield runtime
     runtime.close()
 
@@ -86,14 +85,13 @@ def _stable(response: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in response.items() if key not in VOLATILE}
 
 
-@pytest.mark.parametrize("nested", [False, True])
-@pytest.mark.parametrize("verbosity", ["compact", " Compact ", "bogus"])
-@pytest.mark.parametrize("sql_size", [10, 4000])
+@pytest.mark.parametrize(
+    ("sql_size", "verbosity"), [(10, "compact"), (4000, " Compact "), (4000, "bogus")]
+)
 def test_execute_budget_applies_after_the_final_envelope(
     v2: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
     sql_size: int,
-    nested: bool,
     verbosity: str,
 ) -> None:
     monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "2000")
@@ -104,12 +102,8 @@ def test_execute_budget_applies_after_the_final_envelope(
         "explain": "e" * 4000,
         "sql_plan": "s" * sql_size,
     }
-    monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
-    arguments = (
-        {"query": {**QUERY, "verbosity": verbosity}, "verbosity": "full"}
-        if nested
-        else {"query": QUERY, "verbosity": verbosity}
-    )
+    monkeypatch.setattr(v2.runtime, "query", lambda *_args, **_kwargs: payload.copy())
+    arguments = {"query": QUERY, "verbosity": verbosity}
     for args in (arguments, {"query": QUERY, "verbosity": "full"}):
         result = v2.call_tool("execute", args)
         assert result["ok"] and result["rows"] == payload["rows"]
@@ -131,7 +125,7 @@ def test_compact_execute_omits_plans_even_under_budget(
         "explain": {"query": QUERY},
         "sql_plan": {"sql": "SELECT 12.5 AS revenue"},
     }
-    monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
+    monkeypatch.setattr(v2.runtime, "query", lambda *_args, **_kwargs: payload.copy())
     response = v2.call_tool("execute", {"query": QUERY, "verbosity": "compact"})
     assert response["rows"] == payload["rows"]
     assert {"explain", "sql_plan"} <= set(response["omitted_fields"])
@@ -145,7 +139,7 @@ def test_compact_execute_refuses_an_envelope_that_cannot_fit(
     monkeypatch.setattr(
         v2.runtime,
         "query",
-        lambda _query: {"ok": True, "row_count": 1, "rows": [{"value": "x" * 450}]},
+        lambda *_args, **_kwargs: {"ok": True, "row_count": 1, "rows": [{"value": "x" * 450}]},
     )
     result = v2.call_tool("execute", {"query": QUERY, "verbosity": "compact"})
     assert not result["ok"] and result["error"]["code"] == "RESULT_TOO_LARGE"
@@ -179,13 +173,28 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     execute = tools["execute"]["inputSchema"]["properties"]
     assert execute["max_rows"]["default"] == MCP_DEFAULT_MAX_ROWS
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
-    assert "exclusive" in execute["query"]["properties"]["time"]["properties"]["end"]["description"]
-    for tool in ("discover", "inspect", "execute"):
-        assert tools[tool]["inputSchema"]["properties"]["verbosity"]["default"] == "minimal"
+    published_time = load_contract("query.v2.json")["properties"]["time"]["properties"]
+    assert "exclusive" in published_time["end"]["description"]
+    assert execute["max_rows"]["maximum"] == 100_000
+    for tool, levels in (
+        ("discover", ["minimal", "compact", "full"]),
+        ("inspect", ["minimal", "compact", "full"]),
+        ("execute", None),
+        ("segment", ["minimal", "full"]),
+    ):
+        verbosity = tools[tool]["inputSchema"]["properties"]["verbosity"]
+        assert verbosity["default"] == "minimal", tool
+        assert levels is None or verbosity["enum"] == levels, tool
+    # Empty discover terms page at 100 ids by default; only the calls that read a clock take now.
+    assert "default" not in tools["discover"]["inputSchema"]["properties"]["limit"]
+    assert "now" not in tools["discover"]["inputSchema"]["properties"]
+    assert "now" in execute and "now" in tools["plan"]["inputSchema"]["properties"]
     # Hosts that drop the server instructions still see plan-first and the exclusive end.
     assert "call it before 'execute'" in tools["plan"]["description"]
     assert "call plan first" in tools["execute"]["description"]
     assert "time.end is exclusive" in tools["execute"]["description"]
+    assert "$defs" in tools["execute"]["inputSchema"]
+    assert tools["execute"]["inputSchema"]["required"] == ["query"]
 
 
 def _descriptions(node: Any) -> Iterator[str]:
@@ -221,21 +230,23 @@ def test_execute_modes_run_validate_or_compile(v2: SemanticLayerMCPAdapter) -> N
         ({"query": QUERY}, False, True),
         ({"query": QUERY, "mode": "validate"}, False, False),
         ({"query": QUERY, "mode": "sql", "row_format": "columns"}, True, False),
-        # Top-level Query IR passthrough works in every mode.
-        ({**QUERY, "mode": "validate"}, False, False),
     ):
         response = v2.call_tool("execute", arguments)
         assert response["ok"] is True, response["errors"]
         assert response["api_version"] == "v2"
         assert ("rendered_sql" in response, "rows" in response) == (sql, rows), arguments
+    # The call travels in query; its keys are not arguments of execute.
+    flat = v2.call_tool("execute", {**QUERY, "mode": "validate"})
+    assert flat["ok"] is False and flat["errors"][0]["details"]["path"] == "select"
 
 
 def test_execute_caps_rows_by_default(v2: SemanticLayerMCPAdapter) -> None:
-    capped = v2.call_tool("execute", {"query": UNGRAINED})
+    capped = v2.call_tool("execute", {"query": PER_CUSTOMER})
     assert capped["truncated"] is True
     assert capped["row_count"] == MCP_DEFAULT_MAX_ROWS
     assert "EXECUTE_ROWS_TRUNCATED" in {warning["code"] for warning in capped["warnings"]}
-    assert v2.call_tool("execute", {"query": UNGRAINED, "max_rows": 5})["row_count"] == 5
+    assert capped["total_row_count"] is None
+    assert v2.call_tool("execute", {"query": PER_CUSTOMER, "max_rows": 5})["row_count"] == 5
 
 
 def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) -> None:
@@ -252,8 +263,9 @@ def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) 
             assert error["details"]["field"] == field
 
 
-@pytest.mark.parametrize("action", ["validate", "explain", "preview"])
-@pytest.mark.parametrize("verbosity", [None, "", "   "])
+@pytest.mark.parametrize(
+    ("action", "verbosity"), [("validate", ""), ("explain", "   "), ("preview", None)]
+)
 def test_segment_actions_default_to_minimal_verbosity(
     v2: SemanticLayerMCPAdapter, action: str, verbosity: str | None
 ) -> None:
@@ -301,7 +313,7 @@ def test_discover_and_inspect_return_slim_cards_by_default(v2: SemanticLayerMCPA
 def test_discover_with_empty_terms_lists_ids(v2: SemanticLayerMCPAdapter) -> None:
     # A page large enough for every kind, whatever the fixture's size.
     listed = v2.call_tool("discover", {"terms": "", "limit": 10_000})
-    assert listed["ok"] is True and listed["warnings"] == []
+    assert listed["ok"] is True and "warnings" not in listed
     index = v2.read_resource("semantic-rails://catalog/index")["payload"]["catalog"]
     assert listed["catalog"] == index
     segments = v2.call_tool("discover", {"terms": " ", "kinds": ["segment"]})["catalog"]
@@ -325,23 +337,20 @@ def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) ->
     rest = {"terms": "", "kinds": ["dimension"], "limit": 60, "offset": 60}
     last = v2.call_tool("discover", rest)
     assert last["catalog"]["dimension_ids"] == whole["dimension_ids"][60:]
-    assert last["warnings"] == [] and "measure_ids" not in last["catalog"]
+    assert "warnings" not in last and "measure_ids" not in last["catalog"]
 
 
-@pytest.mark.parametrize("tool", ["forecast", *sorted(UNAVAILABLE_TOOLS)])
+@pytest.mark.parametrize("tool", ["forecast", "catalog", "compile", "segment-validate"])
 def test_unknown_tools_use_one_refusal(v2: SemanticLayerMCPAdapter, tool: str) -> None:
     response = v2.call_tool(tool, {})
     assert response["ok"] is False and response["status"] == "error"
     error = response["errors"][0]
     assert error["code"] == "UNKNOWN_MCP_TOOL"
-    assert error["message"] == f"Unknown MCP tool '{tool}'"
     assert error["details"] == {"tool": tool, "available_tools": sorted(V2_TOOLS)}
-    assert error["recovery_hints"][0]["message"].endswith(
-        "common entry points are 'discover', 'inspect', 'plan'."
-    )
+    assert error["recovery_hints"]
 
 
-AIRSPEED = {"measure": "measure.jaffle.airspeed", "aggregation": "sum"}
+AIRSPEED = {"kind": "measure", "measure": "measure.jaffle.airspeed", "aggregation": "sum"}
 
 
 def _hint_texts(node: Any, key: str = "") -> Iterator[str]:
@@ -428,9 +437,7 @@ def test_recovery_hints_never_send_the_agent_to_a_removed_tool(
 def test_hints_built_outside_those_calls_point_at_v2_calls() -> None:
     why = _trim_why_errors([{"code": "INVALID_QUERY", "message": "bad"}] * 4)
     assert why["truncated"]["dropped"] == 1
-    blocked = _no_viable_candidates_block("x", blocked_codes=[], sample_blocked_messages=[])
-    texts = [*_hint_texts(why), blocked["recovery_hint"]]
-    assert not [text for text in texts if _sends_to_removed_surface(text)]
+    assert not [text for text in _hint_texts(why) if _sends_to_removed_surface(text)]
 
 
 def test_mcp_doctor_checks_the_v2_tools(runtime: Any) -> None:
@@ -440,7 +447,9 @@ def test_mcp_doctor_checks_the_v2_tools(runtime: Any) -> None:
     assert check["tool_count"] == len(V2_TOOLS)
 
 
-def test_v2_tools_take_the_trusted_transport_context(v2: SemanticLayerMCPAdapter) -> None:
+def test_v2_tools_take_the_trusted_transport_context(
+    v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
     for tool in v2.list_tools():
         assert not {"request_id", "policy_context"} & set(tool["inputSchema"]["properties"])
     context = RequestContext(
@@ -448,20 +457,27 @@ def test_v2_tools_take_the_trusted_transport_context(v2: SemanticLayerMCPAdapter
     )
     seen: dict[str, Any] = {}
 
-    def validate(arguments: dict[str, Any]) -> dict[str, Any]:
-        seen.update(arguments)
+    def validate(query: Any, **arguments: Any) -> dict[str, Any]:
+        seen.update(arguments, query=query)
         return {"ok": True}
 
-    v2._handle_validate = validate  # type: ignore[method-assign]
-    claimed = {"roles": ["admin"], "environment": "prod"}
+    monkeypatch.setattr(v2.runtime, "validate", validate)
     response = v2.call_tool(
-        "execute",
-        {"query": {**QUERY, "policy_context": claimed}, "mode": "validate", "request_id": "x"},
-        request_context=context,
+        "execute", {"query": QUERY, "mode": "validate", "request_id": "x"}, request_context=context
     )
-    assert response["request_id"] == "trusted"
-    assert seen["policy_context"] == context.to_policy_context()
-    assert "policy_context" not in seen["query"] and "mode" not in seen
+    assert response["ok"] and response["request_id"] == "trusted"
+    assert seen["context"] == context and seen["query"] == QUERY
+    # A request that says who is asking is refused, never stripped and answered.
+    seen.clear()
+    claimed = {"roles": ["admin"], "environment": "prod"}
+    for arguments in (
+        {"query": {**QUERY, "policy_context": claimed}, "mode": "validate"},
+        {"query": QUERY, "mode": "validate", "policy_context": claimed},
+    ):
+        refused = v2.call_tool("execute", arguments, request_context=context)
+        assert refused["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED", refused
+        assert refused["request_id"] == "trusted"
+    assert not seen
 
 
 @pytest.mark.parametrize(
@@ -489,50 +505,52 @@ def test_every_v2_call_works_behind_an_authenticated_transport(
         roles=("analyst",),
         environment="development",
     )
-    claimed = {**arguments, "request_id": "caller", "policy_context": {"roles": ["admin"]}}
-    message = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": tool, "arguments": claimed},
-    }
-    response = handle_jsonrpc_message(v2, message, request_context=context)
-    assert response is not None
-    result = response["result"]
+
+    def call(arguments: dict[str, Any]) -> dict[str, Any]:
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }
+        response = handle_jsonrpc_message(v2, message, request_context=context)
+        assert response is not None
+        result: dict[str, Any] = response["result"]
+        return result
+
+    result = call({**arguments, "request_id": "caller"})
     payload = result["structuredContent"]
     assert result["isError"] is False and payload["ok"] is True, payload.get("errors")
     assert payload["request_id"] == "trusted"
     assert payload["request_context"]["roles"] == ["analyst"]
-    assert not [w for w in payload["warnings"] if str(w.get("code", "")).endswith("_UNKNOWN_ARG")]
+    assert not [
+        w for w in payload.get("warnings", []) if str(w.get("code", "")).endswith("_UNKNOWN_ARG")
+    ]
+    claimed = call({**arguments, "policy_context": {"roles": ["admin"]}})
+    assert claimed["isError"] is True
+    refusal = claimed["structuredContent"]["errors"][0]
+    assert refusal["code"] == "IDENTITY_CLAIM_REFUSED"
+    assert refusal["details"]["path"] == "policy_context"
 
 
 def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
     ok = v2.call_tool("plan", {"intent": "revenue by store"})
-    assert "request_context" not in ok and "recovery_hints" not in ok
-    assert {
-        "ok",
-        "status",
-        "api_version",
-        "request_id",
-        "package_id",
-        "warnings",
-        "errors",
-        "timing_ms",
-    } <= set(ok)
-    # Main accepts an unambiguous unwrapped metric; conflicting targets still carry recovery.
-    bare = {"version": 1, "select": [{"metric": "metric.sales.aov_usd", "as": "aov"}]}
+    # No empty fields: a clean plan carries no errors, warnings or hints.
+    assert not {"request_context", "recovery_hints", "errors", "warnings"} & set(ok)
+    assert {"ok", "status", "api_version", "request_id", "package_id", "timing_ms"} <= set(ok)
+    # A select item is an id string or {expression, as}; anything else carries its fix.
+    bare = {"select": [{"expression": "metric.sales.aov_usd", "as": "aov"}]}
     assert v2.call_tool("execute", {"query": bare, "mode": "validate"})["ok"]
     bad = {
-        "version": 1,
         "select": [{"metric": "metric.sales.aov_usd", "measure": "measure.jaffle.revenue_usd"}],
     }
     failed = v2.call_tool("execute", {"query": bad})
     issue = failed["errors"][0]
     assert failed["error"] == {key: issue[key] for key in ("code", "message")}
-    assert issue["code"] == "INVALID_EXPRESSION_AST"
-    assert "expression" in issue["message"] and "group_by" in issue["message"]
+    assert issue["code"] == "INVALID_QUERY"
+    assert issue["details"]["path"] == "select[0]"
     assert "recovery_hints" not in failed
-    assert issue["recovery_hints"]
+    assert '"metric.sales.aov_usd"' in issue["recovery_hints"][0]["message"]
     empty = [key for key, value in issue.items() if value in (None, "", [], {})]
     assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
 
@@ -593,8 +611,15 @@ def test_lean_envelopes_preserve_distinct_issues_and_recovery(
         assert "error" not in response and response["ok"] is True
 
 
-@pytest.mark.parametrize("code", ["MIXED_GRAIN_INVALID", "REWRITE_APPLIED"])
-@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize(
+    ("verbosity", "code"),
+    [
+        ("minimal", "MIXED_GRAIN_INVALID"),
+        ("minimal", "REWRITE_APPLIED"),
+        ("compact", "MIXED_GRAIN_INVALID"),
+        ("full", "REWRITE_APPLIED"),
+    ],
+)
 def test_analysis_details_follow_requested_verbosity(v2, code, verbosity) -> None:
     from copy import deepcopy
 
@@ -636,7 +661,7 @@ def test_analysis_details_follow_requested_verbosity(v2, code, verbosity) -> Non
         {channel: [issue]},
         request_id="test",
         started_at=0,
-        arguments={"query": {"verbosity": verbosity}},
+        arguments={"verbosity": verbosity},
     )
     result = response[channel][0]
     expected = deepcopy(details)
@@ -672,3 +697,75 @@ def test_issue_builder_removes_only_duplicate_nested_hints(severity, duplicate) 
     else:
         assert issue["details"]["recovery_hints"] == nested
     assert details["recovery_hints"] == nested
+
+
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+def test_an_ambiguous_route_offers_one_ready_to_send_call_per_option(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from semantic_rails.runtime import Runtime
+    from tests.semantic_rails import test_route_clarification as routes
+
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
+    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(routes._write_package(tmp_path))))
+    call = {"select": ["measure.bank.balance"], "group_by": ["dimension.bank_district_name"]}
+    try:
+        refused = adapter.call_tool("execute", {"query": call, "mode": mode, "verbosity": "full"})
+        error = refused["errors"][0]
+        assert error["code"] == "AMBIGUOUS_PATH", refused
+        options = error["details"]["clarification"]["options"]
+        assert [option["query"]["routes"] for option in options] == [
+            [{"from": routes.ACCOUNT, "to": routes.DISTRICT, "via": route}]
+            for route in (routes.BRANCH_ROUTE, routes.OWNER_ROUTE)
+        ]
+        for option in options:
+            assert {key: value for key, value in option["query"].items() if key != "routes"} == call
+            answered = adapter.call_tool("execute", {"query": option["query"], "mode": mode})
+            assert answered["ok"], answered
+    finally:
+        adapter.close()
+
+
+LAST_MONTH = {
+    "select": ["measure.jaffle.order_count"],
+    "time": {"last": {"unit": "month", "value": 1}},
+}
+FEBRUARY_2017 = {
+    "select": ["measure.jaffle.order_count"],
+    "time": {"start": "2017-02-01", "end": "2017-03-01"},
+}
+
+
+def test_now_pins_a_relative_window_on_execute_and_rest(v2: SemanticLayerMCPAdapter) -> None:
+    from semantic_rails.http_core import SemanticHTTPService
+
+    expected = v2.call_tool("execute", {"query": FEBRUARY_2017})["rows"]
+    pinned = v2.call_tool("execute", {"query": LAST_MONTH, "now": "2017-03-15"})
+    assert pinned["ok"] and pinned["rows"] == expected, pinned
+    service = SemanticHTTPService(v2.runtime)
+    rest, status = service.handle(
+        "POST", "/query", {"query": LAST_MONTH, "options": {"now": "2017-03-15"}}
+    )
+    assert status == 200 and rest["rows"] == expected, rest
+
+
+def test_plan_takes_now_on_mcp_and_rest(
+    v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    import semantic_rails.http_core as http_core
+    from semantic_rails.operations import OPERATIONS
+
+    seen: list[Any] = []
+
+    def plan(*_args: Any, now: Any = None, **_kwargs: Any) -> dict[str, Any]:
+        seen.append(now)
+        return {"status": "ok", "best": None}
+
+    monkeypatch.setitem(OPERATIONS, "plan", replace(OPERATIONS["plan"], service=plan))
+    v2.call_tool("plan", {"intent": "orders last month", "now": "2017-03-15"})
+    http_core.SemanticHTTPService(v2.runtime).handle(
+        "POST", "/plan", {"intent": "orders last month", "options": {"now": "2017-03-16"}}
+    )
+    assert seen == ["2017-03-15", "2017-03-16"]

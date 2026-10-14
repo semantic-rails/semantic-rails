@@ -432,17 +432,14 @@ def test_relation_pipeline_executes_json_explode_date_spine_and_union(tmp_path: 
     try:
         tag_rows = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"as": "rows", "expression": {"metric": "metric.reldemo.account_tag_rows"}}
-                ],
+                "select": [{"as": "rows", "expression": "metric.reldemo.account_tag_rows"}],
                 "group_by": ["dimension.reldemo_account_tag_day_tag"],
                 "time": {
                     "temporal_role": "temporal_role.reldemo_account_tag_day_date_day",
                     "grain": "day",
                 },
                 "order_by": [
-                    {"field": "dimension.reldemo_account_tag_day_tag", "direction": "ASC"}
+                    {"field": "dimension.reldemo_account_tag_day_tag", "direction": "asc"}
                 ],
             }
         )
@@ -454,8 +451,7 @@ def test_relation_pipeline_executes_json_explode_date_spine_and_union(tmp_path: 
 
         sends = runtime.query(
             {
-                "version": 1,
-                "select": [{"as": "sends", "expression": {"metric": "metric.reldemo.sends"}}],
+                "select": ["metric.reldemo.sends"],
                 "group_by": ["dimension.reldemo_send_channel"],
                 "time": {"temporal_role": "temporal_role.reldemo_send_sent_at", "grain": "day"},
             }
@@ -469,10 +465,7 @@ def test_relation_pipeline_executes_json_explode_date_spine_and_union(tmp_path: 
 
         matches = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"as": "matched", "expression": {"metric": "metric.reldemo.matched_signups"}}
-                ],
+                "select": [{"as": "matched", "expression": "metric.reldemo.matched_signups"}],
                 "group_by": ["dimension.reldemo_signup_match_account_id"],
                 "time": {
                     "temporal_role": "temporal_role.reldemo_signup_match_signed_at",
@@ -498,10 +491,7 @@ def test_relation_ctes_are_dependency_pruned_and_ordered(tmp_path: Path, monkeyp
     try:
         physical = runtime.compile(
             {
-                "version": 1,
-                "select": [
-                    {"as": "rows", "expression": {"metric": "metric.reldemo.raw_account_rows"}}
-                ],
+                "select": [{"as": "rows", "expression": "metric.reldemo.raw_account_rows"}],
                 "time": {
                     "temporal_role": "temporal_role.reldemo_account_state_valid_from",
                     "grain": "day",
@@ -513,10 +503,7 @@ def test_relation_ctes_are_dependency_pruned_and_ordered(tmp_path: Path, monkeyp
 
         tag_daily = runtime.compile(
             {
-                "version": 1,
-                "select": [
-                    {"as": "rows", "expression": {"metric": "metric.reldemo.account_tag_rows"}}
-                ],
+                "select": [{"as": "rows", "expression": "metric.reldemo.account_tag_rows"}],
                 "group_by": ["dimension.reldemo_account_tag_day_tag"],
                 "time": {
                     "temporal_role": "temporal_role.reldemo_account_tag_day_date_day",
@@ -544,10 +531,7 @@ def test_relation_anti_join_and_date_add_execute_with_typed_sql(tmp_path: Path, 
     try:
         result = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"as": "rows", "expression": {"metric": "metric.reldemo.eligible_account_rows"}}
-                ],
+                "select": [{"as": "rows", "expression": "metric.reldemo.eligible_account_rows"}],
                 "time": {
                     "temporal_role": "temporal_role.reldemo_eligible_account_state_next_valid_from",
                     "grain": "day",
@@ -556,9 +540,7 @@ def test_relation_anti_join_and_date_add_execute_with_typed_sql(tmp_path: Path, 
         )
         assert result["row_count"] == 1
         assert result["rows"][0]["rows"] == 1
-        assert str(
-            result["rows"][0]["temporal_role.reldemo_eligible_account_state_next_valid_from__day"]
-        ).startswith("2024-01-02")
+        assert str(result["rows"][0]["period"]).startswith("2024-01-02")
         rendered = result["explain"]["rendered_sql"]
         assert "NOT EXISTS" in rendered
         assert "DATE_ADD(src.valid_from, INTERVAL (1) DAY)" in rendered
@@ -638,8 +620,7 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
     try:
         physical = runtime.query(
             {
-                "version": 1,
-                "select": [{"as": "rows", "expression": {"metric": "metric.cycle.physical_rows"}}],
+                "select": [{"as": "rows", "expression": "metric.cycle.physical_rows"}],
             }
         )
         assert physical["rows"] == [{"rows": 1}]
@@ -647,8 +628,7 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
         with pytest.raises(SemanticLayerError) as exc:
             runtime.compile(
                 {
-                    "version": 1,
-                    "select": [{"as": "rows", "expression": {"metric": "metric.cycle.cycle_rows"}}],
+                    "select": [{"as": "rows", "expression": "metric.cycle.cycle_rows"}],
                 }
             )
         assert exc.value.code == "INVALID_CONFIG"

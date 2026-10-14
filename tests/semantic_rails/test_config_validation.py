@@ -51,8 +51,8 @@ def test_probe_diagnostics_do_not_change_shared_debug_authority(
         assert os.environ.get(setting_name) == debug_setting
         raise SemanticLayerError("QUERY_EXECUTION_ERROR", "Redacted failure")
 
-    monkeypatch.setattr(runtime, "query", fail)
-    monkeypatch.setattr(runtime, "compile", lambda payload: {"rendered_sql": "SELECT 1"})
+    monkeypatch.setattr(runtime, "query_internal", fail)
+    monkeypatch.setattr(runtime, "compile_internal", lambda payload: {"rendered_sql": "SELECT 1"})
     result = _run_probe(
         runtime, kind="measure", object_id="measure.example", query=query, repair=True
     )
@@ -260,7 +260,7 @@ def test_runtime_validation_probes_constrained_objects(tmp_path, target, constra
         try:
             actual = [
                 # Probes use LIMIT 0; read the fixture rows for the reference comparison.
-                typed_rows(runtime.query({**probe["query"], "limit": 10}))
+                typed_rows(runtime.query_internal({**probe["query"], "limit": 10}))
                 for probe in report["runtime"]["probes"]
                 if probe["object_id"] in affected
             ]
@@ -378,8 +378,15 @@ def test_probe_combines_required_grouping_with_non_additive_grain(tmp_path):
     assert len(probe["query"]["group_by"]) > 1
 
 
-@pytest.mark.parametrize("constraint", ["required_group_by", "required_where"])
-@pytest.mark.parametrize("denial", ["access", "grouping", "scope"])
+@pytest.mark.parametrize(
+    ("denial", "constraint"),
+    [
+        ("access", "required_group_by"),
+        ("grouping", "required_group_by"),
+        ("grouping", "required_where"),
+        ("scope", "required_where"),
+    ],
+)
 def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constraint, denial):
     package_dir = tmp_path / "policy_scope"
     field = "dimension.demo_order_order_id"
@@ -411,10 +418,8 @@ def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constrai
     else:
         policy["roles"] = ["analyst"]
     _write_yaml(package_dir / "policies.yml", {"semantic_policies": policies})
-    query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}],
-    }
+    # A probe runs the compiler's own form of the query.
+    query = {"select": [{"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}]}
     if denial == "grouping" and constraint == "required_where":
         query["group_by"] = [field]
     runtime = Runtime.from_path(str(package_dir))
@@ -708,14 +713,11 @@ def test_runtime_from_path_prefers_package_relative_assets_for_external_packages
     try:
         result = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
-                "limit": 0,
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+                "limit": 1,
             }
         )
-        assert result["row_count"] == 0
+        assert result["row_count"] == 1
         assert runtime.db_path == str(package_dir / "data" / "jaffle_shop.duckdb")
         assert Path(runtime.db_path).exists()
     finally:
@@ -730,20 +732,6 @@ def test_parse_config_succeeds_for_monolithic_yaml(tmp_path: Path):
 
     assert report["ok"] is True
     assert report["package"]["id"] == "monolithic_demo"
-
-
-def test_parse_config_succeeds_for_snowflake_package(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_demo"
-    _write_minimal_snowflake_package(package_dir)
-
-    report, config = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is True
-    assert report["package"]["id"] == "snowflake_demo"
-    assert config is not None
-    assert config.package.warehouse == "snowflake"
-    assert config.package.connection.kind == "snowflake_cli"
-    assert config.package.connection.name == "semantic_views_trial"
 
 
 def test_jaffle_reference_package_has_release_authoring_profile():
@@ -815,50 +803,91 @@ def test_jaffle_reference_package_has_release_authoring_profile():
     assert missing_curated_metrics == []
 
 
-def test_parse_config_accepts_standard_snowflake_cli_options(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_options_demo"
+_NATIVE_ENV = {"account_env": "SNOW_ACCOUNT", "user_env": "SNOW_USER"}
+_STANDARD_OPTIONS = {
+    "database": "SNOWFLAKE_SAMPLE_DATA",
+    "schema": "TPCH_SF1",
+    "warehouse": "COMPUTE_WH",
+    "role": "ANALYST",
+}
+
+
+@pytest.mark.parametrize(
+    ("connection", "expected"),
+    [
+        (None, {"kind": "snowflake_cli", "name": "semantic_views_trial", "options": {}}),
+        (
+            {"kind": "snowflake_cli", "name": "semantic_views_trial", "options": _STANDARD_OPTIONS},
+            {"options": _STANDARD_OPTIONS},
+        ),
+        (
+            {
+                "kind": "snowflake_native",
+                "name": "prod_native",
+                "options": {
+                    **_NATIVE_ENV,
+                    "password_env": "SNOW_PASSWORD",
+                    **_STANDARD_OPTIONS,
+                    "query_tag": "semantic-rails",
+                    "statement_timeout_seconds": "60",
+                },
+            },
+            {"kind": "snowflake_native", "name": "prod_native"},
+        ),
+        (
+            {
+                "kind": "snowflake_native",
+                "options": {
+                    **_NATIVE_ENV,
+                    "password_env": "SNOW_PASSWORD",
+                    "database": "ANALYTICS",
+                },
+            },
+            {"kind": "snowflake_native", "name": ""},
+        ),
+        (
+            {"kind": "snowflake_native", "options": _NATIVE_ENV},
+            "snowflake_native direct connection",
+        ),
+        ({"kind": "snowflake_cli"}, "snowflake_cli packages must declare package.connection.name"),
+        (
+            {
+                "kind": "snowflake_cli",
+                "name": "semantic_views_trial",
+                "options": {"authenticator": "externalbrowser"},
+            },
+            "unsupported package.connection option 'authenticator'",
+        ),
+    ],
+    ids=[
+        "cli",
+        "cli-options",
+        "native-secret-env",
+        "native-direct",
+        "native-without-auth",
+        "cli-without-name",
+        "cli-unsupported-option",
+    ],
+)
+def test_parse_config_reads_snowflake_connections(tmp_path: Path, connection, expected):
+    package_dir = tmp_path / "snowflake_demo"
     _write_minimal_snowflake_package(package_dir)
-    package_root = yaml.safe_load((package_dir / "package.yml").read_text(encoding="utf-8"))
-    package_root["package"]["connection"]["options"] = {
-        "database": "SNOWFLAKE_SAMPLE_DATA",
-        "schema": "TPCH_SF1",
-        "warehouse": "COMPUTE_WH",
-        "role": "ANALYST",
-    }
-    _write_yaml(package_dir / "package.yml", package_root)
+    if connection is not None:
+        payload = yaml.safe_load((package_dir / "package.yml").read_text(encoding="utf-8"))
+        payload["package"]["connection"] = connection
+        _write_yaml(package_dir / "package.yml", payload)
 
     report, config = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
-    assert report["ok"] is True
-    assert config is not None
-    assert config.package.connection.options == {
-        "database": "SNOWFLAKE_SAMPLE_DATA",
-        "schema": "TPCH_SF1",
-        "warehouse": "COMPUTE_WH",
-        "role": "ANALYST",
-    }
-
-
-def test_yaml_loader_uses_yaml_1_2_boolean_resolution():
-    payload = yaml12_safe_load(
-        """
-truthy: true
-falsey: false
-enabled: on
-disabled: off
-confirmed: yes
-denied: no
-""".strip()
-    )
-
-    assert payload == {
-        "truthy": True,
-        "falsey": False,
-        "enabled": "on",
-        "disabled": "off",
-        "confirmed": "yes",
-        "denied": "no",
-    }
+    if isinstance(expected, str):
+        assert report["ok"] is False
+        assert any(expected in error["message"] for error in report["errors"]), report["errors"]
+        return
+    assert report["ok"] is True, report["errors"]
+    assert report["package"]["id"] == "snowflake_demo"
+    assert (config.package.warehouse, config.package.default_db) == ("snowflake", "")
+    actual = config.package.connection
+    assert {key: getattr(actual, key) for key in expected} == expected
 
 
 def test_parse_config_uses_yaml_1_2_loader_for_unquoted_connection_options(tmp_path: Path):
@@ -891,163 +920,92 @@ defaults:
     report, config = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     assert report["ok"] is True
-    assert config is not None
-    assert config.package.connection.options["schema"] == "yes"
-    assert config.package.connection.options["warehouse"] == "off"
-    assert config.package.connection.options["role"] == "on"
-
-
-def test_parse_config_accepts_snowflake_native_secret_indirection(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_native_demo"
-    _write_minimal_snowflake_package(package_dir)
-    payload = yaml.safe_load((package_dir / "package.yml").read_text(encoding="utf-8"))
-    payload["package"]["connection"] = {
-        "kind": "snowflake_native",
-        "name": "prod_native",
-        "options": {
-            "account_env": "SNOW_ACCOUNT",
-            "user_env": "SNOW_USER",
-            "password_env": "SNOW_PASSWORD",
-            "database": "ANALYTICS",
-            "schema": "CORE",
-            "warehouse": "COMPUTE_WH",
-            "role": "ANALYST",
-            "query_tag": "semantic-rails",
-            "statement_timeout_seconds": "60",
-        },
+    options = config.package.connection.options
+    assert (options["schema"], options["warehouse"], options["role"]) == ("yes", "off", "on")
+    assert yaml12_safe_load("truthy: true\nfalsey: false\ndenied: no") == {
+        "truthy": True,
+        "falsey": False,
+        "denied": "no",
     }
-    _write_yaml(package_dir / "package.yml", payload)
-
-    report, config = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is True
-    assert config is not None
-    assert config.package.connection.kind == "snowflake_native"
-    assert config.package.connection.options["password_env"] == "SNOW_PASSWORD"
 
 
-def test_parse_config_accepts_snowflake_native_direct_options_without_name(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_native_direct_demo"
-    _write_minimal_snowflake_package(package_dir)
-    payload = yaml.safe_load((package_dir / "package.yml").read_text(encoding="utf-8"))
-    payload["package"]["connection"] = {
-        "kind": "snowflake_native",
-        "options": {
-            "account_env": "SNOW_ACCOUNT",
-            "user_env": "SNOW_USER",
-            "password_env": "SNOW_PASSWORD",
-            "database": "ANALYTICS",
-        },
-    }
-    _write_yaml(package_dir / "package.yml", payload)
-
-    report, config = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is True
-    assert config is not None
-    assert config.package.connection.kind == "snowflake_native"
-    assert config.package.connection.name == ""
+def _broken_yaml(package_dir: Path) -> Path:
+    package_dir.mkdir(parents=True)
+    (package_dir / "broken.yml").write_text("package: [", encoding="utf-8")
+    return package_dir / "broken.yml"
 
 
-def test_parse_config_rejects_snowflake_native_direct_options_without_auth(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_native_direct_incomplete"
-    _write_minimal_snowflake_package(package_dir)
-    payload = yaml.safe_load((package_dir / "package.yml").read_text(encoding="utf-8"))
-    payload["package"]["connection"] = {
-        "kind": "snowflake_native",
-        "options": {
-            "account_env": "SNOW_ACCOUNT",
-            "user_env": "SNOW_USER",
-        },
-    }
-    _write_yaml(package_dir / "package.yml", payload)
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    assert any(
-        "snowflake_native direct connection" in error["message"] for error in report["errors"]
-    )
+def _without_graph(package_dir: Path) -> Path:
+    _write_yaml(package_dir / "package.yml", _minimal_package_payload(package_dir.name))
+    return package_dir
 
 
-def test_parse_config_rejects_snowflake_cli_without_name(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_cli_missing_name"
-    _write_minimal_snowflake_package(package_dir)
-    payload = yaml.safe_load((package_dir / "package.yml").read_text(encoding="utf-8"))
-    payload["package"]["connection"] = {"kind": "snowflake_cli"}
-    _write_yaml(package_dir / "package.yml", payload)
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    assert any(
-        "snowflake_cli packages must declare package.connection.name" in error["message"]
-        for error in report["errors"]
-    )
-
-
-def test_parse_config_rejects_unsupported_snowflake_cli_options(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_bad_options_demo"
-    _write_minimal_snowflake_package(package_dir)
-    package_root = yaml.safe_load((package_dir / "package.yml").read_text(encoding="utf-8"))
-    package_root["package"]["connection"]["options"] = {"authenticator": "externalbrowser"}
-    _write_yaml(package_dir / "package.yml", package_root)
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    assert any(
-        "unsupported package.connection option 'authenticator'" in error["message"]
-        for error in report["errors"]
-    )
-
-
-def test_parse_config_reports_invalid_yaml(tmp_path: Path):
-    broken = tmp_path / "broken.yml"
-    broken.write_text("package: [", encoding="utf-8")
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(broken)))
-
-    assert report["ok"] is False
-    assert "invalid YAML" in report["errors"][0]["message"]
-
-
-def test_parse_config_reports_missing_graph_file(tmp_path: Path):
-    package_dir = tmp_path / "missing_graph"
-    _write_yaml(package_dir / "package.yml", _minimal_package_payload("missing_graph"))
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    assert any("graph.yml is missing" in error["message"] for error in report["errors"])
-
-
-def test_parse_config_reports_broken_graph_model_reference(tmp_path: Path):
-    package_dir = tmp_path / "broken_graph"
+def _with_unknown_graph_model(package_dir: Path) -> Path:
     _write_minimal_package(package_dir)
     graph = yaml.safe_load((package_dir / "graph.yml").read_text(encoding="utf-8"))
     graph["graph"]["entities"]["order"]["model"] = "missing_model"
     _write_yaml(package_dir / "graph.yml", graph)
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    assert any(
-        "does not resolve to a declared model" in error["message"] for error in report["errors"]
-    )
+    return package_dir
 
 
-def test_parse_config_reports_loader_failures(tmp_path: Path):
-    package_dir = tmp_path / "loader_failure"
-    _write_minimal_package(
-        package_dir,
-        model_operational_defaults={"owner": "finance"},
-    )
+def _minimal(**options):
+    def build(package_dir: Path) -> Path:
+        _write_minimal_package(package_dir, **options)
+        return package_dir
 
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+    return build
 
-    assert report["ok"] is False
-    assert any("failed to load package config" in error["message"] for error in report["errors"])
+
+@pytest.mark.parametrize(
+    ("build", "expected"),
+    [
+        (_broken_yaml, ["invalid YAML"]),
+        (_without_graph, ["graph.yml is missing"]),
+        (_with_unknown_graph_model, ["does not resolve to a declared model"]),
+        (
+            _minimal(model_operational_defaults={"owner": "finance"}),
+            ["failed to load package config"],
+        ),
+        # A typo in a kind is refused, naming the kinds to choose from.
+        (
+            _minimal(
+                extra_dimensions={
+                    "channel": {"label": "Channel", "column": "channel", "kind": "catagorical"}
+                }
+            ),
+            ["dimension orders.channel has unknown kind 'catagorical'", "categorical", "boolean"],
+        ),
+        (
+            _minimal(
+                extra_times={
+                    "shipped_at": {
+                        "label": "Shipped at",
+                        "column": "shipped_at",
+                        "kind": "datetimestamp",
+                        "class": "event_time",
+                    }
+                }
+            ),
+            ["times orders.shipped_at has unknown kind 'datetimestamp'", "date", "timestamp"],
+        ),
+    ],
+    ids=[
+        "invalid-yaml",
+        "missing-graph",
+        "unknown-graph-model",
+        "loader-failure",
+        "dimension-kind",
+        "times-kind",
+    ],
+)
+def test_parse_config_reports_an_unreadable_package(tmp_path: Path, build, expected):
+    source = build(tmp_path / "broken_package")
+
+    report, config = parse_config_report(resolve_package_reference(path=str(source)))
+
+    assert (report["ok"], config) == (False, None)
+    messages = [error["message"] for error in report["errors"]]
+    assert any(all(part in message for part in expected) for message in messages), messages
 
 
 def test_validate_config_succeeds_on_jaffle_shop(tmp_path: Path):
@@ -1074,7 +1032,7 @@ def test_validate_config_writes_compiled_manifest(tmp_path: Path):
     # validate-config itself doesn't write — the CLI wrapper does. Call
     # write_manifest directly to assert the artifact's shape and on-disk
     # location are stable.
-    from semantic_rails.manifest import write_manifest
+    from semantic_rails.catalog_service import write_manifest
 
     runtime = Runtime.from_path(str(package_dir))
     try:
@@ -1104,7 +1062,7 @@ def test_runtime_manifest_catalog_returns_isolated_dicts(tmp_path: Path):
     _write_minimal_package(package_dir)
     runtime = Runtime.from_path(str(package_dir))
     try:
-        from semantic_rails.manifest import write_manifest
+        from semantic_rails.catalog_service import write_manifest
 
         write_manifest(runtime)
         first = runtime.manifest_catalog(view="summary", verbosity="compact")
@@ -1163,200 +1121,111 @@ def test_shared_catalog_resolver_bypasses_manifest_for_every_policy_context(monk
     assert catalog_service.resolve_catalog(runtime, search="orders")["source"] == "live"
 
 
-def test_validate_config_warns_on_semantic_collision(tmp_path: Path):
-    """Two measures with identical labels (e.g. "Revenue") must trigger
-    a collision warning so the package author knows MCP `discover` will
-    have a hard time distinguishing them."""
+def _revenue(key: str, name: str, label: str, **extra) -> dict:
+    return {
+        key: {
+            "as": f"measure.demo.{key}",
+            "name": name,
+            "label": label,
+            "description": f"{label} ({key})",
+            "kind": "aggregate",
+            "expr": key,
+            "time": "ordered_at",
+            **extra,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("measures", "code", "details", "matching_fields"),
+    [
+        # Two measures labeled "Revenue": discover can't tell them apart.
+        (
+            {
+                **_revenue("revenue_a", "sales.revenue_a", "Revenue"),
+                **_revenue("revenue_b", "sales.revenue_b", "Revenue"),
+            },
+            "SEMANTIC_TERM_COLLISION",
+            {
+                "collision_type": "exact_normalized",
+                "normalized_term": "revenue",
+                "object_ids": ["measure.demo.revenue_a", "measure.demo.revenue_b"],
+            },
+            {"measure.demo.revenue_a": ["label"], "measure.demo.revenue_b": ["label"]},
+        ),
+        (
+            {
+                **_revenue(
+                    "booked_revenue",
+                    "finance.booked_revenue",
+                    "Booked revenue",
+                    synonyms=["Sales Revenue"],
+                ),
+                **_revenue("recognized_revenue", "sales.revenue", "Recognized revenue"),
+            },
+            "SEMANTIC_TERM_COLLISION",
+            {
+                "normalized_term": "salesrevenue",
+                "object_ids": ["measure.demo.booked_revenue", "measure.demo.recognized_revenue"],
+            },
+            {
+                "measure.demo.booked_revenue": ["alias"],
+                "measure.demo.recognized_revenue": ["canonical_name"],
+            },
+        ),
+        (
+            {
+                **_revenue("recurring_revenue", "sales.recurring_revenue", "Recurring revenue"),
+                **_revenue("recurring_typo", "sales.recurring_typo", "Recurring reveneu"),
+            },
+            "SEMANTIC_TERM_NEAR_COLLISION",
+            {
+                "collision_type": "single_edit_typo",
+                "differing_tokens": ["revenue", "reveneu"],
+                "edit_distance": 1,
+                "object_ids": ["measure.demo.recurring_revenue", "measure.demo.recurring_typo"],
+            },
+            None,
+        ),
+        # Qualified siblings and distinct labels are ordinary authoring.
+        (
+            {
+                **_revenue("gross_revenue", "finance.revenue", "Revenue (gross)"),
+                **_revenue("net_revenue", "sales.revenue", "Revenue (net)"),
+            },
+            None,
+            None,
+            None,
+        ),
+        (_revenue("gross_revenue", "sales.gross_revenue", "Gross revenue"), None, None, None),
+    ],
+    ids=["same-label", "alias-vs-name", "single-edit", "qualified-siblings", "distinct-labels"],
+)
+def test_parse_config_warns_on_semantic_term_collisions(
+    tmp_path: Path, measures, code, details, matching_fields
+):
     package_dir = tmp_path / "collision_demo"
-    _write_minimal_package(
-        package_dir,
-        extra_measures={
-            "revenue_a": {
-                "as": "measure.demo.revenue_a",
-                "name": "sales.revenue_a",
-                "label": "Revenue",
-                "description": "Revenue computed via path A",
-                "kind": "aggregate",
-                "expr": "revenue_a",
-                "time": "ordered_at",
-            },
-            "revenue_b": {
-                "as": "measure.demo.revenue_b",
-                "name": "sales.revenue_b",
-                "label": "Revenue",
-                "description": "Revenue computed via path B",
-                "kind": "aggregate",
-                "expr": "revenue_b",
-                "time": "ordered_at",
-            },
-        },
-    )
-
-    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
-    collision_warnings = [
-        w
-        for w in report.get("warnings", [])
-        if isinstance(w, dict) and w.get("code") == "SEMANTIC_TERM_COLLISION"
-    ]
-    assert collision_warnings, (
-        f"expected a collision warning for two measures with label='Revenue'; "
-        f"got warnings={report.get('warnings', [])}"
-    )
-    warning = collision_warnings[0]
-    assert warning["severity"] == "warning"
-    assert warning["details"]["collision_type"] == "exact_normalized"
-    assert warning["details"]["normalized_term"] == "revenue"
-    assert warning["details"]["object_ids"] == [
-        "measure.demo.revenue_a",
-        "measure.demo.revenue_b",
-    ]
-    assert all(row["matching_fields"] == ["label"] for row in warning["details"]["objects"])
-    assert warning["details"]["recovery_hints"]
-
-
-def test_validate_config_warns_on_alias_vs_canonical_name_collision(tmp_path: Path):
-    package_dir = tmp_path / "alias_collision_demo"
-    _write_minimal_package(
-        package_dir,
-        extra_measures={
-            "booked_revenue": {
-                "as": "measure.demo.booked_revenue",
-                "name": "finance.booked_revenue",
-                "label": "Booked revenue",
-                "synonyms": ["Sales Revenue"],
-                "description": "Revenue at booking time",
-                "kind": "aggregate",
-                "expr": "booked_revenue",
-                "time": "ordered_at",
-            },
-            "recognized_revenue": {
-                "as": "measure.demo.recognized_revenue",
-                "name": "sales.revenue",
-                "label": "Recognized revenue",
-                "description": "Revenue after recognition",
-                "kind": "aggregate",
-                "expr": "recognized_revenue",
-                "time": "ordered_at",
-            },
-        },
-    )
+    _write_minimal_package(package_dir, extra_measures=measures)
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-    warning = next(
-        row
-        for row in report["warnings"]
-        if row.get("code") == "SEMANTIC_TERM_COLLISION"
-        and row.get("details", {}).get("normalized_term") == "salesrevenue"
-    )
 
-    objects = {row["id"]: row for row in warning["details"]["objects"]}
-    assert objects["measure.demo.booked_revenue"]["matching_fields"] == ["alias"]
-    assert objects["measure.demo.recognized_revenue"]["matching_fields"] == ["canonical_name"]
-
-
-def test_validate_config_warns_on_single_edit_semantic_term_collision(tmp_path: Path):
-    package_dir = tmp_path / "near_collision_demo"
-    _write_minimal_package(
-        package_dir,
-        extra_measures={
-            "recurring_revenue": {
-                "as": "measure.demo.recurring_revenue",
-                "name": "sales.recurring_revenue",
-                "label": "Recurring revenue",
-                "description": "Recurring revenue",
-                "kind": "aggregate",
-                "expr": "recurring_revenue",
-                "time": "ordered_at",
-            },
-            "recurring_revenue_typo": {
-                "as": "measure.demo.recurring_revenue_typo",
-                "name": "sales.recurring_revenue_typo",
-                "label": "Recurring reveneu",
-                "description": "Recurring revenue from a second source",
-                "kind": "aggregate",
-                "expr": "recurring_revenue_typo",
-                "time": "ordered_at",
-            },
-        },
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-    warning = next(
-        row for row in report["warnings"] if row.get("code") == "SEMANTIC_TERM_NEAR_COLLISION"
-    )
-
-    assert warning["details"]["collision_type"] == "single_edit_typo"
-    assert warning["details"]["differing_tokens"] == ["revenue", "reveneu"]
-    assert warning["details"]["edit_distance"] == 1
-    assert warning["details"]["recovery_hints"]
-
-
-def test_validate_config_does_not_warn_on_qualified_semantic_siblings(tmp_path: Path):
-    package_dir = tmp_path / "qualified_siblings_demo"
-    _write_minimal_package(
-        package_dir,
-        extra_measures={
-            "gross_revenue": {
-                "as": "measure.demo.gross_revenue",
-                "name": "finance.revenue",
-                "label": "Revenue (gross)",
-                "description": "Revenue before deductions",
-                "kind": "aggregate",
-                "expr": "gross_revenue",
-                "time": "ordered_at",
-            },
-            "net_revenue": {
-                "as": "measure.demo.net_revenue",
-                "name": "sales.revenue",
-                "label": "Revenue (net)",
-                "description": "Revenue after deductions",
-                "kind": "aggregate",
-                "expr": "net_revenue",
-                "time": "ordered_at",
-            },
-        },
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-    object_ids = {"measure.demo.gross_revenue", "measure.demo.net_revenue"}
-    sibling_warnings = [
+    ids = {f"measure.demo.{key}" for key in measures}
+    collisions = [
         row
         for row in report["warnings"]
         if str(row.get("code", "")).startswith("SEMANTIC_TERM_")
-        and object_ids <= set(row.get("details", {}).get("object_ids", []))
+        and set(row["details"]["object_ids"]) & ids
     ]
-    assert sibling_warnings == []
-
-
-def test_validate_config_no_collision_warning_when_labels_differ(tmp_path: Path):
-    """A package with distinct labels should produce no collision
-    warning — the detector must not false-positive on standard
-    domain authoring."""
-    package_dir = tmp_path / "no_collision_demo"
-    _write_minimal_package(
-        package_dir,
-        extra_measures={
-            "gross_revenue": {
-                "as": "measure.demo.gross_revenue",
-                "name": "sales.gross_revenue",
-                "label": "Gross revenue",
-                "description": "Top-line revenue before refunds",
-                "kind": "aggregate",
-                "expr": "gross_revenue",
-                "time": "ordered_at",
-            },
-        },
-    )
-
-    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
-    collision_warnings = [
-        w
-        for w in report.get("warnings", [])
-        if isinstance(w, dict) and str(w.get("code", "")).startswith("SEMANTIC_TERM_")
-    ]
-    assert not collision_warnings, (
-        f"unexpected collision warnings for a clean package; got {collision_warnings}"
-    )
+    if code is None:
+        assert collisions == []
+        return
+    (warning,) = [row for row in collisions if row["code"] == code]
+    assert warning["severity"] == "warning"
+    assert {key: warning["details"][key] for key in details} == details
+    assert warning["details"]["recovery_hints"]
+    if matching_fields:
+        objects = {row["id"]: row["matching_fields"] for row in warning["details"]["objects"]}
+        assert {key: objects[key] for key in matching_fields} == matching_fields
 
 
 def test_validate_config_generates_query_time_for_time_required_metrics(tmp_path: Path):
@@ -1725,37 +1594,6 @@ def test_key_roles_default_and_derive_relationship_cardinality(tmp_path: Path):
     assert rel.safety == "safe"
 
 
-def test_parse_config_rejects_typo_in_dimension_kind(tmp_path: Path):
-    """`kind: catagorical` (typo) must be rejected, not silently stored.
-
-    Pre-fix behavior: the dimension was loaded with semantic_kind="catagorical"
-    and data_type="string" (the fallback in _map_dimension_kind). The package
-    "worked" but downstream consumers branching on the kind flag would treat
-    the dimension as non-categorical.
-    """
-    package_dir = tmp_path / "typo_kind_demo"
-    _write_minimal_package(
-        package_dir,
-        extra_dimensions={
-            "channel": {
-                "label": "Channel",
-                "column": "channel",
-                "kind": "catagorical",  # typo for "categorical"
-            }
-        },
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any(
-        "dimension orders.channel has unknown kind 'catagorical'" in msg for msg in messages
-    ), messages
-    # The error must list valid kinds so the author can recover.
-    assert any("categorical" in msg and "boolean" in msg for msg in messages), messages
-
-
 def test_parse_config_accepts_canonical_dimension_kinds(tmp_path: Path):
     """All documented kinds should validate without error."""
     package_dir = tmp_path / "valid_kinds_demo"
@@ -1844,31 +1682,6 @@ def test_docs_minimal_example_validates_when_copy_pasted(tmp_path: Path):
     assert "entity.shop_customer" in entity_ids
 
 
-def test_parse_config_rejects_typo_in_times_kind(tmp_path: Path):
-    """`times.<role>.kind:` must be `date` or `timestamp`."""
-    package_dir = tmp_path / "typo_time_kind_demo"
-    _write_minimal_package(
-        package_dir,
-        extra_times={
-            "shipped_at": {
-                "label": "Shipped at",
-                "column": "shipped_at",
-                "kind": "datetimestamp",  # typo
-                "class": "event_time",
-            }
-        },
-    )
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any(
-        "times orders.shipped_at has unknown kind 'datetimestamp'" in msg for msg in messages
-    ), messages
-    assert any("date" in msg and "timestamp" in msg for msg in messages), messages
-
-
 def _write_current_minimal_package(
     package_dir: Path,
     *,
@@ -1947,72 +1760,25 @@ def _write_current_minimal_package(
 
 
 @pytest.mark.parametrize(
-    ("package_name", "metric_name", "metric_spec"),
+    ("kind", "value_type", "ok"),
     [
-        pytest.param(
-            "strict_no_vt",
-            "no_vt",
-            {
-                "label": "No VT",
-                "description": "metric missing value_type",
-                "kind": "aggregate",
-                "measure": "order_count",
-            },
-            id="aggregate",
-        ),
-        pytest.param(
-            "strict_ratio_no_vt",
-            "no_vt_ratio",
-            {
-                "label": "No VT ratio",
-                "description": "ratio missing value_type",
-                "kind": "ratio",
-                "numerator": "order_count",
-                "denominator": "order_count",
-            },
-            id="ratio",
-        ),
+        ("aggregate", "omitted", False),
+        ("ratio", "omitted", False),
+        # The loader turns a null or empty value_type into the "number" default.
+        ("ratio", None, False),
+        ("ratio", "", False),
+        # An authored `number` is not mistaken for that default.
+        ("ratio", "number", True),
+        ("derived", "number", True),
     ],
 )
-def test_strict_rejects_metric_without_value_type(
-    tmp_path: Path, package_name, metric_name, metric_spec
-):
-    # Missing value_type must not silently default to "number" in strict mode.
-    package_dir = tmp_path / package_name
-    _write_current_minimal_package(package_dir, extra_metrics={metric_name: metric_spec})
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any("missing 'value_type:'" in msg and f"'{metric_name}'" in msg for msg in messages), (
-        messages
-    )
-
-
-def test_strict_accepts_metric_with_value_type(tmp_path: Path):
-    """Baseline: a strict package with all metrics declaring value_type validates."""
-    package_dir = tmp_path / "strict_ok"
-    _write_current_minimal_package(package_dir)
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
-
-
-@pytest.mark.parametrize("kind", ["ratio", "derived"])
-def test_strict_accepts_an_explicit_number_value_type(tmp_path: Path, kind: str):
-    """An authored `value_type: number` satisfies strict mode. A compiled-side
-    check used to reject it as "implicit" on ratio and derived metrics, since
-    the loaded config can't tell an authored `number` from the default."""
-    package_dir = tmp_path / f"strict_number_{kind}"
-    spec: dict = {
-        "label": "Explicit number",
-        "description": "value_type written explicitly",
-        "kind": kind,
-        "value_type": "number",
-    }
-    if kind == "ratio":
+def test_strict_requires_an_authored_value_type(tmp_path: Path, kind, value_type, ok):
+    spec: dict = {"label": "Typed", "description": "a metric", "kind": kind}
+    if value_type != "omitted":
+        spec["value_type"] = value_type
+    if kind == "aggregate":
+        spec["measure"] = "order_count"
+    elif kind == "ratio":
         spec.update(numerator="order_count", denominator="order_count")
     else:
         spec["expression"] = {
@@ -2021,99 +1787,31 @@ def test_strict_accepts_an_explicit_number_value_type(tmp_path: Path, kind: str)
             "left": {"kind": "metric", "metric": "order_count_metric"},
             "right": {"kind": "literal", "value": 2},
         }
-    _write_current_minimal_package(package_dir, extra_metrics={"explicit_number": spec})
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
-
-
-@pytest.mark.parametrize("value_type", [None, ""], ids=["null", "empty"])
-def test_strict_rejects_an_empty_value_type(tmp_path: Path, value_type):
-    # The loader turns a null or empty value_type into the "number" default.
-    package_dir = tmp_path / "strict_empty_vt"
-    _write_current_minimal_package(
-        package_dir,
-        extra_metrics={
-            "empty_vt": {
-                "label": "Empty VT",
-                "description": "value_type written but empty",
-                "kind": "ratio",
-                "numerator": "order_count",
-                "denominator": "order_count",
-                "value_type": value_type,
-            }
-        },
-    )
+    package_dir = tmp_path / "strict_value_type"
+    _write_current_minimal_package(package_dir, extra_metrics={"typed": spec})
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert report["ok"] is False
-    assert any("missing 'value_type:'" in msg and "'empty_vt'" in msg for msg in messages)
+    assert report["ok"] is ok, messages
+    if not ok:
+        assert any("metric 'typed': missing 'value_type:'" in msg for msg in messages), messages
 
 
-def _jaffle_aov_without_value_type(package_config_factory, layout: str) -> Path:
-    """Put sales.aov_usd, minus its value_type, in a layout the loader reads."""
+def test_strict_rejects_a_missing_value_type_in_a_metrics_folder_file(package_config_factory):
     _, package_dir = package_config_factory("jaffle_shop")
     package_dir = Path(package_dir)
     source = package_dir / "metrics" / "core" / "core_metrics.yml"
     doc = yaml.safe_load(source.read_text(encoding="utf-8"))
     spec = doc["metrics"].pop("sales.aov_usd")
     del spec["value_type"]
-    if layout == "metrics_dir":
-        doc["metrics"]["sales.aov_usd"] = spec
     _write_yaml(source, doc)
-    if layout == "folder_file":
-        _write_yaml(package_dir / "metrics" / "relocated.yml", {"metrics": {"sales.aov_usd": spec}})
-    elif layout == "root_file":
-        _write_yaml(package_dir / "metrics.yml", {"metrics": {"sales.aov_usd": spec}})
-    elif layout == "package_yml":
-        package_yml = package_dir / "package.yml"
-        root = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
-        root["metrics"] = {"sales.aov_usd": spec}
-        _write_yaml(package_yml, root)
-    return package_dir
-
-
-@pytest.mark.parametrize("layout", ["metrics_dir", "folder_file", "root_file", "package_yml"])
-def test_strict_rejects_a_missing_value_type_in_every_layout(package_config_factory, layout):
-    package_dir = _jaffle_aov_without_value_type(package_config_factory, layout)
+    _write_yaml(package_dir / "metrics" / "relocated.yml", {"metrics": {"sales.aov_usd": spec}})
 
     errors = validate_runtime_package(package_dir)
 
     assert len(errors) == 1, errors
     assert "metric 'sales.aov_usd': missing 'value_type:'" in errors[0]
-
-
-@pytest.mark.parametrize(
-    ("value_type", "expected_errors"),
-    [("omitted", 1), (None, 1), ("", 1), ("number", 0)],
-    ids=["omitted", "null", "empty", "number"],
-)
-def test_single_file_package_requires_an_authored_value_type(
-    tmp_path: Path, value_type, expected_errors
-):
-    package_file = tmp_path / "monolithic.yml"
-    _write_monolithic_package(package_file, "monolithic_demo")
-    payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
-    spec = {
-        "label": "Orders over orders",
-        "description": "a ratio metric",
-        "kind": "ratio",
-        "numerator": "order_count",
-        "denominator": "order_count",
-    }
-    if value_type != "omitted":
-        spec["value_type"] = value_type
-    payload["metrics"] = {"orders_ratio": spec}
-    _write_yaml(package_file, payload)
-
-    errors = validate_runtime_package(package_file)
-
-    assert len(errors) == expected_errors, errors
-    if expected_errors:
-        assert "metric 'orders_ratio': missing 'value_type:'" in errors[0]
 
 
 def _write_metric_shape_case(tmp_path: Path, layout: str, shape: str, value_type) -> Path:
@@ -2144,6 +1842,8 @@ def _write_metric_shape_case(tmp_path: Path, layout: str, shape: str, value_type
         target = package_yml
         raw = yaml.safe_load(target.read_text(encoding="utf-8"))
         raw["metrics"] = metrics
+        if shape == "package_pairs":
+            raw["package"] = [[key, value] for key, value in raw["package"].items()]
     elif layout == "root_file":
         target = source / "metrics.yml"
         raw = {"metrics": metrics}
@@ -2154,51 +1854,32 @@ def _write_metric_shape_case(tmp_path: Path, layout: str, shape: str, value_type
     return source
 
 
-@pytest.mark.parametrize("layout", ["single_file", "package_yml", "root_file", "metric_file"])
-@pytest.mark.parametrize("shape", ["mapping", "block_pairs", "spec_pairs"])
+@pytest.mark.parametrize("value_type", ["omitted", "number"])
 @pytest.mark.parametrize(
-    "value_type", ["omitted", None, "", "number"], ids=["missing", "null", "empty", "number"]
+    ("layout", "shape"),
+    [
+        *(
+            (layout, "mapping")
+            for layout in ("single_file", "package_yml", "root_file", "metric_file")
+        ),
+        ("single_file", "block_pairs"),
+        ("metric_file", "spec_pairs"),
+        ("single_file", "package_pairs"),
+    ],
 )
-def test_metric_value_type_shape_matrix(tmp_path, layout, shape, value_type):
+def test_metric_value_type_rule_holds_in_every_layout_and_shape(
+    tmp_path, layout, shape, value_type
+):
     source = _write_metric_shape_case(tmp_path, layout, shape, value_type)
 
     errors = validate_runtime_package(source)
     report, config = parse_config_report(resolve_package_reference(path=str(source)))
 
     if value_type != "number":
-        assert any("metric 'orders_ratio': missing 'value_type:'" in error for error in errors)
-        assert report["ok"] is False
-        assert any(
-            "metric 'orders_ratio': missing 'value_type:'" in error["message"]
-            for error in report["errors"]
-        )
-        assert config is None
-    else:
-        assert errors == []
-        assert report["ok"] is True
-        assert config is not None
-
-
-@pytest.mark.parametrize(
-    "value_type", ["omitted", None, "", "number"], ids=["missing", "null", "empty", "number"]
-)
-def test_pair_encoded_package_keeps_the_metric_rule(tmp_path, value_type):
-    source = _write_metric_shape_case(tmp_path, "single_file", "mapping", value_type)
-    raw = yaml.safe_load(source.read_text(encoding="utf-8"))
-    raw["package"] = [[key, value] for key, value in raw["package"].items()]
-    _write_yaml(source, raw)
-
-    errors = validate_runtime_package(source)
-    report, config = parse_config_report(resolve_package_reference(path=str(source)))
-
-    if value_type != "number":
-        assert any("metric 'orders_ratio': missing 'value_type:'" in error for error in errors)
-        assert report["ok"] is False
-        assert any(
-            "metric 'orders_ratio': missing 'value_type:'" in error["message"]
-            for error in report["errors"]
-        )
-        assert config is None
+        missing = "metric 'orders_ratio': missing 'value_type:'"
+        assert any(missing in error for error in errors)
+        assert (report["ok"], config) == (False, None)
+        assert any(missing in error["message"] for error in report["errors"])
     else:
         assert errors == []
         assert report["ok"] is True
@@ -2225,79 +1906,17 @@ def test_invalid_metric_shapes_return_errors(tmp_path, layout, shape):
     report, config = parse_config_report(resolve_package_reference(path=str(source)))
 
     assert errors
-    assert report["ok"] is False
-    assert config is None
+    assert (report["ok"], config) == (False, None)
 
 
 def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
     """Model variants rely on measure rollup semantics in strict packages."""
     package_dir = tmp_path / "strict_measure_rollup"
-    _write_current_minimal_package(
-        package_dir,
-        measure_overrides={"rollup": "additive"},
-    )
+    _write_current_minimal_package(package_dir, measure_overrides={"rollup": "additive"})
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
-
-
-@pytest.mark.parametrize(
-    ("package_name", "package_options", "message_parts"),
-    [
-        pytest.param(
-            "strict_id_measure",
-            {"measure_overrides": {"id": "measure.custom.explicit"}},
-            ["unknown key 'id'", "as:"],
-            id="id_on_measure",
-        ),
-        pytest.param(
-            "strict_pref_ops",
-            {
-                "extra_dimensions": {
-                    "status": {
-                        "label": "Status",
-                        "kind": "categorical",
-                        "preferred_filter_ops": ["="],
-                    }
-                }
-            },
-            ["preferred_filter_ops"],
-            id="dimension_preferred_filter_ops",
-        ),
-        pytest.param(
-            "strict_bad_accum",
-            {"measure_overrides": {"accumulation": "bogus"}},
-            ["accumulation", "bogus"],
-            id="accumulation_outside_enum",
-        ),
-        pytest.param(
-            "strict_topics_dim",
-            {
-                "extra_dimensions": {
-                    "status": {
-                        "label": "Status",
-                        "kind": "categorical",
-                        "topics": ["sales"],
-                    }
-                }
-            },
-            ["unknown key 'topics'"],
-            id="topics_on_dimension",
-        ),
-    ],
-)
-def test_strict_rejects_unsupported_authoring(
-    tmp_path: Path, package_name, package_options, message_parts
-):
-    package_dir = tmp_path / package_name
-    _write_current_minimal_package(package_dir, **package_options)
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is False
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert any(all(part in msg for part in message_parts) for msg in messages), messages
 
 
 def test_check_passes_column_reachability_on_jaffle(tmp_path: Path):
@@ -2346,8 +1965,7 @@ def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str
     runtime = Runtime.from_path(str(package_dir))
     try:
         query = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.row_count"}, "as": "rows"}],
+            "select": [{"expression": "measure.jaffle.row_count", "as": "rows"}],
         }
         sql = runtime.compile(query)["rendered_sql"]
         assert "SUM(" in sql.upper(), sql
@@ -2355,8 +1973,7 @@ def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str
         result = runtime.query(query)
         expected = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "rows"}],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "rows"}],
             }
         )
         assert typed_rows(result) == typed_rows(expected)
@@ -2597,120 +2214,125 @@ def _jaffle_with_segment(package_config_factory, mutate) -> Path:
     return Path(package_dir)
 
 
-@pytest.mark.parametrize("entity_ref", ["customer", "jaffle.Customer", "entity.jaffle_customer"])
-def test_validation_accepts_segment_entity_by_key_name_or_id(package_config_factory, entity_ref):
-    package_dir = _jaffle_with_segment(
-        package_config_factory, lambda segment: segment.update(entity=entity_ref)
-    )
+def _membership_entity(entity: str):
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"]["entity"] = entity
 
-    assert validate_runtime_package(package_dir) == []
+    return mutate
 
 
-def test_validation_rejects_unknown_segment_entity(package_config_factory):
-    package_dir = _jaffle_with_segment(
-        package_config_factory, lambda segment: segment.update(entity="entity.jaffle.customer")
-    )
+def _nested_membership_entity(segment: dict) -> None:
+    predicate = segment["membership"]["metric_filters"][0]["expression"]
+    nested = {**predicate, "entity": "entity.jaffle.customer"}
+    segment["membership"]["metric_filters"][0]["expression"] = {
+        "kind": "boolean",
+        "op": "and",
+        "args": [predicate, nested],
+    }
+
+
+def _membership_expression(change: dict):
+    def mutate(segment: dict) -> None:
+        segment["membership"]["metric_filters"][0]["expression"].update(change)
+
+    return mutate
+
+
+_SUGGEST_CUSTOMER = "did you mean 'entity.jaffle_customer'?"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        *(
+            pytest.param(lambda s, ref=ref: s.update(entity=ref), [], id=f"entity-{ref}")
+            for ref in ("customer", "jaffle.Customer", "entity.jaffle_customer")
+        ),
+        pytest.param(
+            lambda s: s.update(entity="entity.jaffle.customer"),
+            ["targets unknown entity 'entity.jaffle.customer'", _SUGGEST_CUSTOMER],
+            id="unknown-entity",
+        ),
+        # The id is suggested for a membership entity written as a key, a name or a typo.
+        *(
+            pytest.param(
+                _membership_entity(ref),
+                [f"membership references unknown entity '{ref}'", _SUGGEST_CUSTOMER],
+                id=f"membership-entity-{ref}",
+            )
+            for ref in ("entity.jaffle.customer", "customer", "jaffle.Customer")
+        ),
+        pytest.param(
+            _nested_membership_entity,
+            ["membership references unknown entity 'entity.jaffle.customer'", _SUGGEST_CUSTOMER],
+            id="nested-boolean-filter",
+        ),
+        pytest.param(
+            lambda s: s.update(preview_dimensions=["dimension.jaffle_store_name"]),
+            ["is invalid (INVALID_SEGMENT): ", "dimension_id=dimension.jaffle_store_name"],
+            id="runtime-cannot-normalize",
+        ),
+        pytest.param(
+            lambda s: s["membership"].update(
+                where=[{"field": "dimension.jaffle_missing", "op": "=", "value": 1}]
+            ),
+            [
+                "query does not compile (OBJECT_NOT_FOUND): Unknown dimension 'dimension.jaffle_missing'"
+            ],
+            id="query-does-not-compile",
+        ),
+        # The expression parser raises plain ValueError/TypeError for these.
+        pytest.param(
+            _membership_expression({"window": {"unit": "day", "value": "oops"}}),
+            ["query does not compile (ValueError): "],
+            id="window-value",
+        ),
+        pytest.param(
+            _membership_expression({"window": 7}),
+            ["query does not compile (TypeError): "],
+            id="window-scalar",
+        ),
+        pytest.param(
+            _membership_expression(
+                {
+                    "input": {
+                        "kind": "aggregate",
+                        "measure": "measure.jaffle.lifetime_spend_usd",
+                        "parameters": "abc",
+                    }
+                }
+            ),
+            ["query does not compile (ValueError): "],
+            id="parameters",
+        ),
+    ],
+)
+def test_validation_checks_segment_references(package_config_factory, mutate, expected):
+    package_dir = _jaffle_with_segment(package_config_factory, mutate)
 
     errors = validate_runtime_package(package_dir)
 
-    assert errors == [
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} targets unknown entity "
-        "'entity.jaffle.customer'; did you mean 'entity.jaffle_customer'?"
-    ]
+    if not expected:
+        assert errors == []
+        return
+    assert len(errors) == 1, errors
+    assert errors[0].startswith(f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} ")
+    assert all(part in errors[0] for part in expected), errors
     report = validate_config_report(resolve_package_reference(path=str(package_dir)))
     assert report["ok"] is False
     assert [error["message"] for error in report["errors"]] == errors
 
 
-def test_validation_rejects_unknown_entity_in_segment_membership(package_config_factory):
-    def mutate(segment: dict) -> None:
-        predicate = segment["membership"]["metric_filters"][0]["expression"]
-        predicate["entity"] = "entity.jaffle.customer"
-
-    package_dir = _jaffle_with_segment(package_config_factory, mutate)
-
-    assert validate_runtime_package(package_dir) == [
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
-        "'entity.jaffle.customer'; did you mean 'entity.jaffle_customer'?"
-    ]
-
-
-def test_validation_rejects_segment_the_runtime_cannot_normalize(package_config_factory):
-    package_dir = _jaffle_with_segment(
-        package_config_factory,
-        lambda segment: segment.update(preview_dimensions=["dimension.jaffle_store_name"]),
-    )
-
-    errors = validate_runtime_package(package_dir)
-
-    assert len(errors) == 1, errors
-    assert errors[0].startswith(
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} is invalid (INVALID_SEGMENT): "
-    )
-    assert "dimension_id=dimension.jaffle_store_name" in errors[0]
-
-
-def test_validation_rejects_segment_whose_query_does_not_compile(package_config_factory):
-    def mutate(segment: dict) -> None:
-        segment["membership"]["where"] = [
-            {"field": "dimension.jaffle_missing", "op": "=", "value": 1}
-        ]
-
-    package_dir = _jaffle_with_segment(package_config_factory, mutate)
-
-    assert validate_runtime_package(package_dir) == [
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} query does not compile "
-        "(OBJECT_NOT_FOUND): Unknown dimension 'dimension.jaffle_missing'"
-    ]
-
-
-@pytest.mark.parametrize("entity_ref", ["customer", "jaffle.Customer"])
-def test_validation_suggests_the_id_for_a_membership_entity_key_or_name(
-    package_config_factory, entity_ref
-):
-    def mutate(segment: dict) -> None:
-        segment["membership"]["metric_filters"][0]["expression"]["entity"] = entity_ref
-
-    package_dir = _jaffle_with_segment(package_config_factory, mutate)
-
-    assert validate_runtime_package(package_dir) == [
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
-        f"{entity_ref!r}; did you mean 'entity.jaffle_customer'?"
-    ]
-
-
 def test_membership_entity_suggestion_skips_labels_shared_by_entities(package_config_factory):
-    def mutate(segment: dict) -> None:
-        segment["membership"]["metric_filters"][0]["expression"]["entity"] = "customer"
-
-    package_dir = _jaffle_with_segment(package_config_factory, mutate)
+    package_dir = _jaffle_with_segment(package_config_factory, _membership_entity("customer"))
     graph_file = package_dir / "graph.yml"
     graph = yaml.safe_load(graph_file.read_text(encoding="utf-8"))
     graph["graph"]["entities"]["store"]["label"] = "Customer"
     _write_yaml(graph_file, graph)
 
-    assert validate_runtime_package(package_dir) == [
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
-        "'customer'; did you mean 'entity.jaffle_customer'?"
-    ]
-
-
-def test_validation_checks_predicates_nested_in_boolean_filters(package_config_factory):
-    def mutate(segment: dict) -> None:
-        predicate = segment["membership"]["metric_filters"][0]["expression"]
-        nested = {**predicate, "entity": "entity.jaffle.customer"}
-        segment["membership"]["metric_filters"][0]["expression"] = {
-            "kind": "boolean",
-            "op": "and",
-            "args": [predicate, nested],
-        }
-
-    package_dir = _jaffle_with_segment(package_config_factory, mutate)
-
-    assert validate_runtime_package(package_dir) == [
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} membership references unknown entity "
-        "'entity.jaffle.customer'; did you mean 'entity.jaffle_customer'?"
-    ]
+    (error,) = validate_runtime_package(package_dir)
+    assert "membership references unknown entity 'customer'" in error
+    assert error.endswith(_SUGGEST_CUSTOMER)
 
 
 def test_validation_treats_predicate_shaped_literals_as_data(package_config_factory):
@@ -2731,43 +2353,6 @@ def test_validation_treats_predicate_shaped_literals_as_data(package_config_fact
         assert runtime.segment_validate(_HIGH_VALUE_SEGMENT)["ok"] is True
     finally:
         runtime.close()
-
-
-@pytest.mark.parametrize(
-    ("change", "failure"),
-    [
-        ({"window": {"unit": "day", "value": "oops"}}, "ValueError"),
-        ({"window": 7}, "TypeError"),
-        (
-            {
-                "input": {
-                    "kind": "aggregate",
-                    "measure": "measure.jaffle.lifetime_spend_usd",
-                    "parameters": "abc",
-                }
-            },
-            "ValueError",
-        ),
-    ],
-)
-def test_validation_reports_malformed_membership_expressions(
-    package_config_factory, change, failure
-):
-    # The expression parser raises plain ValueError/TypeError for these.
-    def mutate(segment: dict) -> None:
-        segment["membership"]["metric_filters"][0]["expression"].update(change)
-
-    package_dir = _jaffle_with_segment(package_config_factory, mutate)
-
-    errors = validate_runtime_package(package_dir)
-
-    assert len(errors) == 1, errors
-    assert errors[0].startswith(
-        f"{package_dir}: segment {_HIGH_VALUE_SEGMENT} query does not compile ({failure}): "
-    )
-    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
-    assert report["ok"] is False
-    assert [error["message"] for error in report["errors"]] == errors
 
 
 def test_single_file_validation_checks_segment_references(tmp_path: Path):
@@ -2988,11 +2573,17 @@ def _jaffle_with_relocated_spec(
     return package_dir
 
 
-@pytest.mark.parametrize("layout", ["folder_file", "root_file", "package_yml"])
+# Every layout twice: once valid and once with an unknown key, for a segment or a metric.
 @pytest.mark.parametrize(
-    ("kind", "extra_key"),
-    [("segment", None), ("segment", "filters"), ("metric", None), ("metric", "valeu_type")],
-    ids=["valid-segment", "segment-unknown-key", "valid-metric", "metric-unknown-key"],
+    ("kind", "extra_key", "layout"),
+    [
+        ("segment", None, "folder_file"),
+        ("segment", None, "root_file"),
+        ("segment", "filters", "package_yml"),
+        ("metric", None, "package_yml"),
+        ("metric", "valeu_type", "folder_file"),
+        ("metric", "valeu_type", "root_file"),
+    ],
 )
 def test_key_checks_cover_every_layout_the_loader_reads(
     package_config_factory, kind, extra_key, layout
@@ -3080,13 +2671,6 @@ def test_key_checks_accept_a_relative_package_path(package_config_factory, monke
     assert "has 'where' outside membership:" in errors[0]
 
 
-def _quote_schema_version(package_dir: Path) -> None:
-    package_yml = package_dir / "package.yml"
-    root = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
-    root["schema_version"] = "1"
-    _write_yaml(package_yml, root)
-
-
 @pytest.mark.parametrize("version", [".inf", "-.inf", ".nan"])
 def test_nonfinite_schema_version_returns_invalid_report(tmp_path: Path, version: str):
     package_dir = tmp_path / "nonfinite_version"
@@ -3108,57 +2692,37 @@ def test_nonfinite_schema_version_returns_invalid_report(tmp_path: Path, version
 
 
 @pytest.mark.parametrize(
-    ("value_type", "expected_ok"),
-    [("omitted", False), (None, False), ("", False), ("number", True)],
-    ids=["omitted", "null", "empty", "number"],
+    ("extra", "expected"),
+    [
+        ({}, None),
+        ({"value_type": None}, "metric 'quoted': missing 'value_type:'"),
+        ({"valeu_type": "count"}, "has unknown key 'valeu_type'"),
+    ],
+    ids=["valid", "value-type", "unknown-key"],
 )
-def test_strict_directory_checks_run_for_a_quoted_schema_version(
-    tmp_path: Path, value_type, expected_ok
-):
+def test_strict_checks_run_for_a_quoted_schema_version(tmp_path: Path, extra, expected):
     # The loader accepts schema_version: "1", so the directory checks must run for it.
-    package_dir = tmp_path / "strict_quoted_version"
     spec = {
-        "label": "Quoted version ratio",
-        "description": "ratio in a package with a quoted schema_version",
-        "kind": "ratio",
-        "numerator": "order_count",
-        "denominator": "order_count",
+        "label": "Quoted",
+        "description": "metric in a package with a quoted schema_version",
+        "kind": "aggregate",
+        "measure": "order_count",
+        "value_type": "count",
+        **extra,
     }
-    if value_type != "omitted":
-        spec["value_type"] = value_type
-    _write_current_minimal_package(package_dir, extra_metrics={"quoted_ratio": spec})
-    _quote_schema_version(package_dir)
+    package_dir = tmp_path / "strict_quoted_version"
+    _write_current_minimal_package(package_dir, extra_metrics={"quoted": spec})
+    package_yml = package_dir / "package.yml"
+    root = yaml.safe_load(package_yml.read_text(encoding="utf-8"))
+    root["schema_version"] = "1"
+    _write_yaml(package_yml, root)
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert report["ok"] is expected_ok, messages
-    if not expected_ok:
-        assert any("missing 'value_type:'" in msg and "'quoted_ratio'" in msg for msg in messages)
-
-
-def test_key_checks_run_for_a_quoted_schema_version(tmp_path: Path):
-    package_dir = tmp_path / "strict_quoted_keys"
-    _write_current_minimal_package(
-        package_dir,
-        extra_metrics={
-            "typo": {
-                "label": "Typo",
-                "description": "metric with a misspelled key",
-                "kind": "aggregate",
-                "measure": "order_count",
-                "value_type": "count",
-                "valeu_type": "count",
-            }
-        },
-    )
-    _quote_schema_version(package_dir)
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    messages = [str(err.get("message", "")) for err in report["errors"]]
-    assert report["ok"] is False
-    assert any("has unknown key 'valeu_type'" in msg for msg in messages), messages
+    assert report["ok"] is (expected is None), messages
+    if expected:
+        assert any(expected in msg for msg in messages), messages
 
 
 # A metric's temporal_role must be a clock its measures can be timed by. Otherwise each

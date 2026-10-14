@@ -11,7 +11,7 @@
     "from the anchor as a column and filter a measure on it. A metric",
     "recipe with the same anchor and window is refused the same way.",
     "",
-    "Locked contract (subject to schemas/query_ir.v1.json):",
+    "Locked contract (subject to schemas/query.v2.json):",
     "  anchor:  { temporal_role: '<per-entity scalar role id>' }",
     "  window:  { unit: day|week|month|quarter|year,",
     "             value: <positive int>,",
@@ -20,7 +20,6 @@
     "INVALID_EXPRESSION_AST at parse time."
   ],
   "_status": "ir_contract_only",
-  "version": 1,
   "select": [
     {
       "expression": {

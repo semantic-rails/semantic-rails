@@ -9,10 +9,9 @@ VALIDATION_MATRIX = [
     {
         "name": "duplicate_output_alias_rejected",
         "query": {
-            "version": 1,
             "select": [
-                {"expression": {"measure": "measure.jaffle.order_count"}, "as": "dup"},
-                {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "dup"},
+                {"expression": "measure.jaffle.order_count", "as": "dup"},
+                {"expression": "measure.jaffle.revenue_usd", "as": "dup"},
             ],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
         },
@@ -21,7 +20,6 @@ VALIDATION_MATRIX = [
     {
         "name": "time_only_missing_temporal_role_rejected",
         "query": {
-            "version": 1,
             "time": {"grain": "month"},
         },
         "error_code": "INVALID_QUERY",
@@ -29,12 +27,8 @@ VALIDATION_MATRIX = [
     {
         "name": "cumulative_without_time_rejected",
         "query": {
-            "version": 1,
             "select": [
-                {
-                    "expression": {"metric": "metric.sales.cumulative_revenue"},
-                    "as": "cumulative_revenue",
-                },
+                "metric.sales.cumulative_revenue",
             ],
         },
         "error_code": "INVALID_QUERY",
@@ -42,12 +36,8 @@ VALIDATION_MATRIX = [
     {
         "name": "cumulative_bounded_start_rejected",
         "query": {
-            "version": 1,
             "select": [
-                {
-                    "expression": {"metric": "metric.sales.cumulative_revenue"},
-                    "as": "cumulative_revenue",
-                },
+                "metric.sales.cumulative_revenue",
             ],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
@@ -61,12 +51,11 @@ VALIDATION_MATRIX = [
     {
         "name": "rolling_window_grain_mismatch_rejected",
         "query": {
-            "version": 1,
             "select": [
                 {
                     "expression": {
                         "kind": "rolling",
-                        "input": {"measure": "measure.jaffle.order_count"},
+                        "input": "measure.jaffle.order_count",
                         "window": {"unit": "day", "value": 7},
                     },
                     "as": "orders_7d",
@@ -79,12 +68,11 @@ VALIDATION_MATRIX = [
     {
         "name": "prior_period_grain_mismatch_rejected",
         "query": {
-            "version": 1,
             "select": [
                 {
                     "expression": {
                         "kind": "prior_period",
-                        "input": {"measure": "measure.jaffle.order_count"},
+                        "input": "measure.jaffle.order_count",
                         "offset": {"unit": "day", "value": 7},
                     },
                     "as": "orders_prev_7d",
@@ -101,9 +89,8 @@ QUERY_MATRIX = [
     {
         "name": "group_by_only_distinct_values_executes",
         "query": {
-            "version": 1,
             "group_by": ["dimension.jaffle_store_name"],
-            "order_by": [{"field": "dimension.jaffle_store_name", "direction": "ASC"}],
+            "order_by": [{"field": "dimension.jaffle_store_name", "direction": "asc"}],
             "limit": 5,
         },
         "expected_columns": ["dimension.jaffle_store_name"],
@@ -111,12 +98,11 @@ QUERY_MATRIX = [
     {
         "name": "time_only_distinct_values_executes",
         "query": {
-            "version": 1,
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            "order_by": [{"field": "time", "direction": "ASC"}],
+            "order_by": [{"field": "period", "direction": "asc"}],
             "limit": 5,
         },
-        "expected_columns": ["temporal_role.jaffle_order_time__month"],
+        "expected_columns": ["period"],
     },
 ]
 
@@ -125,10 +111,10 @@ COMPILE_MATRIX = [
     {
         "name": "mixed_grain_rewrite_applies",
         "query": {
-            "version": 1,
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.order_count",
                         "aggregation": "count_distinct",
                     },
@@ -136,6 +122,7 @@ COMPILE_MATRIX = [
                 },
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.item_count",
                         "aggregation": "count_distinct",
                     },

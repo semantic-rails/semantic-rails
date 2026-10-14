@@ -3,10 +3,9 @@
 The relevance floor is the single check between ``classify_question`` and the
 candidate-generation logic in ``plan``/``discover``: does the user's text
 share even one content token with anything in the catalog? Intents that fail
-the floor get a structured ``low_relevance`` refusal block; intents that pass
-but cannot produce any executable candidate downstream get a
-``no_viable_candidates`` block. Both blocks share an envelope shape with the
-out-of-scope refusal so agents can branch on a single presence-of-key test.
+the floor get a structured ``low_relevance`` refusal block, which shares an envelope
+shape with the out-of-scope refusal so agents can branch on a single
+presence-of-key test.
 
 This module owns:
 
@@ -14,10 +13,7 @@ This module owns:
 * The stopword set stripped before computing overlap (``_INTENT_STOPWORDS``).
 * Tokenization / catalog-token-index helpers used as the relevance denominator.
 * The floor predicate (``_intent_passes_relevance_floor``).
-* The two structured refusal blocks (``_low_relevance_block``,
-  ``_no_viable_candidates_block``) and the convenience attacher
-  (``_maybe_attach_no_viable_signal``) that planner success paths call
-  to keep the gate fields consistent.
+* The structured refusal block (``_low_relevance_block``).
 """
 
 from __future__ import annotations
@@ -329,77 +325,3 @@ def _low_relevance_block(
         ),
         "catalog_token_sample": catalog_token_sample,
     }
-
-
-def _no_viable_candidates_block(
-    intent: str,
-    *,
-    blocked_codes: list[str],
-    sample_blocked_messages: list[str],
-) -> dict[str, Any]:
-    """Structured top-level signal when planning classifies + clears the
-    relevance floor but cannot produce a single executable candidate (every
-    candidate hits PATH_NOT_FOUND, ENTITY_NOT_REACHABLE, or similar). This is
-    the "real analytic, silent fail" branch the v2 adversarial audit flagged:
-    YoY-on-segment-membership is a sensible question, but the package can't
-    answer it. Without this block, agents see ``candidates=[]`` with no gate
-    hint and start guessing. The block is emitted at the same envelope level
-    as ``low_relevance`` / ``out_of_scope`` so agents can branch on a single
-    presence-of-key test."""
-    return {
-        "code": "NO_VIABLE_CANDIDATES",
-        "intent": intent,
-        "blocked_codes": blocked_codes,
-        "sample_blocked_messages": sample_blocked_messages[:3],
-        "rationale": (
-            "The intent passed scope and relevance checks, but every "
-            "candidate query failed validation — most commonly because the "
-            "requested entity path or analytic pattern isn't modeled in this "
-            "package."
-        ),
-        "recovery_hint": (
-            "Inspect the `blocked` array for specific reason codes "
-            "(PATH_NOT_FOUND, INVALID_QUERY). Use discover to find what IS "
-            "available, or browse the modeled entities, measures, and metrics "
-            "in the catalog (over MCP, `discover` with empty terms)."
-        ),
-    }
-
-
-def _maybe_attach_no_viable_signal(
-    payload: dict[str, Any],
-    *,
-    intent: str,
-) -> dict[str, Any]:
-    """Attach a top-level ``no_viable_candidates`` block to a planning
-    response when the request classified + cleared the relevance floor but
-    every candidate hit validation/path errors. Returns ``payload`` mutated
-    in-place. Idempotent: only attaches when ``candidates`` is empty,
-    ``blocked`` is non-empty, and no other gate block is already present."""
-    if payload.get("candidates"):
-        return payload
-    blocked_rows = list(payload.get("blocked", []) or [])
-    if not blocked_rows:
-        return payload
-    if (
-        payload.get("low_relevance")
-        or payload.get("out_of_scope")
-        or payload.get("no_viable_candidates")
-    ):
-        return payload
-    blocked_codes: list[str] = []
-    blocked_messages: list[str] = []
-    for row in blocked_rows:
-        why = dict(row.get("why_blocked", {}) or {})
-        code = str(why.get("code", "") or "")
-        message = str(why.get("message", "") or "")
-        if code and code not in blocked_codes:
-            blocked_codes.append(code)
-        if message:
-            blocked_messages.append(message)
-    payload["no_viable_candidates"] = _no_viable_candidates_block(
-        intent=intent,
-        blocked_codes=blocked_codes,
-        sample_blocked_messages=blocked_messages,
-    )
-    return payload

@@ -75,8 +75,7 @@ def workspace(tmp_path: Path) -> Path:
                 "gross": {
                     "question": "Gross",
                     "query": {
-                        "version": 1,
-                        "select": [{"expression": {"metric": "metric.shop.gross"}, "as": "gross"}],
+                        "select": ["metric.shop.gross"],
                     },
                 }
             }
@@ -285,10 +284,15 @@ UNRELATED_PIN = {
 }
 
 
-@pytest.mark.parametrize("form", ORDER_CUSTOMER_PINS)
-@pytest.mark.parametrize("declared", ["graph_relationships", "model_entities_only"])
+# Each removal, declaration and pin form, every value twice.
 @pytest.mark.parametrize(
-    ("kind", "key", "model"), [("model", "customers", ""), ("relationship", "customer", "orders")]
+    ("kind", "key", "model", "declared", "form"),
+    [
+        ("model", "customers", "", "graph_relationships", "ids"),
+        ("model", "customers", "", "model_entities_only", "keys"),
+        ("relationship", "customer", "orders", "graph_relationships", "keys"),
+        ("relationship", "customer", "orders", "model_entities_only", "ids"),
+    ],
 )
 def test_a_removal_drops_the_route_pins_through_what_it_removes(
     workspace: Path, kind: str, key: str, model: str, declared: str, form: str

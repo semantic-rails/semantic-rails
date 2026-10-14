@@ -40,77 +40,78 @@ def _notice(project: Path) -> str:
     return shell._operational_notice(PackageReference(source_path=str(project)), "runtime")
 
 
-def test_a_missing_file_may_be_built_from_the_seed(shop: Path) -> None:
-    assert _notice(shop) == (
-        "Operational check: runtime may create the missing DuckDB file "
-        "./shop/data/shop.duckdb from the package seed "
-        "(csv_dir_duckdb data/shop_csv), then query it. "
-        "Validation reports a missing or unusable seed."
-    )
-
-
-def test_the_notice_uses_the_selected_database_path(shop: Path) -> None:
-    package_path = shop / "package.yml"
+def _set_package(project: Path, **changes: object) -> None:
+    package_path = project / "package.yml"
     package = yaml.safe_load(package_path.read_text(encoding="utf-8"))
-    package["package"]["default_db"] = "data/selected.duckdb"
+    package["package"].update(changes)
     package_path.write_text(yaml.safe_dump(package), encoding="utf-8")
 
-    assert "./shop/data/selected.duckdb" in _notice(shop)
-    assert "shop.duckdb" not in _notice(shop)
+
+def _database(project: Path) -> Path:
+    return project / "data" / "shop.duckdb"
 
 
-def test_an_existing_file_missing_a_package_relation_is_not_marked_for_rebuild(shop: Path) -> None:
-    _tables(shop / "data" / "shop.duckdb", "customers", "orders")
-
-    assert _notice(shop) == (
-        "Operational check: runtime queries the existing DuckDB file ./shop/data/shop.duckdb. "
-        "It is never rebuilt or replaced; validation reports missing relations "
-        "or an unreadable file."
-    )
-
-
-def test_a_complete_existing_file_is_not_rebuilt(shop: Path) -> None:
-    _tables(shop / "data" / "shop.duckdb", "raw_events", "notes")
-
-    assert "It is never rebuilt or replaced" in _notice(shop)
+BUILT = (
+    "Operational check: runtime may create the missing DuckDB file ./shop/data/shop.duckdb "
+    "from the package seed (csv_dir_duckdb data/shop_csv), then query it. "
+    "Validation reports a missing or unusable seed."
+)
+KEPT = (
+    "Operational check: runtime queries the existing DuckDB file ./shop/data/shop.duckdb. "
+    "It is never rebuilt or replaced; validation reports missing relations or an unreadable file."
+)
 
 
-def test_an_external_database_is_never_rebuilt(shop: Path) -> None:
-    _tables(shop / "data" / "shop.duckdb", "customers")
-    package_path = shop / "package.yml"
-    package = yaml.safe_load(package_path.read_text(encoding="utf-8"))
-    package["package"]["seed"] = {"kind": "external"}
-    package_path.write_text(yaml.safe_dump(package), encoding="utf-8")
-
-    assert "It is never rebuilt or replaced" in _notice(shop)
-
-
-def test_a_missing_external_database_is_not_created(shop: Path) -> None:
-    package_path = shop / "package.yml"
-    package = yaml.safe_load(package_path.read_text(encoding="utf-8"))
-    package["package"]["seed"] = {"kind": "external"}
-    package_path.write_text(yaml.safe_dump(package), encoding="utf-8")
-
-    assert _notice(shop) == (
-        "Operational check: runtime found no DuckDB file at ./shop/data/shop.duckdb. "
-        "The package uses an external seed, so validation reports the missing file "
-        "and does not create it."
-    )
-
-
-def test_a_broken_database_link_is_not_built_through(shop: Path) -> None:
-    (shop / "data" / "shop.duckdb").symlink_to(shop / "data" / "missing.duckdb")
-
-    assert _notice(shop) == (
-        "Operational check: runtime found a broken link at the DuckDB file "
-        "./shop/data/shop.duckdb. Validation reports it and does not build through the link."
-    )
-
-
-def test_an_unreadable_file_is_not_marked_for_replacement(shop: Path) -> None:
-    (shop / "data" / "shop.duckdb").write_text("not a database", encoding="utf-8")
-
-    assert "It is never rebuilt or replaced" in _notice(shop)
+@pytest.mark.parametrize(
+    ("prepare", "notice"),
+    [
+        # A missing file may be built from the seed.
+        (lambda shop: None, BUILT),
+        # The notice names the selected database.
+        (
+            lambda shop: _set_package(shop, default_db="data/selected.duckdb"),
+            BUILT.replace("shop.duckdb", "selected.duckdb"),
+        ),
+        # An existing file is never rebuilt, whether it lacks a relation, has them all, is
+        # external or is unreadable.
+        (lambda shop: _tables(_database(shop), "customers", "orders"), KEPT),
+        (lambda shop: _tables(_database(shop), "raw_events", "notes"), KEPT),
+        (
+            lambda shop: (
+                _tables(_database(shop), "customers"),
+                _set_package(shop, seed={"kind": "external"}),
+            ),
+            KEPT,
+        ),
+        (lambda shop: _database(shop).write_text("not a database", encoding="utf-8"), KEPT),
+        # A missing external database is not created.
+        (
+            lambda shop: _set_package(shop, seed={"kind": "external"}),
+            "Operational check: runtime found no DuckDB file at ./shop/data/shop.duckdb. "
+            "The package uses an external seed, so validation reports the missing file "
+            "and does not create it.",
+        ),
+        # A broken link is not built through.
+        (
+            lambda shop: _database(shop).symlink_to(shop / "data" / "missing.duckdb"),
+            "Operational check: runtime found a broken link at the DuckDB file "
+            "./shop/data/shop.duckdb. Validation reports it and does not build through the link.",
+        ),
+        # An unloadable package keeps a cautious warning.
+        (
+            lambda shop: _set_package(shop, warehouse="snowflake"),
+            "Operational check: runtime may query the snowflake warehouse. "
+            "Package details could not be read; validation will report why.",
+        ),
+    ],
+    ids=["seed", "selected", "missing-relation", "complete", "external", "unreadable",
+         "missing-external", "broken-link", "unloadable"],
+)  # fmt: skip
+def test_the_operational_notice_says_what_runtime_does_to_the_database(
+    shop: Path, prepare, notice: str
+) -> None:
+    prepare(shop)
+    assert _notice(shop) == notice
 
 
 def test_another_warehouse_keeps_the_general_warning(
@@ -121,18 +122,6 @@ def test_another_warehouse_keeps_the_general_warning(
 
     assert (
         _notice(shop) == "Operational check: runtime may query or refresh the snowflake warehouse."
-    )
-
-
-def test_unloadable_package_keeps_a_cautious_warning(shop: Path) -> None:
-    package_path = shop / "package.yml"
-    package = yaml.safe_load(package_path.read_text(encoding="utf-8"))
-    package["package"]["warehouse"] = "snowflake"
-    package_path.write_text(yaml.safe_dump(package), encoding="utf-8")
-
-    assert _notice(shop) == (
-        "Operational check: runtime may query the snowflake warehouse. "
-        "Package details could not be read; validation will report why."
     )
 
 
@@ -171,12 +160,9 @@ def test_validation_never_replaces_an_existing_file_with_missing_relations(
 def test_confirmed_validation_does_not_create_an_unmanaged_database(
     scenario: str, shop: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    database = shop / "data" / "shop.duckdb"
+    database = _database(shop)
     if scenario == "external":
-        package_path = shop / "package.yml"
-        package = yaml.safe_load(package_path.read_text(encoding="utf-8"))
-        package["package"]["seed"] = {"kind": "external"}
-        package_path.write_text(yaml.safe_dump(package), encoding="utf-8")
+        _set_package(shop, seed={"kind": "external"})
     else:
         database.symlink_to(shop / "data" / "missing.duckdb")
     backend.set_backend(PlainBackend())

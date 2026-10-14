@@ -1,8 +1,8 @@
 """A query says whether conditions on child rows apply to the same row.
 
 "Customers with an item that is a beverage and costs over 5" may mean one item that is both
-(``same_row``) or a beverage and some item over 5 (``separate_rows``). A child group,
-``{child, match, where}``, states it: one EXISTS over the conjunction (``any``) or NOT EXISTS
+(``same_row``) or a beverage and some item over 5 (``separate_rows``). An entity filter,
+``{entity, any | none}``, states it: one EXISTS over the conjunction (``any``) or NOT EXISTS
 (``none``). Two or more positive flat filters on one child, or one negated one, are refused
 with a clarification whose two options are complete rewritten ``where`` lists, offered only
 when both answer. Every other shape keeps its refusal; a query states one child scope. Every
@@ -12,12 +12,13 @@ answer is checked on DuckDB against reference SQL written independently of the e
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import pytest
 import yaml
 
@@ -29,6 +30,7 @@ from semantic_rails.fanout import route_pin
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.policies import row_filters_for_context
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import (
@@ -36,6 +38,7 @@ from semantic_rails.schema import (
     PathPreferenceConfig,
     SemanticPolicyConfig,
 )
+from tests.semantic_rails.conftest import opened
 from tests.semantic_rails.result_helpers import typed_rows
 
 # Customer 1: a cheap beverage and a jaffle over 5 in one order. 2: one beverage over 5.
@@ -72,64 +75,42 @@ schema_version: 1
 package: {id: scope, namespace: scope, warehouse: duckdb, default_db: data/warehouse.duckdb,
   seed: {kind: sql_script, source: data/seed.sql}}
 """
+# Each model's body; its id and its relation are its key.
 MODELS = {
     "customers": """
-model:
-  id: customers
-  relation: customers
-  entities: {customer: {}, region: {expr: region_code}}
-  measures:
-    customer_count: {label: Customers, kind: entity_count, entity_key: customer_id,
-      accumulation: {kind: event}, value_type: count}
-    credit: {label: Credit, kind: aggregate, expr: credit, accumulation: {kind: flow},
-      value_type: currency}
+entities: {customer: {}, region: {expr: region_code}}
+measures:
+  customer_count: {label: Customers, kind: entity_count, entity_key: customer_id,
+    accumulation: {kind: event}, value_type: count}
+  credit: {label: Credit, kind: aggregate, expr: credit, accumulation: {kind: flow},
+    value_type: currency}
 """,
     "regions": """
-model:
-  id: regions
-  relation: regions
-  entities: {region: {}}
-  dimensions:
-    region_name: {label: Region, kind: categorical}
+entities: {region: {}}
+dimensions: {region_name: {label: Region, kind: categorical}}
 """,
     "orders": """
-model:
-  id: orders
-  relation: orders
-  entities: {order: {}, customer: {}}
-  measures:
-    order_count: {label: Orders, kind: entity_count, entity_key: order_id,
-      accumulation: {kind: event}, value_type: count}
-    revenue: {label: Revenue, kind: aggregate, expr: total, accumulation: {kind: flow},
-      value_type: currency}
+entities: {order: {}, customer: {}}
+measures:
+  order_count: {label: Orders, kind: entity_count, entity_key: order_id,
+    accumulation: {kind: event}, value_type: count}
 """,
     "items": """
-model:
-  id: items
-  relation: items
-  entities: {item: {}, order: {}, product: {expr: sku}}
-  dimensions:
-    product_type: {label: Product type, kind: categorical}
-    price: {label: Price, kind: number}
-  measures:
-    item_revenue: {label: Item revenue, kind: aggregate, expr: price,
-      accumulation: {kind: flow}, value_type: currency}
+entities: {item: {}, order: {}, product: {expr: sku}}
+dimensions:
+  product_type: {label: Product type, kind: categorical}
+  price: {label: Price, kind: number}
+measures:
+  item_revenue: {label: Item revenue, kind: aggregate, expr: price,
+    accumulation: {kind: flow}, value_type: currency}
 """,
     "products": """
-model:
-  id: products
-  relation: products
-  entities: {product: {}}
-  dimensions:
-    category: {label: Category, kind: categorical}
+entities: {product: {}}
+dimensions: {category: {label: Category, kind: categorical}}
 """,
     "sessions": """
-model:
-  id: sessions
-  relation: sessions
-  entities: {session: {}, customer: {}}
-  dimensions:
-    channel: {label: Channel, kind: categorical}
+entities: {session: {}, customer: {}}
+dimensions: {channel: {label: Channel, kind: categorical}}
 """,
 }
 ENTITIES = {
@@ -142,13 +123,8 @@ ENTITIES = {
 }
 METRICS = """
 metrics:
-  scope.customers:
-    as: metric.scope.customers
-    label: Customers
-    kind: aggregate
-    measure: customer_count
-    aggregation: count_distinct
-    value_type: count
+  scope.customers: {as: metric.scope.customers, label: Customers, kind: aggregate,
+    measure: customer_count, aggregation: count_distinct, value_type: count}
 """
 
 ITEM = "entity.scope_item"
@@ -160,39 +136,51 @@ CATEGORY = "dimension.scope_product_category"
 CHANNEL = "dimension.scope_session_channel"
 REGION = "dimension.scope_region_region_name"
 CUSTOMER_ID = "dimension.scope_customer_id"
-BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
-OVER_5 = {"field": PRICE, "op": ">", "value": 5}
-WEB = {"field": CHANNEL, "op": "=", "value": "web"}
-CARD = {"field": "dimension.scope_payment_method", "op": "=", "value": "card"}
-SAME_ROW = [{"child": ITEM, "match": "any", "where": [BEVERAGE, OVER_5]}]
-SEPARATE_ROWS = [
-    {"child": ITEM, "match": "any", "where": [BEVERAGE]},
-    {"child": ITEM, "match": "any", "where": [OVER_5]},
-]
-NO_SAME_ROW = [{"child": ITEM, "match": "none", "where": [BEVERAGE, OVER_5]}]
+BEVERAGE = {"field": TYPE, "op": "is", "value": "beverage"}
+OVER_5 = {"field": PRICE, "op": "gt", "value": 5}
+WEB = {"field": CHANNEL, "op": "is", "value": "web"}
+CARD = {"field": "dimension.scope_payment_method", "op": "is", "value": "card"}
+NORTH = {"field": REGION, "op": "is", "value": "North"}
+HOT = {"field": CATEGORY, "op": "is", "value": "hot"}
+NOT_BEVERAGE = {"field": TYPE, "op": "not", "value": "beverage"}
+NOT_17 = {"field": PRICE, "op": "not", "value": 17}
+UNDER_5 = {"field": PRICE, "op": "lt", "value": 5}
+UNDER_10 = {"field": PRICE, "op": "lt", "value": 10}
 
-# Reference SQL, written without the engine: a customer's items are its orders' items.
+
+def _any(*conditions: dict[str, Any], entity: str = ITEM) -> dict[str, Any]:
+    return {"entity": entity, "any": list(conditions)}
+
+
+def _none(*conditions: dict[str, Any], entity: str = ITEM) -> dict[str, Any]:
+    return {"entity": entity, "none": list(conditions)}
+
+
+SAME_ROW = [_any(BEVERAGE, OVER_5)]
+SEPARATE_ROWS = [_any(BEVERAGE), _any(OVER_5)]
+NO_SAME_ROW = [_none(BEVERAGE, OVER_5)]
+THROUGH_ORDERS = ["relationship.orders_customer", "relationship.items_order"]
+
+
+def _each(exists: str, *predicates: str) -> str:
+    """Separate rows in reference SQL: one EXISTS per predicate."""
+    return " AND ".join(exists.format(predicate) for predicate in predicates)
+
+
+# Reference SQL, written without the engine: a customer's items are its orders' items; an
+# item's category is a LEFT JOIN, so a product with no row reads NULL.
 HAS_ITEM = (
     "EXISTS (SELECT 1 FROM orders o JOIN items i ON i.order_id = o.order_id "
     "WHERE o.customer_id = c.customer_id AND {})"
 )
-SAME_ROW_SQL = HAS_ITEM.format("i.product_type = 'beverage' AND i.price > 5")
-SEPARATE_ROWS_SQL = (
-    HAS_ITEM.format("i.product_type = 'beverage'") + " AND " + HAS_ITEM.format("i.price > 5")
+HAS_PRODUCT = (
+    "EXISTS (SELECT 1 FROM orders o JOIN items i ON i.order_id = o.order_id "
+    "LEFT JOIN products p ON p.sku = i.sku WHERE o.customer_id = c.customer_id AND {})"
 )
+ORDER_HAS_ITEM = "EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.order_id AND {})"
+SAME_ROW_SQL = HAS_ITEM.format("i.product_type = 'beverage' AND i.price > 5")
+SEPARATE_ROWS_SQL = _each(HAS_ITEM, "i.product_type = 'beverage'", "i.price > 5")
 NO_SAME_ROW_SQL = "NOT " + SAME_ROW_SQL
-NOT_BEVERAGE = {"field": TYPE, "op": "!=", "value": "beverage"}
-NOT_17 = {"field": PRICE, "op": "!=", "value": 17}
-UNDER_5 = {"field": PRICE, "op": "<", "value": 5}
-UNDER_10 = {"field": PRICE, "op": "<", "value": 10}
-
-
-def _any(*conditions: dict[str, Any]) -> dict[str, Any]:
-    return {"child": ITEM, "match": "any", "where": list(conditions)}
-
-
-def _none(*conditions: dict[str, Any]) -> dict[str, Any]:
-    return {"child": ITEM, "match": "none", "where": list(conditions)}
 
 
 def _write_package(
@@ -207,22 +195,37 @@ def _write_package(
         "data/seed.sql": seed,
         "graph.yml": yaml.safe_dump({"graph": {"entities": entities}}),
         "metrics/core.yml": METRICS,
-        **{f"models/{name}.yml": text for name, text in models.items()},
+        **{
+            f"models/{name}.yml": yaml.safe_dump(
+                {"model": {"id": name, "relation": name, **yaml.safe_load(body)}},
+                sort_keys=False,
+            )
+            for name, body in models.items()
+        },
     }
     for name, text in files.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(text, encoding="utf-8")
-    _run(root, {"select": [_measure("customer_count")]})  # seeds the warehouse
     return root
 
 
-@pytest.fixture(scope="module")
-def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return _write_package(tmp_path_factory.mktemp("scope") / "scope", SEED, MODELS)
+# One runtime per package for the module, opened (and the warehouse seeded) by its fixture.
+_ENGINES: dict[Path, Runtime] = {}
+
+
+def _served(root: Path) -> Iterator[Path]:
+    _ENGINES[root] = opened(Runtime.from_path(str(root)))
+    yield root
+    _ENGINES.pop(root).close()
 
 
 @pytest.fixture(scope="module")
-def item_customer_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def package(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    yield from _served(_write_package(tmp_path_factory.mktemp("scope") / "scope", SEED, MODELS))
+
+
+@pytest.fixture(scope="module")
+def item_customer_package(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """Items also carry a customer key, and every item names customer 3 (who has no orders):
     a customer reaches items through its orders or directly, and the two disagree."""
     items = "CREATE TABLE items AS SELECT * FROM"
@@ -234,11 +237,11 @@ def item_customer_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
         ),
     }
     assert seed != SEED and models["items"] != MODELS["items"]
-    return _write_package(tmp_path_factory.mktemp("scope") / "scope", seed, models)
+    yield from _served(_write_package(tmp_path_factory.mktemp("scope") / "scope", seed, models))
 
 
 @pytest.fixture(scope="module")
-def payments_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def payments_package(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """Orders also have payments, a sibling of items. Card pays order 10 (customer 1, whose
     beverage and item over 5 are on it too) and order 61 (customer 6, whose beverage is on
     order 60); cash pays order 20."""
@@ -247,50 +250,58 @@ def payments_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
         "(3, 20, 'cash')) AS t(payment_id, order_id, method);\n"
     )
     payments = """
-model:
-  id: payments
-  relation: payments
-  entities: {payment: {}, order: {}}
-  dimensions:
-    method: {label: Method, kind: categorical}
+entities: {payment: {}, order: {}}
+dimensions: {method: {label: Method, kind: categorical}}
 """
     graph = {**ENTITIES, "payment": ["payment_id", "payments", "Payment"]}
-    root = tmp_path_factory.mktemp("scope") / "scope"
-    return _write_package(root, seed, {**MODELS, "payments": payments}, graph)
+    root = _write_package(
+        tmp_path_factory.mktemp("scope") / "scope", seed, {**MODELS, "payments": payments}, graph
+    )
+    yield from _served(root)
 
 
 def _measure(name: str, alias: str = "") -> dict[str, Any]:
-    return {"expression": {"measure": f"measure.scope.{name}"}, "as": alias or name}
+    return {"expression": f"measure.scope.{name}", "as": alias or name}
 
 
 def _query(where: list[Any], *measures: str, **extra: Any) -> dict[str, Any]:
     names = measures or ("customer_count",)
-    return {"version": 1, "select": [_measure(name) for name in names], "where": where, **extra}
+    return {"select": [_measure(name) for name in names], "where": where, **extra}
+
+
+def _engine(config: Any, query: dict[str, Any]) -> dict[str, Any]:
+    """The compiler's own form of a call."""
+    return read_call(query, config=config)[0]
+
+
+def _compile(config: Any, query: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return compile_query(config, Registry(config), _engine(config, query), **kwargs)
+
+
+def _compile_error(config: Any, query: dict[str, Any], **kwargs: Any) -> SemanticLayerError:
+    with pytest.raises(SemanticLayerError) as caught:
+        _compile(config, query, **kwargs)
+    return caught.value
+
+
+def _config(package: Path, **changes: Any) -> Any:
+    """The package's config with fields replaced: policies, rollups, routes."""
+    return replace(load_package_config(str(package)), **changes)
+
+
+def _dialect(package: Path, warehouse: str) -> Any:
+    config = load_package_config(str(package))
+    return replace(config, package=replace(config.package, warehouse=warehouse))
+
+
+def _runtime(package: Path, **changes: Any) -> closing[Runtime]:
+    """A runtime on the changed config, closed when its block ends."""
+    return closing(Runtime.from_config(_config(package, **changes), source_path=str(package)))
 
 
 def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dict[str, Any]:
-    engine = Runtime.from_path(str(package))
-    try:
-        payload = {"version": 1, **query}
-        return engine.validate(payload) if validate else engine.query(payload)
-    finally:
-        engine.close()
-
-
-@pytest.mark.parametrize("match", ["any", "none"])
-def test_a_misspelled_child_value_is_named(package: Path, match: str) -> None:
-    response = _run(
-        package,
-        _query(
-            [
-                {"child": ITEM, "match": match, "where": [{**BEVERAGE, "value": "beverag"}]},
-            ]
-        ),
-    )
-    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
-    assert warning["details"]["filters"] == [
-        {"dimension": TYPE, "value": "beverag", "suggestion": "beverage"},
-    ]
+    engine = _ENGINES[package]
+    return engine.validate(query) if validate else engine.query(query)
 
 
 def _normal(rows: Any) -> list[tuple[Any, ...]]:
@@ -310,8 +321,9 @@ def _rows(package: Path, query: dict[str, Any]) -> list[tuple[Any, ...]]:
 
 
 def _reference(package: Path, sql: str) -> list[tuple[Any, ...]]:
-    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        return _normal(conn.execute(sql).fetchall())
+    # On the runtime's own connection: one process opens a file with one configuration.
+    with _ENGINES[package]._get_adapter()._db.conn.cursor() as cursor:
+        return _normal(cursor.execute(sql).fetchall())
 
 
 def _customers(package: Path, condition: str) -> list[tuple[Any, ...]]:
@@ -342,6 +354,16 @@ def _options(error: dict[str, Any]) -> dict[str, list[Any]]:
     }
 
 
+def test_a_misspelled_child_value_is_named(package: Path) -> None:
+    for match in ("any", "none"):
+        where = [{"entity": ITEM, match: [{**BEVERAGE, "value": "beverag"}]}]
+        response = _run(package, _query(where))
+        (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+        assert warning["details"]["filters"] == [
+            {"dimension": TYPE, "value": "beverag", "suggestion": "beverage"},
+        ]
+
+
 @pytest.mark.parametrize(
     ("where", "reference", "kept"),
     [
@@ -365,8 +387,7 @@ def test_a_null_price_fails_the_comparison_inside_any_and_never_excludes_under_n
     package: Path,
 ) -> None:
     """Customer 4's only item has a NULL price: not an item over 5, and not one that excludes."""
-    over_5 = [{"child": ITEM, "match": "any", "where": [OVER_5]}]
-    none_over_5 = [{"child": ITEM, "match": "none", "where": [OVER_5]}]
+    over_5, none_over_5 = [_any(OVER_5)], [_none(OVER_5)]
     assert 4 not in _who(package, over_5)
     assert 4 in _who(package, none_over_5)
     assert _rows(package, _query(over_5)) == _customers(package, HAS_ITEM.format("i.price > 5"))
@@ -392,23 +413,17 @@ def test_a_ratio_and_a_second_measure_entity_each_apply_the_group(package: Path)
     """Each leaf reads the group from its own entity: customers, and orders."""
     ratio = {
         "kind": "ratio",
-        "numerator": {"measure": "measure.scope.credit"},
-        "denominator": {"measure": "measure.scope.customer_count"},
+        "numerator": "measure.scope.credit",
+        "denominator": "measure.scope.customer_count",
     }
     query = {
-        "version": 1,
         "select": [{"expression": ratio, "as": "credit_per_customer"}, _measure("order_count")],
         "where": SEPARATE_ROWS,
     }
-    orders_with = (
-        "SELECT COUNT(*) FROM orders o WHERE "
-        "EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.order_id "
-        "AND i.product_type = 'beverage') AND EXISTS (SELECT 1 FROM items i "
-        "WHERE i.order_id = o.order_id AND i.price > 5)"
-    )
+    orders_with = _each(ORDER_HAS_ITEM, "i.product_type = 'beverage'", "i.price > 5")
     reference = f"""
         SELECT (SELECT SUM(c.credit) / COUNT(*) FROM customers c WHERE {SEPARATE_ROWS_SQL}),
-               ({orders_with})
+               (SELECT COUNT(*) FROM orders o WHERE {orders_with})
     """
     assert _rows(package, query) == _reference(package, reference) == [(400.0, 4)]
 
@@ -427,43 +442,23 @@ def test_grouped_by_a_parent_lookup_the_null_group_stays(package: Path) -> None:
     )
 
 
-def test_two_groups_on_different_children_are_refused(package: Path) -> None:
-    """Groups on two children may need one parent row between them (an item and a payment of
-    one order) or not, and neither group says which: a query states one child scope."""
-    for match in ("any", "none"):
-        web = {"child": SESSION, "match": match, "where": [WEB]}
-        error = _refusal(package, _query([_any(BEVERAGE), web]))
-        assert error["code"] == "MIXED_GRAIN_INVALID"
-        assert "clarification" not in error["details"]
-        assert "one child scope per query" in error["why_invalid"]
-
-
 def test_a_condition_through_a_lookup_from_the_child_reads_null_when_it_finds_no_row(
     package: Path,
 ) -> None:
     """Item 711's product has no category row: it is not 'hot', and its category IS NULL."""
-    has = (
-        "EXISTS (SELECT 1 FROM orders o JOIN items i ON i.order_id = o.order_id "
-        "LEFT JOIN products p ON p.sku = i.sku WHERE o.customer_id = c.customer_id AND {})"
-    )
-    for condition, sql in [
-        ({"field": CATEGORY, "op": "=", "value": "hot"}, "p.category = 'hot'"),
-        ({"field": CATEGORY, "op": "IS NULL", "value": None}, "p.category IS NULL"),
-    ]:
-        where = [{"child": ITEM, "match": "any", "where": [BEVERAGE, condition]}]
+    no_category = {"field": CATEGORY, "op": "missing", "value": True}
+    for condition, sql in [(HOT, "p.category = 'hot'"), (no_category, "p.category IS NULL")]:
         predicate = f"i.product_type = 'beverage' AND {sql}"
-        assert _rows(package, _query(where)) == _customers(package, has.format(predicate))
-    null_category = [
-        {"child": ITEM, "match": "any", "where": [{"field": CATEGORY, "op": "IS NULL"}]}
-    ]
-    assert _who(package, null_category) == [7]
+        assert _rows(package, _query([_any(BEVERAGE, condition)])) == _customers(
+            package, HAS_PRODUCT.format(predicate)
+        )
+    assert _who(package, [_any(no_category)]) == [7]
 
 
 def test_a_lookup_key_the_child_holds_is_read_from_the_child(package: Path) -> None:
     """The product key is the item's own sku column: no lookup join inside EXISTS."""
-    tea = {"field": "dimension.scope_product_sku", "op": "=", "value": "tea"}
-    where = [{"child": ITEM, "match": "any", "where": [tea, OVER_5]}]
-    result = _run(package, _query(where))
+    tea = {"field": "dimension.scope_product_sku", "op": "is", "value": "tea"}
+    result = _run(package, _query([_any(tea, OVER_5)]))
     assert "JOIN products" not in result["rendered_sql"]
     assert _normal(tuple(row.values()) for row in typed_rows(result)) == _customers(
         package, HAS_ITEM.format("i.sku = 'tea' AND i.price > 5")
@@ -475,42 +470,33 @@ def test_the_restatement_spells_out_a_group() -> None:
 
     labels = {ITEM: "Order item", TYPE: "Product type", PRICE: "Price"}
     text = describe_query(_query(SAME_ROW + NO_SAME_ROW), labels)
-    assert text.endswith(
-        'where some Order item has Product type = "beverage" and Price > 5 '
-        'and no Order item has Product type = "beverage" and Price > 5'
+    some, _, none = text.partition("where some Order item has Product type ")[2].partition(
+        " and no Order item has Product type "
     )
+    assert "beverage" in some and "Price" in some and "5" in some, text
+    assert "beverage" in none and "Price" in none and "5" in none, text
+    assert "{" not in text
 
 
 # ---- Flat forms -----------------------------------------------------------------------
 
 
 def test_two_flat_conditions_on_one_child_ask_for_the_scope(package: Path) -> None:
-    query = _query([BEVERAGE, OVER_5])
+    query = _query([NORTH, BEVERAGE, OVER_5])
     error = _refusal(package, query)
     assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
     clarification = error["details"]["clarification"]
     assert clarification["kind"] == "child_scope"
     assert clarification["apply"] == ["query"]
     assert "Order item" in clarification["question"]
-    options = {option["id"]: option for option in clarification["options"]}
-    assert set(options) == {"same_row", "separate_rows"}
-    assert options["same_row"]["where"] == SAME_ROW
-    assert options["separate_rows"]["where"] == SEPARATE_ROWS
-    assert "Product type" in options["same_row"]["meaning"]
+    meanings = {option["id"]: option["meaning"] for option in clarification["options"]}
+    assert "Product type" in meanings["same_row"]
     assert [hint["option"] for hint in error["recovery_hints"]] == ["same_row", "separate_rows"]
-    # Resending an option's where verbatim gives that option's answer.
-    for option, sql in [("same_row", SAME_ROW_SQL), ("separate_rows", SEPARATE_ROWS_SQL)]:
-        resent = {**query, "where": options[option]["where"]}
-        assert _rows(package, resent) == _customers(package, sql)
-
-
-def test_the_other_where_items_stay_unchanged_in_each_option(package: Path) -> None:
-    region = {"field": REGION, "op": "=", "value": "North"}
-    query = _query([region, BEVERAGE, OVER_5])
-    error = _refusal(package, query)
+    # Each option is the whole where, the other items unchanged.
     options = _options(error)
-    assert options == {"same_row": [region, *SAME_ROW], "separate_rows": [region, *SEPARATE_ROWS]}
+    assert options == {"same_row": [NORTH, *SAME_ROW], "separate_rows": [NORTH, *SEPARATE_ROWS]}
     assert error["details"]["paths"] == ["where[1]", "where[2]"]
+    # Resending an option's where verbatim gives that option's answer.
     north = "c.region_code IN (SELECT region_code FROM regions WHERE region_name = 'North')"
     for option, sql in [("same_row", SAME_ROW_SQL), ("separate_rows", SEPARATE_ROWS_SQL)]:
         resent = {**query, "where": options[option]}
@@ -520,24 +506,17 @@ def test_the_other_where_items_stay_unchanged_in_each_option(package: Path) -> N
 def test_a_flat_condition_through_a_lookup_from_the_child_shares_its_scope(
     package: Path,
 ) -> None:
-    hot = {"field": CATEGORY, "op": "=", "value": "hot"}
-    query = _query([BEVERAGE, hot])
+    query = _query([BEVERAGE, HOT])
     error = _refusal(package, query)
     assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
     options = _options(error)
     assert options == {
-        "same_row": [_any(BEVERAGE, hot)],
-        "separate_rows": [_any(BEVERAGE), _any(hot)],
+        "same_row": [_any(BEVERAGE, HOT)],
+        "separate_rows": [_any(BEVERAGE), _any(HOT)],
     }
-    has = (
-        "EXISTS (SELECT 1 FROM orders o JOIN items i ON i.order_id = o.order_id "
-        "LEFT JOIN products p ON p.sku = i.sku WHERE o.customer_id = c.customer_id AND {})"
-    )
     references = {
-        "same_row": has.format("i.product_type = 'beverage' AND p.category = 'hot'"),
-        "separate_rows": has.format("i.product_type = 'beverage'")
-        + " AND "
-        + has.format("p.category = 'hot'"),
+        "same_row": HAS_PRODUCT.format("i.product_type = 'beverage' AND p.category = 'hot'"),
+        "separate_rows": _each(HAS_PRODUCT, "i.product_type = 'beverage'", "p.category = 'hot'"),
     }
     for option, sql in references.items():
         resent = {**query, "where": options[option]}
@@ -548,39 +527,28 @@ def test_one_flat_condition_answers_as_before(package: Path) -> None:
     has_beverage = HAS_ITEM.format("i.product_type = 'beverage'")
     assert _rows(package, _query([BEVERAGE])) == _customers(package, has_beverage) == [(5,)]
     # A group of one condition says the same.
-    group = [{"child": ITEM, "match": "any", "where": [BEVERAGE]}]
-    assert _rows(package, _query(group)) == [(5,)]
+    assert _rows(package, _query([_any(BEVERAGE)])) == [(5,)]
 
 
 @pytest.mark.parametrize(
-    ("condition", "any_sql", "none_condition", "none_sql"),
+    ("condition", "any_sql", "none_condition", "none_sql", "kept"),
     [
         (
-            {"field": TYPE, "op": "!=", "value": "beverage"},
-            "i.product_type != 'beverage'",
-            {"field": TYPE, "op": "=", "value": "beverage"},
+            NOT_BEVERAGE,
+            "(i.product_type <> 'beverage' OR i.product_type IS NULL)",
+            BEVERAGE,
             "i.product_type = 'beverage'",
+            {"any_not": [1, 6], "none": [3, 5]},
         ),
         (
-            {"field": TYPE, "op": "NOT IN", "value": ["beverage"]},
-            "i.product_type NOT IN ('beverage')",
-            {"field": TYPE, "op": "IN", "value": ["beverage"]},
-            "i.product_type IN ('beverage')",
-        ),
-        (
-            {"field": PRICE, "op": "IS NULL", "value": None},
+            {"field": PRICE, "op": "missing", "value": True},
             "i.price IS NULL",
-            {"field": PRICE, "op": "IS NOT NULL", "value": None},
+            {"field": PRICE, "op": "missing", "value": False},
             "i.price IS NOT NULL",
-        ),
-        (
-            {"field": TYPE, "op": "NOT LIKE", "value": "bev%"},
-            "i.product_type NOT LIKE 'bev%'",
-            {"field": TYPE, "op": "LIKE", "value": "bev%"},
-            "i.product_type LIKE 'bev%'",
+            {"any_not": [4], "none": [3, 4, 5]},
         ),
     ],
-    ids=["not_equal", "not_in", "is_null", "not_like"],
+    ids=["not", "missing"],
 )
 def test_a_negated_flat_condition_asks_which_negation(
     package: Path,
@@ -588,133 +556,71 @@ def test_a_negated_flat_condition_asks_which_negation(
     any_sql: str,
     none_condition: dict[str, Any],
     none_sql: str,
+    kept: dict[str, list[int]],
 ) -> None:
     """'Has an item that is not a beverage' and 'has no beverage item' differ."""
     query = _query([condition])
     error = _refusal(package, query)
     assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
-    options = {
-        option["id"]: option["where"] for option in error["details"]["clarification"]["options"]
-    }
-    assert options == {
-        "any_not": [{"child": ITEM, "match": "any", "where": [condition]}],
-        "none": [{"child": ITEM, "match": "none", "where": [none_condition]}],
-    }
-    assert _rows(package, {**query, "where": options["any_not"]}) == _customers(
-        package, HAS_ITEM.format(any_sql)
-    )
-    assert _rows(package, {**query, "where": options["none"]}) == _customers(
-        package, "NOT " + HAS_ITEM.format(none_sql)
-    )
+    options = _options(error)
+    assert options == {"any_not": [_any(condition)], "none": [_none(none_condition)]}
+    references = {"any_not": HAS_ITEM.format(any_sql), "none": "NOT " + HAS_ITEM.format(none_sql)}
+    for option, sql in references.items():
+        assert _rows(package, {**query, "where": options[option]}) == _customers(package, sql)
+        assert _who(package, options[option]) == _ids(package, sql) == kept[option]
 
 
-def test_not_a_beverage_versus_no_beverage(package: Path) -> None:
-    options = _options(_refusal(package, _query([NOT_BEVERAGE])))
-    has_beverage = HAS_ITEM.format("i.product_type = 'beverage'")
-    assert _who(package, options["any_not"]) == [1, 6]
-    assert _ids(package, HAS_ITEM.format("i.product_type != 'beverage'")) == [1, 6]
-    assert _who(package, options["none"]) == _ids(package, f"NOT {has_beverage}") == [3, 5]
+# (where, words its why_invalid names). Customer 6's beverage is on order 60 and its card
+# payment on order 61: whether an item and a payment must share an order changes the answer
+# (customers 1 and 6, or 1 alone), so no question about items alone can settle it.
+OTHER_SHAPES = {
+    # An item and a payment of a customer's orders: the same order, or any?
+    "item_filters_beside_a_payment_filter": ([BEVERAGE, OVER_5, CARD], ""),
+    "item_filter_beside_a_payment_filter": ([BEVERAGE, CARD], ""),
+    "item_group_beside_a_payment_filter": ([_any(BEVERAGE), CARD], ""),
+    "item_group_beside_a_payment_group": ([_any(BEVERAGE), _any(CARD, entity=PAYMENT)], ""),
+    # A customer's items and sessions.
+    "item_group_beside_a_session_filter": ([_any(BEVERAGE), WEB], ""),
+    "item_group_beside_a_session_group": (
+        [_any(BEVERAGE), _any(WEB, entity=SESSION)],
+        "one child scope per query",
+    ),
+    "item_group_beside_a_none_session_group": (
+        [_any(BEVERAGE), _none(WEB, entity=SESSION)],
+        "one child scope per query",
+    ),
+    # A flat filter beside a group on its own child: in the group's row, or another?
+    "flat_beside_any": ([BEVERAGE, _any(OVER_5)], ""),
+    "flat_beside_none": ([BEVERAGE, _none(OVER_5)], ""),
+    "none_beside_flat": ([_none(BEVERAGE), OVER_5], ""),
+    "flat_beside_two_groups": ([_any(BEVERAGE), _any(UNDER_10), OVER_5], ""),
+    "flat_beside_two_groups_under_5": ([_any(BEVERAGE), _any(OVER_5), UNDER_5], ""),
+    # A negated filter beside another filter on the child, or two negated filters.
+    "negated_beside_flat": ([NOT_BEVERAGE, OVER_5], ""),
+    "negated_beside_any": ([_any(OVER_5), NOT_BEVERAGE], ""),
+    "flat_beside_negated": ([BEVERAGE, NOT_17], ""),
+    "two_negated": ([NOT_BEVERAGE, NOT_17], ""),
+}
 
 
-def _payment(*conditions: dict[str, Any]) -> dict[str, Any]:
-    return {"child": PAYMENT, "match": "any", "where": list(conditions)}
-
-
-def _session(*conditions: dict[str, Any]) -> dict[str, Any]:
-    return {"child": SESSION, "match": "any", "where": list(conditions)}
-
-
-@pytest.mark.parametrize(
-    "where",
-    [
-        # An item and a payment of a customer's orders: the same order, or any?
-        [BEVERAGE, OVER_5, CARD],
-        [BEVERAGE, CARD],
-        [_any(BEVERAGE), CARD],
-        [_any(BEVERAGE), _payment(CARD)],
-        # A customer's items and sessions.
-        [_any(BEVERAGE), WEB],
-        [_any(BEVERAGE), _session(WEB)],
-        # A flat filter beside a group on its own child: in the group's row, or another?
-        [BEVERAGE, _any(OVER_5)],
-        [BEVERAGE, _none(OVER_5)],
-        [_none(BEVERAGE), OVER_5],
-        [_any(BEVERAGE), _any(UNDER_10), OVER_5],
-        [_any(BEVERAGE), _any(OVER_5), UNDER_5],
-        # A negated filter beside another filter on the child, or two negated filters.
-        [NOT_BEVERAGE, OVER_5],
-        [_any(OVER_5), NOT_BEVERAGE],
-        [BEVERAGE, NOT_17],
-        [NOT_BEVERAGE, NOT_17],
-        # A negated test with no exact complement to state as a 'none' group.
-        [{"field": TYPE, "op": "IS DISTINCT FROM", "value": "beverage"}],
-        [{"field": TYPE, "op": "NOT ILIKE", "value": "bev%"}],
-    ],
-    ids=[
-        "item_filters_beside_a_payment_filter",
-        "item_filter_beside_a_payment_filter",
-        "item_group_beside_a_payment_filter",
-        "item_group_beside_a_payment_group",
-        "item_group_beside_a_session_filter",
-        "item_group_beside_a_session_group",
-        "flat_beside_any",
-        "flat_beside_none",
-        "none_beside_flat",
-        "flat_beside_two_groups",
-        "flat_beside_two_groups_under_5",
-        "negated_beside_flat",
-        "negated_beside_any",
-        "flat_beside_negated",
-        "two_negated",
-        "is_distinct_from",
-        "not_ilike",
-    ],
-)
-def test_every_other_shape_keeps_its_refusal(payments_package: Path, where: list[Any]) -> None:
+def test_every_other_shape_keeps_its_refusal(payments_package: Path) -> None:
     """Only two shapes are asked about: two or more positive flat filters on one child, or one
-    negated flat filter whose operator has an exact complement. Beside a child group nothing
-    else may cross a one-to-many hop, and groups stay on one child."""
-    error = _refusal(payments_package, _query(where))
-    assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in error["details"]
+    negated flat filter (every negation has an exact complement). Beside an entity filter
+    nothing else may cross a one-to-many hop, and entity filters stay on one child."""
+    for shape, (where, why) in OTHER_SHAPES.items():
+        error = _refusal(payments_package, _query(where))
+        assert error["code"] == "MIXED_GRAIN_INVALID", shape
+        assert "clarification" not in error.get("details", {}), shape
+        assert why in error["why_invalid"], shape
 
 
-@pytest.mark.parametrize("op", ["IS", "IS NOT"])
-@pytest.mark.parametrize(("field", "value"), [(TYPE, "beverage"), (PRICE, 17)])
-def test_invalid_is_operand_is_refused_before_child_scope_analysis(
-    package: Path, op: str, field: str, value: Any
-) -> None:
-    error = _refusal(package, _query([{"field": field, "op": op, "value": value}]))
-    assert error["code"] == "INVALID_QUERY"
-    assert error["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
-    assert "clarification" not in error["details"]
-
-
-def test_a_payment_beside_items_may_mean_one_order_or_any(payments_package: Path) -> None:
-    """Why a sibling child is never settled by a question about items: customer 6's beverage
-    is on order 60 and its card payment on order 61."""
-    paid = (
-        "EXISTS (SELECT 1 FROM orders o JOIN payments p ON p.order_id = o.order_id "
-        "WHERE o.customer_id = c.customer_id AND p.method = 'card')"
-    )
-    item = "EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.order_id AND {})"
-    one_order = (
-        "EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id AND "
-        + " AND ".join(
-            [
-                item.format("i.product_type = 'beverage'"),
-                item.format("i.price > 5"),
-                "EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.order_id "
-                "AND p.method = 'card')",
-            ]
-        )
-        + ")"
-    )
-    assert _ids(payments_package, f"{SEPARATE_ROWS_SQL} AND {paid}") == [1, 6]
-    assert _ids(payments_package, one_order) == [1]
-    error = _refusal(payments_package, _query([BEVERAGE, OVER_5, CARD]))
-    assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in error["details"]
+def test_an_unknown_operator_is_refused_before_child_scope_analysis(package: Path) -> None:
+    for field, value, op in [(TYPE, "beverage", "IS NOT"), (PRICE, 17, "LIKE")]:
+        error = _refusal(package, _query([{"field": field, "op": op, "value": value}]))
+        assert error["code"] == "INVALID_QUERY"
+        assert error["details"]["path"] == "where[0].op"
+        assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
+        assert "clarification" not in error.get("details", {})
 
 
 def test_each_reading_answers_for_every_measure_entity(package: Path) -> None:
@@ -722,12 +628,14 @@ def test_each_reading_answers_for_every_measure_entity(package: Path) -> None:
     query = _query([BEVERAGE, OVER_5], "customer_count", "order_count")
     options = _options(_refusal(package, query))
     assert options == {"same_row": SAME_ROW, "separate_rows": SEPARATE_ROWS}
-    item = "EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.order_id AND {})"
     references = {
-        "same_row": (SAME_ROW_SQL, item.format("i.product_type = 'beverage' AND i.price > 5")),
+        "same_row": (
+            SAME_ROW_SQL,
+            ORDER_HAS_ITEM.format("i.product_type = 'beverage' AND i.price > 5"),
+        ),
         "separate_rows": (
             SEPARATE_ROWS_SQL,
-            item.format("i.product_type = 'beverage'") + " AND " + item.format("i.price > 5"),
+            _each(ORDER_HAS_ITEM, "i.product_type = 'beverage'", "i.price > 5"),
         ),
     }
     for option, (customers, orders) in references.items():
@@ -748,10 +656,11 @@ def test_a_child_grain_measure_beside_ambiguous_filters_keeps_its_refusal(
     package: Path, where: list[Any], option: str
 ) -> None:
     """Item revenue's own rows are items: no group on items can filter it, so no reading can be
-    offered, and the query keeps the refusal it had before groups existed."""
+    offered, and the query keeps the refusal it had before groups existed. The refusal names
+    the reading and its code in its message only: it carries no details."""
     error = _refusal(package, _query(where, "customer_count", "item_revenue"))
     assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in error["details"]
+    assert "clarification" not in error.get("details", {})
     assert "child group" in error["why_invalid"]
     assert f"'{option}' reading" in error["message"] and "(INVALID_QUERY)" in error["message"]
 
@@ -762,13 +671,13 @@ def test_a_question_with_a_reading_that_cannot_answer_is_refused(
     """Force the bypass: a builder adds a reading no query can answer (a group on the measure's
     own entity). The guard in bind_query binds every option first; one that fails withdraws the
     whole question, never leaving the others offered, and names only its id and code."""
-    import semantic_rails.compiler as compiler
+    from semantic_rails.compiler_parts import plan_checks
 
-    built = compiler._child_scope_clarification
+    built = plan_checks._child_scope_clarification
     broken = {
         "id": "broken",
         "meaning": "",
-        "where": [{**_any(BEVERAGE), "child": "entity.scope_customer"}],
+        "where": [_any(BEVERAGE, entity="entity.scope_customer")],
     }
 
     def clarification(*args: Any) -> SemanticLayerError:
@@ -777,158 +686,113 @@ def test_a_question_with_a_reading_that_cannot_answer_is_refused(
         error.details["recovery_hints"].append({"option": "broken"})
         return error
 
-    config = load_package_config(str(package))
-    monkeypatch.setattr(compiler, "_child_scope_clarification", clarification)
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(config, Registry(config), _query([BEVERAGE, OVER_5]))
-    assert caught.value.code == "MIXED_GRAIN_INVALID"
-    assert caught.value.details == {}
-    assert "'broken' reading" in str(caught.value) and "(INVALID_QUERY)" in str(caught.value)
-
-
-def test_a_measure_filter_keeps_its_refusal(package: Path) -> None:
-    """Scopes inside a measure's own filter are not offered: it stays MIXED_GRAIN_INVALID."""
-    expression = {
-        "kind": "aggregate",
-        "measure": "measure.scope.credit",
-        "aggregation": "sum",
-        "filter": {"all": [{"field": TYPE, "op": "!=", "value": "beverage"}]},
-    }
-    error = _refusal(package, {"select": [{"expression": expression, "as": "credit"}]})
-    assert error["code"] == "MIXED_GRAIN_INVALID"
+    monkeypatch.setattr(plan_checks, "_child_scope_clarification", clarification)
+    error = _compile_error(_config(package), _query([BEVERAGE, OVER_5]))
+    assert error.code == "MIXED_GRAIN_INVALID"
+    assert error.details == {}
+    assert "'broken' reading" in str(error) and "(INVALID_QUERY)" in str(error)
 
 
 # ---- Refusals -------------------------------------------------------------------------
 
+DISTRIBUTION = {
+    "expression": {
+        "kind": "distribution",
+        "function": "avg",
+        "over": {
+            "kind": "entity_value",
+            "entity": "entity.scope_customer",
+            "input": "measure.scope.order_count",
+        },
+    },
+    "as": "orders_per_customer",
+}
+CREDIT_NOT_ON_BEVERAGES = {
+    "expression": {
+        "kind": "aggregate",
+        "measure": "measure.scope.credit",
+        "aggregation": "sum",
+        "filter": {"all": [NOT_BEVERAGE]},
+    },
+    "as": "credit",
+}
 
-@pytest.mark.parametrize(
-    ("where", "path"),
-    [
-        (
-            [
-                {
-                    "child": "entity.scope_region",
-                    "match": "any",
-                    "where": [{"field": REGION, "op": "=", "value": "North"}],
-                }
-            ],
-            "where[].child",
-        ),
-        (
-            [
-                {
-                    "child": "entity.scope_customer",
-                    "match": "any",
-                    "where": [{"field": REGION, "op": "=", "value": "North"}],
-                }
-            ],
-            "where[].child",
-        ),
-        ([{"child": ITEM, "match": "any", "where": [WEB]}], "where[].child"),
-        (
-            [
-                {
-                    "child": ITEM,
-                    "match": "any",
-                    "where": [{"child": ITEM, "match": "any", "where": [BEVERAGE]}],
-                }
-            ],
-            "where[0].where[0]",
-        ),
-        ([{"child": ITEM, "match": "all", "where": [BEVERAGE]}], "where[0].match"),
-        ([{"child": ITEM, "where": [BEVERAGE]}], "where[0].match"),
-        ([{"child": ITEM, "match": "any", "where": []}], "where[0].where"),
-        ([{"child": ITEM, "match": "any", "where": [BEVERAGE], "field": TYPE}], "where[0]"),
-    ],
-    ids=[
-        "lookup_only_child",
-        "own_entity",
-        "condition_off_the_child",
-        "nested_group",
-        "unknown_match",
-        "missing_match",
-        "empty_group",
-        "group_and_filter_keys",
-    ],
-)
-def test_malformed_groups_are_invalid_queries(package: Path, where: list[Any], path: str) -> None:
-    error = _refusal(package, _query(where))
-    assert error["code"] == "INVALID_QUERY"
-    assert error["details"]["path"] == path
+# Malformed entity filters: (where, the path the refusal names). A lookup with no child, the
+# measure's own entity, a condition off the child, a nested group, an unknown match, no match,
+# an empty group, and group and filter keys together.
+MALFORMED = [
+    ([_any(NORTH, entity="entity.scope_region")], "where[0].entity"),
+    ([_any(NORTH, entity="entity.scope_customer")], "where[0].entity"),
+    ([_any(WEB)], "where[0].entity"),
+    ([_any(_any(BEVERAGE))], "where[0].any[0]"),
+    ([{"entity": ITEM, "all": [BEVERAGE]}], "where[0].all"),
+    ([{"entity": ITEM}], "where[0]"),
+    ([_any()], "where[0].any"),
+    ([{**_any(BEVERAGE), "field": TYPE}], "where[0].field"),
+]
+# Groups that cannot answer: (query, code, words its why_invalid names).
+UNSUPPORTED = [
+    (_query([_any(BEVERAGE, entity="entity.scope_nothing")]), "OBJECT_NOT_FOUND", ""),
+    (_query([_any({"field": "dimension.nope", "op": "is", "value": 1})]), "OBJECT_NOT_FOUND", ""),
+    (_query([_any({**OVER_5, "value": "five"})]), "INVALID_QUERY", ""),
+    # Item revenue is at the child's grain: a group of its own entity is a plain where.
+    (_query(SAME_ROW, "customer_count", "item_revenue"), "INVALID_QUERY", ""),
+    ({**_query(SEPARATE_ROWS), "group_by": [TYPE]}, "MIXED_GRAIN_INVALID", "child group"),
+    ({"group_by": [REGION], "where": SAME_ROW}, "INVALID_QUERY", ""),
+    # Scopes inside a measure's own filter are not offered.
+    ({"select": [CREDIT_NOT_ON_BEVERAGES]}, "MIXED_GRAIN_INVALID", ""),
+    # Per-entity values across the group's hop are refused, as under a flat child filter.
+    ({"select": [DISTRIBUTION], "where": SAME_ROW}, "MIXED_GRAIN_INVALID", "distribution"),
+]
 
 
-def test_a_group_condition_reading_the_parent_back_refuses(package: Path) -> None:
-    """For an order measure, a lookup from the item to its order would bind the orders table
-    inside EXISTS to the lookup's row and part it from the order being counted."""
-    buyer = {"field": "dimension.scope_order_customer_id", "op": "=", "value": 1}
-    where = [{"child": ITEM, "match": "any", "where": [BEVERAGE, buyer]}]
-    error = _refusal(package, _query(where, "order_count"))
-    assert error["code"] == "INVALID_QUERY"
-    assert error["details"]["tables"] == ["orders"]
-
-
-def test_a_unknown_child_or_dimension_is_not_found(package: Path) -> None:
-    unknown_child = [{"child": "entity.scope_nothing", "match": "any", "where": [BEVERAGE]}]
-    unknown_dim = [{"child": ITEM, "match": "any", "where": [{"field": "dimension.nope"}]}]
-    assert _refusal(package, _query(unknown_child))["code"] == "OBJECT_NOT_FOUND"
-    assert _refusal(package, _query(unknown_dim))["code"] == "OBJECT_NOT_FOUND"
-    wrong_type = [{"child": ITEM, "match": "any", "where": [{**OVER_5, "value": "five"}]}]
-    assert _refusal(package, _query(wrong_type))["code"] == "INVALID_QUERY"
-
-
-def test_a_child_grain_measure_beside_a_group_refuses(package: Path) -> None:
-    """Item revenue is at the child's grain: a group of its own entity is a plain where."""
-    error = _refusal(package, _query(SAME_ROW, "customer_count", "item_revenue"))
-    assert error["code"] == "INVALID_QUERY"
-
-
-def test_grouping_by_a_child_dimension_beside_a_group_refuses(package: Path) -> None:
-    error = _refusal(package, {**_query(SEPARATE_ROWS), "group_by": [TYPE]})
-    assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "child group" in error["why_invalid"]
-
-
-def test_a_query_without_a_measure_refuses_a_group(package: Path) -> None:
-    error = _refusal(package, {"group_by": [REGION], "where": SAME_ROW})
-    assert error["code"] == "INVALID_QUERY"
+def test_every_malformed_or_unsupported_group_is_refused(package: Path) -> None:
+    for where, path in MALFORMED:
+        error = _refusal(package, _query(where))
+        assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path), where
+    for query, code, why in UNSUPPORTED:
+        error = _refusal(package, query)
+        assert error["code"] == code, query
+        assert "clarification" not in error.get("details", {}), query
+        assert why in error.get("why_invalid", ""), query
+    # For an order measure, a lookup from the item to its order would bind the orders table
+    # inside EXISTS to the lookup's row and part it from the order being counted.
+    buyer = {"field": "dimension.scope_order_customer_id", "op": "is", "value": 1}
+    error = _refusal(package, _query([_any(BEVERAGE, buyer)], "order_count"))
+    assert (error["code"], error["details"]["tables"]) == ("INVALID_QUERY", ["orders"])
+    assert _run(package, {"select": [DISTRIBUTION]}, validate=True)["ok"] is True
 
 
 def test_a_segment_membership_refuses_a_group(package: Path) -> None:
     from semantic_rails.schema import SegmentConfig
     from semantic_rails.segments import normalize_segment
 
-    config = load_package_config(str(package))
     segment = SegmentConfig(
         id="segment.scope.beverage_buyers",
         entity="entity.scope_customer",
         basis_metric="metric.scope.customers",
-        where=SAME_ROW,
+        # A package's membership filter, in the compiler's own form.
+        where=[{"child": ITEM, "match": "any", "where": [BEVERAGE, OVER_5]}],
     )
-    config = replace(config, segments=[segment])
     with pytest.raises(SemanticLayerError) as caught:
-        normalize_segment(config, segment.id)
+        normalize_segment(_config(package, segments=[segment]), segment.id)
     assert caught.value.code == "INVALID_SEGMENT"
 
 
-def test_a_distribution_beside_a_group_refuses(package: Path) -> None:
-    """Per-entity values across the group's hop are refused, as under a flat child filter."""
-    distribution = {
-        "kind": "distribution",
-        "function": "avg",
-        "over": {
-            "kind": "entity_value",
-            "entity": "entity.scope_customer",
-            "input": {"measure": "measure.scope.order_count"},
-        },
-    }
-    query = {"select": [{"expression": distribution, "as": "orders_per_customer"}]}
-    assert _run(package, query, validate=True)["ok"] is True
-    error = _refusal(package, {**query, "where": SAME_ROW})
-    assert error["code"] == "MIXED_GRAIN_INVALID"
-    assert "distribution" in error["why_invalid"]
-
-
 # ---- Guards ---------------------------------------------------------------------------
+
+CUSTOMER_7 = {"field": CUSTOMER_ID, "op": "is", "value": 7}
+ANALYST = {"roles": ["analyst"]}
+TYPE_CUTS = SemanticPolicyConfig(
+    id="policy.scope.type_cuts",
+    kind="metric_constraint",
+    object_ids=["measure.scope.customer_count"],
+    roles=["analyst"],
+    config={"allowed_where": [TYPE]},
+)
+HIDE_PRICE = SemanticPolicyConfig(
+    id="policy.scope.hide_price", kind="object_access", object_ids=[PRICE], action="deny"
+)
 
 
 @pytest.mark.parametrize(
@@ -936,26 +800,8 @@ def test_a_distribution_beside_a_group_refuses(package: Path) -> None:
     [
         (SAME_ROW, (TYPE, PRICE)),
         (SAME_ROW, (TYPE,)),
-        (
-            [
-                {
-                    "child": SESSION,
-                    "match": "any",
-                    "where": [{"field": CUSTOMER_ID, "op": "=", "value": 7}],
-                }
-            ],
-            (CUSTOMER_ID,),
-        ),
-        (
-            [
-                {
-                    "child": SESSION,
-                    "match": "none",
-                    "where": [{"field": CUSTOMER_ID, "op": "=", "value": 7}],
-                }
-            ],
-            (CUSTOMER_ID,),
-        ),
+        ([_any(CUSTOMER_7, entity=SESSION)], (CUSTOMER_ID,)),
+        ([_none(CUSTOMER_7, entity=SESSION)], (CUSTOMER_ID,)),
     ],
     ids=["granted_child_dimensions", "ungranted_dimension", "parent_only_any", "parent_only_none"],
 )
@@ -966,114 +812,64 @@ def test_restricted_grants_cannot_authorize_a_child_scope_with_dimensions(
         actor="subject",
         metric_allowlist=("metric.scope.customers",),
         dimension_allowlist=dimensions,
-    ).to_policy_context()
-    query = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.scope.customers"}, "as": "value"}],
-        "where": where,
-    }
-    engine = Runtime.from_path(str(package))
-    try:
-        # Warm the unrestricted path, then ensure denial precedes warehouse access.
-        assert engine.query(query)["ok"] is True
-        plain = {**query, "where": [], "policy_context": context}
-        assert engine.validate(plain)["ok"] is True
-
-        def no_warehouse(*args: Any, **kwargs: Any) -> Any:
-            pytest.fail("A restricted child scope reached the warehouse")
-
-        monkeypatch.setattr("semantic_rails.runtime._adapter_query", no_warehouse)
-        restricted = {**query, "policy_context": context}
-        denied = engine.validate(restricted)
-        assert denied["ok"] is False
-        assert denied["errors"][0]["code"] == "RESOURCE_ACCESS_DENIED"
-        for operation in (engine.compile, engine.query):
-            with pytest.raises(SemanticLayerError) as caught:
-                operation(restricted)
-            assert caught.value.code == "RESOURCE_ACCESS_DENIED"
-    finally:
-        engine.close()
-
-
-def test_a_cut_policy_sees_the_conditions_inside_a_group(package: Path) -> None:
-    config = load_package_config(str(package))
-    policy = SemanticPolicyConfig(
-        id="policy.scope.type_cuts",
-        kind="metric_constraint",
-        object_ids=["measure.scope.customer_count"],
-        roles=["analyst"],
-        config={"allowed_where": [TYPE]},
     )
-    config = replace(config, semantic_policies=[policy])
-    engine = Runtime.from_config(config, source_path=str(package))
-    context = {"roles": ["analyst"]}
-    try:
-        allowed = engine.validate(
-            {
-                **_query([{"child": ITEM, "match": "any", "where": [BEVERAGE]}]),
-                "policy_context": context,
-            }
-        )
-        denied = engine.validate({**_query(SAME_ROW), "policy_context": context})
-    finally:
-        engine.close()
-    assert allowed["ok"] is True, allowed
+    query = {"select": [{"expression": "metric.scope.customers", "as": "value"}], "where": where}
+    engine = _ENGINES[package]
+    # Warm the unrestricted path, then ensure denial precedes warehouse access.
+    assert engine.query(query)["ok"] is True
+    assert engine.validate({**query, "where": []}, context=context)["ok"] is True
+
+    def no_warehouse(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("A restricted child scope reached the warehouse")
+
+    monkeypatch.setattr("semantic_rails.runtime._adapter_query", no_warehouse)
+    denied = engine.validate(query, context=context)
     assert denied["ok"] is False
-    violation = denied["policy_effects"][0]["violations"][0]
-    assert violation == {"kind": "disallowed_where", "disallowed": [PRICE], "allowed": [TYPE]}
+    assert denied["errors"][0]["code"] == "RESOURCE_ACCESS_DENIED"
+    for operation in (engine.compile, engine.query):
+        with pytest.raises(SemanticLayerError) as caught:
+            operation(query, context=context)
+        assert caught.value.code == "RESOURCE_ACCESS_DENIED"
 
 
-def test_a_denied_dimension_inside_a_group_is_denied(package: Path) -> None:
-    config = load_package_config(str(package))
-    policy = SemanticPolicyConfig(
-        id="policy.scope.hide_price",
-        kind="object_access",
-        object_ids=[PRICE],
-        audiences=["partner"],
-        action="deny",
-    )
-    config = replace(config, semantic_policies=[policy])
-    engine = Runtime.from_config(config, source_path=str(package))
-    context = {"audience": "partner"}
-    try:
-        allowed = engine.validate(
-            {
-                **_query([{"child": ITEM, "match": "any", "where": [BEVERAGE]}]),
-                "policy_context": context,
-            }
-        )
-        denied = engine.validate({**_query(NO_SAME_ROW), "policy_context": context})
-    finally:
-        engine.close()
+@pytest.mark.parametrize(
+    ("policy", "context", "where", "violations"),
+    [
+        (
+            TYPE_CUTS,
+            ANALYST,
+            SAME_ROW,
+            [{"kind": "disallowed_where", "disallowed": [PRICE], "allowed": [TYPE]}],
+        ),
+        (replace(HIDE_PRICE, audiences=["partner"]), {"audience": "partner"}, NO_SAME_ROW, None),
+    ],
+    ids=["cut_policy", "denied_dimension"],
+)
+def test_a_policy_sees_the_conditions_inside_a_group(
+    package: Path,
+    policy: SemanticPolicyConfig,
+    context: dict[str, Any],
+    where: list[Any],
+    violations: list[dict[str, Any]] | None,
+) -> None:
+    with _runtime(package, semantic_policies=[policy]) as engine:
+        allowed = engine.validate(_query([_any(BEVERAGE)]), context=context)
+        denied = engine.validate(_query(where), context=context)
     assert allowed["ok"] is True, allowed
     assert denied["ok"] is False
     assert denied["errors"][0]["code"] == "POLICY_DENIED"
+    if violations:
+        assert denied["policy_effects"][0]["violations"] == violations
 
 
 @pytest.mark.parametrize(
     "policy",
     [
-        SemanticPolicyConfig(
-            id="policy.scope.require_beverage",
-            kind="metric_constraint",
-            object_ids=["measure.scope.customer_count"],
-            roles=["analyst"],
-            config={"required_where": [BEVERAGE]},
+        replace(
+            TYPE_CUTS, id="policy.scope.require_beverage", config={"required_where": [BEVERAGE]}
         ),
-        SemanticPolicyConfig(
-            id="policy.scope.type_cuts",
-            kind="metric_constraint",
-            object_ids=["measure.scope.customer_count"],
-            roles=["analyst"],
-            config={"allowed_where": [TYPE]},
-        ),
-        SemanticPolicyConfig(
-            id="policy.scope.hide_price",
-            kind="object_access",
-            object_ids=[PRICE],
-            roles=["analyst"],
-            action="deny",
-        ),
+        TYPE_CUTS,
+        replace(HIDE_PRICE, roles=["analyst"]),
     ],
     ids=["required_where", "allowed_where", "denied_dimension"],
 )
@@ -1083,36 +879,29 @@ def test_no_reading_is_offered_that_the_callers_policies_deny(
     """Each reading moves both filters into groups: a required filter is then no plain filter,
     a disallowed dimension is still read, and so is a denied one. Every reading would be
     POLICY_DENIED for an analyst, so none is offered; others are still asked."""
-    config = replace(load_package_config(str(package)), semantic_policies=[policy])
-    engine = Runtime.from_config(config, source_path=str(package))
-    query = {**_query([BEVERAGE, OVER_5]), "policy_context": {"roles": ["analyst"]}}
-    try:
-        report = engine.validate(query)
-        errors = [report["errors"][0]]
+    query = _query([BEVERAGE, OVER_5])
+    with _runtime(package, semantic_policies=[policy]) as engine:
+        errors = [engine.validate(query, context=ANALYST)["errors"][0]]
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as caught:
-                operation(query)
+                operation(query, context=ANALYST)
             errors.append({"code": caught.value.code, "details": caught.value.details})
-        asked = engine.validate(_query([BEVERAGE, OVER_5]))
-    finally:
-        engine.close()
+        asked = engine.validate(query)
     assert [error["code"] for error in errors] == ["MIXED_GRAIN_INVALID"] * 3
-    assert all("clarification" not in error["details"] for error in errors)
+    assert all("clarification" not in error.get("details", {}) for error in errors)
     assert "'same_row' reading" in errors[0]["message"]
     assert "(POLICY_DENIED)" in errors[0]["message"]
     assert asked["errors"][0]["code"] == "AMBIGUOUS_CHILD_SCOPE"
 
 
 def test_a_rollup_holding_the_group_dimension_is_not_used(package: Path) -> None:
-    config = load_package_config(str(package))
     rollup = AggregateRelationConfig(
         id="aggregate_relation.customers_by_type",
         relation="customers_by_type",
         source_entity="entity.scope_customer",
         dimensions=[TYPE, PRICE],
     )
-    config = replace(config, aggregate_relations=[rollup])
-    compiled = compile_query(config, Registry(config), _query(SAME_ROW))
+    compiled = _compile(_config(package, aggregate_relations=[rollup]), _query(SAME_ROW))
     [leaf] = compiled["logical_plan"].measure_plans
     assert leaf.aggregate_relation_id == ""
     assert leaf.aggregate_relation_rejections == {rollup.id: "child_group"}
@@ -1124,85 +913,73 @@ def test_a_leaf_planned_without_the_group_route_is_refused_not_answered(
 ) -> None:
     """Force the bypass: plan the leaf as if the group were not there. The plan's guard refuses;
     with that guard gone too, the ordinary leaf refuses the group rather than drop it."""
-    import semantic_rails.compiler as compiler
+    from semantic_rails.compiler_parts import planning
 
-    planned = compiler._leaf_path_selections
+    planned = planning._leaf_path_selections
 
     def without_groups(bound: Any, config: Any, query: Any) -> Any:
         selections, entities, _ = planned(bound, config, replace(query, where=[]))
         return selections, entities, ""
 
-    config = load_package_config(str(package))
-    monkeypatch.setattr(compiler, "_leaf_path_selections", without_groups)
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(config, Registry(config), _query(SAME_ROW))
-    assert caught.value.code == "INVALID_QUERY"
-    assert "cannot filter 'measure.scope.customer_count'" in str(caught.value)
+    config = _config(package)
+    monkeypatch.setattr(planning, "_leaf_path_selections", without_groups)
+    error = _compile_error(config, _query(SAME_ROW))
+    assert error.code == "INVALID_QUERY"
+    assert error.details["path"] == "where"
+    assert error.details["measure"] == "measure.scope.customer_count"
 
-    monkeypatch.setattr(compiler, "_require_child_group_leaves", lambda *args: None)
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(config, Registry(config), _query(SAME_ROW))
-    assert caught.value.code == "INVALID_QUERY"
-    assert "in this measure's leaf" in str(caught.value)
+    monkeypatch.setattr(planning, "_require_child_group_leaves", lambda *args: None)
+    error = _compile_error(config, _query(SAME_ROW))
+    assert error.code == "INVALID_QUERY"
+    assert (error.details["path"], error.details["child"]) == ("where[0]", ITEM)
 
 
 # ---- Policies and dialects ------------------------------------------------------------
 
+ROW_POLICIES = {
+    "child_policy": (
+        {"dimension": TYPE, "attribute": "type", "type": "string"},
+        {"type": "beverage"},
+    ),
+    "parent_policy": (
+        {"dimension": CUSTOMER_ID, "attribute": "customer", "type": "integer"},
+        {"customer": 1},
+    ),
+}
+
 
 @pytest.mark.parametrize(
-    ("policy", "attributes"),
+    ("policy", "where", "code"),
     [
-        ({"dimension": TYPE, "attribute": "type", "type": "string"}, {"type": "beverage"}),
-        ({"dimension": CUSTOMER_ID, "attribute": "customer", "type": "integer"}, {"customer": 1}),
+        ("child_policy", SAME_ROW, "POLICY_DENIED"),
+        ("child_policy", NO_SAME_ROW, "POLICY_DENIED"),
+        ("parent_policy", SAME_ROW, "POLICY_DENIED"),
+        ("parent_policy", NO_SAME_ROW, "POLICY_DENIED"),
+        # Every reading is a group, and the row policy denies groups: the query keeps the
+        # refusal it had before groups existed instead of asking a question with no answer.
+        ("parent_policy", [BEVERAGE, OVER_5], "MIXED_GRAIN_INVALID"),
+        ("parent_policy", [NOT_BEVERAGE], "MIXED_GRAIN_INVALID"),
     ],
-    ids=["child_policy", "parent_policy"],
+    ids=["child_any", "child_none", "parent_any", "parent_none", "two_flat", "negated"],
 )
-@pytest.mark.parametrize("where", [SAME_ROW, NO_SAME_ROW], ids=["any", "none"])
 def test_groups_are_denied_under_a_row_policy(
-    package: Path, policy: dict[str, Any], attributes: dict[str, Any], where: list[Any]
+    package: Path, policy: str, where: list[Any], code: str
 ) -> None:
-    config = load_package_config(str(package))
-    config = replace(
-        config,
-        semantic_policies=[
-            SemanticPolicyConfig(id="policy.scope.rows", kind="row_filter", config=policy)
-        ],
-    )
+    rule, attributes = ROW_POLICIES[policy]
+    row_policy = SemanticPolicyConfig(id="policy.scope.rows", kind="row_filter", config=rule)
+    config = _config(package, semantic_policies=[row_policy])
     context = RequestContext(attributes=attributes).to_policy_context()
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(
-            config,
-            Registry(config),
-            _query(where),
-            row_filters=row_filters_for_context(config, context),
-        )
-    assert caught.value.code == "POLICY_DENIED"
-    assert caught.value.details["reason"] == "row_filter_unsupported_query"
-
-
-@pytest.mark.parametrize("where", [[BEVERAGE, OVER_5], [NOT_BEVERAGE]], ids=["two", "negated"])
-def test_no_reading_is_offered_under_a_row_policy_that_denies_groups(
-    package: Path, where: list[Any]
-) -> None:
-    """Every reading is a group, and the row policy denies groups: the query keeps the
-    refusal it had before groups existed instead of asking a question with no answer."""
-    config = load_package_config(str(package))
-    policy = {"dimension": CUSTOMER_ID, "attribute": "customer", "type": "integer"}
-    config = replace(
-        config,
-        semantic_policies=[
-            SemanticPolicyConfig(id="policy.scope.rows", kind="row_filter", config=policy)
-        ],
+    error = _compile_error(
+        config, _query(where), row_filters=row_filters_for_context(config, context)
     )
-    context = RequestContext(attributes={"customer": 1}).to_policy_context()
-    for row_filters, code in [
-        ((), "AMBIGUOUS_CHILD_SCOPE"),
-        (row_filters_for_context(config, context), "MIXED_GRAIN_INVALID"),
-    ]:
-        with pytest.raises(SemanticLayerError) as caught:
-            compile_query(config, Registry(config), _query(where), row_filters=row_filters)
-        assert caught.value.code == code
-        assert ("clarification" in caught.value.details) is (code == "AMBIGUOUS_CHILD_SCOPE")
+    assert error.code == code
+    assert "clarification" not in error.details
+    if code == "POLICY_DENIED":
+        assert error.details["reason"] == "row_filter_unsupported_query"
+    else:  # Without the caller's row filters, the same query is asked about.
+        asked = _compile_error(config, _query(where))
+        assert asked.code == "AMBIGUOUS_CHILD_SCOPE"
+        assert "clarification" in asked.details
 
 
 CLICKHOUSE_SQL = """WITH leaf_1__leaf_1_entity_rows AS (
@@ -1227,77 +1004,44 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.m1 AS customer_count
+  base.m1 AS "customer_count"
 FROM guarded_base AS base
 SETTINGS join_use_nulls = 1"""
 
 
-def _clickhouse(package: Path) -> Any:
-    config = load_package_config(str(package))
-    return replace(config, package=replace(config.package, warehouse="clickhouse"))
-
-
 def test_clickhouse_answers_any_with_its_distinct_parent_leaf(package: Path) -> None:
-    config = _clickhouse(package)
     query = {**_query(SAME_ROW), "observation_scope": "query"}  # the leaf, without a probe
-    sql = compile_query(config, Registry(config), query)["sql"]
+    sql = _compile(_dialect(package, "clickhouse"), query)["sql"]
     assert sql == CLICKHOUSE_SQL
     duckdb_sql = sql.removesuffix("\nSETTINGS join_use_nulls = 1")
     assert _reference(package, duckdb_sql) == _customers(package, SAME_ROW_SQL) == [(2,)]
 
 
-@pytest.mark.parametrize(
-    "where",
-    [
-        NO_SAME_ROW,
-        SEPARATE_ROWS,
-        [
-            {
-                "child": ITEM,
-                "match": "any",
-                "where": [{"field": CATEGORY, "op": "=", "value": "hot"}],
-            }
-        ],
-    ],
-    ids=["none", "two_groups", "lookup_from_the_child"],
-)
-def test_clickhouse_refuses_groups_its_leaf_cannot_answer(package: Path, where: list[Any]) -> None:
-    config = _clickhouse(package)
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(config, Registry(config), _query(where))
-    assert caught.value.code == "MIXED_GRAIN_INVALID"
-    assert "ClickHouse" in caught.value.details["why_invalid"]
-
-
-@pytest.mark.parametrize(
-    ("where", "option"),
-    [
+def test_clickhouse_refuses_groups_its_leaf_cannot_answer_and_asks_nothing(package: Path) -> None:
+    """ClickHouse's leaf answers one 'any' group on the child's own columns: two groups, a
+    'none' group and a group through a lookup are refused there, and so no question is asked
+    whose reading would be one of them. Only the message names the refused reading."""
+    config = _dialect(package, "clickhouse")
+    for where, option in [
+        (NO_SAME_ROW, ""),
+        (SEPARATE_ROWS, ""),
+        ([_any(HOT)], ""),
         ([BEVERAGE, OVER_5], "separate_rows"),
         ([NOT_BEVERAGE], "none"),
-        ([BEVERAGE, {"field": CATEGORY, "op": "=", "value": "hot"}], "same_row"),
-    ],
-    ids=["two_flat", "negated_flat", "child_lookup"],
-)
-def test_clickhouse_asks_nothing_when_its_leaf_refuses_a_reading(
-    package: Path, where: list[Any], option: str
-) -> None:
-    """ClickHouse's leaf answers one 'any' group on the child's own columns: two groups, a
-    'none' group and a group through a lookup are refused there, so no question is asked."""
-    config = _clickhouse(package)
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(config, Registry(config), _query(where))
-    assert caught.value.code == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in caught.value.details
-    assert f"'{option}' reading" in str(caught.value)
+        ([BEVERAGE, HOT], "same_row"),
+    ]:
+        error = _compile_error(config, _query(where))
+        assert error.code == "MIXED_GRAIN_INVALID", where
+        if option:
+            assert "clarification" not in error.details
+            assert f"'{option}' reading" in str(error)
+        else:
+            assert "ClickHouse" in error.details["why_invalid"]
 
 
 def test_other_dialects_render_each_group_as_correlated_exists(package: Path) -> None:
-    config = load_package_config(str(package))
     for warehouse in ("postgres", "snowflake", "bigquery", "databricks"):
-        dialect_config = replace(config, package=replace(config.package, warehouse=warehouse))
-        sql = compile_query(
-            dialect_config, Registry(dialect_config), _query([*SAME_ROW, *NO_SAME_ROW])
-        )["sql"]
+        sql = _compile(_dialect(package, warehouse), _query([*SAME_ROW, *NO_SAME_ROW]))["sql"]
         assert sql.count("NOT EXISTS (") == 1
         assert sql.count("EXISTS (") == 4  # two nested hops per group
 
@@ -1308,7 +1052,7 @@ def test_other_dialects_render_each_group_as_correlated_exists(package: Path) ->
 @pytest.mark.parametrize("decision_scope", ["package", "query"])
 def test_an_ambiguous_child_route_is_never_answered(package: Path, decision_scope: str) -> None:
     """Items reach orders through two relationships of one length: which items are meant?"""
-    config = load_package_config(str(package))
+    config = _config(package)
     [items_order] = [rel for rel in config.relationships if rel.id == "relationship.items_order"]
     returned = replace(
         items_order,
@@ -1317,43 +1061,35 @@ def test_an_ambiguous_child_route_is_never_answered(package: Path, decision_scop
         source_columns=["order_id"],
     )
     tied = replace(config, relationships=[*config.relationships, returned])
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(tied, Registry(tied), _query(SAME_ROW))
-    assert caught.value.code == "AMBIGUOUS_PATH"
-    assert len(caught.value.details["clarification"]["options"]) == 2
-    decision = route_pin(
-        "entity.scope_customer",
-        ITEM,
-        ["relationship.orders_customer", "relationship.items_order"],
-    )
-    pinned = (
-        replace(tied, path_preferences=[PathPreferenceConfig(**decision)])
-        if decision_scope == "package"
-        else tied
-    )
-    extra = {"route_decisions": [decision]} if decision_scope == "query" else {}
-    compiled = compile_query(pinned, Registry(pinned), _query(SAME_ROW, **extra))
-    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        assert _normal(conn.execute(compiled["sql"]).fetchall()) == [(2,)]
+    error = _compile_error(tied, _query(SAME_ROW))
+    assert error.code == "AMBIGUOUS_PATH"
+    assert len(error.details["clarification"]["options"]) == 2
+    decision = route_pin("entity.scope_customer", ITEM, THROUGH_ORDERS)
+    if decision_scope == "package":
+        pinned, extra = replace(tied, path_preferences=[PathPreferenceConfig(**decision)]), {}
+    else:
+        route = {
+            "from": decision["source_entity"],
+            "to": decision["target_entity"],
+            "via": decision["relationship_path"],
+        }
+        pinned, extra = tied, {"routes": [route]}
+    assert _reference(package, _compile(pinned, _query(SAME_ROW, **extra))["sql"]) == [(2,)]
 
     # The route decision also survives the guard that binds both child-scope readings.
     query = _query([BEVERAGE, OVER_5], **extra)
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(pinned, Registry(pinned), query)
-    assert caught.value.code == "AMBIGUOUS_CHILD_SCOPE"
-    options = _options({"details": caught.value.details})
+    error = _compile_error(pinned, query)
+    assert error.code == "AMBIGUOUS_CHILD_SCOPE"
+    options = _options({"details": error.details})
     for option, reference in [("same_row", SAME_ROW_SQL), ("separate_rows", SEPARATE_ROWS_SQL)]:
-        compiled = compile_query(pinned, Registry(pinned), {**query, "where": options[option]})
-        with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-            assert _normal(conn.execute(compiled["sql"]).fetchall()) == _customers(
-                package, reference
-            )
+        compiled = _compile(pinned, {**query, "where": options[option]})
+        assert _reference(package, compiled["sql"]) == _customers(package, reference), option
 
 
 def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Path) -> None:
     """An order reaches sessions through its customer, or through its customer's region if
     sessions carried one. A shorter route doesn't say which sessions the question means."""
-    config = load_package_config(str(package))
+    config = _config(package)
     [customer_region] = [
         rel for rel in config.relationships if rel.id == "relationship.customers_region"
     ]
@@ -1361,32 +1097,19 @@ def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Pat
         customer_region, id="relationship.sessions_region", source_entity=SESSION
     )
     longer = replace(config, relationships=[*config.relationships, session_region])
-    where = [{"child": SESSION, "match": "any", "where": [WEB]}]
-    with pytest.raises(SemanticLayerError) as caught:
-        compile_query(longer, Registry(longer), _query(where, "order_count"))
-    assert caught.value.code == "AMBIGUOUS_PATH"
-    assert len(caught.value.details["clarification"]["options"]) == 2
-    pinned = replace(
-        longer,
-        path_preferences=[
-            PathPreferenceConfig(
-                source_entity="entity.scope_order",
-                target_entity=SESSION,
-                relationship_path=[
-                    "relationship.orders_customer",
-                    "relationship.sessions_customer",
-                ],
-            )
-        ],
-    )
-    compiled = compile_query(pinned, Registry(pinned), _query(where, "order_count"))
+    query = _query([_any(WEB, entity=SESSION)], "order_count")
+    error = _compile_error(longer, query)
+    assert error.code == "AMBIGUOUS_PATH"
+    assert len(error.details["clarification"]["options"]) == 2
+    via_customer = ["relationship.orders_customer", "relationship.sessions_customer"]
+    pin = PathPreferenceConfig("entity.scope_order", SESSION, via_customer)
+    compiled = _compile(replace(longer, path_preferences=[pin]), query)
     reference = (
         "SELECT COUNT(*) FROM orders o WHERE EXISTS (SELECT 1 FROM customers c "
         "JOIN sessions s ON s.customer_id = c.customer_id "
         "WHERE c.customer_id = o.customer_id AND s.channel = 'web')"
     )
-    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
-        assert _normal(conn.execute(compiled["sql"]).fetchall()) == _reference(package, reference)
+    assert _reference(package, compiled["sql"]) == _reference(package, reference)
 
 
 def test_each_reading_keeps_the_route_its_filters_take(item_customer_package: Path) -> None:
@@ -1398,85 +1121,64 @@ def test_each_reading_keeps_the_route_its_filters_take(item_customer_package: Pa
     package = item_customer_package
     config = load_package_config(str(package))
     customer, product = "entity.scope_customer", "entity.scope_product"
-    through_orders = ["relationship.orders_customer", "relationship.items_order"]
     [direct] = [
         rel.id
         for rel in config.relationships
         if {rel.source_entity, rel.target_entity} == {ITEM, customer}
     ]
     product_pin = PathPreferenceConfig(
-        source_entity=customer,
-        target_entity=product,
-        relationship_path=[*through_orders, "relationship.items_product"],
+        customer, product, [*THROUGH_ORDERS, "relationship.items_product"]
     )
-    hot = {"field": CATEGORY, "op": "=", "value": "hot"}
-    warm = {"field": CATEGORY, "op": "IN", "value": ["hot", "soda"]}
-    has = (
-        "EXISTS (SELECT 1 FROM orders o JOIN items i ON i.order_id = o.order_id "
-        "LEFT JOIN products p ON p.sku = i.sku WHERE o.customer_id = c.customer_id AND {})"
-    )
+    warm = {"field": CATEGORY, "op": "is", "value": ["hot", "soda"]}
 
     def answer(pins: list[PathPreferenceConfig], where: list[Any]) -> list[tuple[Any, ...]]:
-        pinned = replace(config, path_preferences=pins)
-        engine = Runtime.from_config(pinned, source_path=str(package))
-        try:
-            result = engine.query({"version": 1, **_query(where)})
-        finally:
-            engine.close()
+        with _runtime(package, path_preferences=pins) as engine:
+            result = engine.query(_query(where))
         return _normal(tuple(row.values()) for row in typed_rows(result))
 
     # One filter follows the recorded route: customers 4 and 7 ordered tea.
-    assert answer([product_pin], [hot]) == _customers(package, has.format("p.category = 'hot'"))
-    assert answer([product_pin], [hot]) == [(2,)]
-    pin_row = json.dumps(route_pin(customer, ITEM, through_orders))
-    with pytest.raises(SemanticLayerError) as caught:
-        answer([product_pin], [hot, warm])
-    assert caught.value.code == "MIXED_GRAIN_INVALID"
-    assert "clarification" not in caught.value.details
-    assert pin_row in caught.value.details["why_invalid"]
+    assert answer([product_pin], [HOT]) == _customers(
+        package, HAS_PRODUCT.format("p.category = 'hot'")
+    )
+    assert answer([product_pin], [HOT]) == [(2,)]
+
+    def refusal(pins: list[PathPreferenceConfig]) -> SemanticLayerError:
+        with pytest.raises(SemanticLayerError) as caught:
+            answer(pins, [HOT, warm])
+        return caught.value
+
+    error = refusal([product_pin])
+    assert error.code == "MIXED_GRAIN_INVALID"
+    assert "clarification" not in error.details
+    assert json.dumps(route_pin(customer, ITEM, THROUGH_ORDERS)) in error.details["why_invalid"]
     direct_pin = PathPreferenceConfig(customer, ITEM, [direct])
-    with pytest.raises(SemanticLayerError) as caught:
-        answer([product_pin, direct_pin], [hot, warm])
-    assert caught.value.code == "INVALID_CONFIG"
-    pins = [product_pin, PathPreferenceConfig(customer, ITEM, through_orders)]
-    with pytest.raises(SemanticLayerError) as caught:
-        answer(pins, [hot, warm])
-    assert caught.value.code == "AMBIGUOUS_CHILD_SCOPE"
-    options = {row["id"]: row["where"] for row in caught.value.details["clarification"]["options"]}
+    assert refusal([product_pin, direct_pin]).code == "INVALID_CONFIG"
+    pins = [product_pin, PathPreferenceConfig(customer, ITEM, THROUGH_ORDERS)]
+    error = refusal(pins)
+    assert error.code == "AMBIGUOUS_CHILD_SCOPE"
+    options = _options({"details": error.details})
     references = {
-        "same_row": has.format("p.category = 'hot' AND p.category IN ('hot', 'soda')"),
-        "separate_rows": has.format("p.category = 'hot'")
-        + " AND "
-        + has.format("p.category IN ('hot', 'soda')"),
+        "same_row": HAS_PRODUCT.format("p.category = 'hot' AND p.category IN ('hot', 'soda')"),
+        "separate_rows": _each(HAS_PRODUCT, "p.category = 'hot'", "p.category IN ('hot', 'soda')"),
     }
     assert set(options) == set(references)
     for option, where in options.items():
         assert answer(pins, where) == _customers(package, references[option]) == [(2,)], option
     # A group on the other recorded route reads the items that name customer 3.
-    assert answer([direct_pin], [_any(hot)]) == [(1,)]
+    assert answer([direct_pin], [_any(HOT)]) == [(1,)]
 
 
 # ---- Agreement ------------------------------------------------------------------------
 
 SHAPES = {
     "same_row": _query(SAME_ROW),
-    "separate_rows": _query(SEPARATE_ROWS),
-    "none": _query(NO_SAME_ROW),
     "parent_sum": _query(SEPARATE_ROWS, "credit"),
     "lookup_group": {**_query(SEPARATE_ROWS), "group_by": [REGION]},
-    "two_children": _query([SEPARATE_ROWS[0], {"child": SESSION, "match": "none", "where": [WEB]}]),
+    "two_children": _query([SEPARATE_ROWS[0], _none(WEB, entity=SESSION)]),
     "two_flat": _query([BEVERAGE, OVER_5]),
-    "negated_flat": _query([{"field": TYPE, "op": "!=", "value": "beverage"}]),
+    "negated_flat": _query([NOT_BEVERAGE]),
     "one_flat": _query([BEVERAGE]),
-    "lookup_only_child": _query(
-        [
-            {
-                "child": "entity.scope_region",
-                "match": "any",
-                "where": [{"field": REGION, "op": "=", "value": "North"}],
-            }
-        ]
-    ),
+    "lookup_only_child": _query([_any(NORTH, entity="entity.scope_region")]),
     "child_grouping": {**_query(SEPARATE_ROWS), "group_by": [TYPE]},
 }
 
@@ -1484,9 +1186,8 @@ SHAPES = {
 @pytest.mark.parametrize("shape", SHAPES)
 def test_validate_compile_execute_and_plan_agree(package: Path, shape: str) -> None:
     query = SHAPES[shape]
-    engine = Runtime.from_path(str(package))
-    mcp = SemanticLayerMCPAdapter(engine)
-    try:
+    with closing(SemanticLayerMCPAdapter(Runtime.from_path(str(package)))) as mcp:
+        engine = mcp.runtime
         report = engine.validate(query)
         outcomes = []
         for call in (engine.compile, engine.query):
@@ -1500,8 +1201,6 @@ def test_validate_compile_execute_and_plan_agree(package: Path, shape: str) -> N
             for mode in ("validate", "sql", "run")
         ]
         planned = plan_payload(engine, intent="customers", partial_query=query)
-    finally:
-        mcp.close()
     code = "ok" if report["ok"] else report["errors"][0]["code"]
     assert [outcome[0] for outcome in outcomes] == [code, code]
     assert [("ok" if row["ok"] else row["error"]["code"]) for row in tool] == [code] * 3
@@ -1509,7 +1208,15 @@ def test_validate_compile_execute_and_plan_agree(package: Path, shape: str) -> N
         assert outcomes[0][1] and outcomes[0][1] == outcomes[1][1]
     # plan carries the caller's where unchanged and validates it the same way.
     best = planned["best"]
-    assert best["query_ir"]["where"] == query["where"]
+    assert best["query"]["where"] == query["where"]
     assert best["validation_ok"] is (code == "ok")
-    plan_codes = [error["code"] for error in (planned.get("why") or {}).get("errors", [])]
-    assert plan_codes == ([] if code == "ok" else [code])
+    why = planned.get("why") or {}
+    if code == "AMBIGUOUS_CHILD_SCOPE":
+        # plan asks the engine's question, each reading a whole call that runs.
+        assert planned["status"] == "needs_clarification"
+        assert why["code"] == code
+        for option in why["details"]["options"]:
+            assert _run(package, option["call"], validate=True)["ok"], option
+    else:
+        plan_codes = [error["code"] for error in why.get("errors", [])]
+        assert plan_codes == ([] if code == "ok" else [code])

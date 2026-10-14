@@ -33,14 +33,15 @@ FIRST_ORDER = "temporal_role.jaffle_customer_first_order_at"
 LATEST_ORDER = "temporal_role.jaffle_customer_latest_ordered_at"
 CUSTOMERS = "measure.jaffle.customer_count"
 ORDERS = "measure.jaffle.order_count"
+EXTERNAL = RequestContext(audience="external")
+# A fixed clock, so two answers to one call compare equal.
+NOW = "2018-01-01T00:00:00Z"
 
 
 def _producer_case(runtime, monkeypatch, producer):
     query = {
-        "select": [{"expression": {"measure": ORDERS}, "as": "orders"}],
+        "select": [{"expression": ORDERS, "as": "orders"}],
         "time": {"temporal_role": ORDER_TIME, "grain": "month"},
-        "policy_context": {"audience": "external"},
-        "verbosity": "full",
     }
     if producer == "alias":
         _with_districts(runtime, monkeypatch)
@@ -60,18 +61,16 @@ def _producer_case(runtime, monkeypatch, producer):
         query["select"][0]["expression"] = {
             "kind": "aggregate",
             "measure": ORDERS,
-            "filter": {"all": [{"dimension": "district", "op": "=", "value": "Central"}]},
+            "filter": {"all": [{"dimension": "district", "op": "is", "value": "Central"}]},
         }
+        alternatives = [STORE_DISTRICT, CUSTOMER_DISTRICT]
         return (
             query,
             CUSTOMER_DISTRICT,
             "Customer district",
             "AMBIGUOUS_ALIAS",
             "candidates",
-            [
-                STORE_DISTRICT,
-                CUSTOMER_DISTRICT,
-            ],
+            alternatives,
         )
     if producer == "conversion_events":
         from semantic_rails.compiler import compile_query
@@ -95,14 +94,8 @@ def _producer_case(runtime, monkeypatch, producer):
         assert raised.value.code == "CONVERSION_NOT_SUPPORTED"
         alternatives = raised.value.details["candidate_measures"]
         assert ORDERS in alternatives
-        return (
-            query,
-            ORDERS,
-            "Order count",
-            "CONVERSION_NOT_SUPPORTED",
-            "candidate_measures",
-            alternatives,
-        )
+        code, field = "CONVERSION_NOT_SUPPORTED", "candidate_measures"
+        return query, ORDERS, "Order count", code, field, alternatives
     monkeypatch.setattr(
         runtime,
         "_config",
@@ -117,52 +110,38 @@ def _producer_case(runtime, monkeypatch, producer):
         ),
     )
     if producer == "measure_clocks":
-        query["select"].append({"expression": {"measure": CUSTOMERS}, "as": "customers"})
+        query["select"].append({"expression": CUSTOMERS, "as": "customers"})
         code = "INCOMPATIBLE_TEMPORAL_ROLE"
     else:
-        query["metric_filters"] = [
+        query["where"] = [
             {
-                "expression": {
-                    "kind": "metric_predicate",
-                    "entity": "entity.jaffle_customer",
-                    "input": {"kind": "aggregate", "measure": CUSTOMERS},
-                    "op": ">",
-                    "value": 1,
-                },
-                "op": "=",
-                "value": True,
+                "entity": "entity.jaffle_customer",
+                "having": [{"field": CUSTOMERS, "op": "gt", "value": 1}],
+                "over": "period",
             }
         ]
         code = "INVALID_TEMPORAL_BINDING"
-    return (
-        query,
-        LATEST_ORDER,
-        "Customer latest ordered at",
-        code,
-        "compatible",
-        [
-            FIRST_ORDER,
-            LATEST_ORDER,
-        ],
-    )
+    alternatives = [FIRST_ORDER, LATEST_ORDER]
+    return query, LATEST_ORDER, "Customer latest ordered at", code, "compatible", alternatives
 
 
 def _producer_response(runtime, query, transport):
     if transport == "validate":
-        return runtime.validate(query)
+        return runtime.validate(query, now=NOW, context=EXTERNAL, verbosity="full")
     if transport == "http":
         service = SemanticHTTPService(runtime)
+        body = {"query": query, "options": {"now": NOW, "verbosity": "full"}}
         # Compile reaches the producer and HTTP's real exception boundary.
         try:
-            return service.handle("POST", "/compile", query)[0]
+            return service.handle("POST", "/compile", body, context=EXTERNAL)[0]
         except SemanticLayerError as exc:
-            payload, status = service.exception_payload(
-                exc, stage="compile", context=RequestContext(audience="external")
-            )
+            payload, status = service.exception_payload(exc, stage="compile", context=EXTERNAL)
         assert status == 400
         return payload
     return SemanticLayerMCPAdapter(runtime).call_tool(
-        "execute", {"query": query, "mode": "validate"}
+        "execute",
+        {"query": query, "now": NOW, "mode": "validate", "verbosity": "full"},
+        request_context=EXTERNAL,
     )
 
 
@@ -180,23 +159,7 @@ def test_real_error_producers_withhold_hidden_alternatives(
             runtime, monkeypatch, producer
         )
         if visibility == "hidden":
-            monkeypatch.setattr(
-                runtime,
-                "_config",
-                replace(
-                    runtime._config,
-                    semantic_policies=[
-                        *runtime._config.semantic_policies,
-                        SemanticPolicyConfig(
-                            id="policy.hide_alternative",
-                            kind="object_visibility",
-                            object_ids=[hidden_id],
-                            audiences=["external"],
-                            action="hidden",
-                        ),
-                    ],
-                ),
-            )
+            monkeypatch.setattr(runtime, "_config", _hide(runtime._config, hidden_id))
         elif visibility == "unknown":
             monkeypatch.setattr(visible_view, "hidden_object_ids", _unknown_visibility)
         payload = _producer_response(runtime, query, transport)
@@ -258,25 +221,25 @@ def test_validation_candidates_respect_visibility(
     elif visibility == "unknown":
         monkeypatch.setattr(visible_view, "hidden_object_ids", _unknown_visibility)
     query = {
-        "select": [{"expression": {"measure": "measure.jaffle.item_revenue_usd"}, "as": "total"}],
+        "select": [{"expression": "measure.jaffle.item_revenue_usd", "as": "total"}],
         "group_by": ["dimension.customer_distric" if failure == "typo" else STORE_DISTRICT],
-        "policy_context": {"audience": "external"},
-        "verbosity": "full",
     }
     try:
         if transport == "validate":
-            payload = runtime.validate(query)
+            payload = runtime.validate(query, context=EXTERNAL, verbosity="full")
         elif transport == "http":
             service = SemanticHTTPService(runtime)
             with pytest.raises(SemanticLayerError) as raised:
-                runtime.compile(query)
+                runtime.compile(query, context=EXTERNAL, verbosity="full")
             payload, status = service.exception_payload(
-                raised.value, stage="compile", context=RequestContext(audience="external")
+                raised.value, stage="compile", context=EXTERNAL
             )
             assert status == 400
         else:
             payload = SemanticLayerMCPAdapter(runtime).call_tool(
-                "execute", {"query": query, "mode": "validate"}
+                "execute",
+                {"query": query, "mode": "validate", "verbosity": "full"},
+                request_context=EXTERNAL,
             )
         assert payload["ok"] is False
         issue = payload["errors"][0]
@@ -341,8 +304,9 @@ def _unknown_visibility(*args, **kwargs):
 
 
 def _hide(config, object_id):
+    """The package with ``object_id`` hidden from the external audience."""
     policy = SemanticPolicyConfig(
-        id="policy.hide_district",
+        id="policy.hide_object",
         kind="object_visibility",
         object_ids=[object_id],
         audiences=["external"],
@@ -399,9 +363,8 @@ def test_registry_alias_candidates_keep_two_visible_matches(runtime_factory, mon
         runtime.close()
 
 
-@pytest.mark.parametrize("source", ["flags", "query"])
 def test_cli_error_enrichment_preserves_scoped_visibility(
-    package_config_factory, monkeypatch, capsys, source
+    package_config_factory, monkeypatch, capsys
 ) -> None:
     import argparse
     from types import SimpleNamespace
@@ -409,19 +372,8 @@ def test_cli_error_enrichment_preserves_scoped_visibility(
     from semantic_rails.cli import app
 
     config, _ = package_config_factory("jaffle_shop")
-    config = replace(
-        config,
-        dimensions=[replace(config.dimensions[0], id=CUSTOMER_DISTRICT, label="Customer district")],
-        semantic_policies=[
-            SemanticPolicyConfig(
-                id="policy.hide_district",
-                kind="object_visibility",
-                object_ids=[CUSTOMER_DISTRICT],
-                audiences=["external"],
-                action="hidden",
-            )
-        ],
-    )
+    district = replace(config.dimensions[0], id=CUSTOMER_DISTRICT, label="Customer district")
+    config = _hide(replace(config, dimensions=[district], semantic_policies=[]), CUSTOMER_DISTRICT)
 
     def fail(args):
         raise SemanticLayerError(
@@ -430,14 +382,7 @@ def test_cli_error_enrichment_preserves_scoped_visibility(
             details={"object_id": "dimension.customer_distric"},
         )
 
-    args = argparse.Namespace(
-        cmd="inspect",
-        func=fail,
-        audience="external" if source == "flags" else "",
-        query_json=json.dumps({"policy_context": {"audience": "external"}})
-        if source == "query"
-        else None,
-    )
+    args = argparse.Namespace(cmd="inspect", func=fail, audience="external", query_json=None)
     monkeypatch.setattr(app, "build_parser", lambda: SimpleNamespace(parse_args=lambda: args))
     monkeypatch.setattr(app, "_config_for_error_enrichment", lambda args: config)
     with pytest.raises(SystemExit) as raised:

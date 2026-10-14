@@ -36,9 +36,7 @@ MINIMAL_ARGUMENTS: dict[str, dict[str, Any]] = {
     "inspect": {"object_id": "measure.jaffle.revenue_usd"},
     "valid-values": {"dimension_id": "dimension.jaffle_store_name"},
     "plan": {"intent": "revenue by store"},
-    "execute": {
-        "query": {"version": 1, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
-    },
+    "execute": {"query": {"select": ["metric.sales.aov_usd"]}},
     "segment": {
         "segment_id": "segment.jaffle.high_value_customers",
         "action": "preview",
@@ -218,7 +216,7 @@ def test_segment_availability_tracks_runtime_reload(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("mode", ["validate", "sql", "run"])
 def test_execute_adds_no_default_time_or_where(adapter: SemanticLayerMCPAdapter, mode: str) -> None:
-    query = {"select": [{"as": "orders", "expression": {"measure": "measure.jaffle.order_count"}}]}
+    query = {"select": [{"as": "orders", "expression": "measure.jaffle.order_count"}]}
     response = adapter.call_tool("execute", {"query": query, "mode": mode, "verbosity": "full"})
     assert response["ok"], response
     normalized = response["query"]
@@ -241,7 +239,7 @@ def test_execute_adds_no_default_time_or_where(adapter: SemanticLayerMCPAdapter,
         assert windowed["ok"] and windowed["rows"] == response["rows"], windowed
 
 
-def test_request_id_and_policy_context_are_hidden_but_accepted(
+def test_request_id_is_hidden_but_accepted_and_policy_context_is_refused(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     response = handle_jsonrpc_message(
@@ -253,16 +251,23 @@ def test_request_id_and_policy_context_are_hidden_but_accepted(
         properties = tool["inputSchema"]["properties"]
         assert "request_id" not in properties, tool["name"]
         assert "policy_context" not in properties, tool["name"]
-    extra = {"request_id": "req-accepted", "policy_context": {"environment": "development"}}
+    context = RequestContext(environment="development")
     for name, arguments in MINIMAL_ARGUMENTS.items():
-        response = adapter.call_tool(name, {**arguments, **extra})
+        response = adapter.call_tool(
+            name, {**arguments, "request_id": "req-accepted"}, request_context=context
+        )
         codes = [issue.get("code") for issue in response.get("errors") or []]
         assert "INVALID_MCP_ARGUMENTS" not in codes, (name, codes)
         warnings = [issue.get("code", "") for issue in response.get("warnings") or []]
         assert not [code for code in warnings if code.endswith("_UNKNOWN_ARG")], (name, warnings)
-        assert response["request_id"] == "req-accepted", name
         assert response["ok"], (name, response)
         assert response["request_context"]["environment"] == "development", name
+        local = adapter.call_tool(name, {**arguments, "request_id": "req-accepted"})
+        assert local["request_id"] == "req-accepted", name
+        claimed = adapter.call_tool(
+            name, {**arguments, "policy_context": {"environment": "development"}}
+        )
+        assert claimed["errors"][0]["details"]["path"] == "policy_context", name
 
 
 @pytest.mark.parametrize("tool_name", ["segment"])
@@ -288,11 +293,7 @@ def test_missing_arguments_do_not_report_transport_fields_as_unknown(
     adapter: SemanticLayerMCPAdapter, tool_name: str
 ) -> None:
     tool = next(t for t in adapter.list_tools() if t["name"] == tool_name)
-    arguments = {
-        **MINIMAL_ARGUMENTS[tool_name],
-        "request_id": "missing-argument",
-        "policy_context": {"environment": "development"},
-    }
+    arguments = {**MINIMAL_ARGUMENTS[tool_name], "request_id": "missing-argument"}
     arguments.pop(tool["inputSchema"]["required"][0])
     result = adapter.call_tool(tool_name, arguments)
     assert result["ok"] is False

@@ -1,9 +1,8 @@
 """Semantic expression AST and the package-expression mini-parser.
 
 Defines the frozen dataclass nodes (``MeasureRefExpr``, ``AggregateExpr``,
-``ArithmeticExpr``, ``MetricPredicateExpr``, ``CumulativeExpr``,
-``PeriodToDateExpr``, …) that compose every metric-recipe and
-measure-expression body. :func:`parse_config_expression` and
+``ArithmeticExpr``, ``MetricPredicateExpr``, ``OffsetWindowExpr``, …) that
+compose every metric-recipe and measure-expression body. :func:`parse_config_expression` and
 :func:`parse_semantic_expression` translate the YAML string form into
 these nodes; the compiler consumes them.
 """
@@ -12,11 +11,12 @@ from __future__ import annotations
 
 import ast as pyast
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
+from . import operators
 from .errors import SemanticLayerError
 
 if TYPE_CHECKING:
@@ -26,8 +26,9 @@ if TYPE_CHECKING:
 CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
 
 
-def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
-    """Validate the authored logical type before it can become a SQL token."""
+def call_cast_type(value: Any, *, decimal: bool = True, warehouse: str = "") -> str:
+    """Validate the authored logical type before it can become a SQL token; ``decimal`` says
+    whether the warehouse's CAST can enforce ``DECIMAL(p,s)``."""
     if isinstance(value, str):
         normalized = value.strip().upper()
         normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
@@ -43,11 +44,12 @@ def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
                 and 0 <= int(scale) <= int(precision) <= 38
                 and int(precision) > 0
             ):
-                if warehouse == "bigquery":
+                if not decimal:
                     raise SemanticLayerError(
                         "INVALID_EXPRESSION_AST",
-                        "BigQuery CAST cannot enforce DECIMAL precision and scale; "
-                        "use DOUBLE or a warehouse column with a parameterized decimal type.",
+                        f"CAST on warehouse '{warehouse}' cannot enforce DECIMAL precision and "
+                        "scale; use DOUBLE or a warehouse column with a parameterized decimal "
+                        "type.",
                         details={"warehouse": warehouse, "target_type": normalized},
                     )
                 return f"DECIMAL({int(precision)},{int(scale)})"
@@ -58,62 +60,38 @@ def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
     )
 
 
-def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
-    """Scalar spellings valid as plain calls, independently of engine SQL tokens."""
-    common = frozenset(
-        {
-            "ABS",
-            "CAST",
-            "CEIL",
-            "CEILING",
-            "COALESCE",
-            "CONCAT",
-            "DATE_DIFF",
-            "EXP",
-            "FLOOR",
-            "LENGTH",
-            "LN",
-            "LOG",
-            "LOWER",
-            "NULLIF",
-            "POWER",
-            "REPLACE",
-            "ROUND",
-            "SQRT",
-            "SUBSTR",
-            "SUBSTRING",
-            "TRIM",
-            "UPPER",
-        }
-    )
-    extras = {
-        "duckdb": {
-            "DATE_PART",
-            "DATE_TRUNC",
-            "LEFT",
-            "RIGHT",
-            "JSON_EXTRACT",
-            "JSON_EXTRACT_STRING",
-            "SPLIT",
-            "STRING_SPLIT",
-            "STR_SPLIT",
-        },
-        "postgres": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"},
-        "snowflake": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
-        "bigquery": {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"},
-        "databricks": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
-        "athena": {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"},
-        "clickhouse": set(),
+# Scalar spellings valid as plain calls on every warehouse, independently of engine SQL tokens;
+# each dialect's ``call_names`` adds its own or drops one.
+PORTABLE_CALL_NAMES = frozenset(
+    {
+        "ABS",
+        "CAST",
+        "CEIL",
+        "CEILING",
+        "COALESCE",
+        "CONCAT",
+        "DATE_DIFF",
+        "EXP",
+        "FLOOR",
+        "LENGTH",
+        "LN",
+        "LOG",
+        "LOWER",
+        "NULLIF",
+        "POWER",
+        "REPLACE",
+        "ROUND",
+        "SQRT",
+        "SUBSTR",
+        "SUBSTRING",
+        "TRIM",
+        "UPPER",
     }
-    warehouse = {"motherduck": "duckdb", "ducklake": "duckdb"}.get(warehouse, warehouse)
-    if warehouse == "clickhouse":
-        return common - {"TRIM"}
-    return common | frozenset(extras[warehouse]) if warehouse in extras else frozenset()
+)
 
 
-def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
+def validate_call_name(name: str, allowed: frozenset[str]) -> str:
     normalized = name.strip().upper()
-    allowed = accepted_call_names(warehouse)
     if normalized not in allowed:
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST",
@@ -129,14 +107,15 @@ def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
     return normalized
 
 
-def call_date_diff_unit(value: Any, *, arg_count: int, warehouse: str) -> str:
-    """Refuse invalid shapes and nonportable units before dialect lowering."""
+def call_date_diff_unit(
+    value: Any, *, arg_count: int, warehouse: str, units: Iterable[str] = ()
+) -> str:
+    """Refuse invalid shapes and nonportable units before dialect lowering; ``units`` are those
+    whose boundary count on the warehouse matches the portable meaning."""
     if arg_count == 3 and isinstance(value, str):
         unit = value.strip().lower()
         if unit in CONVERSION_WINDOW_UNITS:
-            if warehouse == "athena" or (
-                unit == "week" and warehouse in {"snowflake", "bigquery", "clickhouse"}
-            ):
+            if unit not in units:
                 raise SemanticLayerError(
                     "INVALID_EXPRESSION_AST",
                     f"Unsupported DATE_DIFF for warehouse '{warehouse}' and unit '{unit}': "
@@ -247,34 +226,6 @@ class CaseExpr:
 
 
 @dataclass(frozen=True)
-class CumulativeExpr:
-    input: SemanticExpr
-    partition_by: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class RollingExpr:
-    input: SemanticExpr
-    unit: str
-    value: int
-    partition_by: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class PriorPeriodExpr:
-    input: SemanticExpr
-    unit: str
-    value: int = 1
-
-
-@dataclass(frozen=True)
-class PeriodToDateExpr:
-    input: SemanticExpr
-    period: str
-    partition_by: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
 class OffsetWindowExpr:
     input: SemanticExpr
     kind: str
@@ -286,6 +237,12 @@ class OffsetWindowExpr:
     value: int = 0
     partition_by: list[str] = field(default_factory=list)
     window_scope: str = ""
+
+
+# How a predicate's input is taken per entity: grouped with the query's context
+# (``contextual``), over the entity's rows (``entity_only``), or per entity per output period
+# (``entity_period``: grouped by the entity keys and the query's time bucket, nothing else).
+PREDICATE_SCOPES = frozenset({"contextual", "entity_only", "entity_period"})
 
 
 @dataclass(frozen=True)
@@ -353,6 +310,15 @@ class RatioExpr:
 
 
 @dataclass(frozen=True)
+class ShareExpr:
+    """A fraction (0 to 1) of its additive input's total over the rows the query keeps, the
+    total taken across the ``over`` columns (group_by ids or ``period``) within the others."""
+
+    input: SemanticExpr
+    over: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EntityValueExpr:
     entity: str
     input: SemanticExpr
@@ -392,19 +358,40 @@ SemanticExpr = (
     | DateAddExpr
     | InExpr
     | CaseExpr
-    | CumulativeExpr
-    | RollingExpr
-    | PriorPeriodExpr
-    | PeriodToDateExpr
     | OffsetWindowExpr
     | MetricPredicateExpr
     | ConditionalAggregateExpr
     | ScopedAggregateExpr
     | RatioExpr
+    | ShareExpr
     | EntityValueExpr
     | DistributionExpr
     | ConversionExpr
 )
+
+
+def reads_temporal_value(
+    expr: SemanticExpr, temporal_column: Callable[[ColumnRefExpr], bool]
+) -> bool:
+    """Whether ``expr`` reads a date or timestamp: a column ``temporal_column`` says is one, a
+    ``date_add`` or ``DATE_TRUNC``, or a COALESCE, NULLIF, GREATEST, LEAST or CASE whose result
+    is one. Text compared with such a value is a temporal literal (``SqlLiteral.temporal``)."""
+    if isinstance(expr, ColumnRefExpr):
+        return temporal_column(expr)
+    if isinstance(expr, DateAddExpr):
+        return True
+    if isinstance(expr, CaseExpr):
+        results = [item.then for item in expr.whens]
+        results += [expr.else_expr] if expr.else_expr is not None else []
+        return any(reads_temporal_value(result, temporal_column) for result in results)
+    if isinstance(expr, CallExpr):
+        name = expr.name.strip().upper()
+        if name == "DATE_TRUNC":
+            return True
+        args = expr.args[:1] if name == "NULLIF" else expr.args
+        if name in {"COALESCE", "NULLIF", "GREATEST", "LEAST"}:
+            return any(reads_temporal_value(arg, temporal_column) for arg in args)
+    return False
 
 
 # Tags carried as data inside expression payloads (inline metric_predicate
@@ -496,8 +483,8 @@ def _unsupported_expression_kind(kind: Any, path: str) -> SemanticLayerError:
         + (
             f"Write kind {current!r} (`semantic-rails project upgrade` rewrites it)."
             if current
-            else "Send a select expression {measure: '<measure_id>'} or "
-            "{metric: '<metric_id>'}; put dimension ids in group_by."
+            else "Select a measure or metric by its id string, e.g. 'metric.<id>'; "
+            "put dimension ids in group_by."
         ),
         details={"expression_kind": kind, "expression_position": path, "path": path},
     )
@@ -520,15 +507,16 @@ def validate_expression_shapes(value: Any, *, path: str = "expression") -> None:
             validate_expression_shapes(child, path=f"{path}[{index}]")
 
 
-def validate_expression_calls(value: Any, config: PackageConfig) -> None:
-    """Validate call names and portable shapes; argument types belong to the warehouse.
+def validate_expression_calls(value: Any, dialect: Any) -> None:
+    """Validate call names and portable shapes against the warehouse's ``dialect``; argument
+    types belong to the warehouse.
 
     Literal data, metadata and parameters remain opaque.
     """
     if isinstance(value, LiteralExpr):
         return
     if isinstance(value, CallExpr):
-        name = validate_call_name(value.name, config.package.warehouse)
+        name = validate_call_name(value.name, dialect.call_names)
         if value.distinct:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
@@ -538,7 +526,8 @@ def validate_expression_calls(value: Any, config: PackageConfig) -> None:
                 value.args[1].value
                 if len(value.args) == 2 and isinstance(value.args[1], LiteralExpr)
                 else None,
-                config.package.warehouse,
+                decimal=dialect.decimal_cast,
+                warehouse=dialect.name,
             )
         elif name == "DATE_DIFF":
             call_date_diff_unit(
@@ -546,15 +535,16 @@ def validate_expression_calls(value: Any, config: PackageConfig) -> None:
                 if value.args and isinstance(value.args[0], LiteralExpr)
                 else None,
                 arg_count=len(value.args),
-                warehouse=config.package.warehouse,
+                warehouse=dialect.name,
+                units=dialect.date_diff_units,
             )
     if is_dataclass(value) and not isinstance(value, type):
         for item in fields(value):
             if item.name not in {"meta", "parameters"}:
-                validate_expression_calls(getattr(value, item.name), config)
+                validate_expression_calls(getattr(value, item.name), dialect)
     elif isinstance(value, (list, tuple)):
         for child in value:
-            validate_expression_calls(child, config)
+            validate_expression_calls(child, dialect)
 
 
 def is_constant_expression(expr: SemanticExpr | None) -> bool:
@@ -579,7 +569,8 @@ REFERENCE_KEYS = {
     "basis_metric",
     "temporal_role",
 }
-REFERENCE_LISTS = {"partition_by", "constant_properties", "group_by", "preview_dimensions"}
+# A share's ``over`` lists group_by ids, and ``period`` (the time axis, not an object).
+REFERENCE_LISTS = {"partition_by", "constant_properties", "group_by", "preview_dimensions", "over"}
 
 
 def collect_object_references(
@@ -610,7 +601,7 @@ def collect_object_references(
                     references[reference] = None
                 if key in REFERENCE_LISTS and isinstance(child, (list, tuple)):
                     for reference in child:
-                        if isinstance(reference, str) and reference.strip():
+                        if isinstance(reference, str) and reference.strip() not in {"", "period"}:
                             references[reference.strip()] = None
                 if key in {"dimension_bindings", "temporal_role_overrides"} and isinstance(
                     child, Mapping
@@ -707,32 +698,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             ],
             "else": expr_to_dict(expr.else_expr) if expr.else_expr is not None else None,
         }
-    if isinstance(expr, CumulativeExpr):
-        return {
-            "kind": "cumulative",
-            "input": expr_to_dict(expr.input),
-            "partition_by": list(expr.partition_by),
-        }
-    if isinstance(expr, RollingExpr):
-        return {
-            "kind": "rolling",
-            "input": expr_to_dict(expr.input),
-            "window": {"unit": expr.unit, "value": expr.value},
-            "partition_by": list(expr.partition_by),
-        }
-    if isinstance(expr, PriorPeriodExpr):
-        return {
-            "kind": "prior_period",
-            "input": expr_to_dict(expr.input),
-            "offset": {"unit": expr.unit, "value": expr.value},
-        }
-    if isinstance(expr, PeriodToDateExpr):
-        return {
-            "kind": "period_to_date",
-            "input": expr_to_dict(expr.input),
-            "period": expr.period,
-            "partition_by": list(expr.partition_by),
-        }
     if isinstance(expr, OffsetWindowExpr):
         if expr.kind == "cumulative":
             out = {
@@ -818,6 +783,8 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             "numerator": expr_to_dict(expr.numerator),
             "denominator": expr_to_dict(expr.denominator),
         }
+    if isinstance(expr, ShareExpr):
+        return {"kind": "share", "input": expr_to_dict(expr.input), "over": list(expr.over)}
     if isinstance(expr, EntityValueExpr):
         return {
             "kind": "entity_value",
@@ -930,22 +897,25 @@ def parse_config_expression(raw: Any) -> SemanticExpr:
     return parse_semantic_expression(raw, context="config")
 
 
+# The arithmetic ops an expression reads, by each spelling.
+ARITHMETIC_OPS = {
+    "+": "add",
+    "plus": "add",
+    "add": "add",
+    "-": "subtract",
+    "minus": "subtract",
+    "subtract": "subtract",
+    "*": "multiply",
+    "times": "multiply",
+    "multiply": "multiply",
+    "/": "divide",
+    "divide": "divide",
+}
+
+
 def _normalize_arithmetic_op(op: Any) -> str:
-    mapping = {
-        "+": "add",
-        "plus": "add",
-        "add": "add",
-        "-": "subtract",
-        "minus": "subtract",
-        "subtract": "subtract",
-        "*": "multiply",
-        "times": "multiply",
-        "multiply": "multiply",
-        "/": "divide",
-        "divide": "divide",
-    }
     text = str(op or "").strip().lower()
-    return mapping.get(text, text)
+    return ARITHMETIC_OPS.get(text, text)
 
 
 # Valid top-level keys per expression `kind`. Used by
@@ -1004,6 +974,7 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
         "window",
     },
     "ratio": _COMMON_KEYS | {"numerator", "denominator"},
+    "share": _COMMON_KEYS | {"input", "over"},
     "entity_value": _COMMON_KEYS | {"entity", "input", "where"},
     "distribution": _COMMON_KEYS | {"function", "over", "p", "parameters"},
     "conversion": _COMMON_KEYS
@@ -1166,6 +1137,12 @@ def _entity_value_where(raw: Any) -> list[dict[str, Any]]:
                 "query's top-level 'where'.",
                 details={"path": path, "unsupported_keys": unsupported},
             )
+        operators.refuse_text_on_number(
+            item.get("op"),
+            f"entity_value.where[{index}].op",
+            "each entity's value",
+            operators.NUMBER_WORDS,
+        )
         filters.append(dict(item))
     return filters
 
@@ -1245,6 +1222,21 @@ def expression_field(
 
 
 def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
+    """``raw`` parsed; a malformed-shape error names the innermost kind that holds it and,
+    from the top call, the ``path`` the expression came from."""
+    operators.check_strings(raw, path or "expression")
+    try:
+        return _parse_semantic_expression(raw, context=context, path=path)
+    except SemanticLayerError as exc:
+        if exc.code == "INVALID_EXPRESSION_AST":
+            if isinstance(raw, dict) and raw.get("kind"):
+                exc.details.setdefault("expression_kind", raw["kind"])
+            if path:
+                exc.details.setdefault("path", path.removeprefix("query."))
+        raise
+
+
+def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
     if path:
         validate_expression_shapes(raw, path=path)
     if not isinstance(raw, dict):
@@ -1373,9 +1365,8 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST",
             (
-                "Expression requires a 'kind'. Send "
-                '{"kind": "measure", "measure": "<measure id>", "aggregation": "sum"} or '
-                '{"kind": "metric", "metric": "<metric id>"}.'
+                "Expression requires a 'kind'. Send a measure or metric id string, or "
+                '{"kind": "measure", "measure": "<measure id>", "aggregation": "sum"}.'
             ),
             details={"expression_position": context, "received_keys": sorted(expr)},
         )
@@ -1393,6 +1384,14 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         )
     if kind == "literal":
         return LiteralExpr(value=expr.get("value"))
+    like = operators.like_refusal(
+        expr.get("op") if kind in {"comparison", "arithmetic"} else None,
+        expr.get("right"),
+        f"{path or 'expression'}.op",
+        code="INVALID_EXPRESSION_AST",
+    )
+    if like is not None:
+        raise like
     if kind == "arithmetic":
         return ArithmeticExpr(
             op=_normalize_arithmetic_op(expr.get("op", "")),
@@ -1543,7 +1542,12 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         )
     if kind == "case":
         whens = []
-        for row in list(expr.get("whens", []) or []):
+        rows = expr.get("whens")
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "Case expressions require whens: a list of {when, then}"
+            )
+        for row in rows:
             whens.append(
                 CaseWhenExpr(
                     when=parse_semantic_expression(row.get("when"), context=context),
@@ -1801,6 +1805,15 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE", "metric_predicate expressions require 'op'"
             )
+        operators.refuse_text_on_number(
+            op, "metric_predicate.op", "an aggregate", tuple(operators.COMPARISON_SQL)
+        )
+        if operators.operator_word(op, path="metric_predicate.op") not in operators.COMPARISON_SQL:
+            raise SemanticLayerError(
+                "INVALID_METRIC_PREDICATE",
+                "metric_predicate.op compares an aggregate: use is, not, gt, gte, lt or lte",
+                details={"path": "metric_predicate.op", "received_value": op},
+            )
         if context == "config" and not scope_mode:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
@@ -1808,15 +1821,15 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
             )
         if context == "query" and not scope_mode:
             scope_mode = "contextual"
-        if scope_mode not in {"contextual", "entity_only"}:
+        if scope_mode not in PREDICATE_SCOPES:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
-                "metric_predicate scope_mode must be 'contextual' or 'entity_only'",
+                f"metric_predicate scope_mode must be one of {sorted(PREDICATE_SCOPES)}",
             )
-        if scope_mode == "entity_only" and time_grain:
+        if scope_mode != "contextual" and time_grain:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
-                "entity_only metric_predicate expressions cannot declare time_grain",
+                f"{scope_mode} metric_predicate expressions cannot declare time_grain",
             )
         if time_alignment and time_alignment not in {
             "same_query_period",
@@ -1844,8 +1857,8 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
             # The input is 0 for an entity with no rows and NULL for one with no data, so a
             # null threshold would keep the wrong entities.
             hint = (
-                "A count of none is op '=' with value 0; a null test belongs inside the "
-                "input, as an aggregate_if condition."
+                "A count of none is op 'is' with value 0; a test for missing values belongs "
+                'inside the input, as {"op": "missing", "value": true} in its filter.'
             )
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
@@ -2050,6 +2063,21 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
             numerator=parse_semantic_expression(expr.get("numerator"), context=context),
             denominator=parse_semantic_expression(expr.get("denominator"), context=context),
         )
+    if kind == "share":
+        over = expr.get("over")
+        if context == "config":
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST",
+                "share is a query's own calculation; a package metric can't be one",
+            )
+        if "input" not in expr or not isinstance(over, list) or not over:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "share expressions require input and a list over"
+            )
+        return ShareExpr(
+            input=parse_semantic_expression(expr.get("input"), context=context),
+            over=[str(item) for item in over],
+        )
     if kind == "entity_value":
         entity = str(expr.get("entity", "")).strip()
         if not entity:
@@ -2208,11 +2236,7 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
             _walk(node.left)
             _walk(node.right)
             return
-        if isinstance(node, BooleanExpr):
-            for arg in node.args:
-                _walk(arg)
-            return
-        if isinstance(node, CallExpr):
+        if isinstance(node, (BooleanExpr, CallExpr)):
             for arg in node.args:
                 _walk(arg)
             return
@@ -2232,30 +2256,15 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
             if node.else_expr is not None:
                 _walk(node.else_expr)
             return
-        if isinstance(node, CumulativeExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, RollingExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, PriorPeriodExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, PeriodToDateExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, OffsetWindowExpr):
-            _walk(node.input)
-            return
-        if isinstance(node, MetricPredicateExpr):
+        if isinstance(
+            node,
+            (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
+        ):
             _walk(node.input)
             return
         if isinstance(node, RatioExpr):
             _walk(node.numerator)
             _walk(node.denominator)
-            return
-        if isinstance(node, EntityValueExpr):
-            _walk(node.input)
             return
         if isinstance(node, DistributionExpr):
             _walk(node.over)

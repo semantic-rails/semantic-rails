@@ -48,7 +48,7 @@ CONTRACT_NAMES = (
     "http_api.v1.openapi.json",
     "package.v1.json",
     "metric_portability.v1.json",
-    "query_ir.v1.json",
+    "query.v2.json",
     "query_mcp.v2.json",
     "semantic_contract.v1.json",
     "validation_report.v1.json",

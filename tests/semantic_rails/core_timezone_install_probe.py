@@ -59,16 +59,12 @@ def main() -> None:
         )
         for start, end, expected in windows:
             query = {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                ],
+                "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 "time": {
                     "temporal_role": "temporal_role.jaffle_order_time",
                     "grain": "day",
                     "start": start,
                     "end": end,
-                    "fill": True,
                 },
             }
             sql = compile_query(config, registry, query)["sql"]

@@ -1,200 +1,93 @@
-"""Regression tests for ``time.grain`` validation.
+"""``time.grain`` is checked at validate, against the call's words and the role's grains.
 
-Before this validator, ``validate(payload)`` would happily accept a
-typo like ``grain: "fortnight"`` because the compiler never tested the
-grain string against the temporal role's ``supported_grains``. The
-mistake only surfaced at execute time as a raw DuckDB error
-("extract specifier 'fortnight' not recognized") with no structured
-recovery hint and no list of valid grains.
-
-These tests pin the contract: validate must reject unsupported grains
-structurally, list the supported ones, and emit a ``replace_grain``
-recovery hint when a near-miss is available.
+A typo like ``grain: "fortnight"`` is refused structurally, naming the supported grains, rather
+than surfacing at execute time as a raw warehouse error.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
+
+from semantic_rails.config import load_package_config
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
+
+ORDER_TIME = "temporal_role.jaffle_order_time"
+REVENUE = [{"expression": "measure.jaffle.revenue_usd", "as": "revenue"}]
 
 
-def _select_revenue() -> list[dict[str, object]]:
-    return [
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    """One runtime for the module: every call here only validates."""
+    package_dir = copy_package_config(tmp_path_factory.mktemp("grain"), "jaffle_shop")
+    package = load_package_config(str(package_dir))
+    rt = Runtime.from_config(package, source_path=str(package_dir), package_id="jaffle_shop")
+    try:
+        yield rt
+    finally:
+        rt.close()
+
+
+@pytest.mark.parametrize(
+    ("surface", "grain"),
+    # Grains are lowercase words, like every word of the call: "Month" is not read as "month".
+    [("runtime", "Month"), ("mcp", "fortnight")],
+)
+def test_a_grain_outside_the_call_words_is_refused_with_the_grains(
+    runtime: Runtime, surface: str, grain: str
+) -> None:
+    query = {"select": REVENUE, "time": {"temporal_role": ORDER_TIME, "grain": grain}}
+    if surface == "mcp":
+        report = SemanticLayerMCPAdapter(runtime).call_tool(
+            "execute", {"mode": "validate", "query": query}
+        )
+        # The top-level `error` mirrors errors[0] for conventional MCP clients.
+        assert report["error"]["code"] == "INVALID_QUERY"
+    else:
+        report = runtime.validate(query)
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "time.grain"
+    (hint,) = error["recovery_hints"]
+    assert hint["code"] == "FIX_QUERY_CALL"
+    assert "day, week, month, quarter or year" in hint["message"]
+
+
+def test_a_grain_the_role_does_not_support_is_refused_with_its_grains(runtime: Runtime) -> None:
+    """The monthly role supports month, quarter and year: week, valid elsewhere, is refused."""
+    report = runtime.validate(
         {
-            "expression": {"measure": "measure.jaffle.revenue_usd"},
-            "as": "revenue",
+            "select": [
+                {
+                    "expression": "measure.jaffle_monthly_metrics.prior_period_revenue_usd",
+                    "as": "prior_revenue",
+                }
+            ],
+            "time": {"temporal_role": "temporal_role.jaffle_monthly_metric_month", "grain": "week"},
         }
+    )
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "time.grain"
+    assert error["details"]["received"] == "week"
+    assert error["details"]["supported_grains"] == ["month", "quarter", "year"]
+
+
+def test_a_window_without_a_grain_passes_the_grain_check(runtime: Runtime) -> None:
+    """A window without a grain is one total."""
+    report = runtime.validate(
+        {
+            "select": REVENUE,
+            "time": {"temporal_role": ORDER_TIME, "start": "2016-09-01", "end": "2016-10-01"},
+        }
+    )
+    assert not [
+        error
+        for error in report.get("errors") or []
+        if (error.get("details") or {}).get("path") == "time.grain"
     ]
-
-
-def test_unknown_grain_rejected_with_closest_matches(runtime_factory):
-    """``fortnight`` is not a valid grain — validate must reject it
-    with a structured INVALID_QUERY envelope listing supported grains
-    and at least one closest match."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "select": _select_revenue(),
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "fortnight",
-                },
-            }
-        )
-        assert report["ok"] is False
-        assert report["errors"], "expected at least one error"
-        err = report["errors"][0]
-        assert err["code"] == "INVALID_QUERY"
-        details = err.get("details") or {}
-        assert details.get("path") == "time.grain"
-        assert details.get("received") == "fortnight"
-        assert details.get("temporal_role") == "temporal_role.jaffle_order_time"
-        # jaffle_order_time supports day/week/month/quarter/year
-        supported = list(details.get("supported_grains") or [])
-        assert set(supported) >= {"day", "week", "month", "quarter", "year"}
-        closest = list(details.get("closest_matches") or [])
-        assert closest, "closest_matches must be populated for fortnight"
-        # The replace_grain recovery hint should be available.
-        hints = list(report.get("recovery_hints") or [])
-        assert hints, "recovery_hints must be populated for typo grain"
-        replace_hints = [h for h in hints if h.get("kind") == "replace_grain"]
-        assert replace_hints, f"expected a replace_grain hint, got {hints!r}"
-        patch = replace_hints[0].get("patch") or {}
-        assert "replace" in patch and "time.grain" in patch["replace"]
-    finally:
-        runtime.close()
-
-
-def test_grain_unsupported_by_specific_role_rejected(runtime_factory):
-    """``temporal_role.jaffle_monthly_metric_month`` only supports
-    month/quarter/year per its YAML — week must be rejected, even
-    though it's a globally valid grain elsewhere."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "select": [
-                    {
-                        "expression": {
-                            "measure": ("measure.jaffle_monthly_metrics.prior_period_revenue_usd")
-                        },
-                        "as": "prior_revenue",
-                    }
-                ],
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_monthly_metric_month",
-                    "grain": "week",
-                },
-            }
-        )
-        assert report["ok"] is False
-        err = report["errors"][0]
-        assert err["code"] == "INVALID_QUERY"
-        details = err.get("details") or {}
-        assert details.get("path") == "time.grain"
-        assert details.get("received") == "week"
-        supported = list(details.get("supported_grains") or [])
-        assert supported == ["month", "quarter", "year"]
-        assert "week" not in supported
-    finally:
-        runtime.close()
-
-
-def test_empty_grain_passes(runtime_factory):
-    """Empty/missing grain is allowed — separate ungrained-time-projection
-    warnings handle that case. The grain validator must not raise."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "select": _select_revenue(),
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    # No grain — should not raise INVALID_QUERY from grain check.
-                },
-            }
-        )
-        # The query may still emit warnings about ungrained-time projection,
-        # but it must not error out on the grain check.
-        grain_errors = [
-            e
-            for e in (report.get("errors") or [])
-            if e.get("code") == "INVALID_QUERY"
-            and (e.get("details") or {}).get("path") == "time.grain"
-        ]
-        assert not grain_errors, f"empty grain must not raise, got {grain_errors!r}"
-    finally:
-        runtime.close()
-
-
-def test_uppercase_grain_normalized_and_passes(runtime_factory):
-    """The validator normalizes grain to lowercase before checking
-    against ``supported_grains``. ``"Month"`` is treated as ``"month"``
-    and passes — consistent with the codebase's de-facto invariant
-    of lowercasing grain at every downstream use site."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "select": _select_revenue(),
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "Month",
-                },
-            }
-        )
-        grain_errors = [
-            e
-            for e in (report.get("errors") or [])
-            if e.get("code") == "INVALID_QUERY"
-            and (e.get("details") or {}).get("path") == "time.grain"
-        ]
-        assert not grain_errors, f"'Month' must normalize to 'month', got {grain_errors!r}"
-        # And the overall query should compile.
-        assert report["ok"] is True
-    finally:
-        runtime.close()
-
-
-def test_mcp_adapter_surfaces_grain_error_with_recovery_hints(runtime_factory):
-    """End-to-end probe through the MCP adapter: the response envelope
-    must carry the INVALID_QUERY code on ``errors[0]``, surface it at
-    the top-level ``error`` key, and aggregate ``recovery_hints`` at
-    the top level so agents reading the conventional envelope shape
-    can recover."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        adapter = SemanticLayerMCPAdapter(runtime)
-        out = adapter.call_tool(
-            "execute",
-            {
-                "mode": "validate",
-                "query": {
-                    "select": _select_revenue(),
-                    "time": {
-                        "temporal_role": "temporal_role.jaffle_order_time",
-                        "grain": "fortnight",
-                    },
-                },
-            },
-        )
-        assert out.get("ok") is False
-        errors = list(out.get("errors") or [])
-        assert errors, "adapter must surface errors list"
-        first = errors[0]
-        assert first.get("code") == "INVALID_QUERY"
-        # Top-level `error` mirrors errors[0] for conventional MCP clients.
-        top_error = out.get("error") or {}
-        assert top_error.get("code") == "INVALID_QUERY"
-        # closest_matches and supported_grains are present in details.
-        details = first.get("details") or {}
-        assert details.get("received") == "fortnight"
-        assert details.get("closest_matches"), "closest_matches must be set"
-        # Recovery hints belong to the full issue.
-        top_hints = list(first.get("recovery_hints") or [])
-        replace_hints = [h for h in top_hints if h.get("kind") == "replace_grain"]
-        assert replace_hints, (
-            f"expected replace_grain in the issue recovery_hints, got {top_hints!r}"
-        )
-    finally:
-        runtime.close()

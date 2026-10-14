@@ -1,13 +1,17 @@
 """Tenant-filter every supported base scan; deny unsupported shapes.
 
 One ordinary scan plus engine-tagged observation/coverage scans may read the same
-physical relation. Every scan gets the same bound predicate; joins remain denied.
+physical relation. Every scan gets the same bound predicate; joins remain denied. A declared
+load log's mark (``zero_through``: a ``MAX`` over its relation, or an EXISTS against it that
+caps a measure's rows, joined to nothing) reads how far the whole load has completed, so it is
+read as it is, unless a filter applies to that relation: then the statement is refused, never
+read unfiltered.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any, cast
 
@@ -99,21 +103,39 @@ def validate_row_filters(config: PackageConfig) -> None:
 
 
 def apply_row_filters(
-    sql: SqlSelect, filters: Sequence[RowFilter]
+    sql: SqlSelect, filters: Sequence[RowFilter], *, load_logs: Collection[str] = ()
 ) -> tuple[SqlSelect, tuple[ParameterSlot, ...]]:
-    """Filter every qualified scan, or refuse the entire statement."""
+    """Filter every qualified scan, or refuse the entire statement. ``load_logs`` names the
+    relations whose mark a declared ``zero_through`` reads."""
     if not filters:
         return sql, ()
     nodes = list(_walk(sql))
     ctes = {node.name for node in nodes if isinstance(node, SqlCte)}
+    selects = [node for node in nodes if isinstance(node, SqlSelect)]
+    scan_of = {id(node.from_table): node for node in selects if node.from_table is not None}
+    marks = {
+        id(node)
+        for node in nodes
+        if isinstance(node, SqlTableRef)
+        and node.name in load_logs
+        and id(node) in scan_of
+        and _observes(scan_of[id(node)])
+    }
+    marked = {node.name for node in nodes if id(node) in marks}
+    if any(row.table in marked for row in filters):
+        # The load log may be hidden from this caller, so the refusal names no policy.
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            "A row filter applies to the load log this request reads to know how far its data "
+            "is loaded (zero_through), so that date can't be read for this caller.",
+            details={"reason": "row_filter_on_load_log"},
+        )
     reads = [
         node
         for node in nodes
-        if isinstance(node, SqlTableFunction)
-        or (isinstance(node, SqlTableRef) and node.name not in ctes)
+        if (isinstance(node, SqlTableFunction) and not _reads_nothing(node))
+        or (isinstance(node, SqlTableRef) and node.name not in ctes and id(node) not in marks)
     ]
-    selects = [node for node in nodes if isinstance(node, SqlSelect)]
-    scan_of = {id(node.from_table): node for node in selects if node.from_table is not None}
     scans = [read for read in reads if isinstance(read, SqlTableRef) and id(read) in scan_of]
     returning = [read for read in scans if not _observes(scan_of[id(read)])]
     read = (returning or scans)[0] if scans and len(scans) == len(reads) else None
@@ -151,6 +173,15 @@ def apply_row_filters(
 
 
 _OBSERVING = frozenset({"MIN", "MAX", "COUNT"})
+
+
+def _reads_nothing(function: SqlTableFunction) -> bool:
+    """The engine's day series (a named window's periods): a generator of values from its
+    arguments, which reach no relation, so it holds no row a filter could have removed."""
+    return function.name == "GENERATE_SERIES" and not any(
+        isinstance(node, SqlTableRef | SqlTableFunction | SqlSelect)
+        for node in _walk([function.args, function.named_args])
+    )
 
 
 def _aggregate_only(expr: Any) -> bool:

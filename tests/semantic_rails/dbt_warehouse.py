@@ -28,8 +28,7 @@ CREATE TABLE dim_customers AS
 """
 
 ORDER_COUNT_QUERY: dict[str, Any] = {
-    "version": 1,
-    "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+    "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
     "limit": 5,
 }
 

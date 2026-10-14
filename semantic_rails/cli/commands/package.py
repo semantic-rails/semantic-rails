@@ -189,7 +189,7 @@ def cmd_validate_config(args: argparse.Namespace) -> None:
     if not report["ok"]:
         raise SystemExit(1)
     if not getattr(args, "no_manifest", False):
-        from ...manifest import write_manifest
+        from ...catalog_service import write_manifest
 
         runtime = Runtime.from_path(ref.source_path) if ref.source_path else Runtime(ref.package_id)
         try:
@@ -209,6 +209,7 @@ def cmd_check(args: argparse.Namespace) -> None:
         compare_path=args.compare_path,
         base_ref=args.base_ref,
         artifact_path=args.artifact,
+        now=args.now or None,
     )
     _print(_check_cli_payload(report, full=args.full))
     if not report["ok"]:
@@ -230,7 +231,7 @@ def cmd_build_package(args: argparse.Namespace) -> None:
 
 def cmd_run_examples(args: argparse.Namespace) -> None:
     ref = resolve_package_reference(package_id=args.package, path=args.path)
-    report = run_examples_report(ref)
+    report = run_examples_report(ref, now=args.now or None)
     _print(report)
     if not report["ok"]:
         raise SystemExit(1)
@@ -238,7 +239,7 @@ def cmd_run_examples(args: argparse.Namespace) -> None:
 
 def cmd_test_package(args: argparse.Namespace) -> None:
     ref = resolve_package_reference(package_id=args.package, path=args.path)
-    report = run_package_tests_report(ref)
+    report = run_package_tests_report(ref, now=args.now or None)
     _print(report)
     if not report["ok"]:
         raise SystemExit(1)
@@ -257,7 +258,11 @@ def cmd_impact_report(args: argparse.Namespace) -> None:
 def cmd_promote_package(args: argparse.Namespace) -> None:
     ref = resolve_package_reference(package_id=args.package, path=args.path)
     report = promote_package_report(
-        ref, environment=args.environment, compare_path=args.compare_path, base_ref=args.base_ref
+        ref,
+        environment=args.environment,
+        compare_path=args.compare_path,
+        base_ref=args.base_ref,
+        now=args.now or None,
     )
     _print(report)
     if not report["ok"]:

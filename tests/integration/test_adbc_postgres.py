@@ -22,7 +22,7 @@ from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, finalize_parameters
 from tests.semantic_rails.result_helpers import typed_rows
-from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _package, _q
+from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _as, _package
 from tests.semantic_rails.test_time_fill_calendar_buckets import (
     _calendar_runtime,
     _query_buckets,
@@ -187,7 +187,6 @@ def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
         with pytest.raises(SemanticLayerError) as caught:
             runtime.query(
                 {
-                    "version": 1,
                     "select": [
                         {
                             "expression": {
@@ -199,7 +198,7 @@ def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
                         }
                     ],
                     "group_by": ["dimension.rf_order_order_ref"],
-                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "ASC"}],
+                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "asc"}],
                 }
             )
         assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
@@ -262,11 +261,10 @@ def test_postgres_runtime_interval_row_encodes_identically_to_duckdb(adbc, tmp_p
     adbc.query("CREATE TEMP TABLE order_fact(amount INTERVAL)")
     adbc.query(f"INSERT INTO order_fact VALUES (INTERVAL '{literal}'), (NULL)")
     runtime.set_adapter(adbc)
-    db = Database.connect_in_memory()
+    db = Database.connect(":memory:")
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -363,7 +361,7 @@ def test_postgres_row_filter_isolation(adbc, tmp_path):
     )
     runtime.set_adapter(adbc)
     try:
-        results = [runtime.query(_q(BY_STORE, customer_id=customer)) for customer in (A, B, A, B)]
+        results = [_as(runtime.query, BY_STORE, customer_id=customer) for customer in (A, B, A, B)]
         for customer, result in zip((A, B, A, B), results, strict=True):
             assert result["column_types"]["revenue"] == {"type": "decimal"}
             actual = [
@@ -380,9 +378,9 @@ def test_postgres_row_filter_isolation(adbc, tmp_path):
             )
             assert "$1" in result["rendered_sql"] and "?" not in result["rendered_sql"]
         assert results[0]["rendered_sql"] == results[1]["rendered_sql"]
-        assert runtime.query(_q(BY_STORE, customer_id="' OR true --"))["rows"] == []
+        assert _as(runtime.query, BY_STORE, customer_id="' OR true --")["rows"] == []
         with pytest.raises(SemanticLayerError) as caught:
-            runtime.query(_q(BY_STORE))
+            _as(runtime.query, BY_STORE)
         assert caught.value.code == "POLICY_DENIED"
     finally:
         runtime.close()

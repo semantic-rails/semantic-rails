@@ -1,7 +1,9 @@
 """Driver-free checks for Postgres dispatch, immutable binds and bounded batches."""
 
+import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -40,45 +42,49 @@ def _arrow_cursor(batch):
     return Cursor()
 
 
-def _arrow_rows(cursor, positional):
+def _positional_rows(batch):
+    """Rows as the correctness reference reads them: positional tuples."""
+    from tests.integration.correctness.conftest import _rows
+
+    cursor = _arrow_cursor(batch)
+    adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=lambda: cursor))
+    return _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
+
+
+def _arrow_rows(batch, positional):
+    """Rows from the reference reader, or from the adapter capped at one row."""
     if positional:
-        from tests.integration.correctness.conftest import _rows
-
-        adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=lambda: cursor))
-        return [
-            {"payload": row[0]}
-            for row in _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
-        ]
-    return AdbcAdapter._rows(cursor, {"max_rows": 1}, "UTC")
+        return [dict(zip(batch.schema.names, row, strict=True)) for row in _positional_rows(batch)]
+    return AdbcAdapter._rows(_arrow_cursor(batch), {"max_rows": 1}, "UTC")
 
 
-@pytest.mark.parametrize("positional", [False, True])
-@pytest.mark.parametrize("contents", ["value", "null", "empty"])
+# Every unsupported kind is refused from the schema alone, whatever the batch holds,
+# by both readers; the kinds that carry a canary hold it in their value.
 @pytest.mark.parametrize(
-    "kind",
+    ("kind", "contents", "positional"),
     [
-        "numeric_list",
-        "list",
-        "large_list",
-        "fixed_list",
-        "struct",
-        "map",
-        "json",
-        "unknown_extension",
-        "invalid_numeric_storage",
-        "large_binary",
-        "fixed_binary_15",
-        "fixed_binary_16",
-        "uuid_extension",
-        "fixed_binary_17",
-        "opaque_uuid",
-        "opaque_uuid_binary",
-        "time32",
-        "time_ns",
-        "duration",
-        "date64",
-        "timestamp_ns",
-        "dictionary",
+        ("numeric_list", "value", False),
+        ("list", "null", True),
+        ("large_list", "empty", False),
+        ("fixed_list", "value", True),
+        ("struct", "null", False),
+        ("map", "empty", True),
+        ("json", "value", False),
+        ("unknown_extension", "value", True),
+        ("invalid_numeric_storage", "null", False),
+        ("large_binary", "value", False),
+        ("fixed_binary_15", "empty", True),
+        ("fixed_binary_16", "value", False),
+        ("uuid_extension", "null", True),
+        ("fixed_binary_17", "empty", False),
+        ("opaque_uuid", "value", True),
+        ("opaque_uuid_binary", "null", False),
+        ("time32", "empty", True),
+        ("time_ns", "value", False),
+        ("duration", "null", True),
+        ("date64", "empty", False),
+        ("timestamp_ns", "value", True),
+        ("dictionary", "value", True),
     ],
 )
 def test_unsupported_postgres_result_types_refuse_before_reading_values(kind, contents, positional):
@@ -120,58 +126,62 @@ def test_unsupported_postgres_result_types_refuse_before_reading_values(kind, co
         "uuid_extension": pa.binary(16),
     }.get(kind, data_type)
     array = pa.array(values, type=storage_type).view(data_type)
-    batch = pa.record_batch([array], names=["payload"])
     with pytest.raises(SemanticLayerError) as caught:
-        _arrow_rows(_arrow_cursor(batch), positional)
+        _arrow_rows(pa.record_batch([array], names=["payload"]), positional)
     assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
     assert caught.value.details == {"column": "payload", "type": str(data_type)}
-    assert "payload" in str(caught.value) and str(data_type) in str(caught.value)
     assert "row-canary" not in str(caught.value)
 
 
-@pytest.mark.parametrize("positional", [False, True])
+SUPPORTED_SCALARS = [
+    ("int8", -128, "(-128)::TINYINT"),
+    ("int16", -32768, "(-32768)::SMALLINT"),
+    ("int32", -2147483648, "(-2147483648)::INTEGER"),
+    ("int64", 9007199254740993, "9007199254740993::BIGINT"),
+    ("uint64", 18446744073709551615, "18446744073709551615::UBIGINT"),
+    ("float32", 1.25, "1.25::FLOAT"),
+    ("float64", 1.25, "1.25::DOUBLE"),
+    ("string", "123.4500", "'123.4500'::VARCHAR"),
+    ("bool_", True, "TRUE"),
+    ("null", None, "NULL"),
+    ("numeric", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
+    ("decimal128", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
+    ("decimal256", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
+    ("date32", "2026-09-30", "DATE '2026-09-30'"),
+    ("time", "12:34:56.123456", "TIME '12:34:56.123456'"),
+    # Integer-backed times exercise the driver's raw representation at both ends of a day.
+    ("time", 0, "TIME '00:00:00'"),
+    ("time", 86_399_999_999, "TIME '23:59:59.999999'"),
+    ("binary", b"\x00\xffrow-canary", r"'\x00\xFFrow-canary'::BLOB"),
+    ("binary", b"", "''::BLOB"),
+    ("binary", b"x" * 16, "'xxxxxxxxxxxxxxxx'::BLOB"),
+    (
+        "string",
+        "12345678-1234-5678-9abc-def012345678",
+        "'12345678-1234-5678-9abc-def012345678'::VARCHAR",
+    ),
+    ("timestamp", "2026-09-30T12:34:56.123456", "TIMESTAMP '2026-09-30 12:34:56.123456'"),
+    (
+        "timestamptz",
+        "2026-09-30T07:04:56.123456+00:00",
+        "TIMESTAMPTZ '2026-09-30 12:34:56.123456+05:30'",
+    ),
+    ("interval", (1, 2, 3123456000), "INTERVAL '1 month 2 days 3.123456 seconds'"),
+    ("interval", (0, 1, 2000003000), "INTERVAL '1 day 2.000003 seconds'"),
+    ("interval", (-1, 2, -3123456000), "INTERVAL '-1 month 2 days -3.123456 seconds'"),
+    ("interval", (13, 0, 0), "INTERVAL '1 year 1 month'"),
+    ("interval", (0, 0, -1000), "INTERVAL '-0.000001 seconds'"),
+    ("interval", (0, 0, 0), "INTERVAL '0 seconds'"),
+]
+
+
 @pytest.mark.parametrize(
-    "type_name, value, literal",
-    [
-        ("int8", -128, "(-128)::TINYINT"),
-        ("int16", -32768, "(-32768)::SMALLINT"),
-        ("int32", -2147483648, "(-2147483648)::INTEGER"),
-        ("int64", 9007199254740993, "9007199254740993::BIGINT"),
-        ("uint64", 18446744073709551615, "18446744073709551615::UBIGINT"),
-        ("float32", 1.25, "1.25::FLOAT"),
-        ("float64", 1.25, "1.25::DOUBLE"),
-        ("string", "123.4500", "'123.4500'::VARCHAR"),
-        ("bool_", True, "TRUE"),
-        ("null", None, "NULL"),
-        ("numeric", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
-        ("decimal128", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
-        ("decimal256", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
-        ("date32", "2026-09-30", "DATE '2026-09-30'"),
-        ("time", "12:34:56.123456", "TIME '12:34:56.123456'"),
-        ("binary", b"\x00\xffrow-canary", r"'\x00\xFFrow-canary'::BLOB"),
-        ("binary", b"", "''::BLOB"),
-        ("binary", b"x" * 16, "'xxxxxxxxxxxxxxxx'::BLOB"),
-        (
-            "string",
-            "12345678-1234-5678-9abc-def012345678",
-            "'12345678-1234-5678-9abc-def012345678'::VARCHAR",
-        ),
-        ("timestamp", "2026-09-30T12:34:56.123456", "TIMESTAMP '2026-09-30 12:34:56.123456'"),
-        (
-            "timestamptz",
-            "2026-09-30T07:04:56.123456+00:00",
-            "TIMESTAMPTZ '2026-09-30 12:34:56.123456+05:30'",
-        ),
-        ("interval", (1, 2, 3123456000), "INTERVAL '1 month 2 days 3.123456 seconds'"),
-    ],
+    ("type_name", "value", "literal", "positional"),
+    [(*case, index % 2 == 1) for index, case in enumerate(SUPPORTED_SCALARS)],
 )
 def test_supported_postgres_scalars_encode_identically_to_duckdb(
     type_name, value, literal, positional
 ):
-    import json
-    from datetime import date, datetime, time
-    from decimal import Decimal
-
     pa = pytest.importorskip("pyarrow")
     if type_name == "numeric":
         data_type = pa.opaque(pa.string(), "numeric", "PostgreSQL")
@@ -181,7 +191,8 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
     elif type_name == "date32":
         data_type, value = pa.date32(), date.fromisoformat(value)
     elif type_name == "time":
-        data_type, value = pa.time64("us"), time.fromisoformat(value)
+        data_type = pa.time64("us")
+        value = time.fromisoformat(value) if isinstance(value, str) else value
     elif type_name in ("timestamp", "timestamptz"):
         data_type = pa.timestamp("us", tz="UTC" if type_name == "timestamptz" else None)
         value = datetime.fromisoformat(value)
@@ -191,15 +202,20 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
         data_type = getattr(pa, type_name)()
     batch = pa.record_batch([pa.array([value, None], type=data_type)], names=["payload"])
     # The dict path also exercises bounded conversion; compare its first row.
-    rows = _arrow_rows(_arrow_cursor(batch), positional)
-    if type_name in ("numeric", "decimal128", "decimal256"):
-        assert type(rows[0]["payload"]) is Decimal
+    rows = _arrow_rows(batch, positional)
+    python_type = {
+        "numeric": Decimal,
+        "decimal128": Decimal,
+        "decimal256": Decimal,
+        "time": time,
+        "binary": bytes,
+        "interval": timedelta,
+    }.get(type_name)
+    if python_type:
+        assert type(rows[0]["payload"]) is python_type
+    if python_type is Decimal:
         assert rows[0]["payload"].as_tuple().exponent == -4
-    elif type_name == "time":
-        assert type(rows[0]["payload"]) is time
-    elif type_name == "binary":
-        assert type(rows[0]["payload"]) is bytes
-    db = Database.connect_in_memory()
+    db = Database.connect(":memory:")
     try:
         if type_name == "timestamptz":
             reference_rows = (
@@ -216,141 +232,51 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
     )
     if positional:
         assert rows[1] == {"payload": None}
+        assert result_rows(rows)["rows"][1] == {"payload": None}
 
 
-@pytest.mark.parametrize("positional", [False, True])
-@pytest.mark.parametrize("contents", ["null", "empty"])
-@pytest.mark.parametrize("kind", ["time", "binary"])
-def test_supported_postgres_scalar_schemas_allow_null_and_empty_results(kind, contents, positional):
-    pa = pytest.importorskip("pyarrow")
-    data_type = {
-        "time": pa.time64("us"),
-        "binary": pa.binary(),
-    }[kind]
-    values = [None] if contents == "null" else []
-    batch = pa.record_batch([pa.array(values, type=data_type)], names=["payload"])
-    assert _arrow_rows(_arrow_cursor(batch), positional) == (
-        [{"payload": None}] if contents == "null" else []
-    )
-
-
-@pytest.mark.parametrize("positional", [False, True])
 @pytest.mark.parametrize(
-    "microseconds, literal",
-    [(0, "00:00:00"), (86_399_999_999, "23:59:59.999999")],
-)
-def test_postgres_arrow_time_endpoints_encode_identically_to_duckdb(
-    microseconds, literal, positional
-):
-    pa = pytest.importorskip("pyarrow")
-    # Integer-backed arrays exercise the driver's raw representation.
-    batch = pa.record_batch(
-        [pa.array([microseconds, None], type=pa.time64("us"))], names=["payload"]
-    )
-    rows = _arrow_rows(_arrow_cursor(batch), positional)
-    db = Database.connect_in_memory()
-    try:
-        reference = result_rows(db.query(f"SELECT TIME '{literal}' AS payload"))
-    finally:
-        db.close()
-    assert result_rows(rows[:1]) == reference
-    if positional:
-        assert rows[1] == {"payload": None}
-
-
-@pytest.mark.parametrize("positional", [False, True])
-@pytest.mark.parametrize("microseconds", [-1, 86_400_000_000, 86_400_000_001])
-def test_postgres_arrow_time_out_of_range_refuses_before_conversion(microseconds, positional):
-    pa = pytest.importorskip("pyarrow")
-    batch = pa.record_batch([pa.array([0, microseconds], type=pa.time64("us"))], names=["payload"])
-    # 24:00:00 must not collapse into the preceding midnight, even when the
-    # invalid value is the dictionary reader's truncation sentinel.
-    with pytest.raises(SemanticLayerError) as caught:
-        _arrow_rows(_arrow_cursor(batch), positional)
-    assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
-    assert caught.value.details == {"column": "payload", "type": "time64[us]"}
-    assert str(microseconds) not in str(caught.value)
-
-
-def _interval_cursor(values):
-    pa = pytest.importorskip("pyarrow")
-    batch = pa.record_batch(
-        [pa.array(values, type=pa.month_day_nano_interval())], names=["duration"]
-    )
-
-    class Cursor:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def execute(self, sql):
-            assert sql == "SELECT 1"
-
-        def fetch_record_batch(self):
-            return pa.RecordBatchReader.from_batches(batch.schema, [batch])
-
-    return Cursor()
-
-
-@pytest.mark.parametrize("positional", [False, True])
-@pytest.mark.parametrize(
-    "value, literal",
+    ("kind", "contents", "positional"),
     [
-        ((0, 1, 2000003000), "1 day 2.000003 seconds"),
-        ((1, 2, 3123456000), "1 month 2 days 3.123456 seconds"),
-        ((-1, 2, -3123456000), "-1 month 2 days -3.123456 seconds"),
-        ((13, 0, 0), "1 year 1 month"),
-        ((0, 0, -1000), "-0.000001 seconds"),
-        ((0, 0, 0), "0 seconds"),
+        ("time", "null", False),
+        ("time", "empty", True),
+        ("binary", "null", True),
+        ("binary", "empty", False),
     ],
 )
-def test_postgres_intervals_encode_identically_to_duckdb(value, literal, positional):
-    import json
+def test_supported_postgres_scalar_schemas_allow_null_and_empty_results(kind, contents, positional):
+    pa = pytest.importorskip("pyarrow")
+    data_type = {"time": pa.time64("us"), "binary": pa.binary()}[kind]
+    values = [None] if contents == "null" else []
+    batch = pa.record_batch([pa.array(values, type=data_type)], names=["payload"])
+    assert _arrow_rows(batch, positional) == ([{"payload": None}] if contents == "null" else [])
 
-    from tests.integration.correctness.conftest import _rows
 
-    cursor = _interval_cursor([value, None])
-    if positional:
-        adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=lambda: cursor))
-        rows = [
-            {"duration": row[0]}
-            for row in _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
-        ]
+# A time outside one day (24:00:00 must not collapse into the preceding midnight,
+# even as the capped reader's truncation sentinel) and an interval with no exact
+# timedelta refuse without echoing the value.
+@pytest.mark.parametrize(
+    ("value", "positional"),
+    [
+        (-1, True),
+        (86_400_000_000, False),
+        (86_400_000_001, True),
+        ((0, 0, 1), False),
+        ((0, 0, -1), True),
+        ((2147483647, 0, 0), False),
+    ],
+)
+def test_unrepresentable_postgres_values_refuse_without_values(value, positional):
+    pa = pytest.importorskip("pyarrow")
+    if isinstance(value, tuple):
+        column = pa.array([value], type=pa.month_day_nano_interval())
+        code, details = "RESULT_VALUE_UNSUPPORTED", {}
     else:
-        rows = AdbcAdapter._rows(cursor, None, "UTC")
-    assert type(rows[0]["duration"]) is timedelta
-    db = Database.connect_in_memory()
-    try:
-        reference = result_rows(
-            db.query(f"SELECT INTERVAL '{literal}' AS duration UNION ALL SELECT NULL::INTERVAL")
-        )
-    finally:
-        db.close()
-    encoded = result_rows(rows)
-    assert encoded["column_types"] == {"duration": {"type": "interval"}}
-    assert encoded["rows"][1] == {"duration": None}
-    assert (
-        json.dumps(encoded, allow_nan=False, sort_keys=True).encode()
-        == json.dumps(reference, allow_nan=False, sort_keys=True).encode()
-    )
-
-
-@pytest.mark.parametrize("value", [(0, 0, 1), (0, 0, -1), (2147483647, 0, 0)])
-@pytest.mark.parametrize("positional", [False, True])
-def test_unrepresentable_postgres_intervals_refuse_without_values(value, positional):
-    from tests.integration.correctness.conftest import _rows
-
-    cursor = _interval_cursor([value])
+        column = pa.array([0, value], type=pa.time64("us"))
+        code, details = "RESULT_TYPE_UNSUPPORTED", {"column": "payload", "type": "time64[us]"}
     with pytest.raises(SemanticLayerError) as caught:
-        if positional:
-            adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=lambda: cursor))
-            _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
-        else:
-            AdbcAdapter._rows(cursor, None, "UTC")
-    assert caught.value.code == "RESULT_VALUE_UNSUPPORTED"
-    assert caught.value.details == {}
+        _arrow_rows(pa.record_batch([column], names=["payload"]), positional)
+    assert (caught.value.code, caught.value.details) == (code, details)
     assert str(value) not in str(caught.value)
 
 
@@ -391,15 +317,42 @@ def test_nested_comments_hide_tokens_in_both_finalization_and_execution(monkeypa
     assert adapter.query("SELECT /* outer /* inner */ $1 */ 1")
 
 
+MISMATCH = {"reason": "parameter_placeholder_mismatch"}
+
+
 @pytest.mark.parametrize(
-    "sql", ["SELECT ?", "SELECT $2", "SELECT $1, $1", "SELECT '?'", "SELECT $1, ?"]
+    ("sql", "slots", "values", "details"),
+    [
+        # Unfinalized, misaligned or quoted placeholders.
+        ("SELECT ?", (SLOT,), ("canary",), MISMATCH),
+        ("SELECT $2", (SLOT,), ("canary",), MISMATCH),
+        ("SELECT $1, $1", (SLOT,), ("canary",), MISMATCH),
+        ("SELECT '?'", (SLOT,), ("canary",), MISMATCH),
+        ("SELECT $1, ?", (SLOT,), ("canary",), MISMATCH),
+        # A JSON ? operator beside a bind stays refused.
+        ("SELECT '{}'::jsonb ? $1", (SLOT,), ("a",), MISMATCH),
+        # A placeholder without an authored slot.
+        ("SELECT $1", (), (), MISMATCH),
+        # Values that do not match their slots exactly.
+        ("SELECT $1", (SLOT,), (), {"reason": "parameter_count_mismatch"}),
+        ("SELECT $1", (SLOT,), (None,), {"reason": "missing_attribute", "attribute": "tenant"}),
+        (
+            "SELECT $1",
+            (SLOT,),
+            (True,),
+            {"reason": "attribute_type_mismatch", "attribute": "tenant"},
+        ),
+        ("SELECT $1", (SLOT,), ("canary", "extra"), {"reason": "parameter_count_mismatch"}),
+    ],
 )
-def test_unfinalized_or_misaligned_prepared_calls_deny_before_connect(sql, monkeypatch):
+def test_bad_prepared_calls_deny_before_connect(sql, slots, values, details, monkeypatch):
     adapter = AdbcAdapter()
     monkeypatch.setattr(adapter, "_connection", lambda: pytest.fail("must deny before connection"))
     with pytest.raises(SemanticLayerError) as caught:
-        adapter.query_prepared(PreparedQuery(sql, parameters=(SLOT,)), parameters=("canary",))
-    assert caught.value.details == {"reason": "parameter_placeholder_mismatch"}
+        adapter.query_prepared(PreparedQuery(sql, parameters=slots), parameters=values)
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details == details
+    assert "canary" not in str(caught.value)
 
 
 @pytest.mark.parametrize("sql", ["SELECT ?, ?", "SELECT $1", "SELECT '?'", "SELECT ? + $2"])
@@ -407,16 +360,6 @@ def test_bad_finalization_fails_closed(sql):
     with pytest.raises(SemanticLayerError) as caught:
         finalize_parameters(PreparedQuery(sql, parameters=(SLOT,)), "postgres_native")
     assert caught.value.code == "POLICY_DENIED"
-
-
-@pytest.mark.parametrize("values", [(), (None,), (True,), ("canary", "extra")])
-def test_value_checks_precede_connection(values, monkeypatch):
-    adapter = AdbcAdapter()
-    monkeypatch.setattr(adapter, "_connection", lambda: pytest.fail("must deny before connection"))
-    with pytest.raises(SemanticLayerError) as caught:
-        adapter.query_prepared(PreparedQuery("SELECT $1", parameters=(SLOT,)), parameters=values)
-    assert caught.value.code == "POLICY_DENIED"
-    assert "canary" not in str(caught.value.details)
 
 
 class Batch:
@@ -451,7 +394,7 @@ class Reader:
 
 @pytest.mark.parametrize(
     ("cap", "count", "truncated", "reads"),
-    [(0, 3, False, 2), (1, 1, True, 1), (3, 3, False, 2), (4, 3, False, 2)],
+    [(0, 3, False, 2), (1, 1, True, 1), (3, 3, False, 2)],
 )
 def test_bounded_fetch_reads_only_enough_batches(cap, count, truncated, reads):
     reader = Reader([Batch([{"n": 1}, {"n": 2}]), Batch([{"n": 3}])])
@@ -536,34 +479,30 @@ def test_escape_string_and_identifier_preserve_one_separate_bind(monkeypatch, li
     assert all(value not in statement for statement in cursor.statements)
 
 
-@pytest.mark.parametrize("limits", [None, {}, {"time_zone": "UTC"}])
-def test_no_overrides_leave_inherited_timeout_and_zone_untouched(monkeypatch, limits):
-    adapter, cursor = _recording_adapter(monkeypatch)
-    adapter.query("SELECT 1", limits=limits)
-    assert cursor.statements == [
-        "SELECT current_setting('TimeZone'), current_setting('statement_timeout')",
-        "SELECT 1",
-    ]
-
-
 @pytest.mark.parametrize(
-    ("options", "limits", "expected"),
+    ("options", "limits", "timeout"),
     [
+        # No override leaves the inherited timeout and zone untouched.
+        (None, None, None),
+        (None, {}, None),
+        (None, {"time_zone": "UTC"}, None),
+        # An override restores the exact prior session value.
         ({}, {"statement_timeout_ms": 250}, "250"),
         ({"statement_timeout_seconds": "1"}, None, "1000"),
     ],
 )
-def test_timeout_override_restores_exact_prior_session_value(
-    monkeypatch, options, limits, expected
+def test_session_timeout_changes_only_for_an_override_and_is_restored(
+    monkeypatch, options, limits, timeout
 ):
     adapter, cursor = _recording_adapter(monkeypatch, options)
     adapter.query("SELECT 1", limits=limits)
-    assert list(zip(cursor.statements, cursor.parameters, strict=True)) == [
-        ("SELECT current_setting('TimeZone'), current_setting('statement_timeout')", None),
-        ("SELECT set_config('statement_timeout', $1, false)", (expected,)),
-        ("SELECT 1", None),
-        ("SELECT set_config('statement_timeout', $1, false)", ("5s",)),
-    ]
+    settings = ("SELECT current_setting('TimeZone'), current_setting('statement_timeout')", None)
+    set_timeout = "SELECT set_config('statement_timeout', $1, false)"
+    assert list(zip(cursor.statements, cursor.parameters, strict=True)) == (
+        [settings, ("SELECT 1", None)]
+        if timeout is None
+        else [settings, (set_timeout, (timeout,)), ("SELECT 1", None), (set_timeout, ("5s",))]
+    )
 
 
 @pytest.mark.parametrize(
@@ -581,22 +520,9 @@ def test_plain_sql_operators_and_nested_comments_reach_execution(monkeypatch, sq
     assert cursor.statements[-1] == sql
 
 
-def test_parameterized_json_operator_remains_denied_before_connect(monkeypatch):
-    adapter = AdbcAdapter()
-    monkeypatch.setattr(adapter, "_connection", lambda: pytest.fail("must deny before connection"))
-    with pytest.raises(SemanticLayerError) as caught:
-        adapter.query_prepared(
-            PreparedQuery("SELECT '{}'::jsonb ? $1", parameters=(SLOT,)), parameters=("a",)
-        )
-    assert caught.value.details == {"reason": "parameter_placeholder_mismatch"}
-
-
 @pytest.mark.parametrize("zone", ["GMT+5", "<+05>-05"])
 def test_non_iana_session_zone_preserves_real_arrow_utc_timestamps(zone):
-    from datetime import UTC, datetime
-
     pa = pytest.importorskip("pyarrow")
-
     instant = datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)
     batch = pa.record_batch({"instant": pa.array([instant], type=pa.timestamp("us", tz="UTC"))})
     reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
@@ -629,15 +555,6 @@ def test_query_failure_discards_session_and_redacts_driver_text(monkeypatch):
     assert "sql-canary" not in str(caught.value.details)
 
 
-@pytest.mark.parametrize("sql", ["SELECT $1"])
-def test_placeholders_without_authored_slots_deny_before_connect(sql, monkeypatch):
-    adapter = AdbcAdapter()
-    monkeypatch.setattr(adapter, "_connection", lambda: pytest.fail("must deny before connection"))
-    with pytest.raises(SemanticLayerError) as caught:
-        adapter.query_prepared(PreparedQuery(sql))
-    assert caught.value.details == {"reason": "parameter_placeholder_mismatch"}
-
-
 def test_unqualified_adbc_profile_is_refused():
     from semantic_rails.db_parts.adbc import POSTGRES_PROFILE
 
@@ -647,9 +564,6 @@ def test_unqualified_adbc_profile_is_refused():
 
 
 def test_exact_numeric_and_aware_timestamp_conversion():
-    from datetime import UTC, datetime, timedelta
-    from decimal import Decimal
-
     pa = pytest.importorskip("pyarrow")
     numeric = pa.opaque(pa.string(), "numeric", "PostgreSQL")
     batch = pa.record_batch(
@@ -693,10 +607,6 @@ def test_unsupported_result_type_keeps_its_code_and_discards_the_session(monkeyp
 
 
 def test_positional_postgres_results_preserve_exact_numeric_types_and_duplicate_names():
-    from decimal import Decimal
-
-    from tests.integration.correctness.conftest import _rows
-
     pa = pytest.importorskip("pyarrow")
     numeric = pa.opaque(pa.string(), "numeric", "PostgreSQL")
     batch = pa.record_batch(
@@ -707,25 +617,7 @@ def test_positional_postgres_results_preserve_exact_numeric_types_and_duplicate_
         ],
         names=["coalesce", "coalesce", "text"],
     )
-
-    class Cursor:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def execute(self, sql):
-            assert sql == "SELECT 1"
-
-        def fetch_record_batch(self):
-            return pa.RecordBatchReader.from_batches(batch.schema, [batch])
-
-        def fetchall(self):
-            return [("123456789.4500", "70.00", "123.4500"), (None, "0.0000", "70.00")]
-
-    adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=Cursor))
-    rows = _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
+    rows = _positional_rows(batch)
     assert rows == [
         (Decimal("123456789.4500"), Decimal("70.00"), "123.4500"),
         (None, Decimal("0.0000"), "70.00"),

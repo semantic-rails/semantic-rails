@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.embedding import RequestContext
 from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import _tool_content
@@ -28,10 +29,11 @@ CUSTOMER = "dimension.shop_order_customer_id"
 POLICY = SemanticPolicyConfig(
     id="policy.test.rank_only",
     kind="object_access",
-    object_ids=[REVENUE["measure"]],
+    object_ids=[REVENUE],
     action="withhold_values",
     roles=["sales"],
 )
+SALES = RequestContext(roles=("sales",))
 REFERENCE = (
     "SELECT o.customer_id FROM orders AS o WHERE o.store_id IN ('a', 'b') "
     "GROUP BY o.customer_id ORDER BY COALESCE(SUM(o.amount), 0) {0}, o.customer_id {0} LIMIT {1}"
@@ -49,13 +51,11 @@ def _withheld(runtime: Runtime) -> Iterator[Runtime]:
 
 def _rank(direction: str, limit: int) -> dict[str, Any]:
     return {
-        "version": 1,
         "select": [{"expression": REVENUE, "as": "revenue"}],
         "group_by": [CUSTOMER],
-        "where": [{"field": STORE, "op": "IN", "value": ["a", "b"]}],
-        "order_by": [{"field": "revenue", "direction": direction}],
+        "where": [{"field": STORE, "op": "is", "value": ["a", "b"]}],
+        "order_by": [{"field": "revenue", "direction": direction.lower()}],
         "limit": limit,
-        "policy_context": {"roles": ["sales"]},
     }
 
 
@@ -66,8 +66,8 @@ def test_rank_by_withheld_values_matches_reference(request, backend_name):
         answers = {}
         for direction in ("DESC", "ASC"):
             for limit in (3, 7):
-                result = runtime.query(_rank(direction, limit))
-                assert result["withheld"] == [REVENUE["measure"]]
+                result = runtime.query(_rank(direction, limit), context=SALES)
+                assert result["withheld"] == [REVENUE]
                 answers[direction, limit] = [row[CUSTOMER] for row in result["rows"]]
                 assert all(set(row) == {CUSTOMER} for row in result["rows"])
                 reference = backend.reference(REFERENCE.format(direction, limit))
@@ -77,7 +77,7 @@ def test_rank_by_withheld_values_matches_reference(request, backend_name):
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("measure", [REVENUE["measure"], "measure.shop.average_order"])
+@pytest.mark.parametrize("measure", [REVENUE, "measure.shop.average_order"])
 @pytest.mark.parametrize("verbosity", ["minimal", "full"])
 @pytest.mark.parametrize("transport", ["execute", "mcp"])
 @pytest.mark.parametrize("observation_scope", ["dataset", "query"])
@@ -90,22 +90,23 @@ def test_null_withheld_value_has_no_data_diagnostic(
     runtime._config.semantic_policies.append(policy)
     query = {
         **_rank("DESC", 1),
-        "select": [{"expression": {"measure": measure}, "as": "hidden_value"}],
-        "where": [{"field": CUSTOMER, "op": "=", "value": 105}],
-        "order_by": [{"field": "hidden_value", "direction": "DESC"}],
-        "verbosity": verbosity,
+        "select": [{"expression": measure, "as": "hidden_value"}],
+        "where": [{"field": CUSTOMER, "op": "is", "value": 105}],
+        "order_by": [{"field": "hidden_value", "direction": "desc"}],
         "observation_scope": observation_scope,
     }
     try:
-        unrestricted = runtime.query({**query, "policy_context": {}})
+        unrestricted = runtime.query(query, verbosity=verbosity)
         assert unrestricted["rows"] == [{CUSTOMER: 105, "hidden_value": None}]
         if transport == "mcp":
             result = SemanticLayerMCPAdapter(runtime).call_tool(
-                "execute", {"query": query, "mode": "run"}
+                "execute",
+                {"query": query, "mode": "run", "verbosity": verbosity},
+                request_context=SALES,
             )
             serialized = json.dumps(_tool_content(result), default=str)
         else:
-            result = runtime.query(query)
+            result = runtime.query(query, verbosity=verbosity, context=SALES)
             serialized = json.dumps(result, default=str)
         assert result["ok"] and result["rows"] == [{CUSTOMER: 105}]
         assert result["withheld"] == [measure]
@@ -116,10 +117,10 @@ def test_null_withheld_value_has_no_data_diagnostic(
         )
         assert '"hidden_value": null' not in serialized
         assert "reads NULL rather than 0" not in serialized
-        if measure == REVENUE["measure"]:
-            assert any(row["code"] == "NO_DATA_IN_SCOPE" for row in unrestricted["warnings"]) is (
-                observation_scope == "query"
-            )
+        if measure == REVENUE:
+            assert any(
+                row["code"] == "NO_DATA_IN_SCOPE" for row in unrestricted.get("warnings", [])
+            ) is (observation_scope == "query")
     finally:
         runtime._config.semantic_policies.remove(policy)
 
@@ -132,11 +133,11 @@ def test_permitted_outputs_keep_their_no_data_diagnostic(request, backend_name):
             **_rank("DESC", 1),
             "select": [
                 {"expression": REVENUE, "as": "revenue"},
-                {"expression": {"measure": "measure.shop.tax_refunded"}, "as": "tax"},
+                {"expression": "measure.shop.tax_refunded", "as": "tax"},
             ],
-            "where": [{"field": CUSTOMER, "op": "=", "value": 105}],
+            "where": [{"field": CUSTOMER, "op": "is", "value": 105}],
         }
-        result = runtime.query(query)
+        result = runtime.query(query, context=SALES)
         warning = next(row for row in result["warnings"] if row["code"] == "NO_DATA_IN_SCOPE")
         assert warning["details"]["outputs"] == ["tax"]
         assert warning["object_ids"] == ["measure.shop.tax_refunded"]
@@ -174,7 +175,7 @@ def test_null_rank_order_matches_reference_and_reverses(
     config = replace(
         source._config,
         measures=[
-            replace(row, expr=expression) if row.id == REVENUE["measure"] else row
+            replace(row, expr=expression) if row.id == REVENUE else row
             for row in source._config.measures
         ],
         semantic_policies=[POLICY],
@@ -184,14 +185,14 @@ def test_null_rank_order_matches_reference_and_reverses(
         query = {
             **_rank("DESC", 10),
             "group_by": [STORE],
-            "where": [{"field": "dimension.shop_order_id", "op": "IN", "value": [1, 2, 3, 8, 9]}],
+            "where": [{"field": "dimension.shop_order_id", "op": "is", "value": [1, 2, 3, 8, 9]}],
         }
         reference = "SELECT store_id FROM orders WHERE order_id IN (1, 2, 3, 8, 9) GROUP BY store_id ORDER BY (SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) IS NULL), SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) DESC, (store_id IS NULL), store_id DESC"
         key = STORE
     else:
         query = {
             **_rank("DESC", 10),
-            "select": [{"expression": {"measure": "measure.shop.average_order"}, "as": "revenue"}],
+            "select": [{"expression": "measure.shop.average_order", "as": "revenue"}],
             "where": [],
         }
         runtime._config.semantic_policies[:] = [
@@ -202,16 +203,18 @@ def test_null_rank_order_matches_reference_and_reverses(
     try:
         answers = {}
         for direction in ("DESC", "ASC"):
-            order = [{"field": "revenue", "direction": direction}]
+            order = [{"field": "revenue", "direction": direction.lower()}]
             if explicit_ties:
-                order.append({"field": key, "direction": direction})
-            result = runtime.query({**query, "order_by": order, "sql_profile": sql_profile})
+                order.append({"field": key, "direction": direction.lower()})
+            result = runtime.query(
+                {**query, "order_by": order}, sql_profile=sql_profile, context=SALES
+            )
             answers[direction] = [row[key] for row in result["rows"]]
         assert answers["DESC"] == [row[0] for row in backend.reference(reference)]
         assert answers["ASC"] == answers["DESC"][::-1]
         if nullable == "group_key":
             assert answers["DESC"] == ["b", "a", None]
-            values = runtime.query({**query, "policy_context": {}})["rows"]
+            values = runtime.query(query)["rows"]
             assert {row[STORE]: row["revenue"] for row in values} == {"a": 6, None: 6, "b": 200}
         else:
             assert answers["DESC"][-1] == 105

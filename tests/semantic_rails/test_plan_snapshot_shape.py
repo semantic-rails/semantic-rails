@@ -24,6 +24,7 @@ import yaml
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner import snapshot as snapshot_module
+from semantic_rails.planner.call import Call, Time
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -51,13 +52,18 @@ SELECT account_id, day, plan, mrr, CAST(mrr > 0 AS INTEGER) AS paying FROM (
 INSERT INTO accounts VALUES ('e', 'Nonpaying Pro', 'customer');
 INSERT INTO account_day VALUES ('e', DATE '2026-10-04', 'pro', 0, 0);
 """
-CUSTOMERS = {"field": f"dimension.{NS}_account_segment", "op": "=", "value": "customer"}
+CUSTOMERS = {"field": f"dimension.{NS}_account_segment", "op": "is", "value": "customer"}
 DAY_POLICY = {
     "id": "policy.subscriptions.balance_per_day",
     "kind": "metric_constraint",
     "object_ids": [f"measure.{NS}.mrr_all", f"measure.{NS}.paying_all"],
     "required_group_by": [DAY],
 }
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 def _package(root: Path, *, policies: list[dict[str, Any]], days_only: bool) -> Path:
@@ -174,9 +180,9 @@ def _balance(column: str, day: str, by: str = "") -> str:
 
 
 def _answer(runtime: Runtime, plan: dict[str, Any], by: str = "") -> dict[Any, float]:
-    query = plan["best"]["query_ir"]
-    alias = query["select"][0]["as"]
-    rows = runtime.query({**query, "policy_context": NOW})["rows"]
+    query = plan["best"]["query"]
+    alias = _alias(query["select"][0])
+    rows = runtime.query(query, now=NOW["now"])["rows"]
     return {(row[by] if by else ()): row[alias] for row in rows}
 
 
@@ -199,14 +205,19 @@ def test_a_balance_reads_the_day_the_question_names(
     plan = _plan(runtime, intent)
     assert plan["status"] == "ok", plan.get("why")
     assert plan["next"]["ready_for"] == ["execute"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
-    assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
+    if day == "2026-10-04":
+        # Now: the last complete day before it, spelled relative.
+        last_day = {"last": {"unit": "day", "value": 1}}
+        assert query["time"] == {"temporal_role": CLOCK, "grain": "day", **last_day}
+    else:
+        assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
     reference = _reference(_balance(column, day, by))
     answer = _answer(runtime, plan, PLAN if by else "")
     assert answer == reference
-    policy = bool(runtime._config.semantic_policies)
-    assert (DAY in query.get("group_by", [])) is policy
+    # The day grain meets a policy that asks for the day grouping, so none is added.
+    assert DAY not in query.get("group_by", [])
     if intent != "MRR as of 2026-09-30":
         [assumption] = plan["assumptions"]
         assert day in assumption
@@ -223,29 +234,29 @@ def test_the_numbers_are_the_customers_balance_on_that_day(runtime: Runtime) -> 
     assert _reference(_balance("paying", "2026-10-04")) == {(): 2}
     assert _reference(_balance("paying", "2026-10-04", "plan")) == {"basic": 1, "pro": 1}
     plan = _plan(runtime, "What's our MRR?")
-    assert plan["best"]["query_ir"]["select"] == [{"as": "mrr", "expression": {"metric": MRR}}]
+    assert plan["best"]["query"]["select"] == [MRR]
 
 
 def test_right_now_is_the_same_read_as_no_time_words(runtime: Runtime) -> None:
     asked, plain = _plan(runtime, "MRR right now"), _plan(runtime, "What's our MRR?")
     for key in ("select", "time", "group_by"):
-        assert asked["best"]["query_ir"].get(key) == plain["best"]["query_ir"].get(key)
+        assert asked["best"]["query"].get(key) == plain["best"]["query"].get(key)
     assert _answer(runtime, asked) == _answer(runtime, plain) == {(): 599}
 
 
 def test_a_caller_select_keeps_its_measure_and_alias(runtime: Runtime) -> None:
     select = [{"as": "all_mrr", "expression": {
-        "measure": f"measure.{NS}.mrr_all", "aggregation": "last_value",
+        "kind": "measure", "measure": f"measure.{NS}.mrr_all", "aggregation": "last_value",
     }}]  # fmt: skip
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
         "policy_context": NOW, "select": select,
-        "order_by": [{"field": "all_mrr", "direction": "DESC"}],
+        "order_by": [{"field": "all_mrr", "direction": "desc"}],
     })  # fmt: skip
     assert plan["status"] == "ok", plan.get("why")
     assert plan["next"]["ready_for"] == ["execute"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     assert query["select"] == select
-    assert query["order_by"] == [{"field": "all_mrr", "direction": "DESC"}]
+    assert query["order_by"] == [{"field": "all_mrr", "direction": "desc"}]
     assert (
         _answer(runtime, plan)
         == _reference("SELECT SUM(mrr) FROM account_day WHERE day = DATE '2026-10-04'")
@@ -302,7 +313,7 @@ def test_a_balance_window_without_proven_complete_days_is_held(
     runtime: Runtime, bounds: dict[str, str]
 ) -> None:
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
-        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day", **bounds},
         **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
     })  # fmt: skip
@@ -323,11 +334,11 @@ def test_a_balance_window_without_a_clock_reading_is_held(
         "_days",
         lambda bounds, clock: None if bounds is snapshot_module._LAST_DAY else days(bounds, clock),
     )
-    query = {
-        "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+    query = Call.from_call({
+        "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day",
                  "start": "2026-10-04", "end": "2026-10-05"},
-    }  # fmt: skip
+    })  # fmt: skip
     [gap] = snapshot_module.snapshot_day_gaps(runtime, "What's our MRR?", query, query)
     assert gap.kind == "stock_as_of_unrealized"
     assert "isn't proven to end on a complete day" in gap.message
@@ -337,7 +348,7 @@ def test_a_balance_window_without_a_clock_reading_is_held(
 
 def test_a_caller_balance_window_on_a_complete_day_executes(runtime: Runtime) -> None:
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
-        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day",
                  "start": "2026-10-04", "end": "2026-10-05"},
         **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
@@ -357,7 +368,7 @@ def test_day_completion_uses_the_balance_clock_zone(
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
     # NOW is October 4 on this clock, while UTC has already reached October 5.
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
-        "policy_context": NOW, "select": [{"as": "mrr", "expression": {"metric": MRR}}],
+        "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end},
         **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
     })  # fmt: skip
@@ -387,7 +398,7 @@ def test_a_value_named_with_the_balance_filters_it(runtime: Runtime) -> None:
     assert "subject_ambiguous" in {gap["kind"] for gap in ambiguous["why"]["details"]["gaps"]}
     plan = _plan(runtime, "pro paying accounts right now")
     assert plan["status"] == "ok", plan.get("why")
-    assert plan["best"]["query_ir"]["where"] == [{"field": PLAN, "op": "=", "value": "pro"}]
+    assert plan["best"]["query"]["where"] == [{"field": PLAN, "op": "is", "value": "pro"}]
     assert "Paying accounts" in " ".join(plan["assumptions"])
     assert _answer(runtime, plan) == paying_pro
 
@@ -442,15 +453,15 @@ def test_no_single_complete_day_stays_held(runtime: Runtime, intent: str, code: 
         assert plan["why"]["code"] == code
 
 
-def test_an_unloaded_last_complete_day_returns_no_rows(runtime: Runtime) -> None:
+def test_an_unloaded_last_complete_day_returns_no_value(runtime: Runtime) -> None:
     later = {"now": "2026-10-06T06:00:00Z"}
     plan = _plan(runtime, "What's our MRR?", later)
     assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
-    assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-05", "2026-10-06")
-    result = runtime.query({**query, "policy_context": later})
-    assert result["rows"] == []
-    assert "EMPTY_RESULT_WINDOW" in {warning["code"] for warning in result["warnings"]}
+    query = plan["best"]["query"]
+    assert query["time"]["last"] == {"unit": "day", "value": 1}
+    result = runtime.query(query, now=later["now"])
+    # The named day returns its one row, with no value: no data was loaded for it.
+    assert result["rows"] == [{"period": "2026-10-05", "period_partial": False, "mrr": None}]
 
 
 def test_a_draft_forced_past_the_shaper_is_held(
@@ -478,10 +489,10 @@ def test_a_draft_shaped_to_another_day_is_held(
 
     def earlier(*args: Any, **kwargs: Any):
         query, why = shaper(*args, **kwargs)
-        if query.get("time", {}).get("temporal_role") != CLOCK:
+        if query.time is None or query.time.temporal_role != CLOCK:
             return query, why
-        moved = {"temporal_role": CLOCK, "grain": "day", "start": "2026-10-03", "end": "2026-10-04"}
-        return {**query, "time": moved}, why
+        moved = Time(temporal_role=CLOCK, grain="day", start="2026-10-03", end="2026-10-04")
+        return replace(query, time=moved), why
 
     monkeypatch.setattr(plan_module, "shape_snapshot", earlier)
     plan = _plan(runtime, intent)
@@ -502,7 +513,7 @@ def test_any_other_required_grouping_stays_a_hold(tmp_path: Path, required: list
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "VALIDATION_FAILED"
     assert plan["why"]["errors"][0]["code"] == "POLICY_DENIED"
-    assert PLAN not in plan["best"]["query_ir"].get("group_by", [])
+    assert PLAN not in plan["best"]["query"].get("group_by", [])
 
 
 def test_a_required_grouping_hidden_from_the_caller_is_never_added(tmp_path: Path) -> None:
@@ -518,3 +529,83 @@ def test_a_required_grouping_hidden_from_the_caller_is_never_added(tmp_path: Pat
     assert plan["why"]["code"] == "VALIDATION_FAILED"
     assert "execute" not in plan["next"].get("ready_for", [])
     assert "account_name" not in str(plan)
+    [error] = plan["why"]["errors"]
+    assert error["message"] == f"{MRR_ALL} can't be read this way under policy."
+
+
+MRR_ALL = f"measure.{NS}.mrr_all"
+
+
+def test_a_day_policy_refusal_names_the_cut_and_the_fragment_that_meets_it(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path / NS, policies=[DAY_POLICY], days_only=True)
+    try:
+        call = {"select": [MRR_ALL], "time": {"last": {"unit": "month", "value": 1}}}
+        [error] = runtime.validate(call, now=NOW["now"])["errors"]
+        assert (error["code"], error["message"]) == (
+            "POLICY_DENIED",
+            f"{MRR_ALL} can only be read by day: group by {DAY}, or set time.grain to day.",
+        )
+        [hint] = error["recovery_hints"]
+        assert hint == {
+            "code": "FIX_QUERY_CALL",
+            "message": "Set time.grain to day.",
+            "patch": {"merge": {"time": {"grain": "day"}}},
+        }
+        fixed = {**call, "time": {**call["time"], **hint["patch"]["merge"]["time"]}}
+        rows = runtime.query(fixed, now=NOW["now"])["rows"]
+        assert [row["period"] for row in rows] == [f"2026-09-{day:02}" for day in range(1, 31)]
+        closing = "SELECT SUM(mrr) FROM account_day WHERE day = DATE '2026-09-30'"
+        assert {(): rows[-1]["mrr_all"]} == _reference(closing) == {(): 396}
+        # A call with no time names the clock in its fragment too.
+        call = {"select": [MRR_ALL], "group_by": [NAME]}
+        [hint] = runtime.validate(call, now=NOW["now"])["errors"][0]["recovery_hints"]
+        assert hint["message"] == f"Set time.grain to day on {CLOCK}."
+        assert hint["patch"] == {"merge": {"time": {"temporal_role": CLOCK, "grain": "day"}}}
+        fixed = {**call, **hint["patch"]["merge"]}
+        assert runtime.validate(fixed, now=NOW["now"])["ok"] is True
+    finally:
+        runtime.close()
+
+
+def _daily_flow(root: Path) -> Runtime:
+    """The policy package with MRR as a published daily amount that is no balance."""
+    _package(root, policies=[DAY_POLICY], days_only=True)
+    (root / "metrics" / "accounts.yml").unlink()
+    model = root / "models" / "account_day.yml"
+    doc = yaml.safe_load(model.read_text(encoding="utf-8"))
+    doc["model"]["measures"]["mrr_all"] = {"kind": "aggregate", "expr": "mrr", "label": "MRR"}
+    model.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    return Runtime.from_path(str(root))
+
+
+def test_a_day_policy_on_a_daily_amount_reads_one_day_or_asks(tmp_path: Path) -> None:
+    runtime = _daily_flow(tmp_path / NS)
+    try:
+        # One day named: read at day grain, the same number on one row.
+        for intent, window in [
+            ("MRR on 2026-09-30", {"start": "2026-09-30", "end": "2026-10-01"}),
+            ("MRR yesterday", {"last": {"unit": "day", "value": 1}}),
+        ]:
+            plan = _plan(runtime, intent)
+            assert plan["status"] == "ok", plan.get("why")
+            assert plan["best"]["query"]["time"] == {
+                "temporal_role": CLOCK,
+                "grain": "day",
+                **window,
+            }
+        day = "SELECT SUM(mrr) FROM account_day WHERE day = DATE '2026-09-30'"
+        assert _answer(runtime, _plan(runtime, "MRR on 2026-09-30")) == _reference(day)
+        # No one day: plan asks which day, or daily values, naming the cut the policy needs.
+        for intent in ("MRR last month", "What was MRR at the end of last month?", "MRR"):
+            plan = _plan(runtime, intent)
+            assert plan["status"] == "needs_clarification", plan.get("why")
+            assert plan["next"] == {"action": "clarify"}
+            assert [gap["kind"] for gap in plan["why"]["details"]["gaps"]] == ["day_read_required"]
+            assert plan["why"]["details"]["clarification"]["question"] == (
+                "MRR is read per day: which day, or daily values?"
+            )
+            assert "('daily MRR')" in plan["why"]["recovery_hints"][0]["message"]
+    finally:
+        runtime.close()

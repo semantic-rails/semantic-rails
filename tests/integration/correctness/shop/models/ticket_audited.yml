@@ -1,0 +1,10 @@
+# The same tickets loaded through a log nothing has written to yet.
+model:
+  id: ticket_audited
+  relation: tickets
+  entities: {ticket_audited: {}}
+  zero_through: {loaded: ticket_audits.through_day}
+  times:
+    opened_at: {column: opened_at, kind: timestamp, class: event_time, default: true}
+  measures:
+    audited_tickets: {kind: entity_count, entity_key: ticket_id, accumulation: {kind: flow}}

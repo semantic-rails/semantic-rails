@@ -28,10 +28,11 @@ from typing import Any
 
 from ..dialects import (
     connection_option_errors,
+    dialect_for_warehouse,
     normalize_connection_option_name,
 )
 from ..errors import SemanticLayerError, query_execution_error
-from ..sql_preparation import PreparedQuery, prepare_query
+from ..sql_preparation import PreparedQuery
 from .base import (
     QueryRows,
     WarehouseAdapter,
@@ -417,7 +418,9 @@ class DbApiAdapter(WarehouseAdapter):
         return redacted_error_details(self.engine, self.connection_kind, self.options)
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+        return self.query_prepared(
+            dialect_for_warehouse(self.engine).prepare_query(sql), limits=limits
+        )
 
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None

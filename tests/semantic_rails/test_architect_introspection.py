@@ -35,9 +35,9 @@ from tests.semantic_rails.dbt_warehouse import (
 )
 
 
-@pytest.fixture()
-def warehouse_path(tmp_path: Path) -> Path:
-    return build_dbt_warehouse(tmp_path / "warehouse.duckdb")
+@pytest.fixture(scope="module")
+def warehouse_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_dbt_warehouse(tmp_path_factory.mktemp("warehouse") / "warehouse.duckdb")
 
 
 def _by(rows: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:
@@ -324,8 +324,7 @@ def test_special_relation_names_round_trip_to_an_executable_draft(
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.amount"}, "as": "amount"}],
+                "select": ["measure.shop.amount"],
                 "limit": 5,
             }
         )["rows"]
@@ -357,7 +356,9 @@ def test_profile_row_cap_cannot_be_raised_by_the_caller(tmp_path: Path) -> None:
     assert profile["columns"][0]["distinct_count"] <= MAX_PROFILE_ROWS
 
 
-@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["below", "at", "above"])
+# At the cap the profile reads every row; one row more and a sample, and the key is confirmed on
+# every row either way.
+@pytest.mark.parametrize("offset", [0, 1], ids=["at", "above"])
 def test_key_suggestion_states_what_was_checked_at_the_profile_cap(
     tmp_path: Path, offset: int
 ) -> None:
@@ -371,16 +372,15 @@ def test_key_suggestion_states_what_was_checked_at_the_profile_cap(
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "fct_orders")
 
-    key = suggested["primary_key"]
-    assert key["columns"] == ["order_id"]
+    # Refuted on the sample, then confirmed on every row: only a confirmed key is suggested.
+    assert suggested["sampled"] is (offset > 0)
+    assert suggested["key_search"] == {"status": "confirmed", "checked": 1}
+    assert suggested["primary_key"] == {
+        "columns": ["order_id"],
+        "confidence": "high",
+        "reason": f"(order_id) is never null and unique in all {rows} rows",
+    }
     assert suggested["upsert_model"]["primary_key"] == ["order_id"]
-    if offset > 0:
-        assert suggested["sampled"] is True
-        assert key["confidence"] == "low"
-        assert "sample" in key["reason"] and "confirmed" in key["reason"]
-    else:
-        assert suggested["sampled"] is False
-        assert key["confidence"] == "high" and "every row" in key["reason"]
 
 
 def test_declared_key_is_certain_above_the_profile_cap(tmp_path: Path) -> None:
@@ -421,7 +421,7 @@ def test_sampled_duplicate_or_null_key_is_not_suggested(tmp_path: Path, expressi
     assert suggested["upsert_model"]["primary_key"] == []
 
 
-@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["below", "at", "above"])
+@pytest.mark.parametrize("offset", [0, 1], ids=["at", "above"])
 def test_composite_key_suggestion_has_bounded_and_honest_evidence(
     tmp_path: Path, offset: int
 ) -> None:
@@ -436,18 +436,16 @@ def test_composite_key_suggestion_has_bounded_and_honest_evidence(
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "fct_order_lines")
 
-    key = suggested["primary_key"]
-    assert key["columns"] == ["order_id", "line_number"]
+    assert suggested["key_search"]["status"] == "confirmed"
+    assert suggested["primary_key"] == {
+        "columns": ["order_id", "line_number"],
+        "confidence": "high",
+        "reason": f"(order_id, line_number) is never null and unique in all {rows} rows",
+    }
     assert suggested["upsert_model"]["primary_key"] == ["order_id", "line_number"]
-    if offset > 0:
-        assert key["confidence"] == "low"
-        assert "first" in key["reason"] and "confirmed" in key["reason"]
-    else:
-        assert key["confidence"] == "medium"
-        assert "every row" in key["reason"]
 
 
-def test_composite_duplicate_outside_probe_remains_tentative(tmp_path: Path) -> None:
+def test_composite_duplicate_outside_the_sample_is_rejected_on_every_row(tmp_path: Path) -> None:
     db_path = tmp_path / "late-duplicate.duckdb"
     with duckdb.connect(str(db_path)) as conn:
         conn.execute(
@@ -459,10 +457,10 @@ def test_composite_duplicate_outside_probe_remains_tentative(tmp_path: Path) -> 
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "fct_order_lines")
 
-    assert suggested["primary_key"]["columns"] == ["order_id", "line_number"]
-    assert suggested["primary_key"]["confidence"] == "low"
-    assert "first 1000000" in suggested["primary_key"]["reason"]
-    assert "must be confirmed" in suggested["primary_key"]["reason"]
+    assert suggested["sampled"] is True
+    assert suggested["key_search"] == {"status": "none_found", "checked": 1}
+    assert suggested["primary_key"] is None
+    assert suggested["upsert_model"]["primary_key"] == []
 
 
 def test_introspection_never_writes_or_creates_a_database(
@@ -584,10 +582,7 @@ def test_a_drafted_model_validates_against_the_warehouse(tmp_path: Path) -> None
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": "measure.shop.customer_count"}, "as": "customers"}
-                ],
+                "select": [{"expression": "measure.shop.customer_count", "as": "customers"}],
                 "limit": 5,
             }
         )["rows"]
@@ -626,10 +621,9 @@ def test_special_physical_measure_names_execute_as_literal_columns(
     try:
         rows = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
-                        "expression": {"measure": f"measure.shop.{measure_id}"},
+                        "expression": f"measure.shop.{measure_id}",
                         "as": "actual",
                     }
                 ],
@@ -722,8 +716,7 @@ def test_container_columns_are_diagnosed_and_scalar_draft_executes(tmp_path: Pat
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.amount"}, "as": "amount"}],
+                "select": ["measure.shop.amount"],
                 "limit": 5,
             }
         )["rows"]

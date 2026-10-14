@@ -20,6 +20,7 @@ import pytest
 
 from semantic_rails.compiler import NonAdditiveRefusal
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import opened
 
@@ -148,10 +149,10 @@ def _query(
     where: list[dict[str, Any]] | None = None,
     time: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    expression: dict[str, Any] = {"measure": f"measure.{NS}.{measure}"}
+    expression: Any = f"measure.{NS}.{measure}"
     if aggregation:
-        expression["aggregation"] = aggregation
-    payload: dict[str, Any] = {"version": 1, "select": [{"expression": expression, "as": "v"}]}
+        expression = {"kind": "measure", "measure": expression, "aggregation": aggregation}
+    payload: dict[str, Any] = {"select": [{"expression": expression, "as": "v"}]}
     if group_by:
         payload["group_by"] = group_by
     if where:
@@ -167,9 +168,11 @@ def _values(runtime: Runtime, payload: dict[str, Any]) -> list[Any]:
     return sorted((row["v"] for row in result["rows"]), key=lambda v: (v is not None, v or 0))
 
 
-def _refused(runtime: Runtime, payload: dict[str, Any]) -> dict[str, Any]:
+def _refused(
+    runtime: Runtime, payload: dict[str, Any], *, internal: bool = False
+) -> dict[str, Any]:
     with pytest.raises(SemanticLayerError) as raised:
-        runtime.query(payload)
+        (runtime.query_internal if internal else runtime.query)(payload)
     assert raised.value.code == "ROLLUP_UNSAFE"
     assert raised.value.details["unsupported_construct"] == "non_additive_sum"
     # Key columns remain available to in-process validation callers.
@@ -202,15 +205,12 @@ BY_DAY_SNAP = {"temporal_role": SNAP, "grain": "day"}
         (_query("visitors_14d", where=[_eq(REPO_SNAP, "a")], time=BY_WEEK_SNAP), [4]),
         (_query("visitors_14d", where=[_eq(REPO_SNAP, "a")]), [4]),
         # A stock's sum takes one snapshot per series per bucket too, then adds series.
-        (
-            _query("visitors_14d", aggregation="sum", group_by=[REPO_SNAP], time=BY_WEEK_SNAP),
-            [4, 6],
-        ),
+        (_query("visitors_14d", aggregation="sum", group_by=[REPO_SNAP], time=BY_WEEK_SNAP), [4, 6]),
         (_query("path_visitors_14d", group_by=[PATH], where=[_eq(PATH_REPO, "a")]), [2, 2, 3]),
         # An additive stock beside them is untouched.
         (_query("stars", time=BY_WEEK_SNAP), [3]),
     ],
-)
+)  # fmt: skip
 def test_one_row_per_output_row_answers(runtime: Runtime, payload, expected) -> None:
     assert _values(runtime, payload) == expected
 
@@ -229,7 +229,6 @@ def test_one_row_per_output_row_answers(runtime: Runtime, payload, expected) -> 
         # A measure's own `=` filter narrows its rows but doesn't split the output rows.
         (
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -255,8 +254,7 @@ def test_summing_rows_is_refused(runtime: Runtime, payload, missing) -> None:
 
 def _metric(name: str, time: dict[str, Any] = BY_DAY, **extra: Any) -> dict[str, Any]:
     return {
-        "version": 1,
-        "select": [{"expression": {"metric": f"metric.{NS}.{name}"}, "as": "v"}],
+        "select": [{"expression": f"metric.{NS}.{name}", "as": "v"}],
         "group_by": [REPO_DAY],
         "time": time,
         **extra,
@@ -265,55 +263,52 @@ def _metric(name: str, time: dict[str, Any] = BY_DAY, **extra: Any) -> dict[str,
 
 def _inline(expression: dict[str, Any]) -> dict[str, Any]:
     return {
-        "version": 1,
         "select": [{"expression": expression, "as": "v"}],
         "group_by": [REPO_DAY],
         "time": BY_DAY,
     }
 
 
-DAILY = {"measure": f"measure.{NS}.daily_visitors"}
+DAILY = f"measure.{NS}.daily_visitors"
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "internal"),
     [
-        _metric("cumulative_visitors"),
-        _metric("rolling_visitors"),
-        _inline(
-            {
-                "kind": "scoped_aggregate",
-                "measure": DAILY["measure"],
-                "where": [_eq(REPO_DAY, "a")],
-            }
-        ),
-        _inline(
-            {
-                "kind": "scoped_aggregate",
-                "measure": f"measure.{NS}.views",
-                "aggregation": "sum",
-                "predicates": [
-                    {
-                        "kind": "metric_predicate",
-                        "entity": f"entity.{NS}_repository",
-                        "input": {**DAILY, "aggregation": "sum"},
-                        "op": ">",
-                        "value": 1,
-                    }
-                ],
-            }
+        (_metric("cumulative_visitors"), False),
+        (_metric("rolling_visitors"), False),
+        (_inline({"kind": "scoped_aggregate", "measure": DAILY, "where": [_eq(REPO_DAY, "a")]}), False),
+        # A predicate per row's own context over an aggregation override: the engine's form.
+        (
+            _inline(
+                {
+                    "kind": "scoped_aggregate",
+                    "measure": f"measure.{NS}.views",
+                    "aggregation": "sum",
+                    "predicates": [
+                        {
+                            "kind": "metric_predicate",
+                            "entity": f"entity.{NS}_repository",
+                            "input": {"measure": DAILY, "aggregation": "sum"},
+                            "op": ">",
+                            "value": 1,
+                        }
+                    ],
+                }
+            ),
+            True,
         ),
     ],
     ids=["cumulative", "rolling", "scoped-filter", "metric-predicate"],
-)
-def test_windows_and_per_entity_rollups_are_refused(runtime: Runtime, payload) -> None:
-    assert _refused(runtime, payload)["missing_columns"] == []
+)  # fmt: skip
+def test_windows_and_per_entity_rollups_are_refused(runtime: Runtime, payload, internal) -> None:
+    assert _refused(runtime, payload, internal=internal)["missing_columns"] == []
 
 
 def test_per_period_comparisons_and_ratios_follow_the_row_rule(runtime: Runtime) -> None:
     prior = {"kind": "prior_period", "input": DAILY, "offset": {"unit": "day", "value": 1}}
     assert _values(runtime, _inline(prior)) == [None, None, 3, 5]
-    ratio = {"kind": "ratio", "numerator": {"metric": f"metric.{NS}.views"}, "denominator": DAILY}
+    ratio = {"kind": "ratio", "numerator": f"metric.{NS}.views", "denominator": DAILY}
     assert len(_values(runtime, _inline(ratio))) == 3
     _refused(runtime, {**_inline(ratio), "time": BY_WEEK_DAY})
 
@@ -371,7 +366,8 @@ def test_a_role_playing_key_pins_nothing(runtime: Runtime) -> None:
     )
     config = replace(config, relationships=[*config.relationships, second])
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, None, _query("daily_visitors", group_by=[REPO_KEY], time=BY_DAY))
+        query = _query("daily_visitors", group_by=[REPO_KEY], time=BY_DAY)
+        compile_query(config, None, read_call(query, config=config)[0])
     assert isinstance(raised.value, NonAdditiveRefusal) and raised.value.columns == ["repo"]
 
 
@@ -390,6 +386,7 @@ def test_refusal_names_keys_only_when_all_are_visible(
     runtime: Runtime, package_dir: Path, with_aggregate_if: bool, mode: str, hidden_key: str | None
 ) -> None:
     from semantic_rails.mcp import SemanticLayerMCPAdapter
+    from semantic_rails.request_context import RequestContext
     from semantic_rails.schema import SemanticPolicyConfig
 
     policies = []
@@ -406,7 +403,7 @@ def test_refusal_names_keys_only_when_all_are_visible(
     engine = Runtime.from_config(
         replace(runtime.config, semantic_policies=policies), source_path=str(package_dir)
     )
-    query = {**_query("daily_visitors"), "policy_context": {"audience": "external"}}
+    query = _query("daily_visitors")
     if with_aggregate_if:
         # The conditional rewrite must not bypass or lose context on the ordinary
         # non-additive measure beside it.
@@ -431,7 +428,9 @@ def test_refusal_names_keys_only_when_all_are_visible(
         )
     try:
         response = SemanticLayerMCPAdapter(engine).call_tool(
-            "execute", {"query": query, "mode": mode, "verbosity": "full"}
+            "execute",
+            {"query": query, "mode": mode, "verbosity": "full"},
+            request_context=RequestContext(audience="external"),
         )
         assert response["ok"] is False
         issue = response["errors"][0]
@@ -514,7 +513,7 @@ def test_key_names_follow_discovery_policy_context(runtime: Runtime, context, vi
     engine = Runtime.from_config(config, source_path=runtime.source_path)
     try:
         with pytest.raises(NonAdditiveRefusal) as raised:
-            engine.compile({**_query("daily_visitors"), "policy_context": context})
+            engine.compile(_query("daily_visitors"), context=context)
         assert (REPO_DAY in str(raised.value)) is visible
     finally:
         engine.close()
@@ -529,16 +528,12 @@ def test_internal_planning_without_visibility_context_keeps_keys_private(
 
     # Forcing the internal planning path cannot opt into naming a key: it has
     # no request context with which to authorize that disclosure.
+    query, _ = read_call(_query("daily_visitors"), config=runtime.config)
     with pytest.raises(NonAdditiveRefusal) as raised:
         if entry_point == "internal":
-            _plan_query(
-                runtime.config,
-                None,
-                normalize_query(_query("daily_visitors")),
-                collapse_window=True,
-            )
+            _plan_query(runtime.config, None, normalize_query(query), collapse_window=True)
         else:
             operation = plan_query if entry_point == "plan" else compile_query
-            operation(runtime.config, None, _query("daily_visitors"))
+            operation(runtime.config, None, query)
     assert "key_dimensions" not in raised.value.details
     assert REPO_DAY not in str(raised.value)

@@ -153,18 +153,11 @@ class ExplainArtifact:
 
 
 @dataclass(frozen=True)
-class ValidationIssue:
-    code: str
-    message: str
-    details: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class ValidationReport:
     version: int
     ok: bool
-    errors: list[ValidationIssue] = field(default_factory=list)
-    warnings: list[ValidationIssue] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[dict[str, Any]] = field(default_factory=list)
     disabled_options: list[dict[str, Any]] = field(default_factory=list)
     logical_plan: dict[str, Any] = field(default_factory=dict)
     explain: dict[str, Any] = field(default_factory=dict)

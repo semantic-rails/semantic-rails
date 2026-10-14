@@ -10,7 +10,6 @@ adapter.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import json
 import os
@@ -22,37 +21,24 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from .ast import QUERY_INPUT_KEYS, rewrite_select_shorthand
+from . import operations
 from .audit import emit_audit_event
-from .catalog_service import resolve_catalog
 from .diagnostics import (
     enrich_object_not_found,
     exception_issue,
-    semantic_issue,
 )
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
-from .mcp_query import normalize_arguments, normalize_query_spellings, normalize_routes
+from .mcp_query import coerce_arguments
 from .mcp_session import MCPQuerySession
-from .metadata import (
-    _slim_discover_minimal,
-    build_options_payload,
-    catalog_payload,
-    discover_payload,
-    inspect_payload,
-    valid_values_payload,
-)
-from .planner import plan_payload
+from .metadata import _slim_discover_minimal
 from .request_context import (
     RequestContext,
     context_from_policy_context,
     request_context_payload,
-    without_trusted_attributes,
 )
 from .request_payload import (
-    build_query_payload,
     checked_discover_kinds,
     parse_string_list,
-    without_policy_context,
 )
 from .request_payload import (
     clean_request_id as _clean_request_id,
@@ -63,7 +49,7 @@ from .request_payload import (
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
+from .runtime_parts.responses import resolve_verbosity
 from .schema import PackageConfig
 
 __all__ = [
@@ -72,28 +58,21 @@ __all__ = [
     "MCP_RESOURCE_DEFINITIONS",
     "MCP_SERVER_INSTRUCTIONS",
     "MCP_TOOL_DEFINITIONS",
-    "POLICY_CONTEXT_SCHEMA",
     "PromptDefinition",
     "ResourceDefinition",
     "Runtime",
     "SemanticLayerError",
     "SemanticLayerMCPAdapter",
     "ToolDefinition",
-    "build_options_payload",
-    "catalog_payload",
     "context_from_policy_context",
-    "discover_payload",
     "emit_audit_event",
     "enrich_object_not_found",
     "exception_issue",
-    "inspect_payload",
     "json_text",
     "list_prompt_definitions",
     "list_resource_definitions",
     "list_tool_definitions",
-    "plan_payload",
     "request_context_payload",
-    "valid_values_payload",
 ]
 
 
@@ -112,10 +91,6 @@ MCP_DEFAULT_QUERY_VERBOSITY = "minimal"
 # Default row cap for MCP execute. Hosts warn about tool results over 10K tokens; 200 rows keeps a typical
 # answer well under that. A larger result comes back with a truncation hint.
 MCP_DEFAULT_MAX_ROWS = 200
-# Execute asks the warehouse for up to this many rows (never past a
-# limits.max_rows the query sets itself), so a truncated result can still
-# report its total. Some adapters fetch the full result and clip it.
-MCP_ROW_COUNT_CEILING = 10_000
 # The largest max_rows an MCP caller may request.
 MCP_MAX_ROWS_LIMIT = 100_000
 # Every final tool payload, serialized identically for both MCP content channels,
@@ -150,20 +125,20 @@ MCP_SERVER_INSTRUCTIONS = (
     "1. discover(terms) ranks measures, metrics and dimensions for it; empty terms list "
     "every id. inspect(object_id) shows one object's card when you need its aggregations, "
     "values or time roles. valid-values(dimension_id) lists a dimension's values.\n"
-    "2. plan(intent) drafts Query IR; draft with plan rather than writing Query IR from "
-    'scratch. Run best.query_ir only when status is "ok" and there are no warnings; '
-    "otherwise why and warnings name what the draft misses, so fix the Query IR or ask the "
+    "2. plan(intent) drafts the query call; draft with plan rather than writing one from "
+    'scratch. Run best.query only when status is "ok" and there are no warnings; '
+    "otherwise why and warnings name what the draft misses, so fix the call or ask the "
     "user. out_of_scope or unrealizable means the package can't answer. When status is ok, a "
-    "question asking several things returns parts; execute each part's best.query_ir.\n"
-    "3. execute(query) validates, compiles and runs the Query IR and returns at most "
-    f"max_rows rows (default {MCP_DEFAULT_MAX_ROWS}); a capped result reports truncated and "
-    'total_row_count. mode "validate" only checks the query; mode "sql" also returns its '
-    "SQL.\n"
+    "question asking several things returns parts; execute each part's best.query.\n"
+    "3. execute(query) validates, compiles and runs the call and returns at most "
+    f"max_rows rows (default {MCP_DEFAULT_MAX_ROWS}); a capped result reports truncated. "
+    'mode "validate" only checks the call; mode "sql" also returns its SQL.\n'
     "\n"
-    'Query IR: select measures or metrics, group_by dimension ids, where filters (op "in"'
-    " for several values), and time {temporal_role, grain, start, end}, where end is "
-    "exclusive. A window without a grain returns one total, with no time column. The execute tool "
-    "schema lists expression shapes.\n"
+    "The call: select measure or metric ids, group_by dimension ids, where "
+    "[{field, op, value}] with word ops (is, not, gt, gte, lt, lte, contains, starts_with, "
+    "ends_with, missing), and "
+    "time {grain, last, this, start, end}; end is exclusive. A window without a grain "
+    "returns one total. Relative windows resolve against the now argument.\n"
     "No time/where: the query adds no time window or filter; "
     "metric definitions and package policies still apply.\n"
     "\n"
@@ -175,140 +150,48 @@ MCP_SERVER_INSTRUCTIONS = (
     "recovery_hints and closest_matches; follow them before retrying."
 )
 
-POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
+
+def _call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
+    """The query call schema as execute's ``query`` property, and its ``$defs``.
+
+    The definitions move to the tool schema's root so its ``#/$defs/...`` references resolve.
+    """
+    from .contracts.query_schema import embedded_query_call_schema
+
+    return embedded_query_call_schema()
+
+
+QUERY_SCHEMA, QUERY_SCHEMA_DEFS = _call_schema()
+# A metadata tool or plan takes a partial call to start from.
+QUERY_SEED_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "description": "Optional visibility/access policy context.",
-    "properties": {
-        "environment": {"type": "string"},
-        "audience": {"type": "string"},
-    },
-    "additionalProperties": True,
+    "description": "A partial query call (execute's query schema) to start from.",
+}
+NOW_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": "ISO date or date-time for time.last and time.this.",
 }
 
-QUERY_SCHEMA: dict[str, Any] = {
-    "type": ["object", "string"],
-    "description": (
-        "Query IR (object or JSON string): select [{expression: {measure: '<id>'}, as: '<alias>'}], "
-        "group_by ['<dimension_id>'], where [{field: '<dimension_id>', op: '=', value: ...}]. "
-        "Unknown keys rejected as "
-        "INVALID_QUERY (offenders under details.unsupported_keys)."
-    ),
-    "additionalProperties": True,
-    "properties": {
-        "where": {
-            "type": "array",
-            "description": (
-                "Filters {field,op,value}. A child group {child, match: any|none, where} holds "
-                "filters one row of a child entity must meet together. On "
-                "AMBIGUOUS_CHILD_SCOPE, resend an option's where from details.clarification."
-            ),
-            "items": {"type": "object"},
-        },
-        "time": {
-            "type": ["object", "null"],
-            "description": "Optional time: temporal_role, grain, start|end|range, fill, calendar_id. No declared time: INVALID_TEMPORAL_ROLE.",
-            "additionalProperties": True,
-            "properties": {
-                "temporal_role": {
-                    "type": "string",
-                    "description": "Clock id, e.g. 'temporal_role.<x>'. Must match the metric's anchor; mismatch fails as INVALID_TEMPORAL_BINDING.",
-                },
-                "grain": {
-                    "type": "string",
-                    "enum": ["", "day", "week", "month", "quarter", "year", "hour", "minute"],
-                    "description": "Bucket size. Required when fill=true or for inline prior_period.",
-                },
-                "start": {"type": ["string", "null"], "description": "ISO-8601."},
-                "end": {
-                    "type": ["string", "null"],
-                    "description": (
-                        "ISO-8601, exclusive: March 2017 is start 2017-03-01, end 2017-04-01."
-                    ),
-                },
-                "range": {
-                    "type": "object",
-                    "description": "Relative window {last: {unit, value}}: window ends at the floor of now (start of current period) — covers the last N completed periods, NOT a rolling-to-today window. Mutually exclusive with start/end; string shorthand rejected as USE_OBJECT_SHAPE.",
-                    "additionalProperties": True,
-                    "properties": {
-                        "last": {
-                            "type": "object",
-                            "description": "{unit, value} — e.g. {unit: 'day', value: 90}.",
-                            "additionalProperties": False,
-                            "required": ["unit", "value"],
-                            "properties": {
-                                "unit": {
-                                    "type": "string",
-                                    "enum": [
-                                        "minute",
-                                        "hour",
-                                        "day",
-                                        "week",
-                                        "month",
-                                        "quarter",
-                                        "year",
-                                    ],
-                                },
-                                "value": {"type": "integer", "minimum": 1},
-                            },
-                        },
-                    },
-                },
-                "fill": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Dense calendar spine for grain buckets. Requires grain; otherwise fails as INVALID_QUERY.",
-                },
-                "calendar_id": {
-                    "type": "string",
-                    "default": "default",
-                    "description": "Calendar for dense spine (Gregorian or authored fiscal).",
-                },
-            },
-        },
-    },
-}
-
-# Slim Query-IR schema for tools/list dedupe. The full QUERY_SCHEMA
-# (with the detailed time-block spec) ships once, on 'execute', and the
-# other tools point there. Both schemas document accepted inputs.
-QUERY_SCHEMA_SLIM: dict[str, Any] = {
-    "type": ["object", "string"],
-    "additionalProperties": True,
-    "description": (
-        "Query IR (object or JSON string). IR and time shapes: execute's query schema."
-    ),
-}
-
+# execute's response options; each description says only what its enum does not.
 VERBOSITY_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["minimal", "compact", "full"],
     "default": "minimal",
-    "description": (
-        "Response detail. 'minimal' (default)={ok,errors,warnings}, "
-        "+rendered_sql on compile, +rows/row_count on execute — a few KB. "
-        "'compact' adds query metadata without compiler plans. "
-        "'full' adds plans within the same response budget; omitted_fields names trimmed detail."
-    ),
+    "description": "'compact' adds metadata; 'full' adds plans too.",
 }
 
 SQL_PROFILE_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["audit", "compact", "debug", "off"],
     "default": "audit",
-    "description": (
-        "SQL rendering: 'audit'(default)/'compact'/'debug' format rendered_sql; "
-        "'off' suppresses rendered_sql + sql_plan entirely."
-    ),
+    "description": "'off' omits rendered_sql and sql_plan.",
 }
 
 ROW_FORMAT_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["records", "columns"],
     "default": "records",
-    "description": (
-        "Execute row shape. 'records' (default)=rows as objects; "
-        "'columns'=columns plus array rows, avoiding repeated field names."
-    ),
+    "description": "'columns': column names once, rows as arrays.",
 }
 
 MCP_RESULT_SCHEMA: dict[str, Any] = {
@@ -373,7 +256,6 @@ MCP_RESULT_SCHEMA: dict[str, Any] = {
 
 MCP_RESULT_SCHEMA_SLIM: dict[str, Any] = {
     "type": "object",
-    "description": "Semantic Rails MCP v2 result envelope.",
     "required": ["ok", "status"],
     "properties": {
         "ok": {"type": "boolean"},
@@ -531,7 +413,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
                     "description": "Object kinds to rank, such as measure or metric. Default: all.",
                 },
-                "query": QUERY_SCHEMA_SLIM,
+                "query": QUERY_SEED_SCHEMA,
                 "stage": {
                     "type": "string",
                     "description": (
@@ -572,7 +454,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         input_schema=_schema(
             {
                 "object_id": {"type": "string"},
-                "query": QUERY_SCHEMA_SLIM,
+                "query": QUERY_SEED_SCHEMA,
                 "verbosity": _VERBOSITY_MINIMAL,
             },
             required=["object_id"],
@@ -592,7 +474,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         input_schema=_schema(
             {
                 "dimension_id": {"type": "string"},
-                "query": QUERY_SCHEMA_SLIM,
+                "query": QUERY_SEED_SCHEMA,
                 "search": {"type": "string"},
                 "limit": {"type": "integer", "default": 100, "minimum": 1},
                 "offset": {"type": "integer", "default": 0, "minimum": 0},
@@ -610,19 +492,20 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="plan",
         description=(
-            "Draft one best Query IR from a natural-language intent; call it before 'execute' "
-            "instead of writing Query IR from scratch. Returns 'status' ('ok' | "
-            "'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query_ir', and 'why' "
+            "Draft one best query call from a natural-language intent; call it before "
+            "'execute' instead of writing a call from scratch. Returns 'status' ('ok' | "
+            "'low_confidence' | 'unrealizable' | 'out_of_scope'), 'best.query', and 'why' "
             "or 'warnings' naming any part of the question the draft doesn't honor. "
             "detail='query' (default) is compact; 'best' adds intent_ir, trace and next "
             "steps; 'full' adds alternatives and blocked drafts; 'debug' adds compose_hints. "
-            "Gotcha: pass 'best.query_ir' to 'execute' only when status is 'ok' and there are "
+            "Gotcha: pass 'best.query' to 'execute' only when status is 'ok' and there are "
             "no warnings."
         ),
         input_schema=_schema(
             {
                 "intent": {"type": "string"},
-                "query": QUERY_SCHEMA_SLIM,
+                "query": QUERY_SEED_SCHEMA,
+                "now": NOW_SCHEMA,
                 "detail": {
                     "type": "string",
                     "enum": ["query", "best", "full", "debug"],
@@ -643,62 +526,44 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Run plan's best.query_ir (call plan first). time.end is exclusive. "
-            "'validate' checks; 'sql' adds rendered_sql; neither runs. "
-            "query: object or JSON string; run costs warehouse time; "
-            "a query that already ran needs no validate. "
-            "select may be empty: group_by alone lists rows. "
-            "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...], "
-            "where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
-            "{aggregation, measure} | {metric} | "
-            "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
-            "ratio: per-order sum / order count.\n"
-            "arithmetic composes expressions; aggregate_if aggregates "
-            "condition/value: {kind: aggregate_if, aggregation: avg, condition: {...}, "
-            "value: {kind: call, name: date_diff, args: [...]}}.\n"
-            "Empty groups: 0 if data exists (observation_scope=query: in filters)."
+            "Answer a query call; call plan first to draft it. mode 'run' returns rows, "
+            "'validate' only checks the call, 'sql' adds rendered_sql; only 'run' reads the "
+            "warehouse, and a call that already ran needs no validate. Call: select ids or "
+            "{expression, as}, group_by dimension ids (alone, it lists rows), where/having "
+            "[{field, op, value}] and entity filters, time (time.end is exclusive), order_by "
+            "(period is the time column), limit."
         ),
-        input_schema=_schema(
-            {
-                "query": QUERY_SCHEMA,
-                "mode": {
-                    "type": "string",
-                    "enum": list(_EXECUTE_MODES),
-                    "default": "run",
-                    "description": (
-                        "'run' returns rows; 'validate' only checks the query; 'sql' also "
-                        "returns rendered_sql. Only 'run' queries the warehouse."
-                    ),
+        input_schema={
+            **_schema(
+                {
+                    "query": QUERY_SCHEMA,
+                    "now": NOW_SCHEMA,
+                    "mode": {
+                        "type": "string",
+                        "enum": list(_EXECUTE_MODES),
+                        "default": "run",
+                    },
+                    "verbosity": VERBOSITY_SCHEMA,
+                    "sql_profile": SQL_PROFILE_SCHEMA,
+                    "row_format": ROW_FORMAT_SCHEMA,
+                    "max_rows": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MCP_MAX_ROWS_LIMIT,
+                        "default": MCP_DEFAULT_MAX_ROWS,
+                    },
                 },
-                "verbosity": {
-                    **VERBOSITY_SCHEMA,
-                    "description": (
-                        "'minimal' (default): outcome, errors, warnings; SQL in 'sql', rows in 'run'. "
-                        "'compact' adds metadata without plans; 'full' adds plans. "
-                        "All modes share a budget; omitted_fields lists trimmed detail."
-                    ),
-                },
-                "sql_profile": SQL_PROFILE_SCHEMA,
-                "row_format": ROW_FORMAT_SCHEMA,
-                "max_rows": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MCP_MAX_ROWS_LIMIT,
-                    "default": MCP_DEFAULT_MAX_ROWS,
-                    "description": (
-                        "Rows to return in mode 'run'. A larger result sets truncated=true "
-                        f"and total_row_count (null past {MCP_ROW_COUNT_CEILING:,} rows)."
-                    ),
-                },
-            },
-            additional_properties=True,
-        ),
+                required=["query"],
+                additional_properties=True,
+            ),
+            "$defs": QUERY_SCHEMA_DEFS,
+        },
     ),
     ToolDefinition(
         name="segment",
         description=(
             "Work with a package-authored segment, after discover finds its id: "
-            "action='validate' checks it and the Query IR"
+            "action='validate' checks it and the query"
             " derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows"
             " and the total member count. Default verbosity='minimal' leaves out compiler "
             "plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like "
@@ -780,11 +645,11 @@ PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
     PromptDefinition(
         name="semantic-rails-query-review",
         description=(
-            "Review existing Query IR with execute mode 'validate', then mode 'sql', before "
-            "running it."
+            "Review an existing query call with execute mode 'validate', then mode 'sql', "
+            "before running it."
         ),
         arguments=(
-            {"name": "query_json", "description": "Query IR JSON to review.", "required": True},
+            {"name": "query_json", "description": "Query call JSON to review.", "required": True},
         ),
     ),
     PromptDefinition(
@@ -803,13 +668,13 @@ PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
 _PROMPT_TEXT = {
     "semantic-rails-query-builder": (
         "Use the Semantic Layer MCP tools against package '{package_id}' to answer: {intent}\n"
-        "Start with discover and inspect the best governed objects. Draft Query IR with plan, "
+        "Start with discover and inspect the best governed objects. Draft the call with plan, "
         "check filter values with valid-values, then run it with execute, which validates and "
         "compiles first. execute modes 'validate' and 'sql' are optional dry runs. "
         "The response includes diagnostics and any rendered SQL."
     ),
     "semantic-rails-query-review": (
-        "Review this Semantic Layer Query IR with execute mode 'validate', then mode 'sql'. "
+        "Review this Semantic Layer query call with execute mode 'validate', then mode 'sql'. "
         "Only run it with mode 'run' after "
         "validation succeeds and the user needs result rows.\n\n{query_json}"
     ),
@@ -862,17 +727,13 @@ def _argument_error(message: str, *, field: str, value: Any | None = None) -> Se
 
 
 # Argument tables, derived from the tool schemas. A closed schema rejects
-# unknown keys, an open one warns and ignores them. ``execute`` also accepts
-# top-level Query-IR keys (from the parser, so a new IR field needs no second
-# list); Query IR's own additional-keys gate in ``ast.py`` checks those.
+# unknown keys, an open one warns and ignores them.
 _TOOL_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
     definition.name: dict(definition.input_schema or {}) for definition in TOOL_DEFINITIONS
 }
-_TRANSPORT_ARGS = ("request_id", "policy_context")
+_TRANSPORT_ARGS = ("request_id",)
 _KNOWN_ARGS: Mapping[str, frozenset[str]] = {
-    name: frozenset(schema.get("properties") or {})
-    | frozenset(_TRANSPORT_ARGS)
-    | (QUERY_INPUT_KEYS if name == "execute" else frozenset())
+    name: frozenset(schema.get("properties") or {}) | frozenset(_TRANSPORT_ARGS)
     for name, schema in _TOOL_SCHEMAS.items()
 }
 _STRICT_REJECT_TOOLS: frozenset[str] = frozenset(
@@ -1002,12 +863,10 @@ def _required_string_type_error(
     ``OBJECT_NOT_FOUND: Unknown object '12345'``.
     """
     required, _known = _tool_required_properties(tool_name)
+    properties = dict(_TOOL_SCHEMAS.get(tool_name, {}).get("properties") or {})
     payload = dict(arguments or {})
-    # Per tool input_schema, every required arg on the existing tools is
-    # typed `string`. If new non-string required args appear later, this
-    # check should consult the per-field type.
     for field_name in required:
-        if field_name not in payload:
+        if field_name not in payload or properties[field_name].get("type") != "string":
             continue
         value = payload[field_name]
         if value is None:
@@ -1094,111 +953,24 @@ def _object_argument(value: Any, *, field: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _raw_policy_context_payload(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    raw_payload = dict(payload or {})
-    policy_context: dict[str, Any] = {}
-    query = raw_payload.get("query")
-    if isinstance(query, Mapping):
-        policy_context.update(
-            _object_argument(query.get("policy_context"), field="query.policy_context")
-        )
-    policy_context.update(
-        _object_argument(raw_payload.get("policy_context"), field="policy_context")
-    )
-    return policy_context
+def _caller() -> RequestContext:
+    """Who is asking: the identity the transport resolved, or the local operator's (empty)."""
+    return _TOOL_REQUEST_CONTEXT.get() or RequestContext()
 
 
-def _policy_context_payload(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    resolved = _TOOL_REQUEST_CONTEXT.get()
-    if resolved is not None:
-        return resolved.to_policy_context()
-    raw_payload = dict(payload or {})
-    return context_from_policy_context(
-        _raw_policy_context_payload(raw_payload),
-        request_id=_clean_request_id(raw_payload.get("request_id")),
-    ).to_policy_context()
+def _policy_context_payload() -> dict[str, Any]:
+    return _caller().to_policy_context()
 
 
-def _resolved_tool_request_context(
-    arguments: Mapping[str, Any], *, request_id: str = ""
-) -> RequestContext:
-    resolved = _TOOL_REQUEST_CONTEXT.get()
-    if resolved is not None:
-        return resolved
-    return context_from_policy_context(
-        _policy_context_payload(arguments),
-        request_id=request_id or _clean_request_id(arguments.get("request_id")),
-    )
+def _verbosity(arguments: Mapping[str, Any]) -> str:
+    """The response detail an execute-shaped call asked for (MCP's default is minimal)."""
+    raw = str(arguments.get("verbosity") or "").strip() or MCP_DEFAULT_QUERY_VERBOSITY
+    return resolve_verbosity({"verbosity": raw})
 
 
-def _arguments_with_trusted_context(
-    arguments: Mapping[str, Any] | None,
-    context: RequestContext | None,
-    *,
-    inject_policy_context: bool,
-) -> dict[str, Any]:
-    """Return MCP arguments governed by a transport-resolved context.
-
-    Direct adapter and stdio calls pass ``context=None`` and retain the
-    existing trusted-local behavior: callers may provide ``policy_context``
-    themselves. Remote HTTP transports pass a context resolved from the
-    authenticated request. In that mode both supported caller-controlled
-    locations are removed before the trusted values are injected, preventing
-    an outer or nested value from overriding tenant, role, audience, or
-    environment policy.
-    """
-
-    out = dict(arguments or {})
-    if context is None:
-        return out
-
-    out = without_policy_context(out)
-
-    # The transport owns correlation identity too. Do not let a JSON-RPC
-    # argument disagree with the request context recorded in audit events.
-    out.pop("request_id", None)
-    if context.request_id:
-        out["request_id"] = context.request_id
-    if inject_policy_context:
-        out["policy_context"] = context.to_policy_context()
-    return out
-
-
-def _query_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    return build_query_payload(
-        payload,
-        object_payload=_object_argument,
-        policy_context=_policy_context_payload(payload),
-    )
-
-
-def _partial_query_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the partial Query IR a metadata or plan tool received.
-
-    These tools take an argument envelope, so only ``query`` holds Query IR;
-    the tool's other arguments are never read as query fields. An absent seed
-    still carries the resolved policy context.
-    """
-    return _query_payload({**payload, "query": payload.get("query")})
-
-
-def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the query payload for validate/compile/execute with the
-    MCP-adapter default verbosity applied.
-
-    ``_query_payload`` already hoists an explicit outer ``verbosity``
-    into the query dict (and in-query values win over the outer
-    envelope), so by the time we get here an empty/missing ``verbosity``
-    means the caller expressed no preference — fill in
-    :data:`MCP_DEFAULT_QUERY_VERBOSITY`. Because the runtime resolves
-    verbosity from the query payload for both success AND soft-fail
-    (``ok: false``) envelopes, error responses inherit the minimal
-    default too.
-    """
-    query = _query_payload(payload)
-    if str(query.get("verbosity", "") or "").strip() == "":
-        query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
-    return query
+def _call_key(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """What an execute call asks, for the session's repeat hints: the call and its clock."""
+    return {"query": arguments.get("query"), "now": arguments.get("now")}
 
 
 # Explicit minimal verbosity returns the answer without compiler plans
@@ -1336,178 +1108,41 @@ def _max_rows_arg(value: Any) -> int | None:
     return int(value)
 
 
-def _execute_row_limits(query: Mapping[str, Any], requested: int) -> tuple[int, int, bool]:
-    """Return (rows to return, rows to fetch, whether the query's limit binds).
-
-    An explicit ``max_rows`` argument sets the response cap. A ``limits.max_rows``
-    inside the query is an operator's fetch ceiling: it can only lower the
-    cap and bounds what is fetched, but never becomes the response size.
-    Without it, execute fetches up to ``MCP_ROW_COUNT_CEILING`` rows so a
-    truncated result can report its total.
-    """
-
-    limits = query.get("limits")
-    fence = _positive_int(limits.get("max_rows")) if isinstance(limits, Mapping) else None
-    cap = requested
-    if fence is not None and fence <= cap:
-        return fence, fence, True
-    if fence is not None:
-        return cap, fence, False
-    return cap, max(cap, MCP_ROW_COUNT_CEILING), False
-
-
-def _ungrained_time(query: Mapping[str, Any]) -> bool:
-    """A time block with a role and no grain: rows group by the raw timestamp."""
-
-    time = query.get("time")
-    return isinstance(time, Mapping) and bool(time.get("temporal_role")) and not time.get("grain")
-
-
-# Expression kinds that aggregate over their own clock, so a grouped query
-# using them doesn't project the raw timestamp. Running totals (cumulative,
-# period_to_date) are not among them: their buckets come from time.grain.
-_OWN_CLOCK_KINDS = frozenset({"prior_period", "rolling", "conversion", "offset_window"})
-
-
-def _uses_own_clock(expression: Any) -> bool:
-    if not isinstance(expression, Mapping):
-        return False
-    if str(expression.get("kind", "") or "") in _OWN_CLOCK_KINDS:
-        return True
-    for value in expression.values():
-        items = value if isinstance(value, list) else [value]
-        if any(_uses_own_clock(item) for item in items):
-            return True
-    return False
-
-
-def _collapsed_window(result: Mapping[str, Any]) -> bool:
-    """Whether the runtime aggregated a grainless time window as one total."""
-
-    return result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL
-
-
-def _narrowing_advice(query: Mapping[str, Any], result: Mapping[str, Any]) -> str:
-    if _ungrained_time(query) and not _collapsed_window(result):
-        return (
-            "set time.grain (for example 'month' or 'year'); without a grain, rows group by the "
-            "raw timestamp"
-        )
+def _narrowing_advice(query: Mapping[str, Any]) -> str:
     if isinstance(query.get("time"), Mapping) and query["time"].get("grain"):
         return "use a coarser time.grain, filter, or group by fewer dimensions"
     return "filter, or group by fewer dimensions"
 
 
-def _truncate_rows(
-    result: dict[str, Any], *, cap: int, query: Mapping[str, Any], fence_binds: bool = False
-) -> dict[str, Any]:
-    """Return at most ``cap`` rows, and say so loudly.
+def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]) -> dict[str, Any]:
+    """Say loudly that the answer has more than ``cap`` rows.
 
-    A truncated result carries ``truncated: true``, ``total_row_count``
-    (``None`` when more rows exist than were fetched) and an
-    ``EXECUTE_ROWS_TRUNCATED`` warning that says how to narrow the query.
+    Execute fetches ``cap`` rows (the warehouse adapter reads one more to tell), so the
+    total is not counted: a truncated result carries ``truncated: true``,
+    ``total_row_count: null`` and an ``EXECUTE_ROWS_TRUNCATED`` warning that says how to
+    narrow the query.
     """
 
     rows = list(result.get("rows") or [])
-    beyond_fetch = bool(result.get("truncated"))
-    if len(rows) <= cap and not beyond_fetch:
+    if len(rows) <= cap and not result.get("truncated"):
         return result
     kept = rows[:cap]
-    total = None if beyond_fetch else len(rows)
-    counted = f"{total:,}" if total is not None else f"more than {len(rows):,}"
-    advice = _narrowing_advice(query, result)
-    raise_hint = (
-        " The query's limits.max_rows caps the rows fetched."
-        if fence_binds
-        else " Or raise max_rows."
-    )
+    advice = _narrowing_advice(query)
     warning = {
         "code": "EXECUTE_ROWS_TRUNCATED",
         "severity": "warning",
-        "message": f"Returned {len(kept):,} of {counted} rows. To narrow the result, {advice}."
-        + raise_hint,
-        "details": {"returned_rows": len(kept), "total_row_count": total, "max_rows": cap},
+        "message": f"Returned the first {len(kept):,} rows; more exist. To narrow the result, "
+        f"{advice}. Or raise max_rows.",
+        "details": {"returned_rows": len(kept), "total_row_count": None, "max_rows": cap},
     }
     return {
         **result,
         "rows": kept,
         "row_count": len(kept),
         "truncated": True,
-        "total_row_count": total,
+        "total_row_count": None,
         "warnings": [*list(result.get("warnings") or []), warning],
     }
-
-
-def _grouped_ungrained_time_warning(
-    query: Mapping[str, Any], result: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    """Warn about a temporal role with no grain in a grouped query.
-
-    The runtime's ``UNGRAINED_TIME_PROJECTION`` covers ungrouped queries
-    only. A grouped one hits the same trap, each group returning one row per
-    distinct timestamp, so MCP adds its own code with the same shape. A window the
-    runtime aggregated as one total per group has no such rows.
-    """
-
-    if _collapsed_window(result):
-        return None
-    try:
-        query = rewrite_select_shorthand(dict(query))[0]
-    except SemanticLayerError:
-        return None
-    if not query.get("group_by") or not _ungrained_time(query):
-        return None
-    if any(
-        _uses_own_clock(item.get("expression"))
-        for item in query.get("select") or []
-        if isinstance(item, Mapping)
-    ):
-        return None
-    temporal_role = str((query.get("time") or {}).get("temporal_role", ""))
-    return semantic_issue(
-        code="UNGRAINED_GROUPED_TIME_PROJECTION",
-        message=(
-            "query.time.temporal_role is set without time.grain in a grouped query, so each "
-            "group returns one row per distinct timestamp. Set time.grain (for example "
-            "'month' or 'year') to bucket the result."
-        ),
-        severity="warning",
-        stage="mcp",
-        details={
-            "temporal_role": temporal_role,
-            "recovery_hints": [
-                {
-                    "code": "SET_TIME_GRAIN",
-                    "message": "Add time.grain to bucket each group's rows.",
-                    "suggested_patches": [{"add": {"time.grain": "month"}}],
-                }
-            ],
-        },
-    )
-
-
-def _echo_caller_limits(result: dict[str, Any], limits: Any) -> dict[str, Any]:
-    """Echo the caller's own ``limits``, not the fetch ceiling execute added.
-
-    Re-running an echoed query must not raise the default cap.
-    """
-
-    echoed = result.get("query")
-    if not isinstance(echoed, Mapping) or "limits" not in echoed:
-        return result
-    query = {key: value for key, value in echoed.items() if key != "limits"}
-    if isinstance(limits, Mapping):
-        query["limits"] = dict(limits)
-    return {**result, "query": query}
-
-
-def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dict[str, Any]:
-    if warning is None or not bool(result.get("ok", True)):
-        return result
-    existing = list(result.get("warnings") or [])
-    if any(isinstance(item, Mapping) and item.get("code") == warning["code"] for item in existing):
-        return result
-    return {**result, "warnings": [*existing, warning]}
 
 
 def _max_result_chars() -> int:
@@ -1583,7 +1218,7 @@ def _bound_response(
     """Budget the final tool payload without cutting rows or changing its outcome.
 
     Both MCP representations serialize this same payload. Compiler detail and
-    echoes are optional; rows, SQL-mode text, Query IR drafts and diagnostics are not.
+    echoes are optional; rows, SQL-mode text, query drafts and diagnostics are not.
     If those required fields cannot fit, return a bounded, explicit refusal.
     """
     result = dict(payload)
@@ -1621,11 +1256,11 @@ def _bound_response(
     )
     if "rows" in result:
         returned = int(result.get("row_count", result.get("preview_row_count", 0)) or 0)
-        total = result.get("total_row_count") if result.get("truncated") else returned
-        counted = f"{total:,}" if total is not None else f"more than {MCP_ROW_COUNT_CEILING:,}"
+        total = None if result.get("truncated") else returned
+        counted = f"{total:,}" if total is not None else f"more than {returned:,}"
         message = (
             f"The result has {counted} rows and exceeds the {limit:,}-character response budget "
-            f"without optional details. No rows returned; {_narrowing_advice(query, result)}, "
+            f"without optional details. No rows returned; {_narrowing_advice(query)}, "
             "lower max_rows or select fewer columns."
         )
         details.update(row_count=returned, total_row_count=total)
@@ -1636,7 +1271,6 @@ def _bound_response(
         "status": "error",
         "error": {"code": issue["code"]},
         "errors": [issue],
-        "warnings": [],
     }
     if len(json_text(refusal)) > limit:
         issue["message"] = (
@@ -1852,10 +1486,10 @@ class SemanticLayerMCPAdapter:
     def list_tools(self) -> list[dict[str, Any]]:
         return list_tool_definitions(config=self.runtime.config)
 
-    def _caller_tools(self, arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
+    def _caller_tools(self) -> list[dict[str, Any]]:
         """The tools a caller's view offers: no segment tool when they see no segment."""
         try:
-            view = self.runtime.view_for(_resolved_tool_request_context(arguments))
+            view = self.runtime.view_for(_caller())
         except Exception:  # noqa: BLE001 — the call itself refuses an unresolved view
             return self.list_tools()
         return list_tool_definitions(config=view)
@@ -1881,15 +1515,15 @@ class SemanticLayerMCPAdapter:
     ) -> dict[str, Any]:
         """Call one MCP tool.
 
-        ``request_context`` is supplied only by remote transports after their
-        authentication boundary. Omitting it preserves the stdio/in-process
-        contract where the caller is trusted to provide policy context.
+        ``request_context`` is who is asking, resolved from credentials: remote transports
+        pass it after their authentication boundary, a host passes its caller's. Without it
+        the caller is the local operator. Arguments never say who is asking.
         ``session`` enables advisory repeat hints for calls in that session.
         """
 
         # A new invocation owns its identity even when a host handler calls it
         # from another tool. Isolate argument-error envelopes and finish too.
-        context_token = _TOOL_REQUEST_CONTEXT.set(None)
+        context_token = _TOOL_REQUEST_CONTEXT.set(request_context)
         dispatch_token = _BUILTIN_TOOL_DISPATCH.set(False)
         try:
             return self._call_tool(
@@ -1907,55 +1541,31 @@ class SemanticLayerMCPAdapter:
         request_context: RequestContext | None,
         session: MCPQuerySession | None,
     ) -> dict[str, Any]:
-        normalized: list[str] = []
         args_dict: dict[str, Any] = {}
 
         def finish(response: dict[str, Any]) -> dict[str, Any]:
-            if normalized:
-                response["normalized"] = normalized
             if request_context is not None:
                 response["request_context"] = request_context_payload(request_context)
                 if request_context.request_id:
                     response["request_id"] = request_context.request_id
             audit_context = dict(response.get("request_context", {}) or {})
-            shaped_query: dict[str, Any] = {}
-            with contextlib.suppress(SemanticLayerError):
-                # Response shaping needs query/options only, never another identity resolution.
-                shaped_query = build_query_payload(
-                    args_dict,
-                    object_payload=_object_argument,
-                    policy_context={},
-                )
-                if not str(shaped_query.get("verbosity") or "").strip():
-                    shaped_query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
-            compact = resolve_verbosity(shaped_query) == "compact"
+            compact = _verbosity(args_dict) == "compact"
+            raw = args_dict.get("query")
+            query: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
             sql_required = not (
                 name == "execute" and str(args_dict.get("mode") or "run").strip().lower() == "run"
             )
             response = _bound_response(
-                response,
-                compact=compact,
-                query=shaped_query,
-                sql_required=sql_required,
+                response, compact=compact, query=query, sql_required=sql_required
             )
             if session is not None and response.get("ok") is True:
-                query = None
-                if name == "execute":
-                    with contextlib.suppress(SemanticLayerError):
-                        query = _query_payload(
-                            _strip_execute_transport_args(
-                                {key: value for key, value in args_dict.items() if key != "mode"}
-                            )
-                        )
-                session.annotate(self, name, args_dict, response, query=query)
+                key = _call_key(args_dict) if name == "execute" else None
+                session.annotate(self, name, args_dict, response, query=key)
                 response = _bound_response(
-                    response,
-                    compact=compact,
-                    query=shaped_query,
-                    sql_required=sql_required,
+                    response, compact=compact, query=query, sql_required=sql_required
                 )
-                if name == "execute" and query is not None:
-                    session.record_run(self, args_dict, response, query=query)
+                if key is not None:
+                    session.record_run(self, args_dict, response, query=key)
             elif session is not None:
                 session.reset_validate_guidance()
             emit_audit_event(
@@ -1974,11 +1584,7 @@ class SemanticLayerMCPAdapter:
             )
             return response
 
-        policy_aware = "policy_context" in _KNOWN_ARGS.get(name, frozenset())
         if arguments is not None and not isinstance(arguments, Mapping):
-            sanitized = _arguments_with_trusted_context(
-                {}, request_context, inject_policy_context=policy_aware
-            )
             return finish(
                 self._error_response(
                     SemanticLayerError(
@@ -1986,27 +1592,24 @@ class SemanticLayerMCPAdapter:
                         "MCP tool arguments must be a JSON object.",
                         details={"tool": name, "argument_type": type(arguments).__name__},
                     ),
-                    sanitized,
+                    {},
                 )
             )
+        # The transport owns correlation identity too: a JSON-RPC argument must not
+        # disagree with the request context recorded in audit events.
+        args_dict = dict(arguments or {})
+        if request_context is not None:
+            args_dict.pop("request_id", None)
+            if request_context.request_id:
+                args_dict["request_id"] = request_context.request_id
         try:
-            decoded, normalized = normalize_arguments(
-                arguments or {},
-                _KNOWN_ARGS.get(name, frozenset())
-                - (QUERY_INPUT_KEYS - {"request_id", "verbosity", "sql_profile"}),
-            )
+            args_dict = coerce_arguments(args_dict, tool=name, remote=request_context is not None)
         except SemanticLayerError as exc:
-            args_dict = _arguments_with_trusted_context(
-                arguments, request_context, inject_policy_context=policy_aware
-            )
             return finish(self._error_response(exc, args_dict))
-        args_dict = _arguments_with_trusted_context(
-            decoded, request_context, inject_policy_context=policy_aware
-        )
         handler = self._tool_handlers.get(name)
         available_tools = {tool["name"] for tool in self.list_tools()}
         if handler is None or name not in available_tools or name == "segment":
-            available_tools = {tool["name"] for tool in self._caller_tools(args_dict)}
+            available_tools = {tool["name"] for tool in self._caller_tools()}
         if handler is None or name not in available_tools:
             details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"
@@ -2026,36 +1629,11 @@ class SemanticLayerMCPAdapter:
             return finish(self._error_response(missing_arg_error, args_dict))
         # Compute unknown-arg warnings once at the boundary (warn-tools
         # only). Per-handler typo checks (e.g. DISCOVER_UNKNOWN_ARG for
-        # ``term``→``terms``, BUILD_OPTIONS_UNKNOWN_ARG for
-        # ``object_id``→``focus_object_id``) still fire from inside the
-        # handler with their domain-specific guidance; this generic
-        # pass catches everything else.
+        # ``term``→``terms``) still fire from inside the handler with their
+        # domain-specific guidance; this generic pass catches everything else.
         unknown_arg_warnings = _unknown_argument_warnings(tool_name=name, arguments=args_dict)
 
         def dispatch(args: dict[str, Any]) -> dict[str, Any]:
-            nested_query = isinstance(args.get("query"), dict)
-            if nested_query or (name == "execute" and "query" not in args):
-                query = normalize_query_spellings(
-                    args["query"] if nested_query else args, normalized
-                )
-                if nested_query:
-                    args["query"] = query
-                else:
-                    args.clear()
-                    args.update(query)
-                routes = query.get("route_decisions")
-                route_query = query
-                if isinstance(routes, list) and any(isinstance(row, str) for row in routes):
-                    route_query = _query_payload(
-                        _strip_execute_transport_args(
-                            {key: value for key, value in args.items() if key != "mode"}
-                        )
-                        if name == "execute"
-                        else args
-                    )
-                routed = normalize_routes(route_query, normalized, self.runtime.validate)
-                if "route_decisions" in routed:
-                    query["route_decisions"] = routed["route_decisions"]
             # Only this invocation's built-in handler may reuse the boundary.
             token = _BUILTIN_TOOL_DISPATCH.set(handler is self._builtin_tool_handlers.get(name))
             try:
@@ -2114,7 +1692,8 @@ class SemanticLayerMCPAdapter:
         elif uri in {"semantic-rails://catalog/summary", "semantic-rails://catalog/index"}:
             payload = self._envelope(
                 {
-                    "catalog": resolve_catalog(
+                    "catalog": operations.run(
+                        "catalog",
                         self.runtime,
                         view="summary",
                         verbosity="compact" if uri.endswith("/summary") else "summary",
@@ -2127,7 +1706,8 @@ class SemanticLayerMCPAdapter:
         elif uri == "semantic-rails://catalog/full":
             payload = self._envelope(
                 {
-                    "catalog": resolve_catalog(
+                    "catalog": operations.run(
+                        "catalog",
                         self.runtime,
                         view="summary",
                         verbosity="full",
@@ -2221,26 +1801,21 @@ class SemanticLayerMCPAdapter:
         out.setdefault("api_version", self.interface)
         out.setdefault("request_id", request_id or uuid.uuid4().hex)
         out.setdefault("package_id", self.package_id)
-        out.setdefault("warnings", [])
         if "errors" not in out:
             error = out.get("error")
             if isinstance(error, dict):
                 out["errors"] = [error]
             elif error:
                 out["errors"] = [_internal_issue(str(error))]
-            else:
-                out["errors"] = []
-        arguments = arguments or {}
-        verbosity = MCP_DEFAULT_QUERY_VERBOSITY
-        # Use the handler's query shaping and runtime normalization. Invalid
-        # arguments still need an envelope even when no query can be built.
-        with contextlib.suppress(SemanticLayerError):
-            verbosity = resolve_verbosity(_query_payload_with_mcp_default_verbosity(arguments))
+        verbosity = _verbosity(arguments or {})
+        # Errors and warnings only when there are some; no empty fields.
         for key in ("errors", "warnings"):
-            out[key] = [_lean_issue(issue, verbosity=verbosity) for issue in out[key] or []]
+            issues = [_lean_issue(issue, verbosity=verbosity) for issue in out.pop(key, None) or []]
+            if issues:
+                out[key] = issues
         # Keep the conventional truthy error branch for validate soft-fails,
         # while the complete issues and their hints live only in errors.
-        if out["errors"]:
+        if out.get("errors"):
             first = out["errors"][0]
             hints = [hint for issue in out["errors"] for hint in issue.get("recovery_hints", [])]
             extra = [_lean_issue(hint) for hint in out.pop("recovery_hints", []) or []]
@@ -2264,13 +1839,10 @@ class SemanticLayerMCPAdapter:
     def _with_request_context(
         self, out: dict[str, Any], arguments: Mapping[str, Any]
     ) -> dict[str, Any]:
-        # Echo the resolved request context only when there is one (hosted or policy_context).
-        if "request_context" not in out:
-            context = request_context_payload(
-                _resolved_tool_request_context(arguments, request_id=str(out.get("request_id", "")))
-            )
-            if context:
-                out["request_context"] = context
+        # Echo who is asking only when there is an identity (a transport's or a host's).
+        context = request_context_payload(_caller())
+        if context:
+            out.setdefault("request_context", context)
         return out
 
     def _success(
@@ -2294,14 +1866,9 @@ class SemanticLayerMCPAdapter:
         # Surface closest_matches on OBJECT_NOT_FOUND just like the HTTP
         # path — agents shouldn't have to retry blind on a typo'd id.
         request_id = _clean_request_id(arguments.get("request_id")) or uuid.uuid4().hex
-        context: RequestContext | None
-        try:
-            context = _resolved_tool_request_context(arguments, request_id=request_id)
-        except Exception:  # noqa: BLE001 — an unresolved caller gets no suggestions
-            context = None
         try:
             # Suggestions come from the caller's view; without one, none are offered.
-            config = self.runtime.view_for(context) if context is not None else None
+            config = self.runtime.view_for(_caller())
         except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
             config = None
         if config is not None:
@@ -2313,12 +1880,7 @@ class SemanticLayerMCPAdapter:
             started_at=started_at or time.perf_counter(),
             arguments=arguments,
         )
-        if context is not None:
-            # Reuse the resolved context; a second resolution can fail on an error path.
-            request_context = request_context_payload(context)
-            if request_context:
-                out.setdefault("request_context", request_context)
-        return out
+        return self._with_request_context(out, arguments)
 
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
@@ -2328,16 +1890,7 @@ class SemanticLayerMCPAdapter:
             _BUILTIN_TOOL_DISPATCH.set(False)
             return handler(arguments)
         started = time.perf_counter()
-        token = None
         try:
-            # Normalize policy/request identity once for the entire tool call.
-            # Handlers and success/error envelopes read the same ContextVar
-            # value instead of reinterpreting aliases and nested context.
-            resolved_context = context_from_policy_context(
-                _raw_policy_context_payload(arguments),
-                request_id=_clean_request_id(arguments.get("request_id")),
-            )
-            token = _TOOL_REQUEST_CONTEXT.set(resolved_context)
             return self._success(handler(arguments), arguments, started)
         except SemanticLayerError as exc:
             return self._error_response(exc, arguments, started_at=started)
@@ -2370,9 +1923,6 @@ class SemanticLayerMCPAdapter:
                 started_at=started,
             )
             return self._with_request_context(out, arguments)
-        finally:
-            if token is not None:
-                _TOOL_REQUEST_CONTEXT.reset(token)
 
     def _handle_discover(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _build(args: dict[str, Any]) -> dict[str, Any]:
@@ -2424,14 +1974,15 @@ class SemanticLayerMCPAdapter:
             requested_kinds = _coerce_kinds(args.get("kinds", []))
             if not terms_str.strip():
                 # Empty terms list the ids instead of ranking, a page per kind.
-                policy_context = _policy_context_payload(args)
+                policy_context = _policy_context_payload()
                 # A grant lists only the kinds it can produce, so a filter for
                 # any other kind is refused, never answered with an empty list.
                 granted = policy_context.get("metric_allowlist") is not None
                 requested_kinds = checked_discover_kinds(
                     requested_kinds, GRANT_DISCOVER_KINDS if granted else _CATALOG_KIND_FILTERS
                 )
-                catalog = resolve_catalog(
+                catalog = operations.run(
+                    "catalog",
                     self.runtime,
                     view="summary",
                     verbosity="summary",
@@ -2465,13 +2016,12 @@ class SemanticLayerMCPAdapter:
                     )
                 return {"catalog": page, "warnings": terms_warnings}
             verbosity = str(args.get("verbosity") or "minimal")
-            payload = discover_payload(
+            payload = operations.run(
+                "discover",
                 self.runtime,
                 terms=terms_str,
                 kinds=requested_kinds,
-                partial_query=_partial_query_payload(args)
-                if args.get("query") or args.get("policy_context")
-                else None,
+                partial_query=self._seed(args),
                 stage=str(args.get("stage", "")),
                 verbosity="compact" if verbosity == "minimal" else verbosity,
                 limit=_coerce_int(args.get("limit"), 10, field="limit", minimum=1),
@@ -2534,7 +2084,7 @@ class SemanticLayerMCPAdapter:
             if verbosity in {"minimal", "compact"} and "verbosity" in payload:
                 payload["verbosity"] = "minimal"
                 try:
-                    view = self.runtime.view_for(_resolved_tool_request_context(args))
+                    view = self.runtime.view_for(_caller())
                 except Exception:  # noqa: BLE001 — uncertain visibility: the plain projection
                     view = None
                 payload = _slim_discover_minimal(payload, view)
@@ -2552,12 +2102,11 @@ class SemanticLayerMCPAdapter:
     def _handle_inspect(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: inspect_payload(
+            lambda args: operations.run(
+                "inspect",
                 self.runtime,
                 object_id=str(args.get("object_id", "")),
-                partial_query=_partial_query_payload(args)
-                if args.get("query") or args.get("policy_context")
-                else None,
+                partial_query=self._seed(args),
                 verbosity=str(args.get("verbosity") or "minimal"),
             ),
         )
@@ -2566,9 +2115,7 @@ class SemanticLayerMCPAdapter:
         def build(args: dict[str, Any]) -> dict[str, Any]:
             call_arguments: dict[str, Any] = {
                 "dimension_id": str(args.get("dimension_id", "")),
-                "query": _partial_query_payload(args)
-                if args.get("query") or args.get("policy_context")
-                else None,
+                "query": self._seed(args),
                 "search": str(args.get("search", "")),
                 "limit": min(
                     _coerce_int(args.get("limit"), 100, field="limit", minimum=1),
@@ -2581,11 +2128,12 @@ class SemanticLayerMCPAdapter:
                 "include_counts": _coerce_bool(args.get("include_counts"), False),
                 "allow_live_query": _coerce_bool(args.get("allow_live_query"), False),
             }
-            payload = valid_values_payload(self.runtime, **call_arguments)
+            payload = operations.run("valid-values", self.runtime, **call_arguments)
             if payload.get("status") == "needs_live_query":
-                call_arguments["allow_live_query"] = True
-                call_arguments["query"] = without_trusted_attributes(call_arguments["query"] or {})
-                payload["next_call"] = {"tool": "valid-values", "arguments": call_arguments}
+                retry = {**call_arguments, "allow_live_query": True, "query": args.get("query")}
+                if retry["query"] is None:
+                    retry.pop("query")
+                payload["next_call"] = {"tool": "valid-values", "arguments": retry}
             return payload
 
         return self._guarded(arguments, build)
@@ -2593,62 +2141,74 @@ class SemanticLayerMCPAdapter:
     def _handle_plan(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(
             arguments,
-            lambda args: plan_payload(
+            lambda args: operations.run(
+                "plan",
                 self.runtime,
                 intent=str(args.get("intent", "")),
-                partial_query=_partial_query_payload(args),
+                partial_query={
+                    **_object_argument(args.get("query"), field="query"),
+                    "policy_context": _policy_context_payload(),
+                },
+                now=args.get("now"),
                 detail=_plan_detail(args.get("detail")),
                 limit=_coerce_int(args.get("limit"), 3, field="limit", minimum=1),
             ),
         )
 
+    def _seed(self, args: Mapping[str, Any]) -> dict[str, Any] | None:
+        """A metadata tool's ``query`` seed in the engine's form, with the caller's identity."""
+        seed, context = args.get("query"), _policy_context_payload()
+        if not seed and not context:
+            return None
+        return self.runtime.engine_seed(
+            {**_object_argument(seed, field="query"), "policy_context": context}
+        )
+
+    def _call_options(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The service entry's arguments beside the tool's ``query``."""
+        return {
+            "now": args.get("now"),
+            "context": _caller(),
+            "verbosity": str(args.get("verbosity") or "").strip() or MCP_DEFAULT_QUERY_VERBOSITY,
+            "sql_profile": str(args.get("sql_profile") or "").strip() or None,
+        }
+
     def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            query = _query_payload_with_mcp_default_verbosity(args)
-            result = self.runtime.validate(query)
-            return _with_warning(result, _grouped_ungrained_time_warning(query, result))
+            return operations.run(
+                "validate", self.runtime, query=args["query"], **self._call_options(args)
+            )
 
         return self._guarded(arguments, _run)
 
     def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            query = _query_payload_with_mcp_default_verbosity(args)
-            result = self.runtime.compile(query)
-            return _with_warning(result, _grouped_ungrained_time_warning(query, result))
+            return operations.run(
+                "compile", self.runtime, query=args["query"], **self._call_options(args)
+            )
 
         return self._guarded(arguments, _run)
 
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             row_format = _row_format_arg(args)
-            requested_cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
-            query_payload = _query_payload_with_mcp_default_verbosity(
-                _strip_execute_transport_args(args)
+            cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
+            call = args["query"]
+            options = self._call_options(args)
+            result = operations.run(
+                "query", self.runtime, query=call, limits={"max_rows": cap}, **options
             )
-            cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
-            limits = query_payload.get("limits")
-            query_payload["limits"] = {
-                **(dict(limits) if isinstance(limits, Mapping) else {}),
-                "max_rows": fetch,
-            }
-            result = _echo_caller_limits(self.runtime.query(query_payload), limits)
             if bool(result.get("ok", True)):
-                result = _truncate_rows(
-                    result, cap=cap, query=query_payload, fence_binds=fence_binds
-                )
-                result = _with_warning(
-                    result, _grouped_ungrained_time_warning(query_payload, result)
-                )
+                result = _truncate_rows(result, cap=cap, query=call)
             # Surface an EXECUTE_EMPTY_RESULT warning when a successful
             # execute returns 0 rows and the user authored no filters —
             # the most common "successful but wrong" outcome from a
-            # planner-derived IR. Blind-agent benchmark saw a
-            # confidently-empty execute on a wrong-measure choice.
+            # planner-derived call.
             if (
                 bool(result.get("ok", True))
                 and int(result.get("row_count", 0) or 0) == 0
-                and not query_payload.get("where")
-                and not query_payload.get("metric_filters")
+                and not call.get("where")
+                and not call.get("having")
             ):
                 existing = list(result.get("warnings") or [])
                 # Don't double-warn if the runtime already flagged
@@ -2710,17 +2270,11 @@ class SemanticLayerMCPAdapter:
 
         def run(args: dict[str, Any]) -> dict[str, Any]:
             segment_id = str(args.get("segment_id", ""))
-            policy_context = _policy_context_payload(args)
+            policy_context = _policy_context_payload()
+            segment: dict[str, Any] = {"segment_id": segment_id, "policy_context": policy_context}
             if action == "preview":
-                payload = self.runtime.segment_preview(
-                    segment_id,
-                    limit=_coerce_int(args.get("limit"), 50, field="limit", minimum=1),
-                    policy_context=policy_context,
-                )
-            elif action == "explain":
-                payload = self.runtime.segment_explain(segment_id, policy_context=policy_context)
-            else:
-                payload = self.runtime.segment_validate(segment_id, policy_context=policy_context)
+                segment["limit"] = _coerce_int(args.get("limit"), 50, field="limit", minimum=1)
+            payload = operations.run(f"segment-{action}", self.runtime, **segment)
             return _segment_response(action, payload, args.get("verbosity"))
 
         return self._guarded(args, run)

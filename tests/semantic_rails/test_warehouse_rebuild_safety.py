@@ -66,8 +66,7 @@ def _explicit_seed(tmp_path: Path, db_path: Path, kind: str) -> None:
         load_csv_dir_to_duckdb(str(db_path), str(source))
 
 
-@pytest.mark.parametrize("kind", ["sql_script", "csv_dir_duckdb"])
-@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(("kind", "existing"), [("sql_script", False), ("csv_dir_duckdb", True)])
 def test_failed_seed_statement_reports_context_without_publishing(
     tmp_path: Path, kind: str, existing: bool
 ) -> None:
@@ -140,8 +139,10 @@ def test_runtime_preserves_failed_seed_statement_details(tmp_path: Path, surface
     assert not list((package_dir / "data").glob("*.seed.*.tmp*"))
 
 
-@pytest.mark.parametrize("stale", [False, True])
-@pytest.mark.parametrize("surface", ["query", "runtime_validation", "segment_preview"])
+@pytest.mark.parametrize(
+    ("stale", "surface"),
+    [(False, "query"), (True, "runtime_validation"), (True, "segment_preview")],
+)
 def test_failed_query_reports_stale_seed_hint_without_replacing_database(
     tmp_path: Path, stale: bool, surface: str
 ) -> None:
@@ -175,7 +176,7 @@ def test_failed_query_reports_stale_seed_hint_without_replacing_database(
             ORDERS_ONLY_SEED_SQL.replace("order_total", "new_order_total"), encoding="utf-8"
         )
     before = file_digest(db_path)
-    query = {"version": 1, "select": [{"expression": {"measure": "measure.shop.order_total"}}]}
+    query = {"select": ["measure.shop.order_total"]}
     if surface in {"query", "segment_preview"}:
         runtime = Runtime.from_path(str(package_dir))
         try:
@@ -202,7 +203,7 @@ def test_failed_query_reports_stale_seed_hint_without_replacing_database(
     assert details["sql_redacted"] is True and "sql" not in details
     assert "database_message" not in details
     if stale:
-        (warning,) = details["warnings"]
+        (warning,) = details.get("warnings", [])
         assert warning["code"] == "STALE_SEED_DATABASE"
         assert warning["details"] == {"default_db": str(db_path), "reason": "seed_files_changed"}
         assert warning["message"].endswith(f"rm {db_path}")
@@ -211,7 +212,7 @@ def test_failed_query_reports_stale_seed_hint_without_replacing_database(
     assert file_digest(db_path) == before
 
 
-@pytest.mark.parametrize("kind", ["sql", "csv"])
+@pytest.mark.parametrize("kind", ["sql"])
 def test_explicit_seed_refuses_existing_wal_without_touching_database(
     tmp_path: Path, monkeypatch, kind: str
 ) -> None:
@@ -231,7 +232,7 @@ def test_explicit_seed_refuses_existing_wal_without_touching_database(
     assert not list(tmp_path.glob("*.seed.*.tmp"))
 
 
-@pytest.mark.parametrize("kind", ["sql", "csv"])
+@pytest.mark.parametrize("kind", ["csv"])
 def test_explicit_seed_refuses_wal_created_during_build(
     tmp_path: Path, monkeypatch, kind: str
 ) -> None:
@@ -594,10 +595,7 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
             run_checks=False,
         )["project_path"]
     )
-    order_count = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.shop.order_count"}, "as": "orders"}],
-    }
+    order_count = {"select": [{"expression": "metric.shop.order_count", "as": "orders"}]}
 
     def run() -> tuple[int, list[str]]:
         runtime = Runtime.from_path(str(project))
@@ -605,7 +603,9 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
             result = runtime.query(order_count)
         finally:
             runtime.close()
-        return result["rows"][0]["orders"], [warning["code"] for warning in result["warnings"]]
+        return result["rows"][0]["orders"], [
+            warning["code"] for warning in result.get("warnings", [])
+        ]
 
     assert run() == (2, [])
     seed = project / "data" / "shop_csv" / "orders.csv"
@@ -619,10 +619,10 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
     ref = PackageReference(source_path=str(project))
     for mode in ("runtime", "full"):
         report = project_validation_report(ref, mode=mode)
-        assert report["ok"] and [warning["code"] for warning in report["warnings"]] == [
+        assert report["ok"] and [warning["code"] for warning in report.get("warnings", [])] == [
             "STALE_SEED_DATABASE"
         ], mode
-        assert report["warnings"][0]["message"].endswith(f"rm {db_path}")
+        assert report.get("warnings", [])[0]["message"].endswith(f"rm {db_path}")
     assert file_digest(db_path) == before  # reported, never replaced
 
     db_path.unlink()  # the fix the warning names

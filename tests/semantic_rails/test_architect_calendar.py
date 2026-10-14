@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -45,11 +46,9 @@ def _calendar(**extra: Any) -> dict[str, Any]:
     }
 
 
-@pytest.fixture()
-def workspace(tmp_path: Path) -> Path:
-    """The orders package over the dbt warehouse, plus a dim_date the calendar can read."""
-    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
-    db_path = build_dbt_warehouse(package / "data" / "warehouse.duckdb")
+@pytest.fixture(scope="module")
+def calendar_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    db_path = build_dbt_warehouse(tmp_path_factory.mktemp("calendar") / "warehouse.duckdb")
     conn = duckdb.connect(str(db_path))
     try:
         conn.execute(
@@ -62,6 +61,15 @@ def workspace(tmp_path: Path) -> Path:
         )
     finally:
         conn.close()
+    return db_path
+
+
+@pytest.fixture()
+def workspace(tmp_path: Path, calendar_db: Path) -> Path:
+    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
+    target = package / "data" / "warehouse.duckdb"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(calendar_db, target)
     return tmp_path
 
 
@@ -82,18 +90,16 @@ def _model(workspace: Path, model_id: str) -> dict[str, Any]:
 def _monthly_orders(workspace: Path) -> tuple[list[tuple[Any, Any]], str]:
     """Orders per month from December 2023 to April 2024, filled, and the SQL that filled them."""
     engine = Runtime.from_path(str(workspace / "shop"))
-    month = "temporal_role.shop_order_ordered_at__month"
+    month = "period"
     try:
         result = engine.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+                "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                 "time": {
                     "temporal_role": "temporal_role.shop_order_ordered_at",
                     "grain": "month",
                     "start": "2023-12-01 00:00:00",
                     "end": "2024-05-01 00:00:00",
-                    "fill": True,
                 },
                 "order_by": [{"field": month}],
             }
@@ -213,22 +219,18 @@ def test_a_second_calendar_is_refused_in_this_release(workspace: Path) -> None:
     project = _project(workspace)
     assert project.upsert_model(**_calendar()).report["ok"] is True
     assert project.upsert_model(**_fiscal_calendar()).report["ok"] is True
-    month = "temporal_role.shop_order_ordered_at__month"
+    month = "period"
     engine = Runtime.from_path(str(workspace / "shop"))
     try:
         with pytest.raises(SemanticLayerError) as refused:
             engine.query(
                 {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                     "time": {
                         "temporal_role": "temporal_role.shop_order_ordered_at",
                         "grain": "month",
                         "start": "2024-01-06 00:00:00",
                         "end": "2024-04-06 00:00:00",
-                        "fill": True,
                         "calendar_id": "fiscal",
                     },
                     "order_by": [{"field": month}],
@@ -237,8 +239,9 @@ def test_a_second_calendar_is_refused_in_this_release(workspace: Path) -> None:
     finally:
         engine.close()
 
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["reason"] == "calendar_not_supported_yet"
+    # A call cannot pick a calendar: the clock's own calendar applies.
+    assert refused.value.code == "INVALID_QUERY"
+    assert refused.value.details["path"] == "time.calendar_id"
 
 
 def test_one_calendar_per_calendar_id(workspace: Path) -> None:

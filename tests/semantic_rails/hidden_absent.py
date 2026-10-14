@@ -58,14 +58,14 @@ VOLATILE = frozenset(
 ENGINE_READ = frozenset(
     {
         *("id", "package_id", "kind", "value", "expr", "expression", "steps", "accumulation"),
-        *("table", "primary_key", "relation_id", "key", "identifiers", "foreign_keys"),
+        *("table", "key_columns", "model", "relation_id", "identifiers", "foreign_keys"),
         *("calendar_id", "entity", "column", "data_type", "value_domain", "dimension"),
-        *("temporal_class", "supported_grains", "timezone", "column_timezone"),
+        *("temporal_class", "supported_grains", "timezone", "column_timezone", "unknown_values"),
         *("source_entity", "target_entity", "source_column", "target_column", "cardinality"),
         *("safety", "source_columns", "target_columns", "source_key_role", "target_key_role"),
         *("allowed_directions", "target_key_type", "rollup_safe_aggregations_reverse"),
         *("dimensions", "from_", "to", "row_grain", "default_aggregation", "value_type"),
-        *("allowed_aggregations", "source_relation", "invalid_aggregations", "measure_class"),
+        *("allowed_aggregations", "invalid_aggregations", "measure_class"),
         *("compatible_temporal_roles", "suggested_aggregations"),
         *("preferred_companion_metrics", "default_temporal_role"),
         *("cross_window_policy", "lookup_from", "lookup_via", "temporal_role", "filter_spec"),
@@ -333,18 +333,30 @@ def leaks(
     )
 
 
+def _caller(request: dict[str, Any], context: Mapping[str, Any] | None = None) -> Any:
+    """The request without the caller's identity, and that identity as a transport resolves it.
+
+    Tests name the caller with a ``policy_context`` key for brevity; it travels as credentials
+    (``request_context`` / ``context``), never in the request, which would be refused.
+    """
+    request = dict(request)
+    identity = context if context is not None else request.pop("policy_context", None)
+    return request, context_from_policy_context(identity) if identity is not None else None
+
+
 def mcp_call(runtime: Runtime, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    return SemanticLayerMCPAdapter(runtime).call_tool(tool, arguments)
+    arguments, caller = _caller(arguments)
+    return SemanticLayerMCPAdapter(runtime).call_tool(tool, arguments, request_context=caller)
 
 
 def http_call(
     runtime: Runtime, route: str, body: dict[str, Any], context: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
+    body, caller = _caller(body, context)
     service = SemanticHTTPService(runtime)
     try:
-        response, status = service.handle("POST", route, body)
+        response, status = service.handle("POST", route, body, context=caller)
     except SemanticLayerError as exc:
-        caller = context_from_policy_context(context or body.get("policy_context") or {})
         response, status = service.exception_payload(exc, stage="http", context=caller)
     return {**response, "http_status": status}
 

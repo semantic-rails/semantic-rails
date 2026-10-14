@@ -67,13 +67,18 @@ BIG_STORE = {
     "value": True,
 }  # fmt: skip
 BY_STORE = {
-    "version": 1,
     "select": [
         {"expression": REVENUE, "as": "revenue"},
-        {"expression": {"metric": "metric.rf.revenue_per_order"}, "as": "per_order"},
+        {"expression": "metric.rf.revenue_per_order", "as": "per_order"},
     ],
     "group_by": ["dimension.rf_order_store_id"],
-    "order_by": [{"field": "dimension.rf_order_store_id", "direction": "ASC"}],
+    "order_by": [{"field": "dimension.rf_order_store_id", "direction": "asc"}],
+}
+# Stores with at least 100 in revenue: a second scan of the filtered relation.
+BIG_STORES = {
+    "entity": "entity.rf_store",
+    "having": [{"field": "measure.rf.revenue", "op": "gte", "value": 100}],
+    "over": "all_time",
 }
 OWN_ORDERS = {
     "id": "policy.rf.own_orders",
@@ -189,8 +194,9 @@ def _ctx(audience="customer", **attributes):
     return RequestContext(actor="end-user", audience=audience, attributes=attributes)
 
 
-def _q(query=BY_STORE, audience="customer", **attributes):
-    return {**query, "policy_context": _ctx(audience, **attributes).to_policy_context()}
+def _as(method, query=BY_STORE, audience="customer", now=None, **attributes):
+    """``method(query)`` asked by a caller of ``audience`` with ``attributes``."""
+    return method(query, context=_ctx(audience, **attributes), now=now)
 
 
 def _denied(call):
@@ -201,9 +207,9 @@ def _denied(call):
 
 
 def test_two_customers_get_their_own_aggregates_from_one_statement(runtime):
-    a = runtime.query(_q(customer_id=A))
-    b = runtime.query(_q(customer_id=B))
-    everyone = runtime.query(_q(audience="internal"))
+    a = _as(runtime.query, customer_id=A)
+    b = _as(runtime.query, customer_id=B)
+    everyone = _as(runtime.query, audience="internal")
 
     def rows(result):
         return [
@@ -220,13 +226,15 @@ def test_two_customers_get_their_own_aggregates_from_one_statement(runtime):
 
 @pytest.mark.parametrize("attributes", [{}, {"customer_id": 7}, {"customer_id": [A]}, {"tier": A}])
 def test_a_missing_or_mistyped_attribute_denies_every_surface(runtime, attributes):
-    query = _q(**attributes)
-    context = query["policy_context"]
+    context = _ctx(**attributes)
+    preview = "segment.rf.in_s1"
     reasons = {
-        _denied(lambda: runtime.compile(query)),
-        _denied(lambda: runtime.query(query)),
-        _denied(lambda: runtime.segment_preview("segment.rf.in_s1", policy_context=context)),
-        runtime.validate(query)["errors"][0]["details"]["reason"],
+        _denied(lambda: runtime.compile(BY_STORE, context=context)),
+        _denied(lambda: runtime.query(BY_STORE, context=context)),
+        _denied(
+            lambda: runtime.segment_preview(preview, policy_context=context.to_policy_context())
+        ),
+        runtime.validate(BY_STORE, context=context)["errors"][0]["details"]["reason"],
     }
     assert reasons <= {"missing_attribute", "attribute_type_mismatch"} and len(reasons) == 1
 
@@ -234,13 +242,13 @@ def test_a_missing_or_mistyped_attribute_denies_every_surface(runtime, attribute
 @pytest.mark.parametrize(
     ("where", "stores"),
     [
-        ([{"field": "dimension.rf_order_customer_id", "op": "=", "value": B}], []),
-        ([{"field": "dimension.rf_order_customer_id", "op": "IN", "value": [A, B]}], ["s1", "s2"]),
-        ([{"field": "dimension.rf_order_store_id", "op": "!=", "value": "s2"}], ["s1"]),
+        ([{"field": "dimension.rf_order_customer_id", "op": "is", "value": B}], []),
+        ([{"field": "dimension.rf_order_customer_id", "op": "is", "value": [A, B]}], ["s1", "s2"]),
+        ([{"field": "dimension.rf_order_store_id", "op": "not", "value": "s2"}], ["s1"]),
     ],
 )
 def test_a_caller_predicate_only_narrows(runtime, where, stores):
-    result = runtime.query(_q({**BY_STORE, "where": where}, customer_id=A))
+    result = _as(runtime.query, {**BY_STORE, "where": where}, customer_id=A)
     assert [row["dimension.rf_order_store_id"] for row in result["rows"]] == stores
 
 
@@ -257,32 +265,49 @@ def test_the_filter_stays_outside_an_or_in_existing_conditions():
     "query",
     [
         {**BY_STORE, "group_by": ["dimension.rf_store_store_name"], "order_by": []},  # join
-        {**BY_STORE, "metric_filters": [BIG_STORE]},  # a second scan of the filtered relation
-        {  # nested dependency: the prior period comes from another scan over a calendar spine
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.rf.revenue_change"}, "as": "change"}],
-            "time": MONTH,
-        },
-        {  # spine: calendar fill joins the calendar relation
-            "version": 1,
-            "select": [{"expression": REVENUE, "as": "revenue"}],
-            "time": {
-                **MONTH,
-                "grain": "day",
-                "start": "2026-01-01",
-                "end": "2026-01-05",
-                "fill": True,
-            },
-        },
+        {**BY_STORE, "where": [BIG_STORES]},  # a second scan of the filtered relation
     ],
-    ids=["join", "metric_filter", "dependency", "spine"],
+    ids=["join", "metric_filter"],
 )
 def test_unqualified_shapes_are_denied_not_answered_unfiltered(runtime, query):
-    internal = runtime.compile(_q(query, audience="internal"))
+    internal = _as(runtime.compile, query, audience="internal")
     assert internal["ok"] is True
-    assert _denied(lambda: runtime.compile(_q(query, customer_id=A))) == (
+    assert _denied(lambda: _as(runtime.compile, query, customer_id=A)) == (
         "row_filter_unsupported_query"
     )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {  # a prior period over the series' calendar spine
+            "select": [{"expression": "metric.rf.revenue_change", "as": "change"}],
+            "time": MONTH,
+        },
+        {  # a filled series over the calendar spine
+            "select": [{"expression": REVENUE, "as": "revenue"}],
+            "time": {**MONTH, "grain": "day", "start": "2026-01-01", "fill": True},
+        },
+        {  # a named window answers every period over the same spine
+            "select": [{"expression": REVENUE, "as": "revenue"}],
+            "time": {**MONTH, "start": "2026-01-01", "end": "2026-04-01"},
+        },
+    ],
+    ids=["dependency", "spine", "named_window"],
+)
+def test_a_calendar_spine_reads_no_relation_so_each_caller_gets_its_own_series(runtime, query):
+    """The engine's day series generates dates from its bounds and reads no relation: every
+    scan of the filtered relation still carries the caller's filter."""
+    for customer in (A, B):
+        own = {
+            **query,
+            "where": [{"field": "dimension.rf_order_customer_id", "op": "is", "value": customer}],
+        }
+        expected = _as(runtime.query, own, audience="internal", now="2026-06-01")["rows"]
+        result = _as(runtime.query, query, customer_id=customer, now="2026-06-01")
+        assert result["rows"] == expected
+        sql = result["rendered_sql"]
+        assert sql.count("FROM order_fact") == sql.count("order_fact.customer_id = ?") > 0
 
 
 def test_segment_preview_and_count_bind_the_filter(runtime):
@@ -303,9 +328,9 @@ def test_segment_preview_and_count_bind_the_filter(runtime):
 
 
 def test_rollups_are_not_routed_under_a_row_filter(runtime):
-    query = {"version": 1, "select": [{"expression": REVENUE, "as": "revenue"}], "time": MONTH}
-    internal = runtime.compile(_q(query, audience="internal"))
-    filtered = runtime.query(_q(query, customer_id=B))
+    query = {"select": [{"expression": REVENUE, "as": "revenue"}], "time": MONTH}
+    internal = _as(runtime.compile, query, audience="internal")
+    filtered = _as(runtime.query, query, customer_id=B)
     assert "FROM order_monthly" in internal["rendered_sql"]
     assert internal["explain"]["performance_plan"]["aggregate_routing"]["selected"] == [
         "aggregate_relation.orders_monthly"
@@ -322,12 +347,13 @@ def test_zero_rows_skip_the_whole_relation_coverage_probe(runtime, monkeypatch):
     monkeypatch.setattr(
         runtime_module, "_data_coverage_probe", lambda *a, **k: probes.append(1) or {}
     )
-    window = {"version": 1, "select": [{"expression": REVENUE, "as": "revenue"}],
-              "time": {**MONTH, "start": "2025-01-01", "end": "2025-02-01"}}  # fmt: skip
-    filtered = runtime.query(_q(window, customer_id=A))
+    # An open window after the data: no row (a named one would answer its periods, NULL).
+    window = {"select": [{"expression": REVENUE, "as": "revenue"}],
+              "time": {**MONTH, "start": "2027-01-01"}}  # fmt: skip
+    filtered = _as(runtime.query, window, customer_id=A)
     assert filtered["row_count"] == 0 and probes == []
     assert filtered["data_diagnostics"]["actual_data_coverage"] == {}
-    runtime.query(_q(window, audience="internal"))
+    _as(runtime.query, window, audience="internal")
     assert probes == [1]
 
 
@@ -336,7 +362,7 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
         caplog.at_level(logging.DEBUG, logger="semantic_rails"),
         pytest.raises(SemanticLayerError) as caught,
     ):
-        runtime.query(_q(audience="mistyped", customer_id=A))
+        _as(runtime.query, audience="mistyped", customer_id=A)
     error, chain = caught.value, []
     while error is not None:
         chain.append(error)
@@ -416,7 +442,7 @@ def test_a_pipeline_backed_relation_cannot_be_filtered(runtime):
 def test_two_filters_on_one_relation_bind_in_placeholder_order(runtime):
     context = RequestContext(audience="customer", roles=("store_scoped",),
                              attributes={"customer_id": B, "store_id": "s1"})  # fmt: skip
-    result = runtime.query({**BY_STORE, "policy_context": context.to_policy_context()})
+    result = runtime.query(BY_STORE, context=context)
     assert [row["revenue"] for row in result["rows"]] == [400]
     assert "order_fact.customer_id = ? AND order_fact.store_id = ?" in result["rendered_sql"]
 
@@ -611,19 +637,17 @@ def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
 @pytest.mark.parametrize("tenant", [A, B, "customer-with-no-rows"])
 @pytest.mark.parametrize("window_total", [False, True])
 def test_observation_and_coverage_never_see_another_customers_rows(runtime, tenant, window_total):
-    count = {"measure": "measure.rf.s2_count"}
+    count = "measure.rf.s2_count"
     query = {
-        "version": 1,
         "select": [{"expression": REVENUE, "as": "revenue"}, {"expression": count, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }
     if window_total:
         query["time"].pop("grain")
-    result = runtime.query(_q(query, customer_id=tenant))
-    # Both callers have source rows: in the total, whose bucket the loaded-bucket check
-    # gates, B's never-matched condition also counts zero. The month bucket of one leaf
-    # gets no such check, so B's is held at NULL. An empty caller has no group, preserving
-    # the empty-total behavior.
+    result = _as(runtime.query, query, customer_id=tenant)
+    # A named window answers its month, or its total, for every caller. Both A and B have
+    # source rows, and the loaded-bucket check gates the window's bucket, so B's
+    # never-matched condition counts zero; an empty caller reads NULL (nothing in its scope).
     gold = (
         runtime._get_adapter()
         ._db.conn.execute(
@@ -634,11 +658,10 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
         )
         .fetchall()
     )
-    held = tenant == B and not window_total
-    assert [r["v"] for r in result["rows"]] == ([None] if held else [row[0] for row in gold])
+    assert [r["v"] for r in result["rows"]] == ([0] if tenant in {A, B} else [None])
     assert gold == ([(0,)] if tenant in {A, B} else [])
-    # The total probes both measures outside its bounds, plus its leaf and coverage scan.
-    assert result["rendered_sql"].count("customer_id = ?") == (4 if window_total else 3)
+    # Both measures are probed outside the bounds, plus the leaf and its coverage scan.
+    assert result["rendered_sql"].count("customer_id = ?") == 4
     assert tenant not in result["rendered_sql"]
 
 
@@ -654,14 +677,13 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
     runtime = Runtime.from_path(str(package))
     adapter = runtime._get_adapter()
     query = {
-        "version": 1,
         "select": [
             {"expression": REVENUE, "as": "v"},
-            {"expression": {"measure": "measure.rf.order_count"}, "as": "n"},
+            {"expression": "measure.rf.order_count", "as": "n"},
         ],
         "where": [
-            {"field": "dimension.rf_order_ordered_at", "op": ">=", "value": "2026-01-01"},
-            {"field": "dimension.rf_order_ordered_at", "op": "<", "value": "2026-02-01"},
+            {"field": "dimension.rf_order_ordered_at", "op": "gte", "value": "2026-01-01"},
+            {"field": "dimension.rf_order_ordered_at", "op": "lt", "value": "2026-02-01"},
         ],
     }
     gold = adapter._db.conn.execute(
@@ -670,22 +692,22 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
         "AND ordered_at < TIMESTAMP '2026-02-01'",
         [A],
     ).fetchall()
-    result = runtime.query(_q(query, customer_id=A))
+    result = _as(runtime.query, query, customer_id=A)
     assert [(row["v"], row["n"]) for row in result["rows"]] == gold == [(None, None)]
-    assert runtime.query(_q(query, customer_id=B))["rows"] == [{"v": 300, "n": 1}]
+    assert _as(runtime.query, query, customer_id=B)["rows"] == [{"v": 300, "n": 1}]
 
 
 def test_every_tagged_probe_gets_both_policy_filters(runtime):
     query = {
-        "version": 1,
         "select": [{"expression": REVENUE, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }
     context = replace(_ctx(customer_id=A, store_id="s1"), roles=("store_scoped",))
-    result = runtime.query({**query, "policy_context": context.to_policy_context()})
+    result = runtime.query(query, context=context)
     assert result["rows"][0]["v"] == 10
-    assert result["rendered_sql"].count("customer_id = ?") == 2
-    assert result["rendered_sql"].count("store_id = ?") == 2
+    # The leaf, its observation outside the window and the named window's loaded coverage.
+    assert result["rendered_sql"].count("customer_id = ?") == 3
+    assert result["rendered_sql"].count("store_id = ?") == 3
 
 
 def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
@@ -714,7 +736,6 @@ def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
         value,
         bucket=bucket,
         raw_time=stamp,
-        now=dialect.now(),
         bounded=True,
     )
     statement = SqlSelect(

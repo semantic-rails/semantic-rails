@@ -29,7 +29,7 @@ uvx semantic-rails ask --package jaffle_shop "revenue by store name" --run
 
 This groups revenue by store name in the synthetic Jaffle Shop sample, then validates,
 compiles and runs the plan on DuckDB. It prints how it interpreted the question, the
-rows and any warnings, then the Query IR. Check that interpretation before you rely on
+rows and any warnings, then the query call. Check that interpretation before you rely on
 the numbers; see
 [Known limitations](https://github.com/semantic-rails/semantic-rails#known-limitations).
 Without uv, try the [browser demo](https://semantic-rails.com/try) or the hosted MCP
@@ -162,12 +162,12 @@ discover -> plan -> execute
 - `discover` maps business terms to governed metric, dimension and segment IDs.
   `inspect` opens one object's card when the agent needs its aggregations, values or
   time roles.
-- `plan` drafts Query IR from a natural-language question and checks the draft against
+- `plan` drafts a [query call](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_CALL.md) from a natural-language question and checks the draft against
   the question. Run the draft when its status is `ok` and it has no warnings; otherwise
   the response says what the draft misses. `valid-values` (and, over HTTP and the CLI,
   `build-options`) guide step-by-step builders instead.
 - `execute` (the CLI's `query`, HTTP `/api/v1/query`) validates, compiles and runs the
-  Query IR where the package's connection lives. It rejects unknown fields, dimension
+  call where the package's connection lives. It rejects unknown fields, dimension
   mismatches, bad filters and policy failures with structured errors and, where
   possible, recovery hints.
 - `validate` and `compile` are optional dry runs of the same checks. `validate` returns
@@ -253,15 +253,17 @@ lists what is experimental or out of scope.
 In the current release:
 
 - `plan` reports the parts of a question its draft doesn't honor, as `low_confidence`
-  or a `PLAN_UNMATCHED_TERMS` warning, but its checks don't cover every phrasing. For
-  "revenue by store before today" it plans today alone and reports `ok` with only that
-  warning, and `ask` runs it. Check the Query IR, or `ask`'s "Interpreted as" line,
-  before you rely on the numbers.
+  or a `PLAN_UNMATCHED_TERMS` warning, but its checks don't cover every phrasing, so a
+  draft can still misread a question and report `ok`, and `ask` runs it. Check the query
+  call, or `ask`'s "Interpreted as" line, before you rely on the numbers.
 - `ask` runs one query, so it refuses a question that `plan` answers as several parts
   (`PLAN_PARTS`) and lists them: ask each part on its own.
 - `ask` rounds its tables, but JSON results (`query`, `ask --json`, MCP `execute` and the
   HTTP API) return the warehouse's floating-point values as they are, for example
   `486468.17999985756` for a currency total.
+- The text filter words refuse search text holding letters that warehouses lower
+  differently, such as Greek sigma, `ß` and `İ`, and need ICU on Postgres; see
+  [the text words' known limitations](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_CALL.md#known-limitations).
 
 ### Roadmap
 
@@ -285,6 +287,7 @@ Questions and proposals are welcome in
 - [Package authoring](https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md)
 - [MCP interface](https://github.com/semantic-rails/semantic-rails/blob/main/docs/MCP_INTERFACE.md)
 - [Architect MCP](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECT_MCP.md)
+- [The query call](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_CALL.md)
 - [Query API](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_API.md)
 - [Capabilities](https://github.com/semantic-rails/semantic-rails/blob/main/docs/CAPABILITIES.md)
 - [Architecture](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECTURE.md)

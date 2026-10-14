@@ -6,7 +6,7 @@ catalog of a validated package. It exists so that hot read paths
 on every request.
 
 Produced by ``semantic-rails validate-config`` (or programmatically via
-:func:`write_manifest`). Loaded lazily by :class:`Runtime` on first
+:func:`semantic_rails.catalog_service.write_manifest`). Loaded lazily by :class:`Runtime` on first
 catalog access. Keyed by :func:`package_fingerprint` so source edits
 invalidate the cached artifact automatically.
 
@@ -21,7 +21,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .atomic_files import atomic_write_bytes
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 
 
@@ -66,49 +65,6 @@ def manifest_path(source_path: str) -> Path:
 
 def fingerprint_path(source_path: str) -> Path:
     return manifest_dir(source_path) / FINGERPRINT_FILE
-
-
-def write_manifest(runtime, *, variants: tuple[tuple[str, str], ...] = DEFAULT_VARIANTS) -> Path:
-    """Compute catalog payloads for each variant and write to .compiled/.
-
-    Returns the path to the written manifest.json. Overwrites any
-    existing manifest atomically. Both compiled artifacts use mode 0644.
-    """
-    # Local import to avoid a top-level cycle (metadata imports cache).
-    from .metadata import catalog_payload
-
-    with runtime.request_scope():
-        return _write_loaded_manifest(runtime, variants=variants, catalog_payload=catalog_payload)
-
-
-def _write_loaded_manifest(runtime, *, variants, catalog_payload) -> Path:
-    snapshot = runtime.snapshot
-    fingerprint = snapshot.source_fingerprint
-    catalogs: dict[str, dict[str, Any]] = {}
-    for view, verbosity in variants:
-        key = f"{view}|{verbosity}"
-        catalogs[key] = catalog_payload(
-            runtime, view=view, verbosity=verbosity, policy_context=None
-        )
-
-    payload = {
-        "schema_version": 1,
-        "engine_version": _engine_version(),
-        "package_id": runtime.package_id,
-        "source_path": runtime.source_path,
-        "fingerprint": fingerprint,
-        "semantic_fingerprint": snapshot.semantic_fingerprint,
-        "provenance": dict(snapshot.provenance),
-        "source_kind": snapshot.source_kind,
-        "variants": [list(v) for v in variants],
-        "catalogs": catalogs,
-    }
-
-    atomic_write_bytes(
-        manifest_path(runtime.source_path), json.dumps(payload, default=str).encode(), mode=0o644
-    )
-    atomic_write_bytes(fingerprint_path(runtime.source_path), fingerprint.encode(), mode=0o644)
-    return manifest_path(runtime.source_path)
 
 
 def load_manifest(

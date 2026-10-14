@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from .. import operators
 from ..ast import NormalizedQuery
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -15,7 +16,6 @@ from ..expressions import (
     CallExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     LiteralExpr,
@@ -23,15 +23,14 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     expr_kind,
 )
 from ..fanout import (
+    analyze_fanout,
     enters_validity_window,
     record_route_choice,
     resolve_path,
@@ -39,24 +38,65 @@ from ..fanout import (
 )
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
-from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
-from .dependencies import record_bound_object
+from ..sql_ast import (
+    SqlBinary,
+    SqlCase,
+    SqlCaseWhen,
+    SqlIdentifier,
+    SqlIn,
+    SqlIsNull,
+    SqlJoin,
+    SqlLiteral,
+    SqlTableRef,
+    build_filter_condition,
+)
+from .dependencies import holding, record_bound_object
 from .indexes import (
     _default_temporal_role,
     _dimension_index,
     _entity_index,
     _measure_index,
-    _recipe_index,
+    _recipe_or_raise,
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
     rollup_dimension_entities,
 )
-from .temporal import _allows_coarse_snapshot_alignment, _validate_leaf_window_clock
+from .temporal import (
+    _allows_coarse_snapshot_alignment,
+    _time_bound_relationship_ids,
+    _validate_leaf_window_clock,
+)
 
 
 def _column_ref(table: str, column: str) -> SqlIdentifier:
     return SqlIdentifier(parts=[*str(table).split("."), column])
+
+
+def _path_selection(
+    *,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    start_entity: str,
+    target_entity: str,
+    purpose: str,
+) -> PathSelection | None:
+    if target_entity == start_entity:
+        return None
+    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
+    analysis = analyze_fanout(
+        config,
+        start_entity,
+        chosen,
+        time_bound_relationships=_time_bound_relationship_ids(query, config),
+    )
+    return PathSelection(
+        target_entity=target_entity,
+        purpose=purpose,
+        chosen_path=list(chosen),
+        candidate_paths=[list(path) for path in candidates],
+        analysis=analysis,
+    )
 
 
 def _split_column_ref(value: str) -> tuple[str, str]:
@@ -64,7 +104,22 @@ def _split_column_ref(value: str) -> tuple[str, str]:
     return table or column, column
 
 
-def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIdentifier, str]:
+def unknown_as_null(expr: Any, dim: Any) -> Any:
+    """The dimension read with its declared unknown spellings as NULL, so grouping, ``missing``,
+    ``not`` and every other filter word treat them as unknown."""
+    if not getattr(dim, "unknown_values", None):
+        return expr
+    return SqlCase(
+        [
+            SqlCaseWhen(
+                SqlIn(expr, [SqlLiteral(value) for value in dim.unknown_values]), SqlLiteral(None)
+            )
+        ],
+        else_expr=expr,
+    )
+
+
+def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[Any, str]:
     dim_index = _dimension_index(config)
     dim = dim_index.get(dim_id)
     if dim is None:
@@ -74,7 +129,70 @@ def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIden
             details={"dimension": dim_id},
         )
     table = _entity_index(config)[dim.entity].table
-    return _column_ref(table, dim.column), dim.id
+    return unknown_as_null(_column_ref(table, dim.column), dim), dim.id
+
+
+def dimension_filter(
+    expr: Any, field: str, op: Any, value: Any, config: PackageConfig, *, path: str = "where"
+) -> Any:
+    """:func:`build_filter_condition` for a filter on the dimension ``field``: on a date or
+    timestamp dimension, its text values are temporal literals. A text word reads only text; a
+    filter with no field compares each entity's value, a number."""
+    dim = _dimension_index(config).get(field)
+    word = operators.word_of(op)
+    if dim is not None:
+        operators.check_text_operand(word, dim.data_type, f"{path}.op", dim.id)
+    elif not field:
+        operators.check_text_operand(word, "number", f"{path}.op", "each entity's value")
+    temporal = dim is not None and dim.data_type in {"date", "timestamp"}
+    return build_filter_condition(expr, op, value, path=path, temporal=temporal)
+
+
+def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
+    """The dimensions of ``entity`` over its physical ``column``, named as the warehouse names
+    columns: an exact name first; failing that, a name the SQL leaves unquoted (ASCII letters,
+    digits and underscores, not reserved) matches another unquoted name in any ASCII case, as
+    every warehouse but ClickHouse reads them. Never a Unicode casefold: "straße" is quoted, so
+    it is only itself."""
+    from ..renderer import _quote_ident
+
+    dims = [dim for dim in _dimension_index(config).values() if dim.entity == entity]
+    exact = [dim for dim in dims if dim.column == column]
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if exact or _quote_ident(column) != column or dialect.identifiers_case_sensitive:
+        return exact
+    return [
+        dim
+        for dim in dims
+        if _quote_ident(dim.column) == dim.column and dim.column.lower() == column.lower()
+    ]
+
+
+def text_dimension(entity: str, column: str, word: str, config: PackageConfig, path: str) -> Any:
+    """The one dimension over ``entity``'s ``column`` that a text word compares, its type text.
+    The word reads it as a filter on that dimension does; a column that no dimension, or
+    several, declares is refused rather than guessed."""
+    dims = dimensions_over_column(entity, column, config)
+    if len(dims) != 1:
+        declared = "several dimensions" if dims else "no dimension"
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}: '{word}' compares a dimension's text; {entity}.{column} is the column of "
+            f"{declared}",
+            details={
+                "path": path,
+                "dimensions": [dim.id for dim in dims],
+                "recovery_hints": [
+                    {
+                        "code": "USE_FILTER_WORD",
+                        "message": "Filter on one dimension: an aggregate's filter "
+                        f'{{"all": [{{"field": "<dimension id>", "op": "{word}", "value": ...}}]}}.',
+                    }
+                ],
+            },
+        )
+    operators.check_text_operand(word, dims[0].data_type, path, dims[0].id)
+    return dims[0]
 
 
 def _pair_orientations(
@@ -159,14 +277,12 @@ def _direct_entity_key_source_expr(
     target_entity: str,
     target_key_col: str,
     config: PackageConfig,
-    *,
-    source_relation_override: str = "",
 ) -> SqlIdentifier | None:
     entities = _entity_index(config)
     source = entities.get(source_entity)
     if source is None:
         return None
-    source_table = source_relation_override or source.table
+    source_table = source.table
     if source_entity == target_entity and target_key_col in set(source.key or [source.primary_key]):
         return _column_ref(source_table, target_key_col)
     # None: not readable here. Several pairings between the entities (role-playing keys, e.g.
@@ -202,9 +318,7 @@ def _direct_dimension_source_expr(
     source_entity: str,
     dim_id: str,
     config: PackageConfig,
-    *,
-    source_relation_override: str = "",
-) -> tuple[SqlIdentifier, str] | None:
+) -> tuple[Any, str] | None:
     dim_index = _dimension_index(config)
     dim = dim_index.get(dim_id)
     if dim is None:
@@ -214,18 +328,38 @@ def _direct_dimension_source_expr(
             details={"dimension": dim_id},
         )
     target = _entity_index(config).get(dim.entity)
-    if target is None or dim.column not in set(target.key or [target.primary_key]):
+    if target is None or dim.column not in set(target.key_columns):
         return None
-    expr = _direct_entity_key_source_expr(
-        source_entity,
-        dim.entity,
-        dim.column,
-        config,
-        source_relation_override=source_relation_override,
-    )
+    expr = _direct_entity_key_source_expr(source_entity, dim.entity, dim.column, config)
     if expr is None:
         return None
-    return expr, dim.id
+    return unknown_as_null(expr, dim), dim.id
+
+
+def keyed_entity(config: PackageConfig, dimension_id: str) -> Any:
+    """The entity whose one-column key ``dimension_id`` is (never a calendar), else None."""
+    dimension = _dimension_index(config).get(dimension_id)
+    if dimension is None:
+        return None
+    entity = _entity_index(config).get(dimension.entity)
+    if entity is None or entity.kind == "time" or len(entity.key_columns) != 1:
+        return None
+    return entity if dimension.column == entity.key_columns[0] else None
+
+
+def display_key(config: PackageConfig, dimension_id: str) -> str:
+    """The key dimension of the entity ``dimension_id`` names rows of (its ``display``), else
+    ``""``: grouping by a name groups by the key too, so same-named entities stay apart."""
+    entity = next((row for row in config.entities if row.display == dimension_id), None)
+    if entity is None or entity.kind == "time" or len(entity.key_columns) != 1:
+        return ""
+    keys = [
+        row
+        for row in config.dimensions
+        if row.entity == entity.id and row.column == entity.key_columns[0]
+    ]
+    keys.sort(key=lambda row: row.semantic_kind != "id")
+    return keys[0].id if keys else ""
 
 
 def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str]:
@@ -256,21 +390,14 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{expr.measure}'")
         return measure.entity
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expression_root_entity(recipe.expression, config)
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
+            ShareExpr,
         ),
     ):
         return _expression_root_entity(expr.input, config)
@@ -483,11 +610,8 @@ def inner_lookups() -> Iterator[None]:
     """Join every lookup INNER while a metric predicate's own query or a distribution's
     per-entity values lower: each holds the entities that have rows, never a NULL key for rows
     that have none."""
-    token = _inner_lookups.set(True)
-    try:
+    with holding(_inner_lookups, True):
         yield
-    finally:
-        _inner_lookups.reset(token)
 
 
 def rollup_held_lookups(
@@ -662,20 +786,17 @@ def _joins_for_paths(
     return joins
 
 
-def _join_condition(
-    keys: list[str], left_alias: str, right_alias: str, *, dialect: Any | None = None
-) -> Any:
+def _join_condition(keys: list[str], left_alias: str, right_alias: str, *, dialect: Any) -> Any:
     if not keys:
         return SqlLiteral(True)
-    active_dialect = dialect or dialect_for_warehouse("")
-    current: Any = active_dialect.null_safe_eq(
+    current: Any = dialect.null_safe_eq(
         SqlIdentifier(parts=[left_alias, keys[0]]), SqlIdentifier(parts=[right_alias, keys[0]])
     )
     for key in keys[1:]:
         current = SqlBinary(
             current,
             "AND",
-            active_dialect.null_safe_eq(
+            dialect.null_safe_eq(
                 SqlIdentifier(parts=[left_alias, key]), SqlIdentifier(parts=[right_alias, key])
             ),
         )

@@ -80,7 +80,7 @@ def portable(tmp_path):
 
 
 def _validate(payload):
-    query = load_contract("query_ir.v1.json")
+    query = load_contract("query.v2.json")
     registry = Registry().with_resource(query["$id"], Resource.from_contents(query))
     Draft202012Validator(load_contract("metric_portability.v1.json"), registry=registry).validate(
         payload
@@ -107,14 +107,14 @@ def test_authored_package_to_governed_bi_card(portable, tmp_path):
     spec.loader.exec_module(module)
     # A catalog cannot retarget a saved BI binding through a forged template.
     forged = deepcopy(artifact)
-    forged["metrics"][0]["query_template"]["select"][0]["expression"]["metric"] = "metric.foreign"
+    forged["metrics"][0]["query_template"]["select"][0]["expression"] = "metric.foreign"
     calls = []
     module.render_metric_card(
         forged,
         (corpus["namespace"], corpus["expected_metric_ids"][0]),
         lambda query: calls.append(query) or {},
     )
-    assert calls[0]["select"][0]["expression"]["metric"] == corpus["expected_metric_ids"][0]
+    assert calls[0]["select"][0]["expression"] == corpus["expected_metric_ids"][0]
     runtime = Runtime.from_path(str(package))
     try:
         card = module.render_metric_card(
@@ -190,7 +190,7 @@ def test_invalid_exports_fail_closed(portable, change):
     elif change == "definition":
         after["metrics"][0]["definition"]["value_type"] = "currency"
     else:
-        after["metrics"][0]["query_template"]["select"][0]["expression"]["metric"] = "other"
+        after["metrics"][0]["query_template"]["select"][0]["expression"] = "other"
     with pytest.raises(ValueError):
         compare_metric_portability(before, after)
 
@@ -220,27 +220,17 @@ def test_namespace_rename_and_deployment_locator_rules(portable):
     assert not compare_metric_portability(before, export_metric_portability(package))["compatible"]
 
 
-def test_cli_selects_portability_without_changing_default(portable, tmp_path):
-    import subprocess
-    import sys
+def test_cli_selects_portability_without_changing_default(portable, tmp_path, monkeypatch):
+    from semantic_rails.cli import main
 
     _, package = portable
     output = tmp_path / "metrics.json"
-    base = [
-        sys.executable,
-        "-m",
-        "semantic_rails",
-        "export-contract",
-        "--path",
-        str(package),
-        "--output",
-        str(output),
-    ]
-    subprocess.run(
-        [*base, "--format", "metrics"], check=True, capture_output=True, text=True, timeout=120
-    )
+    base = ["semantic-rails", "export-contract", "--path", str(package), "--output", str(output)]
+    monkeypatch.setattr("sys.argv", [*base, "--format", "metrics"])
+    main()
     assert json.loads(output.read_text()) == export_metric_portability(package)
-    subprocess.run(base, check=True, capture_output=True, text=True, timeout=120)
+    monkeypatch.setattr("sys.argv", base)
+    main()
     assert json.loads(output.read_text()) == export_semantic_contract(package)
 
 

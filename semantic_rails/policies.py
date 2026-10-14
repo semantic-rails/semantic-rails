@@ -10,14 +10,29 @@ effects to execution unchanged; responses carry ``visible_view.public_effects``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
 
-from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters
+from . import operators
+from .ast import (
+    Filter,
+    NormalizedQuery,
+    every_filter,
+    normalize_query,
+    plain_filters,
+    time_output_alias,
+)
+from .clock import UNITS
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
-from .compiler_parts.bind import measure_column_ref
+from .compiler_parts.bind import (
+    _resolve_column_entity,
+    _scoped_predicate_expr_payload,
+    measure_column_ref,
+)
+from .compiler_parts.paths import dimensions_over_column
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -25,10 +40,13 @@ from .expressions import (
     ColumnRefExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
+    MeasureRefExpr,
     MetricPredicateExpr,
+    MetricRecipeRefExpr,
     ScopedAggregateExpr,
     collect_column_refs,
     parse_semantic_expression,
+    resolve_filter_dimension,
 )
 from .policy_rules import MAX_RANK, check_request_environment, withheld_max_rank
 from .policy_rules import context_scope_matches as context_scope_matches
@@ -44,8 +62,8 @@ from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral,
 from .sql_preparation import checked_slot_value
 
 WITHHOLD = "withhold_values"
-# A conditional aggregate's condition reads columns, not fields: no allowed_where lists it.
-INLINE_CONDITION = "aggregate_if.condition"
+# A conditional aggregate's condition reads columns: each counts as the dimensions over it, and
+# a column no dimension declares as ``<entity>.<column>``, which no allowed_where lists.
 WITHHELD_SHAPE = (
     "Select the withheld metric directly, put it first in order_by, then every group key in "
     "the same direction (added for you when order_by names only the metric), with a limit of "
@@ -187,6 +205,8 @@ def enforce_query_policies(
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
     require_base(config)
+    if query is not None:
+        _refuse_unfilterable(config, query)
     object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
     # Caller-created measures have no authored object id to govern their raw columns, and a query
     # handed over without its binding cannot be checked: both refused while anything is hidden.
@@ -200,8 +220,19 @@ def enforce_query_policies(
     if unchecked and (_hidden_policy_ids(config, **scope) or _visible_only_listed(config, **scope)):
         raise SemanticLayerError(
             "POLICY_DENIED",
-            "Query references a semantic object blocked by policy.",
-            details={"blocked_objects": [], "policy_effects": [], "policy_violations": []},
+            "This query can't be checked against the package's policies for you: select a "
+            "measure or metric in place of an aggregate over columns.",
+            details={
+                "blocked_objects": [],
+                "policy_effects": [],
+                "policy_violations": [],
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": "Select a measure or metric in place of the aggregate.",
+                    }
+                ],
+            },
         )
     effects = query_policy_effects(
         config,
@@ -214,20 +245,19 @@ def enforce_query_policies(
     )
     blocking = [row for row in effects if row["action"] in {"deny", "hidden"}]
     if blocking:
-        raise SemanticLayerError(
-            "POLICY_DENIED",
-            "Query references a semantic object blocked by policy.",
-            details={
-                "blocked_objects": sorted(
-                    {object_id for row in blocking for object_id in row.get("object_ids", [])}
-                ),
+        # The objects this query reads that a blocking policy lists; all it lists when the
+        # query reads none of them directly (a caller's aggregate over a governed column).
+        listed = {object_id for row in blocking for object_id in row.get("object_ids", [])}
+        raise denied(
+            {
+                "blocked_objects": sorted(listed.intersection(object_ids) or listed),
                 "policy_effects": blocking,
                 "policy_violations": [
                     violation
                     for row in blocking
                     for violation in list(row.get("violations", []) or [])
                 ],
-            },
+            }
         )
     withheld = withheld_object_ids(
         config,
@@ -249,6 +279,193 @@ def enforce_query_policies(
                 row["withheld_objects"] = sorted(withheld)
                 row["withheld_column"] = column
     return effects
+
+
+def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLayerError:
+    """The refusal of a query a policy blocks. Its message and its one hint come from
+    ``details`` alone (the blocked objects and the effects with their violations), so
+    ``visible_view.public_error`` restates both from a caller's view of the same details;
+    ``unstated`` says that view left out an unmet cut, which gets the generic words."""
+    lines: list[str] = []
+    actions: list[str] = []
+    merge: dict[str, Any] = {}
+    objects = list(details.get("blocked_objects") or [])
+    for effect in details.get("policy_effects") or []:
+        names = _listed([item for item in effect.get("object_ids") or [] if item in objects])
+        names = names or _listed(objects) or "This query"
+        violations = list(effect.get("violations") or [])
+        if effect.get("kind") != "metric_constraint":
+            lines.append(f"{names} is denied by policy")
+            actions.append(f"Remove {names} from the call." if objects else "")
+        for violation in violations:
+            line, action, fragment = _constraint_cut(violation)
+            lines.append(f"{names} {line}")
+            actions.append(action)
+            for key, value in fragment.items():
+                merge[key] = (
+                    {**merge.get(key, {}), **value}
+                    if isinstance(value, dict)
+                    else [*merge.get(key, []), *value]
+                )
+    if unstated:
+        lines.append(f"{_listed(objects) or 'This query'} can't be read this way under policy")
+        actions.append("Ask a package admin what this policy allows you to read.")
+    hint: dict[str, Any] = {
+        "code": "FIX_QUERY_CALL",
+        "message": " ".join(dict.fromkeys(action for action in actions if action))
+        or "Ask a package admin what this policy allows you to read.",
+    }
+    if merge:
+        hint["patch"] = {"merge": merge}
+    message = "; ".join(dict.fromkeys(lines)) or "A policy denies this query"
+    return SemanticLayerError(
+        "POLICY_DENIED", f"{message}.", details={**details, "recovery_hints": [hint]}
+    )
+
+
+def _listed(items: Iterable[Any], word: str = "and") -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    texts = [str(item) for item in items]
+    return f"{', '.join(texts[:-1])} {word} {texts[-1]}" if len(texts) > 1 else "".join(texts)
+
+
+def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """What one metric constraint violation says, in the call's words: the cuts the policy
+    allows, the one fix, and the call fragment that makes it (merged into the call)."""
+    kind = violation.get("kind")
+    disallowed = _listed(violation.get("disallowed") or [])
+    allowed = list(violation.get("allowed") or [])
+    if kind == "missing_required_group_by":
+        period = dict(violation.get("by_time") or {})
+        day, grain = period.get("dimension"), period.get("grain")
+        others = [field for field in violation.get("missing") or [] if field != day]
+        reads = [f"by {grain}"] * bool(day) + [f"grouped by {_listed(others)}"] * bool(others)
+        on = f" on {period['temporal_role']}" if "temporal_role" in period else ""
+        fixes = [f"set time.grain to {grain}{on}"] * bool(day)
+        fixes += [f"add {_listed(others)} to group_by"] * bool(others)
+        how = f"group by {day}, or {fixes[0]}" if day and not others else " and ".join(fixes)
+        fragment: dict[str, Any] = {}
+        if day:
+            fragment["time"] = {key: value for key, value in period.items() if key != "dimension"}
+        fragment.update({"group_by": others} if others else {})
+        action = " and ".join(fixes)
+        line = f"can only be read {' and '.join(reads)}: {how}"
+        return line, f"{action[:1].upper()}{action[1:]}.", fragment
+    if kind == "missing_required_where":
+        conditions = [
+            {
+                "field": spec["field"],
+                "op": operators.operator_word(spec.get("op", "is"), path="required_where.op"),
+                "value": spec.get("value", "<value>"),
+            }
+            for spec in violation.get("missing") or []
+        ]
+        said = " and ".join(
+            operators.describe(row["field"], row["op"], row["value"]) for row in conditions
+        )
+        return (
+            f"can only be read where {said}",
+            f"Add {json.dumps(conditions)} to where.",
+            {"where": conditions},
+        )
+    if kind == "required_where_outside_entity_filter":
+        fields = _listed(spec["field"] for spec in violation.get("missing") or [])
+        line = (
+            f"can't be read inside an entity filter: its required filter on {fields} cuts "
+            "only the query's own rows"
+        )
+        return line, "Read it in select instead of in an entity filter's having.", {}
+    if kind == "disallowed_temporal_role":
+        line = f"can't be read on {violation.get('temporal_role')}"
+        if not allowed:
+            return line, "", {}
+        return (
+            f"{line}; it is read on {_listed(allowed, 'or')}",
+            f"Set time.temporal_role to {allowed[0]}.",
+            {"time": {"temporal_role": allowed[0]}},
+        )
+    inline = violation.get("source") == "inline_expression"
+    where = f"Remove the conditions on {disallowed} " + (
+        "inside the expression." if inline else "from where."
+    )
+    cut = {
+        "disallowed_group_by": ("grouped by", f"Remove {disallowed} from group_by."),
+        "disallowed_where": ("filtered by", where),
+        "disallowed_metric_filter_entity": (
+            "cut by an entity filter's having on",
+            f"Remove the entity filter on {disallowed}.",
+        ),
+        "disallowed_metric_filter_metric": (
+            "cut by having on",
+            f"Remove the having on {disallowed}.",
+        ),
+    }.get(str(kind))
+    if cut is not None:
+        verb, action = cut
+        base, by = verb.rsplit(" ", 1)
+        line = (
+            f"can't be {verb} {disallowed}"
+            + " inside an expression" * inline
+            + "; "
+            + (
+                f"it can be {base} only {by} {_listed(allowed, 'or')}"
+                if allowed
+                else f"it can't be {base}"
+            )
+        )
+        return line, action, {}
+    if kind == "unresolved_metric_filter":
+        return (
+            "is cut by a having or entity filter the policy can't check",
+            "Remove that having or entity filter.",
+            {},
+        )
+    if inline:
+        return (
+            "can't be cut by a filter inside an expression",
+            "Remove the filter inside the expression.",
+            {},
+        )
+    return (
+        "can't be cut by having, an entity filter or a filter inside an expression",
+        "Remove the having, entity filter or inline filter that reads it.",
+        {},
+    )
+
+
+def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> None:
+    """A dimension the package declares ``filterable: false`` filters no caller's query: not in
+    ``where``, an entity filter, or a filter inside an expression. Package metrics may."""
+    unfilterable = {row.id for row in config.dimensions if not row.filterable}
+    if not unfilterable:
+        return
+    query = normalize_query(dict(payload))
+    paths = {
+        item.field: f"where[{index}].field"
+        for index, item in reversed(list(enumerate(query.where)))
+        if isinstance(item, Filter)
+    }
+    fields = [
+        *(item.field for item in every_filter(query.where)),
+        *(field for _, field in _inline_filters(query, config)),
+    ]
+    refused = [field for field in dict.fromkeys(fields) if field in unfilterable]
+    if refused:
+        path = paths.get(refused[0], "where")
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            f"{path}: {refused[0]} is not filterable; the package declares filterable: false",
+            details={
+                "path": path,
+                "policy_violations": [{"kind": "not_filterable", "disallowed": refused}],
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": "Remove the condition; group by the dimension instead.",
+                    }
+                ],
+            },
+        )
 
 
 def withheld_object_ids(
@@ -327,8 +544,6 @@ def withheld_shape(
     if binding is None:
         return refuse("withheld_unbound", "only a query can rank by them.")
     query = binding.plan.query
-    if query.get("export"):
-        return refuse("withheld_export", "a query that reads them cannot be exported.")
     order = list(query.get("order_by") or [])
     ranked = next(
         (item for item in query["select"] if order and item["as"] == order[0]["field"]), None
@@ -383,7 +598,7 @@ def withheld_shape(
 def rank_keys(query: Mapping[str, Any]) -> list[str]:
     """A normalized query's output group keys: its group_by, then a time bucket."""
     time = query.get("time") or {}
-    bucket = [f"{time['temporal_role']}__{time['grain']}"] if time.get("grain") else []
+    bucket = [time_output_alias(time)] if time.get("grain") else []
     return [*query.get("group_by", []), *bucket]
 
 
@@ -566,7 +781,7 @@ def _synthetic_constraint_sources(
 
     def rows(measure: MeasureConfig) -> tuple[str, ...]:
         # A one-part row token cannot collide with a two-part column token.
-        relation = measure.source_relation or relations[measure.entity]
+        relation = relations[measure.entity]
         return (identifier(relation.split(".")[-1]),)
 
     def columns(measure: MeasureConfig, seen: frozenset[str] = frozenset()) -> set[tuple[str, ...]]:
@@ -643,6 +858,34 @@ def _metric_constraint_effect(
     return effect
 
 
+def _period_is(dimension_id: str, bound: BoundQuery) -> bool:
+    """Whether the bound query's period is ``dimension_id``: the clock's own date dimension,
+    under a grain at or below that dimension's own (its finest supported grain)."""
+    time = normalize_query(bound.plan.query, config=bound.config).time
+    role = next(
+        (r for r in bound.config.temporal_roles if r.id == getattr(time, "temporal_role", "")), None
+    )
+    if time is None or not time.grain or role is None or role.dimension != dimension_id:
+        return False
+    return time.grain in UNITS and UNITS.index(time.grain) <= UNITS.index(_finest(role))
+
+
+def _finest(role: Any) -> str:
+    return next((grain for grain in UNITS if grain in (role.supported_grains or UNITS)), "day")
+
+
+def _by_time(missing: list[str], bound: BoundQuery) -> dict[str, Any]:
+    """The time block whose period is a missing field, a clock's own date dimension: that
+    clock (named when the query reads another) at its finest grain."""
+    time = normalize_query(bound.plan.query, config=bound.config).time
+    current = getattr(time, "temporal_role", "")
+    for role in sorted(bound.config.temporal_roles, key=lambda row: row.id != current):
+        if role.dimension in missing:
+            clock = {"temporal_role": role.id} if role.id != current else {}
+            return {"by_time": {"dimension": role.dimension, **clock, "grain": _finest(role)}}
+    return {}
+
+
 def _metric_constraint_violations(
     policy: SemanticPolicyConfig,
     query_payload: Mapping[str, Any],
@@ -657,12 +900,14 @@ def _metric_constraint_violations(
     if "required_group_by" in policy_config:
         required = _config_str_list(policy_config, "required_group_by")
         missing = [field for field in required if field not in set(query.group_by)]
+        missing = [field for field in missing if not _period_is(field, bound())]
         if missing:
             violations.append(
                 {
                     "kind": "missing_required_group_by",
                     "missing": missing,
                     "present_group_by": list(query.group_by),
+                    **_by_time(missing, bound()),
                 }
             )
 
@@ -684,7 +929,10 @@ def _metric_constraint_violations(
     # for the governed object, including whole-query attribution for nested filters.
     inline = cache(
         lambda: _governed_inline_fields(
-            _inline_filters(query), bound, object_id, package_wide=not policy.object_ids
+            _inline_filters(query, bound().config),
+            bound,
+            object_id,
+            package_wide=not policy.object_ids,
         )
     )
     where_rows = [
@@ -705,6 +953,16 @@ def _metric_constraint_violations(
                     "kind": "missing_required_where",
                     "missing": missing_filters,
                     "present_where": where_rows,
+                }
+            )
+        # An entity filter takes its aggregate over the entity's rows, outside the query's
+        # where, so the governed object read there would escape the required filter.
+        if required_filters and object_id in _entity_scoped_reads(query, bound().config):
+            violations.append(
+                {
+                    "kind": "required_where_outside_entity_filter",
+                    "missing": required_filters,
+                    "object_id": object_id,
                 }
             )
 
@@ -803,21 +1061,48 @@ def _normalize_where_specs(value: Any) -> list[dict[str, Any]]:
 
 
 def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool:
+    """Whether a where filter meets a required one: same field, word and (when named) values.
+
+    A spec without an op requires ``is``: a ``not``, range or ``contains`` on the field never
+    meets it, whatever its value.
+    """
     if str(row.get("field", "")) != str(spec.get("field", "")):
         return False
-    if "op" in spec and str(row.get("op", "")).upper() != str(spec.get("op", "")).upper():
+    try:
+        word, value = operators.normalize_condition(
+            row.get("op", "is"), row.get("value"), path="where", internal=True
+        )
+        return operators.spec_matches(word, value, dict(spec), path="required_where")
+    except SemanticLayerError:
         return False
-    return "value" not in spec or row.get("value") == spec.get("value")
 
 
-def _inline_filters(query: NormalizedQuery) -> list[tuple[str | None, str]]:
+def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> list[str]:
+    """The fields a conditional aggregate's condition reads: the dimensions over each column."""
+    out: list[str] = []
+    for ref in collect_column_refs(expr.condition):
+        entity = _resolve_column_entity(ref, config)
+        over = [row.id for row in dimensions_over_column(entity, ref.column, config)]
+        out.extend(over or [f"{entity}.{ref.column}"])
+    return out
+
+
+def _inline_filters(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str | None, str]]:
     """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
     expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
-    predicate inputs included. A conditional aggregate's condition has no declared measure and
-    is ``("", INLINE_CONDITION)``. ``measure=None`` marks whole-query attribution under
-    predicates, metric filters and conversion operands. Recipes are not read here.
+    predicate inputs included. A conditional aggregate's condition has no declared measure:
+    each field it reads is ``("", field)``. ``measure=None`` marks whole-query attribution
+    under predicates, metric filters and conversion operands. Recipes are not read here.
     """
     found: list[tuple[str | None, str]] = []
+
+    def field_id(clause: Mapping[str, Any]) -> str:
+        # The id a name or alias binds to, so a renamed field meets the same lists.
+        field = str(clause.get("field") or clause.get("dimension") or "")
+        try:
+            return resolve_filter_dimension(field, config)
+        except SemanticLayerError:
+            return field
 
     def visit(expr: Any, *, whole_query: bool = False) -> None:
         whole_query = whole_query or isinstance(expr, (MetricPredicateExpr, ConversionExpr))
@@ -827,11 +1112,10 @@ def _inline_filters(query: NormalizedQuery) -> list[tuple[str | None, str]]:
                 if "expression" in clause:
                     nested.append(dict(clause["expression"]))
                 else:
-                    found.append((None if whole_query else expr.measure, str(clause["field"])))
+                    found.append((None if whole_query else expr.measure, field_id(clause)))
         elif isinstance(expr, ScopedAggregateExpr):
             found.extend(
-                (None if whole_query else expr.measure, str(item.get("field", "")))
-                for item in expr.where
+                (None if whole_query else expr.measure, field_id(item)) for item in expr.where
             )
             nested.extend(
                 dict(item["input"])
@@ -839,7 +1123,9 @@ def _inline_filters(query: NormalizedQuery) -> list[tuple[str | None, str]]:
                 if isinstance(item.get("input"), dict)
             )
         elif isinstance(expr, ConditionalAggregateExpr):
-            found.append((None if whole_query else "", INLINE_CONDITION))
+            found.extend(
+                (None if whole_query else "", field) for field in _condition_fields(expr, config)
+            )
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"), whole_query=True)
         for item in fields(expr) if is_dataclass(expr) else ():
@@ -853,6 +1139,52 @@ def _inline_filters(query: NormalizedQuery) -> list[tuple[str | None, str]]:
     for metric_filter in query.metric_filters:
         visit(metric_filter.expression, whole_query=True)
     return found
+
+
+def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[str]:
+    """The measures and metrics read by the input of a caller-written predicate whose aggregate
+    is taken per entity (``over`` all_time, window or period), metrics' measures included."""
+    recipes = {row.id: row for row in config.metric_recipes}
+    reads: set[str] = set()
+
+    def children(expr: Any) -> Iterable[Any]:
+        for item in fields(expr) if is_dataclass(expr) else ():
+            value = getattr(expr, item.name)
+            yield from (child for child in (value if isinstance(value, list) else [value]))
+
+    def refs(expr: Any, seen: frozenset[str] = frozenset()) -> None:
+        if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            reads.add(expr.measure)
+        if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
+            reads.add(expr.metric_recipe)
+            recipe = recipes.get(expr.metric_recipe)
+            if recipe is not None:
+                refs(recipe.expression, seen | {expr.metric_recipe})
+        for child in children(expr):
+            if is_dataclass(child):
+                refs(child, seen)
+
+    def visit(expr: Any) -> None:
+        nested: list[dict[str, Any]] = []
+        if isinstance(expr, MetricPredicateExpr) and expr.scope_mode != "contextual":
+            refs(expr.input)
+        if isinstance(expr, AggregateExpr):
+            nested.extend(
+                dict(row["expression"]) for row in expr.filter.get("all", []) if "expression" in row
+            )
+        if isinstance(expr, ScopedAggregateExpr):
+            nested.extend(_scoped_predicate_expr_payload(dict(row)) for row in expr.predicates)
+        for payload in nested:
+            visit(parse_semantic_expression(payload, context="query"))
+        for child in children(expr):
+            if is_dataclass(child):
+                visit(child)
+
+    for row in query.select:
+        visit(row.expression)
+    for metric_filter in query.metric_filters:
+        visit(metric_filter.expression)
+    return reads
 
 
 def _governed_inline_fields(
@@ -875,18 +1207,18 @@ def _governed_inline_fields(
             row.alias for row in bound().plan.bound_measures if row.measure_id == measure
         )
 
+    # The normalized request has no id for a conditional aggregate's own condition.
+    # Every such synthetic measure has those cuts, even if the compiler recorded none.
+    synthetic = object_id in bound().plan.synthetic_measures
     out = [
         field
         for measure, field in filters
         if package_wide
         or measure is None
         or measure == object_id
+        or (measure == "" and synthetic)
         or bound().cut_counts(object_id, owners(measure))
     ]
-    # The normalized request has no id for a conditional aggregate's own condition.
-    # Every such synthetic measure has that cut, even if the compiler recorded none.
-    if ("", INLINE_CONDITION) in filters and object_id in bound().plan.synthetic_measures:
-        out.append(INLINE_CONDITION)
     return list(dict.fromkeys(out))
 
 

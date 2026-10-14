@@ -1,6 +1,7 @@
 """Exact compound subjects share one query only when their scopes agree."""
 
 import json
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,9 +10,11 @@ import pytest
 import yaml
 
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import write_single_file_package
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import disable_planner_patterns
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -19,8 +22,14 @@ EVENT_CLOCK = "temporal_role.subscriptions_event_occurred_at"
 DAY_CLOCK = "temporal_role.subscriptions_account_day_day"
 
 
-@pytest.fixture()
-def subscriptions(tmp_path: Path):
+def _aliases(query: dict) -> list[str]:
+    """The call's output columns, one per select item."""
+    return Call.from_call(query).aliases
+
+
+@pytest.fixture(scope="module")
+def subscriptions_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp_path = tmp_path_factory.mktemp("subscriptions")
     files = {
         "package.yml": """
 schema_version: 1
@@ -144,11 +153,17 @@ INSERT INTO account_day SELECT a.account_id, d::DATE,
        WHEN a.account_id='a' AND d >= DATE '2026-10-02' THEN 500 ELSE 99 END
   FROM accounts a, range(DATE '2026-09-01', DATE '2026-10-05', INTERVAL 1 DAY) t(d);
 """)
-    runtime = Runtime.from_path(str(tmp_path))
-    try:
+    return tmp_path
+
+
+@pytest.fixture()
+def subscriptions(subscriptions_root: Path):
+    """A runtime of its own: tests change the package it reads."""
+    with closing(Runtime.from_path(str(subscriptions_root))) as runtime:
         yield runtime
-    finally:
-        runtime.close()
+
+
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
 
 
 @pytest.mark.parametrize(
@@ -165,15 +180,14 @@ INSERT INTO account_day SELECT a.account_id, d::DATE,
 def test_shared_clock_executes_every_subject(subscriptions, question, kinds):
     payload = plan_payload(subscriptions, intent=question, partial_query={"policy_context": NOW})
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
-    assert query["version"] == 1
+    query = payload["best"]["query"]
     assert payload["best"]["pattern"] == "conjoined_metrics"
     assert len(query["select"]) == len(kinds)
     for part in payload["best"]["interpreted_intent"]["parts"]:
         assert part["spans"]
         for start, end in part["spans"]:
             assert question[start:end].lower() in part["phrase"]
-    rows = subscriptions.query(query)["rows"]
+    rows = subscriptions.query(query, now=NOW["now"])["rows"]
     grouped = "by segment" in question
     filtered = "where segment" in question
     aggregates = ", ".join(
@@ -194,7 +208,7 @@ def test_shared_clock_executes_every_subject(subscriptions, question, kinds):
     actual = [
         tuple(
             ([row["dimension.subscriptions_account_segment"]] if grouped else [])
-            + [row[item["as"]] for item in query["select"]]
+            + [row[alias] for alias in _aliases(query)]
         )
         for row in rows
     ]
@@ -300,9 +314,7 @@ def test_selecting_one_piece_does_not_settle_another(shared_population_names, qu
         shared_population_names,
         intent=question,
         partial_query={
-            "select": [
-                {"as": "starts", "expression": {"metric": "metric.subscriptions.customer_starts"}}
-            ],
+            "select": [{"as": "starts", "expression": "metric.subscriptions.customer_starts"}],
             "policy_context": NOW,
         },
     )
@@ -325,7 +337,7 @@ def test_selecting_one_piece_does_not_settle_another(shared_population_names, qu
 )
 def test_each_settled_piece_matches_its_population_sql(shared_population_names, question):
     selected = [
-        {"as": subject, "expression": {"metric": f"metric.subscriptions.customer_{subject}"}}
+        {"as": subject, "expression": f"metric.subscriptions.customer_{subject}"}
         for subject in ["starts", "closures"]
     ]
     payload = plan_payload(
@@ -334,7 +346,7 @@ def test_each_settled_piece_matches_its_population_sql(shared_population_names, 
         partial_query={"select": selected, "policy_context": NOW},
     )
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert query["select"] == selected
     with duckdb.connect(shared_population_names.db_path, read_only=True) as connection:
         reference = dict(
@@ -350,7 +362,8 @@ GROUP BY a.segment
         )
     assert reference == {"customer": (1, 1), "internal": (4, 0)}
     assert [
-        (row["starts"], row["closures"]) for row in shared_population_names.query(query)["rows"]
+        (row["starts"], row["closures"])
+        for row in shared_population_names.query(query, now=NOW["now"])["rows"]
     ] == [reference["customer"]]
 
 
@@ -396,9 +409,9 @@ def test_caller_grain_is_validated_after_the_merge(subscriptions):
         partial_query={"time": {"grain": "day"}, "policy_context": NOW},
     )
     assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert payload["best"]["pattern"] == "conjoined_metrics"
-    rows = subscriptions.query(query)["rows"]
+    rows = subscriptions.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(subscriptions.db_path, read_only=True) as connection:
         reference = connection.execute("""
 SELECT d::DATE,
@@ -411,35 +424,27 @@ GROUP BY 1 ORDER BY 1
 """).fetchall()
     assert len(reference) == 7
     assert [
-        (str(row[f"{EVENT_CLOCK}__day"])[:10], *[row[item["as"]] for item in query["select"]])
-        for row in rows
+        (str(row["period"])[:10], *[row[alias] for alias in _aliases(query)]) for row in rows
     ] == [(str(day), new, closed) for day, new, closed in reference]
 
 
-def test_customer_count_uses_its_named_metric(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="customer count and lifetime order count by month")
-        assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
-        assert [item["expression"] for item in query["select"]] == [
-            {"metric": "metric.sales.customer_count"},
-            {"measure": "measure.jaffle.lifetime_order_count", "aggregation": "sum"},
-        ]
-        with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            reference = connection.execute("""
+def test_customer_count_uses_its_named_metric(jaffle):
+    payload = plan_payload(jaffle, intent="customer count and lifetime order count by month")
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query"]
+    assert Call.from_call(query).subjects == [
+        "metric.sales.customer_count",
+        "measure.jaffle.lifetime_order_count",
+    ]
+    with duckdb.connect(jaffle.db_path, read_only=True) as connection:
+        reference = connection.execute("""
 SELECT DATE_TRUNC('month', first_order_at), COUNT(DISTINCT customer_id), SUM(lifetime_order_count)
 FROM jaffle_customer GROUP BY 1 ORDER BY 1
 """).fetchall()
-        assert [
-            (
-                str(row["temporal_role.jaffle_customer_first_order_at__month"])[:10],
-                *[row[item["as"]] for item in query["select"]],
-            )
-            for row in runtime.query(query)["rows"]
-        ] == [(str(month)[:10], count, lifetime) for month, count, lifetime in reference]
-    finally:
-        runtime.close()
+    assert [
+        (str(row["period"])[:10], *[row[alias] for alias in _aliases(query)])
+        for row in jaffle.query(query)["rows"]
+    ] == [(str(month)[:10], count, lifetime) for month, count, lifetime in reference]
 
 
 @pytest.mark.parametrize("publish", [True, False])
@@ -452,9 +457,11 @@ def test_starter_revenue_uses_its_named_metric(tmp_path, publish):
     try:
         payload = plan_payload(runtime, intent="revenue and order count by month")
         assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
-        assert query["select"][0]["expression"] == {"metric": "metric.shop.revenue_usd"}
-        assert query["select"][1]["expression"]["measure"] == "measure.shop.order_count"
+        query = payload["best"]["query"]
+        assert Call.from_call(query).subjects == [
+            "metric.shop.revenue_usd",
+            "measure.shop.order_count",
+        ]
         rows = runtime.query(query)["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
             reference = connection.execute("""
@@ -463,8 +470,8 @@ FROM shop_order GROUP BY 1 ORDER BY 1
 """).fetchall()
         assert [
             (
-                str(row["temporal_role.shop_order_ordered_at__month"])[:10],
-                *[float(row[item["as"]]) for item in query["select"]],
+                str(row["period"])[:10],
+                *[float(row[alias]) for alias in _aliases(query)],
             )
             for row in rows
         ] == [(str(month)[:10], float(revenue), count) for month, revenue, count in reference]
@@ -507,7 +514,9 @@ def test_each_subject_uses_its_own_clock(subscriptions, compatible):
         ]
 
 
-def test_an_unsupported_shared_window_is_held(subscriptions):
+def test_a_day_only_clock_answers_a_shared_window_as_one_total(subscriptions):
+    # No grain is asked for, so last week is one total: the call asks for no grain the
+    # clock lacks.
     subscriptions._config = replace(
         subscriptions._config,
         temporal_roles=[
@@ -519,9 +528,19 @@ def test_an_unsupported_shared_window_is_held(subscriptions):
         intent="New accounts and closures last week",
         partial_query={"policy_context": NOW},
     )
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "VALIDATION_FAILED"
-    assert "execute" not in payload.get("next", {}).get("ready_for", [])
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query"]
+    assert "grain" not in query["time"]
+    [row] = subscriptions.query(query, now=NOW["now"])["rows"]
+    with duckdb.connect(subscriptions.db_path, read_only=True) as connection:
+        reference = connection.execute("""
+SELECT
+  COUNT(DISTINCT CASE WHEN a.segment = 'customer' AND e.kind = 'signup' THEN e.event_id END),
+  COUNT(DISTINCT CASE WHEN a.segment = 'customer' AND e.kind = 'close' THEN e.event_id END)
+FROM events e JOIN accounts a USING (account_id)
+WHERE e.occurred_at >= DATE '2026-09-28' AND e.occurred_at < DATE '2026-10-05'
+""").fetchone()
+    assert tuple(row[alias] for alias in _aliases(query)) == reference == (1, 1)
 
 
 def test_a_later_filter_value_is_not_consumed_as_a_subject(subscriptions):
@@ -535,14 +554,15 @@ def test_a_later_filter_value_is_not_consumed_as_a_subject(subscriptions):
     assert payload["why"]["details"]["gaps"][0]["kind"] == "multiple_subjects_unrealized"
     assert "execute" not in payload.get("next", {}).get("ready_for", [])
     # The later occurrence was retained as a filter in the first subject's query.
-    assert payload["best"]["query_ir"]["where"] == [
-        {"field": "dimension.subscriptions_event_kind", "op": "=", "value": "upgrade"}
+    assert payload["best"]["query"]["where"] == [
+        {"field": "dimension.subscriptions_event_kind", "op": "is", "value": "upgrade"}
     ]
 
 
 @pytest.mark.parametrize(
     ("question", "subjects", "grain", "start", "end"),
     [
+        # A grain asked for buckets the answer; a window alone is one total.
         ("revenue and orders by month", ["revenue_usd", "order_count"], "month", None, None),
         (
             "What is order count and revenue by month?",
@@ -561,82 +581,70 @@ def test_a_later_filter_value_is_not_consumed_as_a_subject(subscriptions):
         (
             "item revenue and orders in Q1 2017",
             ["item_revenue_usd", "order_count"],
-            "quarter",
+            None,
             "2017-01-01",
             "2017-04-01",
         ),
         (
             "revenue and item revenue in 2017",
             ["revenue_usd", "item_revenue_usd"],
-            "year",
+            None,
             "2017-01-01",
             "2018-01-01",
         ),
         (
             "gross profit and revenue for the first half of 2017",
             ["gross_profit_usd", "revenue_usd"],
-            "year",
+            None,
             "2017-01-01",
             "2017-07-01",
         ),
         (
             "orders and revenue in March 2017",
             ["order_count", "revenue_usd"],
-            "month",
+            None,
             "2017-03-01",
             "2017-04-01",
         ),
         (
             "revenue, orders and gross profit from March 1 to March 31, 2017",
             ["revenue_usd", "order_count", "gross_profit_usd"],
-            "month",
+            None,
             "2017-03-01",
             "2017-04-01",
         ),
     ],
 )
-def test_conjoined_measures_match_independent_sql(
-    runtime_factory, question, subjects, grain, start, end
-):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=question)
-        assert payload["status"] == "ok", payload.get("why")
-        query = payload["best"]["query_ir"]
-        assert [item["expression"]["measure"] for item in query["select"]] == [
-            f"measure.jaffle.{subject}" for subject in subjects
-        ]
-        assert query["time"]["grain"] == grain
-        rows = runtime.query(query)["rows"]
-        gold = {
-            "revenue_usd": "SUM(o.order_total_cents / 100.0)",
-            "order_count": "COUNT(DISTINCT o.order_id)",
-            "gross_profit_usd": "SUM(o.gross_profit_cents / 100.0)",
-            "item_revenue_usd": "SUM(i.item_revenue_cents / 100.0)",
-        }
-        with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            for subject, item in zip(subjects, query["select"], strict=True):
-                sql = f"SELECT DATE_TRUNC('{grain}', o.ordered_at), {gold[subject]} FROM jaffle_order o"
-                if subject == "item_revenue_usd":
-                    sql += " JOIN jaffle_item i ON i.order_id = o.order_id"
-                params = []
-                if start:
-                    sql += " WHERE o.ordered_at >= CAST(? AS TIMESTAMP) AND o.ordered_at < CAST(? AS TIMESTAMP)"
-                    params = [start, end]
-                sql += " GROUP BY 1 ORDER BY 1"
-                reference = {
-                    str(bucket)[:10]: value
-                    for bucket, value in connection.execute(sql, params).fetchall()
-                }
-                actual = {
-                    str(row[f"temporal_role.jaffle_order_time__{grain}"])[:10]: float(
-                        row[item["as"]]
-                    )
-                    for row in rows
-                }
-                assert actual == pytest.approx(reference)
-    finally:
-        runtime.close()
+def test_conjoined_measures_match_independent_sql(jaffle, question, subjects, grain, start, end):
+    payload = plan_payload(jaffle, intent=question)
+    assert payload["status"] == "ok", payload.get("why")
+    query = payload["best"]["query"]
+    assert Call.from_call(query).subjects == [f"measure.jaffle.{subject}" for subject in subjects]
+    assert query["time"].get("grain") == grain
+    rows = jaffle.query(query)["rows"]
+    gold = {
+        "revenue_usd": "SUM(o.order_total_cents / 100.0)",
+        "order_count": "COUNT(DISTINCT o.order_id)",
+        "gross_profit_usd": "SUM(o.gross_profit_cents / 100.0)",
+        "item_revenue_usd": "SUM(i.item_revenue_cents / 100.0)",
+    }
+    with duckdb.connect(jaffle.db_path, read_only=True) as connection:
+        for subject, alias in zip(subjects, _aliases(query), strict=True):
+            bucket = f"DATE_TRUNC('{grain}', o.ordered_at)" if grain else "NULL"
+            sql = f"SELECT {bucket}, {gold[subject]} FROM jaffle_order o"
+            if subject == "item_revenue_usd":
+                sql += " JOIN jaffle_item i ON i.order_id = o.order_id"
+            params = []
+            if start:
+                sql += " WHERE o.ordered_at >= CAST(? AS TIMESTAMP) AND o.ordered_at < CAST(? AS TIMESTAMP)"
+                params = [start, end]
+            sql += " GROUP BY 1 ORDER BY 1"
+            reference = {
+                str(bucket)[:10] if grain else None: value
+                for bucket, value in connection.execute(sql, params).fetchall()
+            }
+            actual = {str(row["period"])[:10] if grain else None: float(row[alias]) for row in rows}
+            assert actual == pytest.approx(reference)
 
 
 def test_another_longer_subject_cannot_hide_a_pieces_ambiguity(subscriptions):

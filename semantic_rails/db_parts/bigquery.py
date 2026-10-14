@@ -26,9 +26,9 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import Any
 
-from ..dialects import BIGQUERY_CONNECTION_OPTIONS
+from ..dialects import BIGQUERY_CONNECTION_OPTIONS, dialect_for_warehouse
 from ..errors import SemanticLayerError, query_execution_error
-from ..sql_preparation import PreparedQuery, prepare_query
+from ..sql_preparation import PreparedQuery
 from .base import (
     WarehouseAdapter,
     _clip_rows,
@@ -135,7 +135,9 @@ class BigQueryNativeAdapter(WarehouseAdapter):
 
     # -- WarehouseAdapter contract ---------------------------------------
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        return self.query_prepared(prepare_query(sql, self.engine), limits=limits)
+        return self.query_prepared(
+            dialect_for_warehouse(self.engine).prepare_query(sql), limits=limits
+        )
 
     def query_prepared(
         self, prepared: PreparedQuery, *, limits: dict[str, Any] | None = None

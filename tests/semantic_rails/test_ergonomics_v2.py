@@ -6,13 +6,14 @@ from http.server import HTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+import pytest
 import yaml
 
 from semantic_rails.api import AppState, Handler
-from semantic_rails.config import load_package_config
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -132,63 +133,52 @@ INSERT INTO orders VALUES
     )
 
 
-def test_schema_normalizes_to_package_config_and_answers_its_metric(tmp_path: Path):
-    package_dir = tmp_path / "demo"
+@pytest.fixture(scope="module")
+def demo(tmp_path_factory):
+    """A package written from scratch: one entity, a store dimension and four measures."""
+    package_dir = tmp_path_factory.mktemp("package") / "demo"
     _write_demo_package(package_dir)
+    runtime = Runtime.from_path(str(package_dir))
+    yield opened(runtime)
+    runtime.close()
 
-    config = load_package_config(str(package_dir))
 
+@pytest.fixture(scope="module")
+def jaffle(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    runtime = Runtime.from_path(str(path))
+    yield opened(runtime)
+    runtime.close()
+
+
+BY_STORE = {"select": ["metric.demo.revenue"], "group_by": ["dimension.demo_order_store"]}
+
+
+def test_schema_normalizes_to_package_config_and_answers_its_metric(demo):
+    config = demo.package_config
     assert config.version == 1
     assert "entity.demo_order" in {row.id for row in config.entities}
     assert "dimension.demo_order_store" in {row.id for row in config.dimensions}
     assert "temporal_role.demo_order_ordered_at" in {row.id for row in config.temporal_roles}
     assert "measure.demo.revenue" in {row.id for row in config.measures}
     assert "metric.demo.revenue" in {row.id for row in config.metric_recipes}
-
-    runtime = Runtime.from_path(str(package_dir))
-    try:
-        result = runtime.query(
-            {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.demo.revenue"}, "as": "revenue"}],
-                "group_by": ["dimension.demo_order_store"],
-                "order_by": [{"field": "dimension.demo_order_store", "direction": "ASC"}],
-            }
-        )
-    finally:
-        runtime.close()
-
-    assert result["rows"] == [
+    order = [{"field": "dimension.demo_order_store", "direction": "asc"}]
+    assert demo.query({**BY_STORE, "order_by": order})["rows"] == [
         {"dimension.demo_order_store": "A", "revenue": 15.0},
         {"dimension.demo_order_store": "B", "revenue": 20.0},
     ]
 
 
-def test_compile_response_contains_sql_profile_and_output_column_lineage(tmp_path: Path):
-    package_dir = tmp_path / "demo"
-    _write_demo_package(package_dir)
-    runtime = Runtime.from_path(str(package_dir))
-    try:
-        # `verbosity="full"` is required to preserve `lineage` on
-        # output_columns — the new compact default strips it.
-        result = runtime.compile(
-            {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.demo.revenue"}, "as": "revenue"}],
-                "group_by": ["dimension.demo_order_store"],
-                "sql_profile": "compact",
-                "verbosity": "full",
-            }
-        )
-    finally:
-        runtime.close()
-
-    assert result["status"] == "ok"
-    assert result["sql_profile"] == "compact"
-    assert result["warehouse"] == "duckdb"
-    assert result["dialect"] == "duckdb"
-    assert result["rendered_sql"]
-    assert result["output_columns"] == [
+def test_compile_reports_its_sql_profile_and_output_column_lineage(demo):
+    # `verbosity="full"` keeps `lineage` on output_columns.
+    audit, compact, debug = (
+        demo.compile(BY_STORE, verbosity="full", sql_profile=profile)
+        for profile in ("audit", "compact", "debug")
+    )
+    assert compact["status"] == "ok"
+    assert (compact["sql_profile"], debug["sql_profile"]) == ("compact", "debug")
+    assert (compact["warehouse"], compact["dialect"]) == ("duckdb", "duckdb")
+    assert compact["output_columns"] == [
         {
             "field": "dimension.demo_order_store",
             "semantic_id": "dimension.demo_order_store",
@@ -206,41 +196,40 @@ def test_compile_response_contains_sql_profile_and_output_column_lineage(tmp_pat
             "lineage": ["metric.demo.revenue"],
         },
     ]
+    # A render profile changes the SQL's shape, never the metadata.
+    assert compact["rendered_sql"] and "\n" not in compact["rendered_sql"]
+    assert audit["rendered_sql"].count("\n") > 0
+    assert audit["output_columns"] == compact["output_columns"] == debug["output_columns"]
 
 
-def test_compile_response_summarizes_qualified_metric_rollup(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # `verbosity="full"` keeps `semantic_summary`; the new compact
-        # default drops it.
-        result = runtime.compile(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "as": "revenue_usd_from_qualified_customers",
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                            "predicates": [
-                                {
-                                    "measure": "measure.jaffle.order_count",
-                                    "entity": "entity.jaffle_customer",
-                                    "op": ">=",
-                                    "value": 10,
-                                }
-                            ],
-                        },
-                    }
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-                "verbosity": "full",
-            }
-        )
-    finally:
-        runtime.close()
+def test_compile_response_summarizes_qualified_metric_rollup(jaffle):
+    # `verbosity="full"` keeps `semantic_summary`; the compact default drops it.
+    result = jaffle.compile(
+        {
+            "select": [
+                {
+                    "as": "revenue_usd_from_qualified_customers",
+                    "expression": {
+                        "kind": "scoped_aggregate",
+                        "measure": "measure.jaffle.revenue_usd",
+                        "aggregation": "sum",
+                        "predicates": [
+                            {
+                                "measure": "measure.jaffle.order_count",
+                                "entity": "entity.jaffle_customer",
+                                "op": "gte",
+                                "value": 10,
+                                "over": "period",
+                            }
+                        ],
+                    },
+                }
+            ],
+            "group_by": ["dimension.jaffle_store_name"],
+            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        },
+        verbosity="full",
+    )
 
     summary = result["semantic_summary"]
     assert summary["rollup_dimensions"] == ["dimension.jaffle_store_name"]
@@ -251,29 +240,6 @@ def test_compile_response_summarizes_qualified_metric_rollup(runtime_factory):
     )
     assert summary["qualified_metrics"][0]["predicates"][0]["predicate_grain"] == "month"
     assert summary["sql_complexity"]["cte_count"] >= 3
-
-
-def test_sql_render_profiles_change_rendered_shape_without_changing_metadata(tmp_path: Path):
-    package_dir = tmp_path / "demo"
-    _write_demo_package(package_dir)
-    runtime = Runtime.from_path(str(package_dir))
-    query = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.demo.revenue"}, "as": "revenue"}],
-        "group_by": ["dimension.demo_order_store"],
-    }
-    try:
-        audit = runtime.compile({**query, "sql_profile": "audit"})
-        compact = runtime.compile({**query, "sql_profile": "compact"})
-        debug = runtime.compile({**query, "sql_profile": "debug"})
-    finally:
-        runtime.close()
-
-    assert audit["rendered_sql"].count("\n") > compact["rendered_sql"].count("\n")
-    assert "\n" not in compact["rendered_sql"]
-    assert compact["output_columns"] == audit["output_columns"]
-    assert debug["sql_profile"] == "debug"
-    assert debug["output_columns"] == audit["output_columns"]
 
 
 def test_http_compile_route_is_compile_only(runtime_factory, package_config_factory, monkeypatch):
@@ -297,10 +263,7 @@ def test_http_compile_route_is_compile_only(runtime_factory, package_config_fact
         body = json.dumps(
             {
                 "query": {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
-                    ],
+                    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
                 }
             }
         ).encode("utf-8")
@@ -323,79 +286,74 @@ def test_http_compile_route_is_compile_only(runtime_factory, package_config_fact
     assert response["output_columns"][0]["field"] == "orders"
 
 
-def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        ratio = runtime.query(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "as": "pct_revenue_from_session_customers",
-                        "expression": {
-                            "kind": "ratio",
-                            "numerator": {
-                                "kind": "scoped_aggregate",
+def test_jaffle_shop_advanced_examples_execute_hard_questions(jaffle):
+    ratio = jaffle.query(
+        {
+            "select": [
+                {
+                    "as": "pct_revenue_from_session_customers",
+                    "expression": {
+                        "kind": "ratio",
+                        "numerator": {
+                            "kind": "scoped_aggregate",
+                            "measure": "measure.jaffle.revenue_usd",
+                            "aggregation": "sum",
+                            "predicates": [
+                                {
+                                    "measure": "measure.jaffle.session_starts",
+                                    "entity": "entity.jaffle_customer",
+                                    "op": "gt",
+                                    "value": 0,
+                                    "over": "period",
+                                }
+                            ],
+                        },
+                        "denominator": {
+                            "kind": "scoped_aggregate",
+                            "measure": "measure.jaffle.revenue_usd",
+                            "aggregation": "sum",
+                        },
+                    },
+                }
+            ],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "grain": "month",
+                "start": "2016-09-01",
+                "end": "2016-10-01",
+            },
+        }
+    )
+    p80 = jaffle.query(
+        {
+            "select": [
+                {
+                    "as": "p80_customer_revenue",
+                    "expression": {
+                        "kind": "distribution",
+                        "function": "percentile",
+                        "p": 0.8,
+                        "over": {
+                            "kind": "entity_value",
+                            "entity": "entity.jaffle_customer",
+                            "input": {
+                                "kind": "measure",
                                 "measure": "measure.jaffle.revenue_usd",
                                 "aggregation": "sum",
-                                "predicates": [
-                                    {
-                                        "measure": "measure.jaffle.session_starts",
-                                        "entity": "entity.jaffle_customer",
-                                        "op": ">",
-                                        "value": 0,
-                                        "time_alignment": "same_query_period",
-                                    }
-                                ],
                             },
-                            "denominator": {
-                                "kind": "scoped_aggregate",
-                                "measure": "measure.jaffle.revenue_usd",
-                                "aggregation": "sum",
-                            },
+                            "where": [{"kind": "value_filter", "op": "gt", "value": 0}],
                         },
-                    }
-                ],
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "month",
-                    "start": "2016-09-01",
-                    "end": "2016-10-01",
-                },
-            }
-        )
-        p80 = runtime.query(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "as": "p80_customer_revenue",
-                        "expression": {
-                            "kind": "distribution",
-                            "function": "percentile",
-                            "p": 0.8,
-                            "over": {
-                                "kind": "entity_value",
-                                "entity": "entity.jaffle_customer",
-                                "input": {
-                                    "measure": "measure.jaffle.revenue_usd",
-                                    "aggregation": "sum",
-                                },
-                                "where": [{"kind": "value_filter", "op": ">", "value": 0}],
-                            },
-                        },
-                    }
-                ],
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "month",
-                    "start": "2016-09-01",
-                    "end": "2017-01-01",
-                },
-            }
-        )
-    finally:
-        runtime.close()
+                    },
+                }
+            ],
+            "time": {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "grain": "month",
+                "start": "2016-09-01",
+                "end": "2017-01-01",
+            },
+        }
+    )
 
     assert ratio["rows"][0]["pct_revenue_from_session_customers"] > 0
     assert "PredicateSet" in {row["kind"] for row in ratio["explain"]["semantic_dag"]["nodes"]}
@@ -405,23 +363,17 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
     }
 
 
-def test_plan_v2_composes_runtime_arithmetic_from_package_metadata(tmp_path: Path):
-    package_dir = tmp_path / "demo"
-    _write_demo_package(package_dir)
-    runtime = Runtime.from_path(str(package_dir))
-    try:
-        result = plan_candidate_envelope(
-            runtime, intent="sum email sms and push received by store", limit=1
-        )
-        # The package has no region, and the draft drops that grouping: not ready.
-        held = plan_payload(runtime, intent="sum email sms and push messages by region")
-    finally:
-        runtime.close()
+def test_plan_v2_composes_runtime_arithmetic_from_package_metadata(demo):
+    result = plan_candidate_envelope(
+        demo, intent="sum email sms and push received by store", limit=1
+    )
+    # The package has no region, and the draft drops that grouping: not ready.
+    held = plan_payload(demo, intent="sum email sms and push messages by region")
 
     assert held["status"] == "low_confidence"
     assert "ready_for" not in held["next"]
     assert held["why"]["details"]["terms"] == ["messages", "region"]
-    assert not held["best"]["query_ir"].get("group_by")
+    assert not held["best"]["query"].get("group_by")
     query = result["candidates"][0]["candidate_ir"]
     assert result["candidate_envelope_version"] == 1
     assert result["interpreted_intent"]["pattern"] == "runtime_metric_arithmetic"

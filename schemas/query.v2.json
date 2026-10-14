@@ -1,0 +1,1508 @@
+{
+  "$defs": {
+    "Condition": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/$defs/OpValue"
+        }
+      ],
+      "properties": {
+        "field": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "op": {},
+        "value": {}
+      },
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "type": "object"
+    },
+    "Conditions": {
+      "items": {
+        "$ref": "#/$defs/Condition"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "EntityFilter": {
+      "additionalProperties": false,
+      "dependentRequired": {
+        "over": [
+          "having"
+        ]
+      },
+      "oneOf": [
+        {
+          "required": [
+            "any"
+          ]
+        },
+        {
+          "required": [
+            "none"
+          ]
+        },
+        {
+          "required": [
+            "having",
+            "over"
+          ]
+        }
+      ],
+      "properties": {
+        "any": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "entity": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "having": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "none": {
+          "$ref": "#/$defs/Conditions"
+        },
+        "over": {
+          "enum": [
+            "all_time",
+            "window",
+            "period"
+          ]
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    "Expression": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ref"
+        },
+        {
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "aggregate"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_aggregate"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "aggregate_if"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_aggregate_if"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "arithmetic"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_arithmetic"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "between"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_between"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "binary"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_binary"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "boolean"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_boolean"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "call"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_call"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "case"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_case"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "column"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_column"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "comparison"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_comparison"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "conversion"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_conversion"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "cumulative"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_cumulative"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "date_add"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_date_add"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "distribution"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_distribution"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "entity_value"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_entity_value"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "in"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_in"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "literal"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_literal"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "measure"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_measure"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "metric_predicate"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_metric_predicate"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "not_between"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_not_between"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "not_in"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_not_in"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "nullif"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_nullif"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "period_to_date"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_period_to_date"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "prior_period"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_prior_period"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "ratio"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_ratio"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "rolling"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_rolling"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "scoped_aggregate"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_scoped_aggregate"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "semi_additive"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_semi_additive"
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "share"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_share"
+              }
+            }
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "aggregate",
+                "aggregate_if",
+                "arithmetic",
+                "between",
+                "binary",
+                "boolean",
+                "call",
+                "case",
+                "column",
+                "comparison",
+                "conversion",
+                "cumulative",
+                "date_add",
+                "distribution",
+                "entity_value",
+                "in",
+                "literal",
+                "measure",
+                "metric_predicate",
+                "not_between",
+                "not_in",
+                "nullif",
+                "period_to_date",
+                "prior_period",
+                "ratio",
+                "rolling",
+                "scoped_aggregate",
+                "semi_additive",
+                "share"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Kind_aggregate": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {},
+        "filter": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "kind": {
+          "const": "aggregate"
+        },
+        "measure": {},
+        "parameters": {},
+        "temporal_role": {},
+        "window": {}
+      },
+      "required": [
+        "kind",
+        "measure"
+      ],
+      "type": "object"
+    },
+    "Kind_aggregate_if": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {},
+        "condition": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "aggregate_if"
+        },
+        "value": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "required": [
+        "kind",
+        "aggregation",
+        "condition"
+      ],
+      "type": "object"
+    },
+    "Kind_arithmetic": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "arithmetic"
+        },
+        "left": {
+          "$ref": "#/$defs/Expression"
+        },
+        "op": {},
+        "right": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "required": [
+        "kind",
+        "op",
+        "left",
+        "right"
+      ],
+      "type": "object"
+    },
+    "Kind_between": {
+      "additionalProperties": false,
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expression"
+        },
+        "high": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "between"
+        },
+        "low": {
+          "$ref": "#/$defs/Expression"
+        },
+        "negated": {}
+      },
+      "required": [
+        "kind",
+        "expr",
+        "low",
+        "high"
+      ],
+      "type": "object"
+    },
+    "Kind_binary": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "binary"
+        },
+        "left": {
+          "$ref": "#/$defs/Expression"
+        },
+        "op": {},
+        "right": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "required": [
+        "kind",
+        "op",
+        "left",
+        "right"
+      ],
+      "type": "object"
+    },
+    "Kind_boolean": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "$ref": "#/$defs/Expression"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "boolean"
+        },
+        "op": {}
+      },
+      "required": [
+        "kind",
+        "op",
+        "args"
+      ],
+      "type": "object"
+    },
+    "Kind_call": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "$ref": "#/$defs/Expression"
+          },
+          "type": "array"
+        },
+        "distinct": {},
+        "kind": {
+          "const": "call"
+        },
+        "name": {}
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "Kind_case": {
+      "additionalProperties": false,
+      "properties": {
+        "else": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "case"
+        },
+        "whens": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "then": {
+                "$ref": "#/$defs/Expression"
+              },
+              "when": {
+                "$ref": "#/$defs/Expression"
+              }
+            },
+            "required": [
+              "when",
+              "then"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "whens"
+      ],
+      "type": "object"
+    },
+    "Kind_column": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {},
+        "entity": {},
+        "kind": {
+          "const": "column"
+        },
+        "table": {}
+      },
+      "required": [
+        "kind",
+        "column"
+      ],
+      "type": "object"
+    },
+    "Kind_comparison": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "comparison"
+        },
+        "left": {
+          "$ref": "#/$defs/Expression"
+        },
+        "op": {},
+        "right": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "required": [
+        "kind",
+        "op",
+        "left",
+        "right"
+      ],
+      "type": "object"
+    },
+    "Kind_conversion": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "$ref": "#/$defs/Expression"
+        },
+        "constant_properties": {},
+        "converted": {
+          "$ref": "#/$defs/Expression"
+        },
+        "dimension_bindings": {},
+        "entity": {},
+        "kind": {
+          "const": "conversion"
+        },
+        "matching": {},
+        "matching_mode": {},
+        "window": {}
+      },
+      "required": [
+        "kind",
+        "base",
+        "converted",
+        "entity",
+        "window",
+        "matching_mode"
+      ],
+      "type": "object"
+    },
+    "Kind_cumulative": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "cumulative"
+        },
+        "partition_by": {},
+        "window_scope": {}
+      },
+      "required": [
+        "kind",
+        "input"
+      ],
+      "type": "object"
+    },
+    "Kind_date_add": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "date_add"
+        },
+        "unit": {},
+        "value": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "required": [
+        "kind",
+        "unit",
+        "value",
+        "date"
+      ],
+      "type": "object"
+    },
+    "Kind_distribution": {
+      "additionalProperties": false,
+      "properties": {
+        "function": {},
+        "kind": {
+          "const": "distribution"
+        },
+        "over": {
+          "$ref": "#/$defs/Expression"
+        },
+        "p": {},
+        "parameters": {}
+      },
+      "required": [
+        "kind",
+        "function",
+        "over"
+      ],
+      "type": "object"
+    },
+    "Kind_entity_value": {
+      "additionalProperties": false,
+      "properties": {
+        "entity": {},
+        "input": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "entity_value"
+        },
+        "where": {
+          "items": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "$ref": "#/$defs/OpValue"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "value_filter"
+              },
+              "op": {},
+              "value": {}
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "entity",
+        "input"
+      ],
+      "type": "object"
+    },
+    "Kind_in": {
+      "additionalProperties": false,
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "in"
+        },
+        "left": {
+          "$ref": "#/$defs/Expression"
+        },
+        "negated": {},
+        "values": {
+          "items": {
+            "$ref": "#/$defs/Expression"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "values"
+      ],
+      "type": "object"
+    },
+    "Kind_literal": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "literal"
+        },
+        "value": {}
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "type": "object"
+    },
+    "Kind_measure": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {},
+        "kind": {
+          "const": "measure"
+        },
+        "measure": {},
+        "parameters": {},
+        "temporal_role": {}
+      },
+      "required": [
+        "kind",
+        "measure"
+      ],
+      "type": "object"
+    },
+    "Kind_metric_predicate": {
+      "additionalProperties": false,
+      "properties": {
+        "entity": {},
+        "input": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "metric_predicate"
+        },
+        "op": {},
+        "over": {
+          "enum": [
+            "all_time",
+            "window",
+            "period"
+          ]
+        },
+        "value": {},
+        "window": {}
+      },
+      "required": [
+        "kind",
+        "entity",
+        "input",
+        "op",
+        "value",
+        "over"
+      ],
+      "type": "object"
+    },
+    "Kind_not_between": {
+      "additionalProperties": false,
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expression"
+        },
+        "high": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "not_between"
+        },
+        "low": {
+          "$ref": "#/$defs/Expression"
+        },
+        "negated": {}
+      },
+      "required": [
+        "kind",
+        "expr",
+        "low",
+        "high"
+      ],
+      "type": "object"
+    },
+    "Kind_not_in": {
+      "additionalProperties": false,
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "not_in"
+        },
+        "left": {
+          "$ref": "#/$defs/Expression"
+        },
+        "negated": {},
+        "values": {
+          "items": {
+            "$ref": "#/$defs/Expression"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "values"
+      ],
+      "type": "object"
+    },
+    "Kind_nullif": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "nullif"
+        },
+        "null_value": {
+          "$ref": "#/$defs/Expression"
+        },
+        "value": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "required": [
+        "kind",
+        "value",
+        "null_value"
+      ],
+      "type": "object"
+    },
+    "Kind_period_to_date": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "period_to_date"
+        },
+        "partition_by": {},
+        "period": {}
+      },
+      "required": [
+        "kind",
+        "input",
+        "period"
+      ],
+      "type": "object"
+    },
+    "Kind_prior_period": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "prior_period"
+        },
+        "offset": {}
+      },
+      "required": [
+        "kind",
+        "input",
+        "offset"
+      ],
+      "type": "object"
+    },
+    "Kind_ratio": {
+      "additionalProperties": false,
+      "properties": {
+        "denominator": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "ratio"
+        },
+        "numerator": {
+          "$ref": "#/$defs/Expression"
+        }
+      },
+      "required": [
+        "kind",
+        "numerator",
+        "denominator"
+      ],
+      "type": "object"
+    },
+    "Kind_rolling": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/Expression"
+        },
+        "kind": {
+          "const": "rolling"
+        },
+        "partition_by": {},
+        "window": {}
+      },
+      "required": [
+        "kind",
+        "input",
+        "window"
+      ],
+      "type": "object"
+    },
+    "Kind_scoped_aggregate": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {},
+        "anchor": {},
+        "kind": {
+          "const": "scoped_aggregate"
+        },
+        "measure": {},
+        "parameters": {},
+        "predicates": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "temporal_role": {},
+        "where": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "window": {}
+      },
+      "required": [
+        "kind",
+        "measure"
+      ],
+      "type": "object"
+    },
+    "Kind_semi_additive": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {},
+        "filter": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "kind": {
+          "const": "semi_additive"
+        },
+        "measure": {},
+        "parameters": {},
+        "temporal_role": {},
+        "window": {}
+      },
+      "required": [
+        "kind",
+        "measure"
+      ],
+      "type": "object"
+    },
+    "Kind_share": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/Ref"
+        },
+        "kind": {
+          "const": "share"
+        },
+        "over": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "over"
+      ],
+      "type": "object"
+    },
+    "OpValue": {
+      "anyOf": [
+        {
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[iI][sS]|=|==|[eE][qQ]|[iI][nN]|[nN][oO][tT]|!=|<>|[nN][eE][qQ]|[nN][oO][tT]\\s+[iI][nN])\\s*$"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                },
+                {
+                  "items": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[gG][tT]|>|[gG][tT][eE]|>=|[lL][tT]|<|[lL][tT][eE]|<=)\\s*$"
+            },
+            "value": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[cC][oO][nN][tT][aA][iI][nN][sS]|[sS][tT][aA][rR][tT][sS]_[wW][iI][tT][hH]|[eE][nN][dD][sS]_[wW][iI][tT][hH]|[nN][oO][tT]_[cC][oO][nN][tT][aA][iI][nN][sS]|[nN][oO][tT]_[sS][tT][aA][rR][tT][sS]_[wW][iI][tT][hH]|[nN][oO][tT]_[eE][nN][dD][sS]_[wW][iI][tT][hH])\\s*$"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "pattern": "^\\s*(?:[mM][iI][sS][sS][iI][nN][gG])\\s*$"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          }
+        }
+      ],
+      "description": "op is one of is, not, gt, gte, lt, lte, contains, starts_with, ends_with, not_contains, not_starts_with, not_ends_with, missing or an alias (=, ==, eq, in, !=, <>, neq, not in, >, >=, <, <=), in any case. is and not take one value or a list; the ranges take one value; contains, starts_with, ends_with and their not_ forms take text; missing takes true or false.",
+      "properties": {
+        "op": {
+          "type": "string"
+        }
+      }
+    },
+    "Ref": {
+      "pattern": "^(measure|metric)\\.[^\\s]+$",
+      "type": "string"
+    }
+  },
+  "$id": "https://semantic-rails.com/schemas/query.v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A question for Semantic Rails. Identity comes from credentials and now is an argument beside the call; neither travels in it.",
+  "patternProperties": {
+    "^_": {}
+  },
+  "properties": {
+    "group_by": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "having": {
+      "items": {
+        "$ref": "#/$defs/Condition"
+      },
+      "type": "array"
+    },
+    "limit": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "observation_scope": {
+      "enum": [
+        "dataset",
+        "query"
+      ]
+    },
+    "order_by": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "field": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "routes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "to": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "via": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "via"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "select": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Ref"
+          },
+          {
+            "pattern": "^dimension\\.[^\\s]+$",
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "as": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/$defs/Expression"
+              }
+            },
+            "required": [
+              "expression"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "array"
+    },
+    "time": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "grain"
+          ]
+        },
+        {
+          "required": [
+            "last"
+          ]
+        },
+        {
+          "required": [
+            "this"
+          ]
+        },
+        {
+          "required": [
+            "start"
+          ]
+        },
+        {
+          "required": [
+            "end"
+          ]
+        }
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "last",
+              "this"
+            ]
+          },
+          {
+            "required": [
+              "last",
+              "start"
+            ]
+          },
+          {
+            "required": [
+              "last",
+              "end"
+            ]
+          },
+          {
+            "required": [
+              "this",
+              "start"
+            ]
+          },
+          {
+            "required": [
+              "this",
+              "end"
+            ]
+          }
+        ]
+      },
+      "properties": {
+        "end": {
+          "description": "ISO date or date-time, exclusive: [start, end).",
+          "minLength": 1,
+          "type": "string"
+        },
+        "fill": {
+          "type": "boolean"
+        },
+        "grain": {
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year"
+          ]
+        },
+        "last": {
+          "additionalProperties": false,
+          "properties": {
+            "unit": {
+              "enum": [
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ]
+            },
+            "value": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "unit",
+            "value"
+          ],
+          "type": "object"
+        },
+        "start": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "temporal_role": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "this": {
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "quarter",
+            "year"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "version": {
+      "description": "Ignored."
+    },
+    "where": {
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Condition"
+          },
+          {
+            "$ref": "#/$defs/EntityFilter"
+          }
+        ]
+      },
+      "type": "array"
+    }
+  },
+  "title": "Semantic Rails query call",
+  "type": "object",
+  "x-fields": [
+    "select",
+    "group_by",
+    "where",
+    "having",
+    "time",
+    "order_by",
+    "limit",
+    "routes",
+    "observation_scope"
+  ]
+}

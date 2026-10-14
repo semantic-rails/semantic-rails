@@ -3,6 +3,7 @@
 import json
 from typing import Any
 
+from ..ast import time_output_alias
 from ..compiler_parts.sql_lowering import _filtered_series_candidate
 from ..errors import SemanticLayerError
 
@@ -50,7 +51,7 @@ def _filtered_series_warnings(
     ]
     if not unsupported:
         return []
-    time_key = f"{plan.time['temporal_role']}__{plan.time['grain']}"
+    time_key = time_output_alias(plan.time)
     keys = [*plan.group_by, time_key]
 
     def normalized_key(item: dict) -> tuple[str, ...]:
@@ -91,7 +92,7 @@ def _filtered_series_warnings(
             reason = "query_population_filter"
         else:
             try:
-                result = runtime.query(probe)
+                result = runtime.query_internal(probe)
                 if result["truncated"] or len(result["rows"]) >= 1001:
                     reason = "source_limited"
                 else:

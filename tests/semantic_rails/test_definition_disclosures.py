@@ -13,9 +13,9 @@ from typing import Any
 import duckdb
 import pytest
 
-from semantic_rails import runtime as runtime_module
 from semantic_rails.db import DuckDBAdapter
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts import answer_warnings
 
 CUSTOMER = "dimension.jaffle_customer_id"
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -57,7 +57,6 @@ def _agg(measure: str) -> dict[str, Any]:
 
 def _query(*selects: dict[str, Any], **extra: Any) -> dict[str, Any]:
     return {
-        "version": 1,
         "select": [{"expression": expr, "as": f"v{index}"} for index, expr in enumerate(selects)],
         "group_by": [CUSTOMER],
         **extra,
@@ -65,7 +64,7 @@ def _query(*selects: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 
 def _mixed(out: dict[str, Any]) -> list[dict[str, Any]]:
-    return [w for w in out["warnings"] if w["code"] == "MIXED_TIME_ROLES"]
+    return [w for w in out.get("warnings", []) if w["code"] == "MIXED_TIME_ROLES"]
 
 
 ORDERS, SESSIONS = _agg("order_count"), _agg("session_starts")
@@ -95,23 +94,29 @@ ORDERS_IF = {
 }
 
 
-@pytest.mark.parametrize("method", ["validate", "compile", "query"])
-def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, method):
-    out = getattr(runtime, method)(_query(ORDERS, SESSIONS))
+METHODS = ["validate", "compile", "query"]
+TWO_CLOCKS = {
+    "clocks": [
+        {"subject": "measure.jaffle.order_count", "temporal_roles": [ORDER_TIME]},
+        {"subject": "measure.jaffle.session_starts", "temporal_roles": [SESSION_TIME]},
+    ]
+}
 
-    [warning] = _mixed(out)
+
+# The documented message: it names the roles and how each period is read.
+TWO_CLOCKS_MESSAGE = (
+    "These measures are dated by different time roles: measure.jaffle.order_count by "
+    f"{ORDER_TIME}; measure.jaffle.session_starts by {SESSION_TIME}. "
+    "Each period is read on its own role's clock."
+)
+
+
+@pytest.mark.parametrize("method", METHODS)
+def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, method):
+    [warning] = _mixed(getattr(runtime, method)(_query(ORDERS, SESSIONS)))
     assert warning["severity"] == "warning"
-    assert warning["message"] == (
-        "These measures are dated by different time roles: measure.jaffle.order_count by "
-        f"{ORDER_TIME}; measure.jaffle.session_starts by {SESSION_TIME}. "
-        "Each period is read on its own role's clock."
-    )
-    assert warning["details"] == {
-        "clocks": [
-            {"subject": "measure.jaffle.order_count", "temporal_roles": [ORDER_TIME]},
-            {"subject": "measure.jaffle.session_starts", "temporal_roles": [SESSION_TIME]},
-        ]
-    }
+    assert warning["message"] == TWO_CLOCKS_MESSAGE
+    assert warning["details"] == TWO_CLOCKS
     assert warning["object_ids"] == ["measure.jaffle.order_count", "measure.jaffle.session_starts"]
 
 
@@ -123,13 +128,7 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
             RATIO,
             time={"temporal_role": SESSION_TIME, "start": "2016-09-01", "end": "2016-10-01"},
         ),
-        _query(
-            RATIO,
-            time={"temporal_role": SESSION_TIME, "range": {"last": {"unit": "month", "value": 1}}},
-            policy_context={"now": "2016-10-01T00:00:00Z"},
-        ),
-        # A role alone groups by raw timestamp, not all of history.
-        _query(RATIO, time={"temporal_role": SESSION_TIME}),
+        _query(RATIO, time={"temporal_role": SESSION_TIME, "last": {"unit": "month", "value": 1}}),
         # With a time grain each row is one period, not all of history.
         _query(ORDERS, SESSIONS, time=SESSION_MONTHS),
         # Items and orders share the order's clock.
@@ -137,15 +136,14 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
         # One fact.
         _query(ORDERS, _agg("revenue_usd")),
         # A governed metric over two clocks, alone, is the package's own definition.
-        _query({"metric": ORDERS_PER_SESSION}),
+        _query(ORDERS_PER_SESSION),
         # Undated measures are not clocks, even beside a dated measure.
         _query(ORDERS, SESSIONS_IF),
         _query(SESSIONS_IF, ORDERS_IF),
     ],
     ids=[
         "window",
-        "range",
-        "role-only",
+        "last",
         "grain",
         "shared-role",
         "one-fact",
@@ -155,7 +153,7 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
     ],
 )
 def test_no_mixed_clock_warning(runtime, query):
-    assert _mixed(runtime.query(query)) == []
+    assert _mixed(runtime.query(query, now="2016-10-01T00:00:00Z")) == []
 
 
 @pytest.mark.parametrize(
@@ -191,7 +189,7 @@ def test_no_mixed_clock_warning(runtime, query):
         ),
         # A governed metric is one clock, with every role it combines.
         (
-            [{"metric": ORDERS_PER_SESSION}, _agg("delivered_orders")],
+            [ORDERS_PER_SESSION, _agg("delivered_orders")],
             [
                 f"{ORDERS_PER_SESSION} by {ORDER_TIME} and {SESSION_TIME}",
                 f"measure.jaffle.delivered_orders by {DELIVERED_TIME}",
@@ -206,7 +204,7 @@ def test_measures_inside_a_select_expression_are_disclosed_too(runtime, selects,
     assert all(clock in warning["message"] for clock in clocks)
 
 
-@pytest.mark.parametrize("method", ["validate", "compile", "query"])
+@pytest.mark.parametrize("method", METHODS)
 def test_package_without_time_never_warns_about_mixed_clocks(runtime, method):
     config = replace(
         runtime.config,
@@ -227,37 +225,41 @@ def test_package_without_time_never_warns_about_mixed_clocks(runtime, method):
         isolated.close()
 
 
-@pytest.mark.parametrize("method", ["validate", "compile", "query"])
+def _one_customer(runtime: Runtime, tmp_path, orders: list[str], sessions: list[str]) -> Runtime:
+    """The package's semantics over one customer with orders and sessions at these times."""
+    isolated = Runtime.from_config(runtime.config, source_path=runtime.source_path)
+    db_path = str(tmp_path / "one_customer.duckdb")
+    with duckdb.connect(db_path) as connection:
+        connection.execute("CREATE TABLE jaffle_customer AS SELECT 'c1' AS customer_id")
+        for table, key, column, times in [
+            ("jaffle_order", "order_id", "ordered_at", orders),
+            ("jaffle_storefront_session", "session_id", "started_at", sessions),
+        ]:
+            rows = ", ".join(f"('{key}{n}', 'c1', TIMESTAMP '{at}')" for n, at in enumerate(times))
+            connection.execute(
+                f"CREATE TABLE {table} AS SELECT * FROM (VALUES {rows}) "
+                f"AS t({key}, customer_id, {column})"
+            )
+    isolated.set_adapter(DuckDBAdapter(db_path))
+    return isolated
+
+
+@pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("kind", ["aggregate", "scoped_aggregate"])
 def test_date_filtered_ratio_discloses_roles_without_claiming_all_history(
     runtime, tmp_path, method, kind
 ):
-    isolated = Runtime.from_config(runtime.config, source_path=runtime.source_path)
-    db_path = str(tmp_path / "filtered_ratio.duckdb")
-    with duckdb.connect(db_path) as connection:
-        connection.execute("CREATE TABLE jaffle_customer AS SELECT 'c1' AS customer_id")
-        connection.execute("""
-            CREATE TABLE jaffle_order AS
-            SELECT * FROM (VALUES
-                ('o1', 'c1', TIMESTAMP '2016-08-01'),
-                ('o2', 'c1', TIMESTAMP '2016-09-01'),
-                ('o3', 'c1', TIMESTAMP '2016-09-02')
-            ) AS t(order_id, customer_id, ordered_at)
-        """)
-        connection.execute("""
-            CREATE TABLE jaffle_storefront_session AS
-            SELECT * FROM (VALUES
-                ('s1', 'c1', TIMESTAMP '2016-08-01'),
-                ('s2', 'c1', TIMESTAMP '2016-08-02'),
-                ('s3', 'c1', TIMESTAMP '2016-09-01')
-            ) AS t(session_id, customer_id, started_at)
-        """)
-    isolated.set_adapter(DuckDBAdapter(db_path))
+    isolated = _one_customer(
+        runtime,
+        tmp_path,
+        orders=["2016-08-01", "2016-09-01", "2016-09-02"],
+        sessions=["2016-08-01", "2016-08-02", "2016-09-01"],
+    )
 
     def bounded(measure, dimension):
         bounds = [
-            {"field": dimension, "op": ">=", "value": "2016-09-01"},
-            {"field": dimension, "op": "<", "value": "2016-10-01"},
+            {"field": dimension, "op": "gte", "value": "2016-09-01"},
+            {"field": dimension, "op": "lt", "value": "2016-10-01"},
         ]
         return {
             **measure,
@@ -273,53 +275,35 @@ def test_date_filtered_ratio_discloses_roles_without_claiming_all_history(
                 "denominator": bounded(SESSIONS, "dimension.jaffle_session_started_at"),
             }
         )
-        out = getattr(isolated, method)(query)
-        assert out["ok"], out
         # The bounded September ratio differs from the all-history ratio.
         assert [row["v0"] for row in isolated.query(query)["rows"]] == [2.0]
         assert [row["v0"] for row in isolated.query(_query(RATIO))["rows"]] == [1.0]
+        out = getattr(isolated, method)(query)
+        assert out["ok"], out
         [warning] = _mixed(out)
-        assert warning["message"] == (
-            "These measures are dated by different time roles: measure.jaffle.order_count by "
-            f"{ORDER_TIME}; measure.jaffle.session_starts by {SESSION_TIME}. "
-            "Each period is read on its own role's clock."
-        )
+        assert warning["message"] == TWO_CLOCKS_MESSAGE
+        assert warning["details"] == TWO_CLOCKS
         assert "history" not in warning["message"]
     finally:
         isolated.close()
 
 
-def test_role_only_ratio_covers_each_timestamp_not_all_history(runtime, tmp_path):
-    # Use the real package semantics with three orders and two sessions for one customer.
-    isolated = Runtime.from_config(runtime.config, source_path=runtime.source_path)
-    db_path = str(tmp_path / "ratio.duckdb")
-    with duckdb.connect(db_path) as connection:
-        connection.execute("CREATE TABLE jaffle_customer AS SELECT 'c1' AS customer_id")
-        connection.execute("""
-            CREATE TABLE jaffle_order AS
-            SELECT * FROM (VALUES
-                ('o1', 'c1', TIMESTAMP '2016-01-01'),
-                ('o2', 'c1', TIMESTAMP '2016-01-02'),
-                ('o3', 'c1', TIMESTAMP '2016-01-02')
-            ) AS t(order_id, customer_id, ordered_at)
-        """)
-        connection.execute("""
-            CREATE TABLE jaffle_storefront_session AS
-            SELECT * FROM (VALUES
-                ('s1', 'c1', TIMESTAMP '2016-01-01'),
-                ('s2', 'c1', TIMESTAMP '2016-01-02')
-            ) AS t(session_id, customer_id, started_at)
-        """)
-    isolated.set_adapter(DuckDBAdapter(db_path))
+def test_daily_ratio_covers_each_day_not_all_history(runtime, tmp_path):
+    isolated = _one_customer(
+        runtime,
+        tmp_path,
+        orders=["2016-01-01", "2016-01-02", "2016-01-02"],
+        sessions=["2016-01-01", "2016-01-02"],
+    )
     try:
-        timed_query = _query(RATIO, time={"temporal_role": SESSION_TIME})
+        timed_query = _query(RATIO, time={"temporal_role": SESSION_TIME, "grain": "day"})
         timed = isolated.query(timed_query)
         total = isolated.query(_query(RATIO))
 
         assert sorted(row["v0"] for row in timed["rows"]) == [1.0, 2.0]
         assert [row["v0"] for row in total["rows"]] == [1.5]
-        assert _mixed(timed) == []
         assert len(_mixed(total)) == 1
+        assert _mixed(timed) == []
         assert _mixed(isolated.validate(timed_query)) == []
         assert _mixed(isolated.compile(timed_query)) == []
     finally:
@@ -330,7 +314,7 @@ def test_the_warning_never_changes_the_answer(runtime, monkeypatch):
     query = _query(ORDERS, SESSIONS)
     before = runtime.query(query)
     assert len(_mixed(before)) == 1
-    monkeypatch.setattr(runtime_module, "mixed_time_role_warnings", lambda *_: [])
+    monkeypatch.setattr(answer_warnings, "mixed_time_role_warnings", lambda *_: [])
 
     after = runtime.query(query)
 

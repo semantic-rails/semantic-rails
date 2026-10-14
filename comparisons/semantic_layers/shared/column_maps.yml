@@ -3,88 +3,88 @@
 # The answer key (shared/oracle/) uses the field names directly.
 semantic_rails:
   q01_orders_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     orders: "orders"
   q02_revenue_by_store_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     store_name: "dimension.jaffle_store_name"
     revenue_usd: "revenue_usd"
   q03_item_revenue_by_product_type_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     product_type: "dimension.jaffle_item_product_type"
     item_revenue_usd: "item_revenue_usd"
   q04_aov_by_store:
     store_name: "dimension.jaffle_store_name"
     aov_usd: "aov_usd"
   q05_orders_and_item_revenue_by_store_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     store_name: "dimension.jaffle_store_name"
     orders: "orders"
     item_revenue_usd: "item_revenue_usd"
   q06_new_customer_orders_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     new_customer_orders: "new_customer_orders"
   q07_delivered_revenue_by_month:
-    month: "temporal_role.jaffle_lifecycle_delivered_at__month"
+    month: "period"
     delivered_revenue: "delivered_revenue"
   q08_revenue_by_customer_segment_as_of_order_time:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     customer_segment: "dimension.jaffle_customer_history_segment"
     revenue_usd: "revenue_usd"
   q09_session_to_order_conversion_7d:
-    month: "temporal_role.jaffle_session_started_at__month"
+    month: "period"
     session_to_order_conversion_rate_7d: "session_to_order_conversion_rate_7d"
   q10_orders_from_customers_with_10plus_orders_in_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     qualifying_orders: "orders_from_customers_with_10plus_orders_in_period"
   q11_repeat_customer_orders_by_store_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     store_name: "dimension.jaffle_store_name"
     repeat_customer_orders: "repeat_customer_orders"
   q12_orders_by_month_with_lifetime_spend_500_filter:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     filtered_orders: "filtered_orders"
   q13_daily_orders_from_customers_with_10plus_orders_in_month:
-    day: "temporal_role.jaffle_order_time__day"
+    day: "period"
     qualifying_orders: "qualifying_orders"
   q14_revenue_from_customers_with_10plus_orders_same_store_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     store_name: "dimension.jaffle_store_name"
     qualifying_revenue_usd: "qualifying_revenue_usd"
   q15_same_store_session_to_order_conversion_7d:
-    month: "temporal_role.jaffle_session_started_at__month"
+    month: "period"
     same_store_conversion_rate_7d: "same_store_conversion_rate_7d"
   q16_revenue_by_customer_segment_as_of_delivered_time:
-    month: "temporal_role.jaffle_lifecycle_delivered_at__month"
+    month: "period"
     customer_segment: "dimension.jaffle_customer_history_segment"
     delivered_revenue: "delivered_revenue"
   q17_session_to_order_conversion_14d:
-    month: "temporal_role.jaffle_session_started_at__month"
+    month: "period"
     session_to_order_conversion_rate_14d: "session_to_order_conversion_rate_14d"
   q18_same_store_session_to_order_conversion_50m:
-    month: "temporal_role.jaffle_session_started_at__month"
+    month: "period"
     same_store_conversion_rate_50m: "same_store_conversion_rate_50m"
   q19_trailing_3_month_revenue_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     trailing_3_month_revenue_usd: "trailing_3_month_revenue_usd"
   q20_revenue_and_prior_month_revenue_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     revenue_usd: "revenue_usd"
     prior_month_revenue_usd: "prior_month_revenue_usd"
   q21_revenue_and_large_order_revenue_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     revenue_usd: "revenue_usd"
     large_order_revenue_usd: "large_order_revenue_usd"
   q22_average_and_max_item_revenue_by_product_type_by_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     product_type: "dimension.jaffle_item_product_type"
     avg_item_revenue_usd: "avg_item_revenue_usd"
     max_item_revenue_usd: "max_item_revenue_usd"
   q23_orders_from_customers_with_5plus_orders_in_month:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     qualifying_orders: "qualifying_orders"
   q24_orders_by_month_with_lifetime_spend_1000_filter:
-    month: "temporal_role.jaffle_order_time__month"
+    month: "period"
     filtered_orders: "filtered_orders"
 metricflow:
   q01_orders_by_month:

@@ -48,6 +48,7 @@ from .schema import (
     TemporalRoleConfig,
     ValueDomainConfig,
     ValueDomainValue,
+    ZeroThrough,
 )
 from .schema import base_of as base_of
 from .schema import require_base as require_base
@@ -112,14 +113,14 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         identity="name",
     ),
     EntityConfig: _classes(
-        "id table primary_key kind relation_id key identifiers foreign_keys calendar_id "
-        "allowed_as_root freshness_sla_seconds bridge",
+        "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
+        "allowed_as_root freshness_sla_seconds bridge model",
         text="label description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names",
         identity="name aliases",
     ),
     DimensionConfig: _classes(
-        "id entity column data_type filterable groupable value_domain",
+        "id entity column data_type filterable groupable value_domain unknown_values",
         text="label description semantic_kind sample_values_strategy",
         texts="topics",
         identity="name aliases",
@@ -146,16 +147,19 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     MeasureValidityWindow: _classes("from_ to", text="semantics"),
     MeasureExternalDiscontinuity: _classes("from_ to magnitude_estimate_pct", text="what"),
     MeasureConfig: _classes(
-        "id entity row_grain expr default_aggregation allowed_aggregations source_relation "
-        "invalid_aggregations measure_class accumulation compatible_temporal_roles value_type "
+        "id entity row_grain expr default_aggregation allowed_aggregations invalid_aggregations "
+        "measure_class accumulation compatible_temporal_roles value_type "
         "suggested_aggregations preferred_companion_metrics "
         "default_temporal_role cross_window_policy additive lookup_from lookup_via publish",
         text="currency label description comparison_family comparison_mode",
         texts="topics example_entries authoring_warnings",
         identity="name aliases",
         typed="operational meta",
-        rows="validity_windows external_discontinuities",
+        rows="validity_windows external_discontinuities zero_through",
     ),
+    # The load log's physical names stay: the engine reads them. Its declared name may name a
+    # hidden model; an answer names it only where the caller sees that model.
+    ZeroThrough: _classes("kind relation column data_type timezone", text="name"),
     MetricConfig: _classes(
         "id kind expression temporal_role compatible_temporal_roles filter_spec window_spec "
         "preferred_companion_metrics value_type",
@@ -549,7 +553,9 @@ def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
 
 def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list[dict[str, Any]]:
     """The policy effects a response may carry: each private effect as its display policy
-    states it, with hidden ids left out. Execution consumes the private effects unchanged."""
+    states it, with hidden ids left out. A violation is shown whole or not at all: one whose
+    text names a hidden object anywhere (an id or label, alone or inside a value) is left out.
+    Execution consumes the private effects unchanged."""
     meta = get_package_analysis(config).view
     if meta is None:
         return private
@@ -569,6 +575,10 @@ def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list
         for key in ("violations", "withheld_objects", "withheld_column"):
             if key in effect:
                 public[key] = _visible(effect[key], meta.hidden)
+        if "violations" in public:
+            public["violations"] = [
+                row for row in public["violations"] if not _mentions(row, meta.tokens)
+            ]
         out.append(public)
     return out
 
@@ -576,8 +586,10 @@ def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list
 def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     """A policy refusal as this caller may see it (:func:`public_effects`)."""
     meta = get_package_analysis(config).view
-    if meta is None or exc.code != "POLICY_DENIED" or "policy_effects" not in exc.details:
+    if meta is None or exc.code != "POLICY_DENIED" or not exc.details.get("policy_effects"):
         return exc
+    from .policies import denied
+
     effects = public_effects(exc.details["policy_effects"], config)
     details = {
         **exc.details,
@@ -585,9 +597,9 @@ def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLaye
         "policy_effects": effects,
         "policy_violations": [row for effect in effects for row in effect.get("violations", [])],
     }
-    return (
-        exc if details == exc.details else SemanticLayerError(exc.code, str(exc), details=details)
-    )
+    # A cut left out is still unmet: the refusal says so without saying what it is.
+    unstated = len(details["policy_violations"]) < len(exc.details.get("policy_violations") or [])
+    return exc if details == exc.details else denied(details, unstated=unstated)
 
 
 @dataclass

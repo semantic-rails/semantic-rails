@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
 from typing import Any
 
-from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query
+from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query, time_output_alias
+from .catalog_format import format_catalog_payload
 from .catalog_search import (
     CatalogSearchDocument,
     SearchTerms,
@@ -48,24 +49,19 @@ from .expressions import (
     CaseExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
-    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
     collect_object_references,
     expr_to_dict,
     parse_semantic_expression,
 )
-from .fanout import query_route_decisions
+from .fanout import entity_label, query_route_decisions
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
@@ -78,15 +74,16 @@ from .metadata_parts.object_metadata import (
     _comparison_metadata,
     _example_test_metadata,
     _operational_metadata,
-    _public_object_type,
     _review_metadata,
     _time_contract_metadata,
 )
 from .metadata_parts.path_coverage import (
+    PathReach,
     _declared_value_rows,
     _dimension_history_coverage,
     _metric_history_coverage_notes,
     _path_availability,
+    _path_reach,
     _valid_values_lookup_hint,
     _value_domain_for_dimension,
 )
@@ -101,11 +98,12 @@ from .metadata_parts.relevance import (
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
 from .policies import policy_effects_for_object, row_filters_for_context
+from .query_call import call_from_query
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
-from .segments import build_segment_query, normalize_segment
+from .segments import _config_maps, build_segment_query, normalize_segment
 from .temporal_support import require_temporal_support, validate_temporal_support
 from .visible_view import base_of
 
@@ -122,24 +120,8 @@ def _query_state(query: dict[str, Any], config: PackageConfig) -> dict[str, Any]
     return state
 
 
-def _config_maps(config: PackageConfig) -> dict[str, dict[str, Any]]:
-    return {
-        "entities": {row.id: row for row in config.entities},
-        "dimensions": {row.id: row for row in config.dimensions},
-        "temporal_roles": {row.id: row for row in config.temporal_roles},
-        "measures": {row.id: row for row in config.measures},
-        "metric_recipes": {row.id: row for row in config.metric_recipes},
-        "segments": {row.id: row for row in config.segments},
-        "value_domains": {row.id: row for row in config.value_domains},
-    }
-
-
-def _relationship_index(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.relationships}
-
-
 def _relationship_card_payload(config: PackageConfig, relationship_id: str) -> dict[str, Any]:
-    relationships = _relationship_index(config)
+    relationships = {row.id: row for row in config.relationships}
     rel = relationships.get(relationship_id)
     if rel is None:
         raise SemanticLayerError(
@@ -193,14 +175,8 @@ def _compatible_temporal_roles_for_expr(config: PackageConfig, expr: SemanticExp
         return _compatible_temporal_roles_for_expr(config, expr.input)
     if isinstance(expr, DistributionExpr):
         return _compatible_temporal_roles_for_expr(config, expr.over)
-    if isinstance(expr, BooleanExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         current: set[str] = set()
-        for index, arg in enumerate(expr.args):
-            roles = set(_compatible_temporal_roles_for_expr(config, arg))
-            current = roles if index == 0 else current & roles
-        return sorted(current)
-    if isinstance(expr, CallExpr):
-        current = set()
         for index, arg in enumerate(expr.args):
             roles = set(_compatible_temporal_roles_for_expr(config, arg))
             current = roles if index == 0 else current & roles
@@ -219,8 +195,6 @@ def _compatible_temporal_roles_for_expr(config: PackageConfig, expr: SemanticExp
         for row in role_sets[1:]:
             current &= row
         return sorted(current)
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
-        return _compatible_temporal_roles_for_expr(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return []
     if isinstance(expr, ConversionExpr):
@@ -240,9 +214,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         if expr.metric_recipe not in recipes:
             raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric '{expr.metric_recipe}'")
         return _first_root_entity(config, recipes[expr.metric_recipe].expression)
-    if isinstance(expr, ArithmeticExpr):
-        return _first_root_entity(config, expr.left)
-    if isinstance(expr, ComparisonExpr):
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _first_root_entity(config, expr.left)
     if isinstance(expr, RatioExpr):
         return _first_root_entity(config, expr.numerator)
@@ -250,13 +222,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         return _first_root_entity(config, expr.input)
     if isinstance(expr, DistributionExpr):
         return _first_root_entity(config, expr.over)
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            entity = _first_root_entity(config, arg)
-            if entity:
-                return entity
-        return ""
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             entity = _first_root_entity(config, arg)
             if entity:
@@ -271,14 +237,10 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
             if entity:
                 return entity
         return _first_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
-        return _first_root_entity(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return expr.entity
     if isinstance(expr, ConversionExpr):
         return expr.entity or _first_root_entity(config, expr.base)
-    if isinstance(expr, LiteralExpr):
-        return ""
     return ""
 
 
@@ -330,22 +292,10 @@ def _expr_summary(config: PackageConfig, expr: SemanticExpr) -> str:
             "divide": "divided by",
         }.get(expr.op, expr.op)
         return f"{_expr_summary(config, expr.left)} {op} {_expr_summary(config, expr.right)}"
-    if isinstance(expr, CumulativeExpr):
-        return f"cumulative {_expr_summary(config, expr.input)}"
-    if isinstance(expr, RollingExpr):
-        # ``RollingExpr`` carries ``unit``/``value`` directly on the
-        # dataclass — there is no ``.window`` attribute. The earlier
-        # ``expr.window.get(...)`` form crashed with AttributeError as
-        # soon as ``_expr_summary`` ran over any rolling expression.
-        # (The ruff/mypy pass on mainline landed a parallel fix using
-        # bare attribute access; this defensive form supersedes it.)
-        return f"rolling {expr.value or ''}-{expr.unit or ''} {_expr_summary(config, expr.input)}"
-    if isinstance(expr, PriorPeriodExpr):
-        return f"prior-period {_expr_summary(config, expr.input)}"
-    if isinstance(expr, PeriodToDateExpr):
-        return f"{expr.period} to date {_expr_summary(config, expr.input)}"
     if isinstance(expr, MetricPredicateExpr):
-        scope = "contextual" if expr.scope_mode == "contextual" else "entity-only"
+        scope = {"contextual": "contextual", "entity_period": "per period"}.get(
+            expr.scope_mode, "entity-only"
+        )
         if expr.time_grain:
             return f"{_expr_summary(config, expr.input)} {expr.op} {expr.value} ({scope}, {expr.time_grain})"
         return f"{_expr_summary(config, expr.input)} {expr.op} {expr.value} ({scope})"
@@ -478,7 +428,7 @@ def _compact_summary_from_card(
 ) -> dict[str, Any]:
     row = {
         "id": card.get("id", ""),
-        "object_type": _public_object_type(str(card.get("kind", ""))),
+        "object_type": str(card.get("kind", "")),
         "kind": card.get("kind", ""),
         "name": card.get("name", ""),
         "label": card.get("label", ""),
@@ -503,26 +453,26 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
         valid_grouping_entities: list[dict[str, Any]] = []
         disabled_grouping_entities: list[dict[str, Any]] = []
         for entity in config.entities:
-            availability = _path_availability(config, root_entity, entity.id)
+            availability = _path_reach(config, root_entity, entity.id)
             row = {
                 "id": entity.id,
-                "available": availability["available"],
-                "reason": availability.get("reason", ""),
-                "path": availability.get("path", []),
+                "available": availability.available,
+                "reason": availability.reason,
+                "path": list(availability.path),
             }
             (
-                valid_grouping_entities if availability["available"] else disabled_grouping_entities
+                valid_grouping_entities if availability.available else disabled_grouping_entities
             ).append(row)
         provenance = {}
         for dim in config.dimensions:
             if dim.entity == root_entity:
                 continue
-            availability = _path_availability(config, root_entity, dim.entity)
+            availability = _path_reach(config, root_entity, dim.entity)
             provenance[dim.id] = {
                 "entity": dim.entity,
-                "path": availability.get("path", []),
-                "available": availability["available"],
-                "reason": availability.get("reason", ""),
+                "path": list(availability.path),
+                "available": availability.available,
+                "reason": availability.reason,
             }
         return {
             "root_entity": root_entity,
@@ -542,15 +492,15 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
         valid_grouping_entities = []
         disabled_grouping_entities = []
         for entity in config.entities:
-            availability = _path_availability(config, measure.entity, entity.id)
+            availability = _path_reach(config, measure.entity, entity.id)
             row = {
                 "id": entity.id,
-                "available": availability["available"],
-                "reason": availability.get("reason", ""),
-                "path": availability.get("path", []),
+                "available": availability.available,
+                "reason": availability.reason,
+                "path": list(availability.path),
             }
             (
-                valid_grouping_entities if availability["available"] else disabled_grouping_entities
+                valid_grouping_entities if availability.available else disabled_grouping_entities
             ).append(row)
         return {
             "root_entity": measure.entity,
@@ -573,6 +523,7 @@ def _recommended_actions(kind: str) -> list[str]:
         "metric": ["inspect metric card", "add breakdown dimension", "validate query"],
         "dimension": ["group by this dimension", "filter this dimension", "list valid values"],
         "entity": ["inspect related measures", "use as grouping entity"],
+        "row_grain_entity": ["inspect related measures"],  # no key to group its rows by
         "dimension_value": ["apply as a filter", "discover related measures"],
         "segment": ["validate segment", "preview members", "explain derived query"],
     }
@@ -599,20 +550,15 @@ def _policy_metadata(
 
 
 def _result_shape_preview(query_patch: dict[str, Any]) -> dict[str, Any]:
+    """The columns a patch's call returns: its groupings, ``period`` and its selects."""
     select_aliases = [
-        str(row.get("as", "") or "")
+        str(row).split(".")[-1] if isinstance(row, str) else str(row.get("as", "") or "")
         for row in list(query_patch.get("select", []) or [])
-        if str(row.get("as", "") or "")
     ]
+    select_aliases = [alias for alias in select_aliases if alias]
     group_by = [str(item) for item in list(query_patch.get("group_by", []) or [])]
     time = dict(query_patch.get("time", {}) or {})
-    time_alias = ""
-    if time.get("temporal_role"):
-        time_alias = (
-            str(time["temporal_role"])
-            if not time.get("grain")
-            else f"{time['temporal_role']}__{time['grain']}"
-        )
+    time_alias = time_output_alias(time) if time.get("grain") else ""
     columns = [*group_by, *([time_alias] if time_alias else []), *select_aliases]
     return {
         "columns": columns,
@@ -624,23 +570,23 @@ def _result_shape_preview(query_patch: dict[str, Any]) -> dict[str, Any]:
 
 def _availability_for_object(
     config: PackageConfig, root_entity: str, object_id: str, kind: str
-) -> dict[str, Any]:
+) -> PathReach:
     maps = _config_maps(config)
     if kind == "measure":
-        return _path_availability(config, root_entity, maps["measures"][object_id].entity)
+        return _path_reach(config, root_entity, maps["measures"][object_id].entity)
     if kind == "metric":
-        return _path_availability(
+        return _path_reach(
             config,
             root_entity,
             _first_root_entity(config, maps["metric_recipes"][object_id].expression),
         )
     if kind == "dimension":
-        return _path_availability(config, root_entity, maps["dimensions"][object_id].entity)
+        return _path_reach(config, root_entity, maps["dimensions"][object_id].entity)
     if kind == "segment":
-        return _path_availability(config, root_entity, maps["segments"][object_id].entity)
+        return _path_reach(config, root_entity, maps["segments"][object_id].entity)
     if kind == "entity":
-        return _path_availability(config, root_entity, object_id)
-    return {"available": True, "reason": "", "path": [], "candidates": []}
+        return _path_reach(config, root_entity, object_id)
+    return PathReach(True, "", ())
 
 
 def _metric_executable(
@@ -719,22 +665,16 @@ def _predicate_exprs_from_expr(
             *_predicate_exprs_from_expr(config, expr.left, seen_metric_ids=seen_metric_ids),
             *_predicate_exprs_from_expr(config, expr.right, seen_metric_ids=seen_metric_ids),
         ]
-    if isinstance(expr, BooleanExpr):
-        predicates: list[MetricPredicateExpr] = []
-        for arg in expr.args:
-            predicates.extend(
-                _predicate_exprs_from_expr(config, arg, seen_metric_ids=seen_metric_ids)
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return [
+            predicate
+            for arg in expr.args
+            for predicate in _predicate_exprs_from_expr(
+                config, arg, seen_metric_ids=seen_metric_ids
             )
-        return predicates
-    if isinstance(expr, CallExpr):
-        predicates = []
-        for arg in expr.args:
-            predicates.extend(
-                _predicate_exprs_from_expr(config, arg, seen_metric_ids=seen_metric_ids)
-            )
-        return predicates
+        ]
     if isinstance(expr, CaseExpr):
-        predicates = []
+        predicates: list[MetricPredicateExpr] = []
         for item in expr.whens:
             predicates.extend(
                 _predicate_exprs_from_expr(config, item.when, seen_metric_ids=seen_metric_ids)
@@ -747,8 +687,6 @@ def _predicate_exprs_from_expr(
                 _predicate_exprs_from_expr(config, expr.else_expr, seen_metric_ids=seen_metric_ids)
             )
         return predicates
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
-        return _predicate_exprs_from_expr(config, expr.input, seen_metric_ids=seen_metric_ids)
     if isinstance(expr, ConversionExpr):
         return [
             *_predicate_exprs_from_expr(config, expr.base, seen_metric_ids=seen_metric_ids),
@@ -811,7 +749,7 @@ def _predicate_metadata(
     partial_query = dict(partial_query or {})
     context_entities: list[str] = []
     effective_grain = predicate.time_grain or (
-        "inherit" if predicate.scope_mode == "contextual" else ""
+        "inherit" if predicate.scope_mode in {"contextual", "entity_period"} else ""
     )
     if predicate.scope_mode == "contextual" and partial_query:
         try:
@@ -871,7 +809,7 @@ def _object_card(
     payload.update(_metric_object_payload(config, object_id, obj.kind))
     base = {
         "id": obj.id,
-        "object_type": _public_object_type(obj.kind),
+        "object_type": obj.kind,
         "kind": obj.kind,
         "name": payload.get("name", obj.canonical_name),
         "label": payload.get("label", obj.display_name),
@@ -959,7 +897,7 @@ def _object_card(
                 "related_measures": [
                     measure.id
                     for measure in config.measures
-                    if _path_availability(config, measure.entity, dim.entity)["available"]
+                    if _path_reach(config, measure.entity, dim.entity).available
                 ][:10],
                 "coverage_notes": coverage_notes,
                 "null_bucket_meaning": null_bucket_meaning,
@@ -970,13 +908,24 @@ def _object_card(
         base.update(
             {
                 "root_entity": entity.id,
-                "key": list(entity.key),
+                "key": list(entity.key_columns),
                 "allowed_as_root": entity.allowed_as_root,
                 "related_measures": [
                     measure.id for measure in config.measures if measure.entity == entity.id
                 ][:20],
             }
         )
+        if entity.is_row_grain:
+            looks_up = {
+                entity_label(config, row.target_entity)
+                for row in config.relationships
+                if row.source_entity == entity.id
+            }
+            base["key_note"] = (
+                "No key: every stored row counts. It looks up "
+                f"{', '.join(sorted(looks_up)) or 'nothing'}; nothing can look up one of its rows."
+            )
+            base["recommended_next_actions"] = _recommended_actions("row_grain_entity")
     elif obj.kind == "relationship":
         base.update(_relationship_card_payload(config, object_id))
     elif obj.kind == "segment":
@@ -1041,8 +990,8 @@ def _summary_row(
     card = _object_card(runtime, str(obj["id"]), partial_query)
     row = _compact_summary_from_card(
         card,
-        available=availability["available"],
-        blocked_reason=availability.get("reason", ""),
+        available=availability.available,
+        blocked_reason=availability.reason,
         extra={
             "canonical_name": obj.get("canonical_name", ""),
             "display_name": obj.get("display_name", ""),
@@ -1068,17 +1017,12 @@ def _summary_row(
     # default) the catalog is for browsing — agents should
     # ``inspect`` an id to get the payload, not pull every measure's
     # payload in one shot.
-    if obj["kind"] == "measure" and verbosity == "full":
-        row["payload"] = payload
-        row["operational"] = dict(card.get("operational", {}) or {})
     if obj["kind"] == "metric":
         row["executable"] = payload.get("executable", True)
         row["unsupported_reason"] = payload.get("unsupported_reason", "")
-        if verbosity == "full":
-            row["payload"] = payload
-            row["operational"] = dict(card.get("operational", {}) or {})
-    if obj["kind"] == "segment" and verbosity == "full":
+    if obj["kind"] in {"measure", "metric"} and verbosity == "full":
         row["payload"] = payload
+        row["operational"] = dict(card.get("operational", {}) or {})
     if obj["kind"] == "temporal_role":
         # Surface temporal_class so agents and discovery surfaces can
         # reason about role semantics (event_time, calendar_time,
@@ -1122,13 +1066,6 @@ def _summary_row(
     return row
 
 
-_MINIMAL_CATALOG_ROW_KEYS: frozenset[str] = frozenset({"id", "kind", "name", "label", "available"})
-
-
-def _minimal_catalog_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: row[key] for key in _MINIMAL_CATALOG_ROW_KEYS if key in row}
-
-
 @runtime_request_scope
 def catalog_payload(
     runtime: Runtime,
@@ -1142,16 +1079,6 @@ def catalog_payload(
 ) -> dict[str, Any]:
     catalog = runtime.catalog()
     supported_capabilities, unsupported_capabilities = _capability_payload(runtime._config)
-    grouped: dict[str, Any] = {
-        "entities": [],
-        "dimensions": [],
-        "measures": [],
-        "segments": [],
-        "temporal_roles": [],
-        "relationships": [],
-        "value_domains": [],
-        "metrics": [],
-    }
     kind_map = {
         "entity": "entities",
         "dimension": "dimensions",
@@ -1162,6 +1089,7 @@ def catalog_payload(
         "value_domain": "value_domains",
         "metric": "metrics",
     }
+    grouped: dict[str, Any] = {bucket: [] for bucket in kind_map.values()}
     aliases: dict[str, list[str]] = {}
     alias_index: dict[str, list[str]] = {}
     search_norm = normalize_search_value(search)
@@ -1189,8 +1117,6 @@ def catalog_payload(
         bucket = kind_map.get(str(row["kind"]))
         if not bucket:
             continue
-        if view == "summary" and verbosity != "full":
-            row = dict(row)
         grouped[bucket].append(row)
         aliases[row["id"]] = list(row.get("aliases", []) or [])
         for alias in [
@@ -1218,122 +1144,6 @@ def catalog_payload(
         aliases=aliases,
         alias_index=alias_index,
     )
-
-
-def format_catalog_payload(
-    grouped: dict[str, Any],
-    *,
-    package: dict[str, Any],
-    schema_version: Any,
-    view: str,
-    verbosity: str,
-    supported_capabilities: list[dict[str, Any]],
-    unsupported_capabilities: list[dict[str, Any]],
-    aliases: dict[str, list[str]] | None = None,
-    alias_index: dict[str, list[str]] | None = None,
-) -> dict[str, Any]:
-    """Format already-authorized rows without reading package internals.
-
-    Shared by ordinary catalogs and restricted public projections so caps,
-    counts, full retrieval, and verbosity keep the same response contract.
-    """
-    grouped["meta"] = {
-        "package": package,
-        "schema_version": schema_version,
-        "view": view,
-        "verbosity": verbosity,
-    }
-    verbosity_norm = str(verbosity or "").lower()
-    if verbosity_norm == "summary":
-        # Cold-start orientation: counts + flat ID list per kind. No row
-        # dicts, no descriptions, no payload — agents inspect specific
-        # ids via the ``inspect`` tool. Target envelope: under 10KB even
-        # on a 300-object package. Capabilities ship here too so a single
-        # ``catalog?verbosity=summary`` call gives an agent everything it
-        # needs to choose its next move without paying for row metadata.
-        # ``kind_map`` (kind→bucket) reversed gives bucket→singular kind
-        # so id-list keys read naturally as ``measure_ids``, ``entity_ids``
-        # etc. rather than tripping over irregular plurals.
-        bucket_to_kind = {
-            "entities": "entity",
-            "dimensions": "dimension",
-            "measures": "measure",
-            "segments": "segment",
-            "temporal_roles": "temporal_role",
-            "relationships": "relationship",
-            "value_domains": "value_domain",
-            "metrics": "metric",
-        }
-        summary_payload: dict[str, Any] = {
-            "meta": grouped["meta"],
-            "counts": {
-                bucket_key: len(grouped[bucket_key])
-                for bucket_key in list(grouped)
-                if isinstance(grouped[bucket_key], list)
-            },
-            "capabilities": supported_capabilities,
-            "unsupported_capabilities": unsupported_capabilities,
-        }
-        for bucket_key in list(grouped):
-            bucket = grouped[bucket_key]
-            if not isinstance(bucket, list):
-                continue
-            singular = bucket_to_kind.get(bucket_key, bucket_key)
-            summary_payload[f"{singular}_ids"] = [
-                str(row.get("id", "")) for row in bucket if isinstance(row, dict)
-            ]
-        return summary_payload
-    if verbosity_norm == "minimal":
-        # Strip every row to {id, kind, name, label, available} and drop
-        # the alias dictionaries — both can be rebuilt by inspecting
-        # individual objects once the agent has narrowed its target.
-        for bucket_key in list(grouped.keys()):
-            bucket = grouped[bucket_key]
-            if isinstance(bucket, list):
-                grouped[bucket_key] = [
-                    _minimal_catalog_row(row) for row in bucket if isinstance(row, dict)
-                ]
-        grouped["counts"] = {
-            bucket_key: len(grouped[bucket_key])
-            for bucket_key in grouped
-            if isinstance(grouped[bucket_key], list)
-        }
-    elif verbosity_norm == "full":
-        # Full verbosity is opt-in: keep the alias maps for typo-resolution
-        # and emit every matching row uncapped.
-        grouped["aliases"] = aliases or {}
-        grouped["alias_index"] = alias_index or {}
-    else:
-        # Compact (the default). Round four dropped ``alias_index`` and
-        # ``aliases`` here — both grew unbounded with the catalog and
-        # drowned token budgets even with ``search=...``. Callers who
-        # need typo-resolution request ``verbosity=full``; callers who
-        # know an object id use ``inspect``. Compact also caps each
-        # bucket at ``_CATALOG_COMPACT_BUCKET_CAP`` rows and reports the
-        # pre-cap totals + a ``truncated`` flag when any bucket spilled.
-        counts_total: dict[str, int] = {}
-        truncated_buckets: list[str] = []
-        for bucket_key, bucket in list(grouped.items()):
-            if not isinstance(bucket, list):
-                continue
-            counts_total[bucket_key] = len(bucket)
-            if len(bucket) > _CATALOG_COMPACT_BUCKET_CAP:
-                grouped[bucket_key] = bucket[:_CATALOG_COMPACT_BUCKET_CAP]
-                truncated_buckets.append(bucket_key)
-        grouped["counts_total"] = counts_total
-        grouped["counts"] = {bucket_key: len(grouped[bucket_key]) for bucket_key in counts_total}
-        if truncated_buckets:
-            grouped["truncated"] = True
-            grouped["truncated_buckets"] = sorted(truncated_buckets)
-            grouped["truncation_hint"] = (
-                "Compact view caps each kind at "
-                f"{_CATALOG_COMPACT_BUCKET_CAP} rows. Narrow with "
-                "search=/kind=/entity= or request verbosity=full to see "
-                "the full inventory."
-            )
-    grouped["capabilities"] = supported_capabilities
-    grouped["unsupported_capabilities"] = unsupported_capabilities
-    return grouped
 
 
 # Name words that carry units or aggregation rather than meaning; a name
@@ -1375,12 +1185,6 @@ def _name_coverage(candidate: Mapping[str, Any], tokens: Iterable[str]) -> float
         if name_words and name_words <= words | singulars:
             best = max(best, min(1.0, len(name_words) / len(words)))
     return best
-
-
-# Compact-view per-bucket row cap. Sized so a 7-kind catalog stays under
-# ~5K tokens even with all buckets full. Callers asking for the full
-# inventory request ``verbosity=full``.
-_CATALOG_COMPACT_BUCKET_CAP: int = 200
 
 
 def _relevance_score(
@@ -1944,6 +1748,17 @@ def _dimension_builder_score(
     return score, list(dict.fromkeys(reasons))
 
 
+_DISCOVER_BUCKETS = (
+    "measures",
+    "metrics",
+    "segments",
+    "dimensions",
+    "dimension_values",
+    "entities",
+    "blocked",
+)
+
+
 @runtime_request_scope
 def discover_payload(
     runtime: Runtime,
@@ -1976,8 +1791,9 @@ def discover_payload(
     # Internal guided flows leave ``enforce_scope=False`` so builder and
     # planner candidate generation can keep working with partial context.
     if enforce_scope and str(terms or "").strip():
-        classification = classify_question(str(terms))
-        if classification.category != "data_query":
+
+        def gated(key: str, block: dict[str, Any]) -> dict[str, Any]:
+            """The empty answer to a question the gate stops, with the gate's block."""
             return {
                 "terms": terms,
                 "stage": stage,
@@ -1988,40 +1804,21 @@ def discover_payload(
                     "selected_measure_ids": [],
                     "selected_metric_recipe_ids": [],
                 },
-                "measures": [],
-                "metrics": [],
-                "segments": [],
-                "dimensions": [],
-                "dimension_values": [],
-                "entities": [],
-                "blocked": [],
-                "out_of_scope": _scope_block_payload(str(terms), classification),
+                **{bucket: [] for bucket in _DISCOVER_BUCKETS},
+                key: block,
             }
+
+        classification = classify_question(str(terms))
+        if classification.category != "data_query":
+            return gated("out_of_scope", _scope_block_payload(str(terms), classification))
         catalog_tokens = _catalog_token_index(config, search_index=search_index)
         passes, overlap = _intent_passes_relevance_floor(str(terms), catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
-            return {
-                "terms": terms,
-                "stage": stage,
-                "verbosity": verbosity,
-                "query_state": _query_state(partial_query, runtime._config),
-                "selection_context": {
-                    "root_entity": "",
-                    "selected_measure_ids": [],
-                    "selected_metric_recipe_ids": [],
-                },
-                "measures": [],
-                "metrics": [],
-                "segments": [],
-                "dimensions": [],
-                "dimension_values": [],
-                "entities": [],
-                "blocked": [],
-                "low_relevance": _low_relevance_block(
-                    str(terms), overlap_tokens=overlap, catalog_token_sample=sample
-                ),
-            }
+            block = _low_relevance_block(
+                str(terms), overlap_tokens=overlap, catalog_token_sample=sample
+            )
+            return gated("low_relevance", block)
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
     stage = _infer_stage(partial_query, stage, terms)
@@ -2055,8 +1852,8 @@ def discover_payload(
             "description": measure.description,
             "topics": list(measure.topics),
             "review_priority": str((measure.meta or {}).get("review_priority", "") or ""),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": measure.entity,
             "default_temporal_role": measure.compatible_temporal_roles[0]
             if measure.compatible_temporal_roles
@@ -2088,8 +1885,8 @@ def discover_payload(
             "description": recipe.description,
             "topics": list(recipe.topics),
             "review_priority": str((recipe.meta or {}).get("review_priority", "") or ""),
-            "available": availability["available"] and executable,
-            "blocked_reason": unsupported_reason or availability.get("reason", ""),
+            "available": availability.available and executable,
+            "blocked_reason": unsupported_reason or availability.reason,
             "root_entity": _first_root_entity(config, recipe.expression),
             "default_temporal_role": recipe.temporal_role
             or (
@@ -2140,8 +1937,8 @@ def discover_payload(
             "label": segment.label,
             "description": segment.description,
             "topics": list(segment.topics),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": segment.entity,
             "default_temporal_role": "",
             "recommended_next_actions": _recommended_actions("segment"),
@@ -2194,8 +1991,8 @@ def discover_payload(
             "label": dim.label,
             "description": dim.description,
             "topics": list(dim.topics),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": dim.entity,
             "default_temporal_role": "",
             "recommended_next_actions": _recommended_actions("dimension"),
@@ -2221,11 +2018,13 @@ def discover_payload(
             "label": entity.label,
             "description": entity.description,
             "topics": list(entity.topics),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": entity.id,
             "default_temporal_role": "",
-            "recommended_next_actions": _recommended_actions("entity"),
+            "recommended_next_actions": _recommended_actions(
+                "row_grain_entity" if entity.is_row_grain else "entity"
+            ),
         }
         score, reasons = _relevance_score(
             terms,
@@ -2252,8 +2051,8 @@ def discover_payload(
                 "label": value.label,
                 "description": value.description or value.label,
                 "topics": list(dim.topics),
-                "available": availability["available"],
-                "blocked_reason": availability.get("reason", ""),
+                "available": availability.available,
+                "blocked_reason": availability.reason,
                 "root_entity": dim.entity,
                 "default_temporal_role": "",
                 "recommended_next_actions": _recommended_actions("dimension_value"),
@@ -2394,17 +2193,9 @@ def discover_payload(
                     if _is_real_match(row_proxy):
                         per_token_dimval_scores[tok][row["id"]] = (score, reasons)
             # Intersect the per-token matcher sets.
-            shared_ids = (
-                set.intersection(*(set(per_token_scores[tok].keys()) for tok in unique_tokens))
-                if unique_tokens
-                else set()
-            )
-            shared_dimval_ids = (
-                set.intersection(
-                    *(set(per_token_dimval_scores[tok].keys()) for tok in unique_tokens)
-                )
-                if unique_tokens
-                else set()
+            shared_ids = set.intersection(*(set(per_token_scores[tok]) for tok in unique_tokens))
+            shared_dimval_ids = set.intersection(
+                *(set(per_token_dimval_scores[tok]) for tok in unique_tokens)
             )
             if shared_ids or shared_dimval_ids:
                 fallback_token_match_reason = (
@@ -2467,14 +2258,13 @@ def discover_payload(
     # seed `select`; dimensions seed `group_by`. Other kinds (segments,
     # entities, dimension_values, blocked) intentionally skip — they
     # don't map to a single canonical clause.
+    seed = _call_of(partial_query)
     for row in [*measures, *metrics]:
         row["starter_query_patch"] = _query_patch_with_selection(
-            runtime,
-            partial_query,
-            {"id": row["id"], "kind": row["kind"], "label": row["label"]},
+            runtime, seed, {"id": row["id"], "kind": row["kind"], "label": row["label"]}
         )
     for row in dimensions:
-        row["starter_query_patch"] = _query_patch_with_group_by(partial_query, row["id"])
+        row["starter_query_patch"] = _query_patch_with_group_by(seed, row["id"])
 
     payload = {
         "terms": terms,
@@ -2519,7 +2309,6 @@ def discover_payload(
     # this deliberately with terms="").
     if not str(terms or "").strip():
         payload["warnings"] = [
-            *list(payload.get("warnings", []) or []),
             {
                 "code": "DISCOVER_NO_TERMS",
                 "message": (
@@ -2534,11 +2323,7 @@ def discover_payload(
                 ),
             },
         ]
-    if verbosity == "full":
-        return payload
-    if verbosity == "minimal":
-        return _slim_discover_minimal(payload)
-    return payload
+    return _slim_discover_minimal(payload) if verbosity == "minimal" else payload
 
 
 _MINIMAL_DISCOVER_RECORD_KEYS = (
@@ -2789,44 +2574,36 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
 
-    valid_dimensions: list[dict[str, Any]] = []
-    disabled_dimensions: list[dict[str, Any]] = []
-    for dim in config.dimensions:
-        availability = _path_availability(config, root_entity, dim.entity)
-        row = {**asdict(dim), **availability}
-        (valid_dimensions if availability["available"] else disabled_dimensions).append(row)
+    def partition(
+        rows: Iterable[Any], entity_of: Callable[[Any], str | None]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Each row with its path availability from the root, split into valid and disabled."""
+        valid: list[dict[str, Any]] = []
+        disabled: list[dict[str, Any]] = []
+        for item in rows:
+            entity = entity_of(item)
+            availability = (
+                _path_availability(config, root_entity, entity)
+                if entity is not None
+                else {
+                    "available": False,
+                    "reason": "temporal role does not have a queryable backing dimension",
+                    "path": [],
+                    "candidates": [],
+                }
+            )
+            row = {**asdict(item), **availability}
+            (valid if availability["available"] else disabled).append(row)
+        return valid, disabled
 
-    valid_temporal_roles: list[dict[str, Any]] = []
-    disabled_temporal_roles: list[dict[str, Any]] = []
-    for role in config.temporal_roles:
+    def role_entity(role: Any) -> str | None:
         dim = next((d for d in config.dimensions if d.id == role.dimension), None)
-        if dim is None:
-            row = {
-                **asdict(role),
-                "available": False,
-                "reason": "temporal role does not have a queryable backing dimension",
-                "path": [],
-                "candidates": [],
-            }
-            disabled_temporal_roles.append(row)
-            continue
-        availability = _path_availability(config, root_entity, dim.entity)
-        row = {**asdict(role), **availability}
-        (valid_temporal_roles if availability["available"] else disabled_temporal_roles).append(row)
+        return dim.entity if dim is not None else None
 
-    valid_measures: list[dict[str, Any]] = []
-    disabled_measures: list[dict[str, Any]] = []
-    for measure in config.measures:
-        availability = _path_availability(config, root_entity, measure.entity)
-        row = {**asdict(measure), **availability}
-        (valid_measures if availability["available"] else disabled_measures).append(row)
-
-    valid_entities: list[dict[str, Any]] = []
-    disabled_entities: list[dict[str, Any]] = []
-    for entity in config.entities:
-        availability = _path_availability(config, root_entity, entity.id)
-        row = {**asdict(entity), **availability}
-        (valid_entities if availability["available"] else disabled_entities).append(row)
+    valid_dimensions, disabled_dimensions = partition(config.dimensions, lambda row: row.entity)
+    valid_temporal_roles, disabled_temporal_roles = partition(config.temporal_roles, role_entity)
+    valid_measures, disabled_measures = partition(config.measures, lambda row: row.entity)
+    valid_entities, disabled_entities = partition(config.entities, lambda row: row.id)
 
     valid_metric_constructs = [
         {"kind": "aggregate", "available": True, "reason": ""},
@@ -2916,9 +2693,10 @@ def _build_options_payload(
     config = runtime._config
     require_temporal_support(config, requested=step == "time" or stage == "time")
     maps = _config_maps(config)
-    # Patches build on the caller's Query IR only; the policy context in
+    # Patches build on the caller's call only; the policy context in
     # partial_query decides visibility, never a patch's contents.
     raw_query = _query_ir(partial_query)
+    call = _call_of(partial_query)
 
     def _infer_builder_step() -> str:
         if step:
@@ -3062,7 +2840,7 @@ def _build_options_payload(
                 blocked_reason=str(row.get("blocked_reason", "") or ""),
                 query_patch=_query_patch_with_selection(
                     runtime,
-                    partial_query,
+                    call,
                     {"id": row["id"], "kind": row["kind"], "label": row["label"]},
                 ),
             )
@@ -3077,13 +2855,21 @@ def _build_options_payload(
         guidance = _aggregation_guidance(focus_measure)
         suggested_rank = {agg: idx for idx, agg in enumerate(guidance["suggested_aggregations"])}
         for agg in guidance["allowed_aggregations"]:
-            patch = dict(raw_query or {})
-            patch.setdefault("version", 1)
-            expression: dict[str, Any] = {"measure": focus_measure.id, "aggregation": agg}
-            if agg == "percentile":
+            patch = dict(call)
+            expression: Any = (
+                focus_measure.id
+                if agg == focus_measure.default_aggregation
+                else {"kind": "measure", "measure": focus_measure.id, "aggregation": agg}
+            )
+            if agg == "percentile" and isinstance(expression, dict):
                 # A percentile needs its p; the median is the neutral starting point.
                 expression["parameters"] = {"p": 0.5}
-            patch["select"] = [{"expression": expression, "as": focus_measure.label}]
+            alias = focus_measure.id.split(".")[-1]
+            patch["select"] = [
+                expression
+                if isinstance(expression, str)
+                else {"expression": expression, "as": alias}
+            ]
             rank = 20.0 - (float(suggested_rank[agg]) / 10.0) if agg in suggested_rank else 10.0
             row = {
                 "id": agg,
@@ -3138,12 +2924,10 @@ def _build_options_payload(
                 stage=stage,
             )
             patch = (
-                _query_patch_with_group_by(partial_query, str(row["id"]))
+                _query_patch_with_group_by(call, str(row["id"]))
                 if builder_step == "group_by"
-                else dict(raw_query or {})
+                else dict(call)
             )
-            if builder_step == "filter_dimension":
-                patch.setdefault("version", 1)
             option = _option_row(card, rank=score, rationale=reasons, query_patch=patch)
             if any(
                 marker in reasons
@@ -3201,13 +2985,7 @@ def _build_options_payload(
             )
             dim_card = _object_card(runtime, target_dimension, partial_query)
             for value_row in values["values"]:
-                patch = dict(raw_query or {})
-                patch.setdefault("version", 1)
-                patch.setdefault("where", [])
-                patch["where"] = [
-                    *list(patch.get("where", []) or []),
-                    {"field": target_dimension, "op": "=", "value": value_row["value"]},
-                ]
+                patch = _query_patch_with_where(call, target_dimension, value_row["value"])
                 option = {
                     "id": f"{target_dimension}={value_row['value']}",
                     "object_type": "dimension_value",
@@ -3251,7 +3029,7 @@ def _build_options_payload(
                     else str((supported_grains or ["month"])[0])
                 )
             )
-            patch = _query_patch_with_time(partial_query, str(role["id"]), patch_grain)
+            patch = _query_patch_with_time(call, str(role["id"]), patch_grain)
             is_default = str(role["id"]) == default_role_id or (
                 not default_role_id and role.get("default_query_time_axis")
             )
@@ -3292,8 +3070,7 @@ def _build_options_payload(
                 )
 
     else:
-        base_patch = dict(raw_query or {})
-        base_patch.setdefault("version", 1)
+        base_patch = dict(call)
         query_patches = [base_patch]
         recommended.append(
             {
@@ -3312,7 +3089,7 @@ def _build_options_payload(
             }
         )
 
-    if raw_query.get("route_decisions"):
+    if call.get("routes"):
         # A patch that would leave one of the caller's route rows unused is refused as it
         # stands: offer it blocked with that refusal, never with the row stripped.
         for offered in (recommended, available):
@@ -3381,37 +3158,82 @@ def _build_options_payload(
 
 def _unused_route_decision(runtime: Runtime, patch: dict[str, Any] | None) -> str:
     """The ``route_decision_unused`` refusal ``patch`` would get, naming the row, else ``""``."""
-    if not patch or not patch.get("route_decisions"):
+    if not patch or not patch.get("routes"):
         return ""
     try:
-        bind_query(runtime._config, runtime.registry, patch)
+        bind_query(runtime._config, runtime.registry, runtime.engine_payload(patch, partial=True))
     except SemanticLayerError as exc:
         if exc.details.get("reason") == "route_decision_unused":
             return str(exc)
     return ""
 
 
-def _select_expr_for_choice(runtime: Runtime, chosen: dict[str, Any]) -> dict[str, Any]:
-    if chosen["kind"] == "metric":
-        return {"expression": {"metric": chosen["id"]}, "as": chosen["label"]}
-    measure = _config_maps(runtime._config)["measures"][chosen["id"]]
-    return {
-        "expression": {"measure": chosen["id"], "aggregation": measure.default_aggregation},
-        "as": chosen["label"],
-    }
+def _call_of(partial_query: dict[str, Any] | None) -> dict[str, Any]:
+    """A caller's seed (the engine's form) in the call's spelling, for the patches built on it."""
+    return call_from_query(_query_ir(partial_query))
 
 
 def _query_patch_with_selection(
-    runtime: Runtime, partial_query: dict[str, Any], chosen: dict[str, Any]
+    runtime: Runtime, call: dict[str, Any], chosen: dict[str, Any]
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["select"] = [_select_expr_for_choice(runtime, chosen)]
+    query = {**call, "select": [str(chosen["id"])]}
     if chosen.get("kind") == "metric" and not query.get("time"):
         time = _metric_patch_time(runtime, str(chosen.get("id", "")))
         if time:
             query["time"] = time
     return query
+
+
+def _metric_min_window_unit(expression: Any) -> str:
+    """Return the coarsest required window unit ('month', 'quarter', 'year')
+    found in a metric expression tree, or '' if none. Used by the probe
+    to pick a probe grain that matches `prior_period`/`rolling`/etc.
+    window units; without this, a `prior_period(month)` metric probed at
+    day grain raises REWRITE_NOT_SUPPORTED."""
+    if expression is None:
+        return ""
+    units = []
+    direct_unit = getattr(expression, "unit", "")
+    if isinstance(direct_unit, str) and direct_unit:
+        units.append(direct_unit.lower())
+    for attr in ("offset", "window"):
+        spec = getattr(expression, attr, None)
+        if isinstance(spec, dict):
+            unit = str(spec.get("unit", "")).strip().lower()
+            if unit:
+                units.append(unit)
+    for attr in ("input", "left", "right", "numerator", "denominator", "base", "converted"):
+        if hasattr(expression, attr):
+            units.append(_metric_min_window_unit(getattr(expression, attr)))
+    for arg in getattr(expression, "args", None) or []:
+        units.append(_metric_min_window_unit(arg))
+    order = ["year", "quarter", "month", "week", "day"]
+    return min((unit for unit in units if unit in order), key=order.index, default="")
+
+
+def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
+    require_temporal_support(runtime._config)
+    role_id = str(recipe.temporal_role or "").strip()
+    if not role_id:
+        compatible_roles = list(recipe.compatible_temporal_roles or [])
+        default_roles = [
+            role.id
+            for role in runtime._config.temporal_roles
+            if role.default_query_time_axis and role.id in compatible_roles
+        ]
+        if default_roles:
+            role_id = default_roles[0]
+        elif compatible_roles:
+            role_id = compatible_roles[0]
+    if not role_id:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Metric recipe '{recipe.id}' needs a time block in the call but has no compatible temporal role",
+            details={"metric": recipe.id},
+        )
+    coarsest_unit = _metric_min_window_unit(recipe.expression)
+    grain = coarsest_unit if coarsest_unit in {"month", "quarter", "year"} else "day"
+    return {"temporal_role": role_id, "grain": grain}
 
 
 def _metric_patch_time(runtime: Runtime, metric_id: str) -> dict[str, Any]:
@@ -3420,8 +3242,6 @@ def _metric_patch_time(runtime: Runtime, metric_id: str) -> dict[str, Any]:
     Windowed metrics (cumulative, rolling and the like) require query.time,
     so a patch selecting one carries the metric's default window.
     """
-
-    from .config_validation import _default_time_spec_for_metric
 
     recipe = _config_maps(runtime._config)["metric_recipes"].get(metric_id)
     if recipe is None:
@@ -3432,66 +3252,35 @@ def _metric_patch_time(runtime: Runtime, metric_id: str) -> dict[str, Any]:
     return {}
 
 
-def _query_patch_with_group_by(partial_query: dict[str, Any], dimension_id: str) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["group_by"] = list(dict.fromkeys([*list(query.get("group_by", []) or []), dimension_id]))
-    return query
+def _query_patch_with_group_by(call: dict[str, Any], dimension_id: str) -> dict[str, Any]:
+    return {**call, "group_by": list(dict.fromkeys([*(call.get("group_by") or []), dimension_id]))}
 
 
 def _query_patch_with_where(
-    partial_query: dict[str, Any], dimension_id: str, value: Any, op: str = "="
+    call: dict[str, Any], dimension_id: str, value: Any, op: str = "is"
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["where"] = [
-        *list(query.get("where", []) or []),
-        {"field": dimension_id, "op": op, "value": value},
-    ]
-    return query
+    condition = {"field": dimension_id, "op": op, "value": value}
+    return {**call, "where": [*(call.get("where") or []), condition]}
 
 
-def _query_patch_with_order_by_time(partial_query: dict[str, Any]) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["order_by"] = [
-        *list(query.get("order_by", []) or []),
-        {"field": "time", "direction": "DESC"},
-    ]
-    return query
+def _query_patch_with_order_by_time(call: dict[str, Any]) -> dict[str, Any]:
+    order = {"field": "period", "direction": "desc"}
+    return {**call, "order_by": [*(call.get("order_by") or []), order]}
 
 
 def _query_patch_with_metric_filter(
-    partial_query: dict[str, Any], metric_id: str, op: str = ">", value: Any = 0
+    call: dict[str, Any], metric_id: str, op: str = "gt", value: Any = 0
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    # Use the MetricRefExpr shape (`{kind: "metric", metric: "..."}`) +
-    # top-level op/value on the filter. This validates against
-    # `MetricFilterExpression` cleanly without requiring an `entity` or
-    # `input` field — the simpler form is the right scaffold for an
-    # agent who just wants to filter on a governed metric's value.
-    # Agents needing a more complex shape (metric_predicate with entity
-    # scope, contextual time grain, etc.) can read
-    # capabilities.expression_shapes for the full union.
-    query["metric_filters"] = [
-        *list(query.get("metric_filters", []) or []),
-        {
-            "expression": {"kind": "metric", "metric": metric_id},
-            "op": op,
-            "value": value,
-        },
-    ]
-    return query
+    # The rows whose metric value passes: a result filter on the metric, computed for the
+    # filter. The op and value are placeholders.
+    condition = {"field": metric_id, "op": op, "value": value}
+    return {**call, "having": [*(call.get("having") or []), condition]}
 
 
 def _query_patch_with_time(
-    partial_query: dict[str, Any], temporal_role: str, grain: str = ""
+    call: dict[str, Any], temporal_role: str, grain: str = ""
 ) -> dict[str, Any]:
-    query = _query_ir(partial_query)
-    query.setdefault("version", 1)
-    query["time"] = {"temporal_role": temporal_role, "grain": grain or "month"}
-    return query
+    return {**call, "time": {"temporal_role": temporal_role, "grain": grain or "month"}}
 
 
 def _infer_time_grain_from_text(text: str, default: str = "month") -> str:
@@ -3531,8 +3320,7 @@ def _starter_query_patches(
     *,
     card: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    query = dict(partial_query or {})
-    query.setdefault("version", 1)
+    query = _call_of(partial_query)
     card = dict(card or {})
     if not card:
         card = _object_card(runtime, object_id, partial_query)
@@ -3570,9 +3358,9 @@ def _starter_query_patches(
                 _infer_time_grain_from_text(starter_text, default="month"),
             )
             patches.append({"kind": "time", "query_patch": time_query})
-            # `order_by.field = "time"` is a stable shortcut whenever the
-            # query has a time axis — surface it as a starter so blind
-            # agents don't have to guess the shape.
+            # `order_by.field = "period"` names the time axis whenever the
+            # call has a grain — surface it as a starter so blind agents
+            # don't have to guess the shape.
             patches.append(
                 {
                     "kind": "order_by",
@@ -3639,16 +3427,13 @@ def _starter_query_patches(
                     "note": "scaffold — replace value with the filter target before executing",
                 }
             )
-        # For metric cards, scaffold a `metric_filters` clause so agents
-        # see the governed-filter shape regardless of whether the metric
-        # itself is predicate-backed. Predicate-backed metrics get this
-        # scaffold for free; for non-predicate metrics, the scaffold is
-        # how an agent threads "filter on this metric's value" into a
-        # query whose select is different. The op/value are placeholders.
+        # For metric cards, scaffold a `having` clause so agents see how to
+        # keep only the rows whose metric value passes. The op/value are
+        # placeholders.
         if kind == "metric":
             patches.append(
                 {
-                    "kind": "metric_filters",
+                    "kind": "having",
                     "query_patch": _query_patch_with_metric_filter(select_query, object_id),
                     "note": "scaffold — set op/value before executing",
                 }

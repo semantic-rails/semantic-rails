@@ -34,13 +34,12 @@ from tests.semantic_rails.hidden_absent import (
     OBJECT_FIELDS,
     access_policy,
     decoded_strings,
-    http_call,
-    mcp_call,
     object_rows,
     outcome,
     visibility_policy,
     with_policies,
 )
+from tests.semantic_rails.visible_view_sweep import http_as, mcp_as
 
 # A measure, and a relationship on the route from orders to stores.
 TARGETS = ("measure.jaffle.revenue_usd", "relationship.orders_store")
@@ -155,14 +154,14 @@ def _calls(config: PackageConfig, hidden: frozenset[str]) -> dict[str, Callable[
         if row.id not in hidden and row.kind not in {"conversion", "ratio"}
     )
     measure = next(row.id for row in config.measures if row.id not in hidden)
-    query = {"select": [{"expression": {"metric": metric}, "as": "value"}]}
+    query = {"select": [{"expression": metric, "as": "value"}]}
     calls: dict[str, Callable[[Runtime], Any]] = {}
 
     def mcp(tool: str, **arguments: Any) -> Callable[[Runtime], Any]:
-        return lambda runtime: mcp_call(runtime, tool, {**arguments, "policy_context": CALLER})
+        return lambda runtime: mcp_as(runtime, tool, arguments, CALLER)
 
     def http(route: str, **body: Any) -> Callable[[Runtime], Any]:
-        return lambda runtime: http_call(runtime, route, {**body, "policy_context": CALLER})
+        return lambda runtime: http_as(runtime, route, body, CALLER)
 
     def get(route: str, **params: Any) -> Callable[[Runtime], Any]:
         def call(runtime: Runtime) -> Any:
@@ -201,11 +200,10 @@ def _calls(config: PackageConfig, hidden: frozenset[str]) -> dict[str, Callable[
                 )
     variants = {
         "": query,
-        "export": {**query, "export": True},
         "unknown group_by": {**query, "group_by": ["dimension.nope"]},
-        "unknown where": {**query, "where": [{"field": "nope", "op": "=", "value": "x"}]},
+        "unknown where": {**query, "where": [{"field": "nope", "op": "is", "value": "x"}]},
         "bad grain": {**query, "time": {"temporal_role": "", "grain": "fortnight"}},
-        "misspelt metric": {"select": [{"expression": {"metric": f"{metric}x"}, "as": "v"}]},
+        "misspelt metric": {"select": [{"expression": f"{metric}x", "as": "v"}]},
         "by store": {**query, "group_by": ["dimension.jaffle_store_name"]},
     }
     for name, variant in variants.items():
@@ -252,7 +250,7 @@ def test_no_planted_slot_reaches_a_caller(package, action, target, mode):
                     leaks.setdefault(match.group(1) or "<bare>", []).append(label)
             if _codes(response) & set(REFUSED):
                 refused.append(label)
-        # Enforcement is the same caller's without the visibility policy: rows, export hint.
+        # Enforcement is the same caller's without the visibility policy: the same rows.
         policies = [row for row in planted.semantic_policies if row.kind != "object_visibility"]
         base = replace(planted, semantic_policies=policies)
         base_runtime = Runtime.from_config(base, source_path=str(root))
@@ -260,20 +258,10 @@ def test_no_planted_slot_reaches_a_caller(package, action, target, mode):
             tagged = next(
                 row.id for row in planted.measures if row.id not in hidden and row.meta.get("mnpi")
             )
-            query = {"select": [{"expression": {"measure": tagged}, "as": "value"}]}
-            mine = runtime.query({**query, "policy_context": CALLER})
-            theirs = base_runtime.query({**query, "policy_context": CALLER})
+            query = {"select": [{"expression": tagged, "as": "value"}]}
+            mine = runtime.query(query, context=CALLER)
+            theirs = base_runtime.query(query, context=CALLER)
             assert mine["rows"] == theirs["rows"]
-            exported = {**query, "export": True}
-            hints = [
-                {row["code"] for row in out["methodology_hints"]}
-                for out in (
-                    runtime.validate({**exported, "policy_context": CALLER}),
-                    base_runtime.validate({**exported, "policy_context": CALLER}),
-                )
-            ]
-            assert hints[0] == hints[1]
-            assert "MNPI_BULK_EXPORT_DISCOURAGED" in hints[0]
         finally:
             base_runtime.close()
     finally:

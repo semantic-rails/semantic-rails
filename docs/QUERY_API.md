@@ -1,10 +1,11 @@
 # Query API
 
-This guide covers the active CLI, HTTP routes, query AST, and response shapes.
+This guide covers the active CLI, HTTP routes, the query call, and response shapes.
 
 The API is served by the public `semantic-rails` runtime and CLI.
 
-> **Machine-readable Query IR contract:** [`schemas/query_ir.v1.json`](../schemas/query_ir.v1.json) (Draft 2020-12). Narrative reference and worked examples per expression position: [QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md).
+> **The query call:** [QUERY_CALL.md](QUERY_CALL.md) is the reference, with worked examples;
+> [`schemas/query.v2.json`](../schemas/query.v2.json) (Draft 2020-12) is the machine-readable contract.
 
 The stable HTTP contract is served under `/api/v1/*`.
 
@@ -20,7 +21,7 @@ Directory packages are loaded from a package root containing `package.yml`. The 
 - every YAML file under `models/**`
 - every YAML file under `metrics/**`
 
-Use [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md) for the authoring contract. The query payload shape below is unchanged by how the package is split across files.
+Use [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md) for the authoring contract. The query call is unchanged by how the package is split across files.
 
 ## CLI
 
@@ -85,9 +86,7 @@ All JSON HTTP responses include the operation payload plus additive contract fie
 - `api_version`
 - `request_id`
 - `package_id`
-- `warnings`
-- `errors`
-- `recovery_hints`
+- `warnings`, `errors` and `recovery_hints`, each only when it has entries
 - `timing_ms`
 
 Clients may send `X-Request-ID`, `X-Correlation-ID`, a `request_id` query parameter, or a
@@ -108,18 +107,17 @@ route alias prefixes, warehouse capabilities, package semantic capabilities, and
 `expression_shapes` — a structured list of the accepted `select[*].expression`
 shapes (`aggregate`, `metric`, `prior_period`, `rolling`, `cumulative`, `ratio`,
 `conversion`, `distribution`, `aggregate_if`, `between`). Each entry is a
-`{name, description, example}` dict so agents can introspect the IR contract at
-runtime without parsing `schemas/query_ir.v1.json` out of band.
-The capability list advertises `agent_query_ir_v1`, the only accepted Query IR
-version. Queries with `version: 2` are refused with `INVALID_QUERY` and
-`supported_versions: [1]`. Python capability payloads and MCP discovery/catalog
-resources expose the same capability list.
+`{name, description, example}` dict so agents can introspect the call at
+runtime without reading `schemas/query.v2.json` out of band.
+The capability list advertises `query_call_v2`. Python capability payloads and MCP
+discovery/catalog resources expose the same capability list.
 
 ## Request Context And API Key Shim
 
-The runtime accepts trusted request context from headers and merges it into `policy_context` for
-metadata, validate, compile, and query calls. Header context wins over body-provided
-context when both are present:
+The runtime resolves who is asking from the request's credentials, through the policy context
+resolver, for metadata, validate, compile, and query calls. The default resolver reads these
+headers; a request body or query string that says who is asking (`policy_context`, or `environment`
+and `audience` query parameters) is refused with `IDENTITY_CLAIM_REFUSED`, never stripped:
 
 - `X-Request-ID` or `X-Correlation-ID`
 - `X-Semantic-Actor`
@@ -134,13 +132,12 @@ hosted enterprise auth.
 
 ### Trusted Upstream Context
 
-`policy_context.audience`, `policy_context.environment`, `policy_context.tenant`, and
-`policy_context.roles` are **trusted upstream context**. The policy engine matches policies
+The request context's `audience`, `environment`, `tenant`, and `roles` are **trusted upstream
+context**. The policy engine matches policies
 against these fields (for example, a policy with `audiences: [finance]` only fires when the
 resolved context carries `audience=finance`). The default runtime reads them from request
-headers (and falls back to the body's `policy_context` block). `policy_context.attributes` is
-reserved for attributes an embedding host attaches ([EMBEDDING.md](EMBEDDING.md)); a value a
-caller sends is ignored.
+headers only. Trusted attributes are reserved for an embedding host
+([EMBEDDING.md](EMBEDDING.md)); a caller cannot send them.
 
 For local development, single-tenant on-prem, and any deployment behind a trusted edge,
 the header-based default is correct. **For multi-tenant hosted deployments it is unsafe** —
@@ -158,7 +155,7 @@ from semantic_rails.request_context import (
 
 
 class IdentityDerivedResolver:
-    def resolve(self, headers, *, payload=None, request_id=""):
+    def resolve(self, headers, *, request_id=""):
         identity = verify_jwt(headers.get("Authorization", ""))
         return RequestContext(
             request_id=request_id,
@@ -173,7 +170,7 @@ class IdentityDerivedResolver:
 set_policy_context_resolver(IdentityDerivedResolver())
 ```
 
-The Query IR, policy engine, and HTTP envelope do not change — the resolver is the only
+The query call, policy engine, and HTTP envelope do not change — the resolver is the only
 integration seam. The default `HeaderPolicyContextResolver` remains the OSS behavior so a
 single-user local install needs no additional configuration.
 
@@ -189,35 +186,41 @@ continue to mean business policy attributes; hosts enforce operation permissions
 separately before invoking the engine.
 
 Restricted queries select explicit metric references, such as
-`{"expression": {"metric": "metric.sales.customer_count"}, "as": "customers"}`.
+`{"expression": "metric.sales.customer_count", "as": "customers"}`.
 The allowed recipe can read its internal dependencies, subject to package access
 policies. Callers cannot select those measures or columns independently. Grouping,
 filters, and explicit time roles require corresponding dimension grants. Raw measures,
-column/conditional aggregates, runtime expression composition, child-scope groups, metric filters,
-temporal-role overrides, and dimension-only queries are unavailable in this bounded
-contract. Denial occurs before compilation or warehouse access, including cache hits.
-Metric and dimension grants do not authorize caller-selected child entity scopes;
-an explicit child group is denied even when all its condition dimensions are granted.
+column/conditional aggregates, runtime expression composition, entity filters, `having`,
+and dimension-only queries are unavailable in this bounded contract. Denial occurs before
+compilation or warehouse access, including cache hits. Metric and dimension grants do not
+authorize caller-selected entity scopes; an `any`/`none` entity filter is denied even when all
+its condition dimensions are granted.
 
 Catalog, discovery, inspection, and build options return a small projection containing
 only visible metric/dimension/temporal-role IDs and labels. Restricted planning matches
 explicit visible names, labels, or IDs, emits a direct metric reference, and can include
 explicit granted dimensions. General pattern composition, segment operations, and
-valid-value lookups are unavailable for restricted grants. Plans contain portable Query
-IR; each subsequent request must independently resolve its trusted grants. Restricted
+valid-value lookups are unavailable for restricted grants. Plans contain portable calls;
+each subsequent request must independently resolve its trusted grants. Restricted
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
 dependency descriptions, and related-object suggestions. Grant responses carry only
-listed engine diagnostics (`NO_DATA_YET`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
-`FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`, and
-`FILTERED_SERIES_BUCKETS_UNVERIFIED`) whose named objects are all granted. Bucket diagnostics
+listed engine diagnostics (`NO_DATA_YET`, `PARTIAL_DATA`, `ZERO_AFTER_LAST_ROW`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
+`FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`,
+`FILTERED_SERIES_BUCKETS_UNVERIFIED` and `BALANCE_SERIES_MISSING_ON_CLOSING_DAY`) whose named
+objects are all granted. A balance's closing-day disclosures (`BALANCE_CLOSING_DAY`,
+`BALANCE_SERIES_MISSING_ON_CLOSING_DAY`) are kept where the measure or a granted output
+reading it is granted, with the day and counts; a measure not granted is named by those
+outputs, never by its id. Bucket diagnostics
 re-enter authorization and reveal no bucket keys when the source read is denied. Requests
-cannot replace the resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
+cannot replace the resolved grants: a `policy_context` claim, top-level or nested, is refused over
+HTTP and hosted MCP with `IDENTITY_CLAIM_REFUSED`.
 
 `NO_DATA_YET` fires for guarded `NULL` series buckets beyond their visible coverage,
 empty totals with coverage proven before the window, or no visible coverage.
 `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`:
-`last_bucket` names a SQL bucket key, `before_window` names the resolved window start,
-and both `edge` and `edge_source` are null with no visible coverage. It replaces
+`edge` is the date of the measure's last visible row (`edge_source` `last_row`), or of its
+declared edge (`loaded`, null when the load log holds no date; `now`), and both are null with
+no visible coverage. It replaces
 `EMPTY_RESULT_WINDOW` and excludes covered outputs from `NO_DATA_IN_SCOPE`. It is granted
 only when every named measure is granted.
 
@@ -232,7 +235,7 @@ remains unavailable under restricted grants. Output descriptors retain `field`,
 but omit lineage. MCP `row_format=columns` therefore retains its schema on zero rows.
 
 For example, after discovering the granted Customer count metric and Customer type
-dimension, `plan("Show me customer count by customer type")` produces portable Query IR
+dimension, `plan("Show me customer count by customer type")` produces a portable call
 that can pass through validate, compile, and execute. Additional unsupported intent
 clauses return an unrealizable plan. This is a bounded planning contract, not full
 parity with the general expression and segment workflows.
@@ -253,13 +256,14 @@ returning warehouse or package-generated error details.
 `QUERY_EXECUTION_ERROR` envelopes redact the rendered SQL by default (sha256 + outline +
 char count). Raw SQL is only included in `details.sql` when **all three** of these hold:
 
-1. The request payload sets `debug: true`.
+1. The caller asks for it: `Runtime.query(call, debug=True)` (an embedding host or local
+   caller; HTTP and MCP requests carry no debug option).
 2. The operator sets the env var `SEMANTIC_RAILS_ALLOW_DEBUG_SQL=1`.
 3. The resolved request context carries the `debug` role.
 
 The env var (#2) is the operator opt-in: with the OSS default resolver, any client can
-self-assert `roles: ["debug"]` in the body, so role membership alone is not sufficient
-authority. Operators flip the env var only after replacing the resolver with one bound to
+self-assert the `debug` role in the `X-Semantic-Roles` header, so role membership alone is not
+sufficient authority. Operators flip the env var only after replacing the resolver with one bound to
 authenticated identity.
 
 Authentication is disabled by default. Set `SEMANTIC_RAILS_API_KEYS` or
@@ -288,18 +292,18 @@ The preferred human-like query-building cascade is:
 4. `valid-values`
    Page or search categorical values for a selected dimension.
 5. `validate`
-   Check the Query IR and get repair hints, output columns, and performance risk.
+   Check the call and get repair hints, output columns, and performance risk.
 6. `compile`
    Generate SQL without execution. The response includes an `explain` payload with
    chosen relationship paths, candidates, contracts, and the full plan.
 7. `query`
    Execute once the query is assembled.
 
-`plan` is the agent planning entrypoint. It returns `status`, `intent_ir`, and a validated best Query IR draft by default. `detail: "query"` (the MCP default) is for when the next step is direct execution; it keeps the same planning and validation behavior but omits trace, alternatives, `next`, and compose hints. For advanced runtime-composition requests, drafts may use Query IR nodes such as `ratio`, `scoped_aggregate`, `aggregate_if`, `metric_predicate`, `entity_value`, `distribution`, `between`, and `arithmetic`.
+`plan` is the agent planning entrypoint. It returns `status`, `intent_ir`, and a validated best draft call (`best.query`) by default. `detail: "query"` (the MCP default) is for when the next step is direct execution; it keeps the same planning and validation behavior but omits trace, alternatives, `next`, and compose hints. For advanced runtime-composition requests, drafts may use inline kinds such as `ratio`, `scoped_aggregate`, `aggregate_if`, `metric_predicate`, `entity_value`, `distribution`, `between`, and `arithmetic`.
 
 ## Compile-Only SQL
 
-`POST /compile` accepts the same payload as `validate` and `query`, but never executes SQL. It returns:
+`POST /compile` accepts the same body as `validate` and `query`, but never executes SQL. It returns:
 
 - `rendered_sql`
 - `sql_profile`
@@ -356,16 +360,17 @@ cannot serve the requested measure aggregation (including a distinct count of
 anything but the model's single-column row key), the compiler falls back to the
 raw relation.
 
-`validate`, `compile`, and `query` accept a `verbosity` field (`minimal` | `compact` |
-`full`). The HTTP default is `compact`. Over MCP they are one tool, `execute` with `mode`
-`validate`, `sql` or `run`, which defaults to `minimal` instead: it keeps only
-`{ok, status, errors, warnings}` (plus `error` on failure) and `rendered_sql` in mode `sql` and
-`rows` + `row_count` in mode `run` — see
+`validate`, `compile`, and `query` take a `verbosity` option (`minimal` | `compact` |
+`full`; over HTTP `options.verbosity`). The HTTP default is `compact`. Over MCP they are one
+tool, `execute` with `mode` `validate`, `sql` or `run`, which defaults to `minimal` instead: it
+keeps only `{ok, status, errors, warnings}` (plus `error` on failure) and `rendered_sql` in mode
+`sql` and `rows` + `row_count` in mode `run`, plus the answer fields that change what the
+numbers mean (`window`, `clock`, `observation_scope`, `routes`, `assumptions`) — see
 [MCP_INTERFACE.md](MCP_INTERFACE.md). Recovery hints live on each issue in `errors`.
-An explicit `verbosity` overrides the default on both surfaces; over MCP,
-`query.verbosity` takes precedence over the outer `verbosity` argument.
+An explicit `verbosity` argument overrides the default on both surfaces; inside the call it is
+refused.
 
-`sql_profile` currently defaults to `audit`. Callers may pass `sql_profile: "compact"` or `sql_profile: "debug"`; unsupported profile-specific rewrites fall back to audit-safe SQL while preserving the requested profile in metadata.
+`sql_profile` (`options.sql_profile` over HTTP) defaults to `audit`. Callers may pass `compact` or `debug`; unsupported profile-specific rewrites fall back to audit-safe SQL while preserving the requested profile in metadata.
 
 `output_columns` maps result fields back to semantic metadata:
 
@@ -380,104 +385,59 @@ An explicit `verbosity` overrides the default on both surfaces; over MCP,
 }
 ```
 
-## Query Shape
+## The Call
 
-All runtime queries use stable IDs.
-
-`select` is optional when the query is a distinct-values query driven by `group_by` and/or `time`.
-At least one of `select`, `group_by`, or `time` must be present.
-
-```json
-{
-  "version": 1,
-  "select": [
-    {
-      "expression": {
-        "measure": "measure.jaffle.order_count"
-      },
-      "as": "orders"
-    },
-    {
-      "expression": {
-        "metric": "metric.sales.aov_usd"
-      },
-      "as": "aov_usd"
-    }
-  ],
-  "group_by": ["dimension.jaffle_store_name"],
-  "where": [
-    {
-      "field": "dimension.jaffle_order_ordered_at",
-      "op": ">=",
-      "value": "2016-09-01 00:00:00"
-    }
-  ],
-  "metric_filters": [
-    {
-      "expression": {
-        "measure": "measure.jaffle.order_count"
-      },
-      "op": ">",
-      "value": 0
-    }
-  ],
-  "time": {
-    "temporal_role": "temporal_role.jaffle_order_time",
-    "grain": "month",
-    "start": "2016-09-01 00:00:00",
-    "end": "2016-12-01 00:00:00",
-    "fill": false,
-    "calendar_id": "default"
-  },
-  "temporal_role_overrides": {},
-  "order_by": [
-    {
-      "field": "orders",
-      "direction": "DESC"
-    }
-  ],
-  "limit": 25,
-  "policy_context": {
-    "environment": "production",
-    "audience": "finance",
-    "roles": ["sales"]
-  },
-  "debug": false,
-  "explain": false
-}
-```
-
-`time.start` is **inclusive** (`>=`) and `time.end` is **exclusive** (`<`) — the window is
-`[start, end)`. The example above covers September through November 2016; to include December,
-set `end` to `"2017-01-01 00:00:00"`. Half-open bounds let adjacent windows compose without
-overlap. See [QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#timeblock) for the full `TimeBlock`
-contract, including the object-only `range.last` relative window
-(`unit` ∈ `day | week | month | quarter | year`).
-
-A window (`start` and/or `end`) with no `time.grain` is one total over the window per `group_by`
-group, with no time column, including a window inside one day. The response says so in
-`assumptions` and sets `time_shape: "window_total"`. Setting `time.grain` returns one row per
-period instead. Queries that need a time axis, such as a rolling or prior-period expression, a
-metric predicate (including one in an aggregate's `filter` or a metric recipe), and a `time` block
-with no window are not collapsed.
-
-`policy_context` is optional and scopes visibility, access, and metric-constraint policies for metadata, validation, and query routes.
-
-### Request `limits` block (optional)
-
-The query envelope accepts an optional `limits` block with per-request
-resource hints:
+`validate`, `compile` and `query` take a query call: the question, with nothing in it that says
+who is asking or how to render the answer. [QUERY_CALL.md](QUERY_CALL.md) is the reference.
+Over HTTP the body is the call with its options beside it:
 
 ```json
 {
-  "version": 1,
-  "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-  "limits": {
-    "statement_timeout_ms": 30000,
-    "max_rows": 10000
-  }
+  "query": {
+    "select": ["measure.jaffle.order_count", {"expression": "metric.sales.aov_usd", "as": "aov_usd"}],
+    "group_by": ["dimension.jaffle_store_name"],
+    "where": [{"field": "dimension.jaffle_store_name", "op": "not", "value": "Brooklyn"}],
+    "having": [{"field": "order_count", "op": "gt", "value": 0}],
+    "time": {"start": "2016-09-01", "end": "2016-12-01", "grain": "month"},
+    "order_by": [{"field": "order_count", "direction": "desc"}],
+    "limit": 25
+  },
+  "options": {"now": "2017-09-04T12:00:00Z", "verbosity": "compact"}
 }
 ```
+
+The body may also be the call itself. `options` takes `now`, `verbosity` and `sql_profile`;
+any other key beside `query` and `options` is refused. Identity never travels in the body:
+the resolved request context scopes visibility, access and metric-constraint policies, and a
+`policy_context` anywhere in the body is refused with `IDENTITY_CLAIM_REFUSED`. `options.now` pins the
+instant relative windows (`time.last`, `time.this`) resolve against; `plan` takes `options.now`
+beside `intent` and its seed `query`.
+
+- `time.start` is inclusive and `time.end` exclusive: the window is `[start, end)`. The
+  example covers September through November 2016.
+- A window with no `time.grain` is one total per `group_by` group, with no time column; the
+  response says so in `assumptions` (`WINDOW_TOTAL`). With a grain, the
+  time axis is the `period` column (an ISO date) and each row carries `period_partial`.
+- A named window (`last`, `this`, or `start` with `end`) answers every period, except
+  beside a `group_by` on a date or time dimension, on ClickHouse (no day spine), or on a clock
+  whose zone is not a known time zone, where it keeps the rows with data and says why
+  (`OBSERVED_PERIODS_ONLY`); see [Named and open windows](QUERY_CALL.md#named-and-open-windows).
+- `order_by.field` names a select alias, a `group_by` dimension id, or `period`. Without
+  `order_by`, a series returns its periods ascending, then its `group_by` dimensions in their
+  stated order (also ascending), on every warehouse. A window total has no default order.
+- Output column names (`select[*].as`, `group_by` ids, `period`) must be unique; duplicates
+  fail validation with `DUPLICATE_OUTPUT_ALIAS`.
+- `select` is optional when `group_by` is present: the call lists the distinct rows.
+
+```json
+{"group_by": ["dimension.jaffle_store_name"], "order_by": [{"field": "dimension.jaffle_store_name", "direction": "asc"}], "limit": 25}
+```
+
+### Row caps and timeouts
+
+Python callers pass `limits={"statement_timeout_ms": ..., "max_rows": ...}` beside the call
+(`Runtime.query(call, limits=...)`); over MCP the row cap is the `execute` tool's `max_rows`.
+The call's own `limit` is the question's top N, not a cap.
 
 - `statement_timeout_ms` — DuckDB enforces the requested millisecond deadline
   with a per-query watchdog that interrupts the cursor running that query (never
@@ -493,240 +453,123 @@ resource hints:
   `truncated=true` when an additional row exists. Adapters without bounded reads
   still apply the cap after materialization.
 
-Unrecognized keys are ignored. Invalid values (non-int, negative) are
+Unrecognized `limits` keys are ignored. Invalid values (non-int, negative) are
 treated as unset. This is scaffolding for hosted operators to enforce
 per-tenant policies without forking; the OSS default has no limits.
 
-`order_by.field` can reference:
+## Inline Expressions
 
-- a projected alias like `orders`
-- a grouped dimension ID like `dimension.jaffle_store_name`
-- the stable reserved alias `time` whenever the query has a time axis
-
-When `order_by` is omitted or empty, a query with a time axis returns rows
-in ascending time-bucket order, followed by its `group_by` dimensions in their
-stated order (also ascending). This applies on every warehouse, including
-`time.fill` results. An explicit `order_by` replaces this default. A time window
-without a time axis (one total per group) has no default ordering.
-
-Output column names must be unique across:
-
-- `select[*].as`
-- grouped dimension IDs
-- the projected time-axis alias such as `temporal_role.jaffle_order_time__month`
-
-Duplicate output names fail validation with `DUPLICATE_OUTPUT_ALIAS`.
-
-Distinct-values examples:
+A `select` item's `expression` is an id string or an inline kind; a reference anywhere inside
+a kind is an id string too. The kinds and their keys are listed in
+[Inline expression kinds](QUERY_CALL.md#inline-expression-kinds):
 
 ```json
 {
-  "version": 1,
-  "group_by": ["dimension.jaffle_store_name"],
-  "order_by": [{ "field": "dimension.jaffle_store_name", "direction": "ASC" }],
-  "limit": 25
+  "select": [
+    {"expression": {"kind": "measure", "measure": "measure.jaffle.item_revenue_usd", "aggregation": "percentile", "parameters": {"p": 0.95}}, "as": "p95_item_revenue"},
+    {"expression": {"kind": "arithmetic", "op": "divide", "left": "measure.jaffle.revenue_usd", "right": "measure.jaffle.order_count"}, "as": "aov"}
+  ],
+  "group_by": ["dimension.jaffle_store_name"]
 }
 ```
 
+Windowed kinds need `time.grain`:
+
 ```json
 {
-  "version": 1,
-  "time": {
-    "temporal_role": "temporal_role.jaffle_order_time",
-    "grain": "month",
-    "start": "2017-01-01 00:00:00",
-    "end": "2017-04-01 00:00:00"
-  },
-  "order_by": [{ "field": "time", "direction": "ASC" }]
+  "select": [
+    {"expression": {"kind": "cumulative", "input": "measure.jaffle.order_count"}, "as": "orders_to_date"},
+    {"expression": {"kind": "rolling", "input": "measure.jaffle.revenue_usd", "window": {"unit": "month", "value": 3}}, "as": "revenue_3m"},
+    {"expression": {"kind": "prior_period", "input": "measure.jaffle.revenue_usd", "offset": {"unit": "month", "value": 1}}, "as": "revenue_month_before"},
+    {"expression": {"kind": "period_to_date", "input": "measure.jaffle.revenue_usd", "period": "year"}, "as": "revenue_ytd"}
+  ],
+  "time": {"grain": "month", "end": "2016-12-01"}
 }
 ```
 
-## Expression Nodes
-
-### Query-Time Expression Nodes
-
-Supported in `select` and `metric_filters.expression`:
-
-- measure reference
-
-```json
-{ "measure": "measure.jaffle.order_count", "aggregation": "count_distinct" }
+```jsonc
+{"rows": [{"period": "2016-09-01", "period_partial": false, "orders_to_date": 1367, "revenue_3m": 18053.279999999995, "revenue_month_before": null, "revenue_ytd": 18053.279999999995},
+          {"period": "2016-10-01", "period_partial": false, "orders_to_date": 3052, "revenue_3m": 39977.229999999996, "revenue_month_before": 18053.279999999995, "revenue_ytd": 39977.229999999996},
+          {"period": "2016-11-01", "period_partial": false, "orders_to_date": 5332, "revenue_3m": 67894.04999999999, "revenue_month_before": 21923.949999999997, "revenue_ytd": 67894.04999999999}]}
 ```
 
-- metric reference
+They read periods before the ones they return, so a `time.start` (or a `where` on a date) that
+would cut that lookback is refused; an `end` alone runs. See
+[Windows that read earlier periods](QUERY_CALL.md#windows-that-read-earlier-periods).
 
-```json
-{ "metric": "metric.sales.aov_usd" }
-```
+### Predicates
 
-- arithmetic
+A predicate keeps the measure's rows whose entity passes a test on one of its own aggregates.
+In a call it is an entity filter in `where`
+(`{"entity", "having": [{field, op, value}], "over"}`, see
+[Entity filters](QUERY_CALL.md#entity-filters)) or a `metric_predicate` inside a
+`scoped_aggregate`. Predicate expressions are not valid as projected result columns.
 
 ```json
 {
-  "kind": "arithmetic",
-  "op": "divide",
-  "left": { "measure": "measure.jaffle.revenue_usd" },
-  "right": { "measure": "measure.jaffle.order_count" }
-}
-```
-
-- aggregate parameters
-
-```json
-{
-  "measure": "measure.jaffle.item_revenue_usd",
-  "aggregation": "percentile",
-  "parameters": { "p": 0.95 }
-}
-```
-
-- cumulative
-
-```json
-{
-  "kind": "cumulative",
-  "input": { "measure": "measure.jaffle.order_count" },
-  "partition_by": []
-}
-```
-
-- rolling
-
-```json
-{
-  "kind": "rolling",
-  "input": { "measure": "measure.jaffle.revenue_usd" },
-  "window": { "unit": "day", "value": 7 },
-  "partition_by": []
-}
-```
-
-- prior period
-
-```json
-{
-  "kind": "prior_period",
-  "input": { "measure": "measure.jaffle.revenue_usd" },
-  "offset": { "unit": "month", "value": 1 }
-}
-```
-
-- period to date
-
-```json
-{
-  "kind": "period_to_date",
-  "input": { "measure": "measure.jaffle.revenue_usd" },
-  "period": "month",
-  "partition_by": []
-}
-```
-
-- metric predicate
-
-Supported in metric definitions and in `metric_filters.expression`. Predicate expressions are not valid as projected result columns.
-
-```json
-{
-  "kind": "metric_predicate",
-  "entity": "entity.jaffle_customer",
-  "scope_mode": "contextual",
-  "input": { "measure": "measure.jaffle.order_count" },
-  "op": ">",
-  "value": 10
-}
-```
-
-`metric_predicate` rules:
-
-- query-time predicates default to `scope_mode: "contextual"` when omitted
-- package-authored predicates must declare `scope_mode`
-- supported scope modes are `contextual` and `entity_only`
-- contextual predicates inherit the outer time bucket and compatible grouped context entities
-- outer `where` filters are inherited when they are compatible, but they do not widen the scoped join key
-- optional `time_grain` is only valid for contextual predicates and must be a coarser deterministic ancestor of the outer query grain on the same calendar
-- contextual predicates inherit the query period by default; omit `time_alignment` unless the input is measured on another clock (next bullet). Plan drafts never set it
-- a contextual predicate whose input is measured on another clock than `time.temporal_role` is refused with `INVALID_TEMPORAL_BINDING`: matching the two clocks' calendar buckets is a different question. Query on the input's clock, use `scope_mode: "entity_only"` for all time, or set `time_alignment: "same_query_period"` (pinning one clock with the input's `temporal_role` if it has several) to compare the calendar periods on purpose
-- `time_alignment` values are `same_query_period` (contextual only), `query_window` and `rolling_window_in_period` (both only for `entity_only` bounded-window predicates)
-- An `entity_only` window predicate uses the query clock when compatible, or its input's sole compatible clock. If the query clock is incompatible and the input has several clocks, it refuses with `INVALID_TEMPORAL_BINDING` and lists the candidates. A measure's `default_temporal_role` does not choose among those clocks. For a direct measure input, pin its `temporal_role` or set `temporal_role_overrides` for the measure. For a metric input advertising several `compatible_temporal_roles`, pins and measure overrides inside the metric do not narrow those clocks; set `query.time.temporal_role` to one of the listed clocks. For either input, omit `time_alignment` to apply the predicate over all time. A model's default time supplies the clock only when the measure does not declare its own `times` list.
-- A window-aligned metric predicate refuses with `INVALID_TEMPORAL_BINDING` if the chosen window clock is excluded by any measure inside the input, by its pin, an override or its declared clocks; for a conversion, its base measure (the period filters base events; converted events match each base event's window).
-- `temporal_role_overrides` do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion or a time window refuses with `INVALID_TEMPORAL_BINDING`.
-- a threshold that zero satisfies (`= 0`, `< 3`, `<= 0`, `!= 1`) counts an entity with no rows at all as 0 when the input is a count or a sum, or an add or subtract of them, so "customers with no orders" works. Every entity, with rows or none, reads by one rule (see [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0)): an operand is 0 where its measure has data somewhere in the predicate's scope, and `NULL` where it has none. So `large_orders = 0` keeps every customer without a large order when some order in scope is large, and keeps nobody when none is (with no large order anywhere in scope there is no data, not a count of zero), and `orders - returned_orders` is `NULL` for every customer in a window where nothing was returned. An entity whose rows all have a NULL amount is unknown (`NULL`), not 0, except that an add or subtract of measures, a measure with a `CASE` below its expression root, and any predicate in a query with a `distribution` output, reads an operand's unknown amounts as 0 where its measure has data in scope. `NULL` satisfies no threshold, as with a `metric_filter` on the same expression. An average, minimum, maximum, median or ratio over no rows is `NULL` too (an average of nothing is undefined), so `average_order_value < 20` keeps only customers that have orders, as SQL `HAVING AVG(x) < 20` does. Conversion metrics and anchored `scoped_aggregate` ratios refuse a count or sum threshold that zero satisfies for now
-
-Monthly contextual example:
-
-```json
-{
-  "kind": "metric_predicate",
-  "entity": "entity.jaffle_customer",
-  "scope_mode": "contextual",
-  "input": { "measure": "measure.jaffle.order_count" },
-  "op": ">",
-  "value": 10
-}
-```
-
-Runtime-composed qualified rollup example:
-
-```json
-{
-  "version": 1,
   "select": [{
     "as": "revenue_usd_from_qualified_customers",
     "expression": {
       "kind": "scoped_aggregate",
       "measure": "measure.jaffle.revenue_usd",
-      "aggregation": "sum",
-      "predicates": [{
-        "measure": "measure.jaffle.order_count",
-        "entity": "entity.jaffle_customer",
-        "op": ">=",
-        "value": 10
-      }]
+      "predicates": [{"input": "measure.jaffle.order_count", "entity": "entity.jaffle_customer", "op": "gte", "value": 10, "over": "period"}]
     }
   }],
   "group_by": ["dimension.jaffle_store_name"],
-  "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
+  "time": {"grain": "month"}
 }
 ```
 
-Daily outer grain with monthly predicate grain:
+Predicate rules:
+
+- `over` is required: `all_time` (every row of the entity, ignoring the call's window),
+  `window` (the entity's rows inside the call's window) or `period` (per entity per output
+  period; needs `time.grain`). Without it the call is refused with
+  `ENTITY_FILTER_PERIOD_UNSTATED`. The aggregate is per entity and never split by the call's
+  other dimensions. `op` is `is`, `not`, `gt`, `gte`, `lt` or `lte`.
+- Package-authored predicates (in a metric's `filter:`) keep the engine's own scope keys
+  (`scope_mode: contextual | entity_only`, `time_grain`, `time_alignment`); see
+  [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
+- An `over: window` predicate uses the query clock when compatible, or its input's sole
+  compatible clock. If the query clock is incompatible and the input has several clocks, it
+  refuses with `INVALID_TEMPORAL_BINDING` and lists the candidates. A measure's
+  `default_temporal_role` does not choose among those clocks. For a direct measure input, pin
+  its `temporal_role` (`{"kind": "measure", "measure", "temporal_role"}`). For a metric input
+  advertising several `compatible_temporal_roles`, pins inside the metric do not narrow those
+  clocks; set `time.temporal_role` to one of the listed clocks. Or use `over: all_time`. A
+  model's default time supplies the clock only when the measure does not declare its own
+  `times` list.
+- A window-aligned predicate refuses with `INVALID_TEMPORAL_BINDING` if the chosen window clock
+  is excluded by any measure inside the input, by its pin or its declared clocks; for a
+  conversion, its base measure (the period filters base events; converted events match each
+  base event's window).
+- A threshold that zero satisfies (`is 0`, `lt 3`, `lte 0`, `not 1`) counts an entity with no
+  rows at all as 0 when the input is a count or a sum, or an add or subtract of them, so
+  "customers with no orders" works. Every entity, with rows or none, reads by one rule (see
+  [Empty groups](QUERY_CALL.md#empty-groups-null-or-0)): an operand is 0 where its measure has
+  data somewhere in the predicate's scope, and `NULL` where it has none. So
+  `large_order_count is 0` keeps every customer without a large order when some order in scope
+  is large, and keeps nobody when none is. `NULL` satisfies no threshold, as with a `having`
+  on the same expression. An average, minimum, maximum, median or ratio over no rows is `NULL`
+  too, so `average_order_value lt 20` keeps only customers that have orders, as SQL
+  `HAVING AVG(x) < 20` does. Conversion metrics and anchored `scoped_aggregate` ratios refuse
+  a count or sum threshold that zero satisfies for now.
+
+### Conversion
 
 ```json
 {
-  "kind": "metric_predicate",
-  "entity": "entity.jaffle_customer",
-  "scope_mode": "contextual",
-  "time_grain": "month",
-  "input": { "measure": "measure.jaffle.order_count" },
-  "op": ">",
-  "value": 10
-}
-```
-
-Entity-only lifetime example:
-
-```json
-{
-  "kind": "metric_predicate",
-  "entity": "entity.jaffle_customer",
-  "scope_mode": "entity_only",
-  "input": { "measure": "measure.jaffle.lifetime_order_count" },
-  "op": ">",
-  "value": 1
-}
-```
-
-- conversion
-
-```json
-{
-  "kind": "conversion",
-  "entity": "entity.jaffle_customer",
-  "window": { "unit": "day", "value": 7 },
-  "matching_mode": "first_converted_after_base",
-  "base": { "measure": "measure.jaffle.session_starts" },
-  "converted": { "measure": "measure.jaffle.order_count" }
+  "select": [{
+    "expression": {
+      "kind": "conversion",
+      "entity": "entity.jaffle_customer",
+      "window": {"unit": "day", "value": 7},
+      "matching_mode": "first_converted_after_base",
+      "base": "measure.jaffle.session_starts",
+      "converted": "measure.jaffle.order_count"
+    },
+    "as": "conversion_7d"
+  }]
 }
 ```
 
@@ -798,7 +641,7 @@ Each result includes:
 - `root_entity`
 - `default_temporal_role`
 - `recommended_next_actions`
-- `starter_query_patch` — runnable IR seed attached to every measure,
+- `starter_query_patch` — runnable call seed attached to every measure,
   metric, and dimension candidate. Measures/metrics seed `select`;
   dimensions seed `group_by`. Removes the discover → inspect round-trip
   blind agents otherwise need just to copy the patch shape.
@@ -854,13 +697,13 @@ Useful card fields for measures:
   Always includes `select` (and `group_by` when a recommended dimension
   exists, `time` when a default temporal role exists). May also include:
   - `order_by` — when the card has a `default_temporal_role`; seeds
-    `[{field: "time", direction: "DESC"}]`.
+    `[{field: "period", direction: "desc"}]`.
   - `where` — when a recommended dimension has a declared `value_domain`;
     seeds a sample-value filter using `{field, op, value}`. The `note`
     field flags the value as scaffolding.
-  - `metric_filters` — only on predicate-backed metric cards; seeds the
-    `{kind: "metric_predicate", metric, op, value}` shape. The `note`
-    field flags the op/value as scaffolding to replace before executing.
+  - an entity filter — only on predicate-backed metric cards; seeds
+    `{entity, having: [{field, op, value}], over}`. The `note` field flags the
+    op/value as scaffolding to replace before executing.
 - `policy_effects`
 - `policy_visibility`
 
@@ -871,16 +714,7 @@ Request:
 ```json
 {
   "query": {
-    "version": 1,
-    "select": [
-      {
-        "expression": {
-          "measure": "measure.jaffle.order_count",
-          "aggregation": "count_distinct"
-        },
-        "as": "orders"
-      }
-    ]
+    "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]
   },
   "focus_terms": "orders by store",
   "focus_object_id": "measure.jaffle.order_count",
@@ -955,7 +789,6 @@ Optional `POST /catalog` inputs:
 - `kind`
 - `search`
 - `entity`
-- `policy_context`
 
 When `verbosity=full`, measure and metric rows can include a top-level `operational` block and the same fields inside `payload.operational` for packages that declare operational metadata.
 
@@ -970,7 +803,6 @@ Request fields:
 - `offset`
 - `include_counts`
 - `allow_live_query`
-- `policy_context`
 
 Response keys:
 
@@ -1029,7 +861,7 @@ Response keys:
 - `plan_version`
 - `intent`
 - `intent_ir`
-- `status` (`ok`, `low_confidence`, `unrealizable`, or `out_of_scope`)
+- `status` (`ok`, `needs_clarification`, `low_confidence`, `unrealizable`, or `out_of_scope`)
 - `best` (`null` unless a draft exists)
 - `next`
 - `why` when `status != "ok"`
@@ -1040,7 +872,7 @@ Response keys:
 
 `detail="query"` is an MCP-oriented compact projection. It preserves
 `plan_version`, `intent`, `status`, `why`, `tie_break_hints`, `assumptions`, `warnings`, and a compact
-`best` containing `pattern`, `query_ir`, `resolved`, `validation_ok`, and
+`best` containing `pattern`, `query`, `resolved`, `validation_ok`, and
 `subject_ids_used`.
 
 For `status="out_of_scope"`, `why.code` distinguishes classifier
@@ -1059,28 +891,30 @@ prove that the qualification was applied. Store grouping terms use the same
 dimension resolution as other entities. A bare "by store" can therefore require clarification;
 name the intended dimension, such as "by store id" or "by store name".
 
-`best.query_ir` is the canonical Query IR for the selected draft. When
+`best.query` is the call for the selected draft. When
 `status="ok"`, `plan` has already called `validate`, which pays the
 compile cost and warms the runtime compile cache. Agents can forward
-`best.query_ir` to `compile` or `query`; call `validate` again only when
-they need the full diagnostics envelope or are editing the IR by hand.
+`best.query` to `compile` or `query`; call `validate` again only when
+they need the full diagnostics envelope or are editing the call by hand.
 
-Planning applies the caller's `policy_context` (carried in `partial_query`)
-to the time reference as well: when `policy_context.now` is supplied, `today`,
+Planning reads the time reference against the request's `now` (`options.now` over HTTP, the
+`now` argument over MCP; default the server clock): `today`,
 `yesterday`, `this/current <day|week|month|quarter|year>` and relative ranges use
 that clock. Plan drafts and checks every window in one planning zone: the package's
-default zone (UTC when unset). An aware `now` (or, without `now`, the current
-instant) is read in each zone; a naive `now` is already local. A draft is `ok`
+default zone (UTC when unset). `now` (or, without it, the current instant) is read in each
+zone; a `now` without an offset is UTC. A draft is `ok`
 only when the question's window reads the same days in the selected temporal
 role's zone as in the planning zone; otherwise plan holds with
 `TIME_WINDOW_UNRESOLVED`, names the window phrases in
-`why.details.unresolved_phrases` and returns no `query_ir`. The check covers every
+`why.details.unresolved_phrases` and returns no `best.query`. The check covers every
 role a metric's legs are read on: a leg that can't read the selected role keeps its
 own, and `why.details.temporal_roles` names each such role whose zone reads other
-days, with its zone. With `now` supplied,
-a returned relative range (`time.range`) becomes the `time.start` and `time.end`
-that clock gives it in the role's zone, so the returned Query IR runs the window
-plan checked without `policy_context`. A caller bound is read only at a whole day
+days, with its zone. A relative phrase stays relative in the draft ("last week" is
+`time.last`, "this month" `time.this`), so the call resolves against the `now` it is sent
+with. Two periods side by side ("month over month") return `needs_clarification` with
+`PERIOD_COMPARISON` and a call that reads them as one series; a comparison whose period isn't
+over at `now` holds with `PERIOD_COMPARISON_INCOMPLETE`. A caller bound is read only at a
+whole day
 (a date, or 00:00 with no offset or a UTC one), and one with a zone designator (`Z`
 or `±hh:mm`) only when its offset is the role zone's at that instant; a window
 missing either bound, a bound with another time of day, or a window whose start is
@@ -1093,7 +927,7 @@ the complete cue. An explicit interval cannot consume an as-of request. A range
 ending in an as-of cue (`2026-01-01 to now`) stays unresolved in full, and an
 unrepresentable closing-day bound also returns this hold rather than an exception.
 
-Planning reads the package as the caller's `policy_context` sees it, before matching
+Planning reads the package as the caller sees it (the resolved request context), before matching
 or ranking dimensions, measures and metrics, including catalog fallback and Intent IR
 groupings and subjects: an object hidden from the caller is absent from drafts,
 alternatives, diagnostics and composition hints in every detail mode, and naming one has
@@ -1110,11 +944,11 @@ only strict matches satisfy a grouping. The reason lists
 `ambiguous_groupings` and `details.clarification.options`, with one validated
 option per visible candidate dimension. Each option names its `id`, `label`
 and grouping `term`. With exactly one unclear term, it also carries
-`group_by`, `where` and `order_by`: apply those three fields to `best.query_ir`,
+`group_by`, `where` and `order_by`: apply those three fields to `best.query`,
 then validate or execute the chosen reading. Filters and unrelated groupings
 are preserved; dimension sort fields follow the chosen grouping. With two or
 more unclear terms, options carry `id`, `label`, `term` and `replaces`, the draft
-`group_by` IDs matching that term. In `best.query_ir`, for each ambiguous term,
+`group_by` IDs matching that term. In `best.query`, for each ambiguous term,
 remove its chosen option's `replaces` IDs from `group_by` and the corresponding
 `order_by` entries, add the chosen `id` to `group_by`, keep `group_by` IDs sorted
 so choices compose in any order, then validate. When two terms could replace the
@@ -1136,7 +970,7 @@ the package without the hidden object. Error messages refer
 to structured clock alternatives without embedding catalog IDs. Package authoring
 validation retains the full catalog for reference suggestions.
 
-Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
+Validate or execute `best.query` directly. `next` carries `ready_for` and optional
 `valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
 reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`
 instead of repeating their values. Full/debug and query detail retain expanded diagnostics.
@@ -1147,13 +981,13 @@ Every `best` entry may include a compact `trace` showing extracted intent slots,
 subjects/groupings/filters/paths, and whether a fallback was used. Treat it as diagnostic context,
 not as a separate workflow or server-side trace store.
 
-`plan` preserves any caller-supplied partial Query IR fields. Additive
-fields such as `select`, `where`, `metric_filters`, `order_by`, and
+`plan` preserves any caller-supplied partial call fields. Additive
+fields such as `select`, `where`, `having`, `order_by`, and
 `group_by` keep the caller entries first, then append generated entries
 when needed.
 
 The question's values from one value-list phrase on the same dimension become one
-filter: `=` for one value and `in` for several. This yields one total or one
+filter: `is` with one value or a list. This yields one total or one
 combined ranking; no grouping is added for those values. A per-value breakdown
 needs an explicit grouping in the question (for example, "by store") or the
 caller's `group_by`.
@@ -1179,27 +1013,25 @@ and store is Philadelphia" retains both equalities, reports `contradictory_filte
 and has no `execute` readiness. Values without a proven shared list phrase also
 remain separate predicates.
 
-Qualified metric asks return `interpreted_intent.pattern: "qualified_metric_rollup"` and a validated runtime-composed `scoped_aggregate`. Contextual predicates omit `time_alignment`; `time_grain` appears only when the qualification grain differs from the output grain, such as daily output qualified by monthly customer activity.
+Qualified metric asks return `interpreted_intent.pattern: "qualified_metric_rollup"` and a validated runtime-composed `scoped_aggregate` whose predicates state `over`.
 
 ### `POST /api/v1/validate`
 
-Response keys:
+Response keys, besides [the answer](QUERY_CALL.md#the-answer) (`status`, `window`, `clock`,
+`observation_scope`, and `routes`, `assumptions`, `warnings` and `errors` when they have
+entries; no field is ever empty):
 
 - `ok`
 - `version`
-- `status`
-- `errors`
-- `warnings`
-- `recovery_hints`
-- `assumptions`
-- `time_shape` (only `"window_total"`, when the window was one total)
+- `recovery_hints` (when there are some)
 - `policy_effects`
 - `provenance_summary`
-- `disabled_options`
+- `disabled_options` (when there are some)
 - `logical_plan`
 - `explain`
-- `query`
-- `normalized_query`
+- `query` (the call it answered, in the call's spelling)
+- `normalized_query` (the call as the engine read it, defaults filled in, in the call's
+  spelling)
 - `timing_ms`
 
 `validate` returns structured diagnostics. It does not need to throw on semantic failure.
@@ -1211,23 +1043,19 @@ from the returned rows (see
 
 ### `POST /api/v1/query`
 
-Response keys:
+Response keys, besides [the answer](QUERY_CALL.md#the-answer):
 
 - `ok`
-- `status`
 - `rows`
 - `row_count`
 - `rendered_sql`
 - `logical_plan`
 - `sql_plan`
 - `explain`
-- `query`
-- `normalized_query`
-- `warnings`
-- `errors`
-- `recovery_hints`
-- `assumptions`
-- `time_shape` (only `"window_total"`, when the window was one total)
+- `query` (the call it answered, in the call's spelling)
+- `normalized_query` (the call as the engine read it, defaults filled in, in the call's
+  spelling)
+- `recovery_hints` (when there are some)
 - `withheld` (only for a rank by values a `withhold_values` policy withholds: the withheld
   objects, whose column `rows`, `column_types` and `output_columns` leave out; retained at
   minimal verbosity and under resource grants)
@@ -1306,33 +1134,34 @@ Canonical public error codes:
 
 The response `warnings` array can carry these non-error signals:
 
-- `UNGRAINED_TIME_PROJECTION` — fires when `time.temporal_role` is set
-  without `time.grain` or a `start`/`end` window (a window returns one total instead) AND the query has no `group_by` AND no inline
-  window expression (prior_period / rolling / cumulative /
-  period_to_date) carries its own grain. The planner will group by the
-  raw timestamp column and return one row per distinct value;
-  `details.recovery_hints[0]` (`SET_TIME_GRAIN`) recommends adding
-  `time.grain`: a grain whose one calendar bucket covers `[start, end)`
-  returns one total.
 - `NO_DATA_YET` — fires on `execute` for guarded `NULL` series buckets beyond visible
   coverage, empty totals whose coverage is proven before the window, or no visible
   coverage. `details.outputs` lists output aliases; `details.measures` lists
-  `{id, edge, edge_source}`. `last_bucket` names a SQL bucket key (a date for day or
-  coarser grains, a full ISO timestamp for sub-day grains); `before_window` names the
-  resolved window start. Both `edge` and `edge_source` are null with no visible coverage.
+  `{id, edge, edge_source}`: `edge` is the date, in the clock's zone, of the measure's last
+  visible row, with `edge_source` `last_row`, or of its declared edge (`zero_through`), with
+  `edge_source` `loaded` (`edge` null when the load log holds no date) or `now`. Both are
+  null with no visible coverage.
   An empty series with dated coverage keeps existing warnings. `NO_DATA_YET` replaces
   `EMPTY_RESULT_WINDOW`, and covered outputs are excluded from `NO_DATA_IN_SCOPE`.
   Resource grants expose it only when every named measure is granted.
-  See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+  See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
+- `ZERO_AFTER_LAST_ROW` (a note) — fires on `execute` when a sum or count whose package says
+  its table is always loaded (`zero_through: now`) reads days after its last row as `0`:
+  `details.measures` lists `{id, last_row}`. Resource grants expose it only when every named
+  measure is granted. See [Empty periods](PACKAGE_AUTHORING.md#empty-periods).
+- `PARTIAL_DATA` — fires on `execute` when a window total, or a row of a day-or-coarser
+  series, spans a whole day after `window.data_through` and before `now`'s day:
+  `details` `{through, days_covered, days, period}` (`period` only for a series row). See
+  [Partial periods](QUERY_CALL.md#partial-periods).
 - `NO_DATA_IN_SCOPE` — fires on `execute` when a sum, count or distinct count (or a sum or
   difference of them) reads `NULL` on every returned row, or nothing came back and neither a
-  `start`/`end` window nor a metric filter explains it. Such a
+  `start`/`end` window nor an entity filter explains it. Such a
   measure reads `0` in an empty group only where it has data in scope; here it has none, so it
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result, nor, under `observation_scope: "dataset"`, on an empty answer to a filtered query.
-  See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+  See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
 - `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
-  default) when a string `=` or `IN` `where` value matches no row of its dimension that the
+  default) when a string `is` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
   Aggregate-filter literals of a retained additive series are checked in both observation scopes.
   One warning per query; `details.filters` lists each `dimension`, `value` and the closest
@@ -1342,24 +1171,27 @@ The response `warnings` array can carry these non-error signals:
   separately authorized source query; averages over returned rows omit those buckets.
 - `FILTERED_SERIES_BUCKETS_UNVERIFIED` — that source query was denied, failed or capped,
   or the answer has a limit or population filter. `details.reason` explains why the
-  missing buckets could not be established. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+  missing buckets could not be established. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
+- `UNKNOWN_ROWS_KEPT` — a `not` condition kept rows whose value is unknown (NULL or a
+  declared `unknown_values` entry). `details` has `field`, `rows` (how many) and `values`; the
+  message gives the `missing: false` condition that leaves them out. Only when `rows` > 0.
 - `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
   `time` block selects measures of different entities or governed metrics with differing
   sets of real time roles, mixing at least two distinct roles. Undated measures are ignored;
   a governed metric counts as one clock. The message names the roles and says each period is
   read on its own role's clock; measure-level filters can bound those periods.
-  `details.clocks` lists each `subject` with its `temporal_roles`. See
-  [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers).
+  `details.clocks` lists each `subject` with its `temporal_roles`. With a `time` block and no
+  `temporal_role`, the same mix is refused instead, with one option per clock (see
+  [The clock](QUERY_CALL.md#the-clock)).
 - `EXPRESSION_NORMALIZED_AWAY` — fires when an input expression `kind`
   was recognized by the parser but did not survive normalization (or
   the user's `as:` alias is missing from compiled output). Carries
   `details.dropped_expression` and `details.compiled_kind` so the agent
   can decide whether to retry with a different shape.
 - `QUERY_SHORTHAND_NORMALIZED` — fires on `validate`, `compile` and `execute`
-  (not `plan`) once per select item that was accepted as shorthand and
-  rewritten to its canonical form. Carries `details.path` (the item as
-  the caller numbered it), `details.received` and `details.canonical`. See
-  [Query IR schema](QUERY_IR_SCHEMA.md#selectitem).
+  (not `plan`) once per `dimension.` id in `select` that was moved to `group_by`.
+  Carries `details.path`, `details.received` and `details.canonical`. See
+  [`select`](QUERY_CALL.md#select).
 - `SEMANTIC_CAVEAT_APPLIED` — fires when a package-authored caveat is
   relevant to the compiled query shape and time window. Caveats are
   advisory interpretation context: they do not alter SQL, rows, access,
@@ -1368,20 +1200,8 @@ The response `warnings` array can carry these non-error signals:
   matched window or slice itself is affected and comparisons built on it
   can mislead. Agents should mention caveats only when explaining
   affected results.
-- `SEMANTIC_CAVEATS_TRUNCATED` — fires when more caveats matched than
-  the current verbosity returns. Increase `verbosity` to inspect the
-  omitted advisory context.
-- `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` — severity `info`, at `compact`
-  and `full` verbosity: the query reads an entity pair with two or more
-  routes, and the engine used the start entity's own key or the package's
-  `graph.path_preferences` rows. `details.route` is the chosen route; the
-  message reads it ("the Order's Store (own key)"). On `ROUTE_COLOCATED_KEY`,
-  `details.alternatives` holds the row that would make each other route the
-  default when that row would load beside the package's rows, and
-  `details.conflicts_with` lists any other route with the rows its row would
-  disagree with; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
-  it walks through, `details.rows` names them. See
-  [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
+  Every matching caveat is stated at every verbosity; verbosity trims only
+  each caveat's details.
 - `ROUTE_PASS_THROUGH` — severity `warning`, at every verbosity: the package's
   one route for a pair the query reads goes down into another table's rows and
   back up to another parent ("the Team of any of the Member's Member events"),
@@ -1389,33 +1209,31 @@ The response `warnings` array can carry these non-error signals:
   row is left out and one with several can count under several targets. The
   message gives the meaning and the fixes; `details.route`, `details.meaning`,
   `details.through` and `details.fixes` (`declare_key`, `declare_link_table`,
-  `record_route`, `child_group`). See
+  `record_route`, and `entity_filter` when the query has conditions on the target). See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
-- `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
-  `route_decisions` row the query applied. `details.row` is the row and
-  `details.replaced` what would have applied without it (`decided`,
-  `colocated_key`, `inherited`, `only_route` or `undecided`). Only an
-  `undecided` pair whose chosen route was offered by the package's own
-  `AMBIGUOUS_PATH` clarification gets `details.meaning` and
-  `details.route_alternatives`: at most three ready decision rows from those
-  same options, with each meaning in the row's `label`. Routes through entities
-  or relationships hidden under the query's policy context are not in the caller's
-  view, so they are never offered or counted. `details.more_alternatives`,
-  when present, counts the remaining visible alternatives. Validate the query
-  without `route_decisions` to receive every clarification option without a
-  warehouse query. State the chosen meaning and offer the listed rows as
-  one-step query switches; alternatives are never executed. The warning mentions
-  a reviewed package default using `details.row` once, without a duplicate
-  recovery hint. Pairs the package already resolves keep their existing message
-  and details. Route clarifications, conflict rows, inherited-row notes, and
-  plan candidates name only routes whose relationships and every waypoint
-  are visible to the caller. Routes are never re-chosen per caller: when the
+
+The answer's `routes` (not a warning) names each entity pair whose route was
+chosen among two or more, as `{from, to, via}`, at every verbosity; a pair with
+one route is not listed. A route the call chose among its `AMBIGUOUS_PATH`
+clarification's options adds `other_routes`: at most three of the other options,
+each ready to send as `routes`, with `more_routes` counting the rest. Validate
+the call without `routes` to receive every option without a warehouse query;
+alternatives are never executed. A compact or full answer adds how each route
+was chosen (`basis`): `routes` (the call's, with `replaced`: `decided`,
+`colocated_key`, `inherited`, `only_route` or `undecided`), `own_key` (the
+start entity's own key, with `alternatives`, the row that would make each other
+route the default when it would load beside the package's rows, and
+`conflicts_with`, any other route with the rows its row would disagree with) or
+`recorded` (the package's `graph.path_preferences` rows, with `recorded_for`
+naming the pairs whose rows an inherited route follows). Route clarifications,
+conflict rows, switches and plan candidates name only routes whose
+relationships and every waypoint are visible to the caller. Routes are never re-chosen per caller: when the
   package's route for a pair reads a hidden entity or relationship, the pair has
   no route for that caller (`PATH_NOT_FOUND`, `details.reason:
-  "no_relationship_chain"`), and a `route_decisions` row naming a hidden
+  "no_relationship_chain"`), and a `routes` entry naming a hidden
   relationship is an unknown id. An ambiguous pair offers only its visible
   routes and is never answered by the remaining one. See
-  [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
+  [`routes`](QUERY_CALL.md#routes).
 
 HTTP failures return:
 
@@ -1432,29 +1250,37 @@ HTTP failures return:
 
 `details` is returned whole on every surface (HTTP, MCP and CLI). An
 `AMBIGUOUS_PATH` refusal's `details` carry `reason: route_decision_required`,
-`start`, `target`, `hint` and `clarification`:
+`start`, `target`, `hint` and `clarification`. Customers by customer-history segment, on
+jaffle_shop:
 
 ```json
 {
   "code": "AMBIGUOUS_PATH",
   "details": {
     "reason": "route_decision_required",
-    "start": "entity.bank_account",
-    "target": "entity.bank_district",
+    "start": "entity.jaffle_customer",
+    "target": "entity.jaffle_customer_history",
     "clarification": {
       "kind": "route",
       "apply": ["query", "package"],
-      "question": "Which District does the question mean for an Account?",
+      "question": "Which Customer history does the question mean for a Customer?",
       "options": [
         {
-          "id": "branch_district",
-          "meaning": "the District of the Account's Branch",
-          "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+          "id": "order_customer_history",
+          "meaning": "the Customer history valid at the time of any of the Customer's Orders",
+          "relationship_path": ["relationship.orders_customer", "relationship.order_to_customer_history"],
           "decision": {
-            "source_entity": "entity.bank_account",
-            "target_entity": "entity.bank_district",
-            "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
-            "label": "the District of the Account's Branch"
+            "source_entity": "entity.jaffle_customer",
+            "target_entity": "entity.jaffle_customer_history",
+            "relationship_path": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+            "label": "the Customer history valid at the time of any of the Customer's Orders"
+          },
+          "query": {
+            "select": ["measure.jaffle.customer_count"],
+            "group_by": ["dimension.jaffle_customer_history_segment"],
+            "time": {"grain": "year"},
+            "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
+                        "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]}]
           }
         }
       ]
@@ -1464,9 +1290,8 @@ HTTP failures return:
 }
 ```
 
-Send an option's `decision` in the query's `route_decisions` to answer that
-query with it, or record it in the package with Architect
-`record_route_decision`.
+Send an option's `query` to answer the question with that route (this call only), or record
+its `decision` in the package with Architect `record_route_decision`.
 
 ## Real Example
 
@@ -1475,14 +1300,11 @@ curl -s -X POST http://127.0.0.1:8081/api/v1/query \
   -H 'Content-Type: application/json' \
   -d '{
     "query": {
-      "version": 1,
-      "select": [
-        { "expression": { "measure": "measure.jaffle.order_count" }, "as": "orders" },
-        { "expression": { "metric": "metric.sales.aov_usd" }, "as": "aov_usd" }
-      ],
+      "select": ["measure.jaffle.order_count", {"expression": "metric.sales.aov_usd", "as": "aov_usd"}],
       "group_by": ["dimension.jaffle_store_name"],
-      "time": { "temporal_role": "temporal_role.jaffle_order_time", "grain": "month" },
+      "time": {"last": {"unit": "month", "value": 3}, "grain": "month"},
       "limit": 5
-    }
+    },
+    "options": {"now": "2017-09-04T12:00:00Z"}
   }'
 ```

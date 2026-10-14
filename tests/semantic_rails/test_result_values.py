@@ -25,11 +25,8 @@ from semantic_rails.runtime import Runtime
 from tests.integration.harness import assert_column_types_match, assert_rows_match, normalize_rows
 from tests.semantic_rails.dbt_warehouse import write_orders_package
 
-QUERY = {
-    "version": 1,
-    "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-    "verbosity": "minimal",
-}
+QUERY = {"select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]}
+MINIMAL = {"verbosity": "minimal"}
 
 
 @pytest.mark.parametrize(
@@ -50,22 +47,10 @@ QUERY = {
         (None, None, {"type": "null"}),
         (True, True, {"type": "boolean"}),
         (date(2026, 9, 30), "2026-09-30", {"type": "date"}),
-        (
-            datetime(2026, 9, 30, 8, 15),
-            "2026-09-30T08:15:00",
-            {"type": "timestamp", "timezone": "naive"},
-        ),
-        (
-            datetime(2026, 9, 30, 8, 15, tzinfo=timezone(timedelta(hours=-4))),
-            "2026-09-30T12:15:00+00:00",
-            {"type": "timestamp", "timezone": "aware"},
-        ),
+        (datetime(2026, 9, 30, 8, 15), "2026-09-30T08:15:00", {"type": "timestamp", "timezone": "naive"}),
+        (datetime(2026, 9, 30, 8, 15, tzinfo=timezone(timedelta(hours=-4))), "2026-09-30T12:15:00+00:00", {"type": "timestamp", "timezone": "aware"}),
         (time(8, 15, 0, 123), "08:15:00.000123", {"type": "time", "timezone": "naive"}),
-        (
-            time(8, 15, tzinfo=timezone(timedelta(hours=-4))),
-            "12:15:00+00:00",
-            {"type": "time", "timezone": "aware"},
-        ),
+        (time(8, 15, tzinfo=timezone(timedelta(hours=-4))), "12:15:00+00:00", {"type": "time", "timezone": "aware"}),
         (timedelta(), "P0DT0H0M0S", {"type": "interval"}),
         (timedelta(days=-1, microseconds=1), "-P0DT23H59M59.999999S", {"type": "interval"}),
         (b"\x00\xff", "AP8=", {"type": "binary", "encoding": "base64"}),
@@ -76,7 +61,7 @@ QUERY = {
         ([9007199254740993, True], [9007199254740993, True], {"type": "array"}),
         ({"a": [{"n": 9007199254740993}]}, {"a": [{"n": 9007199254740993}]}, {"type": "object"}),
     ],
-)
+)  # fmt: skip
 def test_value_policy(value: Any, expected: Any, metadata: dict[str, str]) -> None:
     result = result_rows([{"value": value}])
     assert result["rows"] == [{"value": expected}]
@@ -101,7 +86,7 @@ def test_runtime_preserves_container_integers(
     runtime = runtime_factory("jaffle_shop")
     monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: rows)
     try:
-        result = runtime.query(QUERY)
+        result = runtime.query(QUERY, **MINIMAL)
         assert result["rows"] == [{"orders": expected}]
         assert result["column_types"] == {"orders": {"type": kind}}
         assert json.loads(json.dumps(result, allow_nan=False))["rows"] == [{"orders": expected}]
@@ -149,17 +134,17 @@ def test_mixed_timestamp_awareness_refuses() -> None:
 
 def test_date_bucket_and_timestamp_bucket_have_one_wire_type(runtime_factory, monkeypatch) -> None:
     runtime = runtime_factory("jaffle_shop")
-    column = "temporal_role.jaffle_order_time__day"
+    column = "period"
     row = {column: date(2026, 9, 30), "orders": 1}
     monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: [row])
     query = {**QUERY, "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"}}
     try:
-        duckdb_result = runtime.query(query)
+        duckdb_result = runtime.query(query, now="2026-10-01T00:00:00Z", **MINIMAL)
         row[column] = datetime(2026, 9, 30)
-        postgres_result = runtime.query(query)
+        postgres_result = runtime.query(query, now="2026-10-01T00:00:00Z", **MINIMAL)
         assert json_text(duckdb_result) == json_text(postgres_result)
-        assert duckdb_result["column_types"][column] == {"type": "timestamp", "timezone": "naive"}
-        assert duckdb_result["rows"][0][column] == "2026-09-30T00:00:00"
+        assert duckdb_result["column_types"][column] == {"type": "date"}
+        assert duckdb_result["rows"][0][column] == "2026-09-30"
     finally:
         runtime.close()
 
@@ -201,7 +186,7 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
     driver_rows = [duckdb_row, postgres_row]
     columns = []
     if include_snowflake:
-        bucket = "temporal_role.jaffle_order_time__day"
+        bucket = "period"
         columns = [{"field": bucket, "semantic_id": "temporal_role.jaffle_order_time"}]
         with duckdb.connect(":memory:") as connection:
             amount, orders, day = connection.execute(
@@ -230,9 +215,11 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
     try:
         for row in driver_rows:
             raw_rows[:] = [row]
-            sdk = runtime.query(QUERY)
+            sdk = runtime.query(QUERY, **MINIMAL)
             assert sdk["truncated"] is True
-            http, status = SemanticHTTPService(runtime).handle("POST", "/query", {"query": QUERY})
+            http, status = SemanticHTTPService(runtime).handle(
+                "POST", "/query", {"query": QUERY, "options": MINIMAL}
+            )
             assert status == 200
             sent = []
 
@@ -241,7 +228,7 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
 
             asyncio.run(app._send(send, 200, http))
             http = json.loads(sent[-1]["body"])
-            mcp = json.loads(json_text(adapter.call_tool("execute", {"query": QUERY})))
+            mcp = json.loads(json_text(adapter.call_tool("execute", {"query": QUERY, **MINIMAL})))
             _print_json(sdk)
             cli = json.loads(capsys.readouterr().out)
             for payload in (sdk, http, mcp, cli):
@@ -251,7 +238,9 @@ def test_driver_rows_are_byte_identical_on_http_mcp_sdk_and_cli(
             assert sdk["rows"] == [{"amount": "12.5", "orders": 3, bucket: "2026-09-30T00:00:00"}]
         else:
             assert sdk["rows"][0]["precise"] == "123456789012345678.123456789"
-        columnar = adapter.call_tool("execute", {"query": QUERY, "row_format": "columns"})
+        columnar = adapter.call_tool(
+            "execute", {"query": QUERY, "row_format": "columns", **MINIMAL}
+        )
         assert columnar["column_types"] == sdk["column_types"]
         assert columnar["rows"] == [[sdk["rows"][0][key] for key in columnar["columns"]]]
     finally:
@@ -468,7 +457,7 @@ def test_runtime_encoding_follows_driver_values_over_authored_types(tmp_path, ca
     model["model"]["measures"]["order_count"]["value_type"] = "integer"
     model["model"]["dimensions"]["status"]["kind"] = "integer"
     path.write_text(yaml.safe_dump(model))
-    expression = {"measure": "measure.shop.order_count"}
+    expression = "measure.shop.order_count"
     if case == "division":
         expression = {
             "kind": "arithmetic",
@@ -480,7 +469,6 @@ def test_runtime_encoding_follows_driver_values_over_authored_types(tmp_path, ca
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [{"expression": expression, "as": "v"}],
                 "group_by": ["dimension.shop_order_status"],
             }

@@ -12,6 +12,7 @@ from semantic_rails.compiler_parts import bind
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import ColumnRefExpr
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config
@@ -67,13 +68,15 @@ CONSTRAINTS = {
     "allowed_metric_filter_metrics": (
         {"allowed_metric_filter_metrics": []},
         "disallowed_metric_filter_metric",
-        {
-            "metric_filters": [
-                {"expression": {"metric": "metric.sales.customer_count"}, "op": ">", "value": 0}
-            ]
-        },
+        {"having": [{"field": "metric.sales.customer_count", "op": "gt", "value": 0}]},
     ),
 }
+
+
+def _compiles(config, query):
+    """Without the policy the query compiles (an engine-form query is passed as it is)."""
+    payload = query if "metric_filters" in query else read_call(query, config=config)[0]
+    assert compiler.compile_query(config, None, payload)["sql"]
 
 
 def _denied(engine, monkeypatch, query, kind):
@@ -83,13 +86,20 @@ def _denied(engine, monkeypatch, query, kind):
     monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
     monkeypatch.setattr(engine, "_compile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
-    result = engine.validate(query)
+    # An inline expression as an entity filter's input has no call spelling.
+    internal = "metric_filters" in query
+    result = (engine.validate_internal if internal else engine.validate)(query)
     assert result["errors"][0]["code"] == "POLICY_DENIED"
     violations = [
         row for effect in result["policy_effects"] for row in effect.get("violations", [])
     ]
     assert kind in [row["kind"] for row in violations]
-    for operation in (engine.compile, engine.query):
+    operations = (
+        (engine.compile_internal, engine.query_internal)
+        if internal
+        else (engine.compile, engine.query)
+    )
+    for operation in operations:
         with pytest.raises(SemanticLayerError) as raised:
             operation(query)
         assert raised.value.code == "POLICY_DENIED"
@@ -100,7 +110,7 @@ def _denied(engine, monkeypatch, query, kind):
 def test_a_column_aggregate_cannot_bypass_a_measure_constraint(config, monkeypatch, key):
     constraint, kind, extra = CONSTRAINTS[key]
     query = _query(**extra)
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = Runtime.from_config(
         replace(config, semantic_policies=[_policy(constraint)]), source_path=PACKAGE
     )
@@ -132,7 +142,7 @@ def test_every_read_uses_its_physical_source_column(config, monkeypatch, positio
         # Keep every read on the alias's grain; the governed measure uses the original entity.
         for node in (expression["condition"]["left"], expression["value"]):
             node["entity"] = alias.id
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = Runtime.from_config(
         replace(config, semantic_policies=[_policy({"allow_metric_filters": False})]),
         source_path=PACKAGE,
@@ -143,7 +153,6 @@ def test_every_read_uses_its_physical_source_column(config, monkeypatch, positio
         engine.close()
 
 
-@pytest.mark.parametrize("qualified", ["measure", "aggregate"])
 @pytest.mark.parametrize(
     "relation",
     [
@@ -155,25 +164,16 @@ def test_every_read_uses_its_physical_source_column(config, monkeypatch, positio
     ],
 )
 def test_relation_qualification_and_quoting_cannot_bypass_constraints(
-    config, monkeypatch, qualified, relation
+    config, monkeypatch, relation
 ):
     expression = deepcopy(SUM_REVENUE)
-    if qualified == "measure":
-        config = replace(
-            config,
-            measures=[
-                replace(row, source_relation=relation) if row.id == REVENUE else row
-                for row in config.measures
-            ],
-        )
-    else:
-        entity = next(row for row in config.entities if row.id == ORDER)
-        alias = replace(entity, id="entity.test.qualified_order", table=relation)
-        config = replace(config, entities=[*config.entities, alias])
-        for ref in (expression["condition"]["left"], expression["value"]):
-            ref["entity"] = alias.id
+    entity = next(row for row in config.entities if row.id == ORDER)
+    alias = replace(entity, id="entity.test.qualified_order", table=relation)
+    config = replace(config, entities=[*config.entities, alias])
+    for ref in (expression["condition"]["left"], expression["value"]):
+        ref["entity"] = alias.id
     query = _query(expression)
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = Runtime.from_config(
         replace(config, semantic_policies=[_policy({"allowed_where": [STORE]})]),
         source_path=PACKAGE,
@@ -186,13 +186,12 @@ def test_relation_qualification_and_quoting_cannot_bypass_constraints(
 
 @pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
 @pytest.mark.parametrize("governed_aggregation", ["count", "count_distinct"])
-@pytest.mark.parametrize("source_relation", ["", '"main"."JAFFLE_ORDER"', "other_orders"])
 @pytest.mark.parametrize(
     ("aggregation", "value"),
     [("count", None), ("count", "customer_id"), ("count_distinct", "customer_id")],
 )
 def test_counts_inherit_count_measure_constraints_on_their_relation(
-    config, monkeypatch, constraint_key, governed_aggregation, source_relation, aggregation, value
+    config, monkeypatch, constraint_key, governed_aggregation, aggregation, value
 ):
     config = replace(
         config,
@@ -201,7 +200,6 @@ def test_counts_inherit_count_measure_constraints_on_their_relation(
                 row,
                 default_aggregation=governed_aggregation,
                 allowed_aggregations=[governed_aggregation],
-                source_relation=source_relation,
             )
             if row.id == ORDER_COUNT
             else row
@@ -217,16 +215,12 @@ def test_counts_inherit_count_measure_constraints_on_their_relation(
         expression["value"]["column"] = value
     constraint, kind, _ = CONSTRAINTS[constraint_key]
     query = _query(expression)
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = Runtime.from_config(
         replace(config, semantic_policies=[_policy(constraint, ORDER_COUNT)]), source_path=PACKAGE
     )
     try:
-        if source_relation == "other_orders":
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
-        else:
-            _denied(engine, monkeypatch, query, kind)
+        _denied(engine, monkeypatch, query, kind)
     finally:
         engine.close()
 
@@ -293,23 +287,13 @@ def _order_aggregate(aggregation, value):
     }
 
 
-def _count_relation(config, source_relation):
-    return replace(
-        config,
-        measures=[
-            replace(row, source_relation=source_relation) if row.id == ORDER_COUNT else row
-            for row in config.measures
-        ],
-    )
-
-
 @pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
 @pytest.mark.parametrize("form", sorted(ROW_READS))
 def test_only_one_column_values_escape_count_constraints(config, monkeypatch, constraint_key, form):
     # sum(1), sum(x * 0 + 1) and sum(x) / avg(x) all recover the constrained row count.
     aggregation, value, _ = ROW_READS[form]
     query = _query(_order_aggregate(aggregation, value))
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     constraint, kind, _ = CONSTRAINTS[constraint_key]
     engine = Runtime.from_config(
         replace(config, semantic_policies=[_policy(constraint, ORDER_COUNT)]), source_path=PACKAGE
@@ -346,18 +330,10 @@ def test_an_unrecognized_synthetic_shape_reads_rows(config, monkeypatch, shape):
 
 
 @pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
-@pytest.mark.parametrize(
-    ("source_relation", "form"),
-    [("", form) for form in sorted(COLUMN_VALUES)]
-    + [("other_orders", form) for form, (_, _, sql) in sorted(ROW_READS.items()) if sql],
-)
-def test_column_values_and_other_relations_match_reference_sql(
-    tmp_path, constraint_key, source_relation, form
-):
+@pytest.mark.parametrize("form", sorted(COLUMN_VALUES))
+def test_column_values_match_reference_sql(tmp_path, constraint_key, form):
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
-    config = _count_relation(
-        replace(load_package_config(str(package)), semantic_policies=[]), source_relation
-    )
+    config = replace(load_package_config(str(package)), semantic_policies=[])
     aggregation, value, value_sql = {**COLUMN_VALUES, **ROW_READS}[form]
     constraint, _, _ = CONSTRAINTS[constraint_key]
     engine = Runtime.from_config(
@@ -378,34 +354,23 @@ def test_column_values_and_other_relations_match_reference_sql(
     assert actual[0]["value"] == pytest.approx(expected[0][0])
 
 
-@pytest.mark.parametrize("placement", ["select", "ratio", "metric_filter", "predicate"])
+@pytest.mark.parametrize("placement", ["select", "ratio", "having", "predicate"])
 def test_nested_conditional_aggregates_inherit_constraints(config, monkeypatch, placement):
     query = _query()
     if placement == "ratio":
+        query = _query({"kind": "ratio", "numerator": SUM_REVENUE, "denominator": REVENUE})
+    elif placement == "having":
+        query["select"].insert(0, ORDER_COUNT)
+        query["having"] = [{"field": "value", "op": "gt", "value": 0}]
+    elif placement == "predicate":
+        predicate = {"kind": "metric_predicate", "entity": ORDER, "input": SUM_REVENUE}
         query = _query(
-            {"kind": "ratio", "numerator": SUM_REVENUE, "denominator": {"measure": REVENUE}}
-        )
-    elif placement in {"metric_filter", "predicate"}:
-        expr = SUM_REVENUE
-        if placement == "predicate":
-            expr = {
-                "kind": "metric_predicate",
-                "entity": ORDER,
-                "input": expr,
-                "op": ">",
-                "value": 0,
-            }
-        query = _query(
-            {"measure": "measure.jaffle.order_count"},
+            {"measure": ORDER_COUNT},
             metric_filters=[
-                {
-                    "expression": expr,
-                    "op": "=" if placement == "predicate" else ">",
-                    "value": True if placement == "predicate" else 0,
-                }
+                {"expression": {**predicate, "op": ">", "value": 0}, "op": "=", "value": True}
             ],
         )
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = Runtime.from_config(
         replace(config, semantic_policies=[_policy({"allowed_where": [STORE]})]),
         source_path=PACKAGE,
@@ -474,7 +439,6 @@ def test_columns_read_from_another_entity_inherit_constraints(config, monkeypatc
             revenue,
             id="measure.test.customer_revenue",
             entity=customer,
-            source_relation="jaffle_customer",
             expr=ColumnRefExpr(column="customer_id"),
             lookup_from=REVENUE,
             lookup_via=customer,
@@ -483,7 +447,7 @@ def test_columns_read_from_another_entity_inherit_constraints(config, monkeypatc
         governed = lookup.id
         expression = SUM_REVENUE
     query = _query(expression)
-    assert compiler.compile_query(config, None, query)["sql"]
+    _compiles(config, query)
     engine = Runtime.from_config(
         replace(config, semantic_policies=[_policy({"allow_metric_filters": False}, governed)]),
         source_path=PACKAGE,
@@ -525,13 +489,10 @@ def test_an_unresolvable_constrained_lookup_never_admits_a_raw_aggregate(
 
 
 @pytest.mark.parametrize("table", [None, "jaffle_order"])
-@pytest.mark.parametrize("source_relation", ["jaffle_order", "other_orders"])
-def test_measure_relation_overrides_match_the_relation_sql_actually_reads(
-    config, table, source_relation
-):
+def test_a_measure_column_read_on_its_relation_is_constrained(config, table):
     revenue = next(row for row in config.measures if row.id == REVENUE)
     ref = ColumnRefExpr(column="order_total_cents", table=table or "")
-    changed = replace(revenue, expr=ref, source_relation=source_relation)
+    changed = replace(revenue, expr=ref)
     config = replace(
         config, measures=[changed if row.id == REVENUE else row for row in config.measures]
     )
@@ -543,10 +504,8 @@ def test_measure_relation_overrides_match_the_relation_sql_actually_reads(
         result = engine.validate(_query())
     finally:
         engine.close()
-    denied = bool(table) or source_relation == "jaffle_order"
-    assert result["ok"] is not denied, result
-    if denied:
-        assert result["errors"][0]["code"] == "POLICY_DENIED"
+    assert result["ok"] is False, result
+    assert result["errors"][0]["code"] == "POLICY_DENIED"
 
 
 @pytest.mark.parametrize("scoped", ["audiences", "roles", "environments"])
@@ -564,7 +523,7 @@ def test_inherited_constraints_retain_their_request_scope(config, scoped, matche
         source_path=PACKAGE,
     )
     try:
-        result = engine.validate(_query(policy_context=context))
+        result = engine.validate(_query(), context=context)
     finally:
         engine.close()
     assert result["ok"] is not matches, result

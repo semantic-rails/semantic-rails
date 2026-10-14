@@ -8,10 +8,12 @@ which caveats are relevant enough to surface as structured warnings.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
+from . import operators
 from .ast import child_groups, every_filter
+from .clock import shift_period
 from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
@@ -85,21 +87,8 @@ def caveat_warnings(
             row.caveat.id,
         )
     )
-    cap = {"minimal": 3, "compact": 5}.get(verbosity, len(matches))
-    selected = matches[:cap]
-    warnings = [_warning_for_match(match, verbosity=verbosity) for match in selected]
-    omitted = len(matches) - len(selected)
-    if omitted > 0:
-        warnings.append(
-            semantic_issue(
-                code="SEMANTIC_CAVEATS_TRUNCATED",
-                message="Additional semantic caveats matched but were omitted at this verbosity.",
-                severity="info",
-                stage="planning",
-                details={"omitted_count": omitted, "matched_count": len(matches)},
-            )
-        )
-    return warnings
+    # Every matching caveat is stated; verbosity trims only each one's details.
+    return [_warning_for_match(match, verbosity=verbosity) for match in matches]
 
 
 def _warning_for_match(match: _Match, *, verbosity: str) -> dict[str, Any]:
@@ -182,14 +171,14 @@ def _signals_for_query(
         if not isinstance(item, dict):
             continue
         expr = dict(item.get("expression", {}) or {})
-        signals.strong_object_ids.update(_collect_expr_object_ids(expr))
+        signals.strong_object_ids.update(collect_object_references(expr))
         if str(expr.get("kind", "") or "") == "prior_period":
             signals.comparative = True
 
     for item in list(query.get("metric_filters", []) or []):
         if isinstance(item, dict):
             signals.strong_object_ids.update(
-                _collect_expr_object_ids(dict(item.get("expression", {}) or {}))
+                collect_object_references(dict(item.get("expression", {}) or {}))
             )
 
     selected_metric_ids = [
@@ -198,7 +187,7 @@ def _signals_for_query(
     for metric_id in selected_metric_ids:
         metric = metrics[metric_id]
         expr_payload = expr_to_dict(metric.expression)
-        signals.strong_object_ids.update(_collect_expr_object_ids(expr_payload))
+        signals.strong_object_ids.update(collect_object_references(expr_payload))
         if _contains_kind(expr_payload, "prior_period"):
             signals.comparative = True
         if metric.temporal_role:
@@ -218,8 +207,7 @@ def _signals_for_query(
 
 
 def _where_values(row: dict[str, Any]) -> set[str]:
-    op = str(row.get("op", "") or "").strip().lower()
-    if op not in {"=", "==", "eq", "in"}:
+    if operators.word_of(row.get("op")) != "is":
         return set()
     raw = row.get("value")
     if isinstance(raw, list):
@@ -227,10 +215,6 @@ def _where_values(row: dict[str, Any]) -> set[str]:
     if raw is None:
         return set()
     return {str(raw)}
-
-
-def _collect_expr_object_ids(expr: dict[str, Any]) -> set[str]:
-    return set(collect_object_references(expr))
 
 
 def _contains_kind(expr: dict[str, Any], kind: str) -> bool:
@@ -585,23 +569,4 @@ def _shift_iso(value: str, amount: int, unit: str) -> str:
     current = _parse_date(value)
     if current is None or unit not in _VALID_GRAINS:
         return ""
-    if unit == "day":
-        return (current + timedelta(days=amount)).isoformat()
-    if unit == "week":
-        return (current + timedelta(weeks=amount)).isoformat()
-    months = amount
-    if unit == "quarter":
-        months *= 3
-    elif unit == "year":
-        months *= 12
-    total = current.year * 12 + (current.month - 1) + months
-    year = total // 12
-    month = (total % 12) + 1
-    day = min(current.day, _last_day(year, month))
-    return date(year, month, day).isoformat()
-
-
-def _last_day(year: int, month: int) -> int:
-    if month == 12:
-        return 31
-    return (date(year, month + 1, 1) - timedelta(days=1)).day
+    return shift_period(current, unit, amount).isoformat()

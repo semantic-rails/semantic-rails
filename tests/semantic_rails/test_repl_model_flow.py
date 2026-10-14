@@ -8,6 +8,7 @@ warehouse other than DuckDB, the wizard asks for the table by name as before.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from collections.abc import Collection, Iterator, Sequence
 from pathlib import Path
@@ -83,8 +84,9 @@ def _terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     backend.set_backend(None)
 
 
-@pytest.fixture
-def shop(tmp_path: Path) -> Path:
+@pytest.fixture(scope="module")
+def shop_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp_path = tmp_path_factory.mktemp("model-project")
     project = Path(
         scaffold.create_project_report(
             package_id="shop", workspace_root=str(tmp_path), run_checks=False
@@ -95,6 +97,11 @@ def shop(tmp_path: Path) -> Path:
         # A bookkeeping clock, which introspection suggests with low confidence.
         connection.execute("ALTER TABLE main_marts.fct_orders ADD COLUMN updated_at TIMESTAMP")
     return project
+
+
+@pytest.fixture
+def shop(tmp_path: Path, shop_template: Path) -> Path:
+    return Path(shutil.copytree(shop_template, tmp_path / "shop"))
 
 
 def _author(project: Path, answers: dict[str, Any]) -> tuple[_Script, list[Any]]:

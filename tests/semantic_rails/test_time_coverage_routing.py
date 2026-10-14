@@ -7,15 +7,16 @@ import pytest
 from semantic_rails.compiler import compile_query, lower_to_sql
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.result_helpers import typed_rows
 
 ROLE = "temporal_role.shop_order_ordered_at"
-REVENUE = {"measure": "measure.shop.revenue"}
-REFUNDS = {"measure": "measure.shop.refund_count"}
-SIGNUPS = {"measure": "measure.shop.signup_count"}
+REVENUE = "measure.shop.revenue"
+REFUNDS = "measure.shop.refund_count"
+SIGNUPS = "measure.shop.signup_count"
 
 
 def _query(*expressions, **time):
@@ -27,6 +28,10 @@ def _query(*expressions, **time):
     }
 
 
+def _compile(config, query, now=None):
+    return compile_query(config, Registry(config), read_call(query, config=config, now=now)[0])
+
+
 def _answers(package, query):
     """The same query with and without the package's rollups, rows sorted by month."""
     config = load_package_config(str(package))
@@ -36,7 +41,7 @@ def _answers(package, query):
         try:
             result = runtime.query(query)
             assert "FROM orders_monthly" not in result["rendered_sql"]
-            answers.append(sorted(typed_rows(result), key=lambda r: str(r[f"{ROLE}__month"])))
+            answers.append(sorted(typed_rows(result), key=lambda r: str(r["period"])))
         finally:
             runtime.close()
     return answers
@@ -47,10 +52,10 @@ def _answers(package, query):
 )
 def test_filled_monthly_answer_is_identical_with_and_without_rollups(tmp_path, variant):
     routed, raw = _answers(
-        _write_variant(tmp_path, variant), _query(start="2023-10-01", end="2024-09-01", fill=True)
+        _write_variant(tmp_path, variant), _query(start="2023-10-01", end="2024-09-01")
     )
     assert routed == raw
-    october = next(r for r in routed if str(r[f"{ROLE}__month"]).startswith("2023-10-01"))
+    october = next(r for r in routed if str(r["period"]).startswith("2023-10-01"))
     assert october["v0"] is None
 
 
@@ -67,9 +72,9 @@ def test_combined_unbounded_answer_is_identical_with_and_without_rollups(tmp_pat
     )
     routed, raw = _answers(package, _query(REVENUE, REFUNDS))
     assert routed == raw
-    future = next(r for r in routed if str(r[f"{ROLE}__month"]).startswith("2098-01-01"))
+    future = next(r for r in routed if str(r["period"]).startswith("2098-01-01"))
     assert (future["v0"], future["v1"]) == (None, 1)
-    december = next(r for r in routed if str(r[f"{ROLE}__month"]).startswith("2023-12-01"))
+    december = next(r for r in routed if str(r["period"]).startswith("2023-12-01"))
     assert (december["v0"], december["v1"]) == (7, 0)  # a loaded month without refunds
 
 
@@ -86,8 +91,8 @@ def test_window_total_coverage_keeps_unknown_amounts_and_positive_counts(tmp_pat
             "TIMESTAMP '2098-01-15 12:00:00' AT TIME ZONE 'UTC');\n"
         )
     start, end = ("2098-01-15", "2098-01-16") if future else ("2024-05-06", "2024-05-07")
-    b = {"measure": "measure.shop.store_b_orders"}
-    query = _query(REVENUE, {"measure": "measure.shop.order_count"}, b, start=start, end=end)
+    b = "measure.shop.store_b_orders"
+    query = _query(REVENUE, "measure.shop.order_count", b, start=start, end=end)
     query["time"].pop("grain")
     config = load_package_config(str(package))
     answers = []
@@ -111,7 +116,10 @@ def test_window_total_coverage_keeps_unknown_amounts_and_positive_counts(tmp_pat
 
 ROUTING_CASES = {
     "plain": ((REVENUE,), {}, "duckdb", True),
-    "plain-bounded": ((REVENUE,), {"start": "2024-02-01", "end": "2024-03-01"}, "duckdb", True),
+    # An open window runs to now, here a month's first instant, so the monthly rollup answers.
+    "plain-open": ((REVENUE,), {"start": "2024-02-01"}, "duckdb", True),
+    # A named window answers every period, its zeros bounded by the base's loaded data.
+    "plain-named": ((REVENUE,), {"start": "2024-02-01", "end": "2024-03-01"}, "duckdb", False),
     "fill": ((REVENUE,), {"fill": True}, "duckdb", False),
     "dense": (
         ({"kind": "rolling", "input": REVENUE, "window": {"unit": "month", "value": 3}},),
@@ -143,12 +151,12 @@ def test_coverage_emitted_exactly_when_rollups_are_refused(
 ):
     config = load_package_config(str(_write_variant(tmp_path, "utc_authored")))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    compiled = compile_query(config, Registry(config), _query(*expressions, **time))
+    compiled = _compile(config, _query(*expressions, **time), now="2024-07-01T00:00:00Z")
     report = compiled["performance_plan"].aggregate_routing
     refused = any(r["reason"] == "base_time_coverage_required" for r in report["candidates"])
     assert bool(report["selected"]) is routes
     assert ("coverage_" in compiled["sql"]) is refused is (not routes)
-    assert compiled["sql"].endswith(f'\nORDER BY\n  "{ROLE}__month" ASC')
+    assert compiled["sql"].endswith('\nORDER BY\n  "period" ASC')
     if not routes:
         assert "FROM orders_monthly" not in compiled["sql"]
 
@@ -158,7 +166,7 @@ def test_a_refused_route_keeps_the_leafs_own_strategy(tmp_path):
     strategies = {}
     for warehouse in ("duckdb", "snowflake"):
         config = replace(base, package=replace(base.package, warehouse=warehouse))
-        compiled = compile_query(config, Registry(config), _query(SIGNUPS, REVENUE, fill=True))
+        compiled = _compile(config, _query(SIGNUPS, REVENUE, fill=True))
         revenue = compiled["logical_plan"].measure_plans[1]
         strategies[warehouse] = (revenue.rewrite_strategy, revenue.aggregate_relation_id)
     assert strategies == {
@@ -173,7 +181,7 @@ def test_injected_rollup_cannot_bypass_the_coverage_guard(tmp_path, window_total
     query = _query(start="2023-11-01", end="2023-12-01") if window_total else _query(fill=True)
     if window_total:
         query["time"].pop("grain")
-    compiled = compile_query(config, Registry(config), query)
+    compiled = _compile(config, query)
     plan = compiled["logical_plan"]
     bypass = replace(
         plan,
@@ -184,3 +192,12 @@ def test_injected_rollup_cannot_bypass_the_coverage_guard(tmp_path, window_total
     with pytest.raises(SemanticLayerError) as caught:
         lower_to_sql(bypass, config)
     assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
+
+
+def test_an_open_window_ending_inside_a_month_reads_the_base(tmp_path):
+    # Mid-month, the monthly rollup would also count the month's rows after now.
+    config = load_package_config(str(_write_variant(tmp_path, "utc_authored")))
+    compiled = _compile(config, _query(start="2024-02-01"), now="2024-07-15T00:00:00Z")
+    report = compiled["performance_plan"].aggregate_routing
+    assert not report["selected"]
+    assert [r["reason"] for r in report["candidates"]] == ["time_bounds_not_aligned"]

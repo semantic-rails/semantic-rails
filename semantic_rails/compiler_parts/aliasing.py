@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
+from ..ast import time_output_alias
 from ..ir import LogicalPlan
 from ..sql_ast import (
     SqlBinary,
@@ -18,6 +19,7 @@ from ..sql_ast import (
     SqlInterval,
     SqlIsNull,
     SqlJoin,
+    SqlLike,
     SqlOrder,
     SqlOrderTerm,
     SqlSelect,
@@ -42,11 +44,7 @@ class AliasRegistry:
         for group_count, alias in enumerate(list(plan.group_by), start=1):
             aliases[alias] = f"g{group_count}"
         if plan.time:
-            time_alias = (
-                plan.time["temporal_role"]
-                if not plan.time.get("grain")
-                else f"{plan.time['temporal_role']}__{plan.time['grain']}"
-            )
+            time_alias = time_output_alias(plan.time)
             aliases[time_alias] = "t"
         for index, alias in enumerate(list(dict.fromkeys(measure_aliases)), start=1):
             aliases[alias] = f"m{index}"
@@ -84,6 +82,8 @@ def alias_expr(expr, registry: AliasRegistry):
     if isinstance(expr, SqlExists):
         return replace(expr, query=alias_select(expr.query, registry, preserve_output_aliases=True))
     if isinstance(expr, SqlIsNull):
+        return replace(expr, expr=alias_expr(expr.expr, registry))
+    if isinstance(expr, SqlLike):
         return replace(expr, expr=alias_expr(expr.expr, registry))
     if isinstance(expr, SqlCase):
         return replace(

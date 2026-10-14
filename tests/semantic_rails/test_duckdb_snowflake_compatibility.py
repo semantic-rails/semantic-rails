@@ -28,11 +28,11 @@ def _default_time(recipe):
         recipe.compatible_temporal_roles[0] if recipe.compatible_temporal_roles else ""
     )
     assert role, f"{recipe.id} requires time but has no compatible role"
-    # Match _default_time_spec_for_metric in config_validation.py: pick the
+    # Match _default_time_spec_for_metric in metadata.py: pick the
     # coarsest window unit found in the metric expression so prior_period
     # / rolling metrics whose offset.unit is month/quarter/year don't blow
     # up at day grain.
-    from semantic_rails.config_validation import _metric_min_window_unit
+    from semantic_rails.metadata import _metric_min_window_unit
 
     coarsest = _metric_min_window_unit(recipe.expression)
     grain = coarsest if coarsest in {"month", "quarter", "year"} else "day"
@@ -59,7 +59,6 @@ def _probe_queries(config):
         )
     for recipe in config.metric_recipes:
         query = {
-            "version": 1,
             "select": [{"expression": {"metric": recipe.id}, "as": "probe_value"}],
             "limit": 0,
         }
@@ -244,7 +243,7 @@ EDGE_CASE_QUERIES = {
             "end": "2016-09-03 00:00:00",
             "fill": True,
         },
-        "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "ASC"}],
     },
     "rolling": {
         "version": 1,
@@ -265,7 +264,7 @@ EDGE_CASE_QUERIES = {
             "grain": "day",
             "end": "2016-09-03 00:00:00",
         },
-        "order_by": [{"field": "temporal_role.jaffle_order_time__day", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "ASC"}],
     },
     "prior_period_period_to_date": {
         "version": 1,
@@ -294,12 +293,13 @@ EDGE_CASE_QUERIES = {
             "grain": "month",
             "end": "2018-02-01 00:00:00",
         },
-        "order_by": [{"field": "temporal_role.jaffle_order_time__month", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "ASC"}],
     },
 }
 
 
 def test_jaffle_shop_compiles_all_probes_and_edge_cases_for_duckdb_and_snowflake():
+    # The compiler's own query form, as the package probes build it.
     duckdb_config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
     configs = {"duckdb": duckdb_config, "snowflake": _snowflake_config(duckdb_config)}
     compiled = {warehouse: {} for warehouse in configs}

@@ -566,13 +566,7 @@ def test_batch_rename_updates_metric_example_and_test_and_undo_restores_all(tmp_
         spec={
             "kind": "query_returns_columns",
             "query": {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {"metric": "metric.service_core.total_amount"},
-                        "as": "total_amount",
-                    }
-                ],
+                "select": ["metric.service_core.total_amount"],
             },
             "columns": ["total_amount"],
         },

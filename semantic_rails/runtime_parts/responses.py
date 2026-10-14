@@ -3,24 +3,16 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from ..ast import is_child_group
+from ..answer import MINIMAL_ROUTE_KEYS
+from ..ast import PERIOD_PARTIAL, is_child_group, time_output_alias
 from ..dialects import dialect_for_warehouse
 from ..expressions import collect_object_references, expr_to_dict
-
-# Said when a time window with no grain was aggregated as one total.
-WINDOW_TOTAL_ASSUMPTION = (
-    "The time window had no grain, so it was aggregated as one total over the window with no "
-    "time column. Set time.grain to get one row per period."
-)
-
-# The ``time_shape`` a response carries when the window was aggregated as one total.
-TIME_SHAPE_WINDOW_TOTAL = "window_total"
 
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
 _VALID_SQL_PROFILES: tuple[str, ...] = ("audit", "compact", "debug", "off")
 
 # Keys preserved on validate/explain responses when verbosity="minimal".
-_MINIMAL_KEYS_NONEXECUTE: frozenset[str] = frozenset({"ok", "errors", "warnings"})
+_MINIMAL_KEYS_NONEXECUTE: frozenset[str] = frozenset({"ok", "status", "errors", "warnings"})
 
 # Keys preserved on compile responses when verbosity="minimal" — same as
 # validate but plus `rendered_sql` so callers asking for the cheapest
@@ -28,11 +20,23 @@ _MINIMAL_KEYS_NONEXECUTE: frozenset[str] = frozenset({"ok", "errors", "warnings"
 # agent benchmark caught that the previous minimal compile output had
 # everything stripped EXCEPT the SQL — making "minimal" useless for the
 # tool whose product is SQL.
-_MINIMAL_KEYS_COMPILE: frozenset[str] = frozenset({"ok", "errors", "warnings", "rendered_sql"})
+_MINIMAL_KEYS_COMPILE: frozenset[str] = frozenset(
+    {"ok", "status", "errors", "warnings", "rendered_sql"}
+)
 
 # Keys preserved on execute responses when verbosity="minimal".
 _MINIMAL_KEYS_EXECUTE: frozenset[str] = frozenset(
-    {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+    {"ok", "status", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+)
+# What the answer means survives the cheapest response (``answer.py``): verbosity never
+# removes a warning, an assumption or a route.
+_ANSWER_KEYS: tuple[str, ...] = (
+    "window",
+    "clock",
+    "observation_scope",
+    "routes",
+    "assumptions",
+    "withheld",
 )
 
 # Heavy keys dropped at the top-level response when verbosity="compact".
@@ -100,8 +104,8 @@ def apply_response_verbosity(
     the other two preserve only ``{ok, errors, warnings}``.
 
     ``sql_profile="off"`` drops ``rendered_sql`` and ``sql_plan`` regardless
-    of verbosity — this lets a caller suppress SQL even when they still
-    want the heavy plan introspection that ``verbosity="full"`` provides.
+    of verbosity, the full ``explain``'s copies included — this lets a caller suppress SQL
+    even when they still want the heavy plan introspection that ``verbosity="full"`` provides.
     """
     out = dict(response or {})
     if verbosity == "minimal":
@@ -111,11 +115,12 @@ def apply_response_verbosity(
             allowed = _MINIMAL_KEYS_COMPILE
         else:
             allowed = _MINIMAL_KEYS_NONEXECUTE
-        out = {key: value for key, value in out.items() if key in allowed}
-        # An assumption changes what the numbers mean, so it survives the cheapest response.
-        for key in ("assumptions", "time_shape", "withheld"):
-            if response.get(key):
-                out[key] = response[key]
+        out = {key: value for key, value in out.items() if key in allowed or key in _ANSWER_KEYS}
+        if out.get("routes"):
+            out["routes"] = [
+                {key: route[key] for key in MINIMAL_ROUTE_KEYS if key in route}
+                for route in out["routes"]
+            ]
     elif verbosity == "compact":
         for key in _COMPACT_DROP_KEYS:
             out.pop(key, None)
@@ -128,11 +133,13 @@ def apply_response_verbosity(
     if sql_profile == "off":
         out.pop("rendered_sql", None)
         out.pop("sql_plan", None)
+        if isinstance(out.get("explain"), dict):  # the full explain repeats both
+            out["explain"] = {
+                key: value
+                for key, value in out["explain"].items()
+                if key not in {"rendered_sql", "sql_plan"}
+            }
     return out
-
-
-def _collect_expr_object_ids(expr_payload: dict[str, Any]) -> list[str]:
-    return collect_object_references(expr_payload)
 
 
 def _object_label_maps(config: Any) -> dict[str, dict[str, Any]]:
@@ -173,7 +180,7 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
     plan = compiled.get("logical_plan")
     if time.get("temporal_role") and not (plan is not None and plan.time.get("window_total")):
         role_id = str(time["temporal_role"])
-        field = role_id if not time.get("grain") else f"{role_id}__{time['grain']}"
+        field = time_output_alias(time)
         meta = labels.get(role_id, {})
         columns.append(
             {
@@ -182,25 +189,40 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
                 "display_label": meta.get("display_label", field),
                 "sql_alias": field,
                 "type": "time",
+                **({"grain": time["grain"]} if time.get("grain") else {}),
                 "lineage": [role_id],
             }
         )
+        if time.get("grain"):
+            # Each period of a series says whether it ends after ``now`` (still filling).
+            columns.append(
+                {
+                    "field": PERIOD_PARTIAL,
+                    "semantic_id": role_id,
+                    "display_label": "Partial period",
+                    "sql_alias": PERIOD_PARTIAL,
+                    "type": "boolean",
+                    "lineage": [role_id],
+                }
+            )
     for item in list(query.get("select", []) or []):
         alias = str(item.get("as", "") or "")
         expr = dict(item.get("expression", {}) or {})
-        lineage = list(dict.fromkeys(_collect_expr_object_ids(expr)))
+        lineage = list(dict.fromkeys(collect_object_references(expr)))
         semantic_id = lineage[0] if len(lineage) == 1 else ""
         meta = labels.get(semantic_id, {})
         value_type = str(meta.get("type", "") or "")
         if not value_type and semantic_id.startswith("metric."):
             recipe = next((row for row in config.metric_recipes if row.id == semantic_id), None)
             if recipe is not None:
-                source_ids = _collect_expr_object_ids(expr_to_dict(recipe.expression))
+                source_ids = collect_object_references(expr_to_dict(recipe.expression))
                 source_measure = next(
                     (row for row in config.measures if row.id in source_ids), None
                 )
                 if source_measure is not None:
                     value_type = source_measure.value_type
+        if expr.get("kind") == "share":
+            value_type = "fraction"  # of its input's total, whatever the input's unit
         columns.append(
             {
                 "field": alias,

@@ -20,7 +20,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ...naming import semantic_token as _semantic_token
 from .._base import (
     _NAME_CONNECTORS,
     _TERM_SYNONYMS,
@@ -35,8 +34,15 @@ from .._base import (
     _singular,
     _tokens,
 )
+from ..call import QueryBuilder, Time
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
-from ..groupings import _entity_grouping, _explicit_grain, _maybe_group_by, _time_spec
+from ..groupings import (
+    _entity_grouping,
+    _explicit_grain,
+    _maybe_group_by,
+    _names_whole_entity,
+    _time_spec,
+)
 from ..intent_ir import _FALLBACK_STOPWORDS
 from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
 from ..ranking_checks import _dimension_nouns, _ranking_request
@@ -100,16 +106,6 @@ def _named_measure(config: Any, text: str, ordinary: Any | None = None) -> Any |
         if following in other_nouns:
             return None
     return row
-
-
-def _implied_window_grain(lowered: str) -> str:
-    """Grain implied by a resolved relative window, or ``""``.
-
-    "last 7 days" implies a daily series; "yesterday"/"today" imply a
-    single day bucket.
-    """
-
-    return _time_window(lowered).relative_unit
 
 
 def _unresolved_time_phrases(text: str) -> list[str]:
@@ -205,24 +201,17 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # canonical concept words (revenue / order / arr / etc.) we just
     # use the raw term set against the catalog.
     target = named[0] if named is not None else None
+    first, second = (
+        (_preferred_metric, _preferred_measure)
+        if metric_first
+        else (_preferred_measure, _preferred_metric)
+    )
     if target is None and target_terms:
-        if metric_first:
-            target = _preferred_metric(config, target_terms, target_focus_terms)
-            if target is None:
-                target = _preferred_measure(config, target_terms, target_focus_terms)
-        else:
-            target = _preferred_measure(config, target_terms, target_focus_terms)
-            if target is None:
-                target = _preferred_metric(config, target_terms, target_focus_terms)
+        target = first(config, target_terms, target_focus_terms) or second(
+            config, target_terms, target_focus_terms
+        )
     if target is None:
-        if metric_first:
-            target = _preferred_metric(config, terms)
-            if target is None:
-                target = _preferred_measure(config, terms)
-        else:
-            target = _preferred_measure(config, terms)
-            if target is None:
-                target = _preferred_metric(config, terms)
+        target = first(config, terms) or second(config, terms)
     if target is None:
         return None
     if named is None and not metric_first:
@@ -236,7 +225,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # ``time`` block — the validator handles that for snapshot-style
     # measures.
     is_top, top_n = _top_n_intent(text)
-    time_spec: dict[str, Any] | None = None
+    time_spec: Time | None = None
     temporal_role = str(getattr(target, "default_temporal_role", "") or "") or str(
         getattr(target, "temporal_role", "") or ""
     )
@@ -249,7 +238,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         time_spec = _time_spec(temporal_role, text, clock)
         if (
             not _explicit_grain(text, clock)
-            and not _implied_window_grain(lowered)
+            and not _time_window(lowered).relative_unit  # e.g. "last 7 days", "today"
             and not _time_bounds_from_text(text)
             and not any(phrase in lowered for phrase in _TIME_SERIES_PHRASES)
             and not _unresolved_time_phrases(text)
@@ -264,42 +253,43 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     target_id = str(getattr(target, "id", ""))
     is_measure = target_id.startswith("measure.")
-    select_alias = _semantic_token(target_id, fallback="value")
+    builder = QueryBuilder(config)
     if is_measure:
-        expression: dict[str, Any] = {
-            "measure": target_id,
-            "aggregation": _aggregation_from_text(text, terms, target),
-        }
+        builder.measure(target_id, _aggregation_from_text(text, terms, target))
     else:
-        expression = {"metric": target_id}
-
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": select_alias, "expression": expression}],
-    }
-    if time_spec is not None:
-        query["time"] = time_spec
+        builder.select(target_id)
+    builder.time(time_spec)
 
     # A ranking keeps what the ranking parser reads: its count ("top three"), its direction
     # ("bottom", "least") and the entity it ranks ("which 2 accounts had the most MRR").
     request = _ranking_request(question, _dimension_nouns(config))
-    direction = "DESC"
+    direction = "desc"
+    held: dict[str, Any] = {}
     if request is not None and request["direction"] and (is_top or request["limit"] is not None):
-        is_top, direction = True, str(request["direction"])
+        is_top, direction = True, str(request["direction"]).lower()
         top_n = request["limit"] if request["limit"] is not None else top_n
         ranked = _entity_grouping(config, str(request["noun"]))
         if ranked is not None and not _named_by_rows(target, str(request["noun"]), question):
             group_by = list(dict.fromkeys([*group_by, *ranked[1]]))
-    if group_by:
-        query["group_by"] = group_by
-    query = _normalize_value_filters(
-        query, _matched_value_rows(runtime, query, text), text=text, config=config
+        noun = [row for row in config.entities if _names_whole_entity(str(request["noun"]), row)]
+        if ranked is None and len(noun) == 1:  # a row-grain or composite key: no rows to rank
+            message = (
+                f"{noun[0].label} has no single key to rank by; rank by one of its dimensions."
+            )
+            held, is_top = {"code": "PLAN_RANKING_NO_KEY", "message": message}, False
+    builder.groups(group_by)
+    drafted = builder.build()
+    builder = QueryBuilder(
+        config,
+        _normalize_value_filters(
+            drafted, _matched_value_rows(runtime, drafted, text), text=text, config=config
+        ),
     )
     if is_top:
-        query["order_by"] = [{"field": select_alias, "direction": direction}]
-        query["limit"] = top_n
+        builder.order(drafted.select[0].alias, direction).limit(top_n)
     else:
-        _add_order(query)
+        _add_order(builder)
+    query = builder.build()
 
     resolved: list[dict[str, Any]] = [_resolved(target)]
     for dim_id in group_by:
@@ -323,6 +313,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             "top_n": top_n if is_top else None,
         },
         score=_CATCH_ALL_SCORE,
+        blocked_reason=held,
     )
 
 

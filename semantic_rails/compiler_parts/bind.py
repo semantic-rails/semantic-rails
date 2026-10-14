@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any
 
+from .. import operators
 from ..ast import NormalizedQuery, normalize_query
 from ..dialects import SqlDialect, dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -21,7 +22,6 @@ from ..expressions import (
     ComparisonExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
-    CumulativeExpr,
     DateAddExpr,
     DistributionExpr,
     EntityValueExpr,
@@ -31,15 +31,14 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
+    reads_temporal_value,
     resolve_filter_dimension,
     resolve_measure_temporal_role,
     validate_boolean_argument_count,
@@ -55,18 +54,26 @@ from ..sql_ast import (
     SqlIn,
     SqlLiteral,
     build_comparison_condition,
+    build_filter_condition,
     build_negation,
 )
-from .dependencies import binding_cut, measure_cut_owners, measure_objects
+from .dependencies import binding_cut, holding, measure_cut_owners, measure_objects
 from .indexes import (
     _dimension_index,
     _entity_index,
     _measure_index,
     _recipe_index,
+    _recipe_or_raise,
     _relationship_index,
     _resolve_table_entity,
 )
-from .paths import _column_ref, _reaches_at_most_one
+from .paths import (
+    _column_ref,
+    _reaches_at_most_one,
+    dimensions_over_column,
+    text_dimension,
+    unknown_as_null,
+)
 
 
 def _freeze_payload(value: Any) -> str:
@@ -104,11 +111,8 @@ def earlier_settlement(enabled: bool = True) -> Iterator[None]:
     does a metric predicate's source over several measures under a threshold that 0 passes
     (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
     off."""
-    token = _earlier_settlement.set(enabled or _earlier_settlement.get())
-    try:
+    with holding(_earlier_settlement, enabled or _earlier_settlement.get()):
         yield
-    finally:
-        _earlier_settlement.reset(token)
 
 
 def earlier_settlement_applies() -> bool:
@@ -263,9 +267,7 @@ def measure_column_ref(
     """The source column shared by SQL lowering and column-aggregate constraints."""
     entity_id = _resolve_expr_entity(ref, measure, config)
     entity = _entity_index(config)[entity_id]
-    # A measure's own fact relation can differ from its entity's relation.
-    source = measure.source_relation if entity_id == measure.entity and not ref.table else ""
-    return _column_ref(source or entity.table, ref.column)
+    return _column_ref(entity.table, ref.column)
 
 
 def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> Any:
@@ -278,6 +280,55 @@ def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: Pack
         )
     with measure_objects(measure.id):
         return _config_expr_to_sql_inner(expr, measure, config)
+
+
+def _temporal_result(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> bool:
+    """Whether ``expr`` reads a date or timestamp (:func:`reads_temporal_value`), its columns
+    typed by the date and timestamp dimensions that declare them."""
+
+    def temporal_column(ref: ColumnRefExpr) -> bool:
+        entity_id = _resolve_expr_entity(ref, measure, config)
+        return any(
+            dim.entity == entity_id
+            and dim.column == ref.column
+            and dim.data_type in {"date", "timestamp"}
+            for dim in _dimension_index(config).values()
+        )
+
+    return reads_temporal_value(expr, temporal_column)
+
+
+def _operand_sql(
+    expr: SemanticExpr, temporal: bool, measure: MeasureConfig, config: PackageConfig
+) -> Any:
+    """One side of a comparison or an operand of ``in``: text compared with a date or timestamp
+    (``temporal``) is a temporal literal (``SqlLiteral.temporal``); text compared with anything
+    else stays text."""
+    if temporal and isinstance(expr, LiteralExpr) and isinstance(expr.value, str):
+        return SqlLiteral(expr.value, temporal=True)
+    return _config_expr_to_sql(expr, measure, config)
+
+
+def _text_comparison(
+    expr: ComparisonExpr, word: str, measure: MeasureConfig, config: PackageConfig
+) -> Any:
+    """A text word on a column is the filter on the one dimension over it: its unknown values
+    read as NULL, so the comparison keeps the rows the dimension's filter keeps."""
+    column, text = expr.left, expr.right
+    if not (
+        isinstance(column, ColumnRefExpr)
+        and isinstance(text, LiteralExpr)
+        and isinstance(text.value, str)
+    ):
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"{measure.id}: '{word}' compares a dimension's column with a text literal",
+            details={"op": word},
+        )
+    entity = _resolve_expr_entity(column, measure, config)
+    dim = text_dimension(entity, column.column, word, config, measure.id)
+    value = unknown_as_null(_config_expr_to_sql(column, measure, config), dim)
+    return build_filter_condition(value, word, text.value)
 
 
 def _config_expr_to_sql_inner(
@@ -302,16 +353,20 @@ def _config_expr_to_sql_inner(
             op,
             _config_expr_to_sql(expr.right, measure, config),
         )
+    if isinstance(expr, ComparisonExpr) and operators.word_of(expr.op) in operators.TEXT_WORDS:
+        return _text_comparison(expr, operators.word_of(expr.op), measure, config)
     if isinstance(expr, ComparisonExpr):
         return build_comparison_condition(
-            _config_expr_to_sql(expr.left, measure, config),
+            _operand_sql(expr.left, _temporal_result(expr.right, measure, config), measure, config),
             expr.op,
-            _config_expr_to_sql(expr.right, measure, config),
+            _operand_sql(expr.right, _temporal_result(expr.left, measure, config), measure, config),
         )
     if isinstance(expr, InExpr):
+        operands = [expr.expr, *expr.values]
+        temporal = any(_temporal_result(item, measure, config) for item in operands)
         return SqlIn(
-            expr=_config_expr_to_sql(expr.expr, measure, config),
-            values=[_config_expr_to_sql(value, measure, config) for value in expr.values],
+            expr=_operand_sql(expr.expr, temporal, measure, config),
+            values=[_operand_sql(value, temporal, measure, config) for value in expr.values],
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
@@ -411,6 +466,40 @@ def _expression_alias(expr: SemanticExpr, config: PackageConfig | None = None) -
     return f"{expr_to_dict(expr)['kind']}__expr"
 
 
+_MEASURE_KINDS = frozenset({"measure", "aggregate", "semi_additive", "scoped_aggregate"})
+
+
+def select_measure_reads(select: Any) -> Iterator[dict[str, Any]]:
+    """Each measure node a query's ``select`` reads itself; a metric's reads are its own."""
+
+    def walk(node: Any) -> Iterator[dict[str, Any]]:
+        if isinstance(node, list):
+            for item in node:
+                yield from walk(item)
+        elif isinstance(node, dict):
+            if node.get("kind") in _MEASURE_KINDS and node.get("measure"):
+                yield node
+                return
+            for value in node.values():
+                yield from walk(value)
+
+    yield from walk([row.get("expression") for row in select or []])
+
+
+def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple[str, str]]:
+    """Each measure a query's ``select`` reads with a statistic other than its package default,
+    by leaf alias: ``(measure id, aggregation)``. An override equal to the default is none, and
+    a metric's own aggregation is the package's definition, never the call's override."""
+    found: dict[str, tuple[str, str]] = {}
+    for node in select_measure_reads(select):
+        measure = _measure_index(config).get(str(node["measure"]))
+        aggregation = str(node.get("aggregation") or "")
+        if measure is not None and aggregation and aggregation != measure.default_aggregation:
+            expr = parse_semantic_expression(node, context="select")
+            found[_expression_alias(expr, config)] = (measure.id, aggregation)
+    return found
+
+
 def _bind_measure(
     expr: MeasureRefExpr,
     config: PackageConfig,
@@ -427,7 +516,9 @@ def _bind_measure(
     if aggregation not in measure.allowed_aggregations:
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION",
-            f"Aggregation '{aggregation}' is not allowed for '{measure_id}'",
+            f"Aggregation '{aggregation}' is not allowed for '{measure_id}'; it allows "
+            f"{list(measure.allowed_aggregations)}. Omit aggregation for the default "
+            f"({measure.default_aggregation}).",
             details={
                 "measure": measure_id,
                 "aggregation": aggregation,
@@ -484,8 +575,8 @@ def _bind_measure(
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
             f"'{measure_id}' isn't timed by '{query_role}' and has several clocks of its own "
-            f"(see `compatible`). Choose one with temporal_role_overrides "
-            f"{{'{measure_id}': <clock>}}, or query a clock the measure has.",
+            f'(see `compatible`). Pin one inline: {{"kind": "measure", "measure": '
+            f'"{measure_id}", "temporal_role": <clock>}}, or query a clock the measure has.',
             details={"measure": measure_id, "requested": query_role, "compatible": compatible},
         )
     alias = _expression_alias(
@@ -671,13 +762,11 @@ def _bound_filter_clauses(bound: BoundMeasure, config: PackageConfig) -> list[di
             continue
         with binding_cut():
             dimension_id = _resolve_filter_dimension(field, config)
-        out.append(
-            {
-                "field": dimension_id,
-                "op": str(clause.get("op", "=")),
-                "value": clause.get("value"),
-            }
+        # Every reader of a bound clause sees the filter word, whatever spelling it was authored in.
+        op, value = operators.normalize_condition(
+            clause.get("op", "is"), clause.get("value"), path=f"filter.{field}", internal=True
         )
+        out.append({"field": dimension_id, "op": op, "value": value})
     return out
 
 
@@ -713,7 +802,7 @@ def _measure_count_distinct_key_columns(measure: MeasureConfig, config: PackageC
     entity = _entity_index(config).get(measure.entity)
     if entity is None:
         return []
-    key_cols = list(entity.key or [entity.primary_key])
+    key_cols = list(entity.key_columns)
     return key_cols if measure.expr.column in set(key_cols) else []
 
 
@@ -771,14 +860,10 @@ def _collect_measure_refs(
         out.append(_bind_scoped_aggregate(expr, config, query))
         return
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         _collect_measure_refs(recipe.expression, config, query, out)
         return
-    if isinstance(expr, ArithmeticExpr):
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         _collect_measure_refs(expr.left, config, query, out)
         _collect_measure_refs(expr.right, config, query, out)
         return
@@ -786,21 +871,10 @@ def _collect_measure_refs(
         _collect_measure_refs(expr.numerator, config, query, out)
         _collect_measure_refs(expr.denominator, config, query, out)
         return
-    if isinstance(expr, EntityValueExpr):
-        _collect_measure_refs(expr.input, config, query, out)
-        return
     if isinstance(expr, DistributionExpr):
         _collect_measure_refs(expr.over, config, query, out)
         return
-    if isinstance(expr, ComparisonExpr):
-        _collect_measure_refs(expr.left, config, query, out)
-        _collect_measure_refs(expr.right, config, query, out)
-        return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_measure_refs(arg, config, query, out)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_measure_refs(arg, config, query, out)
         return
@@ -811,16 +885,10 @@ def _collect_measure_refs(
         if expr.else_expr is not None:
             _collect_measure_refs(expr.else_expr, config, query, out)
         return
-    if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
-    ):
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, EntityValueExpr)):
         _collect_measure_refs(expr.input, config, query, out)
         return
-    if isinstance(expr, MetricPredicateExpr):
-        return
-    if isinstance(expr, ConversionExpr):
-        return
-    if isinstance(expr, (LiteralExpr, ColumnRefExpr)):
+    if isinstance(expr, (MetricPredicateExpr, ConversionExpr, LiteralExpr, ColumnRefExpr)):
         return
     raise SemanticLayerError(
         "INVALID_QUERY", f"Unsupported expression kind '{expr_to_dict(expr)['kind']}'"
@@ -846,17 +914,10 @@ def _collect_conversion_exprs(
         _collect_conversion_exprs(expr.numerator, config, out)
         _collect_conversion_exprs(expr.denominator, config, out)
         return
-    if isinstance(expr, EntityValueExpr):
-        _collect_conversion_exprs(expr.input, config, out)
-        return
     if isinstance(expr, DistributionExpr):
         _collect_conversion_exprs(expr.over, config, out)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _collect_conversion_exprs(arg, config, out)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _collect_conversion_exprs(arg, config, out)
         return
@@ -870,12 +931,10 @@ def _collect_conversion_exprs(
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             MetricPredicateExpr,
             OffsetWindowExpr,
+            ShareExpr,
+            EntityValueExpr,
         ),
     ):
         _collect_conversion_exprs(expr.input, config, out)
@@ -1004,8 +1063,11 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(condition_entities))
 
 
-# A NULL operand makes these comparisons NULL, so a row with no match fails them.
-_NULL_REJECTING_OPS = frozenset({"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN"})
+# A NULL operand makes these comparisons NULL (or, for the text words, false), so a row with no
+# match fails them.
+_NULL_REJECTING_OPS = frozenset(
+    {"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN", "CONTAINS", "STARTS_WITH", "ENDS_WITH"}
+)
 
 
 def _and_terms(expr: SemanticExpr) -> list[SemanticExpr]:
@@ -1087,11 +1149,7 @@ def bind_conditional_aggregate_column(
     remains allowed, as a measure's value column usually has none.
     """
     joined = _measure_required_entities(measure, config) - {measure.entity}
-    dimensions = [
-        row.id
-        for row in config.dimensions
-        if row.entity == entity_id and row.column.casefold() == column.casefold()
-    ]
+    dimensions = [row.id for row in dimensions_over_column(entity_id, column, config)]
     if (
         not dimensions
         and entity_id in joined
@@ -1221,11 +1279,9 @@ def _synthetic_conditional_measure(
     # It aggregates the rows of its entity's table, whose grain the measures of that table
     # declare. A grain other than the entity's key wins, so a rewrite that relies on one row
     # per key refuses this measure as it refuses theirs. With no such measure it is unknown.
-    key = sorted(entity.key or [entity.primary_key])
+    key = sorted(entity.key_columns)
     grains = sorted(
-        list(row.row_grain)
-        for row in config.measures
-        if row.entity == entity_id and row.source_relation in {"", entity.table} and row.row_grain
+        list(row.row_grain) for row in config.measures if row.entity == entity_id and row.row_grain
     )
     row_grain = next(
         (grain for grain in grains if sorted(grain) != key), grains[0] if grains else []
@@ -1261,7 +1317,6 @@ def _synthetic_conditional_measure(
         expr=expr_for_measure,
         default_aggregation=aggregation,
         allowed_aggregations=[aggregation],
-        source_relation=entity.table,
         measure_class="additive",
         value_type="number",
         name=f"aggregate_if[{aggregation}]",
@@ -1333,16 +1388,12 @@ def _rewrite_conditional_aggregates(
                 else None
             ),
         )
-    # Nodes that wrap an aggregation (CumulativeExpr etc.) recurse into
+    # Nodes that wrap an aggregation (OffsetWindowExpr etc.) recurse into
     # their ``input``. Other node types are leaves or carry semantics
     # incompatible with aggregate_if and pass through unchanged.
     if isinstance(
         expr,
         (
-            CumulativeExpr,
-            RollingExpr,
-            PriorPeriodExpr,
-            PeriodToDateExpr,
             OffsetWindowExpr,
             MetricPredicateExpr,
         ),

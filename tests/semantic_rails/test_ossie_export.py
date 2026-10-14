@@ -111,10 +111,9 @@ def test_jaffle_mapping_and_warning_counts_are_golden() -> None:
         "conversion metrics": 3,
         "cumulative metrics": 1,
         "dimension attributes": 67,
-        "entity attributes": 13,
+        "entity attributes": 15,
         "filtered metrics": 2,
-        "measure attributes": 33,
-        "measures on other relations": 8,
+        "measure attributes": 41,
         "metric attributes": 5,
         "metrics on semi-additive measures": 1,
         "metrics using prior_period": 1,
@@ -196,8 +195,7 @@ def test_exported_metrics_compute_the_engine_numbers(runtime_factory) -> None:
         metric_id = sidecar["names"]["metrics"][metric["name"]]
         engine = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"kind": "metric", "metric": metric_id}, "as": "v"}],
+                "select": [{"expression": metric_id, "as": "v"}],
             }
         )
         assert runtime.adapter.query(ossie)[0]["v"] == pytest.approx(engine["rows"][0]["v"])
@@ -216,13 +214,9 @@ def _export_with(**changes) -> tuple[dict, _Exporter]:
         ({"cardinality": "M:N", "safety": "requires_rewrite"}, None, "M:N relationships"),
         ({"safety": "unsafe"}, None, "unsafe relationships"),
         ({"allowed_directions": ["reverse"]}, None, "relationships closed to many-to-one joins"),
-        (
-            {"cardinality": "1:N", "allowed_directions": ["forward"]},
-            None,
-            "relationships closed to many-to-one joins",
-        ),
+        ({"cardinality": "1:N", "allowed_directions": ["forward"]}, None, "relationships closed to many-to-one joins"),
     ],
-)
+)  # fmt: skip
 def test_relationships_export_only_as_safe_many_to_one_joins(change, exported, construct) -> None:
     config = load_package_snapshot(JAFFLE).config
     relationships = [
@@ -253,25 +247,13 @@ COST = AggregateExpr(measure="measure.jaffle.order_cost_usd", aggregation="sum")
             "SUM(jaffle_order.jaffle_revenue_usd) / "
             "NULLIF(COUNT(DISTINCT jaffle_order.jaffle_order_count), 0) * 100",
         ),
-        (
-            ArithmeticExpr("add", REVENUE, COST),
-            "SUM(jaffle_order.jaffle_revenue_usd) + SUM(jaffle_order.jaffle_order_cost_usd)",
-        ),
+        (ArithmeticExpr("add", REVENUE, COST), "SUM(jaffle_order.jaffle_revenue_usd) + SUM(jaffle_order.jaffle_order_cost_usd)"),
         (replace(REVENUE, aggregation="median"), "metrics using median"),
-        (
-            replace(REVENUE, temporal_role="temporal_role.jaffle_order_time"),
-            "metrics with clock or parameter overrides",
-        ),
-        (
-            MetricRecipeRefExpr("metric.sales.cumulative_revenue"),
-            "metrics built on omitted objects",
-        ),
-        (
-            AggregateExpr(measure="measure.jaffle.revenue_ytd_usd"),
-            "metrics built on omitted objects",
-        ),
+        (replace(REVENUE, temporal_role="temporal_role.jaffle_order_time"), "metrics with clock or parameter overrides"),
+        (MetricRecipeRefExpr("metric.sales.cumulative_revenue"), "metrics built on omitted objects"),
+        (AggregateExpr(measure="measure.jaffle.revenue_ytd_usd"), "metrics on semi-additive measures"),
     ],
-)
+)  # fmt: skip
 def test_metrics_export_their_sql_or_stay_in_the_sidecar(expression, expected) -> None:
     config = load_package_snapshot(JAFFLE).config
     probe = MetricConfig(id="metric.test.probe", kind="derived", expression=expression)
@@ -287,13 +269,9 @@ def test_metrics_export_their_sql_or_stay_in_the_sidecar(expression, expected) -
 @pytest.mark.parametrize(
     ("change", "measure_gap", "metric_gap"),
     [
-        (
-            {"expr": ColumnRefExpr(column="customer_id", entity="entity.jaffle_customer")},
-            "measures reading other entities",
-            "metrics built on omitted objects",
-        ),
+        ({"expr": ColumnRefExpr(column="customer_id", entity="entity.jaffle_customer")}, "measures reading other entities", "metrics built on omitted objects"),
     ],
-)
+)  # fmt: skip
 def test_measure_gaps_keep_their_metrics_in_the_sidecar(change, measure_gap, metric_gap) -> None:
     config = load_package_snapshot(JAFFLE).config
     measures = [
@@ -312,7 +290,7 @@ def test_entities_over_relation_pipelines_stay_in_the_sidecar_with_their_objects
     entities = [
         replace(row, relation_id="relation.orders", table="rel_orders")
         if row.id == "entity.jaffle_order"
-        else replace(row, key=[], primary_key="")
+        else replace(row, key_columns=[])
         if row.id == "entity.jaffle_supply"
         else row
         for row in config.entities

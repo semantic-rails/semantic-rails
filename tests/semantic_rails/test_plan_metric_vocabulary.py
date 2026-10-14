@@ -15,7 +15,9 @@ import yaml
 
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.planner import _base, faithfulness, plan_payload, time_windows
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
 SEED = """
@@ -36,6 +38,11 @@ INSERT INTO events VALUES (7,'d','signup','2026-09-30','Trader Joe''s');
 CREATE OR REPLACE VIEW event_records AS
  SELECT e.*, a.segment FROM events e JOIN accounts a USING (account_id);
 """
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 def _package(
@@ -138,6 +145,28 @@ def _package(
     return root
 
 
+@pytest.fixture(scope="module")
+def packages(tmp_path_factory: pytest.TempPathFactory):
+    """Each package variant, written once per module; a test gets a runtime of its own."""
+    roots: dict[tuple[bool, bool, bool], Path] = {}
+
+    def build(*, synonyms: bool = False, collision: bool = False, clients: bool = False) -> Path:
+        key = (synonyms, collision, clients)
+        if key not in roots:
+            root = tmp_path_factory.mktemp("shop") / "shop"
+            roots[key] = _package(root, synonyms=synonyms, collision=collision, clients=clients)
+        return roots[key]
+
+    return build
+
+
+def _open(packages, **flags: bool):
+    return closing(Runtime.from_path(str(packages(**flags))))
+
+
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
+
+
 @pytest.fixture(autouse=True)
 def monday(monkeypatch: pytest.MonkeyPatch) -> None:
     # Fix the lexical clock independently of the caller-clock implementation.
@@ -159,15 +188,15 @@ def monday(monkeypatch: pytest.MonkeyPatch) -> None:
         ("Net new accounts by month", "net_new_accounts", [3, -1]),
     ],
 )
-def test_authored_names_answer_reference_sql(tmp_path: Path, question: str, metric: str, gold: Any):
-    root = _package(tmp_path / "shop", synonyms="sign" in question)
+def test_authored_names_answer_reference_sql(packages, question: str, metric: str, gold: Any):
+    root = packages(synonyms="sign" in question)
     with closing(Runtime.from_path(str(root))) as runtime:
         plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
         assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query_ir"]
-        assert query["select"][0]["expression"] == {"metric": f"metric.shop.{metric}"}
-        rows = runtime.query({**query, "policy_context": NOW})["rows"]
-        values = sorted((row[query["select"][0]["as"]] for row in rows), reverse=True)
+        query = plan["best"]["query"]
+        assert Call.from_call(query).select[0].ref == f"metric.shop.{metric}"
+        rows = runtime.query(query, now=NOW["now"])["rows"]
+        values = sorted((row[_alias(query["select"][0])] for row in rows), reverse=True)
         with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
             if metric == "net_new_accounts":
                 sql = """SELECT date_trunc('month', occurred_at),
@@ -191,24 +220,27 @@ def test_authored_names_answer_reference_sql(tmp_path: Path, question: str, metr
 
 
 @pytest.mark.parametrize(
-    "question",
+    ("question", "synonyms"),
     [
-        "How many accounts signed up last week?",
-        "How many signups last week?",
-        "How many accounts closed last week?",
-        "How many accounts upgraded last week?",
+        ("How many accounts signed up last week?", False),
+        ("How many signups last week?", False),
+        ("How many accounts closed last week?", False),
+        ("How many accounts upgraded last week?", False),
+        # A partial or non-contiguous synonym is not consumed.
+        ("How many accounts signed last week up?", True),
+        ("How many accounts signed last week?", True),
     ],
 )
-def test_undeclared_inflections_stay_held(tmp_path: Path, question: str):
-    with closing(Runtime.from_path(str(_package(tmp_path / "shop")))) as runtime:
+def test_undeclared_inflections_stay_held(packages, question: str, synonyms: bool):
+    with _open(packages, synonyms=synonyms) as runtime:
         plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
         assert plan["status"] != "ok"
         assert "ready_for" not in plan["next"]
 
 
 @pytest.mark.parametrize("phrase", ["signups", "signed up"])
-def test_shared_synonym_clarifies_instead_of_rank_picking(tmp_path: Path, phrase: str):
-    root = _package(tmp_path / "shop", synonyms=True, collision=True)
+def test_shared_synonym_clarifies_instead_of_rank_picking(packages, phrase: str):
+    root = packages(synonyms=True, collision=True)
     with closing(Runtime.from_path(str(root))) as runtime:
         plan = plan_payload(
             runtime, intent=f"How many {phrase} last week?", partial_query={"policy_context": NOW}
@@ -233,27 +265,31 @@ def test_aliases_is_still_an_unknown_metric_key(tmp_path: Path):
     assert "aliases" in str(report["errors"])
 
 
-@pytest.mark.parametrize("apostrophe", ["'", "’"])
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("text", "expected", "apostrophe"),
     [
-        ("What's here?", "What is here?"),
-        ("Who's there?", "Who is there?"),
-        ("Where's it?", "Where is it?"),
-        ("When's it?", "When is it?"),
-        ("How's it?", "How is it?"),
-        ("It's that", "It is that"),
-        ("That's it", "That is it"),
-        ("There's it", "There is it"),
-        ("Here's it", "Here is it"),
-        ("Globex's accounts", "Globex's accounts"),
-        ("didn't close", "did not close"),
-        ("can't close", "can not close"),
-        ("won't close", "will not close"),
-        ("we're here", "we are here"),
-        ("we've closed", "we have closed"),
-        ("we'll close", "we will close"),
-        ("we'd close", "we would close"),
+        (text, expected, ("'", "’")[index % 2])
+        for index, (text, expected) in enumerate(
+            [
+                ("What's here?", "What is here?"),
+                ("Who's there?", "Who is there?"),
+                ("Where's it?", "Where is it?"),
+                ("When's it?", "When is it?"),
+                ("How's it?", "How is it?"),
+                ("It's that", "It is that"),
+                ("That's it", "That is it"),
+                ("There's it", "There is it"),
+                ("Here's it", "Here is it"),
+                ("Globex's accounts", "Globex's accounts"),
+                ("didn't close", "did not close"),
+                ("can't close", "can not close"),
+                ("won't close", "will not close"),
+                ("we're here", "we are here"),
+                ("we've closed", "we have closed"),
+                ("we'll close", "we will close"),
+                ("we'd close", "we would close"),
+            ]
+        )
     ],
 )
 def test_contractions(text: str, expected: str, apostrophe: str) -> None:
@@ -284,19 +320,19 @@ def test_quoted_text_and_declared_phrases_stay_as_typed(text: str, expected: str
     "question",
     ['new accounts for "Globex\'s"', "new accounts for Globex's", "new accounts for ‘Globex’s’"],
 )
-def test_apostrophe_value_is_never_answered_as_another_value(tmp_path: Path, question: str):
-    root = _package(tmp_path / "shop", clients=True)
+def test_apostrophe_value_is_never_answered_as_another_value(packages, question: str):
+    root = packages(clients=True)
     with closing(Runtime.from_path(str(root))) as runtime:
         plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
         assert plan["intent"] == question
         if plan["status"] != "ok":
             assert "ready_for" not in plan["next"]
             return
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert [(row["field"], row["value"]) for row in query["where"]] == [
             ("dimension.shop_event_client", "Globex's")
         ]
-        rows = runtime.query({**query, "policy_context": NOW})["rows"]
+        rows = runtime.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
         reference = connection.execute(
             """SELECT COUNT(DISTINCT event_id) FROM event_records
@@ -305,18 +341,18 @@ def test_apostrophe_value_is_never_answered_as_another_value(tmp_path: Path, que
     assert [row["new_accounts"] for row in rows] == [reference] == [1]
 
 
-def test_declared_value_with_a_possessive_still_matches(tmp_path: Path):
-    root = _package(tmp_path / "shop", clients=True)
+def test_declared_value_with_a_possessive_still_matches(packages):
+    root = packages(clients=True)
     with closing(Runtime.from_path(str(root))) as runtime:
         plan = plan_payload(
             runtime, intent="new accounts for Trader Joe's", partial_query={"policy_context": NOW}
         )
         assert plan["status"] == "ok", plan.get("why")
-        query = plan["best"]["query_ir"]
+        query = plan["best"]["query"]
         assert query["where"] == [
-            {"field": "dimension.shop_event_client", "op": "=", "value": "Trader Joe's"}
+            {"field": "dimension.shop_event_client", "op": "is", "value": "Trader Joe's"}
         ]
-        rows = runtime.query({**query, "policy_context": NOW})["rows"]
+        rows = runtime.query(query, now=NOW["now"])["rows"]
     with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
         reference = connection.execute(
             """SELECT COUNT(DISTINCT event_id) FROM event_records
@@ -379,12 +415,8 @@ def test_hidden_metric_words_never_reach_relevance(tmp_path: Path):
     "question",
     ["session to order conversion rate by store", "session to order conversion rate"],
 )
-def test_label_shared_without_parenthetical_clarifies(runtime_factory, question: str):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        plan = plan_payload(runtime, intent=question)
-    finally:
-        runtime.close()
+def test_label_shared_without_parenthetical_clarifies(jaffle, question: str):
+    plan = plan_payload(jaffle, intent=question)
     assert plan["status"] == "needs_clarification"
     assert "ready_for" not in plan["next"]
     assert plan["why"]["details"]["gaps"][0]["expected"]["candidates"] == [
@@ -401,13 +433,9 @@ def test_label_shared_without_parenthetical_clarifies(runtime_factory, question:
     ],
 )
 def test_label_without_parenthetical_never_selects(
-    runtime_factory, question: str, subject: str, status: str
+    jaffle, question: str, subject: str, status: str
 ):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        plan = plan_payload(runtime, intent=question)
-    finally:
-        runtime.close()
+    plan = plan_payload(jaffle, intent=question)
     assert plan["status"] == status, plan
     if status == "low_confidence":
         assert "ready_for" not in plan["next"], plan
@@ -417,13 +445,10 @@ def test_label_without_parenthetical_never_selects(
         ], plan
     else:
         assert "execute" in plan["next"]["ready_for"], plan
-    select = plan["best"]["query_ir"]["select"]
-    assert [item["expression"].get("measure") for item in select] == [subject]
+    assert Call.from_call(plan["best"]["query"]).subjects == [subject]
 
 
-def test_negation_is_normalized_before_scope_and_parsing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_negation_is_normalized_before_scope_and_parsing(packages, monkeypatch: pytest.MonkeyPatch):
     from semantic_rails import scope
 
     original = scope.classify_question
@@ -434,7 +459,7 @@ def test_negation_is_normalized_before_scope_and_parsing(
         return original(question)
 
     monkeypatch.setattr(scope, "classify_question", classify)
-    with closing(Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True)))) as runtime:
+    with _open(packages, synonyms=True) as runtime:
         plan = plan_payload(
             runtime,
             intent="Which accounts didn't close last week?",
@@ -446,51 +471,32 @@ def test_negation_is_normalized_before_scope_and_parsing(
     assert plan["status"] != "ok"
 
 
-@pytest.mark.parametrize(
-    "question",
-    [
-        "How many accounts signed last week up?",
-        "How many accounts signed last week?",
-    ],
-)
-def test_partial_or_noncontiguous_synonym_is_not_consumed(tmp_path: Path, question: str):
-    with closing(Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True)))) as runtime:
-        plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
-        assert plan["status"] != "ok"
-        assert "ready_for" not in plan["next"]
-
-
-def test_phrase_consumption_records_exact_span_and_preserves_numbers(tmp_path: Path):
+def test_phrase_consumption_records_exact_span_and_preserves_numbers(packages):
     from dataclasses import replace
 
     from semantic_rails.planner.consumed_spans import unconsumed_terms
     from semantic_rails.planner.unmatched_words import _unconsumed_words
 
-    with closing(Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True)))) as runtime:
+    with _open(packages, synonyms=True) as runtime:
         metric = next(
             row for row in runtime._config.metric_recipes if row.id == "metric.shop.new_accounts"
         )
         runtime._config = replace(
             runtime._config, metric_recipes=[replace(metric, aliases=["7 day signups"])]
         )
-        query = {"version": 1, "select": [{"as": "n", "expression": {"metric": metric.id}}]}
+        query = Call.from_call({"select": [{"as": "n", "expression": metric.id}]})
         assert _unconsumed_words(runtime, "7 days signups", query) == ([], [])
         assert unconsumed_terms(runtime, "7 days signups", query) == []
         assert unconsumed_terms(runtime, "7 days unrelated signups", query) == ["7"]
 
 
-def test_collision_check_also_guards_a_forced_draft(tmp_path: Path):
+def test_collision_check_also_guards_a_forced_draft(packages):
     from semantic_rails.planner.faithfulness import intent_subject_why
     from semantic_rails.planner.intent_ir import parse_intent
 
-    with closing(
-        Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True, collision=True)))
-    ) as runtime:
+    with _open(packages, synonyms=True, collision=True) as runtime:
         question = "How many signups last week?"
-        query = {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"metric": "metric.shop.new_accounts"}}],
-        }
+        query = Call.from_call({"select": [{"as": "n", "expression": "metric.shop.new_accounts"}]})
         why = intent_subject_why(
             runtime, question=question, intent_ir=parse_intent(runtime, question), query=query
         )
@@ -501,10 +507,8 @@ def test_collision_check_also_guards_a_forced_draft(tmp_path: Path):
         ]
 
 
-def test_unique_words_separate_a_shared_synonym(tmp_path: Path):
-    with closing(
-        Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True, collision=True)))
-    ) as runtime:
+def test_unique_words_separate_a_shared_synonym(packages):
+    with _open(packages, synonyms=True, collision=True) as runtime:
         assert [
             row.id
             for row in faithfulness._shared_subjects(runtime._config, "new accounts signed up")
@@ -515,20 +519,20 @@ def test_unique_words_separate_a_shared_synonym(tmp_path: Path):
         )
 
 
-def test_metric_synonym_lists_round_trip_from_yaml(tmp_path: Path):
+def test_metric_synonym_lists_round_trip_from_yaml(packages):
     from semantic_rails.config import load_package_config
 
-    config = load_package_config(str(_package(tmp_path / "shop", synonyms=True)))
+    config = load_package_config(str(packages(synonyms=True)))
     names = {row.id: row.aliases for row in config.metric_recipes}
     assert names["metric.shop.new_accounts"] == ["signups", "signed up", "new signups"]
     assert names["metric.shop.closures"] == ["closed"]
     assert names["metric.shop.upgrades"] == ["upgraded"]
 
 
-def test_metric_synonym_colliding_with_a_measure_clarifies(tmp_path: Path):
+def test_metric_synonym_colliding_with_a_measure_clarifies(packages):
     from dataclasses import replace
 
-    with closing(Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True)))) as runtime:
+    with _open(packages, synonyms=True) as runtime:
         measure = runtime._config.measures[0]
         runtime._config = replace(
             runtime._config, measures=[replace(measure, label="Signups", publish=True)]
@@ -541,10 +545,10 @@ def test_metric_synonym_colliding_with_a_measure_clarifies(tmp_path: Path):
         assert "metric.shop.new_accounts" in str(plan["why"])
 
 
-def test_whole_metric_label_collision_clarifies(tmp_path: Path):
+def test_whole_metric_label_collision_clarifies(packages):
     from dataclasses import replace
 
-    with closing(Runtime.from_path(str(_package(tmp_path / "shop")))) as runtime:
+    with _open(packages) as runtime:
         runtime._config = replace(
             runtime._config,
             metric_recipes=[
@@ -555,14 +559,12 @@ def test_whole_metric_label_collision_clarifies(tmp_path: Path):
         assert plan["status"] == "needs_clarification"
 
 
-def test_collision_options_include_only_visible_metrics(tmp_path: Path):
+def test_collision_options_include_only_visible_metrics(packages):
     from dataclasses import replace
 
     from semantic_rails.schema import SemanticPolicyConfig
 
-    with closing(
-        Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True, collision=True)))
-    ) as runtime:
+    with _open(packages, synonyms=True, collision=True) as runtime:
         hidden = "metric.shop.closures"
         runtime._config = replace(
             runtime._config,

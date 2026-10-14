@@ -122,150 +122,41 @@ def _write_minimal_package(
 
 def test_loader_recurses_models_and_metrics_directories(tmp_path: Path):
     package_dir = tmp_path / "recursive_demo"
-
-    _write_yaml(
-        package_dir / "package.yml",
-        {
-            "schema_version": 1,
-            "package": {
-                "id": "recursive_demo",
-                "name": "recursive_demo",
-                "description": "Recursive loader demo",
-                "default_db": "data/example.duckdb",
-                "seed": {"kind": "sql_script", "source": "data/seed_example.sql", "post_sql": ""},
-            },
-            "defaults": {
-                "time": {
-                    "timezone": "UTC",
-                    "supported_grains": ["day", "week", "month", "quarter", "year"],
-                }
-            },
-        },
-    )
-    _write_yaml(
-        package_dir / "graph.yml",
-        {
-            "graph": {
-                "entities": {
-                    "customer": {
-                        "as": "entity.demo_customer",
-                        "name": "demo.Customer",
-                        "label": "Customer",
-                        "key": ["customer_id"],
-                        "model": "customers",
-                    },
-                    "order": {
-                        "as": "entity.demo_order",
-                        "name": "demo.Order",
-                        "label": "Order",
-                        "key": ["order_id"],
-                        "model": "orders",
-                    },
-                }
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "models" / "dimensions" / "customers.yml",
-        {
-            "model": {
-                "id": "customers",
-                "entities": {"customer": {}},
-                "relation": "customer_dim",
-                "dimensions": {
-                    "country": {
-                        "as": "dimension.demo_customer_country",
-                        "name": "demo.Customer.country",
-                        "label": "Customer country",
-                        "kind": "categorical",
-                    }
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "models" / "facts" / "orders.yml",
-        {
-            "model": {
-                "id": "orders",
-                "entities": {"order": {}, "customer": {}},
-                "relation": "order_fact",
-                "times": {
-                    "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
-                        "name": "demo.Order.ordered_at",
-                        "label": "Order time",
-                        "column": "ordered_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                    }
-                },
-                "measures": {
-                    "order_count": {
-                        "as": "measure.demo.order_count",
-                        "name": "sales.orders",
-                        "label": "Orders",
-                        "kind": "entity_count",
-                        "time": "ordered_at",
-                    }
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "metrics.yml",
-        {
-            "metrics": {
-                "sales.orders": {
-                    "value_type": "number",
-                    "id": "metric.sales.orders",
-                    "kind": "aggregate",
-                    "measure": "measure.demo.order_count",
-                    "label": "Orders",
-                },
-                "sales.orders_cumulative": {
-                    "value_type": "number",
-                    "id": "metric.sales.orders_cumulative",
-                    "name": "sales.orders_cumulative",
-                    "label": "Cumulative orders",
-                    "kind": "cumulative",
-                    "temporal_role": "temporal_role.demo_order_time",
-                    "expression": {
-                        "kind": "cumulative",
-                        "input": {"kind": "metric", "metric": "metric.sales.orders"},
-                    },
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "metrics" / "sales" / "orders_copy.yml",
-        {
-            "metrics": {
-                "sales.orders_copy": {
-                    "id": "metric.sales.orders_copy",
-                    "name": "sales.orders_copy",
-                    "label": "Orders copy",
-                    "value_type": "number",
-                    "kind": "derived",
-                    "temporal_role": "temporal_role.demo_order_time",
-                    "expression": {"kind": "metric", "metric": "metric.sales.orders"},
-                }
-            }
-        },
-    )
+    _write_minimal_package(package_dir, model_extra={"entities": {"order": {}, "customer": {}}})
+    graph = yaml.safe_load((package_dir / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["entities"]["customer"] = {
+        "as": "entity.demo_customer",
+        "key": ["customer_id"],
+        "model": "customers",
+    }
+    _write_yaml(package_dir / "graph.yml", graph)
+    # Models and metrics in nested directories, and a nested metric file with a `metrics:` map.
+    (package_dir / "models" / "facts").mkdir()
+    (package_dir / "models" / "orders.yml").rename(package_dir / "models" / "facts" / "orders.yml")
+    customers = {
+        "id": "customers",
+        "entities": {"customer": {}},
+        "relation": "customer_dim",
+        "dimensions": {"country": {"as": "dimension.demo_customer_country", "kind": "categorical"}},
+    }
+    _write_yaml(package_dir / "models" / "dimensions" / "customers.yml", {"model": customers})
+    metrics = yaml.safe_load((package_dir / "metrics.yml").read_text(encoding="utf-8"))
+    copy = metrics["metrics"].pop("sales.orders_copy")
+    _write_yaml(package_dir / "metrics.yml", metrics)
+    orders_copy = {"metrics": {"sales.orders_copy": copy}}
+    _write_yaml(package_dir / "metrics" / "sales" / "orders_copy.yml", orders_copy)
 
     config = load_package_config(str(package_dir))
 
     assert config.version == 1
-    assert any(row.id == "entity.demo_customer" for row in config.entities)
-    assert any(row.id == "entity.demo_order" for row in config.entities)
-    assert any(row.id == "dimension.demo_customer_country" for row in config.dimensions)
-    assert any(row.id == "temporal_role.demo_order_time" for row in config.temporal_roles)
-    assert any(row.id == "measure.demo.order_count" for row in config.measures)
-    assert any(row.id == "metric.sales.orders" for row in config.metric_recipes)
-    assert any(row.id == "metric.sales.orders_cumulative" for row in config.metric_recipes)
-    assert any(row.id == "metric.sales.orders_copy" for row in config.metric_recipes)
+    assert {row.id for row in config.entities} == {"entity.demo_customer", "entity.demo_order"}
+    assert "dimension.demo_customer_country" in {row.id for row in config.dimensions}
+    assert [row.id for row in config.temporal_roles] == ["temporal_role.demo_order_time"]
+    assert [row.id for row in config.measures] == ["measure.demo.order_count"]
+    assert {row.id for row in config.metric_recipes} == {
+        "metric.sales.orders",
+        "metric.sales.orders_copy",
+    }
 
 
 def test_starter_normalizes_to_stable_package_config():
@@ -341,7 +232,7 @@ def test_jaffle_shop_package_surface_remains_stable():
         "semantic_policies": len(config.semantic_policies),
         "semantic_caveats": len(config.semantic_caveats),
     } == {
-        "entities": 13,
+        "entities": 15,
         "dimensions": 67,
         "temporal_roles": 18,
         "relationships": 16,
@@ -427,8 +318,7 @@ def test_an_installed_bundled_package_builds_its_database_in_the_user_cache(
         runtime = runtime_module.Runtime("mini")
         try:
             query = {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.mini.event_count"}}],
+                "select": ["metric.mini.event_count"],
             }
             assert runtime.query(query)["rows"]  # builds the database from the seed files
         finally:
@@ -441,97 +331,6 @@ def test_an_installed_bundled_package_builds_its_database_in_the_user_cache(
     assert Path(runtime.db_path).is_file()
     assert sorted(path for path in installed.rglob("*")) == before
     assert not site_packages.exists()
-
-
-def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
-    package_dir = tmp_path / "snowflake_loader_demo"
-
-    _write_yaml(
-        package_dir / "package.yml",
-        {
-            "schema_version": 1,
-            "package": {
-                "id": "snowflake_loader_demo",
-                "name": "snowflake_loader_demo",
-                "description": "Snowflake loader demo",
-                "warehouse": "snowflake",
-                "connection": {"kind": "snowflake_cli", "name": "semantic_views_trial"},
-            },
-            "defaults": {
-                "time": {
-                    "timezone": "UTC",
-                    "supported_grains": ["day", "week", "month", "quarter", "year"],
-                }
-            },
-        },
-    )
-    _write_yaml(
-        package_dir / "graph.yml",
-        {
-            "graph": {
-                "entities": {
-                    "order": {
-                        "as": "entity.demo_order",
-                        "name": "demo.Order",
-                        "label": "Order",
-                        "key": ["O_ORDERKEY"],
-                        "model": "orders",
-                    }
-                }
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "models" / "orders.yml",
-        {
-            "model": {
-                "id": "orders",
-                "entities": {"order": {}},
-                "relation": "SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS",
-                "times": {
-                    "order_date": {
-                        "id": "temporal_role.demo_order_date",
-                        "name": "demo.Order.order_date",
-                        "label": "Order date",
-                        "column": "O_ORDERDATE",
-                        "kind": "date",
-                        "class": "event_time",
-                    }
-                },
-                "measures": {
-                    "order_count": {
-                        "as": "measure.demo.order_count",
-                        "name": "sales.orders",
-                        "label": "Orders",
-                        "description": "Orders",
-                        "kind": "entity_count",
-                        "time": "order_date",
-                    }
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "metrics.yml",
-        {
-            "metrics": {
-                "sales.orders": {
-                    "value_type": "number",
-                    "id": "metric.sales.orders",
-                    "kind": "aggregate",
-                    "measure": "measure.demo.order_count",
-                    "label": "Orders",
-                }
-            }
-        },
-    )
-
-    config = load_package_config(str(package_dir))
-
-    assert config.package.warehouse == "snowflake"
-    assert config.package.connection.kind == "snowflake_cli"
-    assert config.package.connection.name == "semantic_views_trial"
-    assert config.package.default_db == ""
 
 
 def test_loader_applies_operational_metadata_contract_and_model_defaults(tmp_path: Path):
@@ -591,85 +390,73 @@ def test_loader_applies_operational_metadata_contract_and_model_defaults(tmp_pat
     assert config.operational_contract["metric"]["fields"]["verified"]["type"] == "boolean"
 
 
-def test_loader_rejects_operational_metadata_without_contract(tmp_path: Path):
-    package_dir = tmp_path / "operational_demo"
-    _write_minimal_package(
-        package_dir,
-        model_extra={"operational_defaults": {"owner": "finance"}},
-    )
-
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(package_dir))
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "operational_defaults" in str(exc.value)
+_OWNER_REQUIRED = {"owner": {"type": "string", "required": True}}
 
 
-def test_loader_rejects_missing_required_operational_fields(tmp_path: Path):
-    package_dir = tmp_path / "operational_demo"
-    _write_minimal_package(
-        package_dir,
-        defaults_extra={
-            "operational": {
-                "metric": {
-                    "fields": {
-                        "owner": {"type": "string", "required": True},
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        (
+            {"model_extra": {"operational_defaults": {"owner": "finance"}}},
+            ["operational_defaults"],
+        ),
+        (
+            {"defaults_extra": {"operational": {"metric": {"fields": _OWNER_REQUIRED}}}},
+            ["missing required operational fields"],
+        ),
+        (
+            {
+                "defaults_extra": {
+                    "operational": {
+                        "measure": {
+                            "fields": {
+                                **_OWNER_REQUIRED,
+                                "tags": {"type": "string_list", "required": False},
+                            }
+                        },
+                        "metric": {"fields": _OWNER_REQUIRED},
+                    }
+                },
+                "model_extra": {"operational_defaults": {"owner": "finance"}},
+                "orders_metric_extra": {"operational": {"owner": "finance", "tags": ["core"]}},
+            },
+            [
+                "metric 'metric.sales.orders' operational.tags",
+                "is not declared in defaults.operational.metric.fields",
+            ],
+        ),
+        (
+            {"metric_extra": {"id": "metric.sales.orders"}},
+            ["duplicate metric id 'metric.sales.orders'"],
+        ),
+        (
+            {
+                "model_extra": {
+                    "dimensions": {
+                        "bad_dimension": {"as": "entity.demo_order", "kind": "categorical"}
                     }
                 }
-            }
-        },
-    )
-
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(package_dir))
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "missing required operational fields" in str(exc.value)
-
-
-def test_loader_rejects_metric_operational_fields_not_declared_for_metrics(tmp_path: Path):
+            },
+            ["duplicate object id 'entity.demo_order'"],
+        ),
+    ],
+    ids=[
+        "operational-without-contract",
+        "missing-required-field",
+        "undeclared-metric-field",
+        "duplicate-metric-id",
+        "duplicate-id-across-kinds",
+    ],
+)
+def test_loader_refuses_an_inconsistent_package(tmp_path: Path, options, expected):
     package_dir = tmp_path / "operational_demo"
-    _write_minimal_package(
-        package_dir,
-        defaults_extra={
-            "operational": {
-                "measure": {
-                    "fields": {
-                        "owner": {"type": "string", "required": True},
-                        "tags": {"type": "string_list", "required": False},
-                    }
-                },
-                "metric": {
-                    "fields": {
-                        "owner": {"type": "string", "required": True},
-                    }
-                },
-            }
-        },
-        model_extra={"operational_defaults": {"owner": "finance"}},
-        orders_metric_extra={"operational": {"owner": "finance", "tags": ["core"]}},
-    )
+    _write_minimal_package(package_dir, **options)
 
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(package_dir))
 
     assert exc.value.code == "INVALID_CONFIG"
-    assert "is not declared in defaults.operational.metric.fields" in str(exc.value)
-    assert f"{package_dir}: metric 'metric.sales.orders' operational.tags" in str(exc.value)
-
-
-def test_loader_rejects_duplicate_metric_ids(tmp_path: Path):
-    package_dir = tmp_path / "duplicate_metric_demo"
-    _write_minimal_package(
-        package_dir,
-        metric_extra={"id": "metric.sales.orders"},
-    )
-
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(package_dir))
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "duplicate metric id 'metric.sales.orders'" in str(exc.value)
+    assert all(part in str(exc.value) for part in expected), str(exc.value)
 
 
 def test_loader_rejects_duplicate_entity_ids(tmp_path: Path):
@@ -688,29 +475,6 @@ def test_loader_rejects_duplicate_entity_ids(tmp_path: Path):
     _write_yaml(
         package_dir / "models" / "invoices.yml",
         {"model": {"entities": {"invoice": {}}, "relation": "order_fact"}},
-    )
-
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(package_dir))
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "duplicate object id 'entity.demo_order'" in str(exc.value)
-
-
-def test_loader_rejects_duplicate_object_ids_across_kinds(tmp_path: Path):
-    package_dir = tmp_path / "duplicate_object_demo"
-    _write_minimal_package(
-        package_dir,
-        model_extra={
-            "dimensions": {
-                "bad_dimension": {
-                    "as": "entity.demo_order",
-                    "name": "demo.Order.bad_dimension",
-                    "label": "Bad dimension",
-                    "kind": "categorical",
-                }
-            }
-        },
     )
 
     with pytest.raises(SemanticLayerError) as exc:

@@ -216,7 +216,7 @@ def _compile_after_plan(
     if payload.get("status") != "ok":
         return {"attempted": False}
     best = payload.get("best") or {}
-    query = dict(best.get("query_ir") or {})
+    query = dict(best.get("query") or {})
     if not query:
         return {"attempted": False}
     query["verbosity"] = "full"
@@ -264,7 +264,7 @@ def _ids_in_plan(payload: dict[str, Any]) -> set[str]:
     for row in list(best.get("resolved", []) or []):
         if isinstance(row, dict) and row.get("id"):
             ids.add(str(row["id"]))
-    query = dict(best.get("query_ir") or {})
+    query = dict(best.get("query") or {})
     for item in list(query.get("select", []) or []):
         if not isinstance(item, dict):
             continue
@@ -301,12 +301,12 @@ def _collect_expression_ids(value: Any, ids: set[str]) -> None:
 def _query_patch_misses(expected: dict[str, Any], payload: dict[str, Any]) -> list[str]:
     if not expected:
         return []
-    query = dict((payload.get("best") or {}).get("query_ir") or {})
+    query = dict((payload.get("best") or {}).get("query") or {})
     return list(_missing_paths(expected, query))
 
 
 def _unexpected_query_paths(paths: list[str], payload: dict[str, Any]) -> list[str]:
-    query: Any = (payload.get("best") or {}).get("query_ir") or {}
+    query: Any = (payload.get("best") or {}).get("query") or {}
     hits: list[str] = []
     for path in paths:
         current = query

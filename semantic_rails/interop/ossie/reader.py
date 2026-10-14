@@ -26,6 +26,7 @@ from ...config import (
     load_package_snapshot,
 )
 from ...config_parts.measure_governance import with_published_flags
+from ...config_parts.model_rows import _inferred_source_role
 from ...errors import SemanticLayerError
 from ...expressions import (
     AggregateExpr,
@@ -265,7 +266,7 @@ class _Importer:
                 self.skip("datasets without a primary key or defined by a query", name)
                 continue
             entity_id = self.sr_id("datasets", name, f"entity.{self.ns}_{_slug(name)}")
-            document = {"table": source, "primary_key": key[0], "key": key}
+            document = {"table": source, "key_columns": key}
             document.update(
                 description=str(dataset.get("description") or ""), aliases=_synonyms(dataset)
             )
@@ -341,7 +342,9 @@ class _Importer:
             rel_id = self.sr_id("relationships", name, f"relationship.{_slug(name)}")
             if (self.residual("relationships", rel_id) or {}).get("cardinality") == "1:N":
                 ends, columns = ends[::-1], columns[::-1]  # the export writes 1:N joins reversed
-            elif not self.sidecar and set(columns[1]) != set(self.rows["entities"][ends[1]]["key"]):
+            elif not self.sidecar and set(columns[1]) != set(
+                self.rows["entities"][ends[1]]["key_columns"]
+            ):
                 self.skip("relationships not to their target's primary key", name)  # maybe not N:1
                 continue
             document: dict[str, Any] = {"source_entity": ends[0], "target_entity": ends[1]}
@@ -349,9 +352,11 @@ class _Importer:
             document.update(source_column=columns[0][0], source_columns=columns[0])
             document.update(target_column=columns[1][0], target_columns=columns[1])
             document.update(cardinality="N:1", safety="safe")
-            # The key roles the loader derives: a join on the source's own key is primary.
-            key = self.rows["entities"][ends[0]]["key"]
-            source_role = "primary" if set(columns[0]) <= set(key) else "foreign"
+            # The key roles the loader derives: a join holding the source's key is primary.
+            source = self.rows["entities"][ends[0]]
+            source_role = _inferred_source_role(
+                columns[0], list(source["key_columns"]), source.get("key_roles") or {}
+            )
             defaults = {"name": name, "label": _titleize(name), "source_key_role": source_role}
             self.row("relationships", rel_id, document, **defaults, target_key_role="primary")
 

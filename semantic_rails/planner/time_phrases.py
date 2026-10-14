@@ -7,12 +7,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from ..clock import shift_period
 from ._base import _NUMBER_WORDS, _tokens
-
-
-def _first_day_of_next_month(value: date) -> date:
-    return (value.replace(day=28) + timedelta(days=4)).replace(day=1)
-
 
 _TIME_UNITS = ("day", "week", "month", "quarter", "year")
 _TIME_UNIT_ALT = "|".join(_TIME_UNITS)
@@ -27,8 +23,7 @@ _COMPARISON_GUARD = (
     r"(?<!vs )(?<!vs\. )(?<!versus )(?<!compared to )(?<!relative to )(?<!than )(?<!since )"
 )
 
-# Relative trailing windows the planner resolves into the Query IR's
-# relative range form (``time.range.last``): "last month",
+# Relative trailing windows the planner drafts as the call's ``time.last``: "last month",
 # "last 7 days", "past three quarters", "trailing 12 months", ...
 _RELATIVE_WINDOW_RE = re.compile(
     rf"{_COMPARISON_GUARD}\b(?:last|past|previous|prior|trailing)\s+"
@@ -230,28 +225,6 @@ def _relative_window_value(raw: str) -> int:
         return 1
 
 
-def _current_period_bounds(unit: str, today: date) -> dict[str, str]:
-    if unit == "day":
-        return {"start": today.isoformat(), "end": (today + timedelta(days=1)).isoformat()}
-    if unit == "week":
-        start = today - timedelta(days=today.weekday())
-        return {"start": start.isoformat(), "end": (start + timedelta(days=7)).isoformat()}
-    if unit == "month":
-        start = today.replace(day=1)
-        return {"start": start.isoformat(), "end": _first_day_of_next_month(today).isoformat()}
-    if unit == "quarter":
-        start_month = ((today.month - 1) // 3) * 3 + 1
-        start = date(today.year, start_month, 1)
-        end_year = today.year + (1 if start_month == 10 else 0)
-        end_month = 1 if start_month == 10 else start_month + 3
-        return {"start": start.isoformat(), "end": date(end_year, end_month, 1).isoformat()}
-    # year
-    return {
-        "start": date(today.year, 1, 1).isoformat(),
-        "end": date(today.year + 1, 1, 1).isoformat(),
-    }
-
-
 def _month_start(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}-01"
 
@@ -447,6 +420,9 @@ def _calendar_windows(
             if boundary:
                 # Report the bound with its word: "since march 2017".
                 span = (boundary.start(), span[1])
+            if boundary and boundary.group().split()[0] == "since" and bounds:
+                # "since <date>" is a window that starts there and stays open.
+                bounds, boundary = {"start": bounds["start"]}, None
             qualified = bool(
                 pattern is _YEAR_IN_RE
                 and _BARE_YEAR_LEAD_RE.match(text)
@@ -472,26 +448,30 @@ def _calendar_windows(
     return accepted, rejected
 
 
-def _relative_window(
-    lowered: str, today: date
-) -> list[tuple[tuple[int, int], dict[str, Any], str]]:
-    """Every relative window in the text: (span, bounds, unit)."""
+def _relative_window(lowered: str) -> list[tuple[tuple[int, int], dict[str, Any], str]]:
+    """Every relative window in the text: (span, window, unit), as the call spells it.
+
+    A relative phrase is never a date: "last week" is ``last: {week, 1}`` (the last complete
+    week before ``now``), "yesterday" ``last: {day, 1}``, "this month" ``this: month`` and
+    "today" ``this: day`` (the period so far).
+    """
 
     candidates: list[tuple[tuple[int, int], dict[str, Any], str]] = []
     for match in _RELATIVE_WINDOW_RE.finditer(lowered):
         unit = match.group(2)
-        bounds = {
-            "range": {"last": {"unit": unit, "value": _relative_window_value(match.group(1))}}
-        }
-        candidates.append((match.span(), bounds, unit))
+        value = _relative_window_value(match.group(1))
+        last = {"unit": unit, "value": value}
+        try:
+            shift_period(date.today(), unit, -value)
+        except (ValueError, OverflowError):
+            continue  # reaches past the calendar: the phrase stays unread, and held
+        candidates.append((match.span(), {"last": last}, unit))
     for match in _YESTERDAY_RE.finditer(lowered):
-        # ``range.last`` floors ``end`` to the start of the current period,
-        # so {day, 1} is exactly yesterday (end-exclusive).
-        candidates.append((match.span(), {"range": {"last": {"unit": "day", "value": 1}}}, "day"))
+        candidates.append((match.span(), {"last": {"unit": "day", "value": 1}}, "day"))
     for match in _THIS_PERIOD_RE.finditer(lowered):
-        candidates.append((match.span(), _current_period_bounds(match.group(1), today), ""))
+        candidates.append((match.span(), {"this": match.group(1)}, ""))
     for match in _TODAY_RE.finditer(lowered):
-        candidates.append((match.span(), _current_period_bounds("day", today), "day"))
+        candidates.append((match.span(), {"this": "day"}, "day"))
     return sorted(candidates, key=lambda row: row[0][0])
 
 
@@ -613,33 +593,14 @@ def _named_calendar_windows(
             )
             continue
         if match["lead"] == "since":
-            # Include only complete days. The explicit end survives execution on a later clock.
+            # "since July" starts there and stays open; a start after today names no window.
             if bounds["start"] >= today.isoformat():
                 rejected.append(span)
                 continue
-            bounds = {"start": bounds["start"], "end": today.isoformat()}
-        elif bounds["end"] > today.isoformat():
-            rejected.append(span)
-            prior = {}
-            for year in range(start.year - 1, start.year - 5, -1):
-                try:
-                    prior = _named_period_bounds(match, year)
-                except ValueError:
-                    continue
-                if prior:
-                    break
-            current = (
-                f"{bounds['start']} (not a complete day yet)"
-                if start == today
-                else f"{bounds['start']} through {(today - timedelta(days=1)).isoformat()} (complete days)"
-            )
-            readings.extend(
-                [
-                    (span, current),
-                    (span, f"{prior['start']} to {prior['end']} (end exclusive)"),
-                ]
-            )
+            windows.append((span, {"start": bounds["start"]}, ""))
+            assumptions.append(f"'{match[0]}' means since {bounds['start']}.")
             continue
+        # A period not over yet is read so far: the answer marks its last period partial.
         windows.append((span, bounds, ""))
         assumptions.append(
             f"'{match[0]}' means {start.year}: {bounds['start']} to {bounds['end']} (end exclusive)."
@@ -682,6 +643,11 @@ _PERIOD_SHIFT_TRIGGERS = (
     (r"\bvs\.?\s+(?:last|prior|previous)\s+week\b", "week"),
     (r"\bqoq\b", "quarter"),
     (r"\bquarter[\s\-]?over[\s\-]?quarter\b", "quarter"),
+    # "revenue last week vs the week before"
+    *(
+        (rf"\b(?:vs\.?|versus|compared\s+(?:to|with))\s+the\s+{unit}\s+before\b", unit)
+        for unit in ("day", "week", "month", "quarter", "year")
+    ),
 )
 
 

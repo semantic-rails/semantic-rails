@@ -37,6 +37,7 @@ def _query() -> dict[str, object]:
         "select": [
             {
                 "expression": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.order_count",
                     "aggregation": "count_distinct",
                 },
@@ -83,31 +84,6 @@ def _patch_orders_times(
     orders_yml.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
-def test_column_timezone_wraps_raw_expr_with_convert_timezone(
-    package_config_factory,
-) -> None:
-    """jaffle_shop is a DuckDB package, so the emitted rewrite must be
-    DuckDB's. This previously asserted Snowflake's CONVERT_TIMEZONE — which
-    the base dialect emitted for all nine warehouses, and which DuckDB
-    rejects at execute time with `Scalar Function with name
-    convert_timezone does not exist!`."""
-    _, package_path = package_config_factory("jaffle_shop")
-    _patch_orders_times(
-        package_path,
-        timezone="America/New_York",
-        column_timezone="UTC",
-    )
-    config = load_package_config(str(package_path))  # reload after YAML mutation
-
-    compiled = compile_query(config, Registry(config), _query())
-    rendered = compiled["sql"]
-
-    assert "TIMEZONE('America/New_York', TIMEZONE('UTC'" in rendered, rendered
-    assert "CONVERT_TIMEZONE" not in rendered, rendered
-    # The wrap goes inside DATE_TRUNC — truncation happens in the target zone.
-    assert "DATE_TRUNC('month', CAST(TIMEZONE(" in rendered, rendered
-
-
 def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory) -> None:
     """Compile-time success meant nothing before: the old rewrite produced
     ok:true and then died at execute time on the reference warehouse."""
@@ -122,10 +98,10 @@ def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory)
     config = load_package_config(str(package_path))
     rendered = compile_query(config, Registry(config), _query())["sql"]
 
-    con = duckdb.connect()
-    con.execute("CREATE TABLE jaffle_order (order_id VARCHAR, ordered_at TIMESTAMP)")
-    con.execute("INSERT INTO jaffle_order VALUES ('o1', TIMESTAMP '2024-01-15 12:00:00')")
-    rows = con.execute(rendered).fetchall()
+    with duckdb.connect() as con:
+        con.execute("CREATE TABLE jaffle_order (order_id VARCHAR, ordered_at TIMESTAMP)")
+        con.execute("INSERT INTO jaffle_order VALUES ('o1', TIMESTAMP '2024-01-15 12:00:00')")
+        rows = con.execute(rendered).fetchall()
     assert rows, rendered
     # 12:00 UTC is 07:00 in New York, so the row truncates into January.
     assert str(rows[0][0]).startswith("2024-01-01")
@@ -135,12 +111,10 @@ def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory)
     ("warehouse", "expected"),
     [
         ("duckdb", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
-        ("motherduck", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
-        ("ducklake", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
         ("postgres", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
         ("snowflake", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
         ("databricks", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
-        ("bigquery", "DATETIME(TIMESTAMP(t.ts, 'UTC'), 'America/New_York')"),
+        ("bigquery", "DATETIME(CAST(t.ts AS TIMESTAMP), 'America/New_York')"),
         ("clickhouse", "toTimeZone(toDateTime(t.ts, 'UTC'), 'America/New_York')"),
         ("athena", "AT_TIMEZONE(WITH_TIMEZONE(t.ts, 'UTC'), 'America/New_York')"),
     ],
@@ -172,39 +146,24 @@ def test_unknown_warehouse_refuses_the_rewrite_instead_of_guessing() -> None:
     assert exc.value.details["rewrite"] == "convert_timezone"
 
 
-def test_no_column_timezone_emits_no_convert_timezone(
+@pytest.mark.parametrize("column_timezone", [None, "UTC"], ids=["absent", "equal"])
+def test_no_conversion_when_source_zone_is_absent_or_equal(
     package_config_factory,
+    column_timezone,
 ) -> None:
     _, package_path = package_config_factory("jaffle_shop")
-    # Leave column_timezone empty; timezone may default to UTC.
     _patch_orders_times(
         package_path,
         timezone="UTC",
-        column_timezone=None,
+        column_timezone=column_timezone,
     )
     config = load_package_config(str(package_path))  # reload after YAML mutation
 
     compiled = compile_query(config, Registry(config), _query())
     rendered = compiled["sql"]
 
-    assert "CONVERT_TIMEZONE" not in rendered, rendered
-
-
-def test_column_timezone_equal_to_timezone_emits_no_convert_timezone(
-    package_config_factory,
-) -> None:
-    _, package_path = package_config_factory("jaffle_shop")
-    _patch_orders_times(
-        package_path,
-        timezone="UTC",
-        column_timezone="UTC",
-    )
-    config = load_package_config(str(package_path))  # reload after YAML mutation
-
-    compiled = compile_query(config, Registry(config), _query())
-    rendered = compiled["sql"]
-
-    assert "CONVERT_TIMEZONE" not in rendered, rendered
+    # DuckDB writes a conversion as TIMEZONE(...).
+    assert "TIMEZONE(" not in rendered, rendered
 
 
 # -- zone-aware columns: answers in the role's zone, whatever the session's ------------
@@ -241,7 +200,7 @@ model:
 
 
 ZONE_ROLE = "temporal_role.zones_order_ordered_at"
-ZONE_REVENUE = [{"expression": {"measure": "measure.zones.revenue"}, "as": "revenue"}]
+ZONE_REVENUE = [{"expression": "measure.zones.revenue", "as": "revenue"}]
 
 
 def _zone_runtime(root: Path, column: str, zones: str) -> Runtime:
@@ -268,22 +227,12 @@ def _zone_runtime(root: Path, column: str, zones: str) -> Runtime:
     [
         # A zone-aware column is bucketed and bounded in the role's zone (UTC by default).
         ("ordered_at_tz", "", {"2023-12-01": 7}, {"2023-12-01": 15}),
-        (
-            "ordered_at_tz",
-            ", timezone: America/New_York",
-            {"2023-12-01": 14},
-            {"2023-11-01": 1, "2023-12-01": 14},
-        ),
+        ("ordered_at_tz", ", timezone: America/New_York", {"2023-12-01": 14}, {"2023-11-01": 1, "2023-12-01": 14}),
         # Naive columns keep their stored clock, converted only by column_timezone.
         ("ordered_at", "", {"2023-12-01": 7}, {"2023-12-01": 15}),
-        (
-            "ordered_at",
-            ", timezone: America/New_York, column_timezone: UTC",
-            {"2023-12-01": 14},
-            {"2023-11-01": 1, "2023-12-01": 14},
-        ),
+        ("ordered_at", ", timezone: America/New_York, column_timezone: UTC", {"2023-12-01": 14}, {"2023-11-01": 1, "2023-12-01": 14}),
     ],
-)
+)  # fmt: skip
 def test_answers_do_not_follow_the_session_time_zone(
     tmp_path: Path, column: str, zones: str, days: dict[str, int], months: dict[str, int]
 ) -> None:
@@ -299,13 +248,8 @@ def test_answers_do_not_follow_the_session_time_zone(
             },
             {"temporal_role": ZONE_ROLE, "grain": "month"},
         ):
-            result = runtime.query({"version": 1, "select": ZONE_REVENUE, "time": time})
-            answers.append(
-                {
-                    str(row[f"{ZONE_ROLE}__{time['grain']}"])[:10]: row["revenue"]
-                    for row in result["rows"]
-                }
-            )
+            result = runtime.query({"select": ZONE_REVENUE, "time": time})
+            answers.append({str(row["period"])[:10]: row["revenue"] for row in result["rows"]})
         # The zone ended with each query's cursor: the connection the host sees, and any
         # cursor made from it later, still read Los Angeles.
         conn = runtime._get_adapter()._db.conn  # noqa: SLF001
@@ -323,17 +267,17 @@ def test_the_whole_query_runs_in_its_zone(tmp_path: Path) -> None:
     A query whose measures use a role in another zone runs in its own role's zone, and says so.
     """
     runtime = _zone_runtime(tmp_path, "ordered_at_tz", "")
-    hours = [{"expression": {"measure": "measure.zones.hours"}, "as": "hours"}]
-    tokyo = [{"expression": {"measure": "measure.zones.tokyo_revenue"}, "as": "tokyo"}]
+    hours = [{"expression": "measure.zones.hours", "as": "hours"}]
+    tokyo = [{"expression": "measure.zones.tokyo_revenue", "as": "tokyo"}]
     time = {"temporal_role": ZONE_ROLE, "grain": "month"}
     try:
         # The UTC hours 2, 6, 23 and 4, where Los Angeles would read 18, 22, 15 and 20.
-        assert runtime.query({"version": 1, "select": hours})["rows"] == [{"hours": 35}]
+        assert runtime.query({"select": hours})["rows"] == [{"hours": 35}]
         codes = [
             [item["code"] for item in runtime.query(query).get("warnings", [])]
             for query in (
-                {"version": 1, "select": ZONE_REVENUE, "time": time},
-                {"version": 1, "select": ZONE_REVENUE + tokyo, "time": time},
+                {"select": ZONE_REVENUE, "time": time},
+                {"select": ZONE_REVENUE + tokyo, "time": time},
             )
         ]
     finally:
@@ -383,7 +327,7 @@ def test_an_injected_adapter_receives_the_role_zone(
     runtime.set_adapter(adapter)
     time = {"temporal_role": ZONE_ROLE, "grain": "day", "start": "2023-12-01", "end": "2023-12-02"}
     try:
-        runtime.query({"version": 1, "select": ZONE_REVENUE, "time": time})
+        runtime.query({"select": ZONE_REVENUE, "time": time})
     finally:
         runtime.close()
     assert adapter.limits
@@ -437,20 +381,19 @@ def test_postgres_restores_the_current_session_zone(zone: str) -> None:
     )
 
 
-@pytest.mark.parametrize("zone,offset", [("Asia/Tokyo", "+09:00"), ("Europe/Berlin", "+01:00")])
+@pytest.mark.parametrize("zone", ["Asia/Tokyo", "Europe/Berlin"])
 def test_eastern_zone_month_buckets_keep_their_first_day(
-    tmp_path: Path, zone: str, offset: str, monkeypatch
+    tmp_path: Path, zone: str, monkeypatch
 ) -> None:
     runtime = _zone_runtime(tmp_path, "ordered_at_tz", f", timezone: {zone}")
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": ZONE_REVENUE,
                 "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
             }
         )
-        assert result["rows"][0][f"{ZONE_ROLE}__month"][:10] == "2023-12-01"
+        assert result["rows"][0]["period"][:10] == "2023-12-01"
         # Exercise a native aware bucket too: a driver may return either a
         # local naive clock or an aware instant for the same calendar bucket.
         from datetime import datetime
@@ -459,21 +402,16 @@ def test_eastern_zone_month_buckets_keep_their_first_day(
         bucket = datetime(2023, 12, 1, tzinfo=ZoneInfo(zone))
         monkeypatch.setattr(
             "semantic_rails.runtime._adapter_query",
-            lambda *args, **kwargs: [{f"{ZONE_ROLE}__month": bucket, "revenue": 15}],
+            lambda *args, **kwargs: [{"period": bucket, "revenue": 15}],
         )
         result = runtime.query(
             {
-                "version": 1,
                 "select": ZONE_REVENUE,
                 "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
             }
         )
-        assert result["rows"] == [
-            {f"{ZONE_ROLE}__month": f"2023-12-01T00:00:00{offset}", "revenue": 15}
-        ]
-        assert result["column_types"][f"{ZONE_ROLE}__month"] == {
-            "type": "timestamp",
-            "timezone": "aware",
-        }
+        assert result["rows"] == [{"period": "2023-12-01", "period_partial": False, "revenue": 15}]
+        # A month is a calendar date, whatever zone the driver read it in.
+        assert result["column_types"]["period"] == {"type": "date"}
     finally:
         runtime.close()

@@ -22,14 +22,9 @@ from .expressions import (
     CaseExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
-    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
-    RollingExpr,
     SemanticExpr,
 )
 from .schema import PackageConfig, SegmentConfig
@@ -82,13 +77,7 @@ def metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
         return metric_root_entity(config, recipes[expr.metric_recipe].expression)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return metric_root_entity(config, expr.left)
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            entity = metric_root_entity(config, arg)
-            if entity:
-                return entity
-        return ""
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             entity = metric_root_entity(config, arg)
             if entity:
@@ -103,14 +92,10 @@ def metric_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
             if entity:
                 return entity
         return metric_root_entity(config, expr.else_expr) if expr.else_expr is not None else ""
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
-        return metric_root_entity(config, expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return expr.entity
     if isinstance(expr, ConversionExpr):
         return expr.entity or metric_root_entity(config, expr.base)
-    if isinstance(expr, LiteralExpr):
-        return ""
     return ""
 
 

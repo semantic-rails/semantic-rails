@@ -49,8 +49,7 @@ def test_nested_tool_calls_enforce_their_own_context(runtime_factory, same_adapt
     execute_args = {
         "mode": "validate",
         "query": {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}}],
+            "select": ["measure.jaffle.order_count"],
         },
     }
     standalone = {
@@ -65,9 +64,7 @@ def test_nested_tool_calls_enforce_their_own_context(runtime_factory, same_adapt
             for tool, args in (("inspect", inspect_args), ("execute", execute_args))
         }
         assert _TOOL_REQUEST_CONTEXT.get() == outer_context
-        results["outer_read"] = built_in_inspect(
-            {**inspect_args, "policy_context": arguments["policy_context"]}
-        )
+        results["outer_read"] = built_in_inspect(inspect_args)
         assert _TOOL_REQUEST_CONTEXT.get() == outer_context
         return {"nested": results}
 
@@ -132,13 +129,41 @@ def test_eval_set_is_frozen(dev_cases: list[dict[str, Any]]) -> None:
     assert _plan_baseline()["eval_set_sha256"] == mcp_context.DEV_SET_SHA256
 
 
-def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
-    metrics = mcp_context.measure_query_mcp(jaffle_package)
+@pytest.fixture(scope="module")
+def query_measurement(jaffle_package: Path):
+    from semantic_rails.runtime import Runtime
+
+    preview = Runtime.segment_preview
+    samples: dict[str, Any] = {}
+
+    def frozen_preview(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # Unordered preview rows can vary in length between warehouse calls.
+        key = json.dumps([args, kwargs], sort_keys=True)
+        if key not in samples:
+            samples[key] = preview(self, *args, **kwargs)
+        return deepcopy(samples[key])
+
+    def sampled_preview(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = preview(self, *args, **kwargs)
+        key = json.dumps([args, kwargs], sort_keys=True)
+        samples.setdefault(key, deepcopy(result))
+        return result
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Runtime, "segment_preview", sampled_preview)
+        metrics = mcp_context.measure_query_mcp(jaffle_package)
+    return metrics, frozen_preview
+
+
+def test_query_mcp_stays_within_context_budgets(query_measurement) -> None:
+    metrics, _preview = query_measurement
     for metric, maximum in {
         "query.v2.instructions_tokens": 459,
-        "query.v2.tools_list.model_visible_tokens": 2803,
-        "query.v2.tools_list.wire_tokens": 3607,
-        "query.v2.tools_list.largest_tool_tokens": 1136,
+        # execute embeds the query call's schema (query.v2.json) once, share kind and each
+        # operator's value shape included.
+        "query.v2.tools_list.model_visible_tokens": 4645,
+        "query.v2.tools_list.wire_tokens": 5546,
+        "query.v2.tools_list.largest_tool_tokens": 3347,
     }.items():
         assert metrics[metric] <= maximum, (metric, metrics[metric], maximum)
     checks = mcp_context.check_budgets(metrics, mcp_context.load_budgets(), prefix="query.")
@@ -154,24 +179,13 @@ def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
 
 
 def test_session_hints_do_not_increase_first_call_costs(
-    jaffle_package: Path, monkeypatch: pytest.MonkeyPatch
+    jaffle_package: Path, query_measurement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from semantic_rails.mcp_session import MCPQuerySession
     from semantic_rails.runtime import Runtime
 
-    preview = Runtime.segment_preview
-    samples: dict[str, Any] = {}
-
-    def frozen_preview(self: Any, *args: Any, **kwargs: Any) -> Any:
-        # Unordered preview rows can vary in length between warehouse calls.
-        key = json.dumps([args, kwargs], sort_keys=True)
-        if key not in samples:
-            samples[key] = preview(self, *args, **kwargs)
-        return deepcopy(samples[key])
-
+    enabled, frozen_preview = query_measurement
     monkeypatch.setattr(Runtime, "segment_preview", frozen_preview)
-
-    enabled = mcp_context.measure_query_mcp(jaffle_package)
     monkeypatch.setattr(MCPQuerySession, "annotate", lambda *_args, **_kwargs: None)
     disabled = mcp_context.measure_query_mcp(jaffle_package)
     first_calls = {
@@ -222,7 +236,7 @@ def test_store_questions_group_by_the_keyed_store(jaffle_package: Path, question
     with mcp_context.QueryMCPClient(jaffle_package) as client:
         payload = client.tool_payload("plan", {"intent": question, "detail": "query"})
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"]["group_by"] == [
+    assert payload["best"]["query"]["group_by"] == [
         "dimension.jaffle_store_id",
         "dimension.jaffle_store_name",
     ]
@@ -270,11 +284,7 @@ def _case(gold: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 
 def _query(**parts: Any) -> dict[str, Any]:
-    return {
-        "version": 1,
-        "select": [{"as": "revenue_usd", "expression": {"measure": REVENUE}}],
-        **parts,
-    }
+    return {"select": [REVENUE], **parts}
 
 
 def _plan(query: dict[str, Any] | None, *, status: str = "ok", warnings: int = 0) -> dict[str, Any]:
@@ -282,7 +292,7 @@ def _plan(query: dict[str, Any] | None, *, status: str = "ok", warnings: int = 0
         "ok": True,
         "status": status,
         "warnings": [{"code": "SOME_WARNING"}] * warnings,
-        "best": {"query_ir": query} if query is not None else None,
+        "best": {"query": query} if query is not None else None,
     }
 
 
@@ -342,12 +352,12 @@ def test_a_plan_passes_only_if_its_query_returns_the_frozen_answer() -> None:
 def test_multi_value_filter_must_keep_every_value() -> None:
     gold = _query(
         group_by=[STORE],
-        where=[{"field": STORE, "op": "in", "value": ["Philadelphia", "Brooklyn"]}],
+        where=[{"field": STORE, "op": "is", "value": ["Philadelphia", "Brooklyn"]}],
     )
-    one_value = _query(group_by=[STORE], where=[{"field": STORE, "op": "=", "value": "Brooklyn"}])
+    one_value = _query(group_by=[STORE], where=[{"field": STORE, "op": "is", "value": "Brooklyn"}])
     reordered = _query(
         group_by=[STORE],
-        where=[{"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+        where=[{"field": STORE, "op": "is", "value": ["Brooklyn", "Philadelphia"]}],
     )
     # Pinning the store to one value also collapses the per-store grouping.
     assert mcp_context.mismatched_slots(_case(gold), one_value, AGGREGATIONS) == [
@@ -355,31 +365,32 @@ def test_multi_value_filter_must_keep_every_value() -> None:
         "where",
     ]
     assert mcp_context.mismatched_slots(_case(gold), reordered, AGGREGATIONS) == []
-    # "=" with a list compares the dimension against the list's text.
+    # An alias takes its word's meaning: "=" with a list is "is" with the list.
     equals_list = _query(
         group_by=[STORE],
         where=[{"field": STORE, "op": "=", "value": ["Philadelphia", "Brooklyn"]}],
     )
-    assert mcp_context.mismatched_slots(_case(gold), equals_list, AGGREGATIONS) == ["where"]
+    assert mcp_context.mismatched_slots(_case(gold), equals_list, AGGREGATIONS) == []
+
+
+SINCE_2017 = {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"}
 
 
 @pytest.mark.parametrize(
     ("change", "slot"),
     [
-        ({"time": {**WINDOW_2017, "fill": True}}, "fill"),
-        ({"time": {**WINDOW_2017, "calendar_id": "fiscal"}}, "calendar_id"),
-        ({"temporal_role_overrides": {REVENUE: ORDER_TIME}}, "temporal_role_overrides"),
+        ({"time": {**SINCE_2017, "fill": True}}, "fill"),
+        ({"observation_scope": "query"}, "observation_scope"),
     ],
 )
 def test_every_field_that_can_change_rows_is_a_slot(change: dict[str, Any], slot: str) -> None:
-    gold = _query(time=WINDOW_2017)
+    gold = _query(time=SINCE_2017)
     assert mcp_context.mismatched_slots(_case(gold), {**gold, **change}, AGGREGATIONS) == [slot]
 
 
 def test_equivalent_spellings_compare_equal() -> None:
-    gold = _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}], time=WINDOW_2017)
+    gold = _query(where=[{"field": STORE, "op": "is", "value": "Brooklyn"}], time=WINDOW_2017)
     spelled_out = {
-        "version": 1,
         "select": [
             {
                 "as": "rev",
@@ -390,16 +401,16 @@ def test_equivalent_spellings_compare_equal() -> None:
         "group_by": [STORE],
         "where": [{"field": STORE, "op": "in", "value": ["Brooklyn"]}],
         "time": {**WINDOW_2017, "end": "2018-01-01T00:00:00", "fill": False},
-        "order_by": [{"field": "time", "direction": "ASC"}],
+        "order_by": [{"field": "period", "direction": "asc"}],
     }
     assert mcp_context.mismatched_slots(_case(gold), spelled_out, AGGREGATIONS) == []
 
 
 def test_ranking_order_matters_only_for_ranking_questions() -> None:
     gold = _query(
-        group_by=[STORE], order_by=[{"field": "revenue_usd", "direction": "DESC"}], limit=1
+        group_by=[STORE], order_by=[{"field": "revenue_usd", "direction": "desc"}], limit=1
     )
-    ascending = {**gold, "order_by": [{"field": "revenue_usd", "direction": "ASC"}]}
+    ascending = {**gold, "order_by": [{"field": "revenue_usd", "direction": "asc"}]}
     assert mcp_context.mismatched_slots(_case(gold, ordered=True), ascending, AGGREGATIONS) == [
         "order"
     ]
@@ -541,10 +552,9 @@ def test_rebaselining_moves_only_real_changes() -> None:
 FOOD = "measure.jaffle.food_revenue_usd"
 DRINK = "measure.jaffle.drink_revenue_usd"
 FOOD_AND_DRINK = {
-    "version": 1,
     "select": [
-        {"as": "food", "expression": {"measure": FOOD}},
-        {"as": "drink", "expression": {"measure": DRINK}},
+        {"as": "food", "expression": FOOD},
+        {"as": "drink", "expression": DRINK},
     ],
     "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
 }
@@ -557,12 +567,12 @@ def _table(rows: list[dict[str, Any]], query: dict[str, Any], *, trend: bool = T
 
 def test_answers_keep_each_value_in_its_column() -> None:
     gold = _table(
-        [{"temporal_role.t__quarter": "2016-07-01 00:00:00", "food": 7971.0, "drink": 9061.0}],
+        [{"period": "2016-07-01 00:00:00", "food": 7971.0, "drink": 9061.0}],
         FOOD_AND_DRINK,
     )
     assert gold["columns"] == [f"{DRINK}:sum", f"{FOOD}:sum", "time"]
     swapped = _table(
-        [{"temporal_role.t__quarter": "2016-07-01", "food": 9061.0, "drink": 7971.0}],
+        [{"period": "2016-07-01", "food": 9061.0, "drink": 7971.0}],
         FOOD_AND_DRINK,
     )
     assert not mcp_context.answers_match(gold, swapped, ordered=False)
@@ -570,18 +580,16 @@ def test_answers_keep_each_value_in_its_column() -> None:
     renamed = {
         **FOOD_AND_DRINK,
         "select": [
-            {"as": "d", "expression": {"measure": DRINK, "aggregation": "sum"}},
+            {"as": "d", "expression": {"kind": "measure", "measure": DRINK, "aggregation": "sum"}},
             {"as": "f", "expression": {"kind": "aggregate", "measure": FOOD}},
         ],
     }
     noisy = _table(
-        [{"d": 9061.000000000186, "temporal_role.t__quarter": "2016-07-01", "f": 7970.9999999999}],
+        [{"d": 9061.000000000186, "period": "2016-07-01", "f": 7970.9999999999}],
         renamed,
     )
     assert mcp_context.answers_match(gold, noisy, ordered=False)
-    changed = _table(
-        [{"d": 9061.5, "temporal_role.t__quarter": "2016-07-01", "f": 7971.0}], renamed
-    )
+    changed = _table([{"d": 9061.5, "period": "2016-07-01", "f": 7971.0}], renamed)
     assert not mcp_context.answers_match(gold, changed, ordered=False)
 
 
@@ -600,9 +608,8 @@ def test_frozen_answers_are_canonicalized_and_compared_tightly() -> None:
 
 def test_a_pinned_dimension_is_not_part_of_the_answer() -> None:
     pinned = {
-        "version": 1,
-        "select": [{"as": "r", "expression": {"measure": REVENUE}}],
-        "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+        "select": [{"as": "r", "expression": REVENUE}],
+        "where": [{"field": STORE, "op": "is", "value": "Brooklyn"}],
     }
     gold = _table([{"r": 5.0}], pinned, trend=False)
     grouped = _table([{STORE: "Brooklyn", "r": 5.0}], {**pinned, "group_by": [STORE]}, trend=False)
@@ -610,14 +617,8 @@ def test_a_pinned_dimension_is_not_part_of_the_answer() -> None:
 
 
 def test_one_value_computed_another_way_still_aligns() -> None:
-    count = {
-        "version": 1,
-        "select": [{"as": "n", "expression": {"measure": "measure.jaffle.large_order_count"}}],
-    }
-    filtered = {
-        "version": 1,
-        "select": [{"as": "n", "expression": {"measure": "measure.jaffle.order_count"}}],
-    }
+    count = {"select": [{"as": "n", "expression": "measure.jaffle.large_order_count"}]}
+    filtered = {"select": [{"as": "n", "expression": "measure.jaffle.order_count"}]}
     measures = {
         "measure.jaffle.large_order_count": "count",
         "measure.jaffle.order_count": "count_distinct",
@@ -633,8 +634,8 @@ def test_one_value_computed_another_way_still_aligns() -> None:
             {
                 **FOOD_AND_DRINK,
                 "select": [
-                    {"as": "food", "expression": {"measure": FOOD}},
-                    {"as": "revenue", "expression": {"measure": REVENUE}},
+                    {"as": "food", "expression": FOOD},
+                    {"as": "revenue", "expression": REVENUE},
                 ],
             },
         ),
@@ -644,8 +645,7 @@ def test_one_value_computed_another_way_still_aligns() -> None:
 
 def test_answer_rows_compare_as_sets_unless_ranked() -> None:
     query = {
-        "version": 1,
-        "select": [{"as": "r", "expression": {"measure": REVENUE}}],
+        "select": [{"as": "r", "expression": REVENUE}],
         "group_by": [STORE],
     }
     rows = [{STORE: "Brooklyn", "r": 1.0}, {STORE: "Philadelphia", "r": 2.0}]
@@ -654,9 +654,7 @@ def test_answer_rows_compare_as_sets_unless_ranked() -> None:
     assert mcp_context.answers_match(gold, reversed_rows, ordered=False)
     assert not mcp_context.answers_match(gold, reversed_rows, ordered=True)
     # Without a trend, time buckets are not part of the answer.
-    bucketed = _table(
-        [{**row, "temporal_role.t__year": "2017-01-01"} for row in rows], query, trend=False
-    )
+    bucketed = _table([{**row, "period": "2017-01-01"} for row in rows], query, trend=False)
     assert mcp_context.answers_match(gold, bucketed, ordered=True)
 
 
@@ -756,10 +754,19 @@ def test_a_session_may_only_use_ids_it_was_shown(
         mcp_context.measure_query_mcp(jaffle_package)
 
 
-@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+# Each probe once, and every verbosity across the probes.
+PROBE_VERBOSITY = {
+    "discover_unknown_argument": "minimal",
+    "inspect_label_not_id": "compact",
+    "validate_fanout": "full",
+    "validate_unknown_dimension": "minimal",
+}
+
+
 @pytest.mark.parametrize("probe", mcp_context.ERROR_PROBES, ids=lambda p: p[0])
-def test_error_probe_hints_appear_once(jaffle_package: Path, probe, verbosity: str) -> None:
-    _name, tool, arguments, ok, code = probe
+def test_error_probe_hints_appear_once(jaffle_package: Path, probe) -> None:
+    name, tool, arguments, ok, code = probe
+    verbosity = PROBE_VERBOSITY[name]
     with mcp_context.QueryMCPClient(jaffle_package) as client:
         result = client.call_tool(tool, {**arguments, "verbosity": verbosity})
     payload = result["structuredContent"]
@@ -797,31 +804,18 @@ def test_minimal_mixed_grain_preserves_all_recovery(jaffle_package: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    ("outer_verbosity", "query_verbosity", "keeps_analysis"),
-    [
-        ("minimal", "compact", True),
-        ("compact", "minimal", False),
-        ("minimal", " COMPACT ", True),
-        ("compact", " MINIMAL ", False),
-        ("compact", "", False),
-        ("compact", None, False),
-    ],
+    ("verbosity", "keeps_analysis"),
+    [("compact", True), (" COMPACT ", True), ("minimal", False), (" MINIMAL ", False), ("", False)],
 )
-def test_mixed_grain_uses_query_verbosity(
-    jaffle_package: Path, outer_verbosity: str, query_verbosity: str | None, keeps_analysis: bool
+def test_mixed_grain_follows_the_verbosity_argument(
+    jaffle_package: Path, verbosity: str, keeps_analysis: bool
 ) -> None:
     probe = next(p for p in mcp_context.ERROR_PROBES if p[0] == "validate_fanout")
     _name, tool, arguments, _ok, _code = probe
     with mcp_context.QueryMCPClient(jaffle_package) as client:
-        payload = client.call_tool(
-            tool,
-            {
-                **arguments,
-                "mode": "run",
-                "verbosity": outer_verbosity,
-                "query": {**arguments["query"], "verbosity": query_verbosity},
-            },
-        )["structuredContent"]
+        payload = client.call_tool(tool, {**arguments, "mode": "run", "verbosity": verbosity})[
+            "structuredContent"
+        ]
     assert payload["ok"] is False
     issue = payload["errors"][0]
     assert issue["code"] == "MIXED_GRAIN_INVALID"

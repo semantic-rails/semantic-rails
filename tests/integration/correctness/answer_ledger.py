@@ -7,13 +7,18 @@ import ast
 import hashlib
 import json
 import re
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 import yaml
 
 from semantic_rails import package_tools, result_values, yaml_loader
+from semantic_rails.ast import PERIOD_PARTIAL as PARTIAL
+from semantic_rails.clock import parse_now
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import _time_zone
 from semantic_rails.runtime_parts.responses import output_columns
 from semantic_rails.yaml_loader import Yaml12SafeLoader
@@ -22,18 +27,19 @@ from .conftest import SHOP, VARIANTS, _rows, _runtime, _write_variant
 
 ROOT = SHOP.parents[3]
 LEDGER = SHOP / "tests" / "answers.yml"
-KEYS = {"kind", "query", "expected_rows", "expected_rows_by_backend", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "partial_query", "known_wrong"}  # fmt: skip
-TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result"}  # fmt: skip
-TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days"]
+KEYS = {"kind", "query", "now", "context", "expected_rows", "expected_rows_by_backend", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "partial_query", "known_wrong"}  # fmt: skip
+TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result", "row-grain"}  # fmt: skip
+TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days", "tickets", "ticket_loads", "ticket_audits", "ticket_exports", "shipment_scans", "order_tags", "tags"]  # fmt: skip
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
 DECISIONS = {
-    "docs/QUERY_IR_SCHEMA.md#wherefilter",
-    "docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0",
-    "docs/QUERY_IR_SCHEMA.md#timeblock",
-    "docs/QUERY_IR_SCHEMA.md#child-groups",
-    "docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union",
-    "docs/QUERY_IR_SCHEMA.md#metricfilter-expressions",
-    "docs/QUERY_IR_SCHEMA.md#orderby",
+    "docs/QUERY_CALL.md#select",
+    "docs/QUERY_CALL.md#where",
+    "docs/QUERY_CALL.md#entity-filters",
+    "docs/QUERY_CALL.md#having",
+    "docs/QUERY_CALL.md#time",
+    "docs/QUERY_CALL.md#order_by",
+    "docs/QUERY_CALL.md#inline-expression-kinds",
+    "docs/QUERY_CALL.md#empty-groups-null-or-0",
 }
 KINDS = {
     "answer": "query_matches_snapshot",
@@ -44,6 +50,19 @@ KINDS = {
 
 def text(value):
     return isinstance(value, str) and bool(value.strip())
+
+
+def instant(value):
+    """Whether ``now`` is an ISO date or date-time, the call argument's own spelling."""
+    try:
+        return text(value) and bool(parse_now(value))
+    except SemanticLayerError:
+        return False
+
+
+def call_arguments(spec):
+    """The arguments an entry sends beside its query: ``now`` and ``context``."""
+    return package_tools._call_arguments(spec)
 
 
 class DecimalLoader(Yaml12SafeLoader):
@@ -180,6 +199,9 @@ def messages(entries, fixture, runtime):
             ),
             "invalid partial_query": "partial_query" in spec
             and (not text(spec.get("intent")) or not isinstance(spec["partial_query"], dict)),
+            "invalid now": "now" in spec and not instant(spec["now"]),
+            "invalid context": "context" in spec
+            and (not isinstance(spec["context"], dict) or not spec["context"]),
         }
         errors.extend(f"{case_id}: {rule}" for rule, failed in checks.items() if failed)
     if set(fixture) != {"tables", "data_sha256"} or fixture.get("tables") != TABLES:
@@ -190,16 +212,41 @@ def messages(entries, fixture, runtime):
 
 
 def encode(runtime, spec, reference=None):
-    compiled = runtime._compile(spec["query"], policy_context={})
+    payload = runtime.engine_payload(spec["query"], **call_arguments(spec))
+    compiled = runtime._compile(payload, policy_context=payload["policy_context"])
     columns = output_columns(runtime._config, compiled)
+    zone = _time_zone(runtime._config, compiled)
     rows = spec.get("expected_rows") or []
     if reference is not None:
-        keys = list(rows[0]) if rows else [col["field"] for col in columns]
+        keys = list(rows[0]) if rows else [c["field"] for c in columns if c["field"] != PARTIAL]
+        keys = [key for key in keys if key != PARTIAL]
         rows = [dict(zip(keys, row, strict=True)) for row in reference(spec["reference_sql"])]
-    encoded = result_values.result_rows(
-        rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
-    )
+    grain = (spec["query"].get("time") or {}).get("grain")
+    if any(column["field"] == PARTIAL for column in columns):
+        now = parse_now(payload["policy_context"]["now"])
+        rows = [_with_partial(row, grain, now, zone or "UTC") for row in rows]
+    encoded = result_values.result_rows(rows, output_columns=columns, zone=zone)
     return {**encoded, "output_columns": columns}
+
+
+def _with_partial(row, grain, now, zone):
+    """``row`` with the series flag a frozen row leaves out, worked out from the calendar: its
+    period ends after ``now`` on the clock's wall time."""
+    if PARTIAL in row:
+        return row
+    start = date.fromisoformat(str(row["period"])[:10])
+    if grain in {"day", "week"}:
+        end = start + timedelta(days=1 if grain == "day" else 7)
+    else:
+        index = start.month - 1 + {"month": 1, "quarter": 3, "year": 12}[grain]
+        end = date(start.year + index // 12, index % 12 + 1, 1)
+    local = now.astimezone(ZoneInfo(zone)).replace(tzinfo=None)
+    out = {}
+    for key, value in row.items():
+        out[key] = value
+        if key == "period":
+            out[PARTIAL] = datetime(end.year, end.month, end.day) > local
+    return out
 
 
 def comparable(result, *, ordered=False, positional=False):

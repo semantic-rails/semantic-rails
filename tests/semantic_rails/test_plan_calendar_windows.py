@@ -7,19 +7,29 @@ question names exactly one, in a form it reads unambiguously. A bound ("before
 2017", "since March 2017"), a qualifier ("early 2017", "the end of 2017"), a
 comparison year, a numeric date or two windows at once is reported as
 unresolved instead of being narrowed or widened to the nearest form that
-parses. A total over a window gets a grain that yields a single bucket.
+parses. A total over a window is one total: the window asks for no grain.
 """
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner._base import RuntimeCompositionDraft
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.groupings import _time_spec
+from semantic_rails.planner.intent_ir import parse_intent
+from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
-from semantic_rails.planner.time_windows import _time_bounds_from_text
+from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
 Q2_2017 = {"start": "2017-04-01", "end": "2017-07-01"}
@@ -61,6 +71,8 @@ FIRST_WEEK_OF_APRIL = {"start": "2017-04-01", "end": "2017-04-08"}
         ("orders between April 3 and April 5, 2017", {"start": "2017-04-03", "end": "2017-04-06"}),
         ("revenue between March and May 2017", {"start": "2017-03-01", "end": "2017-06-01"}),
         ("orders over 2000 in 2017", YEAR_2017),
+        # "since" a named month starts there and stays open.
+        ("orders since March 2017", {"start": "2017-03-01"}),
     ],
 )
 def test_clear_calendar_windows_resolve(text: str, bounds: dict[str, str]) -> None:
@@ -68,35 +80,40 @@ def test_clear_calendar_windows_resolve(text: str, bounds: dict[str, str]) -> No
     assert _unresolved_time_phrases(text) == []
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "revenue last month and this month",
-        "revenue this month and last month",
-        "revenue this month and this year",
-        "revenue this year and this month",
-        "revenue current month and last month",
-        "revenue last month and current month",
-    ],
-)
-def test_multiple_relative_windows_are_unresolved(text: str) -> None:
+MULTIPLE_RELATIVE_WINDOWS = [
+    "revenue last month and this month",
+    "revenue this month and last month",
+    "revenue this month and this year",
+    "revenue this year and this month",
+    "revenue current month and last month",
+    "revenue last month and current month",
+]
+
+
+@pytest.mark.parametrize("text", MULTIPLE_RELATIVE_WINDOWS)
+def test_multiple_relative_windows_are_unresolved(runtime: Runtime, text: str) -> None:
     assert _time_bounds_from_text(text) == {}
     phrases = _unresolved_time_phrases(text)
     assert len(phrases) == 2, phrases
+    payload = SemanticLayerMCPAdapter(runtime).call_tool("plan", {"intent": text})
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    assert len(payload["why"]["details"]["unresolved_phrases"]) == 2
+    assert not {"start", "end", "last", "this"} & set(_best(payload).get("time") or {})
 
 
 @pytest.mark.parametrize(
-    "text", ["revenue last month", "revenue this month", "revenue current year"]
+    "text",
+    [
+        "revenue last month",
+        "revenue this month",
+        "revenue current year",
+        # A comparison's relative period stays outside window resolution.
+        "revenue this month vs last month",
+        "revenue this month compared to last month",
+    ],
 )
 def test_single_relative_window_still_resolves(text: str) -> None:
-    assert _time_bounds_from_text(text)
-    assert _unresolved_time_phrases(text) == []
-
-
-@pytest.mark.parametrize(
-    "text", ["revenue this month vs last month", "revenue this month compared to last month"]
-)
-def test_comparison_relative_period_stays_outside_window_resolution(text: str) -> None:
     assert _time_bounds_from_text(text)
     assert _unresolved_time_phrases(text) == []
 
@@ -127,7 +144,6 @@ def test_quantities_are_not_years(text: str) -> None:
         ("revenue after 2016", "after 2016"),
         ("pre-2017 revenue", "pre-2017"),
         ("revenue since 2016", "since 2016"),
-        ("orders since March 2017", "since march 2017"),
         ("orders before April 3, 2017", "before april 3, 2017"),
         ("orders from March 1, 2017 onward", "from march 1, 2017"),
         ("revenue as of June 30, 2017", "as of june 30, 2017"),
@@ -178,18 +194,17 @@ def test_unclear_windows_are_reported(text: str, phrase: str) -> None:
 @pytest.mark.parametrize(
     ("text", "grain"),
     [
-        ("total revenue in 2017", "year"),
-        ("gross profit in the first half of 2017", "year"),
-        ("item revenue from March through May 2017", "year"),
-        ("orders in March 2017", "month"),
-        ("revenue by store in Q2 2017", "quarter"),
-        ("revenue on April 3, 2017", "day"),
-        # April 1, 2017 is a Saturday, so the first seven days are no calendar week...
-        ("orders from April 1 to April 7, 2017", "month"),
-        # ...while Monday July 3 to Sunday July 9 is one.
-        ("orders from July 3 to July 9, 2017", "week"),
-        ("revenue in 2016 and 2017", "year"),
-        # An explicit grain or a trend cue still wins.
+        # A window with no grain asked for is one total.
+        ("total revenue in 2017", ""),
+        ("gross profit in the first half of 2017", ""),
+        ("item revenue from March through May 2017", ""),
+        ("orders in March 2017", ""),
+        ("revenue by store in Q2 2017", ""),
+        ("revenue on April 3, 2017", ""),
+        ("orders from April 1 to April 7, 2017", ""),
+        ("orders from July 3 to July 9, 2017", ""),
+        ("revenue in 2016 and 2017", ""),
+        # An explicit grain or a trend cue sets one.
         ("monthly revenue by store for 2017", "month"),
         ("daily orders from April 1 to April 7, 2017", "day"),
         ("revenue trend in 2017", "month"),
@@ -201,190 +216,155 @@ def test_unclear_windows_are_reported(text: str, phrase: str) -> None:
     ],
 )
 def test_totals_over_a_window_get_one_bucket(text: str, grain: str) -> None:
-    assert _time_spec("temporal_role.jaffle_order_time", text)["grain"] == grain
+    assert _time_spec("temporal_role.jaffle_order_time", text).grain == grain
+
+
+ORDER_TIME = "temporal_role.jaffle_order_time"
+LONG = "revenue " + "please " * 300
+
+
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 def _best(payload: dict[str, Any]) -> dict[str, Any]:
-    return (payload.get("best") or {}).get("query_ir") or {}
+    return (payload.get("best") or {}).get("query") or {}
 
 
-def test_plan_keeps_the_year(runtime_factory: Any) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        total = plan_payload(runtime, intent="total revenue in 2017", detail="query")
-        assert total["status"] == "ok"
-        assert _best(total)["time"] == {
-            "temporal_role": "temporal_role.jaffle_order_time",
-            "grain": "year",
-            **YEAR_2017,
-        }
-        trend = plan_payload(runtime, intent="monthly revenue by store for 2017", detail="query")
-        assert trend["status"] == "ok"
-        assert {key: _best(trend)["time"][key] for key in ("grain", "start", "end")} == {
-            "grain": "month",
-            **YEAR_2017,
-        }
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize(
-    "intent", ["revenue 2017 vs 2016", "orders since March 2017", "revenue before 2017"]
-)
-def test_plan_reports_a_window_it_cannot_resolve(runtime_factory: Any, intent: str) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=intent, detail="query")
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-        assert not {"start", "end"} & set(_best(payload).get("time") or {})
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize(
-    "intent",
-    [
-        "revenue last month and this month",
-        "revenue this month and last month",
-        "revenue this month and this year",
-        "revenue this year and this month",
-        "revenue current month and last month",
-        "revenue last month and current month",
-    ],
-)
-def test_public_plan_rejects_multiple_relative_windows(runtime_factory: Any, intent: str) -> None:
-    from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = SemanticLayerMCPAdapter(runtime).call_tool("plan", {"intent": intent})
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-        assert len(payload["why"]["details"]["unresolved_phrases"]) == 2
-        assert not {"start", "end", "range"} & set(_best(payload).get("time") or {})
-    finally:
-        runtime.close()
-
-
-def test_a_callers_explicit_window_settles_the_question(runtime_factory: Any) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    caller_window = {"time": {"start": "2017-03-01", "end": "2018-01-01"}}
-    try:
-        payload = plan_payload(
-            runtime, intent="orders since March 2017", partial_query=caller_window, detail="query"
-        )
-    finally:
-        runtime.close()
-    assert (payload.get("why") or {}).get("code") != "TIME_WINDOW_UNRESOLVED"
-    assert _best(payload)["time"]["start"] == "2017-03-01"
-
-
-def test_a_lookback_metric_keeps_its_end_and_says_so(runtime_factory: Any) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(
-            runtime, intent="month-over-month revenue growth by month in 2017", detail="query"
-        )
-        time = _best(payload)["time"]
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
-        assert payload["why"]["details"]["requested_start"] == "2017-01-01"
-        assert "start" not in time and time["end"] == "2018-01-01"
-        # The draft runs: the engine can't bound this metric's start, but it can its end.
-        from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-        adapter = SemanticLayerMCPAdapter(runtime)
-        checked = adapter.call_tool("execute", {"mode": "validate", "query": _best(payload)})
-        assert checked["ok"] is True
-    finally:
-        runtime.close()
-
-
-def test_the_catalog_fallback_resolves_windows_the_same_way(
-    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from semantic_rails.planner import plan as plan_module
-    from semantic_rails.planner.intent_ir import parse_intent
-    from semantic_rails.planner.orchestrator import CompositionResult
-
-    runtime = runtime_factory("jaffle_shop")
+def _without_primary(monkeypatch: pytest.MonkeyPatch, draft: Any = None) -> None:
     monkeypatch.setattr(
         plan_module,
         "compose",
         lambda runtime, intent: CompositionResult(
-            intent_ir=parse_intent(runtime, intent), draft=None
+            intent_ir=parse_intent(runtime, intent), draft=draft, pattern="test" if draft else ""
         ),
     )
-    try:
-        resolved = plan_payload(runtime, intent="orders in March 2017", detail="best")
-        unclear = plan_payload(runtime, intent="orders since March 2017", detail="best")
-    finally:
-        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("intent", "partial", "status", "code", "time"),
+    [
+        ("total revenue in 2017", None, "ok", None, {"temporal_role": ORDER_TIME, **YEAR_2017}),
+        (
+            "monthly revenue by store for 2017",
+            None,
+            "ok",
+            None,
+            {"temporal_role": ORDER_TIME, "grain": "month", **YEAR_2017},
+        ),
+        # "since" a named month starts there and stays open.
+        (
+            "orders since March 2017",
+            None,
+            "ok",
+            None,
+            {"temporal_role": ORDER_TIME, "start": "2017-03-01"},
+        ),
+        ("revenue 2017 vs 2016", None, "low_confidence", "TIME_WINDOW_UNRESOLVED", None),
+        ("revenue before 2017", None, "low_confidence", "TIME_WINDOW_UNRESOLVED", None),
+        (
+            LONG + "in 2017",
+            {"time": {"temporal_role": ORDER_TIME, "grain": "year", **YEAR_2017}},
+            "ok",
+            None,
+            YEAR_2017,
+        ),
+    ],
+)
+def test_plan_keeps_the_window_it_resolves_and_reports_the_rest(
+    runtime: Runtime, intent: str, partial: Any, status: str, code: str | None, time: Any
+) -> None:
+    payload = plan_payload(runtime, intent=intent, partial_query=partial, detail="query")
+    assert payload["status"] == status, payload.get("why")
+    assert (payload.get("why") or {}).get("code") == code
+    drafted = _best(payload).get("time") or {}
+    if time is None:
+        assert not {"start", "end"} & set(drafted)
+    else:
+        # A caller's window comes back with its own role and grain.
+        assert (drafted if partial is None else {key: drafted[key] for key in time}) == time
+
+
+@pytest.mark.parametrize(
+    ("intent", "window", "code"),
+    [
+        (
+            "orders since March 2017",
+            {"start": "2017-03-01", "end": "2018-01-01"},
+            "TIME_WINDOW_UNRESOLVED",
+        ),
+        (
+            "month-over-month revenue growth by month in 2017",
+            YEAR_2017,
+            "TIME_WINDOW_START_DROPPED",
+        ),
+    ],
+)
+def test_a_callers_explicit_window_settles_the_question_and_keeps_its_start(
+    runtime: Runtime, intent: str, window: dict[str, str], code: str
+) -> None:
+    payload = plan_payload(runtime, intent=intent, partial_query={"time": window}, detail="query")
+    assert (payload.get("why") or {}).get("code") != code
+    assert _best(payload)["time"]["start"] == window["start"]
+
+
+def test_a_lookback_metric_keeps_its_end_and_says_so(runtime: Runtime) -> None:
+    payload = plan_payload(
+        runtime, intent="month-over-month revenue growth by month in 2017", detail="query"
+    )
+    time = _best(payload)["time"]
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
+    assert payload["why"]["details"]["requested_start"] == "2017-01-01"
+    assert "start" not in time and time["end"] == "2018-01-01"
+    # The draft runs: the engine can't bound this metric's start, but it can its end.
+    checked = SemanticLayerMCPAdapter(runtime).call_tool(
+        "execute", {"mode": "validate", "query": _best(payload)}
+    )
+    assert checked["ok"] is True
+
+
+def test_the_catalog_fallback_resolves_windows_the_same_way(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_primary(monkeypatch)
+    resolved = plan_payload(runtime, intent="orders in March 2017", detail="best")
+    since = plan_payload(runtime, intent="orders since March 2017", detail="best")
     assert resolved["best"]["pattern"] == "catalog_fallback"
-    time = resolved["best"]["query_ir"]["time"]
-    assert (time["start"], time["end"], time["grain"]) == ("2017-03-01", "2017-04-01", "month")
-    assert unclear["status"] == "low_confidence"
-    assert unclear["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    time = resolved["best"]["query"]["time"]
+    assert (time["start"], time["end"]) == ("2017-03-01", "2017-04-01")
+    assert "grain" not in time
+    # "since" a named month starts there and stays open, through the fallback too.
+    assert since["status"] == "ok", since.get("why")
+    assert since["best"]["pattern"] == "catalog_fallback"
+    assert since["best"]["query"]["time"]["start"] == "2017-03-01"
+    assert "end" not in since["best"]["query"]["time"]
 
 
 def test_today_follows_the_date(monkeypatch: pytest.MonkeyPatch) -> None:
-    from datetime import UTC, datetime
-
-    from semantic_rails.planner import time_windows
-
-    class OtherDay(datetime):
-        @classmethod
-        def now(cls, tz=None) -> datetime:
-            assert tz is UTC
-            return cls(2001, 2, 3, tzinfo=UTC)
-
-    before = _time_bounds_from_text("orders today")
-    monkeypatch.setattr(time_windows, "datetime", OtherDay)
-    assert _time_bounds_from_text("orders today") == {"start": "2001-02-03", "end": "2001-02-04"}
-    assert _time_bounds_from_text("revenue this month")["start"] == "2001-02-01"
-    assert before != _time_bounds_from_text("orders today")
+    # "today" and "this month" are relative windows: the call carries no dates for them.
+    assert _time_bounds_from_text("orders today") == {"this": "day"}
+    assert _time_bounds_from_text("revenue this month") == {"this": "month"}
+    # A named month is the latest one already begun, so its year follows the date.
+    before = _time_bounds_from_text("revenue in March")
+    monkeypatch.setattr(
+        "semantic_rails.clock.current_time", lambda: datetime(2001, 2, 3, tzinfo=UTC)
+    )
+    march = {"start": "2000-03-01", "end": "2000-04-01"}
+    assert _time_bounds_from_text("revenue in March") == march
+    assert before != march
 
 
 def test_a_draft_cannot_edit_the_cached_window() -> None:
     first = _time_bounds_from_text("revenue in the last 3 months")
-    first["range"]["last"]["value"] = 99
-    assert _time_bounds_from_text("revenue in the last 3 months")["range"]["last"]["value"] == 3
+    first["last"]["value"] = 99
+    assert _time_bounds_from_text("revenue in the last 3 months")["last"]["value"] == 3
 
 
 def test_a_long_question_is_not_partially_resolved() -> None:
-    import time
-
     started = time.perf_counter()
     assert _time_bounds_from_text("revenue " * 20000 + "in 2017") == {}
     assert _time_bounds_from_text("revenue in 2017 " + "please " * 300 + "but not March") == {}
     assert time.perf_counter() - started < 2
-
-
-@pytest.mark.parametrize(
-    "intent",
-    [
-        "revenue " + "please " * 300 + "in 2017",
-        "revenue in 2017 " + "please " * 300 + "and 2019",
-    ],
-    ids=["trailing-window", "trailing-conflict"],
-)
-def test_plan_reports_an_incomplete_long_question(runtime_factory: Any, intent: str) -> None:
-    from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = SemanticLayerMCPAdapter(runtime).call_tool(
-            "plan", {"intent": intent, "detail": "best"}
-        )
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-        assert payload["why"]["details"]["max_intent_chars"] == 2000
-        assert "shorten" in payload["why"]["recovery_hints"][0]["message"].lower()
-        assert "execute" not in payload["next"].get("ready_for", [])
-        assert not {"start", "end"} & set(_best(payload).get("time") or {})
-    finally:
-        runtime.close()
 
 
 def test_time_resolution_accepts_a_question_at_the_length_limit() -> None:
@@ -393,166 +373,103 @@ def test_time_resolution_accepts_a_question_at_the_length_limit() -> None:
     assert _unresolved_time_phrases(intent) == []
 
 
-def test_explicit_bounds_settle_a_long_questions_time_scope(runtime_factory: Any) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(
-            runtime,
-            intent="revenue " + "please " * 300 + "in 2017",
-            partial_query={
-                "time": {
-                    "temporal_role": "temporal_role.jaffle_order_time",
-                    "grain": "year",
-                    **YEAR_2017,
-                }
-            },
-            detail="query",
-        )
-        assert payload["status"] == "ok"
-        assert {key: _best(payload)["time"][key] for key in ("start", "end")} == YEAR_2017
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("detail", ["query", "best", "full"])
-@pytest.mark.parametrize("endpoint", ["start", "end"])
-def test_one_endpoint_does_not_settle_a_long_question(
-    runtime_factory: Any, detail: str, endpoint: str
-) -> None:
-    from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = SemanticLayerMCPAdapter(runtime).call_tool(
-            "plan",
-            {
-                "intent": "revenue " + "please " * 300 + "in 2017",
-                "detail": detail,
-                "query": {
-                    "time": {
-                        "temporal_role": "temporal_role.jaffle_order_time",
-                        "grain": "year",
-                        endpoint: YEAR_2017[endpoint],
-                    }
-                },
-            },
-        )
-        assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert [gap["kind"] for gap in payload["why"]["details"]["gaps"]] == [
-            "time_window_unrealized",
-            "time_window_unresolved",
-        ]
-        hint = next(
-            hint["message"]
-            for hint in payload["why"]["recovery_hints"]
-            if hint["kind"] == "provide_explicit_bounds"
-        )
-        assert "query.time" in hint and "partial_query" not in hint
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("detail", ["query", "best", "full"])
 @pytest.mark.parametrize(
-    ("bounds", "suffix"),
+    "intent", [LONG + "in 2017", "revenue in 2017 " + "please " * 300 + "and 2019"],
+    ids=["trailing-window", "trailing-conflict"],
+)  # fmt: skip
+def test_plan_reports_an_incomplete_long_question(runtime: Runtime, intent: str) -> None:
+    payload = SemanticLayerMCPAdapter(runtime).call_tool(
+        "plan", {"intent": intent, "detail": "best"}
+    )
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    assert payload["why"]["details"]["max_intent_chars"] == 2000
+    assert payload["why"]["recovery_hints"][0]["kind"] == "rephrase_time_window"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert not {"start", "end"} & set(_best(payload).get("time") or {})
+
+
+@pytest.mark.parametrize(
+    ("detail", "bounds", "suffix", "settled"),
     [
-        (YEAR_2017, "in 2017"),
+        ("query", {"start": YEAR_2017["start"]}, "in 2017", False),
+        ("best", {"end": YEAR_2017["end"]}, "in 2017", False),
+        ("full", {"start": YEAR_2017["start"]}, "in 2017", False),
+        ("query", YEAR_2017, "in 2017", True),
         # A question that states no year has none to disagree with a relative window.
-        ({"range": {"last": {"unit": "year", "value": 1}}}, "for the last year"),
+        ("best", {"last": {"unit": "year", "value": 1}}, "for the last year", True),
+        ("full", YEAR_2017, "in 2017", True),
     ],
 )
-def test_public_query_argument_settles_complete_long_question_bounds(
-    runtime_factory: Any, detail: str, bounds: dict[str, Any], suffix: str
+def test_only_complete_bounds_in_the_query_argument_settle_a_long_question(
+    runtime: Runtime, detail: str, bounds: dict[str, Any], suffix: str, settled: bool
 ) -> None:
-    from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = SemanticLayerMCPAdapter(runtime).call_tool(
-            "plan",
-            {
-                "intent": "revenue " + "please " * 300 + suffix,
-                "detail": detail,
-                "query": {
-                    "time": {
-                        "temporal_role": "temporal_role.jaffle_order_time",
-                        "grain": "year",
-                        **bounds,
-                    }
-                },
-            },
-        )
+    payload = SemanticLayerMCPAdapter(runtime).call_tool(
+        "plan",
+        {
+            "intent": LONG + suffix,
+            "detail": detail,
+            "query": {"time": {"temporal_role": ORDER_TIME, "grain": "year", **bounds}},
+        },
+    )
+    if settled:
         assert payload["status"] == "ok"
         assert all(_best(payload)["time"][key] == value for key, value in bounds.items())
         assert not payload.get("warnings")
-    finally:
-        runtime.close()
-
-
-def test_a_period_comparison_that_drops_the_start_says_so(runtime_factory: Any) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(
-            runtime, intent="revenue by month in 2017 compared to last year", detail="query"
-        )
-    finally:
-        runtime.close()
-    time = _best(payload)["time"]
-    assert "start" not in time and time["end"] == "2018-01-01"
+        return
+    # One endpoint does not settle it.
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "TIME_WINDOW_START_DROPPED"
-    assert payload["why"]["details"]["requested_start"] == "2017-01-01"
-
-
-def test_only_the_callers_window_settles_an_unresolved_phrase(
-    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from semantic_rails.planner import plan as plan_module
-    from semantic_rails.planner._base import RuntimeCompositionDraft
-    from semantic_rails.planner.intent_ir import parse_intent
-    from semantic_rails.planner.orchestrator import CompositionResult
-
-    # A draft that carries a window of its own doesn't settle "since March 2017".
-    bounded = {
-        "version": 1,
-        "select": [{"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}],
-        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year", **YEAR_2017},
-    }
-    monkeypatch.setattr(
-        plan_module,
-        "compose",
-        lambda runtime, intent: CompositionResult(
-            intent_ir=parse_intent(runtime, intent),
-            draft=RuntimeCompositionDraft(
-                query=bounded, resolved=[], rationale=[], interpreted_intent={}
-            ),
-            pattern="test",
-        ),
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert [gap["kind"] for gap in payload["why"]["details"]["gaps"]] == [
+        "time_window_unrealized",
+        "time_window_unresolved",
+    ]
+    hint = next(
+        hint["message"]
+        for hint in payload["why"]["recovery_hints"]
+        if hint["kind"] == "provide_explicit_bounds"
     )
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent="orders since March 2017", detail="query")
-    finally:
-        runtime.close()
+    # The hint names the tool's own argument.
+    assert "query.time" in hint and "partial_query" not in hint
+
+
+def test_a_period_comparison_offers_the_years_compared_as_one_series(runtime: Runtime) -> None:
+    payload = plan_payload(
+        runtime, intent="revenue by month in 2017 compared to last year", detail="query"
+    )
+    assert payload["status"] == "needs_clarification"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    # The stated year, widened by the year before it, by month.
+    series = {
+        "temporal_role": ORDER_TIME,
+        "grain": "month",
+        "start": "2016-01-01",
+        "end": "2018-01-01",
+    }
+    [option] = payload["why"]["details"]["options"]
+    assert option["call"]["time"] == series
+    assert _best(payload)["time"] == series
+
+
+def test_a_drafts_other_window_does_not_answer_a_since_phrase(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A draft that carries a window of its own doesn't answer "since March 2017".
+    bounded = Call.from_call(
+        {
+            "select": ["measure.jaffle.order_count"],
+            "time": {"temporal_role": ORDER_TIME, "grain": "year", **YEAR_2017},
+        }
+    )
+    _without_primary(
+        monkeypatch,
+        RuntimeCompositionDraft(query=bounded, resolved=[], rationale=[], interpreted_intent={}),
+    )
+    payload = plan_payload(runtime, intent="orders since March 2017", detail="query")
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-
-
-def test_a_callers_start_is_never_dropped(runtime_factory: Any) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    caller = {"time": {"start": "2017-01-01", "end": "2018-01-01"}}
-    try:
-        payload = plan_payload(
-            runtime,
-            intent="month-over-month revenue growth by month in 2017",
-            partial_query=caller,
-            detail="query",
-        )
-    finally:
-        runtime.close()
-    assert _best(payload)["time"]["start"] == "2017-01-01"
-    assert (payload.get("why") or {}).get("code") != "TIME_WINDOW_START_DROPPED"
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert [gap["kind"] for gap in payload["why"]["details"]["gaps"]] == ["time_window_unrealized"]
+    assert "execute" not in (payload.get("next") or {}).get("ready_for", [])
 
 
 @pytest.mark.parametrize(
@@ -563,8 +480,6 @@ def test_a_callers_start_is_never_dropped(runtime_factory: Any) -> None:
     ],
 )
 def test_named_calendar_forms_resolve_on_a_fixed_clock(text, bounds):
-    from semantic_rails.planner.time_windows import _time_window
-
     read = _time_window(text, {"now": "2026-10-05T06:00:00Z"})
     assert read.bounds == bounds
     assert not read.unresolved

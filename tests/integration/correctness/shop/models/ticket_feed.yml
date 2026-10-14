@@ -1,0 +1,10 @@
+# The same tickets counted as always loaded, through the request's now.
+model:
+  id: ticket_feed
+  relation: tickets
+  entities: {ticket_feed: {}}
+  zero_through: now
+  times:
+    opened_at: {column: opened_at, kind: timestamp, class: event_time, default: true}
+  measures:
+    tickets_always_loaded: {kind: entity_count, entity_key: ticket_id, accumulation: {kind: flow}}

@@ -20,16 +20,6 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 # ---------------------------------------------------------------------
 
 
-def test_expression_field_raises_invalid_expression_when_dict_lacks_key():
-    with pytest.raises(SemanticLayerError) as exc:
-        expression_field({"direction": "DESC"}, "field", expression_position="order_by")
-    assert exc.value.code == "INVALID_EXPRESSION"
-    details = exc.value.details
-    assert details["expression_position"] == "order_by"
-    assert details["missing_key"] == "field"
-    assert "direction" in details["received_keys"]
-
-
 def test_expression_field_raises_when_value_is_not_a_dict():
     with pytest.raises(SemanticLayerError) as exc:
         expression_field("not_a_dict", "field", expression_position="order_by")
@@ -118,102 +108,44 @@ def _first_error(out: dict) -> dict:
     return errors[0] if errors else {}
 
 
-def test_mcp_validate_with_bad_order_by_returns_structured_envelope(runtime_factory):
+BAD_ORDER = {
+    "select": [{"expression": "measure.jaffle.revenue_usd", "as": "rev"}],
+    "order_by": [{"expression": "measure.jaffle.revenue_usd", "direction": "desc"}],
+}
+
+
+@pytest.mark.parametrize("mode", ["validate", "sql"])
+def test_mcp_execute_with_bad_order_by_returns_structured_envelope(runtime_factory, mode):
+    """An order item shaped like a select item is refused at its key, naming the order
+    keys, in every execute mode (no bare KeyError across the JSON-RPC boundary)."""
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
-        out = adapter.call_tool(
-            "execute",
-            {
-                "mode": "validate",
-                "query": {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "rev"}
-                    ],
-                    "order_by": [
-                        {
-                            "expression": {"measure": "measure.jaffle.revenue_usd"},
-                            "direction": "DESC",
-                        }
-                    ],
-                },
-            },
-        )
+        out = adapter.call_tool("execute", {"mode": mode, "query": BAD_ORDER})
     finally:
         adapter.close()
     assert out["ok"] is False
     issue = _first_error(out)
-    assert issue.get("code") == "INVALID_EXPRESSION", out
-    assert issue["recovery_hints"], "MCP envelope must carry recovery_hints"
-    kinds = {h.get("kind") for h in issue["recovery_hints"]}
-    assert "fix_order_by_shape" in kinds
-
-
-def test_mcp_compile_with_bad_order_by_returns_structured_envelope(runtime_factory):
-    """execute mode ``sql`` raises rather than soft-failing — the adapter must
-    still pack the structured envelope (this is the surface the reviewer
-    reported as 'MCP error -32603: field').
-    """
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        out = adapter.call_tool(
-            "execute",
-            {
-                "mode": "sql",
-                "query": {
-                    "version": 1,
-                    "select": [
-                        {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "rev"}
-                    ],
-                    "order_by": [
-                        {
-                            "expression": {"measure": "measure.jaffle.revenue_usd"},
-                            "direction": "DESC",
-                        }
-                    ],
-                },
-            },
-        )
-    finally:
-        adapter.close()
-    assert out["ok"] is False
-    issue = _first_error(out)
-    assert issue.get("code") == "INVALID_EXPRESSION", out
-    assert issue["recovery_hints"]
-    # The whole point of the structured envelope — no bare KeyError.
-    assert "field" in (issue.get("details", {}).get("missing_key", "") or "")
+    assert issue.get("code") == "INVALID_QUERY", out
+    assert issue["details"]["path"] == "order_by[0].expression"
+    assert "field" in issue["message"]
+    assert len(issue["recovery_hints"]) == 1
 
 
 def test_mcp_validate_with_unknown_expression_key_returns_closest_matches(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
+    typo = {"kind": "measure", "measure": "measure.jaffle.revenue_usd", "meaure": "typo"}
     try:
         out = adapter.call_tool(
             "execute",
-            {
-                "mode": "validate",
-                "query": {
-                    "version": 1,
-                    "select": [
-                        {
-                            "expression": {
-                                "measure": "measure.jaffle.revenue_usd",
-                                "meaure": "typo",  # typo intended
-                            },
-                            "as": "rev",
-                        }
-                    ],
-                },
-            },
+            {"mode": "validate", "query": {"select": [{"expression": typo, "as": "rev"}]}},
         )
     finally:
         adapter.close()
     assert out["ok"] is False
     issue = _first_error(out)
-    assert issue.get("code") == "INVALID_EXPRESSION_KEY", out
-    hints = issue["recovery_hints"]
-    assert hints
-    closest = hints[0].get("closest_matches", [])
-    assert "measure" in closest
+    assert issue.get("code") == "INVALID_QUERY", out
+    assert issue["details"]["path"] == "select[0].expression.meaure"
+    (hint,) = issue["recovery_hints"]
+    assert "'measure'" in hint["message"]

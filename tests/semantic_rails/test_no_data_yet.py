@@ -5,11 +5,15 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from semantic_rails import runtime as runtime_module
+from semantic_rails.clock import local_date
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.empty_groups import sql_nodes
 from semantic_rails.registry import Registry
-from semantic_rails.runtime import _no_data_yet_warnings
+from semantic_rails.runtime_parts import answer_warnings as answer_warnings_module
+from semantic_rails.runtime_parts.answer_warnings import (
+    _no_data_yet_warnings,
+    _partial_data_warnings,
+)
 from semantic_rails.sql_ast import SqlIdentifier
 
 ROLE = "temporal_role.jaffle_order_time"
@@ -27,10 +31,14 @@ def total(package_config_factory):
     return compile_query(config, Registry(config), query), query
 
 
+# The last row the same coverage read: the edge a dated disclosure names.
+LAST_ROW = datetime(2026, 9, 13, 23, 30)
+
+
 @pytest.mark.parametrize(
     "loaded_from,loaded_to,start,expected",
     [
-        (-1, -1, "2026-09-21", "before_window"),
+        (-1, -1, "2026-09-21", "last_row"),
         (-1, 0, "2026-09-21", None),
         (-1, 1, "2026-09-21", None),
         (1, 1, "2026-09-21", None),
@@ -51,48 +59,51 @@ def test_window_total_markers_only_disclose_proven_edges(
     query["time"]["start"] = start
     compiled["logical_plan"].time["start"] = start
     compiled["explain"].normalized_query["time"]["start"] = start
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {
-            "coverage_1__loaded_from": loaded_from,
-            "coverage_1__loaded_to": loaded_to,
-        },
-    )
-    warnings = _no_data_yet_warnings(None, compiled, [], query)
+    coverage = {
+        "coverage_1__loaded_from": loaded_from,
+        "coverage_1__loaded_to": loaded_to,
+        "coverage_1__data_through": None if loaded_to is None else LAST_ROW,
+    }
+    warnings = _no_data_yet_warnings(compiled, [], query, coverage)
     assert bool(warnings) is (expected is not None)
     if expected:
         assert warnings[0]["details"]["measures"] == [
             {
                 "id": REVENUE,
-                "edge": start if expected == "before_window" else None,
+                "edge": "2026-09-13" if expected == "last_row" else None,
                 "edge_source": None if expected == "undated" else expected,
             }
         ]
 
 
-def test_relative_window_total_names_the_normalized_start(total, monkeypatch):
+def test_relative_window_total_names_the_last_row_and_the_normalized_start(total, monkeypatch):
     compiled, query = total
-    query["time"] = {"temporal_role": ROLE, "range": {"last": 1, "unit": "week"}}
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {
-            "coverage_1__loaded_from": -1,
-            "coverage_1__loaded_to": -1,
-        },
+    query["time"] = {"temporal_role": ROLE, "last_unit": "week", "last_value": 1}
+    coverage = {
+        "coverage_1__loaded_from": -1,
+        "coverage_1__loaded_to": -1,
+        "coverage_1__data_through": LAST_ROW,
+    }
+    warning = _no_data_yet_warnings(compiled, [], query, coverage)[0]
+    assert warning["details"]["measures"][0]["edge"] == "2026-09-13"
+    assert warning["message"] == (
+        f"No data yet for {REVENUE}: its last row is dated 2026-09-13. Nothing says this data "
+        "is loaded past it, so the window starting 2026-09-21 reads NULL, not 0. If the load "
+        'ran and nothing happened, declare zero_through (PACKAGE_AUTHORING.md, "Empty periods").'
     )
-    warning = _no_data_yet_warnings(None, compiled, [], query)[0]
-    assert warning["details"]["measures"][0]["edge"] == "2026-09-21"
+
+
+def test_a_dated_edge_needs_the_last_row_on_every_leaf(total):
+    compiled, query = total
+    coverage = {"coverage_1__loaded_from": -1, "coverage_1__loaded_to": -1}
+    assert _no_data_yet_warnings(compiled, [], query, coverage) == []
 
 
 @pytest.mark.parametrize("rows,excluded", [([{"value": 1}], ()), ([{"value": None}], ("value",))])
-def test_no_extra_read_for_values_or_withheld_outputs(total, monkeypatch, rows, excluded):
+def test_no_warning_for_values_or_withheld_outputs(total, rows, excluded):
     compiled, query = total
-    calls = []
-    monkeypatch.setattr(runtime_module, "_compiled_cte_row", lambda *a: calls.append(a))
-    assert _no_data_yet_warnings(None, compiled, rows, query, excluded_outputs=excluded) == []
-    assert calls == []
+    coverage = {"coverage_1__loaded_from": -1, "coverage_1__loaded_to": -1}
+    assert _no_data_yet_warnings(compiled, rows, query, coverage, excluded_outputs=excluded) == []
 
 
 @pytest.mark.parametrize("window_total", [False, True])
@@ -121,30 +132,20 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
     for node in sql_nodes(field.expression):
         if isinstance(node, SqlIdentifier) and node.parts[0] == "coverage_1":
             node.parts[0] = "coverage_2"
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {
-            "coverage_1__loaded_from": -1 if window_total else datetime(2026, 9, 7),
-            "coverage_1__loaded_to": -1 if window_total else datetime(2026, 9, 7),
-            "coverage_2__loaded_from": None,
-            "coverage_2__loaded_to": None,
-        },
-    )
-    rows = (
-        []
-        if window_total
-        else [{f"{ROLE}__week": datetime(2026, 9, 21), "money": None, "count": None}]
-    )
-    warnings = _no_data_yet_warnings(None, compiled, rows, query)
+    coverage = {
+        "coverage_1__loaded_from": -1 if window_total else datetime(2026, 9, 7),
+        "coverage_1__loaded_to": -1 if window_total else datetime(2026, 9, 7),
+        "coverage_1__data_through": LAST_ROW,
+        "coverage_2__loaded_from": None,
+        "coverage_2__loaded_to": None,
+        "coverage_2__data_through": None,
+    }
+    rows = [] if window_total else [{"period": datetime(2026, 9, 21), "money": None, "count": None}]
+    warnings = _no_data_yet_warnings(compiled, rows, query, coverage)
     assert len(warnings) == 1
     assert warnings[0]["details"]["outputs"] == ["money", "count"]
     assert warnings[0]["details"]["measures"] == [
-        {
-            "id": REVENUE,
-            "edge": "2026-09-21" if window_total else "2026-09-07",
-            "edge_source": "before_window" if window_total else "last_bucket",
-        },
+        {"id": REVENUE, "edge": "2026-09-13", "edge_source": "last_row"},
         {"id": ORDERS, "edge": None, "edge_source": None},
     ]
 
@@ -154,15 +155,15 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
     [
         ("week", [datetime(2024, 9, 16)], [], None),
         ("day", [datetime(2024, 9, 21)], [], None),
-        ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 11)], "2024-09-21T10:00:00"),
+        ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 11)], "2024-09-21"),
         ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 10)], None),
         ("day", [date(2024, 9, 21)], [date(2024, 9, 22)], "2024-09-21"),
-        ("week", [datetime(2024, 9, 16)], [datetime(2024, 9, 23)], "2024-09-16"),
+        ("week", [datetime(2024, 9, 16)], [datetime(2024, 9, 23)], "2024-09-21"),
         (
             "hour",
             [datetime(2024, 9, 21, 10, 0, 0, 123456, tzinfo=UTC)],
             [datetime(2024, 9, 21, 7, tzinfo=timezone(timedelta(hours=-4)))],
-            "2024-09-21T10:00:00.123456+00:00",
+            "2024-09-21",
         ),
         ("day", [date(2024, 9, 21)], [datetime(2024, 9, 22)], None),
         ("day", [datetime(2024, 9, 21)], [date(2024, 9, 22)], None),
@@ -172,15 +173,10 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
         ("day", [date(2024, 9, 21)], [None], None),
         ("day", [date(2024, 9, 21)], [date(2024, 9, 22), "2024-09-23"], None),
         ("day", [date(2024, 9, 20), datetime(2024, 9, 21)], [date(2024, 9, 22)], None),
-        (
-            "hour",
-            [datetime(2024, 9, 21, 9), datetime(2024, 9, 21, 10, tzinfo=UTC)],
-            [datetime(2024, 9, 21, 11)],
-            None,
-        ),
+        ("hour", [datetime(2024, 9, 21, 9), datetime(2024, 9, 21, 10, tzinfo=UTC)], [datetime(2024, 9, 21, 11)], None),
         ("day", [None], [], "undated"),
     ],
-)
+)  # fmt: skip
 def test_series_compares_only_compatible_sql_bucket_keys(
     package_config_factory, monkeypatch, grain, edges, buckets, expected
 ):
@@ -222,26 +218,65 @@ def test_series_compares_only_compatible_sql_bucket_keys(
     for index in range(2, len(edges) + 1):
         compiled["sql_ast"].ctes.append(replace(coverage, name=f"coverage_{index}"))
     monkeypatch.setattr(
-        runtime_module,
+        answer_warnings_module,
         "_guard_probe_names",
-        lambda *a: (
-            {"m1": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
-            {"value": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+        lambda compiled, prefix: (
+            (
+                {"m1": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+                {"value": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+            )
+            if prefix == "coverage_"
+            else ({}, {})
         ),
     )
-    monkeypatch.setattr(
-        runtime_module,
-        "_compiled_cte_row",
-        lambda *a: {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)},
-    )
-    rows = [{f"{ROLE}__{grain}": bucket, "value": None} for bucket in buckets]
-    warnings = _no_data_yet_warnings(None, compiled, rows, query)
+    coverage = {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)}
+    # Each leaf's last row: on the Saturday its bucket holds.
+    last_row = None if edges == [None] else datetime(2024, 9, 21, 10, 30)
+    coverage.update({f"coverage_{i}__data_through": last_row for i in range(1, len(edges) + 1)})
+    rows = [{"period": bucket, "value": None} for bucket in buckets]
+    warnings = _no_data_yet_warnings(compiled, rows, query, coverage)
     assert bool(warnings) is (expected is not None)
     if expected:
         assert warnings[0]["details"]["measures"] == [
             {
                 "id": REVENUE,
                 "edge": None if expected == "undated" else expected,
-                "edge_source": None if expected == "undated" else "last_bucket",
+                "edge_source": None if expected == "undated" else "last_row",
             }
         ]
+
+
+@pytest.mark.parametrize(
+    "through,zone,expected",
+    [
+        (datetime(2026, 10, 10, 18), "UTC", (6, 7)),  # Sunday 10-11 is missing
+        (datetime(2026, 10, 11, 23), "UTC", None),  # a nightly load: only today is unfinished
+        (datetime(2026, 10, 4, 12), "UTC", None),  # the whole week is after the edge
+        (datetime(2026, 10, 9, 12), "UTC", (5, 7)),
+        # 01:30 UTC on Sunday is still Saturday in New York.
+        (datetime(2026, 10, 11, 1, 30), "America/New_York", (6, 7)),
+        (None, "UTC", None),
+    ],
+)
+def test_partial_data_counts_whole_days_after_the_edge_before_today(
+    package_config_factory, through, zone, expected
+):
+    config, _ = package_config_factory("jaffle_shop")
+    query = {
+        "select": [{"expression": {"measure": REVENUE}, "as": "value"}],
+        "time": {"temporal_role": ROLE, "start": "2026-10-05", "end": "2026-10-12"},
+    }
+    compiled = compile_query(config, Registry(config), query)
+    coverage = {"coverage_1__data_through": through}
+    now = (
+        datetime(2026, 10, 12, 6, tzinfo=UTC)
+        if zone == "UTC"
+        else datetime(2026, 10, 12, 10, tzinfo=UTC)
+    )
+    warnings = _partial_data_warnings(compiled, [{"value": 1}], coverage, now=now, zone=zone)
+    if expected is None:
+        assert warnings == []
+    else:
+        [warning] = warnings
+        assert (warning["details"]["days_covered"], warning["details"]["days"]) == expected
+        assert warning["details"]["through"] == local_date(through, zone)

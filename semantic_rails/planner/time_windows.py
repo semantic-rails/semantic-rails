@@ -5,14 +5,12 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..ast import _parse_now, _relative_range_bounds
-from ..errors import SemanticLayerError
-from ._base import _tokens
+from ..clock import floor_period, parse_now, period_end, shift_period
 from .exclusions import excluded_time_spans
 from .time_phrases import (
     _BOUNDARY_BEFORE_RE,
@@ -35,25 +33,10 @@ from .time_phrases import (
     _time_cues,
 )
 from .time_reference import time_policy_context, time_timezone
-from .visibility import visible_dimensions
 
-
-def _fiscal_calendar(config: Any) -> Any | None:
-    """The package's one non-default calendar that names itself fiscal, else ``None``."""
-
-    rows = [
-        row
-        for row in config.entities
-        if row.kind == "time"
-        and (row.calendar_id or "default") != "default"
-        and "fiscal" in _tokens(f"{row.calendar_id} {row.id} {row.name} {row.label}")
-    ]
-    return rows[0] if len(rows) == 1 else None
-
-
-# The only fiscal mention plan honors itself: a bucket ("by fiscal quarter", "fiscal
-# quarterly"). Any other ("the first fiscal quarter", "since the start of the fiscal year",
-# "vs prior fiscal year") scopes or compares time in a way the draft doesn't carry.
+# A fiscal bucket the question asks for ("by fiscal quarter", "fiscal quarterly"). Any other
+# fiscal mention ("the first fiscal quarter", "since the start of the fiscal year", "vs prior
+# fiscal year") scopes or compares time in a way the draft doesn't carry.
 _FISCAL_BUCKET_RE = re.compile(
     r"\b(?:by|per|each)\s+fiscal[\s-]+(?P<unit>year|quarter|month|week)s?\b"
     r"|\bfiscal[\s-]+(?P<cadence>year|quarter|month|week)ly\b"
@@ -62,69 +45,6 @@ _FISCAL_BUCKET_RE = re.compile(
 # Period-to-date resets on Gregorian periods whatever the calendar, and plan drops a
 # to-date or rolling ask.
 _TO_DATE_OR_ROLLING_RE = re.compile(r"\b(?:[ymqw]td|to[\s-]+date|rolling|trailing|moving)\b")
-# The calendar column a filled series buckets each grain on.
-_CALENDAR_BUCKET_COLUMNS = {
-    "day": "date_day",
-    "week": "week_start",
-    "month": "month_start",
-    "quarter": "quarter_start",
-    "year": "year_start",
-}
-
-
-def _with_fiscal_calendar(config: Any, text: str, query: dict[str, Any]) -> dict[str, Any]:
-    """Bucket a fiscal question's draft on the package's fiscal calendar.
-
-    Only when every fiscal mention asks for fiscal buckets of the draft's grain, and
-    nothing asks for a to-date or rolling value. ``fill`` routes the buckets through
-    the calendar (the engine refuses a non-default ``calendar_id`` without it). A
-    ``group_by`` on the calendar's bucket for the same grain ("by fiscal quarter" read
-    as a dimension) is what the time bucket now holds, so it goes, and an ``order_by``
-    on it orders by time. Otherwise the draft is unchanged and plan reports the gap.
-    """
-
-    time = query.get("time")
-    calendar = _fiscal_calendar(config)
-    lowered = str(text or "").lower()
-    units = {
-        match["unit"] or match["cadence"] or "year" for match in _FISCAL_BUCKET_RE.finditer(lowered)
-    }
-    if (
-        calendar is None
-        or not isinstance(time, dict)
-        or time.get("calendar_id")
-        # The draft's grain is the one bucket the question names, not one plan chose to
-        # hold a window ("fiscal annual revenue from 2017-02-01 to 2017-02-28": month).
-        or units != {time.get("grain")}
-        or _FISCAL_RE.search(_FISCAL_BUCKET_RE.sub(" ", lowered))
-        or _TO_DATE_OR_ROLLING_RE.search(lowered)
-    ):
-        return query
-    column = _CALENDAR_BUCKET_COLUMNS.get(str(time["grain"]))
-    bucket = {
-        row.id
-        for row in visible_dimensions(config)
-        if row.entity == calendar.id and row.column == column
-    }
-    out = {**query, "time": {**time, "calendar_id": calendar.calendar_id, "fill": True}}
-    order_by: list[Any] = []
-    for item in query.get("order_by") or []:
-        if isinstance(item, dict) and item.get("field") in bucket:
-            item = {**item, "field": "time"}
-        if item not in order_by:
-            order_by.append(item)
-    kept = {
-        "group_by": [item for item in query.get("group_by") or [] if item not in bucket],
-        "order_by": order_by,
-    }
-    for key, items in kept.items():
-        if items:
-            out[key] = items
-        else:
-            out.pop(key, None)
-    return out
-
-
 # "revenue in 2017 over 2016", "more revenue in 2017 than in 2016": a
 # comparison of two years, even where "over 2000" alone would be a quantity.
 _YEAR_COMPARISON_RE = re.compile(
@@ -240,16 +160,8 @@ def _time_window(
         return _TimeWindow()
     lowered = text.lower()
     context = time_policy_context(policy_context)
-    now = (
-        _parse_now(context)
-        if context and context.get("now") not in (None, "")
-        else datetime.now(UTC)
-    )
-    if isinstance(now, datetime):
-        if now.tzinfo is not None:
-            now = now.astimezone(ZoneInfo(timezone or time_timezone()))
-        now = now.date()
-    today = now
+    instant = parse_now((context or {}).get("now"))
+    today = instant.astimezone(ZoneInfo(timezone or time_timezone())).date()
     return copy.deepcopy(_resolved_time_window(lowered, today))
 
 
@@ -279,7 +191,7 @@ def _as_of_cues(lowered: str, today: date) -> tuple[_AsOfCue, ...]:
         suffix = lowered[lead.end() :]
         accepted, rejected = _calendar_windows(suffix)
         candidates = [(span, bounds) for span, bounds, _form in accepted]
-        candidates += [(span, bounds) for span, bounds, _unit in _relative_window(suffix, today)]
+        candidates += [(span, bounds) for span, bounds, _unit in _relative_window(suffix)]
         candidates += [(span, {}) for span in rejected + _time_cues(suffix)]
         candidates = [row for row in candidates if row[0][0] == 0]
         if not candidates:
@@ -287,12 +199,11 @@ def _as_of_cues(lowered: str, today: date) -> tuple[_AsOfCue, ...]:
             cues.append(_AsOfCue("closing_day", lead.span()))
             continue
         span, bounds = max(candidates, key=lambda row: row[0][1])
-        if bounds.get("range"):
-            try:
-                bounds = _relative_range_bounds(bounds["range"], policy_context={"now": today})
-            except (SemanticLayerError, ValueError, OverflowError):
-                bounds = {}
-        cues.append(_AsOfCue("closing_day", (lead.start(), lead.end() + span[1]), bounds))
+        try:
+            days = period_days(bounds, today)
+        except (ValueError, OverflowError):
+            days = {}  # past the calendar's range: the cue stays unread, and held
+        cues.append(_AsOfCue("closing_day", (lead.start(), lead.end() + span[1]), days))
     return tuple(sorted(cues, key=lambda cue: cue.span))
 
 
@@ -305,7 +216,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         start, end = cue.span
         interval_text = interval_text[:start] + " " * (end - start) + interval_text[end:]
     accepted, rejected = _calendar_windows(interval_text, boundary_text=lowered, as_of=as_of)
-    relative = _relative_window(interval_text, today)
+    relative = _relative_window(interval_text)
     if _FISCAL_RE.search(lowered):
         # A fiscal question's "last quarter" or "this year" is a fiscal period.
         rejected += [row[0] for row in relative if row[2] != "day"]
@@ -416,3 +327,18 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
 
 def _time_bounds_from_text(text: str) -> dict[str, Any]:
     return dict(_time_window(text).bounds)
+
+
+def period_days(window: dict[str, Any], today: date) -> dict[str, Any]:
+    """A window's whole days on ``today``'s calendar: ``last`` is its complete periods, ``this``
+    the whole current period; a dated window is itself."""
+
+    last, this = window.get("last"), window.get("this")
+    if isinstance(last, dict):
+        end = floor_period(today, str(last["unit"]))
+        start = shift_period(end, str(last["unit"]), -int(last["value"]))
+        return {"start": start.isoformat(), "end": end.isoformat()}
+    if this:
+        start = floor_period(today, str(this))
+        return {"start": start.isoformat(), "end": period_end(start, str(this)).isoformat()}
+    return {key: window[key] for key in ("start", "end") if window.get(key)}

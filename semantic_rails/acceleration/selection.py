@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .. import operators
 from ..ast import NormalizedQuery, child_groups, refuse_child_groups
 from ..compiler_parts.bind import (
     _bound_filter_clauses,
@@ -94,12 +95,12 @@ def _leaf_rollup_blocker(
         return ROUTING_OFF
     if _measure_index(config)[bound.measure_id].lookup_from:
         return "parent_lookup"  # its value is another measure's total per parent, not a column
+    if _measure_index(config)[bound.measure_id].zero_through is not None:
+        return "declared_edge"  # its base read stops at the edge; a rollup's buckets can't
     if _bound_metric_predicates(bound) or any(
         isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
     ):
         return "metric_predicate_filter"
-    if query.time and (query.time.calendar_id or "default").strip().lower() != "default":
-        return "calendar_mismatch"
     role = _temporal_role_index(config).get(leaf_time_role)
     column_tz = str(getattr(role, "column_timezone", "") or "").strip()
     target_tz = str(getattr(role, "timezone", "") or "").strip()
@@ -339,6 +340,9 @@ def _select_aggregate_relation(
     ]
     dimensions = {str(item) for item in query.group_by} | {str(field) for field, _, _ in filters}
     dimensions.discard("")
+    if any(row.unknown_values for row in config.dimensions if row.id in dimensions):
+        # A rollup holds the raw spellings; the source read maps them to unknown.
+        return "", {row.id: "unknown_values" for row in rows}
     key = _measure_count_distinct_key_columns(measure, config)
     leaf = _Leaf(
         bound=bound,
@@ -347,15 +351,11 @@ def _select_aggregate_relation(
         time_role=leaf_time_role,
         dimensions=dimensions,
         single_valued={str(item) for item in query.group_by}
-        | {
-            str(field)
-            for field, op, value in filters
-            if str(op or "=").strip() in {"=", "=="} and not isinstance(value, (list, tuple, set))
-        },
+        | {str(field) for field, op, value in filters if operators.pinned_value(op, value)[0]},
         join_paths=_join_paths(dimensions, measure.entity, path_selections, config),
         joins_undeclared=any(item.purpose in {"measure_expr", "time"} for item in path_selections),
         # Each value of a model's single-column row key sits in one rollup row.
-        counts_fact_key=len(key) == 1 and measure.row_grain == key and not measure.source_relation,
+        counts_fact_key=len(key) == 1 and measure.row_grain == key,
     )
     rejections = {
         row.id: reason

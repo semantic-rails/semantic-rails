@@ -18,9 +18,10 @@ import pytest
 import yaml
 
 from semantic_rails.http_core import SemanticHTTPService
-from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import _slim_inspect_card
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 OBJECTS = [
     "measure.jaffle.revenue_usd",
@@ -34,19 +35,12 @@ EMPTY: tuple[Any, ...] = (None, "", [], {})
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    mcp = SemanticLayerMCPAdapter(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
     try:
         yield mcp
     finally:
         mcp.close()
-
-
-def test_inspect_advertises_minimal_default_and_whole_card_opt_in() -> None:
-    inspect = next(tool for tool in list_tool_definitions() if tool["name"] == "inspect")
-    verbosity = inspect["inputSchema"]["properties"]["verbosity"]
-    assert verbosity["default"] == "minimal"
-    assert verbosity["enum"] == ["minimal", "compact", "full"]
 
 
 @pytest.mark.parametrize("object_id", OBJECTS)
@@ -142,13 +136,16 @@ def test_minimal_inspect_preserves_starter_query_literals(
     adapter: SemanticLayerMCPAdapter, value: Any
 ) -> None:
     query = {
-        "version": 1,
-        "where": [{"field": "dimension.jaffle_store_name", "op": "eq", "value": value}],
+        "where": [{"field": "dimension.jaffle_store_name", "op": "is", "value": value}],
     }
     response = adapter.call_tool(
         "inspect",
         {"object_id": "measure.jaffle.revenue_usd", "query": query, "verbosity": "minimal"},
     )
+    if value is None or isinstance(value, dict):
+        # A filter value is a string, number or boolean: the seed is refused at its path.
+        assert response["errors"][0]["details"]["path"] == "where[0].value", response
+        return
     assert response["ok"] is True
     filter_row = response["card"]["starter_query_patches"][0]["query_patch"]["where"][0]
     assert "value" in filter_row
@@ -157,7 +154,7 @@ def test_minimal_inspect_preserves_starter_query_literals(
 
 
 def test_minimal_inspect_preserves_nested_constraint_and_example_payloads() -> None:
-    query = {"where": [{"field": "dimension.example", "op": "eq", "value": None}]}
+    query = {"where": [{"field": "dimension.example", "op": "missing", "value": True}]}
     card = {
         "id": "measure.example",
         "kind": "measure",

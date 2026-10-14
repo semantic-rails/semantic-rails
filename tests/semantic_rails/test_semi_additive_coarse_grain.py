@@ -42,14 +42,13 @@ def _rows(runtime: Runtime, payload: dict) -> list[dict]:
 
 
 def _metric_select(metric_id: str, alias: str) -> list[dict]:
-    return [{"expression": {"metric": metric_id}, "as": alias}]
+    return [{"expression": metric_id, "as": alias}]
 
 
 def _day_value(runtime: Runtime, metric_id: str, day: str, next_day: str) -> float:
     rows = _rows(
         runtime,
         {
-            "version": 1,
             "select": _metric_select(metric_id, "value"),
             "time": {"temporal_role": ROLE, "grain": "day", "start": day, "end": next_day},
         },
@@ -62,7 +61,6 @@ def test_stock_metric_at_month_grain_is_end_of_month_value(runtime):
     month_rows = _rows(
         runtime,
         {
-            "version": 1,
             "select": _metric_select("metric.sales.revenue_ytd", "ytd"),
             "time": {
                 "temporal_role": ROLE,
@@ -84,7 +82,6 @@ def test_stock_metric_at_year_grain_is_end_of_year_value(runtime):
     year_rows = _rows(
         runtime,
         {
-            "version": 1,
             "select": _metric_select("metric.sales.revenue_ytd", "ytd"),
             "time": {
                 "temporal_role": ROLE,
@@ -102,7 +99,7 @@ def test_stock_metric_at_year_grain_is_end_of_year_value(runtime):
 def test_stock_metric_scalar_is_latest_snapshot_value(runtime):
     scalar_rows = _rows(
         runtime,
-        {"version": 1, "select": _metric_select("metric.sales.revenue_ytd", "ytd")},
+        {"select": _metric_select("metric.sales.revenue_ytd", "ytd")},
     )
     assert len(scalar_rows) == 1
     # The rollup's snapshots span into a later year where YTD reset, so a
@@ -116,7 +113,6 @@ def test_non_summable_stock_metric_at_month_grain_is_end_of_month_value(runtime)
     month_rows = _rows(
         runtime,
         {
-            "version": 1,
             "select": _metric_select("metric.sales.median_item_revenue", "med"),
             "time": {
                 "temporal_role": ROLE,
@@ -139,10 +135,7 @@ def test_multi_key_snapshot_sum_across_entities_is_preserved(runtime):
     collapse genuine multi-key snapshot tables to a single row."""
     result = runtime.query(
         {
-            "version": 1,
-            "select": [
-                {"expression": {"metric": "metric.sales.inventory_on_hand_eop"}, "as": "inv"}
-            ],
+            "select": [{"expression": "metric.sales.inventory_on_hand_eop", "as": "inv"}],
             "time": {
                 "temporal_role": "temporal_role.jaffle_inventory_day",
                 "grain": "month",

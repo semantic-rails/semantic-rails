@@ -11,6 +11,7 @@ used by ``explain`` output.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from datetime import date, timedelta
@@ -85,6 +86,29 @@ def relationship_contract_payload(rel: RelationshipConfig) -> dict[str, Any]:
         "cardinality": rel.cardinality,
         "temporal_validity": bool(rel.temporal_validity),
     }
+
+
+_EMPTY: tuple[Any, ...] = (None, "", [], {})
+
+
+def lean_issue(issue: Any) -> Any:
+    """An error or warning object as a caller reads it: no empty fields, its own or its
+    recovery hints' (``code`` and ``message`` always stay). ``details`` keep their values: an
+    empty value there is what the caller sent."""
+    if not isinstance(issue, dict):
+        return issue
+    lean = {
+        key: value
+        for key, value in issue.items()
+        if key in ("code", "message") or not _is_empty(value)
+    }
+    if isinstance(lean.get("recovery_hints"), list):
+        lean["recovery_hints"] = [lean_issue(hint) for hint in lean["recovery_hints"]]
+    return lean
+
+
+def _is_empty(value: Any) -> bool:
+    return isinstance(value, (str, list, dict, type(None))) and value in _EMPTY
 
 
 def semantic_issue(
@@ -194,48 +218,15 @@ def recovery_hints_for_error(
         missing = str(details.get("missing_key", "") or "")
         received = list(details.get("received_keys", []) or [])
         hints: list[dict[str, Any]] = []
-        # Cross-position key suggestion: the reviewer hit asymmetry —
-        # order_by uses ``field``, where uses ``dimension``, metric_filters
-        # uses ``expression``. When the agent's received_keys include the
-        # canonical key from a different position, tell them where it
-        # belongs before showing the generic fix-shape hint.
-        _POSITION_CANONICAL_KEY: dict[str, str] = {
-            "order_by": "field",
-            "where": "dimension",
-            "metric_filters": "expression",
-        }
-        canonical_here = _POSITION_CANONICAL_KEY.get(position, "")
-        cross_positions = [
-            (pos, key)
-            for pos, key in _POSITION_CANONICAL_KEY.items()
-            if pos != position and key in received and key != canonical_here
-        ]
-        if cross_positions:
-            other_pos, other_key = cross_positions[0]
-            hints.append(
-                {
-                    "kind": "use_canonical_key_for_position",
-                    "message": (
-                        f"{position!r} entries use the key {canonical_here!r}, "
-                        f"but you passed {other_key!r} which belongs in {other_pos!r}. "
-                        f"Move the value under {canonical_here!r} (or move the entry "
-                        f"to the {other_pos!r} clause if that's what you meant)."
-                    ),
-                    "expected_key_here": canonical_here,
-                    "received_canonical_key": other_key,
-                    "received_canonical_key_belongs_to": other_pos,
-                }
-            )
         if position == "order_by":
             hints.append(
                 {
                     "kind": "fix_order_by_shape",
                     "message": (
-                        'Each order_by entry must be {"field": "<select_alias_or_dimension_id_or_time>", '
-                        '"direction": "ASC"|"DESC"} — not a select-style expression. Use the alias '
-                        "you set on a select item, the group_by dimension id, or 'time'."
+                        'Each order_by entry is {"field": "<select alias, group_by id or period>", '
+                        '"direction": "asc"|"desc"} — not a select-style expression.'
                     ),
-                    "shape": {"field": "<alias>", "direction": "ASC"},
+                    "shape": {"field": "<alias>", "direction": "asc"},
                     "missing_key": missing,
                     "received_keys": received,
                 }
@@ -243,13 +234,13 @@ def recovery_hints_for_error(
         elif position == "metric_filters":
             hints.append(
                 {
-                    "kind": "fix_metric_filters_shape",
+                    "kind": "fix_having_shape",
                     "message": (
-                        "Each metric_filters entry must be "
-                        '{"expression": {...}, "op": "=|>|<|>=|<=|!=", "value": ...}. '
-                        "The 'expression' is typically a kind='metric_predicate' object."
+                        'Each having entry is {"field": "<select alias, measure or metric id>", '
+                        '"op": "gt", "value": ...}; to keep entities by an aggregate, write an '
+                        'entity filter in where: {"entity", "having", "over"}.'
                     ),
-                    "shape": {"expression": {"kind": "metric_predicate"}, "op": "=", "value": True},
+                    "shape": {"field": "<alias>", "op": "gt", "value": 0},
                     "missing_key": missing,
                     "received_keys": received,
                 }
@@ -260,7 +251,7 @@ def recovery_hints_for_error(
                     "kind": "fix_expression_shape",
                     "message": (
                         f"{position or 'expression'} entry is missing the required {missing!r} key. "
-                        "Send select items as {expression: {measure: '<id>'}, as: '<alias>'}, "
+                        "Send select items as a measure or metric id or {expression, as}, "
                         "group_by as dimension ids, and where entries as {field, op, value}."
                     ),
                     "missing_key": missing,
@@ -277,7 +268,7 @@ def recovery_hints_for_error(
                     "kind": "use_supported_filter_operator",
                     "message": (
                         f"Choose a where operator: {', '.join(details['allowed'])}. "
-                        "To test for null, use op 'IS NULL' or 'IS NOT NULL' and omit value."
+                        "To test for no value, use op 'missing' with value true or false."
                     ),
                     "allowed": list(details["allowed"]),
                 }
@@ -290,7 +281,13 @@ def recovery_hints_for_error(
         closest = list(details.get("closest_matches", []) or [])
         if kind == "prior_period":
             hints = []
-            received_measure = str(received_dict.get("measure", "") or "")
+            received_input = received_dict.get("input")
+            received_measure = str(
+                received_dict.get("measure")
+                or (received_input if isinstance(received_input, str) else "")
+                or (received_input.get("measure") if isinstance(received_input, dict) else "")
+                or ""
+            )
             if "unknown_offset_keys" in details:
                 hints.append(
                     {
@@ -307,34 +304,15 @@ def recovery_hints_for_error(
                         "unknown_offset_keys": list(details.get("unknown_offset_keys", []) or []),
                     }
                 )
-            shorthand_shape: dict[str, Any] = {
-                "kind": "prior_period",
-                "measure": received_measure or "<measure_id>",
-                "offset": -1,
-                "grain": "<day|week|month|quarter|year>",
-            }
-            ir_shape: dict[str, Any] = {
-                "kind": "prior_period",
-                "input": {"kind": "measure", "measure": received_measure or "<measure_id>"},
-                "offset": {"unit": "<day|week|month|quarter|year>", "value": 1},
-            }
-            hints.append(
-                {
-                    "kind": "use_prior_period_shorthand",
-                    "message": (
-                        "For an inline period shift in a select, use the shorthand: "
-                        "{kind: 'prior_period', measure: '<id>', offset: <signed int>, grain: '<unit>'}."
-                    ),
-                    "shape": shorthand_shape,
-                }
-            )
             hints.append(
                 {
                     "kind": "use_prior_period_ir_shape",
-                    "message": (
-                        "Canonical IR shape: input is required and offset must be {unit, value}."
-                    ),
-                    "shape": ir_shape,
+                    "message": "prior_period takes an input and an offset {unit, value}.",
+                    "shape": {
+                        "kind": "prior_period",
+                        "input": received_measure or "<measure or metric id>",
+                        "offset": {"unit": "<day|week|month|quarter|year>", "value": 1},
+                    },
                 }
             )
             if closest:
@@ -343,25 +321,27 @@ def recovery_hints_for_error(
                     {
                         "kind": "use_authored_prior_period_metric",
                         "message": (
-                            "An authored metric already defines this period shift over the same measure. "
-                            "Reference it directly via {kind: 'metric', metric: '<id>'} — no inline shift needed."
+                            "An authored metric already defines this period shift over the same "
+                            'measure. Select its id ("metric.<id>"); no inline shift needed.'
                         ),
                         "closest_matches": closest,
                     },
                 )
             return hints
-        return [
-            {
-                "kind": "fix_expression_shape",
-                "message": (
-                    f"Expression with kind={kind!r} in position {position!r} is malformed. "
-                    "For select, send {expression: {measure: '<id>'}, as: '<alias>'} or "
-                    "{expression: {metric: '<id>'}}. Put dimension ids in group_by; "
-                    "send where entries as {field, op, value}."
-                ),
-                "details": dict(details),
-            }
-        ]
+        if details.get("recovery_hints"):
+            return list(details["recovery_hints"])
+        from .query_call import KIND_REQUIRED
+
+        where = f"the expression at {details['path']}" if details.get("path") else "the expression"
+        if kind in KIND_REQUIRED:
+            shape = {"kind": kind, **dict.fromkeys(KIND_REQUIRED[kind], "...")}
+            message = f"Write {where} as {json.dumps(shape)}, with each key's value as the query schema lists it."
+        else:
+            message = (
+                f"Write {where} as a measure or metric id, or an object with a kind the query "
+                "schema lists."
+            )
+        return [{"kind": "fix_expression_shape", "message": message}]
     if code == "PATH_NOT_FOUND" and details.get("reason") == "excluded_by_decision":
         return [
             {
@@ -484,15 +464,13 @@ def recovery_hints_for_error(
             allowed = list(details["allowed"])
             default = str(details.get("default_aggregation", "") or "")
             default_hint = (
-                f", or omit `aggregation` to use the measure's default ({default})"
-                if default in allowed
-                else ""
+                f"; omit `aggregation` for the default ({default})" if default in allowed else ""
             )
             return [
                 {
                     "kind": "use_supported_aggregation",
                     "message": (
-                        f"Choose an allowed aggregation for this measure: "
+                        f"Use one of this measure's aggregations: "
                         f"{', '.join(allowed)}{default_hint}."
                         if allowed
                         else "This measure allows no aggregations; inspect another measure."
@@ -536,7 +514,7 @@ def recovery_hints_for_error(
         return [
             {
                 "kind": "rename_output",
-                "message": "Rename projected outputs so each result column is unique.",
+                "message": f'Give the repeated select item its own name with "as" ({alias!r} is taken).',
                 "alias": alias,
             }
         ]
@@ -815,18 +793,8 @@ def recovery_hints_for_error(
                     "details": dict(details),
                 }
             ]
-        effects = list(details.get("policy_effects", []) or [])
-        if any(str(effect.get("kind", "")) == "metric_constraint" for effect in effects):
-            return [
-                {
-                    "kind": "adjust_metric_cuts",
-                    "message": (
-                        "Use only the group_by, where, temporal, or metric-filter cuts "
-                        "allowed by the metric constraint policy."
-                    ),
-                    "details": dict(details),
-                }
-            ]
+        if details.get("recovery_hints"):
+            return list(details["recovery_hints"])
         return [
             {
                 "kind": "remove_denied_object",
@@ -878,6 +846,18 @@ def recovery_hints_for_error(
         # An authored filter or policy is not a caller-editable time boundary.
         if details.get("filter_source") in {"measure", "policy"}:
             return []
+        if details.get("comparison_beside_window"):
+            series = dict(details.get("time") or {})
+            return [
+                {
+                    "kind": "ask_for_a_series",
+                    "message": (
+                        "Ask for the series: keep time.grain and leave out the window "
+                        "(last, this, start and end), then read the periods you need."
+                    ),
+                    "patch": {"replace": {"time": series}},
+                }
+            ]
         # The error message already says what to do — agents need a
         # structured patch they can apply without parsing English.
         # Two patches: ``drop_time_start`` (remove the boundary entirely)
@@ -896,8 +876,8 @@ def recovery_hints_for_error(
             {
                 "kind": "drop_time_start",
                 "message": (
-                    f"Remove {where_path or 'query.time.start'} entirely — the window function "
-                    "computes its own lookback. Keep query.time.end if you "
+                    f"Remove {where_path or 'time.start'} entirely — the window function "
+                    "computes its own lookback. Keep time.end if you "
                     "need an upper bound. This is the safe default — apply "
                     "this first."
                 ),
@@ -910,7 +890,7 @@ def recovery_hints_for_error(
                 {
                     "kind": "widen_time_window",
                     "message": (
-                        f"Widen {where_path + '.value' if where_path else 'query.time.start'} "
+                        f"Widen {where_path + '.value' if where_path else 'time.start'} "
                         "by the metric's lookback "
                         f"({lookback.get('value')} {lookback.get('unit')}) "
                         "so the leaf WHERE doesn't truncate the rows the "
@@ -933,39 +913,17 @@ def recovery_hints_for_error(
         field = str(details.get("field", "") or "")
         argument_type = str(details.get("argument_type", "") or "")
         hints = []
-        # Most common mistake: passing a Query IR as a stringified JSON
-        # blob or a freeform sentence instead of a JSON object.
-        if field == "query" and argument_type in {"str", "string"}:
-            hints.append(
-                {
-                    "kind": "wrap_query_as_object",
-                    "message": 'Wrap the query in an object: {"query": {"select": [...], "version": 1}}.',
-                    "closest_valid_query": {
-                        "version": 1,
-                        "select": [{"object_id": "<measure_or_metric_id>"}],
-                    },
-                    "details": {"field": field, "argument_type": argument_type},
-                }
-            )
-        elif field == "query":
+        # Most common mistake: a sentence, or JSON that is not an object, in place of the
+        # query call.
+        if field == "query":
             hints.append(
                 {
                     "kind": "wrap_query_as_object",
                     "message": (
-                        "'query' must be a JSON object containing the Query IR — "
-                        'e.g. {"query": {"version": 1, "select": [...]}}.'
+                        "'query' is the query call, a JSON object: "
+                        '{"query": {"select": ["<measure or metric id>"]}}.'
                     ),
-                    "details": {"field": field, "argument_type": argument_type},
-                }
-            )
-        elif field == "policy_context":
-            hints.append(
-                {
-                    "kind": "wrap_policy_context_as_object",
-                    "message": (
-                        "'policy_context' must be a JSON object with optional "
-                        'keys like {"environment": "production", "audience": "internal"}.'
-                    ),
+                    "closest_valid_query": {"select": ["<measure or metric id>"]},
                     "details": {"field": field, "argument_type": argument_type},
                 }
             )
@@ -1059,7 +1017,7 @@ def recovery_hints_for_error(
         # ``time.grain``, give the agent a structured patch with the
         # closest supported grain so it can retry without parsing English.
         path = str(details.get("path", "") or "")
-        if path == "time.grain":
+        if path == "time.grain" and "supported_grains" in details:
             received_grain = str(details.get("received", "") or "")
             closest_matches = list(details.get("closest_matches", []) or [])
             supported_grains = list(details.get("supported_grains", []) or [])
@@ -1132,7 +1090,8 @@ def recovery_hints_for_error(
                 "details": dict(details),
             }
         ]
-    return []
+    # A refusal that carries its own hint (``query_call.refusal``) is followed as is.
+    return list(details.get("recovery_hints", []) or [])
 
 
 def _object_catalog_ids(config: PackageConfig) -> list[str]:
@@ -1473,10 +1432,25 @@ def _scrub_exception_details(details: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+# Details that echo an expression back to the caller, in the call's spelling.
+_EXPRESSION_DETAILS = ("expression", "received", "predicate")
+
+
+def _in_call_spelling(details: dict[str, Any]) -> dict[str, Any]:
+    from .query_call import _call_expression
+
+    return {
+        key: _call_expression(value)
+        if key in _EXPRESSION_DETAILS and isinstance(value, dict) and value.get("kind")
+        else value
+        for key, value in details.items()
+    }
+
+
 def exception_issue(
     exc: SemanticLayerError, *, stage: str, object_ids: Iterable[str] | None = None, path: str = ""
 ) -> dict[str, Any]:
-    details = _scrub_exception_details(exc.details)
+    details = _in_call_spelling(_scrub_exception_details(exc.details))
     return semantic_issue(
         code=exc.code,
         message=str(exc),

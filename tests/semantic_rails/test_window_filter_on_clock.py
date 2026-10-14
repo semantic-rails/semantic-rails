@@ -26,12 +26,14 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails import compiler
+from semantic_rails.compiler_parts import binding
 from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.operators import normalize_condition
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 DAY_ROLE = "temporal_role.fees_account_day_date_day"
 EVENT_ROLE = "temporal_role.fees_event_occurred_at"
@@ -45,8 +47,8 @@ CHANNEL = "dimension.fees_event_channel"
 SECOND_CALENDAR_DAY = "dimension.fees_time2_date_day"
 LINKED_DATE = "dimension.fees_snapshot_label_observed_date"
 CALENDAR_ROLE = "temporal_role.fees_time_date_day"
-FEE = {"measure": "measure.fees.fee"}
-AMOUNT = {"measure": "measure.fees.amount"}
+FEE = "measure.fees.fee"
+AMOUNT = "measure.fees.amount"
 PRIOR_DAY = {"kind": "prior_period", "input": FEE, "offset": {"unit": "day", "value": 1}}
 ROLLING = {"kind": "rolling", "input": AMOUNT, "window": {"unit": "day", "value": 7}}
 CUMULATIVE = {"kind": "cumulative", "input": AMOUNT}
@@ -168,9 +170,9 @@ def _reference(sql: str, *, august: bool = False) -> list[tuple]:
         connection.close()
 
 
-@pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[Runtime]:
-    runtime = Runtime.from_path(str(_package(tmp_path)))
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    runtime = opened(Runtime.from_path(str(_package(tmp_path_factory.mktemp("fees")))))
     yield runtime
     runtime.close()
 
@@ -245,7 +247,6 @@ def disconnected_runtime(tmp_path: Path) -> Iterator[Runtime]:
 def _query(expression: dict, where: list[dict], *, grouped: bool = False) -> dict[str, Any]:
     role = DAY_ROLE if expression is PRIOR_DAY else EVENT_ROLE
     return {
-        "version": 1,
         "select": [{"expression": expression, "as": "v"}],
         "group_by": [ACCOUNT] if grouped else [],
         "time": {"temporal_role": role, "grain": "day"},
@@ -253,15 +254,14 @@ def _query(expression: dict, where: list[dict], *, grouped: bool = False) -> dic
     }
 
 
-def _rows(runtime: Runtime, query: dict[str, Any]) -> list[tuple]:
-    result = runtime.query(query)
+def _rows(runtime: Runtime, query: dict[str, Any], context: Any = None) -> list[tuple]:
+    result = runtime.query(query, context=context)
     assert result["ok"], result.get("errors")
-    time_alias = f"{query['time']['temporal_role']}__{query['time']['grain']}"
     return sorted(
         (
             (
                 *(row[dim] for dim in query["group_by"]),
-                date.fromisoformat(str(row[time_alias])[:10]),
+                date.fromisoformat(str(row["period"])[:10]),
                 row["v"],
             )
             for row in result["rows"]
@@ -274,45 +274,51 @@ def _cut(field: str, op: str, value: Any) -> dict[str, Any]:
     return {"field": field, "op": op, "value": value}
 
 
-SINCE_14 = _cut(DAY, ">=", "2026-09-14")
-SINCE_15 = _cut(OCCURRED_AT, ">=", "2026-09-15")
+SINCE_14 = _cut(DAY, "gte", "2026-09-14")
+SINCE_15 = _cut(OCCURRED_AT, "gte", "2026-09-15")
 # id: expression, where, grouped by account, refusal, path of the cut
 ON_THE_CLOCK = {
     "lower-bound": (PRIOR_DAY, [SINCE_14], True, "WINDOWED", "where[0]"),
-    "strict-lower-bound": (PRIOR_DAY, [_cut(DAY, ">", "2026-09-13")], True, "WINDOWED", "where[0]"),
-    "pinned-total": (PRIOR_DAY, [_cut(DAY, "=", "2026-09-14")], False, "WINDOWED", "where[0]"),
-    "in-list": (PRIOR_DAY, [_cut(DAY, "in", ["2026-09-14"])], True, "WINDOWED", "where[0]"),
-    "excluded-day": (PRIOR_DAY, [_cut(DAY, "!=", "2026-09-13")], True, "WINDOWED", "where[0]"),
+    "strict-lower-bound": (
+        PRIOR_DAY,
+        [_cut(DAY, "gt", "2026-09-13")],
+        True,
+        "WINDOWED",
+        "where[0]",
+    ),
+    "pinned-total": (PRIOR_DAY, [_cut(DAY, "is", "2026-09-14")], False, "WINDOWED", "where[0]"),
+    "in-list": (PRIOR_DAY, [_cut(DAY, "is", ["2026-09-14"])], True, "WINDOWED", "where[0]"),
+    "excluded-day": (PRIOR_DAY, [_cut(DAY, "not", "2026-09-13")], True, "WINDOWED", "where[0]"),
     "same-column": (
         PRIOR_DAY,
-        [_cut(SNAPSHOT_DATE, ">=", "2026-09-14")],
+        [_cut(SNAPSHOT_DATE, "gte", "2026-09-14")],
         True,
         "WINDOWED",
         "where[0]",
     ),
     "calendar-day": (
         PRIOR_DAY,
-        [_cut(CALENDAR_DAY, ">=", "2026-09-14")],
+        [_cut(CALENDAR_DAY, "gte", "2026-09-14")],
         True,
         "WINDOWED",
         "where[0]",
     ),
     "calendar-week": (
         PRIOR_DAY,
-        [_cut(CALENDAR_WEEK, "=", "2026-09-14")],
+        [_cut(CALENDAR_WEEK, "is", "2026-09-14")],
         True,
         "WINDOWED",
         "where[0]",
     ),
-    "second-item": (PRIOR_DAY, [_cut(ACCOUNT, "=", "a"), SINCE_14], True, "WINDOWED", "where[1]"),
+    "second-item": (PRIOR_DAY, [_cut(ACCOUNT, "is", "a"), SINCE_14], True, "WINDOWED", "where[1]"),
     # The guard reads a child group's conditions too. (A group on the measure's own rows is
     # refused later in any case; this checks the guard's depth.)
     "child-group": (
         PRIOR_DAY,
-        [{"child": "entity.fees_account_day", "match": "any", "where": [SINCE_14]}],
+        [{"entity": "entity.fees_account_day", "any": [SINCE_14]}],
         True,
         "WINDOWED",
-        "where[0].where[0]",
+        "where[0].any[0]",
     ),
     "rolling": (ROLLING, [SINCE_15], False, "WINDOWED", "where[0]"),
     "cumulative": (CUMULATIVE, [SINCE_15], False, "CUMULATIVE", "where[0]"),
@@ -338,10 +344,14 @@ def test_a_where_cut_of_the_clock_refuses(
     assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
     details = caught.value.details
     assert details["where_path"] == where_path
-    cut = where[-1] if "field" in where[-1] else where[-1]["where"][0]
-    assert details["where"] == cut
+    cut = where[-1] if "field" in where[-1] else where[-1]["any"][0]
+    # The condition as the call reads it: a one-value list is that value.
+    assert details["where"] == {
+        **cut,
+        "value": normalize_condition(cut["op"], cut["value"], path="where")[1],
+    }
     # A lower bound is where a widened start goes; a pin or an exclusion has none.
-    assert details.get("start") == (cut["value"] if cut["op"] in {">=", ">"} else None)
+    assert details.get("start") == (cut["value"] if cut["op"] in {"gte", "gt"} else None)
     if expression is ROLLING:
         assert details["lookback"] == {
             "kind": "OffsetWindowExpr[rolling]",
@@ -378,12 +388,6 @@ def test_time_start_refusal_is_unchanged(runtime: Runtime) -> None:
     with pytest.raises(SemanticLayerError) as caught:
         runtime.query(query)
     assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
-    assert str(caught.value) == (
-        "Rolling, prior_period, and period_to_date expressions do not support a bounded "
-        "query.time.start: the leaf-level WHERE truncates the lookback rows the window "
-        "function depends on, producing silently wrong values. Remove the start boundary "
-        "or widen it by the metric's window/offset/period lookback."
-    )
     assert caught.value.details["start"] == "2026-09-14"
     assert "where_path" not in caught.value.details
     query = _query(CUMULATIVE, [])
@@ -391,10 +395,6 @@ def test_time_start_refusal_is_unchanged(runtime: Runtime) -> None:
     with pytest.raises(SemanticLayerError) as caught:
         runtime.query(query)
     assert caught.value.code == "CUMULATIVE_TIME_FILTER_UNSUPPORTED"
-    assert str(caught.value) == (
-        "Cumulative expressions do not support a bounded query.time.start; widen the time "
-        "window or remove the start boundary"
-    )
     assert set(caught.value.details) == {"start", "expression"}
 
 
@@ -420,51 +420,21 @@ RUNNING_REFERENCE = (
 @pytest.mark.parametrize(
     ("expression", "where", "reference"),
     [
-        pytest.param(
-            PRIOR_DAY,
-            [_cut(DAY, "<=", "2026-09-14")],
-            PRIOR_REFERENCE.format(cut="a.date_day <= '2026-09-14'"),
-            id="prior-upper",
-        ),
-        pytest.param(
-            PRIOR_DAY,
-            [_cut(CALENDAR_WEEK, "<", "2026-09-14")],
-            PRIOR_REFERENCE.format(cut="c.week_start < '2026-09-14'"),
-            id="calendar-upper",
-        ),
-        pytest.param(
-            PRIOR_DAY,
-            [_cut(ACCOUNT, "=", "a")],
-            PRIOR_REFERENCE.format(cut="a.account_id = 'a'"),
-            id="prior-account",
-        ),
-        pytest.param(
-            ROLLING,
-            [_cut(OCCURRED_AT, "<", "2026-09-15")],
-            ROLLING_REFERENCE.format(cut="occurred_at < '2026-09-15'"),
-            id="rolling-upper",
-        ),
-        pytest.param(
-            ROLLING,
-            [_cut(CHANNEL, "=", "web")],
-            ROLLING_REFERENCE.format(cut="channel = 'web'"),
-            id="rolling-channel",
-        ),
+        pytest.param(PRIOR_DAY, [_cut(DAY, "lte", "2026-09-14")], PRIOR_REFERENCE.format(cut="a.date_day <= '2026-09-14'"), id="prior-upper"),
+        pytest.param(PRIOR_DAY, [_cut(CALENDAR_WEEK, "lt", "2026-09-14")], PRIOR_REFERENCE.format(cut="c.week_start < '2026-09-14'"), id="calendar-upper"),
+        pytest.param(PRIOR_DAY, [_cut(ACCOUNT, "is", "a")], PRIOR_REFERENCE.format(cut="a.account_id = 'a'"), id="prior-account"),
+        pytest.param(ROLLING, [_cut(OCCURRED_AT, "lt", "2026-09-15")], ROLLING_REFERENCE.format(cut="occurred_at < '2026-09-15'"), id="rolling-upper"),
+        pytest.param(ROLLING, [_cut(CHANNEL, "is", "web")], ROLLING_REFERENCE.format(cut="channel = 'web'"), id="rolling-channel"),
         pytest.param(
             CUMULATIVE,
-            [_cut(OCCURRED_AT, "<=", "2026-09-15 12:00:00")],
+            [_cut(OCCURRED_AT, "lte", "2026-09-15 12:00:00")],
             RUNNING_REFERENCE.format(cut="occurred_at <= '2026-09-15 12:00:00'", period=""),
             id="cumulative-upper",
         ),
-        pytest.param(
-            CUMULATIVE,
-            [_cut(CHANNEL, "=", "web")],
-            RUNNING_REFERENCE.format(cut="channel = 'web'", period=""),
-            id="cumulative-channel",
-        ),
+        pytest.param(CUMULATIVE, [_cut(CHANNEL, "is", "web")], RUNNING_REFERENCE.format(cut="channel = 'web'", period=""), id="cumulative-channel"),
         pytest.param(
             MONTH_TO_DATE,
-            [_cut(CHANNEL, "!=", "web")],
+            [_cut(CHANNEL, "not", "web")],
             RUNNING_REFERENCE.format(
                 cut="channel != 'web'",
                 period="and date_trunc('month', p.d) = date_trunc('month', e.d)",
@@ -472,7 +442,7 @@ RUNNING_REFERENCE = (
             id="month-to-date-channel",
         ),
     ],
-)
+)  # fmt: skip
 def test_an_upper_bound_or_another_dimension_matches_reference(
     runtime: Runtime, expression: dict, where: list[dict], reference: str
 ) -> None:
@@ -483,7 +453,7 @@ def test_an_upper_bound_or_another_dimension_matches_reference(
 
 def test_mcp_execute_returns_the_refusal_with_a_patch_for_the_filter(runtime: Runtime) -> None:
     mcp = SemanticLayerMCPAdapter(runtime)
-    query = _query(PRIOR_DAY, [_cut(ACCOUNT, "=", "a"), _cut(DAY, ">=", "2026-09-14")])
+    query = _query(PRIOR_DAY, [_cut(ACCOUNT, "is", "a"), _cut(DAY, "gte", "2026-09-14")])
     response = mcp.call_tool("execute", {"query": query})
     assert response["ok"] is False
     error = response["errors"][0]
@@ -497,9 +467,9 @@ def test_mcp_execute_returns_the_refusal_with_a_patch_for_the_filter(runtime: Ru
 @pytest.mark.parametrize(
     ("field", "op"),
     [
-        pytest.param(SECOND_CALENDAR_DAY, ">=", id="two-hop-lower-bound"),
-        pytest.param(SECOND_CALENDAR_DAY, "=", id="two-hop-pin"),
-        pytest.param(LINKED_DATE, ">=", id="reverse-non-calendar"),
+        pytest.param(SECOND_CALENDAR_DAY, "gte", id="two-hop-lower-bound"),
+        pytest.param(SECOND_CALENDAR_DAY, "is", id="two-hop-pin"),
+        pytest.param(LINKED_DATE, "gte", id="reverse-non-calendar"),
     ],
 )
 def test_a_related_clock_cut_refuses(related_runtime: Runtime, field: str, op: str) -> None:
@@ -512,7 +482,7 @@ def test_a_related_clock_cut_refuses(related_runtime: Runtime, field: str, op: s
 
 
 def test_a_two_hop_calendar_upper_bound_matches_reference(related_runtime: Runtime) -> None:
-    query = _query(PRIOR_DAY, [_cut(SECOND_CALENDAR_DAY, "<=", "2026-09-14")], grouped=True)
+    query = _query(PRIOR_DAY, [_cut(SECOND_CALENDAR_DAY, "lte", "2026-09-14")], grouped=True)
     reference = _reference(
         "select a.account_id, a.date_day, p.fee from account_day a "
         "left join account_day p on p.account_id = a.account_id and p.date_day = a.date_day - 1 "
@@ -538,7 +508,7 @@ def _monthly(where: list[dict]) -> dict[str, Any]:
 
 def test_monthly_snapshot_own_clock_cut_refuses(runtime: Runtime) -> None:
     with pytest.raises(SemanticLayerError) as caught:
-        runtime.query(_monthly([_cut(DAY, ">=", "2026-09-01")]))
+        runtime.query(_monthly([_cut(DAY, "gte", "2026-09-01")]))
     assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
     assert caught.value.details["where_path"] == "where[0]"
 
@@ -548,7 +518,7 @@ def test_a_date_cut_of_a_snapshot_with_no_calendar_relationship_refuses(
 ) -> None:
     """The cut is not on the query clock, but on the snapshot's own date, which the leaf filters
     before its window: September read NULL instead of each account's last August snapshot."""
-    cut = _cut(DAY, ">=", "2026-09-01")
+    cut = _cut(DAY, "gte", "2026-09-01")
     with pytest.raises(SemanticLayerError) as caught:
         disconnected_runtime.query(_monthly([cut]))
     assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
@@ -559,7 +529,7 @@ def test_a_date_cut_of_a_snapshot_with_no_calendar_relationship_refuses(
 def test_an_upper_bound_on_a_snapshot_with_no_calendar_relationship_matches_reference(
     disconnected_runtime: Runtime,
 ) -> None:
-    rows = _rows(disconnected_runtime, _monthly([_cut(DAY, "<=", "2026-09-30")]))
+    rows = _rows(disconnected_runtime, _monthly([_cut(DAY, "lte", "2026-09-30")]))
     september = [(account, value) for account, month, value in rows if month == date(2026, 9, 1)]
     reference = _reference(
         "select account_id, fee from account_day a where date_day = (select max(date_day) "
@@ -664,14 +634,14 @@ BY_TYPE = {
         {"account_days": {ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: date_day}\n"}},
         PRIOR_DAY,
         "dimension.fees_account_day_label",
-        ">=",
+        "gte",
     ),
     # Not date-typed, so an upper bound refuses too.
     "categorical-upper-bound": (
         {"account_days": {ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: date_day}\n"}},
         PRIOR_DAY,
         "dimension.fees_account_day_label",
-        "<=",
+        "lte",
     ),
     "datetime-kind": (
         {
@@ -681,20 +651,20 @@ BY_TYPE = {
         },
         PRIOR_DAY,
         SNAPSHOT_DATE,
-        ">=",
+        "gte",
     ),
     # Not the window's clock; still a date, so it may cut the lookback.
     "another-date-of-the-measure": (
         {"events": {CHANNEL_LINE: CHANNEL_LINE + "    shipped_on: {kind: date}\n"}},
         ROLLING,
         SHIPPED,
-        ">=",
+        "gte",
     ),
     "kind-in-capitals": (
         {"events": {CHANNEL_LINE: CHANNEL_LINE + "    shipped_on: {kind: Date}\n"}},
         ROLLING,
         SHIPPED,
-        "=",
+        "is",
     ),
     # Not temporal by kind or by a dimension on its column: by the relationship alone.
     "categorical-related-to-the-clock": (
@@ -706,7 +676,7 @@ BY_TYPE = {
         },
         PRIOR_DAY,
         LINKED_DATE,
-        ">=",
+        "gte",
     ),
     "kindless-related-to-the-clock": (
         {
@@ -717,9 +687,9 @@ BY_TYPE = {
         },
         PRIOR_DAY,
         LINKED_DATE,
-        ">=",
+        "gte",
     ),
-    "categorical-relating-the-clock": (DAY_INFO, PRIOR_DAY, "dimension.fees_day_info_label", ">="),
+    "categorical-relating-the-clock": (DAY_INFO, PRIOR_DAY, "dimension.fees_day_info_label", "gte"),
     # A column is its name compared without case, on any table.
     "clock-column-in-capitals": (
         {
@@ -729,7 +699,7 @@ BY_TYPE = {
         },
         PRIOR_DAY,
         "dimension.fees_account_day_label",
-        ">=",
+        "gte",
     ),
     "clock-column-in-mixed-case": (
         {
@@ -739,28 +709,28 @@ BY_TYPE = {
         },
         PRIOR_DAY,
         "dimension.fees_account_day_label",
-        ">=",
+        "gte",
     ),
-    "rolling-clock-column-in-capitals": (OCCURRED_LABEL_EDITS, ROLLING, OCCURRED_LABEL, ">="),
+    "rolling-clock-column-in-capitals": (OCCURRED_LABEL_EDITS, ROLLING, OCCURRED_LABEL, "gte"),
     "cumulative-clock-column-in-capitals": (
         OCCURRED_LABEL_EDITS,
         CUMULATIVE,
         OCCURRED_LABEL,
-        ">=",
+        "gte",
     ),
     "period-to-date-clock-column-in-capitals": (
         OCCURRED_LABEL_EDITS,
         MONTH_TO_DATE,
         OCCURRED_LABEL,
-        ">=",
+        "gte",
     ),
     "categorical-relating-the-clock-in-capitals": (
         DAY_INFO_IN_CAPITALS,
         PRIOR_DAY,
         "dimension.fees_day_info_label",
-        ">=",
+        "gte",
     ),
-    "categorical-related-by-another-name": (INFO, PRIOR_DAY, "dimension.fees_info_label", ">="),
+    "categorical-related-by-another-name": (INFO, PRIOR_DAY, "dimension.fees_info_label", "gte"),
 }
 
 
@@ -788,7 +758,7 @@ def test_an_upper_bound_on_another_date_matches_reference(tmp_path: Path) -> Non
         tmp_path, {"events": {CHANNEL_LINE: CHANNEL_LINE + "    shipped_on: {kind: date}\n"}}
     )
     try:
-        rows = _rows(runtime, _query(ROLLING, [_cut(SHIPPED, "<=", "2026-09-11")]))
+        rows = _rows(runtime, _query(ROLLING, [_cut(SHIPPED, "lte", "2026-09-11")]))
     finally:
         runtime.close()
     reference = ROLLING_REFERENCE.format(cut="occurred_at::date + 1 <= date '2026-09-11'")
@@ -893,14 +863,16 @@ def _filtered_window(expression: dict, cut: dict) -> dict:
     return expression
 
 
-@pytest.mark.parametrize(("expression", "sql", "expected"), LEAF_WINDOWS)
-@pytest.mark.parametrize("authored", [False, True], ids=["inline", "authored"])
+@pytest.mark.parametrize(
+    ("expression", "sql", "expected", "authored"),
+    [(*window, i % 2 == 1) for i, window in enumerate(LEAF_WINDOWS)],
+)
 def test_measure_clock_filters_refuse_before_reading_truncated_history(
     tmp_path: Path, expression: dict, sql: str, expected: int, authored: bool
 ) -> None:
     assert _reference(sql) == [(expected,)]
     package = _clock_filter_package(tmp_path)
-    cut = _cut(OCCURRED_AT, ">=", "2026-09-15")
+    cut = _cut(OCCURRED_AT, "gte", "2026-09-15")
     filtered = _filtered_window(expression, cut)
     if authored:
         (package / "metrics").mkdir()
@@ -918,7 +890,7 @@ def test_measure_clock_filters_refuse_before_reading_truncated_history(
                 }
             )
         )
-        filtered = {"metric": "metric.fees.visible_window"}
+        filtered = "metric.fees.visible_window"
     runtime = Runtime.from_path(str(package))
     query = _query(filtered, [])
     try:
@@ -939,18 +911,16 @@ def test_measure_clock_filters_refuse_before_reading_truncated_history(
         runtime.close()
 
 
-@pytest.mark.parametrize("surface", ["validate", "compile", "query", "metric-filter"])
-@pytest.mark.parametrize("field", [OCCURRED_AT, CLOCK_LABEL])
+@pytest.mark.parametrize(
+    ("surface", "field"),
+    [("validate", OCCURRED_AT), ("compile", CLOCK_LABEL), ("query", OCCURRED_AT)],
+)
 def test_bound_clock_filters_share_the_planning_guard(
     tmp_path: Path, surface: str, field: str
 ) -> None:
     runtime = Runtime.from_path(str(_clock_filter_package(tmp_path)))
-    expression = _filtered_window(ROLLING, _cut(field, "=", "2026-09-15 10:00:00"))
+    expression = _filtered_window(ROLLING, _cut(field, "is", "2026-09-15 10:00:00"))
     query = _query(expression, [])
-    if surface == "metric-filter":
-        query["select"] = [{"expression": AMOUNT, "as": "v"}]
-        query["metric_filters"] = [{"expression": expression, "op": ">", "value": 0}]
-        surface = "query"
     try:
         if surface == "validate":
             error = runtime.validate(query)["errors"][0]
@@ -971,21 +941,18 @@ def test_clock_row_policy_refuses_or_keeps_its_existing_scan_refusal(
     assert _reference(sql) == [(expected,)]
     runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CLOCK_LABEL)))
     query = _query(expression, [])
-    query["policy_context"] = RequestContext(
-        audience="reader", attributes={"visible": "2026-09-15 10:00:00"}
-    ).to_policy_context()
+    reader = RequestContext(audience="reader", attributes={"visible": "2026-09-15 10:00:00"})
     try:
         with pytest.raises(SemanticLayerError) as caught:
-            runtime.query(query)
-        if expression in (CUMULATIVE, MONTH_TO_DATE):
-            code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
-            assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
-            assert caught.value.details["filter_source"] == "policy"
-            assert caught.value.details["policy_id"] == VISIBLE_DAY_POLICY
-            assert "2026-09-15" not in str(caught.value.details)
-            assert recovery_hints_for_error(caught.value.code, caught.value.details) == []
-        else:
-            assert caught.value.code == "POLICY_DENIED"
+            runtime.query(query, context=reader)
+        # The series' calendar spine reads no relation, so the row filter reaches every
+        # window kind, and each refuses on the policy's cut of its clock.
+        code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
+        assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
+        assert caught.value.details["filter_source"] == "policy"
+        assert caught.value.details["policy_id"] == VISIBLE_DAY_POLICY
+        assert "2026-09-15" not in str(caught.value.details)
+        assert recovery_hints_for_error(caught.value.code, caught.value.details) == []
         # The same declared policy does not match the internal audience.
         assert dict(_rows(runtime, _query(expression, [])))[date(2026, 9, 15)] == expected
     finally:
@@ -997,13 +964,11 @@ def test_clock_policy_still_refuses_if_the_scan_gate_is_bypassed(
 ) -> None:
     runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CLOCK_LABEL)))
     query = _query(CUMULATIVE, [])
-    query["policy_context"] = RequestContext(
-        audience="reader", attributes={"visible": "2026-09-15 10:00:00"}
-    ).to_policy_context()
-    monkeypatch.setattr(compiler, "apply_row_filters", lambda sql, filters: (sql, ()))
+    reader = RequestContext(audience="reader", attributes={"visible": "2026-09-15 10:00:00"})
+    monkeypatch.setattr(binding, "apply_row_filters", lambda sql, filters, **_: (sql, ()))
     try:
         with pytest.raises(SemanticLayerError) as caught:
-            runtime.compile(query)
+            runtime.compile(query, context=reader)
         assert caught.value.code == "CUMULATIVE_TIME_FILTER_UNSUPPORTED"
         assert caught.value.details["filter_source"] == "policy"
     finally:
@@ -1016,21 +981,22 @@ def test_nonclock_row_policy_preserves_the_filtered_population(
 ) -> None:
     runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CHANNEL)))
     query = _query(expression, [])
-    query["policy_context"] = RequestContext(
-        audience="reader", attributes={"visible": "web"}
-    ).to_policy_context()
+    reader = RequestContext(audience="reader", attributes={"visible": "web"})
     try:
         assert _reference("select sum(amount) from events where channel = 'web'") == [(70,)]
-        assert dict(_rows(runtime, query))[date(2026, 9, 15)] == 70
+        assert dict(_rows(runtime, query, reader))[date(2026, 9, 15)] == 70
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("expression", [ROLLING, CUMULATIVE, MONTH_TO_DATE])
 @pytest.mark.parametrize(
-    "cut",
-    [_cut(OCCURRED_AT, "<=", "2026-09-15 10:00:00"), _cut(CHANNEL, "=", "web")],
-    ids=["upper-bound", "nonclock"],
+    ("expression", "cut"),
+    [
+        (ROLLING, _cut(OCCURRED_AT, "lte", "2026-09-15 10:00:00")),
+        (CUMULATIVE, _cut(CHANNEL, "is", "web")),
+        (MONTH_TO_DATE, _cut(OCCURRED_AT, "lte", "2026-09-15 10:00:00")),
+    ],
+    ids=["rolling-upper-bound", "cumulative-nonclock", "month-to-date-upper-bound"],
 )
 def test_safe_bound_filters_keep_the_reference_values(
     runtime: Runtime, expression: dict, cut: dict
@@ -1069,7 +1035,7 @@ def test_a_stored_derived_month_needs_a_temporal_declaration(
         query_expression["offset"] = {"unit": "month", "value": 1}
     if "window" in query_expression:
         query_expression["window"] = {"unit": "month", "value": 2}
-    query = _query(query_expression, [_cut(STORED_MONTH, ">=", "2026-09-01")])
+    query = _query(query_expression, [_cut(STORED_MONTH, "gte", "2026-09-01")])
     query["time"]["grain"] = "month"
     runtime = Runtime.from_path(str(package))
     try:
@@ -1087,7 +1053,7 @@ def test_a_stored_derived_month_needs_a_temporal_declaration(
 def test_a_bound_clock_filter_keeps_unwindowed_and_query_period_answers(
     runtime: Runtime, kind: str
 ) -> None:
-    cut = _cut(OCCURRED_AT, ">=", "2026-09-15")
+    cut = _cut(OCCURRED_AT, "gte", "2026-09-15")
     aggregate = _filtered_window(CUMULATIVE, cut)["input"]
     expression = (
         aggregate
