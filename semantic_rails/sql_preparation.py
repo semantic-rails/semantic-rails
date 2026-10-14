@@ -161,25 +161,28 @@ def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
     return tokens
 
 
-# The most values one statement binds, by connection. Postgres's wire protocol counts a
-# statement's parameters in 16 bits (libpq refuses more than 65,535). Snowflake's server
-# refuses an expression list longer than 16,384 values; holding a statement's total to that
-# keeps every IN list under it. DuckDB states no limit.
-MAX_PARAMETERS = {"postgres_native": 65_535, "snowflake_adbc": 16_384}
+# Each warehouse's documented limit, by connection. Postgres binds at most 65,535 parameters
+# in one statement: its protocol's Bind message counts them in 16 bits
+# (https://www.postgresql.org/docs/current/protocol-message-formats.html, "Bind").
+MAX_PARAMETERS = {"postgres_native": 65_535}
+# Snowflake takes at most 200,000 expressions in one list, such as an IN list
+# (https://docs.snowflake.com/en/sql-reference/constructs/where, "Usage notes").
+# DuckDB documents neither limit.
+MAX_LIST_ITEMS = {"snowflake_adbc": 200_000}
 
 
 def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> PreparedQuery:
-    """Refuse more parameters than the connection binds, then finalize Postgres bind syntax,
-    before the statement reaches execution."""
-    limit = MAX_PARAMETERS.get(connection_kind)
-    if limit is not None and len(prepared.parameters) > limit:
-        # Neither the count nor the values: a trusted list's length is not the caller's to read.
-        raise SemanticLayerError(
-            "POLICY_DENIED",
-            f"This request binds more query parameters than one statement on this warehouse "
-            f"accepts ({limit:,}), so its row filters can't be applied here.",
-            details={"reason": "parameter_limit_exceeded", "limit": limit},
-        )
+    """Refuse a statement over its warehouse's documented limit, then finalize Postgres bind
+    syntax, before the statement reaches execution."""
+    statement_limit = MAX_PARAMETERS.get(connection_kind)
+    if statement_limit is not None and len(prepared.parameters) > statement_limit:
+        raise _over_limit(statement_limit, "parameters in one statement")
+    list_limit = MAX_LIST_ITEMS.get(connection_kind)
+    # A list's slots are indexed from 0, so its length is its last index plus one.
+    if list_limit is not None and any(
+        slot.index is not None and slot.index >= list_limit for slot in prepared.parameters
+    ):
+        raise _over_limit(list_limit, "values in one list")
     if connection_kind != "postgres_native" or not prepared.parameters:
         return prepared
     tokens = postgres_parameter_tokens(prepared.sql)
@@ -190,6 +193,16 @@ def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> Prepar
         pieces += [prepared.sql[position : token.start()], f"${index}"]
         position = token.end()
     return replace(prepared, sql="".join([*pieces, prepared.sql[position:]]))
+
+
+def _over_limit(limit: int, unit: str) -> SemanticLayerError:
+    # Neither the size nor the values: a trusted list's length is not the caller's to read.
+    return SemanticLayerError(
+        "POLICY_DENIED",
+        f"This request binds more than the warehouse's documented limit of {limit:,} {unit}, "
+        "so its row filters can't be applied here.",
+        details={"reason": "parameter_limit_exceeded", "limit": limit},
+    )
 
 
 def check_postgres_parameters(prepared: PreparedQuery) -> None:

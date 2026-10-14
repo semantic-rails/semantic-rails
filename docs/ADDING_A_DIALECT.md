@@ -353,9 +353,10 @@ including the base fallback, denies it before reaching its driver. Never render 
 value into SQL text as a fallback. `DuckDBAdapter`, Postgres ADBC and Snowflake
 ADBC support binding today; qualify a driver's parameter API with tests before
 enabling another. A list attribute binds one placeholder per item, so no placeholder
-ever receives a list. Add the most parameters one statement may bind on the warehouse
-to `sql_preparation.MAX_PARAMETERS` (Postgres 65,535; Snowflake 16,384): compilation
-refuses a statement over it with `POLICY_DENIED` before anything executes.
+ever receives a list. Record the warehouse's documented limit, with its source, in
+`sql_preparation.MAX_PARAMETERS` (parameters in one statement; Postgres 65,535) or
+`MAX_LIST_ITEMS` (values in one list; Snowflake 200,000): compilation refuses a statement
+over it with `POLICY_DENIED` before anything executes.
 
 Rules every adapter follows:
 
