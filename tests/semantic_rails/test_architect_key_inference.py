@@ -146,3 +146,38 @@ def test_a_dbt_model_without_key_tests_imports_as_row_grain(tmp_path):
         ("order_lines", ["order_id"])
     ]
     assert "no key" in skipped_references[0]["reason"]
+
+
+def test_a_relation_named_like_a_sample_is_confirmed_on_its_own_rows(tmp_path):
+    # One duplicate id among the rows the one-thread repeatable sample leaves out.
+    path = tmp_path / "shadow.duckdb"
+    rows = architect_introspection.MAX_PROFILE_ROWS + 1
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(
+            "CREATE TABLE __semantic_rails_sample AS SELECT CASE WHEN i = 866466 THEN 700 "
+            f"ELSE i END AS id, 'x' AS category FROM range({rows}) t(i)"
+        )
+    with open_duckdb(path) as warehouse:
+        warehouse.connection.execute("SET threads = 1")
+        suggested = suggest_model(warehouse, "__semantic_rails_sample")
+        temporary = warehouse.execute(
+            "SELECT system.main.count(*) FROM system.main.duckdb_tables() WHERE temporary"
+        )[1][0][0]
+    assert suggested["sampled"] is True
+    assert suggested["primary_key"] is None, suggested["key_search"]
+    assert suggested["upsert_model"]["primary_key"] == []
+    assert temporary == 0  # the sample is dropped
+
+
+def test_a_key_is_confirmed_under_the_equality_joins_use(tmp_path):
+    # 'a' and 'A' are one value to a NOCASE column's joins and groups.
+    path = tmp_path / "collated.duckdb"
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(
+            "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE, category VARCHAR); "
+            "INSERT INTO accounts VALUES ('a', 'x'), ('A', 'x')"
+        )
+    with open_duckdb(path) as warehouse:
+        suggested = suggest_model(warehouse, "accounts")
+    assert suggested["primary_key"] is None, suggested["key_search"]
+    assert suggested["key_search"]["status"] == "none_found"

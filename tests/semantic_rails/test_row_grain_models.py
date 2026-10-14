@@ -516,3 +516,58 @@ def test_kind_fact_is_refused_with_the_two_ways_to_write_it(tmp_path):
     fact = _scans(lambda model: model.update(kind="fact", time_entity="default_calendar"))
     message = "give the model an entity keyed by its time column, or leave it row grain"
     assert message in str(_refusal(_shop(tmp_path, fact)))
+
+
+def test_a_hidden_key_dimension_never_shrinks_a_composite_key(tmp_path):
+    # A row-grain model's per-parent values over a two-column parent key, for a caller who
+    # can't see the parent's account_id dimension: three parents, never merged into one.
+    readings = {
+        "id": "readings",
+        "relation": "readings",
+        "entities": {"account_day": {"expr": ["account_id", "snapshot_day"]}},
+        "dimensions": {
+            "account_id": {
+                "column": "account_id",
+                "name": "Reading owner",
+                "label": "Reading owner",
+            }
+        },
+        "measures": {"reading_amount": {"kind": "aggregate", "expr": "amount"}},
+    }
+    hide = {"id": "policy.shop.hide_id", "kind": "object_visibility", "action": "hidden"}
+    hide.update(object_ids=["dimension.shop_account_day_account_id"], roles=["support"])
+    package = _shop(
+        tmp_path,
+        ("models/readings.yml", lambda doc: doc.update(model=readings)),
+        (
+            "models/account_days.yml",
+            lambda doc: doc["model"]["dimensions"].update(account_id={"label": "account_id"}),
+        ),
+        ("policies.yml", lambda doc: doc.update(semantic_policies=[hide])),
+    )
+    seed = package / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text(encoding="utf-8")
+        + "\nCREATE TABLE readings (account_id INTEGER, snapshot_day DATE, amount INTEGER);\n"
+        "INSERT INTO readings VALUES (1, DATE '2024-01-01', 1), (2, DATE '2024-01-01', 10),\n"
+        "  (3, DATE '2024-01-01', 100);\n",
+        encoding="utf-8",
+    )
+    over = {"kind": "entity_value", "entity": "entity.shop_account_day"}
+    over["input"] = "measure.shop.reading_amount"
+    median = {"kind": "distribution", "function": "median", "over": over}
+    runtime = _runtime(package)
+    try:
+        adapter = SemanticLayerMCPAdapter(runtime)
+        for roles in ([], ["support"]):
+            result = adapter.call_tool(
+                "execute",
+                {"query": {"select": [{"as": "median", "expression": median}]}},
+                request_context=context_from_policy_context({"roles": roles}),
+            )
+            if roles and not result["ok"]:
+                continue  # a refusal is fine: the key needs a dimension the caller can't see
+            assert result["ok"], result
+            assert float(result["rows"][0]["median"]) == 10, (roles, result["rows"])
+    finally:
+        runtime.close()

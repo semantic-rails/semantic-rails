@@ -9,6 +9,7 @@ either list, or one that moves between them, fails here until the lists are revi
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2] / "semantic_rails"
@@ -79,6 +80,16 @@ NOT_AN_ENTITY = {
     ("cli/commands/project.py", "cmd_project_new"),
     ("visible_view.py", "request_view"),
 }
+# Reads and projections of `key_columns` by field name (a string), not by attribute: each
+# must keep every key column, whatever the caller may see.
+BY_NAME = {
+    ("interop/ossie/export.py", "_Exporter.datasets"),
+    ("interop/ossie/reader.py", "_Importer.read_datasets"),
+    ("interop/ossie/reader.py", "_Importer.read_relationships"),
+    ("interop/package_writer.py", "_Writer.graph"),
+    ("runtime_parts/answer_warnings.py", "_history_result_warnings"),
+    ("visible_view.py", "<module>"),
+}
 _SWITCHED_ATTRS = {"key_columns", "is_row_grain"}
 _KEY_ATTRS = {"key", "primary_key"}
 
@@ -105,6 +116,8 @@ def _reads(path: Path) -> set[tuple[str, str, str]]:
                 attr = str(child.args[1].value)
             if attr in _SWITCHED_ATTRS | _KEY_ATTRS:
                 found.add((relative, scope or "<module>", attr))
+            if isinstance(child, ast.Constant) and re.search(r"\bkey_columns\b", str(child.value)):
+                found.add((relative, scope or "<module>", "by_name"))
             visit(child, inner)
 
     visit(ast.parse(path.read_text(encoding="utf-8")), "")
@@ -125,3 +138,12 @@ def test_every_key_read_is_switched_or_refuses() -> None:
     keyed = {(path, scope) for path, scope, attr in reads if attr in _KEY_ATTRS}
     assert switched == SWITCHED
     assert keyed == REFUSES | NOT_AN_ENTITY
+    assert {(path, scope) for path, scope, attr in reads if attr == "by_name"} == BY_NAME
+
+
+def test_the_visible_view_keeps_every_key_column() -> None:
+    """A hidden dimension named like a key column never drops it from the key."""
+    from semantic_rails.schema import EntityConfig
+    from semantic_rails.visible_view import ROW_FIELDS
+
+    assert ROW_FIELDS[EntityConfig]["key_columns"] == "kept"
