@@ -163,14 +163,16 @@ def allowed_hosts() -> tuple[str, ...]:
 
 
 # A whole authority: a bracketed IPv6 address or a plain name, then an optional port.
-_AUTHORITY = re.compile(r"(?:\[([0-9a-f.]*:[0-9a-f:.]*)\]|([a-z0-9._~-]+))(?::([0-9]{1,5}))?")
+_AUTHORITY = re.compile(
+    r"(?:\[([0-9a-f.]*:[0-9a-f:.]*)\]|([a-z0-9._~-]+))(?::([0-9]{1,5}))?", re.ASCII | re.IGNORECASE
+)
 
 
 def _allowed_authority(authority: str, listed: tuple[str, ...]) -> bool:
-    match = _AUTHORITY.fullmatch(authority.lower())
+    match = _AUTHORITY.fullmatch(authority)
     if match is None or int(match[3] or 0) > 65535:
         return False
-    name = match[1] or match[2]
+    name = (match[1] or match[2]).lower()
     return loopback_host(name) or name in listed
 
 
@@ -180,7 +182,7 @@ def rebinding_refusal(
     *,
     target: str = "",
 ) -> tuple[int, dict[str, Any]] | None:
-    """The status and issue refusing a request a web page could send by DNS rebinding.
+    """The status and minimal body refusing a request a web page could send by DNS rebinding.
 
     One check before every response, `/api/v1` and `/mcp` alike. Pass the raw header
     pairs, so a repeated `Host` or `Origin` is refused rather than collapsed. When the
@@ -188,12 +190,12 @@ def rebinding_refusal(
     `SEMANTIC_RAILS_ALLOWED_HOSTS` is set, it needs one well-formed `Host` naming loopback
     or a listed host, with any port, and so does the authority of an absolute-form
     `target` (421). An `Origin`, even an empty one, must be on `SEMANTIC_RAILS_CORS_ORIGINS`
-    (403); clients that send none pass.
+    (403); clients that send none pass. The body names no package and no identity.
     """
     found: dict[str, list[str]] = {"host": [], "origin": []}
     for name, value in headers.items() if isinstance(headers, Mapping) else headers:
-        if str(name).lower() in found:
-            found[str(name).lower()].append(str(value).strip())
+        if str(name).lower() in found:  # trim HTTP whitespace only, not other spacing
+            found[str(name).lower()].append(str(value).strip(" \t"))
     hosts, origins = found["host"], found["origin"]
     listed = allowed_hosts()
     try:
@@ -205,16 +207,24 @@ def rebinding_refusal(
         (listed or loopback_host(server_host or ""))
         and not (hosts and all(_allowed_authority(a, listed) for a in authorities))
     ):
-        return 421, issue(
-            "HOST_NOT_ALLOWED",
-            f"Host {' '.join(hosts)!r} is not allowed; list it in SEMANTIC_RAILS_ALLOWED_HOSTS.",
+        status, refused = (
+            421,
+            issue(
+                "HOST_NOT_ALLOWED",
+                f"Host {' '.join(hosts)!r} is not allowed; list it in SEMANTIC_RAILS_ALLOWED_HOSTS.",
+            ),
         )
-    if origins and (len(origins) > 1 or not cors_origin_header(origins[0])):
-        return 403, issue(
-            "ORIGIN_NOT_ALLOWED",
-            f"Origin {' '.join(origins)!r} is not allowed; list it in SEMANTIC_RAILS_CORS_ORIGINS.",
+    elif origins and (len(origins) > 1 or not cors_origin_header(origins[0])):
+        status, refused = (
+            403,
+            issue(
+                "ORIGIN_NOT_ALLOWED",
+                f"Origin {' '.join(origins)!r} is not allowed; list it in SEMANTIC_RAILS_CORS_ORIGINS.",
+            ),
         )
-    return None
+    else:
+        return None
+    return status, {"ok": False, "error": refused, "errors": [refused]}
 
 
 # Options a REST call may set beside its query (``{"query": ..., "options": {...}}``).

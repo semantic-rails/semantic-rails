@@ -38,8 +38,9 @@ request that reaches the server on a loopback address needs one well-formed
 it is refused with `421`; so does an absolute request target. Behind a port
 mapping or a proxy, requests do not arrive on loopback: set
 `SEMANTIC_RAILS_ALLOWED_HOSTS` to the names clients use, which applies the same
-check to every request. A repeated `Host` or `Origin` is always refused. These
-checks run before any response, including a package-load failure.
+check to every request. A repeated `Host` or `Origin` is always refused, and a
+malformed header line with `400`. These checks run before any response,
+including a package-load failure, and a refusal names no package or caller.
 
 Run the Jaffle package:
 

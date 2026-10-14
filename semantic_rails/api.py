@@ -75,17 +75,20 @@ class Handler(BaseHTTPRequestHandler):
         """Parse the request, then refuse DNS rebinding before any method or route answers."""
         if not super().parse_request():
             return False
+        if self.headers.defects or self.headers.get_payload():
+            # A malformed line ends the stdlib header parse and hides the headers after it.
+            self.send_error(400, "Malformed header line")
+            return False
         server_host = str(self.connection.getsockname()[0])  # the address this connection reached
         refusal = rebinding_refusal(self.headers.items(), server_host, target=self.path)
         if refusal is None:
             return True
         status, refused = refusal
+        self._request_id = request_id_from_parts(self._request_headers(), self._query_params())
         if self._is_mcp_route():
-            request_id = request_id_from_parts(self._request_headers(), self._query_params())
-            self._send_mcp(_error(status, -32003, refused["message"]), request_id)
-        else:
-            self._prepare_request()
-            _json(self, status, {"ok": False, "error": refused})
+            self._send_mcp(_error(status, -32003, refused["error"]["message"]), self._request_id)
+        else:  # no identity is resolved for a refused request
+            _json(self, status, {**refused, "request_id": self._request_id}, wrap=False)
         return False
 
     def _prepare_request(self, payload: dict[str, Any] | None = None) -> None:
@@ -277,14 +280,18 @@ class Handler(BaseHTTPRequestHandler):
     do_PUT = do_PATCH = do_HEAD = do_TRACE = do_CONNECT = do_DELETE
 
 
-def _json(handler: Handler, status: int, payload: dict[str, Any]) -> None:
-    service = handler._service()
-    envelope = service.envelope(
-        status,
-        payload,
-        request_id=str(getattr(handler, "_request_id", "")),
-        started=getattr(handler, "_request_started_at", None),
-        request_context=getattr(handler, "_request_context", None),
+def _json(handler: Handler, status: int, payload: dict[str, Any], *, wrap: bool = True) -> None:
+    """Send ``payload`` in the API envelope, or as it is when ``wrap`` is False."""
+    envelope = (
+        handler._service().envelope(
+            status,
+            payload,
+            request_id=str(getattr(handler, "_request_id", "")),
+            started=getattr(handler, "_request_started_at", None),
+            request_context=getattr(handler, "_request_context", None),
+        )
+        if wrap
+        else payload
     )
     # Pretty-printing is opt-in via `?pretty=true`. The default is
     # compact JSON to halve bandwidth on large catalog and discover

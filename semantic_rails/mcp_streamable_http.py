@@ -92,7 +92,7 @@ def handle_streamable_http_request(
     # rejected and non-browser clients — which send no Origin — are unaffected.
     refusal = rebinding_refusal(headers)
     if refusal is not None:
-        return _error(refusal[0], -32003, refusal[1]["message"])
+        return _error(refusal[0], -32003, refusal[1]["error"]["message"])
 
     common_headers = {
         "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,

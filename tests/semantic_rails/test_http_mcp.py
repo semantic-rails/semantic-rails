@@ -8,12 +8,15 @@ import copy
 import http.client
 import ipaddress
 import json
+import socket
 import threading
+import time
 from contextlib import contextmanager
 from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+import uvicorn
 
 from semantic_rails.api import Handler
 from semantic_rails.asgi import PackageLoadFailureApp, SemanticLayerASGIApp
@@ -36,6 +39,62 @@ HEADERS = {
 PING = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
 
 
+class _BodyReads:
+    """A request stream that records body reads (``read``), not header lines (``readline``)."""
+
+    def __init__(self, stream, reads):
+        self._stream, self._reads = stream, reads
+
+    def read(self, size=-1):
+        if size:
+            self._reads.append("serve")
+        return self._stream.read(size)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+@contextmanager
+def _uvicorn(app):
+    """Serve ``app`` with uvicorn's h11 parser on loopback; yield its address and body reads."""
+    reads = []
+
+    async def recording(scope, receive, send):
+        async def counted():
+            reads.append("asgi")
+            return await receive()
+
+        await app(scope, counted, send)
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    config = uvicorn.Config(recording, http="h11", lifespan="off", log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        assert time.monotonic() < deadline, "uvicorn did not start"
+        time.sleep(0.01)
+    try:
+        yield sock.getsockname(), reads
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        sock.close()
+
+
+def _raw(address, request):
+    """Send raw request bytes; return the status and body the server answers."""
+    with socket.create_connection(address, timeout=5) as connection:
+        connection.sendall(request)
+        response = b""
+        while chunk := connection.recv(65536):
+            response += chunk
+    head, _, body = response.partition(b"\r\n\r\n")
+    return int(head.split()[1]), body
+
+
 @contextmanager
 def _frontends(runtime):
     from http.server import ThreadingHTTPServer
@@ -44,11 +103,16 @@ def _frontends(runtime):
     app.mcp_adapter.close()
     app.runtime = runtime
     app.mcp_adapter = SemanticLayerMCPAdapter(runtime)
+    reads = []  # requests whose body either transport read
 
     class LocalHandler(Handler):
         state = SimpleNamespace(
             runtime=runtime, package_id=runtime.package_id, mcp_adapter=app.mcp_adapter
         )
+
+        def setup(self):
+            super().setup()
+            self.rfile = _BodyReads(self.rfile, reads)
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), LocalHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -92,7 +156,7 @@ def _frontends(runtime):
             sent = []
 
             async def receive():
-                call.reads.append(path)
+                reads.append("asgi")
                 return {"type": "http.request", "body": body, "more_body": False}
 
             async def send(event):
@@ -106,7 +170,8 @@ def _frontends(runtime):
                     "headers": [
                         (k.lower().encode("latin1"), v.encode("latin1")) for k, v in request_headers
                     ],
-                    # The address the connection reached, as uvicorn reports it.
+                    # The target and the address the connection reached, as uvicorn reports them.
+                    "raw_path": path.partition("?")[0].encode("latin1"),
                     "server": server or httpd.server_address,
                 },
                 receive,
@@ -118,7 +183,7 @@ def _frontends(runtime):
 
         return asyncio.run(request())
 
-    call.reads = []  # paths whose ASGI request body was read
+    call.reads, call.app, call.address = reads, app, httpd.server_address
     try:
         yield call
     finally:
@@ -383,6 +448,8 @@ def _assert_refused(response, path, status, code):
         assert {k.lower() for k in response_headers} >= {"mcp-protocol-version"}
     else:
         assert payload["errors"][0]["code"] == code
+        # A minimal answer: the refused caller learns neither the package nor an identity.
+        assert "package_id" not in payload and "request_context" not in payload
 
 
 @pytest.mark.parametrize("backend", ["serve", "asgi"])
@@ -513,3 +580,96 @@ def test_package_load_failure_refuses_rebinding_before_its_diagnostics():
         assert b"/private/path" not in body and b"broken" not in body
         assert "access-control-allow-origin" not in response_headers
     assert call([("Host", "localhost:8080")])[0] == 503
+
+
+# --- raw requests through the real parsers ---------------------------------------
+#
+# Bytes no well-behaved client sends: an absolute-form target naming another host,
+# header lines the stdlib parser stops at (hiding the headers after them), and
+# non-HTTP padding around a loopback name. Each is refused before any body is read.
+
+PING_BYTES = json.dumps(PING, separators=(",", ":")).encode()
+MCP_LINES = (
+    b"Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n"
+    b"Content-Length: %d\r\nConnection: close\r\n" % len(PING_BYTES)
+)
+RAW_REQUESTS = {
+    "absolute target": (
+        b"GET http://evil.example:8090/api/v1/catalog HTTP/1.1\r\n"
+        b"Host: localhost\r\nConnection: close\r\n\r\n",
+        421,
+    ),
+    "absolute mcp target": (
+        b"POST http://evil.example:8090/mcp HTTP/1.1\r\nHost: localhost\r\n"
+        + MCP_LINES
+        + b"\r\n"
+        + PING_BYTES,
+        421,
+    ),
+    "header line without a colon hides later headers": (
+        b"POST /mcp HTTP/1.1\r\nHost: localhost\r\n"
+        + MCP_LINES
+        + b"BadHeader\r\nHost: evil.example\r\nOrigin: https://evil.example\r\n\r\n"
+        + PING_BYTES,
+        400,
+    ),
+    "api header line without a colon": (
+        b"POST /api/v1/catalog HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+        b"Content-Length: 2\r\nConnection: close\r\nBadHeader\r\nHost: evil.example\r\n\r\n{}",
+        400,
+    ),
+    "space before a colon": (
+        b"GET /api/v1/catalog HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
+        b"Origin : https://evil.example\r\n\r\n",
+        400,
+    ),
+    "non-breaking space padding": (
+        b"GET /api/v1/catalog HTTP/1.1\r\nHost: \xa0localhost\xa0\r\nConnection: close\r\n\r\n",
+        421,
+    ),
+    "next-line padding": (
+        b"GET /api/v1/catalog HTTP/1.1\r\nHost: \x85localhost\x85\r\nConnection: close\r\n\r\n",
+        421,
+    ),
+}
+
+
+@pytest.mark.parametrize("backend", ["serve", "asgi"])
+@pytest.mark.parametrize("name", RAW_REQUESTS)
+def test_raw_requests_are_refused_before_any_body_read(frontends, backend, name):
+    request, status = RAW_REQUESTS[name]
+    if backend == "serve":
+        got, body = _raw(frontends.address, request)
+        reads = frontends.reads
+    else:
+        with _uvicorn(frontends.app) as (address, reads):
+            got, body = _raw(address, request)
+    assert got == status
+    assert b"jaffle" not in body
+    assert reads == []
+
+
+def test_raw_loopback_requests_are_still_served(frontends):
+    request = b"GET /api/v1/catalog HTTP/1.1\r\nHost: localhost:1\r\nConnection: close\r\n\r\n"
+    assert _raw(frontends.address, request)[0] == 200
+    with _uvicorn(frontends.app) as (address, _):
+        assert _raw(address, request)[0] == 200
+
+
+def test_package_load_failure_refuses_an_absolute_target_before_its_diagnostics():
+    app = PackageLoadFailureApp(package_id="broken", error=RuntimeError("/private/path failed"))
+    request = RAW_REQUESTS["absolute target"][0].replace(
+        b"Host: localhost", b"Host: localhost\r\nOrigin: http://localhost"
+    )
+    with _uvicorn(app) as (address, reads):
+        got, body = _raw(address, request)
+        assert (
+            _raw(
+                address,
+                b"GET /api/v1/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )[0]
+            == 503
+        )
+    assert got == 421
+    assert b"/private/path" not in body and b"broken" not in body
+    assert reads == []
