@@ -1172,12 +1172,17 @@ def _object_catalog_ids(config: PackageConfig) -> list[str]:
 
 
 def filter_value_miss(
-    subject: str, dimension: str, literal: str, values: Iterable[str]
+    subject: str, dimension: str, literal: str, values: Iterable[str], data_type: str = ""
 ) -> tuple[str, str | None]:
-    """The message for a filter literal that matches no value in the data, and the closest
-    value in any case, for package validation and a query's own filters alike."""
+    """The message for a filter literal that matches no value in the data, and the value it
+    likely meant, for package validation and a query's own filters alike: the same text in
+    another case, or else a close spelling. An id, code or hash (an id dimension, or a literal
+    with a digit) differs by one character from another real one, so it gets no close
+    spelling, and neither does a weak match."""
     folded = {value.casefold(): value for value in values}
-    close = get_close_matches(literal.casefold(), list(folded), n=1)
+    close = [literal.casefold()] if literal.casefold() in folded else []
+    if not close and data_type != "id" and not any(char.isdigit() for char in literal):
+        close = get_close_matches(literal.casefold(), list(folded), n=1, cutoff=0.7)
     suggestion = folded[close[0]] if close else None
     return (
         f"{subject} filters {dimension} on {literal!r}, which matches no value in the data"

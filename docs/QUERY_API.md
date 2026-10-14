@@ -1164,8 +1164,10 @@ The response `warnings` array can carry these non-error signals:
   default) when a string `is` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
   Aggregate-filter literals of a retained additive series are checked in both observation scopes.
-  One warning per query; `details.filters` lists each `dimension`, `value` and the closest
-  `suggestion`.
+  One warning per query; `details.filters` lists each `dimension`, `value` and the likely
+  `suggestion` (the same text in another case, or a close spelling; none for an id
+  dimension, a value with a digit or a weak match), the first 10 of `details.missing_count`;
+  the message names the first 5.
 - `FILTERED_SERIES_BUCKETS_DROPPED` — an unsupported filtered additive series omits
   observed buckets. `details.dropped_buckets` lists their time and grouping keys from a
   separately authorized source query; averages over returned rows omit those buckets.

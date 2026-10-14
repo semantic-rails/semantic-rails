@@ -719,6 +719,11 @@ def _no_data_in_scope_warnings(
     ]
 
 
+# A filter value list can be long: the missing-value warning names this many and lists this many.
+_NAMED_MISSES = 5
+_LISTED_MISSES = 10
+
+
 def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
     """Probe string filter literals that can otherwise read a confident zero.
 
@@ -785,18 +790,26 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
             page = values(miss["dimension"], [], limit) or []
             known[miss["dimension"]] = page if len(page) < limit else []
         message, suggestion = filter_value_miss(
-            "This query", miss["dimension"], miss["value"], known[miss["dimension"]]
+            "This query",
+            miss["dimension"],
+            miss["value"],
+            known[miss["dimension"]],
+            dimensions[miss["dimension"]].data_type,
         )
         miss.update(message=message, suggestion=suggestion)
     warnings = []
     if misses:
+        # The warning names a few misses and counts the rest, whatever the filter lists.
+        named = [miss.pop("message") for miss in misses][:_NAMED_MISSES]
+        rest = len(misses) - len(named)
         warnings.append(
             semantic_issue(
                 code="FILTER_VALUE_NOT_FOUND",
-                message="; ".join(miss.pop("message") for miss in misses),
+                message="; ".join(named)
+                + (f"; and {rest} more values match nothing" if rest else ""),
                 severity="warning",
                 stage="execution",
-                details={"filters": misses},
+                details={"filters": misses[:_LISTED_MISSES], "missing_count": len(misses)},
                 object_ids=sorted({miss["dimension"] for miss in misses}),
             )
         )
