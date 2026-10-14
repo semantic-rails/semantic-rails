@@ -35,7 +35,13 @@ OVER_50 = {"entity": "entity.x_account", "input": BALANCE, "op": "gt", "value": 
 
 
 def _package(
-    root: Path, rows: str = ROWS, clock: str = "", *, relation: str = "snap", ts: str = "TIMESTAMP"
+    root: Path,
+    rows: str = ROWS,
+    clock: str = "",
+    *,
+    relation: str = "snap",
+    ts: str = "TIMESTAMP",
+    extra: str = "",
 ) -> Path:
     (root / "models").mkdir(parents=True)
     (root / "metrics").mkdir()
@@ -53,12 +59,13 @@ def _package(
     (root / "models" / "snap.yml").write_text(
         f"model:\n  id: snap\n  relation: {relation}\n  entities: {{snap: {{}}, account: {{}}}}\n"
         "  dimensions: {id: {kind: categorical}}\n"
-        f"  times:\n    ts: {{column: ts, kind: timestamp, class: as_of_time, default: true{clock}}}\n"
+        f"  times:\n    ts: {{column: ts, kind: {'date' if ts == 'DATE' else 'timestamp'}, "
+        f"class: as_of_time, default: true{clock}}}\n"
         "  measures:\n"
         f"    balance: {{kind: aggregate, expr: value, {stock}}}\n"
         f'    balance2: {{kind: aggregate, expr: "value * 2", {stock}}}\n'
         "    flow: {kind: aggregate, expr: value, default_agg: sum,\n"
-        "      accumulation: {kind: flow}, value_type: number}\n"
+        "      accumulation: {kind: flow}, value_type: number}\n" + extra
     )
     (root / "models" / "accounts.yml").write_text(
         "model:\n  id: accounts\n  relation: accounts\n  entities: {account: {}}\n"
@@ -116,14 +123,25 @@ def _disclosed(result: dict) -> list[tuple[str, str, int]]:
     )
 
 
-def test_an_entity_set_ratio_reads_the_closing_day(x: Runtime) -> None:
-    """The share of balances held by accounts over 50: X has no snapshot on the closing day,
-    so neither side counts it, and the share is 200 / 200."""
-    ratio = {"kind": "ratio", "numerator": {**FEE, "predicates": [{**OVER_50, "over": "all_time"}]},
-             "denominator": FEE}  # fmt: skip
-    result = x.query({"select": [{"expression": ratio, "as": "v"}]})
-    assert _values(result) == [1.0]
-    assert (BALANCE, "2020-01-20", 1) in _disclosed(result)
+def _refused(runtime: Runtime, call: dict, code: str, reason: str) -> None:
+    with pytest.raises(SemanticLayerError) as caught:
+        runtime.query(call)
+    assert (caught.value.code, caught.value.details.get("reason")) == (code, reason)
+
+
+def _share_refused(runtime: Runtime, ratio: dict) -> None:
+    """A share of a balance that closes on a day, filtered by entity sets: refused, never a
+    number its operands read alone wouldn't give."""
+    call = {"select": [{"expression": ratio, "as": "v"}]}
+    _refused(runtime, call, "REWRITE_NOT_SUPPORTED", "entity_set_ratio_closing_day")
+
+
+def test_an_entity_set_ratio_of_a_balance_is_refused(x: Runtime) -> None:
+    """The share of balances held by accounts over 50 is refused; its part and whole answer
+    on their own."""
+    part = {**FEE, "predicates": [{**OVER_50, "over": "all_time"}]}
+    _share_refused(x, {"kind": "ratio", "numerator": part, "denominator": FEE})
+    assert _values(x.query({"select": [{"expression": part, "as": "v"}]})) == [200.0]
 
 
 def test_a_balance_read_inside_an_entity_filter_is_disclosed(x: Runtime) -> None:
@@ -191,6 +209,10 @@ def test_the_closing_day_is_the_clocks_own_day(lowering, tmp_path: Path, time: d
         call: dict = {"select": [{"expression": BALANCE, "as": "v"}]}
         if time:
             call["time"] = {"temporal_role": "temporal_role.x_snap_ts", **time}
+        if not time:
+            # Untimed, the call runs in UTC, not the clock's zone: refused.
+            _refused(runtime, call, "MIXED_TIME_ROLES", "closing_day_zone")
+            return
         result = runtime.query(call)
         assert [v for v in _values(result) if v is not None] == [300.0]
         assert _disclosed(result) == [(BALANCE, "2020-01-01", 0)]
@@ -221,7 +243,7 @@ LA = ", timezone: America/Los_Angeles"
 
 def test_an_entity_set_ratio_closes_within_each_operands_scope(x: Runtime) -> None:
     """Both operands keep only accounts whose flow is 100 (X): each closes on X's January 5
-    and reads 100, so their ratio is 1.0, not a ratio of two empty closing days."""
+    and reads 100. Their share is refused, never read on another scope's closing day."""
     is_100 = {"entity": "entity.x_account", "input": "measure.x.flow", "op": "is", "value": 100,
               "over": "all_time"}  # fmt: skip
     over_50 = {**is_100, "op": "gt", "value": 50}
@@ -229,9 +251,7 @@ def test_an_entity_set_ratio_closes_within_each_operands_scope(x: Runtime) -> No
         assert _values(x.query({"select": [{"expression": operand, "as": "v"}]})) == [100.0]
     ratio = {"kind": "ratio", "numerator": {**FEE, "predicates": [is_100, over_50]},
              "denominator": {**FEE, "predicates": [is_100]}}  # fmt: skip
-    result = x.query({"select": [{"expression": ratio, "as": "v"}]})
-    assert _values(result) == [1.0]
-    assert (BALANCE, "2020-01-05", 0) in _disclosed(result)
+    _share_refused(x, ratio)
 
 
 @pytest.mark.parametrize(
@@ -260,12 +280,17 @@ def test_the_closing_day_is_the_clocks_day_bucket_across_dst(
 ) -> None:
     """March 8, 2020 is 23 hours long in Los Angeles: Y at 01:30 PST and X at 23:30 PDT are
     both that day, though X is March 9 in UTC. The closing day is the day the clock's own
-    day grain puts each snapshot in, so both are read, untimed too."""
+    day grain puts each snapshot in, so both are read; untimed, the call runs in UTC and is
+    refused."""
     runtime = _runtime(_package(tmp_path / "x", rows, LA + zone, ts=ts))
     try:
         call: dict = {"select": [{"expression": BALANCE, "as": "v"}]}
         if time:
             call["time"] = {"temporal_role": "temporal_role.x_snap_ts", **time}
+        if not time:
+            # Untimed, the call runs in UTC, not the clock's zone: refused.
+            _refused(runtime, call, "MIXED_TIME_ROLES", "closing_day_zone")
+            return
         result = runtime.query(call)
         assert [v for v in _values(result) if v is not None] == [300.0]
         assert _disclosed(result) == [(BALANCE, "2020-03-08", 0)]
@@ -273,19 +298,16 @@ def test_the_closing_day_is_the_clocks_day_bucket_across_dst(
         runtime.close()
 
 
-def test_a_zone_aware_clock_declared_in_utc_closes_on_its_day_bucket(
-    lowering, tmp_path: Path
-) -> None:
-    """A TIMESTAMP WITH TIME ZONE column with column_timezone: UTC: X at 20:00Z and Y at
-    10:00Z, January 2, close on January 2 and both count."""
+def test_an_untimed_zone_aware_balance_in_another_zone_is_refused(lowering, tmp_path: Path) -> None:
+    """A TIMESTAMP WITH TIME ZONE clock in Los Angeles, read with no time block: the call
+    runs in UTC, so its day could be another, and it is refused."""
     rows = "('X', TIMESTAMPTZ '2020-01-02 20:00:00+00', 100), ('Y', TIMESTAMPTZ '2020-01-02 10:00:00+00', 200)"  # fmt: skip
     runtime = _runtime(
         _package(tmp_path / "x", rows, LA + ", column_timezone: UTC", ts="TIMESTAMPTZ")
     )
     try:
-        result = runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})
-        assert _values(result) == [300.0]
-        assert _disclosed(result) == [(BALANCE, "2020-01-02", 0)]
+        call = {"select": [{"expression": BALANCE, "as": "v"}]}
+        _refused(runtime, call, "MIXED_TIME_ROLES", "closing_day_zone")
     finally:
         runtime.close()
 
@@ -369,10 +391,8 @@ def test_duplicate_snapshots_on_the_closing_day_are_all_read(lowering, tmp_path:
         runtime.close()
 
 
-def test_a_balance_closing_in_another_zone_than_the_query_is_refused(tmp_path: Path) -> None:
-    """Accounts filtered by a Los Angeles balance in a call that runs in UTC (a hits clock):
-    a zone-aware clock would close on a UTC day, so the call is refused, never answered."""
-    root = _package(tmp_path / "x", clock=LA)
+def _with_hits(root: Path) -> Path:
+    """Add hits by account on a UTC event clock."""
     (root / "models" / "hits.yml").write_text(
         "model:\n  id: hits\n  relation: hits\n  entities: {hit: {}, account: {}}\n  dimensions: {hit_id: {kind: categorical}}\n"
         "  times:\n    at: {column: at, kind: timestamp, class: event_time, default: true}\n"
@@ -385,7 +405,20 @@ def test_a_balance_closing_in_another_zone_than_the_query_is_refused(tmp_path: P
         con.execute(
             "CREATE TABLE hits AS SELECT 1 AS hit_id, 'Y' AS id, TIMESTAMP '2020-01-21' AS at"
         )
-    runtime = _runtime(root)
+    return root
+
+
+HITS_OVER_50 = {
+    "select": [{"expression": "measure.x.hits", "as": "v"}],
+    "where": [{"entity": "entity.x_account", "having": [{"field": BALANCE, "op": "gt", "value": 50}],
+               "over": "all_time"}],
+}  # fmt: skip
+
+
+def test_a_balance_closing_in_another_zone_than_the_query_is_refused(tmp_path: Path) -> None:
+    """Accounts filtered by a Los Angeles balance on a timestamp clock, in a call that runs
+    in UTC (a hits clock): a zone-aware clock would close on a UTC day, so it is refused."""
+    runtime = _runtime(_with_hits(_package(tmp_path / "x", clock=LA)))
     try:
         where = [{"entity": "entity.x_account", "having": [{"field": BALANCE, "op": "gt", "value": 50}],
                   "over": "all_time"}]  # fmt: skip
@@ -395,19 +428,60 @@ def test_a_balance_closing_in_another_zone_than_the_query_is_refused(tmp_path: P
         assert caught.value.code == "MIXED_TIME_ROLES"
         assert caught.value.details["reason"] == "closing_day_zone"
         # Read on its own clock, the balance answers.
-        assert _values(runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})) == [200.0]
+        own = {
+            "temporal_role": "temporal_role.x_snap_ts",
+            "start": "2020-01-01",
+            "end": "2020-02-01",
+        }
+        assert _values(
+            runtime.query({"select": [{"expression": BALANCE, "as": "v"}], "time": own})
+        ) == [200.0]
     finally:
         runtime.close()
 
 
 def test_an_entity_set_ratio_equals_its_operands_read_alone(x: Runtime) -> None:
     """The part keeps X only and closes on X's January 5 (100); the whole closes on
-    January 20, where only Y has a snapshot (200). The ratio is the ratio of the two, each
-    read on its own day."""
+    January 20, where only Y has a snapshot (200). Each answers alone; their share is
+    refused."""
     is_100 = {"entity": "entity.x_account", "input": "measure.x.flow", "op": "is",
               "value": 100, "over": "all_time"}  # fmt: skip
     part = {**FEE, "predicates": [is_100]}
     alone = [_values(x.query({"select": [{"expression": e, "as": "v"}]}))[0] for e in (part, FEE)]
     assert alone == [100.0, 200.0]
-    ratio = {"kind": "ratio", "numerator": part, "denominator": FEE}
-    assert _values(x.query({"select": [{"expression": ratio, "as": "v"}]})) == [0.5]
+    _share_refused(x, {"kind": "ratio", "numerator": part, "denominator": FEE})
+
+
+def test_a_date_clock_in_another_zone_closes_on_its_own_day(tmp_path: Path) -> None:
+    """A DATE clock never depends on the session's zone: the same filter on a Los Angeles
+    DATE balance runs in UTC and keeps Y (1 hit), closing January 20 with X missing."""
+    rows = "('X', DATE '2020-01-05', 100), ('Y', DATE '2020-01-20', 200)"
+    runtime = _runtime(_with_hits(_package(tmp_path / "x", rows, LA, ts="DATE")))
+    try:
+        result = runtime.query(HITS_OVER_50)
+        assert _values(result) == [1.0]
+        assert _disclosed(result) == [(BALANCE, "2020-01-20", 1)]
+    finally:
+        runtime.close()
+
+
+LOCAL_HOUR = (
+    "    local: {kind: aggregate, default_agg: sum, accumulation: {kind: flow}, "
+    "value_type: number,\n      expr: {kind: case, whens: [{when: {kind: comparison, op: '<', "
+    "left: {kind: call, name: DATE_PART, args: [{kind: literal, value: hour}, "
+    "{kind: column, column: ts}]}, right: {kind: literal, value: 12}}, "
+    "then: {kind: column, column: value}}], else: {kind: literal, value: 0}}}\n"
+)
+
+
+def test_an_untimed_call_without_a_balance_keeps_running_in_utc(tmp_path: Path) -> None:
+    """No balance read, no time block: the call runs in UTC as it always has. 01:00Z is
+    before noon there and 13:00Z after, so only 100 counts (in Los Angeles it would be 200)."""
+    rows = "('X', TIMESTAMPTZ '2020-01-02 01:00:00+00', 100), ('Y', TIMESTAMPTZ '2020-01-02 13:00:00+00', 200)"  # fmt: skip
+    runtime = _runtime(_package(tmp_path / "x", rows, LA, ts="TIMESTAMPTZ", extra=LOCAL_HOUR))
+    try:
+        assert _values(
+            runtime.query({"select": [{"expression": "measure.x.local", "as": "v"}]})
+        ) == [100.0]
+    finally:
+        runtime.close()
