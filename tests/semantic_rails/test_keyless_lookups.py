@@ -321,6 +321,8 @@ GENERATED = "sr_one_per_key__shop_room"  # the name rooms' one-per-key relation 
         GENERATED.replace("_", "-", 3),  # a name a warehouse would make legal by underscores
         f"{GENERATED}__2_where",  # one of its steps
         _shortened_identifier("sr_one_per_key__" + "r" * 64),  # as Postgres shortens one
+        "sr_one_per_key",  # whose steps would be sr_one_per_key__2_where (Sol round 3)
+        "Sr-One-Per-Key-Rows",
     ],
 )
 def test_a_name_one_per_key_relations_are_read_under_can_t_be_authored(tmp_path, table):
@@ -331,7 +333,7 @@ def test_a_name_one_per_key_relations_are_read_under_can_t_be_authored(tmp_path,
     with pytest.raises(SemanticLayerError) as raised:
         load_package_config(str(_shop(tmp_path, renamed)))
     assert raised.value.code == "INVALID_CONFIG"
-    assert "sr_one_per_key__ is reserved" in str(raised.value)
+    assert "sr_one_per_key is reserved" in str(raised.value)
     assert raised.value.details["name"] == table
 
 
@@ -349,7 +351,32 @@ def test_a_pipeline_source_padded_to_a_generated_name_is_refused(tmp_path):
     with pytest.raises(SemanticLayerError) as raised:
         load_package_config(str(package))
     assert raised.value.code == "INVALID_CONFIG"
-    assert "sr_one_per_key__ is reserved" in str(raised.value)
+    assert "sr_one_per_key is reserved" in str(raised.value)
+
+
+def test_a_pipeline_whose_steps_are_read_under_a_generated_name_is_refused(tmp_path):
+    """Sol round 3, finding 1: a pipeline output named sr_one_per_key has a step read under
+    sr_one_per_key__2_where, the name of a room relation for an entity id ending 2_where."""
+    staff = {
+        "output_name": "sr_one_per_key",
+        "source": "people",
+        "columns": ["person_id", "room_id", "title", "salary", "started_on"],
+        "steps": [{"where": []}, {"select": {"room_id": "room_id"}}],
+    }
+    package = _shop(
+        tmp_path,
+        (
+            "graph.yml",
+            lambda doc: doc["graph"]["entities"]["room"].update({"as": "entity.2_where"}),
+        ),
+        ("relations.yml", lambda doc: doc.update(relations={"staff": staff})),
+        ("models/people.yml", lambda doc: doc["model"].update(relation="staff")),
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        load_package_config(str(package))
+    assert raised.value.code == "INVALID_CONFIG"
+    assert raised.value.details["name"] == "sr_one_per_key"
+    assert "sr_one_per_key is reserved" in str(raised.value)
 
 
 def test_every_generated_name_keeps_the_reserved_prefix_once_shortened(tmp_path):
@@ -453,6 +480,47 @@ def test_an_aggregate_if_reads_only_the_columns_a_one_per_key_model_declares(tmp
     assert hint["kind"] == "declare_column"
     assert "declare a dimension or measure on 'bonus'" in hint["message"]
     assert declared == [{"kept": 200}]  # r1 and r3, 100 each
+
+
+def test_a_measure_on_another_model_reads_only_declared_one_per_key_columns(tmp_path):
+    """Sol round 3, finding 2: any measure, on any model, reading a column a one-per-key model
+    doesn't project is refused while planning, with the same hint; a declared one reads."""
+    people_measures = {
+        "room_bonus": {
+            "kind": "aggregate",
+            "expr": {"kind": "column", "entity": ROOM, "column": "bonus"},
+        },
+        "room_area_seen": {
+            "kind": "aggregate",
+            "expr": {"kind": "column", "entity": ROOM, "column": "area"},
+        },
+    }
+    package = _shop(
+        tmp_path,
+        ("models/people.yml", lambda doc: doc["model"]["measures"].update(people_measures)),
+    )
+    seed = package / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text(encoding="utf-8")
+        + "\nALTER TABLE room_rows ADD COLUMN bonus INTEGER;\nUPDATE room_rows SET bonus = 42;\n",
+        encoding="utf-8",
+    )
+    runtime = _runtime(package)
+    try:
+        report = runtime.validate({"select": ["measure.shop.room_bonus"]})
+        error = _refusal(runtime, {"select": ["measure.shop.room_bonus"]})
+        declared = runtime.query({"select": ["measure.shop.room_area_seen"]})["rows"]
+    finally:
+        runtime.close()
+    assert not report["ok"]
+    assert report["errors"][0]["code"] == error.code == "INVALID_CONFIG"
+    assert "Measure 'measure.shop.room_bonus' reads column 'bonus' of 'entity.shop_room'" in str(
+        error
+    )
+    [hint] = error.details["recovery_hints"]
+    assert hint["kind"] == "declare_column"
+    assert "declare a dimension or measure on 'bonus'" in hint["message"]
+    assert declared == [{"room_area_seen": 650}]  # each person's room once: 100+100+300+100+50
 
 
 def test_a_lookup_into_a_one_per_key_model_on_another_column_reads_it(tmp_path):
