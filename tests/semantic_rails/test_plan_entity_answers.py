@@ -477,6 +477,9 @@ def test_who_reaching_two_entities_with_a_display_asks_which(
         "Which plans had MRR on 2026-10-04?",
         # Two plans or two accounts: "the most" without a count is held.
         "Which accounts had the most MRR on 2026-10-04?",
+        # Only the listed noun names a subject: listing the accounts New accounts counts would
+        # answer "which accounts signed up", not "which accounts there are".
+        "Which accounts are there?",
     ],
 )
 def test_a_list_or_ranking_plan_cannot_read_is_held(

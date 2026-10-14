@@ -436,7 +436,8 @@ def test_a_prior_period_comparison_asks_which_reading(jaffle: Runtime) -> None:
 @pytest.mark.parametrize(
     ("question", "code"),
     [
-        ("Who are our customers by store?", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        # A customer belongs to no store: plan names the pair and offers no draft.
+        ("Who are our customers by store?", "PLAN_UNCONNECTED"),
         ("Revenue per store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
         ("Orders by store last week compared with the week before?", "PERIOD_COMPARISON"),
         ("What's the store's revenue last month?", UNMATCHED),

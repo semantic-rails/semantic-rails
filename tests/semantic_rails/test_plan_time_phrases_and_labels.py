@@ -88,6 +88,14 @@ def _plan(runtime: Runtime, text: str, **kwargs: Any) -> dict[str, Any]:
     return plan_payload(runtime, intent=text, detail="best", **kwargs)
 
 
+def _unmatched_subject(payload: dict[str, Any], terms: list[str]) -> None:
+    """No measure is named by the question's words: no draft, never ready."""
+    assert payload["status"] == "unrealizable", payload
+    assert payload["best"] is None
+    assert payload["why"]["code"] == "PLAN_SUBJECT_UNMATCHED"
+    assert payload["why"]["details"]["terms"] == terms
+
+
 def _held(payload: dict[str, Any], *codes: str) -> None:
     assert payload["status"] == "low_confidence", payload
     assert "ready_for" not in payload.get("next", {})
@@ -267,8 +275,11 @@ def test_a_number_or_time_word_that_is_not_an_hour_is_never_read_as_one(
     payload = _plan(runtime, text)
     why = payload.get("why") or {}
     assert why.get("code") != "TIME_WINDOW_UNRESOLVED", why
+    if text == "average delivery time by month":
+        # No measure is named by "delivery": plan offers no draft on average order value.
+        _unmatched_subject(payload, ["delivery"])
+        return
     unknown = {
-        "average delivery time by month": ["delivery"],
         # The intent parse records "region" as "geo", which nothing resolves.
         "orders in 2017 for the west region": ["west", "region"],
         "orders by day in Central": ["central"],
@@ -322,11 +333,7 @@ def test_a_question_whose_numbers_and_time_words_are_all_consumed_is_ok(
 ) -> None:
     payload = _plan(runtime, text)
     if "delivery" in text:
-        _held(payload)
-        assert payload["why"]["details"] == {
-            "terms": ["delivery"],
-            "kind": "filter_values_unrealized",
-        }
+        _unmatched_subject(payload, ["delivery"])
         return
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
@@ -993,10 +1000,12 @@ def test_an_exact_multi_word_label_outranks_a_partial_one(
     runtime: Runtime, text: str, measure: str, unconsumed: list[str] | None
 ) -> None:
     payload = plan_payload(runtime, intent=text, detail="query")
-    assert _measures(payload) == [measure]
     if unconsumed is None:
-        _held(payload, "VALIDATION_FAILED")
+        # Revenue, read per order, can't reach an item: plan names the pair, no draft.
+        _held(payload, "PLAN_UNCONNECTED")
+        assert payload["why"]["details"]["subjects"] == [measure]
         return
+    assert _measures(payload) == [measure]
     assert payload["status"] == ("low_confidence" if unconsumed else "ok"), payload.get("why")
     assert (payload.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
 

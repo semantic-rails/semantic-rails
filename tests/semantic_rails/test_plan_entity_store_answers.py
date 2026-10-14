@@ -455,3 +455,12 @@ def test_an_unnamed_value_is_held(jaffle: Runtime, case: _Case) -> None:
     )
     assert payload["status"] != "ok"
     assert "execute" not in payload["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize("question", ["Which stores are there?", "Which customers are there?"])
+def test_a_list_that_names_only_its_rows_is_held(jaffle: Runtime, question: str) -> None:
+    # The only word naming a subject is the listed noun: listing the stores the open store
+    # count counts on the last day answers another question, so plan holds the list.
+    payload = plan_payload(jaffle, intent=question, now=AUGUST)
+    assert payload["status"] != "ok"
+    assert "execute" not in payload["next"].get("ready_for", [])
