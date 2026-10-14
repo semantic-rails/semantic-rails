@@ -12,6 +12,7 @@ Every expected number below comes from the hand SQL beside it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -497,9 +498,10 @@ PIPELINE_BALANCE = """model:
 """
 
 
-def test_a_refusal_names_no_row_filter_hidden_from_the_caller(tmp_path: Path) -> None:
-    """A balance read through a pipeline over a filtered relation is refused; the refusal
-    names the caller's own filter and only the kind of one hidden from them."""
+@pytest.fixture
+def hidden_region(tmp_path: Path) -> Runtime:
+    """A tenant sees only its building; a second filter, on a region it can't see, applies
+    too. A pipeline reads the filtered relation."""
     root = _write_package(tmp_path / "inv", HIDDEN_REGION_RULE)
     (root / "relations.yml").write_text(
         "relations:\n  dense_pipe:\n    columns: [building, snap_date, area]\n"
@@ -516,25 +518,61 @@ def test_a_refusal_names_no_row_filter_hidden_from_the_caller(tmp_path: Path) ->
     with duckdb.connect(str(root / "data" / "inv.duckdb")) as con:
         con.execute("ALTER TABLE inv_dense ADD COLUMN region VARCHAR DEFAULT 'north'")
     runtime = Runtime.from_path(str(root))
-    call = {
-        "select": [{"expression": {"kind": "measure", "measure": "measure.inv.pipe_area"}, "as": "v"}],
-        "time": {"temporal_role": "temporal_role.inv_dense_pipe_snap_date", "grain": "month", **YEAR},
-    }  # fmt: skip
-    context = RequestContext(
-        actor="u", audience="tenant", attributes={"building": "C", "region": "north"}
-    )
-    try:
-        # A pipeline over a filtered relation is refused under it, timed or not.
-        with pytest.raises(SemanticLayerError) as untimed:
-            runtime.query({"select": call["select"]}, context=context)
-        with pytest.raises(SemanticLayerError) as caught:
-            runtime.query(call, context=context)
-    finally:
-        runtime.close()
+    yield runtime
+    runtime.close()
+
+
+PIPE_AREA = [{"expression": {"kind": "measure", "measure": "measure.inv.pipe_area"}, "as": "v"}]
+PIPE_MONTHLY = {
+    "select": PIPE_AREA,
+    "time": {"temporal_role": "temporal_role.inv_dense_pipe_snap_date", "grain": "month", **YEAR},
+}
+
+
+def _tenant(**attributes: object) -> RequestContext:
+    return RequestContext(actor="u", audience="tenant", attributes=attributes)
+
+
+def test_a_refusal_names_no_row_filter_hidden_from_the_caller(hidden_region: Runtime) -> None:
+    """A balance read through a pipeline over a filtered relation is refused, timed or not;
+    the refusal names the caller's own filter and only the kind of one hidden from them."""
+    context = _tenant(building="C", region="north")
+    with pytest.raises(SemanticLayerError) as untimed:
+        hidden_region.query({"select": PIPE_AREA}, context=context)
     assert untimed.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
+    with pytest.raises(SemanticLayerError) as caught:
+        hidden_region.query(PIPE_MONTHLY, context=context)
     assert caught.value.code == "POLICY_DENIED"
     assert caught.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
     assert "region" not in f"{caught.value} {caught.value.details}"
+
+
+def _refusal(runtime: Runtime, surface: str, context: RequestContext) -> tuple[dict, str]:
+    """The refusal's details and everything a caller reads about it, on ``surface``."""
+    if surface == "validate":
+        out = runtime.validate({"select": PIPE_AREA}, context=context)
+        (error,) = out["errors"]
+        return error["details"], json.dumps([error, out["recovery_hints"], out["query_ir_hints"]])
+    with pytest.raises(SemanticLayerError) as caught:
+        getattr(runtime, surface)({"select": PIPE_AREA}, context=context)
+    assert caught.value.code == "POLICY_DENIED"
+    return caught.value.details, f"{caught.value} {json.dumps(caught.value.details)}"
+
+
+@pytest.mark.parametrize("surface", ["query", "compile", "validate"])
+@pytest.mark.parametrize("region", [None, 7])
+def test_an_attribute_refusal_names_no_row_filter_hidden_from_the_caller(
+    hidden_region: Runtime, surface: str, region: int | None
+) -> None:
+    """A missing or mistyped attribute of a filter the caller can't see is refused without
+    naming it; one of the caller's own filters is named, so they can fix it."""
+    attributes: dict = {"building": "C"} if region is None else {"building": "C", "region": 7}
+    details, said = _refusal(hidden_region, surface, _tenant(**attributes))
+    assert details == {"reason": "row_filter_denied"}
+    assert "region" not in said
+    details, said = _refusal(hidden_region, surface, _tenant(region="north"))
+    assert details == {"reason": "missing_attribute", "attribute": "building"}
+    assert "building" in said
 
 
 def test_a_probe_that_fails_still_discloses_the_rule() -> None:

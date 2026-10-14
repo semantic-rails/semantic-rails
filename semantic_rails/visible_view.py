@@ -53,6 +53,7 @@ from .schema import (
 from .schema import base_of as base_of
 from .schema import require_base as require_base
 from .segments import build_segment_query, normalize_segment
+from .sql_preparation import parameters_denied
 
 OBJECT_FIELDS = (
     "entities",
@@ -598,9 +599,19 @@ def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list
 
 
 def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
-    """A policy refusal as this caller may see it (:func:`public_effects`)."""
+    """A policy refusal as this caller may see it (:func:`public_effects`). A request attribute
+    no row filter shown to the caller reads is never named: the refusal says only that a row
+    filter denied the request."""
     meta = get_package_analysis(config).view
-    if meta is None or exc.code != "POLICY_DENIED" or not exc.details.get("policy_effects"):
+    if meta is None or exc.code != "POLICY_DENIED":
+        return exc
+    if "attribute" in exc.details and exc.details["attribute"] not in {
+        row.config.get("attribute")
+        for row in config.semantic_policies
+        if row.id and row.kind == "row_filter"
+    }:
+        return parameters_denied("row_filter_denied")
+    if not exc.details.get("policy_effects"):
         return exc
     from .policies import denied
 

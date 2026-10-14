@@ -5,3 +5,6 @@
   that disclosure.
 - A row-filter refusal's `policy_ids` name only the policies the caller can see; a row
   filter hidden from the caller is listed as `row_filter`.
+- A missing or mistyped request attribute of a row filter hidden from the caller is refused
+  as `POLICY_DENIED` with reason `row_filter_denied`, naming no attribute; an attribute of a
+  row filter the caller can see is still named.
