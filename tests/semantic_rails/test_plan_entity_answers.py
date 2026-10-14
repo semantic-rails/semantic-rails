@@ -23,6 +23,7 @@ from semantic_rails.planner.patterns import metric_by_dimension_rollup as rollup
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from semantic_rails.visible_view import view_of
+from tests.semantic_rails.result_helpers import disable_planner_patterns
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
 EVENT_CLOCK = "temporal_role.subscriptions_event_occurred_at"
@@ -264,8 +265,13 @@ def _ready(payload: dict[str, Any]) -> dict[str, Any]:
         (" excluding north", " AND (e.region != 'north' OR e.region IS NULL)", [("North Star", 1)]),
     ],
 )
+@pytest.mark.parametrize("fallback", [False, True])
 def test_a_resolved_name_never_adds_a_value_filter(
-    subscriptions: Callable[..., Runtime], clause: str, predicate: str, expected: list[Any]
+    subscriptions: Callable[..., Runtime],
+    clause: str,
+    predicate: str,
+    expected: list[Any],
+    fallback: bool,
 ) -> None:
     runtime = subscriptions(
         event_region=True,
@@ -276,6 +282,8 @@ def test_a_resolved_name_never_adds_a_value_filter(
         UPDATE accounts SET name = 'Star Labs' WHERE account_id = 'd';
         """,
     )
+    if fallback:
+        disable_planner_patterns(runtime, "metric_by_dimension_rollup")
     query = _ready(_plan(runtime, f"How many new accounts did North Star have last month{clause}?"))
     region = "dimension.subscriptions_event_region"
     if not clause:

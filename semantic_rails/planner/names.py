@@ -25,9 +25,9 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
 from .. import visible_view
-from ._base import QUOTED
+from ._base import QUOTED, _name_matches
 from .call import Call, QueryBuilder, condition
-from .coverage import CoverageGap, _coverage_why
+from .coverage import CoverageGap, _coverage_why, _referenced_ids
 from .groupings import _display_entities, _entity_stand_ins
 
 _WORD_RE = re.compile(r"[^\W_]+")
@@ -72,6 +72,8 @@ class _Lookups:
 
     reads: dict[tuple[str, tuple[str, ...]], _Read] = field(default_factory=dict)
     named: dict[str, tuple[NamedRow, ...]] = field(default_factory=dict)
+    question: str = ""
+    unknown_words: Callable[[Call], Iterable[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,29 @@ class _Run:
 
 
 _lookups: ContextVar[_Lookups | None] = ContextVar("planner_name_lookups", default=None)
+
+
+def name_question(
+    question: str | None = None,
+    *,
+    unknown_words: Callable[[Call], Iterable[str]] | None = None,
+) -> str:
+    """Retain each question's case before composition normalizes its words."""
+
+    state = _lookups.get()
+    if state is None:
+        return question or ""
+    if question is not None:
+        state.question = question
+        state.unknown_words = unknown_words
+    return state.question
+
+
+def name_unknown_words(query: Call) -> Iterable[str]:
+    """Use plan's unknown-word check without coupling value generation to readiness."""
+
+    state = _lookups.get()
+    return state.unknown_words(query) if state is not None and state.unknown_words else ()
 
 
 def with_name_lookups(operation: Callable[_P, _R]) -> Callable[_P, _R]:
@@ -100,10 +125,13 @@ def with_name_lookups(operation: Callable[_P, _R]) -> Callable[_P, _R]:
     return wrapped
 
 
-def _runs(question: str, held: set[str]) -> list[_Run]:
+def _runs(
+    question: str, held: set[str], metric_spans: Iterable[tuple[int, int]] = ()
+) -> list[_Run]:
     """Quoted text holding a held word, and each complete run of capitalized words side by side
     holding one, with the possessive "'s" after it. Every word of a run is its name: "Acme
-    Accounts" is looked up whole, even though "Accounts" alone is a catalog word.
+    Accounts" is looked up whole, even though "Accounts" alone is a catalog word. An unquoted
+    run leaves out the requested metric at either edge ("Acme MRR" names "Acme").
 
     A sentence capitalizes its first word, so a run there leaves it out unless it is held
     ("Did Acme …" is "Acme"), and one word there is a name only with a possessive ("Acme's
@@ -124,6 +152,13 @@ def _runs(question: str, held: set[str]) -> list[_Run]:
         if first and len(current) > 1 and current[0].group().lower() not in held:
             del current[0]
             first = False
+        # Trim only complete declared names of selected metrics/measures, never individual
+        # catalog words inside a row name ("Accounts" in "Acme Accounts"). Quotes stay whole.
+        for low, high in metric_spans:
+            if current and low == current[0].start():
+                current[:] = [match for match in current if match.start() >= high]
+            elif current and high == current[-1].end():
+                current[:] = [match for match in current if match.end() <= low]
         words = tuple(match.group().lower() for match in current)
         if current and set(words) & held:
             start, end = current[0].start(), current[-1].end()
@@ -215,7 +250,18 @@ def name_filters(
 
     held = set(held)
     state = _lookups.get()
-    runs = _runs(question, held) if state is not None else []
+    selected = set(_referenced_ids(query))
+    metric_spans = sorted(
+        {
+            (start, end)
+            for row in [*runtime._config.measures, *runtime._config.metric_recipes]
+            if row.id in selected
+            for _, start, end in _name_matches(row, question.lower())
+        },
+        key=lambda span: span[1] - span[0],
+        reverse=True,
+    )
+    runs = _runs(question, held, metric_spans) if state is not None else []
     entities = _named_entities(runtime, query) if runs else []
     if state is None or not entities:
         return query, None
@@ -305,6 +351,27 @@ def honored_names(question: str, query: Call) -> tuple[NamedRow, ...]:
         if row.display_dimension in query.group_by
         and condition(row.key_dimension, "is", row.value) in query.conditions
     )
+
+
+def without_named_rows(question: str, query: Call) -> str:
+    """Value matching sees only text outside confirmed row names, retaining its offsets.
+
+    Composition and faithfulness can substitute metric IDs or mask subjects in their text;
+    only the confirmed name's complete, unchanged spelling is shielded in that text.
+    """
+
+    text = question
+    source = name_question() or question
+    for row in honored_names(source, query):
+        start, end = row.span
+        spelling = re.escape(source[start:end])
+        text = re.sub(
+            rf"(?<!\w){spelling}(?!\w)",
+            lambda match: " " * len(match.group()),
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
 
 
 def name_readings(question: str, query: Call) -> list[str]:

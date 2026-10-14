@@ -379,7 +379,10 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     builder = QueryBuilder(
         config,
         _normalize_value_filters(
-            drafted, _matched_value_rows(runtime, drafted, text), text=text, config=config
+            drafted,
+            _matched_value_rows(runtime, drafted, question),
+            text=question,
+            config=config,
         ),
     )
     if is_top:

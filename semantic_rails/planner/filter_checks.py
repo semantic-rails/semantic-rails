@@ -20,6 +20,7 @@ from .coverage import (
     _value_phrases,
 )
 from .exclusions import _contains_literal, exclusion_regions
+from .names import without_named_rows
 from .time_windows import _time_window
 from .visibility import visible_dimensions
 
@@ -84,6 +85,7 @@ def _filter_value_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap
     """
 
     config = runtime._config
+    text = without_named_rows(text, query)
     phrases = _value_phrases(config)
     plain = _plain(text)
     matches = _value_matches(plain, phrases)

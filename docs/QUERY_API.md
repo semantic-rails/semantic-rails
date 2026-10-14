@@ -904,6 +904,13 @@ compile cost and warms the runtime compile cache. Agents can forward
 `best.query` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the call by hand.
 
+A confirmed row name contributes its key filter; words inside it never also become value
+filters. For example, "North Star" can name an account without filtering its region to
+"north"; an explicit "where region is north" outside the name still applies. Unquoted names
+leave a complete declared name of the selected measure or metric at either edge outside the
+lookup ("Acme MRR" looks up "Acme"). Other name words stay whole: "Acme Accounts" does not
+silently shorten to "Acme". Quote a name when it includes the requested metric's own name.
+
 Planning reads the time reference against the request's `now` (`options.now` over HTTP, the
 `now` argument over MCP; default the server clock): `today`,
 `yesterday`, `this/current <day|week|month|quarter|year>` and relative ranges use

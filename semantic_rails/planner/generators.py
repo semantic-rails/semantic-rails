@@ -604,6 +604,22 @@ def _matched_value_rows(runtime: Any, query: Call, text: str) -> list[dict[str, 
         _selection_context,
         discover_payload,
     )
+    from .coverage import _value_phrases  # noqa: WPS433
+    from .names import (  # noqa: WPS433
+        name_filters,
+        name_question,
+        name_unknown_words,
+        without_named_rows,
+    )
+
+    # Every inferred-value path resolves names first. The final plan still adds the key in
+    # _with_named_rows; this provisional call only shields a confirmed name's own words.
+    question = name_question()
+    if question and not query.where:
+        values = _value_phrases(runtime._config)
+        held = [word for word in name_unknown_words(query) if word not in values]
+        named, _ask = name_filters(runtime, question, query, held)
+        text = without_named_rows(text, named)
 
     dimensions = visible_dimensions(runtime._config)
     if not dimensions:

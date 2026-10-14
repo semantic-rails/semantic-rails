@@ -367,9 +367,15 @@ def test_a_name_reads_the_one_row_it_gives(
     assert actual == _reference(runtime, reference.format(key=key)) == expected
 
 
-def test_a_name_of_several_rows_asks_which(subscriptions: Callable[..., Runtime]) -> None:
+@pytest.mark.parametrize(
+    "question",
+    ["How many new accounts did Acme have last month?", "What is Acme MRR?"],
+)
+def test_a_name_of_several_rows_asks_which(
+    subscriptions: Callable[..., Runtime], question: str
+) -> None:
     runtime = subscriptions("INSERT INTO accounts VALUES ('e','Acme Labs','customer');")
-    payload = _plan(runtime, "How many new accounts did Acme have last month?")
+    payload = _plan(runtime, question)
     assert payload["status"] == "needs_clarification", payload.get("why")
     assert payload["next"] == {"action": "clarify"}
     [gap] = payload["why"]["details"]["gaps"]
@@ -395,6 +401,7 @@ def test_a_capitalized_name_is_read_whole(subscriptions: Callable[..., Runtime])
     for question in (
         "How many new accounts did Acme Accounts have last month?",
         'How many new accounts did "Acme Accounts" have last month?',
+        "What is Acme Accounts MRR?",
     ):
         payload = _plan(runtime, question)
         assert payload["status"] != "ok", question

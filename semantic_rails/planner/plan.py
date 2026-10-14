@@ -59,7 +59,7 @@ from .intent_holds import (
     _with_time_gap,
 )
 from .intent_ir import compose_hints, parse_intent
-from .names import name_filters, name_readings, with_name_lookups
+from .names import name_filters, name_question, name_readings, with_name_lookups
 from .no_draft import unconnected_why, unmatched_subject_why, unnamed_subject_terms
 from .orchestrator import compose
 from .plan_query import (
@@ -237,6 +237,12 @@ def _question_payload(
     from ..scope import classify_question  # noqa: WPS433
 
     intent_str = intent
+    name_question(
+        intent_str
+        if partial_query is None or not (partial_query.where or partial_query.group_by)
+        else "",
+        unknown_words=lambda query: unconsumed_unknown_words(runtime, intent_str, query),
+    )
     example, invalid_examples = example_plan(
         runtime,
         intent_str,
