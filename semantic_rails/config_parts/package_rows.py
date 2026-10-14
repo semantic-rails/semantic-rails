@@ -600,18 +600,26 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: join '{model_id}.{edge_key}' key width does not match target key",
                 )
+            # An inferred cardinality rests on keys: off the target's key a target row can
+            # repeat, and part of a composite source key repeats across source rows.
+            target_key = target_cfg.key or [target_cfg.primary_key]
+            if (
+                "cardinality" not in join_spec
+                and not join_spec.get("target_key_role")
+                and not set(target_key) <= set(target_cols)
+            ):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: join '{model_id}.{edge_key}' joins {target_ref} on "
+                    f"[{', '.join(target_cols)}], not its key [{', '.join(target_key)}]: join on "
+                    "the key, or declare `cardinality:` (many_to_many when the values repeat)",
+                )
             local_role = str(
                 join_spec.get("source_key_role", foreign_key_roles.get(str(edge_key), "")) or ""
             ).lower()
             if not local_role:
-                local_role = (
-                    "primary"
-                    if all(
-                        column in set(entity_cfg.key or [entity_cfg.primary_key])
-                        for column in local_cols
-                    )
-                    else "foreign"
-                )
+                source_key = set(entity_cfg.key or [entity_cfg.primary_key])
+                local_role = "primary" if set(local_cols) == source_key else "foreign"
             target_role = str(join_spec.get("target_key_role", "") or "").lower()
             if not target_role:
                 target_roles = {

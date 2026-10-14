@@ -1214,6 +1214,11 @@ non-default rule:
 - Custom `cardinality:` override
 - `allowed_directions:` restriction
 
+Without `cardinality:`, a relationship infers it from keys, so it must join on the key: a
+`target:` that does not cover the target entity's key fails loading with `INVALID_CONFIG`
+(declare `cardinality:`, `many_to_many` when the values repeat), and a `via:` on part of a
+composite source key is a foreign key, not the source's own key.
+
 ## Models
 
 A model declares one warehouse table or mart, the entities it exposes, the

@@ -349,9 +349,9 @@ class _Importer:
             document.update(source_column=columns[0][0], source_columns=columns[0])
             document.update(target_column=columns[1][0], target_columns=columns[1])
             document.update(cardinality="N:1", safety="safe")
-            # The key roles the loader derives: a join on the source's own key is primary.
+            # The key roles the loader derives: a join on the source's whole key is primary.
             key = self.rows["entities"][ends[0]]["key"]
-            source_role = "primary" if set(columns[0]) <= set(key) else "foreign"
+            source_role = "primary" if set(columns[0]) == set(key) else "foreign"
             defaults = {"name": name, "label": _titleize(name), "source_key_role": source_role}
             self.row("relationships", rel_id, document, **defaults, target_key_role="primary")
 
