@@ -94,6 +94,7 @@ from .db import (
     build_seed_database,
     create_warehouse_adapter,
     seed_digest,
+    temporal_cast_error_value,
 )
 from .db_parts.base import query_with_limits, reject_parameters
 from .db_parts.duckdb_confinement import confinement_directory, require_inside
@@ -232,9 +233,10 @@ def _enrich_runtime_error(
     chain them safely. Keeping this in one place means new enrichers
     only need to be added here, not at every catch site.
     """
-    exc = _caller_select_paths(visible_view.public_error(exc, config), notes)
+    exc = visible_view.public_error(exc, config)
     if isinstance(exc, NonAdditiveRefusal):
         exc = _named_key_refusal(exc, config)
+    exc = _caller_select_paths(exc, notes)
     exc = enrich_object_not_found(exc, config)
     exc = enrich_expression_ast_error(exc, config)
     exc = enrich_column_expression(exc, config)
@@ -1992,16 +1994,32 @@ class Runtime:
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
-            raise query_execution_error(
-                _query_execution_error_details(
-                    engine=self.warehouse_engine,
-                    sql=compiled["sql"],
-                    payload=payload,
-                    policy_context=policy_context,
-                    extra=exc.details if isinstance(exc, SemanticLayerError) else None,
-                    seed_warnings=self._seed_warnings,
-                ),
-            ) from exc
+            details = _query_execution_error_details(
+                engine=self.warehouse_engine,
+                sql=compiled["sql"],
+                payload=payload,
+                policy_context=policy_context,
+                extra=exc.details if isinstance(exc, SemanticLayerError) else None,
+                seed_warnings=self._seed_warnings,
+            )
+            value = temporal_cast_error_value(exc)
+            if value is not None:
+                dimensions = {dim.id: dim for dim in self._config.dimensions}
+                paths = [
+                    f"where[{index}].value"
+                    for index, item in enumerate(payload.get("where") or [])
+                    if (dimension := dimensions.get(item.get("field"))) is not None
+                    and dimension.data_type.lower() in {"date", "timestamp", "datetime"}
+                    and value
+                    in (
+                        item["value"]
+                        if isinstance(item.get("value"), list)
+                        else [item.get("value")]
+                    )
+                ]
+                if len(paths) == 1:
+                    details["path"] = paths[0]
+            raise query_execution_error(details) from exc
         mark_partial_periods(
             rows,
             compiled,

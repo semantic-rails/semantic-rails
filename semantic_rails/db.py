@@ -88,6 +88,24 @@ __all__ = [
 ]
 
 
+def temporal_cast_error_value(exc: BaseException) -> str | None:
+    """Read a DuckDB temporal conversion's input for in-process path matching only.
+
+    Never forward driver text: it can also contain SQL and source row values.
+    Other driver errors retain their ordinary redacted execution error.
+    """
+    while isinstance(exc, SemanticLayerError) and exc.__cause__ is not None:
+        exc = exc.__cause__
+    if duckdb is None or not isinstance(exc, duckdb.ConversionException):
+        return None
+    match = re.match(
+        r"Conversion Error: (?:invalid (?:timestamp|date) field format|"
+        r'(?:timestamp|date) field value out of range): "([^"\n]*)"',
+        str(exc),
+    )
+    return match[1] if match else None
+
+
 def _row_to_dict(description: Any, row: Any) -> dict[str, Any]:
     return {col[0]: row[idx] for idx, col in enumerate(description)}
 

@@ -188,6 +188,11 @@ Items are ANDed. Each is a condition on a dimension or an [entity filter](#entit
 A measure or metric in `where` is refused with the entity filter that says it ("customers with
 20 or more orders" is an entity filter on the customer), or `having` for a result threshold. A
 condition on a date dimension is legal; for a time window, use `time`.
+The warehouse parses date and timestamp filter values; validation rejects only obvious
+mistakes such as text without digits or a month outside 1–12. DuckDB also accepts forms
+such as `2017-09-04 12:00:00 UTC` and `2017-09-04T24:00:00`. If DuckDB rejects a temporal
+cast and its reported value identifies one date filter, the redacted
+`QUERY_EXECUTION_ERROR` names that filter's `where[i].value` path.
 
 ### Filter words
 

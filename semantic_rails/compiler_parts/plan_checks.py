@@ -6,6 +6,7 @@ windows, and a where value's type.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import asdict, fields, is_dataclass
 from typing import Any
@@ -1354,17 +1355,14 @@ _NUMERIC_DATA_TYPES = {"integer", "number"}
 _TEMPORAL_DATA_TYPES = {"date", "timestamp", "datetime"}
 
 
-def _reads_as_iso_time(text: str) -> bool:
-    """Whether ``text`` is an ISO date or date-time, the form a temporal literal is cast from."""
-    from datetime import date, datetime
-
-    for parse in (date.fromisoformat, datetime.fromisoformat):
-        try:
-            parse(text.strip())
-        except ValueError:
-            continue
+def _clearly_invalid_temporal_literal(text: str) -> bool:
+    """Refuse obvious mistakes; the warehouse owns its temporal literal syntax."""
+    if not any(character.isdigit() for character in text):
         return True
-    return False
+    date_prefix = re.match(r"^\d{4}-(\d{2})-(\d{2})(?:$|[ T])", text.strip())
+    return bool(
+        date_prefix and not (1 <= int(date_prefix[1]) <= 12 and 1 <= int(date_prefix[2]) <= 31)
+    )
 
 
 def _validate_where_value_type(dim, item, path: str = "where") -> None:
@@ -1455,13 +1453,13 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
             if isinstance(value, str) and value.lower() in {"true", "false"}:
                 continue
             raise mismatch("boolean", value)
-        # A warehouse casts the text to its type; text no cast reads fails there, unplaced.
+        # Preserve date-like text for the warehouse, whose syntax can be wider than ISO.
         if (
             data_type in _TEMPORAL_DATA_TYPES
             and isinstance(value, str)
-            and not _reads_as_iso_time(value)
+            and _clearly_invalid_temporal_literal(value)
         ):
-            raise mismatch("ISO date or date-time", value)
+            raise mismatch("date or date-time", value)
 
 
 def _group_path(query: Any, group: ChildGroup) -> str:

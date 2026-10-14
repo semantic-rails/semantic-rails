@@ -321,13 +321,18 @@ def test_a_warehouse_timestamp_literal_keeps_its_reference_answer(runtime, value
     assert result["rows"] == [{"n": expected}]
 
 
+@pytest.mark.parametrize("op", ["gte", "is", "not"])
 @pytest.mark.parametrize("value", ["2017-09-04T25:00:00", "2017-02-30"])
-def test_a_warehouse_timestamp_cast_failure_names_the_callers_value(runtime, value):
+def test_a_warehouse_timestamp_cast_failure_names_the_callers_value(runtime, value, op):
     call = {
         "select": [STORE, ORDERS],
         "where": [
             {"field": STORE, "op": "is", "value": "Brooklyn"},
-            {"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": value},
+            {
+                "field": "dimension.jaffle_order_ordered_at",
+                "op": op,
+                "value": ["2017-09-04", value] if op in {"is", "not"} else value,
+            },
         ],
     }
     assert runtime.validate(call)["ok"]
@@ -337,6 +342,58 @@ def test_a_warehouse_timestamp_cast_failure_names_the_callers_value(runtime, val
     assert raised.value.details["path"] == "where[1].value"
     assert raised.value.details["sql_redacted"] is True
     assert "sql" not in raised.value.details
+
+
+@pytest.mark.parametrize(
+    ("where", "driver_error"),
+    [
+        # The same value in two conditions does not identify one caller path.
+        (
+            [
+                {"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": "2017-02-30"},
+                {"field": "dimension.jaffle_order_ordered_at", "op": "lt", "value": "2017-02-30"},
+            ],
+            duckdb.ConversionException(
+                'Conversion Error: timestamp field value out of range: "2017-02-30"'
+            ),
+        ),
+        # A bad source value need not be a query literal.
+        (
+            [{"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": "2017-09-04"}],
+            duckdb.ConversionException(
+                'Conversion Error: timestamp field value out of range: "2017-02-30"'
+            ),
+        ),
+        (
+            [{"field": STORE, "op": "is", "value": "2017-02-30"}],
+            duckdb.ConversionException(
+                'Conversion Error: timestamp field value out of range: "2017-02-30"'
+            ),
+        ),
+        # Arbitrary driver text never becomes a path or public error detail.
+        (
+            [{"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": "2017-02-30"}],
+            RuntimeError('Conversion Error: timestamp field value out of range: "2017-02-30"'),
+        ),
+    ],
+    ids=["ambiguous", "source-value", "string-dimension", "other-driver-error"],
+)
+def test_a_temporal_driver_error_only_locates_an_unambiguous_date_filter(
+    runtime, monkeypatch, where, driver_error
+):
+    class FailingAdapter:
+        engine = "duckdb"
+
+        def query(self, sql, **kwargs):
+            raise driver_error
+
+    monkeypatch.setattr(runtime, "_get_adapter", lambda: FailingAdapter())
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query({"select": [ORDERS], "where": where})
+    assert raised.value.code == "QUERY_EXECUTION_ERROR"
+    assert "path" not in raised.value.details
+    assert "2017-02-30" not in str(raised.value.details)
+    assert raised.value.details["sql_redacted"] is True
 
 
 def test_an_unknown_arithmetic_op_in_a_package_metric_is_refused_at_its_path(tmp_path: Path):
