@@ -27,6 +27,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import random
 import textwrap
 import weakref
 from dataclasses import replace
@@ -511,6 +512,68 @@ def test_recorded_route_notes_obey_the_hop_ceiling(tmp_path, monkeypatch, hop_li
 def test_bounded_route_multiplicity_matches_simple_paths(graph, hop_limit):
     expected = len(fanout_module.enumerate_paths(graph, "a", "c", hop_limit)) > 1
     assert fanout_module._has_multiple_routes(graph, "a", "c", hop_limit) == expected
+
+
+def _unpruned_paths(
+    graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
+) -> list[list[str]]:
+    """Every simple route, by a depth-first search that tries every step."""
+    found: list[list[str]] = []
+
+    def walk(node: str, path: list[str], visited: frozenset[str]) -> None:
+        if len(path) > hop_limit:
+            return
+        if node == target:
+            found.append(path)
+            return
+        for neighbor, rel_id in graph.get(node, []):
+            if neighbor not in visited:
+                walk(neighbor, [*path, rel_id], visited | {neighbor})
+
+    walk(start, [], frozenset({start}))
+    return found
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_pruned_route_search_finds_the_same_routes_in_the_same_order(seed):
+    rng = random.Random(seed)
+    nodes = [f"n{index}" for index in range(rng.randint(2, 8))]
+    graph: dict[str, list[tuple[str, str]]] = {}
+    for index in range(rng.randint(1, 3 * len(nodes))):
+        source, end = rng.choice(nodes), rng.choice(nodes)
+        graph.setdefault(source, []).append((end, f"r{index}"))
+        if rng.random() < 0.5:
+            graph.setdefault(end, []).append((source, f"r{index}"))
+    for start in [*nodes, "absent"]:
+        for target in [*nodes, "absent"]:
+            for hop_limit in range(-1, 6):
+                assert fanout_module.enumerate_paths(
+                    graph, start, target, hop_limit
+                ) == _unpruned_paths(graph, start, target, hop_limit)
+
+
+def test_route_search_expands_only_prefixes_that_can_still_reach_the_target():
+    expanded: list[str] = []
+
+    class Recorded(dict):
+        def get(self, key, default=None):
+            expanded.append(key)
+            return super().get(key, default)
+
+    branches = Recorded(
+        {
+            "a": [("b", "ab"), ("x", "ax")],
+            "b": [("c", "bc")],
+            "x": [("y", "xy")],
+            "y": [("z", "yz")],
+        }
+    )
+    assert fanout_module.enumerate_paths(branches, "a", "c", 2) == [["ab", "bc"]]
+    assert expanded == ["a", "b"]
+    expanded.clear()
+    chain = Recorded({"a": [("b", "ab")], "b": [("c", "bc")], "c": [("d", "cd")]})
+    assert fanout_module.enumerate_paths(chain, "a", "d", 2) == []
+    assert expanded == ["a"]
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,8 @@ Discover, inspect, and valid-values all need the same set of questions
 answered about a given object:
 
 * "From the current root entity, can I get to this dimension / measure /
-  entity at all, and on what relationship path?" — ``_path_availability``.
+  entity at all, and on what relationship path?" — ``_path_availability``,
+  and ``_path_reach`` for its cached answer.
 * "Does any relationship on that path carry temporal validity, so my
   result will be history-aware (and possibly include NULL buckets)?" —
   ``_path_has_temporal_validity``.
@@ -25,16 +26,54 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import asdict
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..catalog_search import normalize_search_value
+from ..compiler_parts.indexes import get_package_analysis
 from ..errors import SemanticLayerError
-from ..fanout import analyze_fanout, resolve_path, route_label
+from ..fanout import analyze_fanout, query_routes_active, resolve_path, route_label
 from ..schema import PackageConfig
 
 
 def _relationships_by_id(config: PackageConfig) -> dict[str, Any]:
     return {row.id: row for row in config.relationships}
+
+
+class PathReach(NamedTuple):
+    """The part of ``_path_availability`` a catalog row reads: whether the root entity reaches
+    the target, why not, and on which route. Immutable, so one cached answer serves every
+    caller."""
+
+    available: bool
+    reason: str
+    path: tuple[str, ...]
+
+
+_SAME_ENTITY = PathReach(True, "", ())
+
+
+def _resolved_availability(
+    config: PackageConfig, root_entity: str, target_entity: str
+) -> dict[str, Any]:
+    """``_path_availability`` of a pair whose route resolves; raises the pair's refusal."""
+    path, candidates = resolve_path(config, start=root_entity, target=target_entity)
+    analysis = analyze_fanout(config, root_entity, path, validity_windows=False)
+    status = analysis["status"]
+    # A labelled package decision for the pair says which meaning the path is.
+    label = route_label(config, root_entity, target_entity, path)
+    return {
+        "available": status == "ok",
+        "reason": "" if status == "ok" else "requires leaf rewrite or grain-aware plan",
+        "path": path,
+        "candidates": candidates,
+        "analysis": analysis,
+        **({"route_label": label} if label else {}),
+    }
+
+
+def _refusal_reason(exc: SemanticLayerError) -> str:
+    # The catalog repeats this per object; the routes and their rows are in details.
+    return "route decision required" if exc.code == "AMBIGUOUS_PATH" else str(exc)
 
 
 def _path_availability(
@@ -43,29 +82,40 @@ def _path_availability(
     if not root_entity or target_entity == root_entity:
         return {"available": True, "reason": "", "path": [], "candidates": []}
     try:
-        path, candidates = resolve_path(config, start=root_entity, target=target_entity)
-        analysis = analyze_fanout(config, root_entity, path, validity_windows=False)
-        status = analysis["status"]
-        # A labelled package decision for the pair says which meaning the path is.
-        label = route_label(config, root_entity, target_entity, path)
-        return {
-            "available": status == "ok",
-            "reason": "" if status == "ok" else "requires leaf rewrite or grain-aware plan",
-            "path": path,
-            "candidates": candidates,
-            "analysis": analysis,
-            **({"route_label": label} if label else {}),
-        }
+        return _resolved_availability(config, root_entity, target_entity)
     except SemanticLayerError as exc:
         return {
             "available": False,
-            # The catalog repeats this per object; the routes and their rows are in details.
-            "reason": "route decision required" if exc.code == "AMBIGUOUS_PATH" else str(exc),
+            "reason": _refusal_reason(exc),
             "path": [],
             "candidates": [],
             "error_code": exc.code,
             "details": exc.details,
         }
+
+
+def _path_reach(config: PackageConfig, root_entity: str, target_entity: str) -> PathReach:
+    """``_path_availability``'s availability, reason and path, cached per package on the
+    package's analysis, so a reloaded package or a caller's view starts empty. A query's own
+    route decisions answer for that query only, so nothing is cached while they are in force.
+    """
+    if not root_entity or target_entity == root_entity:
+        return _SAME_ENTITY
+    pair = (root_entity, target_entity)
+    cache = None if query_routes_active() else get_package_analysis(config).path_reach
+    reach = cache.get(pair) if cache is not None else None
+    if reach is None:
+        try:
+            availability = _resolved_availability(config, root_entity, target_entity)
+        except SemanticLayerError as exc:
+            reach = PathReach(False, _refusal_reason(exc), ())
+        else:
+            reach = PathReach(
+                availability["available"], availability["reason"], tuple(availability["path"])
+            )
+        if cache is not None:
+            cache[pair] = reach
+    return reach
 
 
 def _path_has_temporal_validity(config: PackageConfig, path: Iterable[str]) -> bool:
@@ -89,8 +139,8 @@ def _dimension_history_coverage(
 ) -> tuple[list[str], str]:
     dim = {row.id: row for row in config.dimensions}[dimension_id]
     if root_entity:
-        availability = _path_availability(config, root_entity, dim.entity)
-        if _path_has_temporal_validity(config, availability.get("path", [])):
+        availability = _path_reach(config, root_entity, dim.entity)
+        if _path_has_temporal_validity(config, availability.path):
             note = _history_coverage_note(dimension=True)
             return [note], note
     relationships = _relationships_by_id(config)
@@ -108,8 +158,8 @@ def _metric_history_coverage_notes(config: PackageConfig, root_entity: str) -> l
     for entity in config.entities:
         if entity.id == root_entity:
             continue
-        availability = _path_availability(config, root_entity, entity.id)
-        if _path_has_temporal_validity(config, availability.get("path", [])):
+        availability = _path_reach(config, root_entity, entity.id)
+        if _path_has_temporal_validity(config, availability.path):
             notes.append(_history_coverage_note())
             break
     return list(dict.fromkeys(notes))

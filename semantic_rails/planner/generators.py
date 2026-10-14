@@ -541,7 +541,7 @@ def _choose_group_dimensions(runtime: Any, query: Call, text: str) -> list[str]:
             availability = _availability_for_object(
                 runtime._config, selection["root_entity"], dimension_id, "dimension"
             )
-            if availability["available"]:
+            if availability.available:
                 chosen = dimension_id
                 break
         if not chosen and matched_ids:
@@ -709,7 +709,7 @@ def _matched_value_rows(runtime: Any, query: Call, text: str) -> list[dict[str, 
         availability = _availability_for_object(
             runtime._config, selection["root_entity"], dim_id, "dimension"
         )
-        if not availability["available"]:
+        if not availability.available:
             return
         enriched = dict(row)
         enriched["_match_key"] = match_key or str(row.get("value", "") or "")

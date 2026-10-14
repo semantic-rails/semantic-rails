@@ -43,11 +43,11 @@ from semantic_rails.db import DuckDBAdapter
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import MeasureRefExpr
-from semantic_rails.fanout import query_route_decisions
+from semantic_rails.fanout import package_route, query_route_decisions
 from semantic_rails.interop.package_writer import package_documents, write_package
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import build_options_payload, valid_values_payload
-from semantic_rails.metadata_parts.path_coverage import _path_availability
+from semantic_rails.metadata_parts.path_coverage import PathReach, _path_availability, _path_reach
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
@@ -1452,6 +1452,44 @@ def test_every_entry_point_asks_and_every_option_answers_both_ways(tmp_path, ent
         assert resolution._rows(out, columns) == gold
         assert [row["row"]["relationship_path"] for row in _chosen_by_query(out)] == [route]
         assert resolution._rows(recorded.query(query), columns) == gold
+
+
+def test_a_caller_that_changes_a_refusal_never_changes_the_cached_one(tmp_path):
+    config = load_package_config(str(_write_package(tmp_path)))
+    with pytest.raises(SemanticLayerError) as first:
+        package_route(config, start=ACCOUNT, target=DISTRICT)
+    pristine = json.dumps(first.value.details, sort_keys=True)
+    first.value.details["clarification"]["options"].clear()
+    first.value.details["hint"] = "changed"
+    with pytest.raises(SemanticLayerError) as second:
+        package_route(config, start=ACCOUNT, target=DISTRICT)
+    assert second.value.code == "AMBIGUOUS_PATH"
+    assert json.dumps(second.value.details, sort_keys=True) == pristine
+    cached = get_package_analysis(config).path_cache[(ACCOUNT, DISTRICT)]
+    assert json.dumps(cached.details, sort_keys=True) == pristine
+
+
+def test_path_reach_is_cached_per_package_but_never_under_a_query_row(tmp_path):
+    config = load_package_config(str(_write_package(tmp_path)))
+    analysis = get_package_analysis(config)
+
+    def projected(availability: dict[str, Any]) -> PathReach:
+        return PathReach(
+            availability["available"], availability["reason"], tuple(availability["path"])
+        )
+
+    with query_route_decisions({(ACCOUNT, DISTRICT): OWNER_ROUTE}):
+        reach = _path_reach(config, ACCOUNT, DISTRICT)
+        assert reach.path == tuple(OWNER_ROUTE)
+        assert reach == projected(_path_availability(config, ACCOUNT, DISTRICT))
+    assert analysis.path_reach == {}
+    reach = _path_reach(config, ACCOUNT, DISTRICT)
+    assert reach == projected(_path_availability(config, ACCOUNT, DISTRICT))
+    assert reach == PathReach(False, "route decision required", ())
+    assert _path_reach(config, ACCOUNT, DISTRICT) is reach
+    assert analysis.path_reach == {(ACCOUNT, DISTRICT): reach}
+    reloaded = load_package_config(str(_write_package(tmp_path / "reloaded")))
+    assert get_package_analysis(reloaded).path_reach == {}
 
 
 def test_build_options_follows_a_query_row(tmp_path):

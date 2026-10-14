@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import weakref
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -52,7 +51,9 @@ class RouteRefusal(NamedTuple):
     details: dict[str, Any]
 
     def error(self) -> SemanticLayerError:
-        return SemanticLayerError(self.code, self.message, details=deepcopy(self.details))
+        """The refusal raised again. Its details stay the cache's: the error copies them when a
+        caller first reads them, so a caller that only reads the code copies nothing."""
+        return SemanticLayerError.with_shared_details(self.code, self.message, self.details)
 
 
 @dataclass
@@ -74,6 +75,9 @@ class PackageAnalysis:
     path_cache: dict[tuple[str, str], RouteResolution | RouteRefusal] = field(default_factory=dict)
     # Pinned-pair notes need only whether two routes fit the hop ceiling.
     route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
+    # (root, target) -> the catalog's reach of the pair (``path_coverage._path_reach``).
+    # Keyed only by package inputs: never written while a query's own route decisions apply.
+    path_reach: dict[tuple[str, str], Any] = field(default_factory=dict)
     # Object id -> every object the compiler reads to answer it, or None when it cannot be
     # bound (``visible_view.hidden_object_ids``). Keyed only by package inputs.
     object_reads: dict[str, frozenset[str] | None] | None = None
