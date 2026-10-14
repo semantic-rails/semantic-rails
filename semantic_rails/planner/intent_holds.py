@@ -328,7 +328,7 @@ def _incomplete_period_why(runtime: Any, query: Call, start: Any = "") -> dict[s
     except SemanticLayerError:
         # A draft execution can't read proves no period complete: the check reads it as one
         # with no window, which runs to now.
-        engine = {"select": call.get("select"), "policy_context": {"now": now}}
+        engine = {**Call(select=query.select).to_call(), "policy_context": {"now": now}}
     return incomplete_period_why(runtime._config, engine, call=call, start=start)
 
 
@@ -358,10 +358,58 @@ def _start_dropped_why(start: Any) -> dict[str, Any] | None:
     }
 
 
+_CURRENT_WORDS = frozenset({"current", "currently", "now"})
+# Words too common to tie a measure to a question: articles, statistics, period suffixes.
+_COMMON_WORDS = frozenset(
+    {"the", "and", "for", "with", "per", "eop", "sop", "count", "number", "total", "sum", "amount"}
+)
+
+
+def _words(text: str) -> set[str]:
+    """The words of ``text`` or an id's tail, singular, without short or common ones."""
+    found = re.findall(r"[a-z]+", text.lower().rsplit(".", 1)[-1].replace("_", " "))
+    return {word.removesuffix("s") for word in found if len(word) > 2} - _COMMON_WORDS
+
+
+def _current_state_hint(config: Any, intent: str, phrases: list[str]) -> dict[str, Any] | None:
+    """For a "current" plan can't read as a window: the package's current-state flags (true or
+    false dimensions named current or active) and snapshot measures (on an as-of clock) that
+    share a word with the question."""
+    if config is None or not _CURRENT_WORDS & {w for p in phrases for w in p.lower().split()}:
+        return None
+    asked = _words(intent) - _CURRENT_WORDS
+    flags = [
+        row.id
+        for row in config.dimensions
+        if row.data_type == "boolean"
+        and {"current", "active"} & _words(row.id)
+        and asked & _words(row.id)
+    ][:3]
+    as_of = {row.id for row in config.temporal_roles if row.temporal_class == "as_of_time"}
+    snapshots = [
+        row.id
+        for row in config.measures
+        if row.accumulation.kind == "stock"
+        and row.default_temporal_role in as_of
+        and asked & _words(row.id)
+    ][:3]
+    if not flags and not snapshots:
+        return None
+    ways = [f"filter on a current-state flag ({', '.join(flags)}) being true"] if flags else []
+    if snapshots:
+        ways.append(f"read a snapshot measure as of a day ({', '.join(snapshots)})")
+    return {
+        "kind": "use_current_state",
+        "message": "'Current' is a state, not a window: " + ", or ".join(ways) + ".",
+    }
+
+
 def _unresolved_time_why(
     intent: str,
     partial_query: Call | None,
     consumed: tuple[tuple[int, int], ...] = (),
+    *,
+    config: Any = None,
 ) -> dict[str, Any] | None:
     """Return a ``why`` envelope when the intent's time scope wasn't resolved.
 
@@ -436,6 +484,7 @@ def _unresolved_time_why(
             **({"max_intent_chars": _MAX_TIME_TEXT} if too_long else {}),
         },
         "recovery_hints": [
+            *([state] if (state := _current_state_hint(config, intent, phrases)) else []),
             *hour_hint,
             {
                 "kind": "rephrase_time_window",

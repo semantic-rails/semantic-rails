@@ -169,8 +169,8 @@ table (the description of `$defs/Expression`), and `$defs/Op` listing the filter
 SQL aliases read as them, in lower case and capitals, with each word's values in one sentence. `query.v2.json` keeps a schema per kind, and the parser
 refuses what the table rules out at its path. `plan` and the metadata tools take a partial call
 to start from. `tests/semantic_rails/test_mcp_response_budget.py` caps each tool's definition
-and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call before it runs; a call that already ran needs no
-validation.
+and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call without running it;
+a run checks the call too, so a call to answer is run directly, never validated first.
 
 ### Writing Tool Descriptions
 
@@ -238,7 +238,8 @@ segment policy effects, warnings, errors, and actionable recovery hints when pre
 
 MCP reads tool arguments in one place: a `query` sent as a JSON string is parsed, and a tool
 argument sent inside `query` (`now`, `mode`, `max_rows`, `row_format`, `verbosity`,
-`sql_profile`) is refused naming the argument, with the hint to pass it beside `query`. The call
+`sql_profile`) is refused naming the argument, with the hint to pass it beside `query`; a key of
+the call sent beside `query` (`limit`, say) is refused with the hint to move it inside. The call
 has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `lt`, `lte`,
 `contains`, `starts_with`, `ends_with`, `not_contains`, `not_starts_with`, `not_ends_with`,
 `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused with the
@@ -388,7 +389,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   that day's start and end. A stock keyed by its clock alone (a
   daily rollup) is one series and isn't held. `plan` drafts most balance questions on one
   day itself (see "How plan reads a balance" below); an as-of cue on anything else ("new
-  accounts right now") stays `TIME_WINDOW_UNRESOLVED`;
+  accounts right now") stays `TIME_WINDOW_UNRESOLVED`. For a "current" or "now", its
+  `use_current_state` hint names the package's current-state flags (true or false dimensions
+  named current or active) and snapshot measures (on an as-of clock) that share a word with
+  the question;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue". The ranked value must be
@@ -942,7 +946,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` | `execute` | A balance on an `as_of_time` clock is read on each period's closing day, and series seen earlier in a period had no snapshot that day, so they are not counted. `details` `{measure, outputs, nested, closing_day, periods, checked, series, series_missing, periods_missing}` (`closing_day` is the latest such day; `outputs` empty for the whole answer, `null` when the engine can't tell, and then dropped beside a withheld column; `nested` for a read inside an entity filter, predicate or branch). A series that stopped is right to leave out; one that takes its snapshots on other days, or a table that records only changes, is undercounted. Granted when the measure or a granted output reading it is; a measure not granted is named by those outputs, never by a column that doesn't read it. See [Balances](QUERY_CALL.md#balances) |
 | `PARTIAL_DATA` | `execute` | A window total, or a row of a day-or-coarser series, spans a whole day after `window.data_through` and before `now`'s day, so its number covers only the loaded days. `details` `{through, days_covered, days, period}` (`period` only for a series row). Silent for a nightly load whose only gap is today. See [Partial periods](QUERY_CALL.md#partial-periods) |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a window, a `having` nor an entity filter on aggregates explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. Under `observation_scope: "dataset"` an empty answer to a filtered query never gets it. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
-| `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `is` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. Aggregate-filter literals of a retained additive series are checked in both observation scopes. One warning; `details.filters` lists each `dimension`, `value` and closest `suggestion`. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
+| `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `is` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. Aggregate-filter literals of a retained additive series are checked in both observation scopes. One warning; `details.filters` lists each `dimension`, `value` and likely `suggestion` (none for an id dimension, a value with a digit or a weak match), the first 10 of `details.missing_count`. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. With a `time` block and no `temporal_role`, the call is refused with this code instead: each of `details.options` names one clock and the selections it reads. See [The clock](QUERY_CALL.md#the-clock) |
 | `FILTERED_SERIES_BUCKETS_DROPPED` | `execute` | An unsupported filtered additive series omitted observed buckets. `details.dropped_buckets` lists their time and grouping keys from a separately authorized source query; an average over returned rows omits them |
 | `FILTERED_SERIES_BUCKETS_UNVERIFIED` | `execute` | Missing observed buckets could not be established because the source query was denied, failed or capped, or the answer has a limit or population filter. `details.reason` explains why |
@@ -1217,8 +1221,9 @@ Each issue carries `code` and `message`, plus at least one of `details`, `recove
 
 At MCP verbosity `minimal`, `MIXED_GRAIN_INVALID` omits the relationship analysis
 dump while retaining offending dimensions, compatible measures and dimensions,
-time-axis recovery, and every recovery hint. `REWRITE_APPLIED` omits `details.analysis`
-and `details.path`, retaining its code, message, and `details.rewrite_kind`.
+time-axis recovery, and every recovery hint. `REWRITE_APPLIED`, a note (severity `info`) that
+discloses how a correct answer was computed, omits `details.analysis` and `details.path`,
+retaining its code, message, and `details.rewrite_kind`.
 Request `compact` or `full` for analysis details within the same response budget. An unsupported
 expression kind names the received kind and its request path (for example,
 `query.select[0].expression.left`); recovery hints include the request shape to send.
@@ -1237,7 +1242,7 @@ expression kind names the received kind and its request path (for example,
 | `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric (`details.measures` names the measures whose `times:` don't list it), or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
-| `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (`is`) each key dimension. Keys are named only on validate, compile and run errors. The message, `details.key_dimensions` and hint name those dimensions only when every key column is a dimension of the caller's view; a key a hidden dimension declares keeps the generic refusal. |
+| `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (`is`) each key dimension. Keys are named only on validate, compile and run errors, for both `select: [dimension, measure]` and `select: [measure], group_by: [dimension]`. The message, `details.key_dimensions` and hint name those dimensions only when every key column is a dimension of the caller's view; a key a hidden dimension declares keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
 | `OUT_OF_SCOPE` | Request isn't a governed-data query; hand off to the recommended tool — the semantic layer compiles governed data queries only. |
 | `CUMULATIVE_TIME_FILTER_UNSUPPORTED` | Measure's accumulation semantics forbid the requested time filter: a bounded `time.start`, or a `where` filter on a date or calendar dimension other than an upper bound (`details.where_path`). Filters on the window's own measure input and applied row policies on temporal columns refuse too (`details.filter_source`), with no patch to remove the authored filter or policy. |

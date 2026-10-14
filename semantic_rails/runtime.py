@@ -15,6 +15,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shlex
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -76,6 +77,7 @@ from .compiler_parts.empty_groups import (
     observation_scope,
     observed_outside_filters,
 )
+from .compiler_parts.paths import text_dimension
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -91,6 +93,7 @@ from .db import (
     build_seed_database,
     create_warehouse_adapter,
     seed_digest,
+    temporal_cast_error_value,
 )
 from .db_parts.base import query_with_limits, reject_parameters
 from .db_parts.duckdb_confinement import confinement_directory, require_inside
@@ -186,8 +189,44 @@ def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveR
     )
 
 
-def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayerError:
-    """Run every applicable diagnostics enricher over a runtime error, on the caller's view.
+_SELECT_PATH = re.compile(r"\bselect\[(\d+)\]")
+
+
+def _caller_select_paths(exc: SemanticLayerError, notes: Any) -> SemanticLayerError:
+    """The error with each ``select[i]`` the engine wrote as the caller's index: a dimension
+    the call lifted from select into group_by (a call note) is not in the engine's select."""
+    lifted = sorted(
+        int(match.group(1))
+        for note in notes or []
+        if "group_by" in (note.get("canonical") or {})
+        and (match := re.fullmatch(r"select\[(\d+)\]", str(note.get("path", ""))))
+    )
+    if not lifted:
+        return exc
+
+    def caller(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        for at in lifted:
+            index += at <= index
+        return f"select[{index}]"
+
+    def remap(value: Any) -> Any:
+        if isinstance(value, str):
+            return _SELECT_PATH.sub(caller, value)
+        if isinstance(value, list):
+            return [remap(item) for item in value]
+        if isinstance(value, dict):
+            return {key: remap(item) for key, item in value.items()}
+        return value
+
+    return SemanticLayerError(exc.code, remap(str(exc)), details=remap(dict(exc.details or {})))
+
+
+def _enrich_runtime_error(
+    exc: SemanticLayerError, config: Any, notes: Any = ()
+) -> SemanticLayerError:
+    """Run every applicable diagnostics enricher over a runtime error, on the caller's view,
+    with its select paths at the caller's indexes (``notes``, the call's).
 
     Each enricher is a no-op when its code doesn't match, so we can
     chain them safely. Keeping this in one place means new enrichers
@@ -196,6 +235,7 @@ def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayer
     exc = visible_view.public_error(exc, config)
     if isinstance(exc, NonAdditiveRefusal):
         exc = _named_key_refusal(exc, config)
+    exc = _caller_select_paths(exc, notes)
     exc = enrich_object_not_found(exc, config)
     exc = enrich_expression_ast_error(exc, config)
     exc = enrich_column_expression(exc, config)
@@ -736,6 +776,11 @@ def _no_data_in_scope_warnings(
     ]
 
 
+# A filter value list can be long: the missing-value warning names this many and lists this many.
+_NAMED_MISSES = 5
+_LISTED_MISSES = 10
+
+
 def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
     """Probe string filter literals that can otherwise read a confident zero.
 
@@ -811,18 +856,26 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
             page = values(miss["dimension"], [], limit) or []
             known[miss["dimension"]] = page if len(page) < limit else []
         message, suggestion = filter_value_miss(
-            "This query", miss["dimension"], miss["value"], known[miss["dimension"]]
+            "This query",
+            miss["dimension"],
+            miss["value"],
+            known[miss["dimension"]],
+            dimensions[miss["dimension"]].data_type,
         )
         miss.update(message=message, suggestion=suggestion)
     warnings = []
     if misses:
+        # The warning names a few misses and counts the rest, whatever the filter lists.
+        named = [miss.pop("message") for miss in misses][:_NAMED_MISSES]
+        rest = len(misses) - len(named)
         warnings.append(
             semantic_issue(
                 code="FILTER_VALUE_NOT_FOUND",
-                message="; ".join(miss.pop("message") for miss in misses),
+                message="; ".join(named)
+                + (f"; and {rest} more values match nothing" if rest else ""),
                 severity="warning",
                 stage="execution",
-                details={"filters": misses},
+                details={"filters": misses[:_LISTED_MISSES], "missing_count": len(misses)},
                 object_ids=sorted({miss["dimension"] for miss in misses}),
             )
         )
@@ -1665,6 +1718,7 @@ class Runtime:
                     config=self._config,
                     now=instant,
                     default_clock=self._default_clock,
+                    text_dimension=text_dimension,
                     partial=partial,
                 )
         payload: dict[str, Any] = {**internal, "policy_context": policy}
@@ -1807,7 +1861,7 @@ class Runtime:
                 kind="validate",
             )
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config)
+            exc = _enrich_runtime_error(exc, self._config, payload.get("_call_notes"))
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -1852,7 +1906,7 @@ class Runtime:
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         public_effects = visible_view.public_effects(policy_effects, self._config)
         out = {
@@ -1906,7 +1960,7 @@ class Runtime:
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         public_effects = visible_view.public_effects(policy_effects, self._config)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
@@ -1971,16 +2025,32 @@ class Runtime:
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
-            raise query_execution_error(
-                _query_execution_error_details(
-                    engine=self.warehouse_engine,
-                    sql=compiled["sql"],
-                    payload=payload,
-                    policy_context=policy_context,
-                    extra=exc.details if isinstance(exc, SemanticLayerError) else None,
-                    seed_warnings=self._seed_warnings,
-                ),
-            ) from exc
+            details = _query_execution_error_details(
+                engine=self.warehouse_engine,
+                sql=compiled["sql"],
+                payload=payload,
+                policy_context=policy_context,
+                extra=exc.details if isinstance(exc, SemanticLayerError) else None,
+                seed_warnings=self._seed_warnings,
+            )
+            value = temporal_cast_error_value(exc)
+            if value is not None:
+                dimensions = {dim.id: dim for dim in self._config.dimensions}
+                paths = [
+                    f"where[{index}].value"
+                    for index, item in enumerate(payload.get("where") or [])
+                    if (dimension := dimensions.get(item.get("field"))) is not None
+                    and dimension.data_type.lower() in {"date", "timestamp", "datetime"}
+                    and value
+                    in (
+                        item["value"]
+                        if isinstance(item.get("value"), list)
+                        else [item.get("value")]
+                    )
+                ]
+                if len(paths) == 1:
+                    details["path"] = paths[0]
+            raise query_execution_error(details) from exc
         mark_partial_periods(
             rows,
             compiled,

@@ -182,6 +182,9 @@ _FILTER_VALUE_FORMS = {
     "string": "text; in YAML, quote text that looks like a number or boolean (`value: 'true'`)",
     "integer": "a whole number",
     "number": "a number",
+    "date": "an ISO date, such as 2017-09-04",
+    "timestamp": "an ISO date or date-time, such as 2017-09-04T12:00:00",
+    "datetime": "an ISO date or date-time, such as 2017-09-04T12:00:00",
 }
 
 
@@ -354,17 +357,37 @@ def recovery_hints_for_error(
         start = str(details.get("start", "") or "")
         target = str(details.get("target", "") or "")
         reachable = list(details.get("reachable_targets", []) or [])
+        items = list(details.get("unreachable_items", []) or [])
+        row_grain = bool(details.get("target_row_grain"))
         hints = []
         if not reachable:
+            blocked = {
+                "direction": f"by direction, each relationship of '{start}' leads only to it",
+                "hop_limit": "the hop limit stops every route",
+                "route_choice": "the package's route choices drop every route",
+            }.get(
+                str(details.get("blocked_by", "")),
+                f"no relationship joins '{start}' to another entity",
+            )
+            message = f"No entity is reachable from '{start}': {blocked}."
+            if details.get("bridge_entities"):
+                message += (
+                    f" Entities related to both '{start}' and '{target}': "
+                    f"{', '.join(repr(entity) for entity in details['bridge_entities'])}."
+                )
+            if details.get("shared_key_columns"):
+                message += f" Key columns they share: {', '.join(details['shared_key_columns'])}."
+            dropped = f" ({', '.join(items)})" if items else ""
+            message += (
+                f" Split the query, or drop what needs '{target}'{dropped}; or group by a "
+                f"dimension on '{start}' itself."
+            )
+            if not row_grain:
+                message += f" Or author a relationship from '{start}' to '{target}'."
             hints.append(
                 {
                     "kind": "isolated_source_entity",
-                    "message": (
-                        f"No entity has a resolvable path from '{start}' under the package's "
-                        f"directions, hop limit, and route choices. Group by a dimension "
-                        f"defined on '{start}' itself, or author a relationship "
-                        f"from '{start}' to '{target}'."
-                    ),
+                    "message": message,
                     "start": start,
                     "unreachable_target": target,
                 }
@@ -405,17 +428,41 @@ def recovery_hints_for_error(
                     "compatible_group_by_dimensions": compatible_dims,
                 }
             )
-        hints.append(
-            {
-                "kind": "author_relationship",
-                "message": (
-                    f"If '{target}' should be reachable, author a relationship in "
-                    "configs/.../relationships/ connecting it to a reachable entity."
-                ),
-                "start": start,
-                "unreachable_target": target,
-            }
-        )
+        if items and reachable:
+            hints.append(
+                {
+                    "kind": "drop_or_split",
+                    "message": (
+                        f"{details.get('anchor') or ''} Drop {', '.join(items)}, or split the "
+                        f"query: ask for {', '.join(items)} separately."
+                    ).strip(),
+                    "unreachable_items": items,
+                }
+            )
+        if row_grain:
+            hints.append(
+                {
+                    "kind": "row_grain_target",
+                    "message": (
+                        f"'{target}' is a row-grain model (no key): nothing can look up one of "
+                        "its rows, so no relationship leads into it. Group its own measures by "
+                        "its columns, or declare a key on it if its rows have one."
+                    ),
+                    "unreachable_target": target,
+                }
+            )
+        else:
+            hints.append(
+                {
+                    "kind": "author_relationship",
+                    "message": (
+                        f"If '{target}' should be reachable, author a relationship in "
+                        "configs/.../relationships/ connecting it to a reachable entity."
+                    ),
+                    "start": start,
+                    "unreachable_target": target,
+                }
+            )
         return hints
     if code == "INVALID_EXPRESSION_KEY":
         unknown = list(details.get("unknown_keys", []) or [])
@@ -1128,12 +1175,17 @@ def _object_catalog_ids(config: PackageConfig) -> list[str]:
 
 
 def filter_value_miss(
-    subject: str, dimension: str, literal: str, values: Iterable[str]
+    subject: str, dimension: str, literal: str, values: Iterable[str], data_type: str = ""
 ) -> tuple[str, str | None]:
-    """The message for a filter literal that matches no value in the data, and the closest
-    value in any case, for package validation and a query's own filters alike."""
+    """The message for a filter literal that matches no value in the data, and the value it
+    likely meant, for package validation and a query's own filters alike: the same text in
+    another case, or else a close spelling. An id, code or hash (an id dimension, or a literal
+    with a digit) differs by one character from another real one, so it gets no close
+    spelling, and neither does a weak match."""
     folded = {value.casefold(): value for value in values}
-    close = get_close_matches(literal.casefold(), list(folded), n=1)
+    close = [literal.casefold()] if literal.casefold() in folded else []
+    if not close and data_type != "id" and not any(char.isdigit() for char in literal):
+        close = get_close_matches(literal.casefold(), list(folded), n=1, cutoff=0.7)
     suggestion = folded[close[0]] if close else None
     return (
         f"{subject} filters {dimension} on {literal!r}, which matches no value in the data"
@@ -1403,7 +1455,53 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
     details["target"] = target
     details["reachable_targets"] = reachable_sorted
     details["compatible_group_by_dimensions"] = compatible_dimensions[:15]
+    if any(row.id == target and row.is_row_grain for row in config.entities):
+        details["target_row_grain"] = True
+    if not reachable_sorted:
+        details.update(_isolated_start(config, start, target, str(details.get("reason") or "")))
     return SemanticLayerError(exc.code, str(exc), details=details)
+
+
+def _isolated_start(config: PackageConfig, start: str, target: str, reason: str) -> dict[str, Any]:
+    """What keeps ``start`` from every entity: the constraint (``blocked_by``), the entities
+    related to both ends (``bridge_entities``), and the key columns of one end that the other
+    end's dimensions read (``shared_key_columns``)."""
+
+    def related(entity: str) -> set[str]:
+        return {
+            other
+            for rel in config.relationships
+            for one, other in (
+                (rel.source_entity, rel.target_entity),
+                (rel.target_entity, rel.source_entity),
+            )
+            if one == entity
+        }
+
+    walkable = any(
+        (rel.source_entity == start and "forward" in rel.allowed_directions)
+        or (rel.target_entity == start and "reverse" in rel.allowed_directions)
+        for rel in config.relationships
+    )
+    blocked = {"hop_limit_exceeded": "hop_limit", "excluded_by_decision": "route_choice"}.get(
+        reason
+    ) or ("route_choice" if walkable else "direction" if related(start) else "no_relationship")
+    keys = {row.id: list(row.key_columns) for row in config.entities}
+
+    def columns(entity: str) -> set[str]:
+        return {dim.column.lower() for dim in config.dimensions if dim.entity == entity}
+
+    shared = {
+        column
+        for one, other in ((start, target), (target, start))
+        for column in keys.get(other, [])
+        if column.lower() in columns(one)
+    }
+    return {
+        "blocked_by": blocked,
+        "bridge_entities": sorted((related(start) & related(target)) - {start, target}),
+        "shared_key_columns": sorted(shared),
+    }
 
 
 def enrich_object_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
@@ -1514,10 +1612,11 @@ def rewrite_warning_payload(step: Any) -> dict[str, Any]:
             "Safe cross-fact alignment: independent leaf aggregates were joined on final "
             "grain keys."
         )
+    # A disclosure of how a correct answer was computed: a note, not a warning to act on.
     return semantic_issue(
         code="REWRITE_APPLIED",
         message=message,
-        severity="warning",
+        severity="info",
         stage="planning",
         details=details,
         object_ids=[str(getattr(step, "measure_id", "") or "")],

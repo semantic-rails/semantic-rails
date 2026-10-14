@@ -6,6 +6,7 @@ windows, and a where value's type.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import asdict, fields, is_dataclass
 from typing import Any
@@ -1437,6 +1438,17 @@ def _unsupported_conversion(expr: ConversionExpr) -> SemanticLayerError:
 
 
 _NUMERIC_DATA_TYPES = {"integer", "number"}
+_TEMPORAL_DATA_TYPES = {"date", "timestamp", "datetime"}
+
+
+def _clearly_invalid_temporal_literal(text: str) -> bool:
+    """Refuse obvious mistakes; the warehouse owns its temporal literal syntax."""
+    if not any(character.isdigit() for character in text):
+        return True
+    date_prefix = re.match(r"^\d{4}-(\d{2})-(\d{2})(?:$|[ T])", text.strip())
+    return bool(
+        date_prefix and not (1 <= int(date_prefix[1]) <= 12 and 1 <= int(date_prefix[2]) <= 31)
+    )
 
 
 def _validate_where_value_type(dim, item, path: str = "where") -> None:
@@ -1500,7 +1512,13 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
                 f"where filter on dimension {dim.id!r} expects a {expected} value but "
                 f"got {value!r} (type {type(value).__name__})."
             ),
-            details={"dimension": dim.id, "data_type": data_type, "value": value, "op": item.op},
+            details={
+                "dimension": dim.id,
+                "data_type": data_type,
+                "value": value,
+                "op": item.op,
+                "path": f"{path}.value",
+            },
         )
 
     for value in values:
@@ -1521,6 +1539,13 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
             if isinstance(value, str) and value.lower() in {"true", "false"}:
                 continue
             raise mismatch("boolean", value)
+        # Preserve date-like text for the warehouse, whose syntax can be wider than ISO.
+        if (
+            data_type in _TEMPORAL_DATA_TYPES
+            and isinstance(value, str)
+            and _clearly_invalid_temporal_literal(value)
+        ):
+            raise mismatch("date or date-time", value)
 
 
 def _group_path(query: Any, group: ChildGroup) -> str:

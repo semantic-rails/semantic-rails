@@ -229,6 +229,31 @@ def _mixed_grain_error(
     )
 
 
+def _anchored_refusal(
+    exc: SemanticLayerError, query: NormalizedQuery, config: PackageConfig, anchor: str
+) -> SemanticLayerError:
+    """A ``PATH_NOT_FOUND`` that says how its start was chosen (``anchor``) and which of the
+    query's own items sit on the entity it can't reach (``unreachable_items``)."""
+    target = str(exc.details.get("target", "") or "")
+    dimensions = _dimension_index(config)
+
+    def on_target(dim_id: str) -> bool:
+        return dim_id in dimensions and dimensions[dim_id].entity == target
+
+    items = [dim_id for dim_id in query.group_by if on_target(dim_id)]
+    for item in query.where:
+        if isinstance(item, ChildGroup):
+            items.extend(row.field for row in item.where if on_target(row.field))
+        elif on_target(item.field):
+            items.append(item.field)
+    if query.time is not None:
+        role = _temporal_role_index(config).get(query.time.temporal_role)
+        if role is not None and on_target(role.dimension):
+            items.append(role.id)
+    details = {**exc.details, "anchor": anchor, "unreachable_items": list(dict.fromkeys(items))}
+    return SemanticLayerError(exc.code, str(exc), details=details)
+
+
 def _checked_where_dimension(
     item: Filter, dimensions: dict[str, Any], measures: dict[str, Any], path: str = "where"
 ) -> Any:
@@ -333,6 +358,12 @@ def _root_path_summary(
                 analyses[target_entity] = {"status": "rewrite_required", "reason": exc.code.lower()}
                 preaggregate(target_entity, _SEPARATE_FAMILIES, {"target_entity": target_entity})
                 continue
+            if exc.code == "PATH_NOT_FOUND":
+                read = [row.measure_id for row in bound_measures]
+                anchor = (
+                    f"{root_entity} holds the rows of {', '.join(read)}, so routes start there."
+                )
+                raise _anchored_refusal(exc, query, config, anchor) from None
             if exc.code == "AMBIGUOUS_PATH":
                 # A calendar date reached through another fact's rows is not the question's
                 # date either way: keep the time-block recovery a calendar group_by gets.
@@ -491,22 +522,36 @@ def _infer_root_entity_for_distinct_query(
         )
 
     candidates: list[dict[str, Any]] = []
-    failures: list[SemanticLayerError] = []
+    failures: list[tuple[str, SemanticLayerError]] = []
     for entity in config.entities:
         if not entity.allowed_as_root:
             continue
         try:
             candidates.append(_candidate_root_summary(entity.id, query, config))
         except SemanticLayerError as exc:
-            failures.append(exc)
+            failures.append((entity.id, exc))
 
     if not candidates:
         if failures:
-            # Prefer the refusal a query time would lift, so it names the hop and the fix.
-            raise next(
-                (exc for exc in failures if exc.details.get("reason") == UNANCHORED_TIME_VALID_HOP),
+            # Prefer the refusal a query time would lift, so it names the hop and the fix;
+            # else a start the query reads, in its order, never an entity it doesn't name.
+            own = _preferred_root_order(query, config)
+            failures.sort(key=lambda row: own.index(row[0]) if row[0] in own else len(own))
+            root, failure = next(
+                (
+                    row
+                    for row in failures
+                    if row[1].details.get("reason") == UNANCHORED_TIME_VALID_HOP
+                ),
                 failures[0],
             )
+            if failure.code == "PATH_NOT_FOUND" and root in own:
+                anchor = (
+                    "A query without a measure starts at an entity that reaches every entity it "
+                    f"reads; none reaches them all, and {root}, the first it reads, doesn't."
+                )
+                raise _anchored_refusal(failure, query, config, anchor) from None
+            raise failure
         raise SemanticLayerError(
             "PATH_NOT_FOUND",
             "No valid root entity found for distinct-values query",

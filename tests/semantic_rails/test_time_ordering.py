@@ -123,9 +123,10 @@ def test_default_order_covers_alternate_lowering_paths(config, shape):
             {"expression": {"measure": "measure.jaffle.order_count"}, "op": ">", "value": 0}
         ]
     else:
+        # The opening balance: a closing-day balance's share by entity sets is refused.
         aggregate = {
             "kind": "scoped_aggregate",
-            "measure": "measure.jaffle.inventory_on_hand_eop",
+            "measure": "measure.jaffle.inventory_on_hand_sop",
             "aggregation": "sum",
         }
         query["select"] = [
@@ -239,8 +240,8 @@ def test_nested_query_preserves_only_explicit_order(config, explicit):
         query["order_by"] = [{"field": "time", "direction": "DESC"}]
     select = _compile_query_sql_ast(config, query)
     assert select.limit == 3
-    # The period is the only group key and is ordered already: no tie-breaker follows.
-    assert [o.direction for o in select.order_by] == (["DESC"] if explicit else [])
+    # A limit keeps the first rows in the series order, so the period orders it either way.
+    assert [o.direction for o in select.order_by] == (["DESC"] if explicit else ["ASC"])
     if explicit:
         assert select.order_by[-1].nulls_last
 

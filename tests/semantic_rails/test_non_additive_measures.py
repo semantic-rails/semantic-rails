@@ -471,6 +471,61 @@ def test_refusal_names_keys_only_when_all_are_visible(
         engine.close()
 
 
+@pytest.mark.parametrize("lift_dimension", [False, True], ids=["group-by", "select"])
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+@pytest.mark.parametrize("hidden_key", [False, True], ids=["visible-key", "hidden-key"])
+def test_grouping_spelling_preserves_non_additive_key_hints(
+    runtime, lift_dimension, mode, hidden_key
+):
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+    from semantic_rails.request_context import RequestContext
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    policies = (
+        [
+            SemanticPolicyConfig(
+                id="policy.test.hide_grouping_key",
+                kind="object_visibility",
+                object_ids=[REPO_DAY],
+                audiences=["external"],
+                action="hidden",
+            )
+        ]
+        if hidden_key
+        else []
+    )
+    # OWNER is visible even when a missing key dimension is hidden.
+    query = _query("daily_visitors", group_by=[OWNER])
+    if lift_dimension:
+        query["select"].insert(0, OWNER)
+        del query["group_by"]
+    engine = opened(
+        Runtime.from_config(
+            replace(runtime.config, semantic_policies=policies), source_path=runtime.source_path
+        )
+    )
+    try:
+        result = SemanticLayerMCPAdapter(engine).call_tool(
+            "execute",
+            {"query": query, "mode": mode, "verbosity": "full"},
+            request_context=RequestContext(audience="external"),
+        )
+    finally:
+        engine.close()
+    assert result["ok"] is False
+    issue = result["errors"][0]
+    assert issue["code"] == "ROLLUP_UNSAFE"
+    names = [REPO_DAY, f"dimension.{NS}_traffic_day_day"]
+    if hidden_key:
+        assert "key_dimensions" not in issue["details"]
+        assert all(name not in json.dumps(result) for name in names)
+    else:
+        assert issue["details"]["key_dimensions"] == names
+        for name in names:
+            assert name in issue["message"]
+            assert name in issue["recovery_hints"][0]["message"]
+
+
 def test_uncertain_key_visibility_refuses_naming_no_key(runtime: Runtime, monkeypatch) -> None:
     from semantic_rails import visible_view
 

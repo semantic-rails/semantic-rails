@@ -173,7 +173,7 @@ In practice:
   (entity key, output grain) before it aggregates, so the filter means EXISTS
 - a distinct count grouped by such a dimension counts each row once in every group it
   has a matching child in ("orders that included each product type"); both carry a
-  `REWRITE_APPLIED` warning (`fanout_dedup`)
+  `REWRITE_APPLIED` note (severity `info`, `fanout_dedup`)
 - an entity filter in `where` (`{entity, any | none}`) says whether its
   conditions apply to the same child row; it lowers to correlated `EXISTS` or
   `NOT EXISTS`. Two or more positive plain conditions on one child, or one `not` or
