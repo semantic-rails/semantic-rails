@@ -301,12 +301,13 @@ def _window_total(
 
 
 def _measures_under_summing_wrappers(
-    expr: Any, config: PackageConfig, wrapper: str = ""
+    expr: Any, config: PackageConfig, wrapper: str = "", wrappers: tuple[type, ...] = ()
 ) -> Iterable[tuple[str, str]]:
-    """(measure id, construct) for each measure a window or per-entity rollup reaches."""
+    """(measure id, construct) for each measure a window or per-entity rollup reaches (or one
+    of ``wrappers``, when given)."""
     # A prior-period offset reads one other period's value; it adds nothing.
     offset = isinstance(expr, OffsetWindowExpr) and expr.aggregate in {"lag", "lead"}
-    if isinstance(expr, _SUMMING_WRAPPERS) and not offset:
+    if any(isinstance(expr, kind) for kind in wrappers or _SUMMING_WRAPPERS) and not offset:
         wrapper = wrapper or expr_kind(expr)
     if wrapper and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         yield expr.measure, wrapper
@@ -315,7 +316,9 @@ def _measures_under_summing_wrappers(
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         if recipe is not None:
-            yield from _measures_under_summing_wrappers(recipe.expression, config, wrapper)
+            yield from _measures_under_summing_wrappers(
+                recipe.expression, config, wrapper, wrappers
+            )
         return
     if not is_dataclass(expr):
         return
@@ -323,7 +326,7 @@ def _measures_under_summing_wrappers(
         value = getattr(expr, item.name)
         for child in value if isinstance(value, list) else [value]:
             if is_dataclass(child):
-                yield from _measures_under_summing_wrappers(child, config, wrapper)
+                yield from _measures_under_summing_wrappers(child, config, wrapper, wrappers)
 
 
 def _single_valued_columns(
@@ -716,6 +719,22 @@ _FANOUT_DEDUP_AGGREGATIONS = frozenset(
 _FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
 
 
+# Grouped across link hops only (a one-per-key model to the rows of its own relation), each
+# entity counts once in every group its key has a row in: a link carries no amount to split,
+# so sums, counts and averages over the de-duplicated rows have one reading.
+_LINK_GROUPED_AGGREGATIONS = frozenset({"sum", "count", "avg", "count_distinct"})
+
+
+def _link_hops(selection: PathSelection) -> list[dict[str, Any]] | None:
+    """The one-to-many hops of the path when every one is a link, else None."""
+    hops = [
+        row
+        for row in selection.analysis.get("relationships", []) or []
+        if row.get("directional_safety") == "requires_rewrite"
+    ]
+    return hops if hops and all(row.get("link") for row in hops) else None
+
+
 def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
     """A filter whose EXISTS reading ("has a row that is not X") differs from "has no row that
     is X": ``not`` or a ``not_`` text word, ``missing: true``, or on a boolean dimension anything
@@ -805,7 +824,10 @@ def _fanout_dedup_refusal(
             row,
         )
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-    if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
+    links = bool(grouped) and all(_link_hops(row) is not None for row in grouped)
+    if grouped and aggregation not in (
+        _LINK_GROUPED_AGGREGATIONS if links else _FANOUT_GROUPED_AGGREGATIONS
+    ):
         return (
             f"'{aggregation}' of {subject} grouped by a dimension of "
             f"'{grouped[0].target_entity}' is ambiguous across a one-to-many hop: the amount "
@@ -819,10 +841,13 @@ def _fanout_dedup_refusal(
     # model's rows need none there. Grouped de-duplication and the one-row-per-key leaf of a
     # warehouse without correlated EXISTS read the key.
     row_grain_filter = entity.is_row_grain and not grouped and correlated_exists
+    # A distinct count grouped across links counts values, not rows: DISTINCT (group, value)
+    # keeps each one, so a row-grain model's rows need no key there either.
+    row_grain_values = entity.is_row_grain and links and aggregation == "count_distinct"
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and (row_grain_filter or _measure_has_source_row_key(measure, entity))
+        and (row_grain_filter or row_grain_values or _measure_has_source_row_key(measure, entity))
     ):
         return (
             f"'{aggregation}' of {subject} is not defined over one row per "
@@ -864,6 +889,17 @@ def _fanout_dedup_refusal(
             "is not supported across a one-to-many hop.",
             (grouped or selections)[0],
         )
+    if links and any(
+        measure_id == bound.measure_id
+        for root in roots
+        for measure_id, _ in _measures_under_summing_wrappers(root, config, wrappers=(ShareExpr,))
+    ):
+        return (
+            "A share across a link is not supported: each entity counts in every group it has "
+            "a row in, so the groups overlap and their sum is not the total of the entities. "
+            "Ask for the ungrouped total in its own query.",
+            grouped[0],
+        )
     conditions = _hop_conditions(bound, selections, config, query)
     if groups:
         refusal = _second_child_scope(selections, conditions)
@@ -876,7 +912,7 @@ def _fanout_dedup_refusal(
             if isinstance(ambiguity, str):
                 return ambiguity, hop
             raise ambiguity
-    if len(conditions) > 1:
+    if len(conditions) > 1 and not _one_link_conditions(conditions):
         return _two_hop_conditions(conditions)
     for dim, item, hop in conditions:
         if item and _negated_filter(item, dim):
@@ -1186,6 +1222,18 @@ def _hop_conditions(
     return conditions
 
 
+def _one_link_conditions(conditions: list[tuple[Any, dict[str, Any], PathSelection]]) -> bool:
+    """Whether a grouping and the other conditions all cross one link hop by one route. Each
+    reads a row of the link's relation, so together they read the same row: two groupings are
+    the values one stored row holds together, never every pairing of a key's values."""
+    paths = {tuple(hop.chosen_path) for _, _, hop in conditions}
+    return (
+        len(paths) == 1
+        and any(hop.purpose == "group_by" for _, _, hop in conditions)
+        and all(len(_link_hops(hop) or ()) == 1 for _, _, hop in conditions)
+    )
+
+
 def _two_hop_conditions(
     conditions: list[tuple[Any, dict[str, Any], PathSelection]],
 ) -> tuple[str, PathSelection]:
@@ -1253,6 +1301,11 @@ def _hop_steps(
     if crossing != "fanout_dedup":
         return []
     none = any(group.match == "none" for group in child_groups(query.where))
+    linked = any(
+        row.purpose == "group_by" and _link_hops(row) is not None
+        for row in path_selections
+        if row.analysis.get("status") != "ok"
+    )
     return [
         RewriteStep(
             kind="fanout_dedup",
@@ -1263,6 +1316,12 @@ def _hop_steps(
                 f"{', '.join(repr(target) for target in sorted(crossed))}; a filter there means "
                 "it has at least one matching row"
                 + ("; a 'none' child group means it has none." if none else ".")
+                + (
+                    " Across a link it counts in every group it has a row in, so the groups "
+                    "can overlap and need not add up to the total."
+                    if linked
+                    else ""
+                )
             ),
             details={"paths": crossed},
         )

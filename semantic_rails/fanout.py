@@ -1086,7 +1086,9 @@ def one_to_many_descent(analysis: dict[str, Any], entity_keys: dict[str, list[st
     start entity has its own set of target rows, so a query can keep one row per (start key,
     output grain) and count every start row once per group. A lookup followed by a fan-out
     (orders -> customer -> sessions), an M:N hop or a join off the key relates the two
-    entities many-to-many, and stays refused.
+    entities many-to-many, and stays refused. A link hop (``RelationshipConfig.link``: a
+    one-per-key model to the rows of its own relation) may follow a lookup: it splits one
+    looked-up row into the values its key holds, so each start row still has its own set.
     """
     descended = looked_up = False
     for row in analysis.get("relationships", []) or []:
@@ -1099,7 +1101,7 @@ def one_to_many_descent(analysis: dict[str, Any], entity_keys: dict[str, list[st
             columns = list(row.get(f"{side}_columns") or [row.get(f"{side}_column")])
             if (
                 cardinality != ("1:N" if forward else "N:1")
-                or looked_up
+                or (looked_up and not row.get("link"))
                 or row.get("temporal_validity")
                 or sorted(columns) != sorted(entity_keys.get(one, []))
             ):

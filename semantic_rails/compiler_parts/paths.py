@@ -589,6 +589,16 @@ def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: Package
     return _reaches_at_most_one(rel, current_entity)
 
 
+def _is_link_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
+    """True when the hop walks a link in reverse, from a one-per-key model to the rows of its
+    own relation, on a warehouse whose outer join reads NULL (as for a lookup)."""
+    return (
+        rel.link
+        and current_entity == rel.target_entity
+        and dialect_for_warehouse(config.package.warehouse).outer_lookup_joins
+    )
+
+
 # The reads that need the looked-up row, so they join every hop of their path INNER: a time
 # role (a row with no time has no bucket), a metric predicate's route to the entity its set is
 # matched on, a conversion's events, and the measure's own entity read back from the anchor of
@@ -724,11 +734,16 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
-                lookup = (
-                    keep_rows
-                    and join_key not in inner_hops
-                    and _is_lookup_hop(rel, current_entity, config)
+                kept = keep_rows and join_key not in inner_hops
+                lookup = kept and _is_lookup_hop(rel, current_entity, config)
+                # A grouping across a link keeps a key with no row there (an orphan the lookup
+                # before it kept): it reads the NULL group, not no group.
+                link = (
+                    kept
+                    and selection.purpose == "group_by"
+                    and _is_link_hop(rel, current_entity, config)
                 )
+                nullable_path = nullable_path or link
                 joins.append(
                     SqlJoin(
                         join_type="LEFT"
