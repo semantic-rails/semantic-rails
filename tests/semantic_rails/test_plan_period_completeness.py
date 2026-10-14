@@ -10,10 +10,12 @@ other draft answers as it does without the check.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.period_completeness import compares_periods, incomplete_period_why
@@ -22,6 +24,8 @@ from semantic_rails.planner import intent_holds
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
+from semantic_rails.yaml_loader import safe_load
+from tests.semantic_rails.conftest import copy_package_config, opened, write_single_file_package
 from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 HELD = "PERIOD_COMPARISON_INCOMPLETE"
@@ -308,3 +312,134 @@ def test_a_draft_that_compares_nothing_plans_as_before(
     unchecked = plan_payload(runtime, intent=intent, now=NOW)
     for key in ("status", "why", "next", "best", "warnings"):
         assert checked.get(key) == unchecked.get(key), key
+
+
+# ---------------------------------------------------------------- round 2: every bound counts
+# A shop on a DATE clock: May reads 100, June 1 reads 10 and the rest of June 90, so complete June
+# against May is 0% growth, and any cut of June reads -90%.
+GROWTH_NOW = "2018-07-15T12:00:00Z"
+GROWTH_CLOCK = "temporal_role.shop_order_ordered_at"
+GROWTH_SEED = """
+CREATE OR REPLACE TABLE shop_customer AS
+SELECT 'customer_1' AS customer_id, 'new' AS customer_type, TIMESTAMP '2018-01-01 00:00:00' AS first_ordered_at;
+CREATE OR REPLACE TABLE shop_order AS
+SELECT * FROM (VALUES
+  ('order_1', 'customer_1', 'web', 10000, DATE '2018-05-10'),
+  ('order_2', 'customer_1', 'web', 1000, DATE '2018-06-01'),
+  ('order_3', 'customer_1', 'web', 9000, DATE '2018-06-20')
+) AS t(order_id, customer_id, channel, order_total_cents, ordered_at);
+CREATE OR REPLACE TABLE shop_order_item AS
+SELECT 'item_1' AS order_item_id, 'order_1' AS order_id, 'product_1' AS product_id, 1 AS quantity, 10000 AS line_total_cents;
+CREATE OR REPLACE TABLE shop_product AS SELECT 'product_1' AS product_id, 'beverage' AS product_type;
+"""
+
+
+@pytest.fixture(scope="module")
+def growth(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    source = write_single_file_package(tmp_path_factory.mktemp("growth") / "growth")
+    (source.parent / "data" / "seed_example.sql").write_text(GROWTH_SEED.lstrip(), "utf-8")
+    doc = safe_load(source.read_bytes())
+    doc["models"]["orders"]["times"]["ordered_at"]["kind"] = "date"
+    revenue = {"kind": "aggregate", "measure": "measure.shop.revenue_usd", "aggregation": "sum"}
+    prior = {"kind": "prior_period", "input": revenue, "offset": {"unit": "month", "value": 1}}
+    change = {"kind": "arithmetic", "op": "subtract", "left": revenue, "right": prior}
+    doc["metrics"]["growth"] = {
+        "label": "Revenue growth",
+        "kind": "derived",
+        "value_type": "percent",
+        "expression": {"kind": "arithmetic", "op": "divide", "left": change, "right": prior},
+    }
+    source.write_text(yaml.safe_dump(doc, sort_keys=False), "utf-8")
+    with closing(opened(Runtime.from_path(str(source)))) as runtime:
+        yield runtime
+
+
+def _growth_call(runtime: Runtime, end: str | None, where: list[dict] | None = None) -> dict:
+    role = next(row for row in runtime.config.temporal_roles if row.id == GROWTH_CLOCK)
+    time = {"temporal_role": role.id, "grain": "month", **({"end": end} if end else {})}
+    return {"select": ["metric.shop.growth"], "time": time, **({"where": where} if where else {})}
+
+
+def _cut(runtime: Runtime, op: str, value: str) -> list[dict]:
+    role = next(row for row in runtime.config.temporal_roles if row.id == GROWTH_CLOCK)
+    return [{"field": role.dimension, "op": op, "value": value}]
+
+
+def _plan_example(runtime: Runtime, call: dict, now: str) -> dict:
+    saved = runtime._package_examples
+    runtime._package_examples = [
+        ("asked", {"question": "Revenue growth as authored", "query": call})
+    ]
+    try:
+        payload = plan_payload(runtime, intent="Revenue growth as authored", now=now)
+    finally:
+        runtime._package_examples = saved
+    assert payload["best"]["pattern"] == "package_example"
+    return payload
+
+
+def _growth_rows(runtime: Runtime, call: dict) -> dict[str, float | None]:
+    rows = runtime.query(call, now=GROWTH_NOW)["rows"]
+    return {str(row["period"])[:10]: row["growth"] for row in rows}
+
+
+def test_the_fixture_reads_zero_over_complete_june_and_minus_ninety_over_a_cut_one(
+    growth: Runtime,
+) -> None:
+    assert _growth_rows(growth, _growth_call(growth, "2018-07-01"))["2018-06-01"] == 0
+    cut = _growth_call(growth, None, _cut(growth, "lt", "2018-06-15"))
+    assert _growth_rows(growth, cut)["2018-06-01"] == pytest.approx(-0.9)
+
+
+def test_every_clock_the_draft_reads_must_have_ended(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Orders on a New York clock, sessions on UTC: at 02:00Z on July 1, New York's June has two
+    hours to go, so a comparison of order counts bucketed there is held."""
+
+    path = copy_package_config(tmp_path_factory.mktemp("zoned"), "jaffle_shop", preseed_db=True)
+    orders = path / "models" / "core" / "orders.yml"
+    doc = safe_load(orders.read_bytes())
+    doc["model"]["times"]["ordered_at"].update(timezone="America/New_York", column_timezone="UTC")
+    orders.write_text(yaml.safe_dump(doc, sort_keys=False), "utf-8")
+    prior = {"kind": "prior_period", "input": "measure.jaffle.order_count", "offset": {"unit": "month", "value": 1}}  # fmt: skip
+    call = {
+        "select": [
+            "measure.jaffle.session_starts",
+            "measure.jaffle.order_count",
+            {"expression": prior, "as": "orders_month_before"},
+        ],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_session_started_at",
+            "grain": "month",
+            "end": "2018-07-01",
+        },
+    }
+    with closing(opened(Runtime.from_path(str(path)))) as runtime:
+        payload = _plan_example(runtime, call, "2018-07-01T02:00:00Z")
+    assert payload["best"]["validation_ok"] is True
+    _assert_held(payload)
+
+
+def test_an_end_finer_than_a_microsecond_is_held(growth: Runtime) -> None:
+    call = _growth_call(growth, "2018-06-01T00:00:00.0000001")
+    details = _assert_held(_plan_example(growth, call, GROWTH_NOW))
+    for option in details.get("options", []):
+        assert _ready(_plan_example(growth, option["call"], GROWTH_NOW))
+
+
+def test_the_option_ends_before_a_date_filter_cuts_a_period(growth: Runtime) -> None:
+    call = _growth_call(growth, None, _cut(growth, "lt", "2018-06-15"))
+    details = _assert_held(_plan_example(growth, call, GROWTH_NOW))
+    (option,) = details["options"]
+    assert option["call"]["time"]["end"] == "2018-06-01"
+    assert option["call"]["where"] == call["where"]  # the caller's filter stays
+    assert _ready(_plan_example(growth, option["call"], GROWTH_NOW))
+    assert "2018-06-01" not in _growth_rows(growth, option["call"])
+
+
+def test_a_date_filter_on_the_end_of_a_complete_window_holds_nothing(growth: Runtime) -> None:
+    call = _growth_call(growth, "2018-07-01", _cut(growth, "lt", "2018-07-01"))
+    payload = _plan_example(growth, call, GROWTH_NOW)
+    assert payload["status"] == "ok" and _ready(payload), payload.get("why")
+    assert _growth_rows(growth, call)["2018-06-01"] == 0
