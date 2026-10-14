@@ -527,12 +527,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Answer a query call; call plan first to draft it. mode 'run' returns rows, "
-            "'validate' only checks the call, 'sql' adds rendered_sql; only 'run' reads the "
-            "warehouse. A run checks the call too, so it needs no validate first: run it "
-            "directly. Call: select ids or {expression, as}, group_by dimension ids (alone, it "
-            "lists rows), where/having [{field, op, value}] and entity filters, time (time.end "
-            "is exclusive), order_by (period is the time column) and limit inside it; max_rows "
+            "Answer a call; draft it with plan first. mode 'run' returns rows, 'validate' only "
+            "checks, 'sql' adds rendered_sql; only 'run' reads the warehouse. Skip validate; run "
+            "a call directly. Call: select ids or {expression, as}, group_by dimension ids "
+            "(alone, it lists rows), where/having [{field, op, value}] and entity filters, time "
+            "(end is exclusive), order_by (period is the time column), limit inside it; max_rows "
             "and row_format go beside query."
         ),
         input_schema={

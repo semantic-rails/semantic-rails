@@ -239,7 +239,7 @@ def test_execute_says_where_its_arguments_go_and_to_run_directly():
     description = execute["description"]
     assert "max_rows and row_format go beside query" in description
     assert "limit inside it" in description
-    assert "run it directly" in description
+    assert "run a call directly" in description
 
 
 # --- FILTER_VALUE_NOT_FOUND --------------------------------------------------------------------
