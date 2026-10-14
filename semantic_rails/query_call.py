@@ -894,6 +894,25 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
         if isinstance(right, Mapping) and right.get("kind") == "literal"
         else None
     )
+    # Before offering a text word for LIKE, check whether this column can read one.
+    left = raw.get("left")
+    if (
+        context.config is not None
+        and spelling.replace("_", " ") in operators.LIKE_SPELLINGS
+        and isinstance(left, Mapping)
+        and left.get("kind") == "column"
+    ):
+        from .compiler_parts.paths import dimensions_over_column
+        from .expressions import resolve_table_entity
+
+        entity = str(left.get("entity") or "").strip() or resolve_table_entity(
+            context.config, str(left.get("table") or "")
+        )
+        dims = dimensions_over_column(entity or "", str(left.get("column")), context.config)
+        if len(dims) == 1:
+            operators.check_text_operand(
+                spelling, dims[0].data_type, f"{path}.op", dims[0].id, comparison=True
+            )
     like = operators.like_refusal(op, right, f"{path}.op")
     if like is not None:
         raise like
@@ -1041,8 +1060,10 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
         }
     if not isinstance(item, Mapping) or "field" not in item and "dimension" not in item:
         return item
-    word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
-    if context.config is not None and word in operators.TEXT_WORDS:
+    word = operators.word_of(item.get("op", "is"))
+    if context.config is not None and (
+        word in operators.TEXT_WORDS or word.replace("_", " ") in operators.LIKE_SPELLINGS
+    ):
         from .expressions import resolve_filter_dimension
 
         try:
@@ -1051,6 +1072,7 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
             field = ""
         for dim in (row for row in context.config.dimensions if row.id == field):
             operators.check_text_operand(word, dim.data_type, f"{path}.op", dim.id)
+    word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
     return {**item, "op": word, "value": value}
 
 
@@ -1118,7 +1140,7 @@ def _over_unstated(path: str, node: Mapping[str, Any]) -> SemanticLayerError:
     )
 
 
-def _condition(item: Any, path: str) -> dict[str, Any]:
+def _condition(item: Any, path: str, context: CallContext | None = None) -> dict[str, Any]:
     if not isinstance(item, Mapping):
         raise refusal(
             path,
@@ -1131,8 +1153,12 @@ def _condition(item: Any, path: str) -> dict[str, Any]:
         raise refusal(f"{path}.field", "is a dimension id", fix='Write "dimension.<id>".')
     if "op" not in item:
         raise refusal(f"{path}.op", "is required", fix=f"Use one of {list(operators.WORDS)}.")
-    word, value = operators.normalize_condition(item["op"], item.get("value"), path=path)
-    return {"field": field_id.strip(), "op": word, "value": value}
+    if context is None:
+        word, value = operators.normalize_condition(item["op"], item.get("value"), path=path)
+        return {"field": field_id.strip(), "op": word, "value": value}
+    return _inline_condition(
+        {"field": field_id.strip(), "op": item["op"], "value": item.get("value")}, path, context
+    )
 
 
 def _where(
@@ -1156,7 +1182,7 @@ def _where(
         ):
             raise _child_group_refusal(item, path)
         if isinstance(item, Mapping) and "entity" in item:
-            group, having = _entity_filter(item, path, grain)
+            group, having = _entity_filter(item, path, grain, context)
             rows.extend(group)
             entity_having.extend(having)
             continue
@@ -1172,7 +1198,7 @@ def _where(
                     'or filter results with "having".'
                 ),
             )
-        rows.append(_condition(item, path))
+        rows.append(_condition(item, path, context))
     return rows, entity_having
 
 
@@ -1200,7 +1226,7 @@ def _child_group_refusal(item: Mapping[str, Any], path: str) -> SemanticLayerErr
 
 
 def _entity_filter(
-    item: Mapping[str, Any], path: str, grain: Any
+    item: Mapping[str, Any], path: str, grain: Any, context: CallContext | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     _check_keys(item, ENTITY_FILTER_KEYS, path)
     entity = item.get("entity")
@@ -1229,7 +1255,7 @@ def _entity_filter(
             at = f"{path}.{part}[{index}]"
             if isinstance(condition, Mapping) and "entity" in condition:
                 raise refusal(at, "entity filters do not nest", fix="Make it its own where item.")
-            where.append(_condition(condition, at))
+            where.append(_condition(condition, at, context))
         return [{"child": entity.strip(), "match": part, "where": where}], []
     over = item.get("over")
     if over is None:
@@ -1298,11 +1324,19 @@ def _having(raw: Any, aliases: Mapping[str, Any]) -> list[dict[str, Any]]:
         raise refusal(
             "having", "is a list", fix='Write [{"field": "<alias>", "op": "gt", "value": 0}].'
         )
+    expression_hint = (
+        'Add the aggregate expression to "select" with an alias, then use that '
+        'alias as field in "having". Or name a measure or metric by its id.'
+    )
     out = []
     for index, item in enumerate(raw):
         path = f"having[{index}]"
         if not isinstance(item, Mapping):
             raise refusal(path, "is {field, op, value}", fix="Name a select alias in field.")
+        if "expression" in item:
+            raise refusal(
+                f"{path}.expression", "takes a select alias in field", fix=expression_hint
+            )
         _check_keys(item, CONDITION_KEYS, path)
         field_id = str(item.get("field", "")).strip()
         if field_id in aliases:
@@ -1313,7 +1347,7 @@ def _having(raw: Any, aliases: Mapping[str, Any]) -> list[dict[str, Any]]:
             raise refusal(
                 f"{path}.field",
                 f"'{field_id}' is not a select alias, measure or metric",
-                fix=f"Use one of {sorted(aliases)}." if aliases else "Name a measure or metric.",
+                fix=expression_hint,
             )
         operators.refuse_text_on_number(
             item.get("op"), f"{path}.op", "a result", operators.NUMBER_WORDS

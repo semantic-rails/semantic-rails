@@ -250,6 +250,9 @@ cast and its reported value identifies one date filter, the redacted
   pattern's shape: `'X%'` is `starts_with`, `'%X'` is `ends_with` and `'%X%'` is `contains`
   (`NOT LIKE` takes the `not_` form), each ignoring case. A pattern with `_` or an inner `%`
   has no word; the hint is `is` (or `not`) with the exact values, which `valid-values` lists.
+  In a query call, on a dimension declared as an id or another non-text type, the hint uses exact
+  values instead of a text word, even when the stored codes contain letters. In a
+  `comparison`, use `=` or `<>` with an exact value.
   A package's own `comparison` (a measure's `expr`) refuses `LIKE` the same way.
 - A text word ignores case by lowering the value and the text with the same function, so it
   gives the same rows on every warehouse. A column's own collation is set aside first: Postgres
@@ -456,7 +459,9 @@ The complements are exact: `is` ↔ `not`, `missing: true` ↔ `missing: false`.
 
 Conditions on result rows, after aggregation. `field` is a select alias, or a measure or metric
 id (computed for the test, not returned). Same words; `{"op": "missing", "value": true}` keeps
-results that are NULL. "Which X did Y" is `group_by` X plus a `having`:
+results that are NULL. To filter on a composed aggregate expression, add it to `select`
+with an alias and use that alias as `having.field`; an unselected expression is refused
+with this hint. "Which X did Y" is `group_by` X plus a `having`:
 
 ```json
 {"select": ["measure.jaffle.revenue_usd"],
@@ -947,6 +952,11 @@ returned row's total spans the same number:
                   "message": "store_share is a fraction of the total of measure.jaffle.revenue_usd across dimension.jaffle_store_name in the rows the call keeps (2 rows per total)."}]}
 ```
 
+`SHARE_OF_TOTAL` also accompanies a share nested inside `round(...)`, arithmetic or any
+other select expression, for every share it contains. The disclosure describes the nested
+share's denominator; the enclosing expression can change the output's unit (for example,
+multiplying by 100 returns a percentage). Nested shares omit the optional row count.
+
 ### Per-entity value filters
 
 In a `distribution`, `entity_value.where` filters each entity's computed value. Each item takes
@@ -1071,8 +1081,10 @@ for error in jsonschema.Draft202012Validator(schema).iter_errors(call):
 
 `validate` (MCP `execute` with mode `validate`, `POST /api/v1/validate`, `Runtime.validate`,
 `semantic-rails validate`) checks a call against the package and its policies without reading
-the warehouse. The fenced JSON calls in this page and the other query docs are validated
-against the schema and the `jaffle_shop` package by the test suite.
+the warehouse. It uses the same route/path resolution and SQL compilation as execution;
+a missing path fails validation with the execution diagnostic. The fenced JSON calls in this
+page and the other query docs are validated against the schema and the `jaffle_shop` package
+by the test suite.
 
 ## Known limitations
 
