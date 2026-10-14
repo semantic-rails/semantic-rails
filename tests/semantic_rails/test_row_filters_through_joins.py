@@ -775,3 +775,78 @@ def test_a_hold_names_nothing_the_callers_view_hides(runtime, home_stores, hidde
             assert "rj_customer" not in f"{error} {error.details}"
         else:
             assert "entity.rj_customer" in error.details["objects"]
+
+
+DOUBLED = {"kind": "aggregate", "measure": "measure.rj.doubled", "aggregation": "sum"}
+
+
+@pytest.fixture
+def overflow(tmp_path):
+    """Package row arithmetic (an order's ``big`` doubled) that overflows a 64-bit integer only
+    on an East order."""
+    root = _package(tmp_path / "rj_overflow")
+    model = yaml.safe_load((root / "models/orders.yml").read_text())
+    model["model"]["measures"]["doubled"] = {
+        "kind": "aggregate",
+        "rollup": "additive",
+        "expr": {"kind": "arithmetic", "op": "multiply",
+                 "left": {"kind": "column", "column": "big"},
+                 "right": {"kind": "literal", "value": 2}},
+    }  # fmt: skip
+    _put(root, "models/orders.yml", model)
+    with duckdb.connect(str(root / "rj.duckdb")) as connection:
+        connection.execute(SEED)
+        connection.execute("ALTER TABLE order_fact ADD COLUMN big BIGINT DEFAULT 1")
+        connection.execute("UPDATE order_fact SET big = 9000000000000000000 WHERE order_id = 'o4'")
+    return root
+
+
+def test_package_arithmetic_that_overflows_only_on_a_hidden_row_never_moves_an_answer(overflow):
+    """DuckDB evaluates the measure's arithmetic only on rows that passed the visibility
+    predicate in the same scope: the West answer equals the answer on the West's visible
+    rows, while an unfiltered caller (who can see the row) gets the warehouse's error."""
+    runtime = Runtime.from_path(str(overflow))
+    query = _query({"v": DOUBLED})
+    try:
+        west = _rows(runtime.query(query, context=WEST))
+        with pytest.raises(SemanticLayerError) as unfiltered:
+            runtime.query(query, context=EVERYONE)
+    finally:
+        runtime.close()
+    assert unfiltered.value.code == "QUERY_EXECUTION_ERROR"
+    with duckdb.connect(str(overflow / "rj.duckdb")) as connection:
+        connection.execute(
+            "DELETE FROM order_fact WHERE store_id IS NULL OR store_id NOT IN "
+            "(SELECT store_id FROM store_dim WHERE region = 'West')"
+        )
+    visible_only = Runtime.from_path(str(overflow))
+    try:
+        assert west == _rows(visible_only.query(query, context=EVERYONE)) == [(6,)]
+    finally:
+        visible_only.close()
+
+
+@pytest.mark.parametrize("warehouse", ["duckdb", "postgres", "snowflake"])
+def test_package_arithmetic_reads_rows_in_the_scope_that_checks_their_visibility(
+    overflow, warehouse
+):
+    """On every warehouse that runs row filters, a measure's row arithmetic is in the same
+    SELECT as its rows' visibility predicate, never in a scope that reads unchecked rows.
+    Whether a warehouse evaluates it before that predicate within the scope is the documented
+    residual (integer overflow on a hidden row)."""
+    base = Runtime.from_path(str(overflow)).package_config
+    config = replace(base, package=replace(base.package, warehouse=warehouse))
+    filters = row_filters_for_context(config, WEST.to_policy_context())
+    compiled = compile_query(config, None, _query({"v": DOUBLED}), row_filters=filters)
+    from semantic_rails.sql_ast import sql_nodes
+
+    scopes = [
+        node
+        for node in sql_nodes(compiled["sql_ast"])
+        if isinstance(node, SqlSelect)
+        and any(isinstance(item, SqlBinary) and item.op == "*" for item in sql_nodes(node.select))
+    ]
+    assert scopes
+    for scope in scopes:
+        assert scope.from_table.name == "order_fact"
+        assert any(isinstance(item, SqlInQuery) for item in sql_nodes(scope.where))

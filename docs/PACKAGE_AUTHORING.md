@@ -862,6 +862,12 @@ kind names must match exactly.
   Postgres finalizes the placeholders as `$1`, `$2`, … before execution and binds trusted
   values through ADBC.
 
+  A measure's row arithmetic is computed in the same `SELECT` that checks its rows'
+  visibility. DuckDB computes it only for visible rows, so a value that would overflow on a
+  hidden row never changes a filtered answer; on Postgres and Snowflake the warehouse's plan
+  decides the order inside that `SELECT`, so such an overflow can refuse a filtered
+  question with an execution error (it never returns a hidden value).
+
   Known limitation: the SQL a row-filtered caller can see (`mode: sql`, `rendered_sql`)
   shows the names of the filter's tables and columns, and of the tables it reaches, never
   their values. A host that hides those from a caller should not grant that caller SQL
