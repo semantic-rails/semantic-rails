@@ -72,8 +72,9 @@ arguments beside it:
 
 An HTTP body is `{"query": <call>, "options": {...}}`, or the call itself; any other key
 beside `query` and `options` is refused. A tool argument sent inside the call (`"now"`,
-`"max_rows"`, `"verbosity"`, ...) is refused with "pass it beside `query`". MCP also reads a
-`query` sent as a JSON string.
+`"max_rows"`, `"verbosity"`, ...) is refused with "pass it beside `query`", and MCP refuses a
+key of the call sent beside `query` (`"limit"`, ...) with the hint to move it inside. MCP also
+reads a `query` sent as a JSON string.
 
 ```bash
 uv run semantic-rails query --package jaffle_shop --now 2017-09-04T12:00:00Z \

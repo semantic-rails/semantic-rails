@@ -169,8 +169,8 @@ table (the description of `$defs/Expression`), and `$defs/Op` listing the filter
 SQL aliases read as them, in lower case and capitals, with each word's values in one sentence. `query.v2.json` keeps a schema per kind, and the parser
 refuses what the table rules out at its path. `plan` and the metadata tools take a partial call
 to start from. `tests/semantic_rails/test_mcp_response_budget.py` caps each tool's definition
-and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call before it runs; a call that already ran needs no
-validation.
+and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call without running it;
+a run checks the call too, so a call to answer is run directly, never validated first.
 
 ### Writing Tool Descriptions
 
@@ -238,7 +238,8 @@ segment policy effects, warnings, errors, and actionable recovery hints when pre
 
 MCP reads tool arguments in one place: a `query` sent as a JSON string is parsed, and a tool
 argument sent inside `query` (`now`, `mode`, `max_rows`, `row_format`, `verbosity`,
-`sql_profile`) is refused naming the argument, with the hint to pass it beside `query`. The call
+`sql_profile`) is refused naming the argument, with the hint to pass it beside `query`; a key of
+the call sent beside `query` (`limit`, say) is refused with the hint to move it inside. The call
 has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `lt`, `lte`,
 `contains`, `starts_with`, `ends_with`, `not_contains`, `not_starts_with`, `not_ends_with`,
 `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused with the

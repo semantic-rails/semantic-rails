@@ -16,7 +16,8 @@ def coerce_arguments(arguments: Mapping[str, Any], *, tool: str, remote: bool) -
 
     A ``query`` sent as a JSON string is parsed. An identity claim is refused (``remote``: the
     transport resolved the caller from credentials), and so is a call ``execute`` received
-    as its own arguments: the call travels in ``query``, the options beside it.
+    as its own arguments, or a call key beside its ``query`` (which execute would otherwise
+    ignore): the call travels in ``query``, the options beside it.
     """
     out = dict(arguments)
     query = out.get("query")
@@ -33,12 +34,12 @@ def coerce_arguments(arguments: Mapping[str, Any], *, tool: str, remote: bool) -
             )
         out["query"] = query
     refuse_identity_claims(out, remote=remote, transport="mcp")
-    if tool == "execute" and "query" not in out:
-        flat = next((key for key in out if key in FIELDS), None)
-        if flat is not None:
-            raise refusal(
-                flat,
-                "is a key of the query call, not an argument of execute",
-                fix=f'Send the call as the query argument: {{"query": {{"{flat}": ...}}}}.',
-            )
+    flat = next((key for key in out if key in FIELDS), None) if tool == "execute" else None
+    if flat is not None:
+        fix = f'Send the call as the query argument: {{"query": {{"{flat}": ...}}}}.'
+        if "query" in out:
+            fix = f"Move `{flat}` inside `query`."
+        if flat == "limit":
+            fix += " max_rows, beside query, caps the rows the tool returns."
+        raise refusal(flat, "is a key of the query call, not an argument of execute", fix=fix)
     return out
