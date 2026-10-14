@@ -301,10 +301,7 @@ def test_the_refused_letters_are_every_letter_whose_lowercase_changes_length():
             if len(lower) == 1 and lower not in "kåω":
                 unstable.add(lower)
     expected = unstable | set("Σσςßı̇")
-    refused = set(operators.UNSTABLE_CASE_LETTERS)
-    assert expected <= refused
-    # The list is Unicode 16's; an older Python's tables have no case pair for the rest.
-    assert all(letter.lower() == letter.upper() == letter for letter in refused - expected)
+    assert expected <= set(operators.UNSTABLE_CASE_LETTERS)
 
 
 @pytest.mark.parametrize(
@@ -328,3 +325,64 @@ def test_a_column_is_named_by_the_warehouses_identifier_rules(warehouse, column,
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     dims = dimensions_over_column("entity.jaffle_store", column, config)
     assert [dim.id for dim in dims] == (["dimension.jaffle_store_name"] if found else [])
+
+
+# --- Parity by refusal: letters some supported warehouse lowers differently ----------------
+
+PARITY_REFUSED = {
+    "Ⲁ": "Coptic capital alfa (ClickHouse 24.8 leaves U+2000-U+2FFF as it is)",
+    "ⲁ": "Coptic small alfa",
+    "Ⰰ": "Glagolitic capital az",
+    "Ⱡ": "Latin capital L with double bar (Latin Extended-C)",
+    "ⱡ": "Latin small l with double bar",
+    "Ⅰ": "Roman numeral one",
+    "Ⓐ": "circled capital A",
+    "ⴀ": "Georgian small an (Nuskhuri)",
+    "Ⴀ": "Georgian capital an, whose small letter is in U+2000-U+2FFF",
+    "Ꟍ": "Latin capital S with diagonal stroke (case pair new in Unicode 16)",
+    "ꟍ": "Latin small s with diagonal stroke",
+    "Ᲊ": "Cyrillic capital TJE (Unicode 16)",
+    "\U00010570": "Vithkuqi capital A (Unicode 14)",
+    "\U00010d50": "Garay capital A (Unicode 16)",
+}
+READABLE = ["a", "É", "é", "ω", "Ω", "k", "å", "я", "Я", "ა", "東京", "10%", "N/A", "’", "€"]
+
+
+@pytest.mark.parametrize("letter", PARITY_REFUSED)
+def test_a_letter_some_warehouse_lowers_differently_is_refused_everywhere(letter):
+    from semantic_rails.errors import SemanticLayerError
+
+    with pytest.raises(SemanticLayerError) as caught:
+        operators.check_text_letters(f"x{letter}y", "where[0].value")
+    assert caught.value.details["path"] == "where[0].value"
+
+
+@pytest.mark.parametrize("text", READABLE)
+def test_text_every_warehouse_lowers_alike_is_read(text):
+    operators.check_text_letters(text, "where[0].value")
+
+
+def test_the_refused_letters_follow_the_pinned_rule():
+    """Generated from unicodedata: every cased letter in U+2000-U+2FFF, or whose lower or upper
+    case is there (ClickHouse 24.8's lowerUTF8 copies that range as it is), is refused; and
+    every refused letter is cased here, or a letter whose case pair is newer than this Python's
+    Unicode tables (added after Unicode 13.0), or the combining dot above."""
+    import sys
+    import unicodedata
+
+    refused = operators.UNSTABLE_CASE_LETTERS
+
+    def in_range(text: str) -> bool:
+        return len(text) == 1 and 0x2000 <= ord(text) <= 0x2FFF
+
+    for point in range(sys.maxunicode + 1):
+        letter = chr(point)
+        if 0xD800 <= point <= 0xDFFF or (letter.lower() == letter == letter.upper()):
+            continue
+        if in_range(letter) or in_range(letter.lower()) or in_range(letter.upper()):
+            assert letter in refused, f"U+{point:04X}"
+    for letter in refused:
+        cased = letter.lower() != letter or letter.upper() != letter
+        # A letter caseless here has its case pair in a newer Unicode than this Python's.
+        newer = unicodedata.category(letter) in {"Cn", "Ll", "Lu"}
+        assert cased or newer or letter == "\u0307", letter

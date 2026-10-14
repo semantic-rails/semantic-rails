@@ -630,3 +630,56 @@ def test_text_with_an_unstable_letter_is_refused_at_its_path(duckdb_backend, tex
     assert '"op": "is"' in hint and "valid-values" in hint
     [error] = runtime.validate(_count_if("ends_with", text))["errors"][:1]
     assert error["details"]["path"] == "select[0].expression.condition.right"
+
+
+# --- NUL and lone surrogates: no warehouse reads them as text -------------------------------
+
+BAD_STRINGS = [("a\x00b", "U+0000"), ("\ud800", "U+D800"), ("x\udfffy", "U+DFFF")]
+
+
+@pytest.mark.parametrize(("text", "code_point"), BAD_STRINGS)
+def test_nul_and_lone_surrogates_are_refused_in_every_string_of_a_call(
+    duckdb_backend, text, code_point
+):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    calls = {
+        "where[0].value": {
+            "select": [SIGNUPS],
+            "where": [{"field": CHANNEL, "op": "contains", "value": text}],
+        },
+        "where[0].value[1]": {
+            "select": [SIGNUPS],
+            "where": [{"field": CHANNEL, "op": "is", "value": ["web", text]}],
+        },
+        "select[0].expression.condition.right.value": _count_if("starts_with", text),
+        "select[0].as": {"select": [{"expression": "measure.shop.signup_count", "as": text}]},
+    }
+    for path, call in calls.items():
+        report = runtime.validate(call)
+        assert not report["ok"], path
+        [error] = report["errors"][:1]
+        assert error["details"]["path"] == path
+        assert code_point in error["message"]
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(call)
+        assert caught.value.details["path"] == path
+
+
+def test_a_package_authored_nul_is_refused(tmp_path):
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    orders = package / "models" / "orders.yml"
+    model = orders.read_text(encoding="utf-8")
+    old = "right: {kind: literal, value: a}},\n        then: {kind: column, column: amount}"
+    assert model.count(old) == 1
+    orders.write_text(model.replace(old, old.replace("value: a}", 'value: "a\\0"}')))
+    with pytest.raises(SemanticLayerError) as caught:
+        runtime_for(package).validate({"select": ["measure.shop.store_a_amount"]})
+    assert "U+0000" in str(caught.value)
+
+
+def test_error_summaries_take_any_string():
+    from semantic_rails.answer import _sql_summary
+
+    summary = _sql_summary("SELECT '\ud800'")
+    assert summary["sql_chars"] == 10 and len(summary["sql_sha256"]) == 64

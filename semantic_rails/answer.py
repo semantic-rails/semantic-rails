@@ -433,7 +433,10 @@ def _sql_summary(sql: str) -> dict[str, Any]:
     """
     body = str(sql or "")
     return {
-        "sql_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest() if body else "",
+        # surrogatepass: a malformed string still hashes, so the summary never fails.
+        "sql_sha256": (
+            hashlib.sha256(body.encode("utf-8", errors="surrogatepass")).hexdigest() if body else ""
+        ),
         "sql_chars": len(body),
         "sql_outline": _sql_outline(body),
     }

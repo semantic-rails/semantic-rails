@@ -17,11 +17,13 @@ from semantic_rails.sql_ast import (
 )
 
 TEXT = "50%_Off\\x'y"
-# Both sides fold through the dialect's own lowercase function (lowerUTF8 on ClickHouse, whose
-# LOWER is ASCII only), so a column and its own text always fold alike. Standard-conforming
-# literals keep backslashes as they are and need ESCAPE; backslash-escaping literals double
-# them, and BigQuery and Spark also escape the quote with one (they read '' as two literals);
-# BigQuery and ClickHouse escape LIKE with a backslash by default.
+# Both sides fold through one per-dialect function, so a column and its own text always fold
+# alike: a column's own collation is set aside first (Postgres folds under the ICU root, and
+# Snowflake, BigQuery and Databricks drop it), and ClickHouse reads a FixedString as String
+# without its zero padding. Standard-conforming literals keep backslashes as they are and need
+# ESCAPE; backslash-escaping literals double them, and BigQuery and Spark also escape the quote
+# with one (they read '' as two literals); BigQuery and ClickHouse escape LIKE with a backslash
+# by default.
 STANDARD = r"(LOWER(t.name) LIKE LOWER('%50\%\_Off\\x''y%') ESCAPE '\')"
 COLLATED = 'AS TEXT) COLLATE "und-x-icu")'
 POSTGRES = (
@@ -31,12 +33,27 @@ POSTGRES = (
     + COLLATED
     + r" ESCAPE '\')"
 )
-BACKSLASH = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x''y%') ESCAPE '\\')"
-BACKSLASH_QUOTE = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x\'y%') ESCAPE '\\')"
-BACKSLASH_QUOTE_DEFAULT_ESCAPE = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x\'y%'))"
+BACKSLASH = (
+    r"(LOWER(COLLATE(t.name, '')) LIKE LOWER(COLLATE('%50\\%\\_Off\\\\x''y%', '')) ESCAPE '\\')"
+)
+BACKSLASH_QUOTE = (
+    r"(LOWER((t.name) COLLATE UTF8_BINARY) LIKE LOWER(('%50\\%\\_Off\\\\x\'y%') COLLATE "
+    r"UTF8_BINARY) ESCAPE '\\')"
+)
+BACKSLASH_QUOTE_DEFAULT_ESCAPE = (
+    r"(LOWER(COLLATE(t.name, '')) LIKE LOWER(COLLATE('%50\\%\\_Off\\\\x\'y%', '')))"
+)
+
+
+def _clickhouse_fold(value: str) -> str:
+    return (
+        f"lowerUTF8(if(position(toTypeName({value}), 'FixedString') > 0, "
+        f"toStringCutToZero(toString({value})), toString({value})))"
+    )
+
+
 UTF8_DEFAULT_ESCAPE = (
-    r"(lowerUTF8(toStringCutToZero(toString(t.name))) LIKE "
-    r"lowerUTF8(toStringCutToZero(toString('%50\\%\\_Off\\\\x''y%'))))"
+    "(" + _clickhouse_fold("t.name") + " LIKE " + _clickhouse_fold(r"'%50\\%\\_Off\\\\x''y%'") + ")"
 )
 EXPECTED = {
     "duckdb": STANDARD,
@@ -77,7 +94,7 @@ def test_contains_renders_an_escaped_case_folded_pattern_that_matches_literally(
 # %, ends_with the trailing one, and each not_ form is NOT LIKE that keeps unknown rows, as `not`.
 SHAPES = {
     "contains": lambda sql: sql,
-    "starts_with": lambda sql: sql.replace("'%", "'", 1),
+    "starts_with": lambda sql: sql.replace("'%50", "'50"),
     "ends_with": lambda sql: sql.replace("y%'", "y'"),
 }
 
@@ -189,12 +206,28 @@ def test_text_with_a_letter_whose_lowercase_is_unstable_is_refused(word, letter)
     assert '"op": "is"' in hint and "valid-values" in hint
 
 
-def test_clickhouse_reads_any_text_column_type_as_plain_text_before_folding():
-    """FixedString (padded with zero bytes) and Enum are refused by lowerUTF8: toString reads any
-    type as String, NULL kept, and toStringCutToZero drops a FixedString's padding."""
+def test_clickhouse_cuts_zero_padding_only_from_a_fixedstring():
+    """lowerUTF8 refuses FixedString and Enum: toString reads any type as String (NULL kept).
+    Only a FixedString loses its zero padding; a String keeps every byte, NUL included."""
     sql = _rendered("clickhouse", "web")
-    assert "lowerUTF8(toStringCutToZero(toString(t.name)))" in sql
-    assert "lowerUTF8(toStringCutToZero(toString('%web%')))" in sql
+    assert _clickhouse_fold("t.name") in sql
+    assert "toStringCutToZero(toString(t.name)), toString(t.name)" in sql
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "fold"),
+    [
+        ("snowflake", "LOWER(COLLATE(t.name, ''))"),
+        ("bigquery", "LOWER(COLLATE(t.name, ''))"),
+        ("databricks", "LOWER((t.name) COLLATE UTF8_BINARY)"),
+        ("postgres", 'LOWER(CAST(t.name AS TEXT) COLLATE "und-x-icu")'),
+        ("duckdb", "LOWER(t.name)"),
+        ("athena", "LOWER(t.name)"),
+    ],
+)
+def test_a_columns_own_collation_is_set_aside_before_folding(warehouse, fold):
+    where = " ".join(_rendered(warehouse, "web").split("WHERE", 1)[1].split())
+    assert where.split(" LIKE ")[0] == f"({fold}"
 
 
 def test_postgres_folds_both_operands_under_one_explicit_collation():
