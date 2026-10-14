@@ -8,6 +8,8 @@
   check reads every clock the draft buckets by (clocks in different time zones hold it), every
   bound that ends the window (a `where` upper bound on the clock's date counts like
   `time.end`), and holds a bound finer than a microsecond; the option ends before any period a
-  filter cuts, and is offered only when it is complete. A window that has ended stays as it
+  filter cuts, and is offered only when it is complete. What it can't prove complete is held
+  with no option: an entity's aggregate read beside the comparison, a measure's own filter on
+  a date, a bound with a non-UTC offset, or a comma before a fraction. A window that has ended stays as it
   was. The hint of `TIME_WINDOW_START_DROPPED` no longer
   asks to execute a comparison that returns an incomplete period.

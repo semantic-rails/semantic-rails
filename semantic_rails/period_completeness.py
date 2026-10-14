@@ -11,9 +11,12 @@ bound the window runs to ``now``, and its last period is the one in progress.
 
 Every clock the draft buckets by counts, as the compiler binds each measure, through metrics
 and ``having``; clocks in different zones end their periods at different moments, so they hold.
-The check holds whatever it can't read exactly: a draft it can't plan, a bound finer than a
-microsecond, a ``where`` bound on another date or on a clock it can't line up, or a grain or
-clock it can't read. Its complete-periods option keeps the draft's filters and ends at the last
+The check holds whatever it can't read exactly, with no option: a draft it can't plan, one that
+also reads an entity's aggregate (a metric predicate, an entity filter's having, a scoped
+aggregate's conditions), a measure's own filter on a date or time, a ``where`` bound on another
+date or on a clock it can't line up, a bound with a UTC offset (other than UTC on a UTC clock)
+or a comma before its fraction, or a grain or clock it can't read; a bound finer than a
+microsecond holds with the option below it. Its complete-periods option keeps the draft's filters and ends at the last
 boundary before every bound; it is offered only when the same check calls it complete.
 
 ``plan``, the granted-metric plan and a matched package example all call it, on the draft's
@@ -31,10 +34,16 @@ from typing import Any
 
 from .ast import normalize_query
 from .clock import UNITS, floor_period, local_now, parse_now, shift_period
+from .compiler_parts.bind import _bound_filter_clauses
 from .compiler_parts.paths import _leaf_time_role
 from .compiler_parts.planning import plan_query
 from .errors import SemanticLayerError
-from .expressions import MetricRecipeRefExpr, OffsetWindowExpr
+from .expressions import (
+    MetricPredicateExpr,
+    MetricRecipeRefExpr,
+    OffsetWindowExpr,
+    ScopedAggregateExpr,
+)
 from .schema import base_of
 
 _CODE = "PERIOD_COMPARISON_INCOMPLETE"
@@ -148,14 +157,17 @@ def _check(config: Any, query: Mapping[str, Any], start: Any) -> _Held | None:
     raw_time = query.get("time")
     time: Mapping[str, Any] = raw_time if isinstance(raw_time, Mapping) else {}
     grain = str(time.get("grain", "") or "").strip().lower()
-    roles = _effective_roles(config, query)
-    if roles is None:
+    effective = _effective_roles(config, query)
+    if effective is None:
         return _Held(
             "The draft compares periods, but plan can't read which clocks it buckets them by, "
             "so it can't tell that each period is complete.",
             {"path": "time.temporal_role"},
             "Validate the call, then plan again.",
         )
+    roles, unproven = effective
+    if unproven:
+        return _unproven(f"it reads {unproven}", "select")
     zones = sorted({str(role.timezone or "UTC") for role in roles})
     if len(zones) > 1:
         return _Held(
@@ -186,7 +198,10 @@ def _check(config: Any, query: Mapping[str, Any], start: Any) -> _Held | None:
             "Set time.grain to the period the comparison reports, then plan again.",
         )
     current = _floor(now, grain)
-    bounds, uncut = _bounds(config, query, roles, zone)
+    bounds, uncut, unread = _bounds(config, query, roles, zone)
+    if unread:
+        source, problem = unread[0]
+        return _unproven(f"{source} {problem}", _path(source))
     if uncut:
         return _Held(
             f"The draft compares periods and bounds time with a where filter on "
@@ -236,6 +251,36 @@ def _check(config: Any, query: Mapping[str, Any], start: Any) -> _Held | None:
     return _held(grain, now_text, cut, cut, reason, first, start, path=_path(source))
 
 
+def _unproven(reason: str, path: str) -> _Held:
+    """A hold plan can't lift with a call of its own: nothing it can offer is provably
+    complete."""
+    return _Held(
+        f"The draft compares periods, but {reason}, so plan can't tell that each period it "
+        "returns is complete.",
+        {"path": path},
+        "Plan can't prove this comparison's periods complete, so it offers no call; compare "
+        "periods on one clock, bounded by time.end on a period boundary, then plan again.",
+    )
+
+
+# A bound's UTC offset or zone designator, after its time of day.
+_DESIGNATOR = re.compile(r"(?:[zZ]|[+-]\d{2}(?::?\d{2}){0,2}(?:\.\d+)?)$")
+_UTC_DESIGNATORS = {"Z", "+00:00", "+0000", "+00"}
+
+
+def _bound_problem(value: Any, utc: bool) -> str:
+    """Why a bound can't be read as the SQL reads it: a comma before its fraction, or a UTC
+    offset (the SQL compares the wall time) other than UTC itself on a UTC clock; "" when
+    none."""
+    text = str(value).strip()
+    if "," in text:
+        return "writes its fraction after a comma, which plan can't read exactly"
+    designator = _DESIGNATOR.search(text[11:]) if len(text) > 10 and text[10] in "Tt " else None
+    if designator and not (utc and designator.group(0).upper() in _UTC_DESIGNATORS):
+        return "carries a UTC offset, which the query compares as wall time"
+    return ""
+
+
 def _held(
     grain: str,
     now_text: str,
@@ -272,22 +317,65 @@ def _path(source: str) -> str:
     return "time.end" if source == "time.end" else "where"
 
 
-def _effective_roles(config: Any, query: Mapping[str, Any]) -> list[Any] | None:
+def _effective_roles(config: Any, query: Mapping[str, Any]) -> tuple[list[Any], str] | None:
     """The clock each measure the draft reads is bucketed by, through metrics and ``having``,
-    as the compiler binds it; None when the draft can't be planned."""
+    as the compiler binds it, with what plan can't check about those reads ("" when nothing);
+    None when the draft can't be planned."""
 
     payload = {key: value for key, value in query.items() if key not in _REQUEST_KEYS}
     try:
         plan = plan_query(config, None, payload)
         normalized = normalize_query(payload, config=config)
         names = {_leaf_time_role(bound, normalized, config) for bound in plan.bound_measures}
+        unproven = _unchecked_reads(config, normalized, plan.bound_measures)
     except Exception:  # noqa: BLE001 — a draft that can't be planned proves no clock
         return None
     raw_time = query.get("time")
     requested = raw_time.get("temporal_role") if isinstance(raw_time, Mapping) else None
     names = (names - {""}) or {str(requested or "")}
     roles = [row for row in config.temporal_roles if row.id in names]
-    return roles if len(roles) == len(names) else None
+    return (roles, unproven) if len(roles) == len(names) else None
+
+
+def _unchecked_reads(config: Any, parsed: Any, leaves: list[Any]) -> str:
+    """What the draft reads that plan can't check period by period: an entity's aggregate (an
+    entity filter's having, a metric predicate, a scoped aggregate's conditions), which reads
+    periods of its own, or a measure's own filter on a date, which can cut a period short.
+    "" when there is none."""
+
+    recipes = {str(row.id): row for row in getattr(base_of(config), "metric_recipes", []) or []}
+    seen: set[str] = set()
+    pending: list[Any] = [
+        *(row.expression for row in parsed.select),
+        *(row.expression for row in parsed.metric_filters),
+        *parsed.where,
+    ]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (list, tuple)):
+            pending.extend(node)
+        elif isinstance(node, MetricPredicateExpr) or (
+            isinstance(node, ScopedAggregateExpr) and (node.predicates or node.where)
+        ):
+            return "an entity's aggregate, which reads periods of its own"
+        elif isinstance(node, MetricRecipeRefExpr):
+            if node.metric_recipe not in seen:
+                seen.add(node.metric_recipe)
+                pending.append(getattr(recipes.get(node.metric_recipe), "expression", None))
+        elif is_dataclass(node) and not isinstance(node, type):
+            pending.extend(getattr(node, item.name) for item in fields(node))
+    dimensions = {row.id: row for row in config.dimensions}
+    for leaf in leaves:
+        spec = dict(leaf.filter_spec or {})
+        clauses = list(spec.get("all", []) or [])
+        if set(spec) - {"all"} or any(clause.get("expression") is not None for clause in clauses):
+            return "an entity's aggregate, which reads periods of its own"
+        for clause in _bound_filter_clauses(leaf, config):
+            if _is_dated(dimensions.get(str(clause.get("field")))):
+                return (
+                    f"{leaf.measure_id}'s own filter on {clause['field']}, which can cut a period"
+                )
+    return ""
 
 
 # A where bound's ops: the one a comparison can run beside is an upper bound.
@@ -296,7 +384,7 @@ _UPPER = {"lt": "lt", "<": "lt", "lte": "lte", "<=": "lte"}
 
 def _bounds(
     config: Any, query: Mapping[str, Any], roles: list[Any], zone: str
-) -> tuple[list[tuple[str, tuple[datetime, bool] | None]], list[str]]:
+) -> tuple[list[tuple[str, tuple[datetime, bool] | None]], list[str], list[tuple[str, str]]]:
     """Every bound that ends the window, by source (``time.end``, or the where filter on a
     field), as (wall time in the clock's zone, read exactly), None for one plan can't read; and
     the dated fields of where filters whose cut plan can't line up with the clock's buckets."""
@@ -304,6 +392,13 @@ def _bounds(
     raw_time = query.get("time")
     time: Mapping[str, Any] = raw_time if isinstance(raw_time, Mapping) else {}
     bounds: list[tuple[str, tuple[datetime, bool] | None]] = []
+    utc = all(
+        str(role.timezone or "UTC") == "UTC" and str(role.column_timezone or "UTC") == "UTC"
+        for role in roles
+    )
+    unread: list[tuple[str, str]] = []
+    if time.get("end") is not None and (problem := _bound_problem(time["end"], utc)):
+        unread.append((f"time.end {time['end']}", problem))
     if time.get("end") is not None:
         try:
             moment, exact = _parse_bound(time["end"])
@@ -316,10 +411,6 @@ def _bounds(
         for role in roles
         if role.dimension in dimensions
     }
-    utc = all(
-        str(role.timezone or "UTC") == "UTC" and str(role.column_timezone or "UTC") == "UTC"
-        for role in roles
-    )
     uncut: set[str] = set()
     for item in query.get("where") or []:
         nested = not (isinstance(item, Mapping) and "field" in item)
@@ -338,6 +429,9 @@ def _bounds(
                 uncut.add(field)
                 continue
             source = f"the where filter on {field}"
+            if problem := _bound_problem(row.get("value"), utc):
+                unread.append((source, problem))
+                continue
             try:
                 value, exact = _parse_bound(row.get("value"))
             except (ValueError, OverflowError, TypeError):
@@ -349,7 +443,7 @@ def _bounds(
                 day = str(getattr(dimension, "data_type", "")).lower() == "date"
                 moment += timedelta(days=1) if day and pure_date else timedelta(microseconds=1)
             bounds.append((source, (moment, exact)))
-    return bounds, sorted(uncut)
+    return bounds, sorted(uncut), unread
 
 
 def _rows(item: Any) -> list[Mapping[str, Any]]:
@@ -413,6 +507,7 @@ def _is_dated(dimension: Any) -> bool:
     return str(getattr(dimension, "data_type", "") or "").lower() in {
         "date",
         "datetime",
+        "time",
         "timestamp",
     }
 

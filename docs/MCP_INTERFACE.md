@@ -789,7 +789,11 @@ by, through metrics and `having`: clocks in different time zones hold it
 (`lt`, `lte`) on a UTC clock's own date ends the window like `time.end`, so the earliest bound
 decides, and the option ends before any period the filter cuts; a bound on another date, or one
 plan can't line up with the clock's buckets, holds the draft with no option. A bound finer than a
-microsecond holds it too. A window that has ended (every bound on a period boundary no later
+microsecond holds it too. So, with no option, does whatever plan can't prove complete: a draft
+that also reads an entity's aggregate (an entity filter's `having`, a metric predicate, a scoped
+aggregate's conditions), a measure or metric that filters its own rows on a date or time, or a
+bound with a UTC offset (other than UTC itself on a UTC clock, since the SQL compares the wall
+time) or a comma before its fraction. A window that has ended (every bound on a period boundary no later
 than `now`) keeps its answer, and an option is offered only when the same check calls it
 complete.
 Questions longer than 2,000 characters are not partially parsed for time: unless the caller
