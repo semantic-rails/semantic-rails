@@ -1351,6 +1351,20 @@ def _unsupported_conversion(expr: ConversionExpr) -> SemanticLayerError:
 
 
 _NUMERIC_DATA_TYPES = {"integer", "number"}
+_TEMPORAL_DATA_TYPES = {"date", "timestamp", "datetime"}
+
+
+def _reads_as_iso_time(text: str) -> bool:
+    """Whether ``text`` is an ISO date or date-time, the form a temporal literal is cast from."""
+    from datetime import date, datetime
+
+    for parse in (date.fromisoformat, datetime.fromisoformat):
+        try:
+            parse(text.strip())
+        except ValueError:
+            continue
+        return True
+    return False
 
 
 def _validate_where_value_type(dim, item, path: str = "where") -> None:
@@ -1414,7 +1428,13 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
                 f"where filter on dimension {dim.id!r} expects a {expected} value but "
                 f"got {value!r} (type {type(value).__name__})."
             ),
-            details={"dimension": dim.id, "data_type": data_type, "value": value, "op": item.op},
+            details={
+                "dimension": dim.id,
+                "data_type": data_type,
+                "value": value,
+                "op": item.op,
+                "path": f"{path}.value",
+            },
         )
 
     for value in values:
@@ -1435,6 +1455,13 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
             if isinstance(value, str) and value.lower() in {"true", "false"}:
                 continue
             raise mismatch("boolean", value)
+        # A warehouse casts the text to its type; text no cast reads fails there, unplaced.
+        if (
+            data_type in _TEMPORAL_DATA_TYPES
+            and isinstance(value, str)
+            and not _reads_as_iso_time(value)
+        ):
+            raise mismatch("ISO date or date-time", value)
 
 
 def _group_path(query: Any, group: ChildGroup) -> str:

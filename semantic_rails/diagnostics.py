@@ -182,6 +182,9 @@ _FILTER_VALUE_FORMS = {
     "string": "text; in YAML, quote text that looks like a number or boolean (`value: 'true'`)",
     "integer": "a whole number",
     "number": "a number",
+    "date": "an ISO date, such as 2017-09-04",
+    "timestamp": "an ISO date or date-time, such as 2017-09-04T12:00:00",
+    "datetime": "an ISO date or date-time, such as 2017-09-04T12:00:00",
 }
 
 
