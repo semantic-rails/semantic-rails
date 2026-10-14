@@ -75,7 +75,6 @@ from .compiler_parts.empty_groups import (
     CoverageClock,
     observation_scope,
     observed_outside_filters,
-    sql_nodes,
 )
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -119,7 +118,7 @@ from .policy_rules import check_request_environment
 from .query_call import read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
-from .renderer import render_select_for_profile
+from .renderer import render_with_slots
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -152,7 +151,7 @@ from .seed_provenance import (
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
 from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
 from .sql_identifiers import plain_relation_parts
-from .sql_preparation import PreparedQuery, checked_parameter_values
+from .sql_preparation import PreparedQuery, checked_parameter_values, finalize_parameters
 
 
 def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveRefusal:
@@ -405,9 +404,17 @@ def _unchained_failure(exc: Exception, adapter: Any, query: PreparedQuery) -> Se
 
 
 def _coverage_probe_query(
-    warehouse: str, table: str, column: str, *, entity: str, dimension: str
+    warehouse: str,
+    table: str,
+    column: str,
+    *,
+    entity: str,
+    dimension: str,
+    visibility: Any = None,
+    connection_kind: str = "",
 ) -> PreparedQuery:
-    """``SELECT MIN(column), MAX(column) FROM table``, rendered as compiled SQL is.
+    """``SELECT MIN(column), MAX(column) FROM table``, rendered as compiled SQL is, and held to
+    the request's row filters (``visibility``) as every statement it runs is.
 
     Both names come from package config, so each must be a plain SQL identifier;
     anything else refuses before any SQL is built.
@@ -431,8 +438,15 @@ def _coverage_probe_query(
         ],
         from_table=SqlTableRef(table),
     )
+    if visibility is not None:
+        from .row_filters import apply_row_filters
+
+        probe = apply_row_filters(probe, visibility)
     dialect = dialect_for_warehouse(warehouse)
-    return dialect.prepare_query(render_select_for_profile(probe, dialect=dialect))
+    rendered, slots = render_with_slots(probe, dialect=dialect)
+    return finalize_parameters(
+        replace(dialect.prepare_query(rendered), parameters=slots), connection_kind
+    )
 
 
 def _data_coverage_probe(
@@ -443,6 +457,8 @@ def _data_coverage_probe(
     root_entity: str,
     temporal_role: str,
     limits: dict[str, Any],
+    visibility: Any = None,
+    policy_context: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """Run a single ``SELECT MIN(<col>), MAX(<col>) FROM <table>`` probe
     to discover what time window actually has data for the root entity's
@@ -472,8 +488,10 @@ def _data_coverage_probe(
             dim_row.column,
             entity=entity_row.id,
             dimension=dim_row.id,
+            visibility=visibility,
+            connection_kind=config.package.connection.kind if visibility is not None else "",
         )
-        rows = _adapter_query(adapter, query, limits=limits)
+        rows = _adapter_query(adapter, query, limits=limits, policy_context=policy_context)
         if not rows:
             return {}
         first = rows[0] or {}
@@ -538,24 +556,19 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
 
 
 def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
-    """The first row of ``probe``, a select whose parameters are all in its CTEs, run as the
-    answer's own SQL is: bound row filters and request limits kept."""
+    """The first row of ``probe``, run as the answer's own SQL is: held to its row filters
+    again (after its relation CTEs are attached), its slots read from its render, and the
+    request's limits kept."""
     from .relation_pipelines import attach_relation_ctes
-    from .renderer import render_select_for_profile
-    from .sql_ast import SqlParameter
-    from .sql_preparation import finalize_parameters
+    from .row_filters import apply_row_filters
 
     probe = attach_relation_ctes(runtime._config, probe)
+    visibility = compiled.get("row_filter_visibility")
+    if visibility is not None:
+        probe = apply_row_filters(probe, visibility)
     dialect = dialect_for_warehouse(runtime.warehouse)
-    prepared = replace(
-        dialect.prepare_query(render_select_for_profile(probe, dialect=dialect)),
-        parameters=tuple(
-            node.slot
-            for cte in probe.ctes
-            for node in sql_nodes(cte.query)
-            if isinstance(node, SqlParameter)
-        ),
-    )
+    rendered, slots = render_with_slots(probe, dialect=dialect)
+    prepared = replace(dialect.prepare_query(rendered), parameters=slots)
     prepared = finalize_parameters(prepared, runtime._config.package.connection.kind)
     with runtime._query_lock:
         rows = _adapter_query(
@@ -750,12 +763,20 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
         if key in payload:
             probe[key] = payload[key]
 
+    held: set[str] = set()
+
     def values(field: str, where: list[dict[str, Any]], limit: int) -> list[str] | None:
         try:
             result = runtime.query_internal(
                 {**probe, "group_by": [field], "where": where, "limit": limit}
             )
-        except SemanticLayerError:
+        except SemanticLayerError as exc:
+            if exc.code == "POLICY_DENIED" and str(exc.details.get("reason", "")).startswith(
+                "row_filter_"
+            ):
+                # A row filter holds the listing (the model no filter reaches): the answered
+                # query says nothing about the value rather than call it unverified.
+                held.add(field)
             return None
         return [str(row[field]) for row in result["rows"] if row.get(field) is not None]
 
@@ -778,7 +799,8 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
                 else None
             )
             if found is None:
-                unverified.append({"dimension": field, "value": literal})
+                if field not in held:
+                    unverified.append({"dimension": field, "value": literal})
             elif not found:
                 misses.append({"dimension": field, "value": literal})
     limit = max_valid_values_limit()
@@ -1065,16 +1087,20 @@ class Runtime:
 
     def _view(self) -> visible_view.ViewEntry:
         pinned = visible_view.pinned_view(self)
-        return pinned.entry if pinned is not None else self._views[frozenset()]
+        return pinned.entry if pinned is not None else self._views[frozenset(), frozenset()]
 
     def _replace_base(self, config: Any) -> None:
         """Serve ``config`` as the whole package (``package_config``); every view of the
         previous one is dropped with the caches computed from it."""
+        from .row_filter_visibility import check_shared
+
+        check_shared(config)
         with self._cache_lock:
             self.package_config = config
             self._generation += 1
-            self._views: dict[frozenset[str], visible_view.ViewEntry] = {
-                frozenset(): visible_view.ViewEntry(config, Registry(config))
+            # Keyed by the caller's hidden objects and withheld value domains.
+            self._views: dict[tuple[frozenset[str], frozenset[str]], visible_view.ViewEntry] = {
+                (frozenset(), frozenset()): visible_view.ViewEntry(config, Registry(config))
             }
 
     def view_for(self, context: Any) -> Any:
@@ -2093,18 +2119,18 @@ class Runtime:
                 # still ships. The probe only fires on the zero-row path
                 # (we already paid for the original query) so the
                 # round-three "signal only, no probes" rule still holds.
-                # The probe reads the whole relation, so a row-filtered query skips it.
-                actual_data_coverage: dict[str, str] = {}
-                if not compiled["prepared_query"].parameters:
-                    with self._query_lock:
-                        actual_data_coverage = _data_coverage_probe(
-                            self._get_adapter(),
-                            self._config,
-                            warehouse=self.warehouse,
-                            root_entity=root_entity,
-                            temporal_role=str(time_block.get("temporal_role", "") or ""),
-                            limits=limits,
-                        )
+                # Under a row filter the probe reads only the caller's visible rows.
+                with self._query_lock:
+                    actual_data_coverage = _data_coverage_probe(
+                        self._get_adapter(),
+                        self._config,
+                        warehouse=self.warehouse,
+                        root_entity=root_entity,
+                        temporal_role=str(time_block.get("temporal_role", "") or ""),
+                        limits=limits,
+                        visibility=compiled.get("row_filter_visibility"),
+                        policy_context=policy_context,
+                    )
                 # The resolved bounds show where the filter landed: a relative window
                 # resolves against now, which can fall far outside historical data.
                 requested_window = _requested_window(compiled, payload)

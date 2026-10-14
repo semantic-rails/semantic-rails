@@ -24,6 +24,12 @@ INSERT INTO orders VALUES
 ALTER TABLE orders ADD COLUMN ordered_at_tz TIMESTAMP WITH TIME ZONE;
 UPDATE orders SET ordered_at_tz = ordered_at AT TIME ZONE 'UTC';
 
+-- Stores own their orders. Elm (a) is in the West and Oak (b) in the East, so a West caller
+-- sees orders 1, 3, 4, 6, 7 and 11. Fir (c), also in the West, has no orders, and order 8,
+-- with no store, belongs to no region.
+CREATE TABLE stores (store_id VARCHAR(8), name VARCHAR(16), region VARCHAR(8));
+INSERT INTO stores VALUES ('a', 'Elm', 'West'), ('b', 'Oak', 'East'), ('c', 'Fir', 'West');
+
 -- DATE and timestamp clocks straddle different window edges; converted dates
 -- read as June 30 and July 1 in New York.
 CREATE TABLE clock_edges (id INTEGER, source_day DATE, source_time TIMESTAMP, amount INTEGER);

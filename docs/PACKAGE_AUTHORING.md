@@ -703,7 +703,7 @@ and `action`, even when empty. Each kind also accepts only:
 | `object_visibility`, `protected_object` | none |
 | `object_access` | `max_rank` |
 | `metric_constraint` | `required_group_by`, `allowed_group_by`, `required_where`, `allowed_where`, `allow_metric_filters`, `allowed_metric_filter_entities`, `allowed_metric_filter_metrics`, `allowed_temporal_roles` |
-| `row_filter` | `dimension`, `attribute`, `type`, `unless_roles` |
+| `row_filter` | `dimension`, `attribute`, `type`, `unless_roles`, `shared` |
 
 Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
 are refused with `INVALID_CONFIG`, including policies built in Python. Use
@@ -807,30 +807,96 @@ kind names must match exactly.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.
-- **`row_filter`** — limits a relation's rows to one customer (or other
-  principal) by comparing a `dimension` with a trusted request `attribute`
-  that the embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The
-  compiler adds `<column> = ?` to the relation's scan and the runtime binds the
-  attribute's value as a parameter; values never enter SQL text. A list value
-  (strings or integers, for example a manager's regions) adds
-  `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the rows
-  of any of them; a statement over the warehouse's documented limit (Postgres: 65,535
-  parameters in one statement; Snowflake: 200,000 values in one list) is refused before
-  it runs. The
-  dimension must be a plain `string`, `integer` or `boolean`
-  column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value.
-  The policy takes no `object_ids`, `action` or operator. A request it applies to is
-  denied (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty
-  list (a grant of nothing), and so is any query outside the qualified family: the
-  compiled statement must read one ordinary scan of the filtered relation, as its only
-  relation. Engine-generated
-  observation and coverage scans may repeat that relation; each receives the same policy
-  filter. Joins, entity filters, calendar spines (prior-period comparisons, fill) and
-  other second scans are refused, and rollups are not routed to. The zero-row
-  data-coverage probe is skipped. Such a policy loads for any warehouse, but only
-  DuckDB and Postgres execute these statements today; every other adapter
-  refuses them. Postgres finalizes the placeholders as `$1`, `$2`, … before
-  execution and binds trusted values through ADBC.
+- **`row_filter`** — limits the rows a caller can see to one customer, region or other
+  principal, by comparing a `dimension` with a trusted request `attribute` that the
+  embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The compiler compares
+  `<column> = ?` and the runtime binds the attribute's value as a parameter; values never
+  enter SQL text. A list value (strings or integers, for example a manager's regions)
+  compares `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the
+  rows of any of them; a statement over the warehouse's documented limit (Postgres: 65,535
+  parameters in one statement; Snowflake: 200,000 values in one list) is refused before it
+  runs. The dimension must be a plain `string`, `integer` or `boolean`
+  column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value. The
+  policy takes no `object_ids`, `action` or operator. A request it applies to is denied
+  (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
+  of nothing).
+
+  **What a filtered caller sees.** Each caller reads a *visible database*: the package's
+  data with every row they can't see removed, and every answer (totals, groups, shares,
+  distinct counts, `EXISTS` filters, windows, prior periods, coverage dates and
+  `NO_DATA_YET`) is the answer an unfiltered caller would get on that data. A row is
+  visible when it passes its relation's own filter and every *owner* on its route to the
+  filtered model is visible. A model's owners are found through the package's own route to
+  the filtered model (the route `resolve_path` picks for the package, never a query's
+  route decision) when every hop of that route reaches at most one row (`many_to_one` or
+  `one_to_one`) on a single-column key. With a filter on stores' region, an order belongs
+  to its store and an order line to its order, so a West manager's revenue, order counts
+  and line quantities count only West stores' orders, by store or in total, and a store
+  with a hidden duplicate key still shows only the caller's copy. `validate` lists, per
+  row filter, the models it *filters*, the models it *covers* through their owners, the
+  ones it leaves *uncovered*, and the ones it can't trace (*unsupported*).
+
+  - An order with no store (or a store id no store row has) has no visible owner, so it
+    counts for no filtered caller; roles in `unless_roles` see it. Regions can therefore
+    sum to less than the company total. To give such rows an owner, model one: an
+    "Online" or "Unassigned" store row, and grant it to the callers who should see them.
+  - A model no filter reaches (customers, when orders belong to stores) is reference data:
+    filtered rows may look it up (revenue by customer segment answers), but a question
+    that counts or lists it ("how many customers do we have?") is refused with
+    `row_filter_uncovered_root`; ask about the rows the filter does reach instead
+    ("customers who bought in my stores"). List such a model in the filter's `shared:`
+    (entity ids) to let every caller the filter applies to read all of its rows. `shared`
+    only loosens, and names only models the filter doesn't reach: a model it filters, covers
+    or can't trace fails to load (`INVALID_CONFIG`).
+  - A lookup into a filtered or covered model along a route that isn't how the walking
+    model is owned (revenue by a customer's *home* store, when orders belong to the store
+    they were placed in) is refused with `row_filter_route_not_owned`: visible orders would
+    land under stores the caller can't see. Ask by the owner's route instead.
+  - A model whose route to the filtered model is undecided, composite, crosses a
+    `temporal_validity` relationship, or disagrees with its owner's route is refused under
+    the filter (`row_filter_coverage_unsupported`); decide its route with a
+    `graph.path_preferences` row or give it one owner. So is a relation read under two
+    names, or by models that disagree on its owner.
+  - Refused under a filter too (`row_filter_unsupported_query` unless noted): relation
+    pipelines over a filtered or covered relation, relations no model reads, table
+    functions other than the engine's day series, a `RIGHT` or `FULL` join beside a
+    filtered relation, a load log the filter restricts (`row_filter_on_load_log`), and any
+    row-level call other than `COALESCE`, `NULLIF`, `CONCAT`, `LOWER`, `UPPER`, `TRIM`,
+    `REPLACE`, `LENGTH`, `ROUND`, `FLOOR`, `CEIL`, `DATE_TRUNC`, `DATE_PART`, `LEFT`,
+    `RIGHT` and a `CAST` to text (`row_filter_fallible_expression`), whoever wrote it, since
+    an error on a hidden row would tell something about it. Rollups are not routed to; the
+    query reads its base relations. When a window returns no rows, the data coverage the
+    answer reports is that of the caller's own visible rows.
+  - A filtered or covered model's declared value `domain:` is withheld from every caller in
+    the filter's scope, including those its `unless_roles` exempts: a value list (valid
+    values, the inspect card, search) is read live, from the caller's own rows, so a West
+    manager's store picker lists only West stores, and an exempt caller's lists every store.
+
+  Every statement a filtered request runs is checked before it runs: each read of a
+  filtered or covered relation must carry its visibility condition, and anything the check
+  can't prove is refused, never run unfiltered. Such a policy loads for any warehouse, but
+  only DuckDB, Postgres and Snowflake (through ADBC) execute these statements today; every
+  other adapter refuses them. Known limitation in this release: on Snowflake, an optional
+  (`LEFT`) lookup into a model a filter covers (refunds by their order's region, order lines
+  by store) is refused, until its tests prove the subquery that condition needs there.
+  Postgres finalizes the placeholders as `$1`, `$2`, … before execution and binds trusted
+  values through ADBC.
+
+  A measure's row arithmetic is computed in the same `SELECT` that checks its rows'
+  visibility. DuckDB computes it only for visible rows, so a value that would overflow on a
+  hidden row never changes a filtered answer; on Postgres and Snowflake the warehouse's plan
+  decides the order inside that `SELECT`, so such an overflow, or a hidden text value the
+  warehouse can't convert where a measure reads text as a number (`COALESCE(amount_text, 0)`),
+  can refuse a filtered question with an execution error (it never returns a hidden value).
+
+  A filter value on a model no filter reaches (`where` on a customer's segment, say) isn't
+  checked against the data for a filtered caller, since listing that model is held: such a
+  query gets no `FILTER_VALUE_NOT_FOUND` warning, where an unfiltered caller could.
+
+  Known limitation: the SQL a row-filtered caller can see (`mode: sql`, `rendered_sql`)
+  shows the names of the filter's tables and columns, and of the tables it reaches, never
+  their values. A host that hides those from a caller should not grant that caller SQL
+  output.
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host
@@ -884,6 +950,13 @@ semantic_policies:
     attribute: customer_id
     unless_roles: [auditor]
     rationale: Each customer sees only their own orders; auditors see every order.
+
+  - id: policy.shop.own_region
+    kind: row_filter
+    dimension: dimension.shop_store_region
+    attribute: region
+    shared: [entity.shop_customer]
+    rationale: Managers see their region's stores and the orders placed in them.
 ```
 
 ### Objects visible only to named roles
@@ -1903,9 +1976,8 @@ never added across two parents, or repeated over the child's own child rows.
   none; an `avg`, `min` or `max` source reads NULL for it.
 - The source is compiled as its own query, so its access policies apply. The lookup's
   direct relationship is also a bound dependency: denying it refuses
-  validate, compile and query with `POLICY_DENIED` before rendering or execution. A row filter
-  allows one relation per query, so a lookup under any row filter is refused with
-  `POLICY_DENIED`.
+  validate, compile and query with `POLICY_DENIED` before rendering or execution. Under a row
+  filter the source reads the caller's visible rows, as every read does.
 - Time: the carried value is the parent's all-time total. A query's `where`, `time`
   window and buckets on the child's own clocks select child rows, and leave the value
   unchanged. Bucketing by the source's clock, prior-period, cumulative, rolling and

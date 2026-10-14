@@ -1,6 +1,6 @@
 fixture:
-  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports, shipment_scans, order_tags, tags, room_rows, people, room_bookings]
-  data_sha256: 703241118ddc88ebcd4d181f6d9dcdfd8c0b98f92966fc5625fdc422e591d6e1
+  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports, shipment_scans, order_tags, tags, room_rows, people, room_bookings, stores]
+  data_sha256: 9198ccea1473642464181d3d0b8de4e880a4ccc20144f01dcff752bf2cf6aefb
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot
@@ -8946,3 +8946,481 @@ tests:
     query:
       select: [measure.shop.headcount]
       group_by: [dimension.shop_room_bookings_booker]
+
+  # Row filters through joins. The regional policy (shop/policies.yml) filters stores by the
+  # caller's trusted region, and an order is visible only when its store is: a West manager's
+  # answer is exactly an unfiltered caller's answer on the rows a West manager can see. Each
+  # reference reads those rows through explicit visibility CTEs; an auditor is unfiltered.
+  shop/row-filter-total-revenue:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A West manager sees Elm's orders 1, 3, 4, 6, 7 and 11; Oak's are hidden, and order 8 has no store, so no filtered caller counts it.
+    cites: &row_filter_revenue_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: &west {roles: [regional], attributes: {region: West}}
+    query:
+      select: &row_filter_revenue [measure.shop.revenue]
+    expected_rows: [{revenue: 43}]
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT SUM(amount) FROM visible_orders
+  shop/row-filter-total-revenue-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor is outside the regional policy and sees every order, order 8 with no store included, so regions can sum below this total (43 + 25 of 74).
+    cites: *row_filter_revenue_cites
+    tags: [row-filter]
+    context: &unfiltered {roles: [auditor]}
+    query:
+      select: *row_filter_revenue
+    expected_rows: [{revenue: 74}]
+    reference_sql: SELECT SUM(amount) FROM orders
+  shop/row-filter-revenue-by-store:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Grouped by store, a West manager sees Elm alone. Oak is no group at all, neither NULL nor 0, and no NULL store group holds order 8; Fir is visible but has no orders, so it is no group either.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.name, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *west
+    query: &revenue_by_store_name
+      select: *row_filter_revenue
+      group_by: [dimension.shop_store_name]
+    expected_rows:
+      - {dimension.shop_store_id: a, dimension.shop_store_name: Elm, revenue: 43}
+    reference_sql: |
+      WITH visible_stores AS (SELECT * FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT s.store_id, s.name, SUM(o.amount)
+      FROM visible_orders AS o JOIN visible_stores AS s ON s.store_id = o.store_id
+      GROUP BY s.store_id, s.name
+  shop/row-filter-revenue-by-store-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor sees Elm 43, Oak 25 and order 8's 6 under no store.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.name, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *unfiltered
+    query: *revenue_by_store_name
+    expected_rows:
+      - {dimension.shop_store_id: a, dimension.shop_store_name: Elm, revenue: 43}
+      - {dimension.shop_store_id: b, dimension.shop_store_name: Oak, revenue: 25}
+      - {dimension.shop_store_id: null, dimension.shop_store_name: null, revenue: 6}
+    reference_sql: |
+      SELECT s.store_id, s.name, SUM(o.amount)
+      FROM orders AS o LEFT JOIN stores AS s ON s.store_id = o.store_id
+      GROUP BY s.store_id, s.name
+  shop/row-filter-revenue-by-region:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Grouped by region, a West manager sees only the West, holding Elm's 43; the East and order 8's missing region are no groups.
+    cites: *row_filter_revenue_cites
+    tags: [row-filter]
+    context: *west
+    query: &revenue_by_region
+      select: *row_filter_revenue
+      group_by: [dimension.shop_store_region]
+    expected_rows:
+      - {dimension.shop_store_region: West, revenue: 43}
+    reference_sql: |
+      WITH visible_stores AS (SELECT * FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT s.region, SUM(o.amount)
+      FROM visible_orders AS o JOIN visible_stores AS s ON s.store_id = o.store_id
+      GROUP BY s.region
+  shop/row-filter-revenue-by-region-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor sees the West's 43, the East's 25 and order 8's 6 under no region.
+    cites: *row_filter_revenue_cites
+    tags: [row-filter]
+    context: *unfiltered
+    query: *revenue_by_region
+    expected_rows:
+      - {dimension.shop_store_region: West, revenue: 43}
+      - {dimension.shop_store_region: East, revenue: 25}
+      - {dimension.shop_store_region: null, revenue: 6}
+    reference_sql: |
+      SELECT s.region, SUM(o.amount)
+      FROM orders AS o LEFT JOIN stores AS s ON s.store_id = o.store_id
+      GROUP BY s.region
+  shop/row-filter-refunds-follow-their-order:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A refund is visible when its order is, and an order when its store is, two hops away; a West manager counts the refunds of orders 4, 6 and 7 (two on order 7), not order 2's two.
+    cites: &row_filter_refund_cites [tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *west
+    query:
+      select: &refund_count [measure.shop.refund_count]
+    expected_rows: [{refund_count: 4}]
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores)),
+      visible_refunds AS (SELECT * FROM refunds WHERE order_id IN (SELECT order_id FROM visible_orders))
+      SELECT COUNT(DISTINCT refund_id) FROM visible_refunds
+  shop/row-filter-refunds-follow-their-order-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor counts all six refunds.
+    cites: *row_filter_refund_cites
+    tags: [row-filter]
+    context: *unfiltered
+    query:
+      select: *refund_count
+    expected_rows: [{refund_count: 6}]
+    reference_sql: SELECT COUNT(DISTINCT refund_id) FROM refunds
+  shop/row-filter-refunds-by-region-through-their-order:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Refunds grouped by their order's store's region, two hops from the refunds; a West manager sees the West's four and no East group.
+    cites: *row_filter_refund_cites
+    tags: [row-filter]
+    context: *west
+    query: &refunds_by_region
+      select: *refund_count
+      group_by: [dimension.shop_store_region]
+    expected_rows:
+      - {dimension.shop_store_region: West, refund_count: 4}
+    reference_sql: |
+      WITH visible_stores AS (SELECT * FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores)),
+      visible_refunds AS (SELECT * FROM refunds WHERE order_id IN (SELECT order_id FROM visible_orders))
+      SELECT s.region, COUNT(DISTINCT r.refund_id)
+      FROM visible_refunds AS r
+      JOIN visible_orders AS o ON o.order_id = r.order_id
+      JOIN visible_stores AS s ON s.store_id = o.store_id
+      GROUP BY s.region
+  shop/row-filter-refunds-by-region-through-their-order-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor sees the West's four refunds and the East's two, both on order 2.
+    cites: *row_filter_refund_cites
+    tags: [row-filter]
+    context: *unfiltered
+    query: *refunds_by_region
+    expected_rows:
+      - {dimension.shop_store_region: West, refund_count: 4}
+      - {dimension.shop_store_region: East, refund_count: 2}
+    reference_sql: |
+      SELECT s.region, COUNT(DISTINCT r.refund_id)
+      FROM refunds AS r
+      LEFT JOIN orders AS o ON o.order_id = r.order_id
+      LEFT JOIN stores AS s ON s.store_id = o.store_id
+      GROUP BY s.region
+  shop/row-filter-uncovered-lookup-keeps-visible-orphans:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Customers hold no store, so no region filters them and every caller looks them up; a West manager's orders group by their customer's channel, and order 11's customer (who never signed up) and order 7's (no channel) read in the NULL channel.
+    cites: &row_filter_channel_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *west
+    query: &revenue_by_channel
+      select: *row_filter_revenue
+      group_by: [dimension.shop_customer_channel]
+    expected_rows:
+      - {dimension.shop_customer_channel: web, revenue: 37}
+      - {dimension.shop_customer_channel: store, revenue: 4}
+      - {dimension.shop_customer_channel: null, revenue: 2}
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT c.channel, SUM(o.amount)
+      FROM visible_orders AS o LEFT JOIN signups AS c ON c.customer_id = o.customer_id
+      GROUP BY c.channel
+  shop/row-filter-uncovered-lookup-keeps-visible-orphans-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor's channels hold every order's revenue.
+    cites: *row_filter_channel_cites
+    tags: [row-filter]
+    context: *unfiltered
+    query: *revenue_by_channel
+    expected_rows:
+      - {dimension.shop_customer_channel: web, revenue: 55}
+      - {dimension.shop_customer_channel: store, revenue: 17}
+      - {dimension.shop_customer_channel: null, revenue: 2}
+    reference_sql: |
+      SELECT c.channel, SUM(o.amount)
+      FROM orders AS o LEFT JOIN signups AS c ON c.customer_id = o.customer_id
+      GROUP BY c.channel
+  shop/row-filter-share-of-total-reads-visible-rows:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A share's denominator is the total of the rows the caller sees, 43 for a West manager, never the company's 74; the visible shares add up to 1.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_CALL.md#inline-expression-kinds, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *west
+    query: &revenue_share_by_channel
+      select:
+        - {expression: measure.shop.revenue, as: revenue}
+        - {expression: {kind: share, input: measure.shop.revenue, over: [dimension.shop_customer_channel]}, as: revenue_share}
+      group_by: [dimension.shop_customer_channel]
+    expected_rows:
+      - {dimension.shop_customer_channel: web, revenue: 37, revenue_share: 0.8604651162790697}
+      - {dimension.shop_customer_channel: store, revenue: 4, revenue_share: 0.09302325581395349}
+      - {dimension.shop_customer_channel: null, revenue: 2, revenue_share: 0.046511627906976744}
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT c.channel, SUM(o.amount) AS revenue,
+        SUM(o.amount) / CAST(SUM(SUM(o.amount)) OVER () AS DOUBLE PRECISION) AS revenue_share
+      FROM visible_orders AS o LEFT JOIN signups AS c ON c.customer_id = o.customer_id
+      GROUP BY c.channel
+  shop/row-filter-share-of-total-reads-visible-rows-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor's shares are fractions of the company's 74.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_CALL.md#inline-expression-kinds, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *unfiltered
+    query: *revenue_share_by_channel
+    expected_rows:
+      - {dimension.shop_customer_channel: web, revenue: 55, revenue_share: 0.7432432432432432}
+      - {dimension.shop_customer_channel: store, revenue: 17, revenue_share: 0.22972972972972974}
+      - {dimension.shop_customer_channel: null, revenue: 2, revenue_share: 0.02702702702702703}
+    reference_sql: |
+      SELECT c.channel, SUM(o.amount) AS revenue,
+        SUM(o.amount) / CAST(SUM(SUM(o.amount)) OVER () AS DOUBLE PRECISION) AS revenue_share
+      FROM orders AS o LEFT JOIN signups AS c ON c.customer_id = o.customer_id
+      GROUP BY c.channel
+  shop/row-filter-scans-of-hidden-or-unknown-orders:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Scans have no key and are visible through their order; a West manager sees the scans of orders 1 (three, one stored twice), 4 and 6, never order 2's or order 8's, nor the scan with no order or the one naming order 99, which no store owns.
+    cites: &row_filter_scan_cites [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, row-grain]
+    context: *west
+    query: &scan_totals
+      select: [measure.shop.scan_count, measure.shop.scan_weight]
+    expected_rows: [{scan_count: 6, scan_weight: 11.75}]
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores)),
+      visible_scans AS (SELECT * FROM shipment_scans WHERE order_id IN (SELECT order_id FROM visible_orders))
+      SELECT COUNT(*), SUM(weight) FROM visible_scans
+  shop/row-filter-scans-of-hidden-or-unknown-orders-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor counts every stored scan, those with no order or an unknown one included.
+    cites: *row_filter_scan_cites
+    tags: [row-filter, row-grain]
+    context: *unfiltered
+    query: *scan_totals
+    expected_rows: [{scan_count: 10, scan_weight: 19.25}]
+    reference_sql: SELECT COUNT(*), SUM(weight) FROM shipment_scans
+  shop/row-filter-bridge-distinct-orders-by-tag:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Tag links are visible through their order and tags hold no store; a West manager counts orders 1 and 4 under gift (order 1's duplicate link absorbed), order 1 under rush and order 4 under fragile, never Oak's orders 2 and 9.
+    cites: &row_filter_tag_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/tags.yml#model.dimensions.tag_name, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, row-grain]
+    context: *west
+    query: &orders_by_tag
+      select: &row_filter_order_count [measure.shop.order_count]
+      group_by: [dimension.shop_tag_tag_name]
+    expected_rows:
+      - {dimension.shop_tag_tag_name: gift, order_count: 2}
+      - {dimension.shop_tag_tag_name: rush, order_count: 1}
+      - {dimension.shop_tag_tag_name: fragile, order_count: 1}
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores)),
+      visible_links AS (SELECT * FROM order_tags WHERE order_id IN (SELECT order_id FROM visible_orders))
+      SELECT t.tag_name, COUNT(DISTINCT l.order_id)
+      FROM visible_links AS l JOIN tags AS t ON t.tag_id = l.tag_id
+      GROUP BY t.tag_name
+  shop/row-filter-bridge-distinct-orders-by-tag-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor counts two orders under each tag.
+    cites: *row_filter_tag_cites
+    tags: [row-filter, row-grain]
+    context: *unfiltered
+    query: *orders_by_tag
+    expected_rows:
+      - {dimension.shop_tag_tag_name: gift, order_count: 2}
+      - {dimension.shop_tag_tag_name: rush, order_count: 2}
+      - {dimension.shop_tag_tag_name: fragile, order_count: 2}
+    reference_sql: |
+      SELECT t.tag_name, COUNT(DISTINCT l.order_id)
+      FROM order_tags AS l JOIN tags AS t ON t.tag_id = l.tag_id
+      GROUP BY t.tag_name
+  shop/row-filter-orders-by-scan-type:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Orders grouped by their scans' type count each visible order once per type; a West manager sees pickups of orders 1, 4 and 6 and deliveries of orders 1 and 4, never orders 2 and 8.
+    cites: &row_filter_scan_type_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/shipment_scans.yml#model.dimensions.scan_type, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, row-grain]
+    context: *west
+    query: &orders_by_scan_type
+      select: *row_filter_order_count
+      group_by: [dimension.shop_shipment_scans_scan_type]
+    expected_rows:
+      - {dimension.shop_shipment_scans_scan_type: pickup, order_count: 3}
+      - {dimension.shop_shipment_scans_scan_type: delivery, order_count: 2}
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores)),
+      visible_scans AS (SELECT * FROM shipment_scans WHERE order_id IN (SELECT order_id FROM visible_orders))
+      SELECT s.scan_type, COUNT(DISTINCT o.order_id)
+      FROM visible_orders AS o JOIN visible_scans AS s ON s.order_id = o.order_id
+      GROUP BY s.scan_type
+  shop/row-filter-orders-by-scan-type-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor sees pickups of orders 1, 2, 4, 6 and 8 and deliveries of orders 1 and 4; the scans of order 99 and of no order name no order.
+    cites: *row_filter_scan_type_cites
+    tags: [row-filter, row-grain]
+    context: *unfiltered
+    query: *orders_by_scan_type
+    expected_rows:
+      - {dimension.shop_shipment_scans_scan_type: pickup, order_count: 5}
+      - {dimension.shop_shipment_scans_scan_type: delivery, order_count: 2}
+    reference_sql: |
+      SELECT s.scan_type, COUNT(DISTINCT o.order_id)
+      FROM orders AS o JOIN shipment_scans AS s ON s.order_id = o.order_id
+      GROUP BY s.scan_type
+  shop/row-filter-month-with-only-hidden-orders:
+    kind: query_matches_snapshot
+    expect: answer
+    why: June 2024's only order (9) is Oak's. A West manager's orders run from November 2023 to August 2024, so June lies inside their data and reads 0, data of nothing, exactly as an unfiltered caller reads it on the West's rows alone.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#empty-groups-null-or-0, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, null-vs-zero, time-window]
+    context: *west
+    now: '2024-09-01T00:00:00Z'
+    query: &june_revenue
+      select: *row_filter_revenue
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2024-06-01', end: '2024-07-01'}
+    expected_rows: [{revenue: 0}]
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT COALESCE(SUM(amount), 0) FROM visible_orders
+      WHERE ordered_at >= TIMESTAMP '2024-06-01' AND ordered_at < TIMESTAMP '2024-07-01'
+  shop/row-filter-month-with-only-hidden-orders-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor reads order 9's 3.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#time, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, time-window]
+    context: *unfiltered
+    now: '2024-09-01T00:00:00Z'
+    query: *june_revenue
+    expected_rows: [{revenue: 3}]
+    reference_sql: |
+      SELECT SUM(amount) FROM orders
+      WHERE ordered_at >= TIMESTAMP '2024-06-01' AND ordered_at < TIMESTAMP '2024-07-01'
+  shop/row-filter-two-regions:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A manager of both regions sees every order with a store, 43 + 25; order 8 still belongs to no region.
+    cites: *row_filter_revenue_cites
+    tags: [row-filter]
+    context: {roles: [regional], attributes: {region: [West, East]}}
+    query:
+      select: *row_filter_revenue
+    expected_rows: [{revenue: 68}]
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region IN ('West', 'East')),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT SUM(amount) FROM visible_orders
+  shop/row-filter-customers-who-bought-in-visible-stores:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Distinct customers counted from the orders a West manager sees, customers 101, 102, 103, 105 and 108 (who never signed up); 104 and 106 bought only at Oak. This is what a regional caller is offered for a count of customers.
+    cites: &row_filter_buyer_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.buying_customers, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *west
+    query:
+      select: &buying_customers [measure.shop.buying_customers]
+    expected_rows: [{buying_customers: 5}]
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT COUNT(DISTINCT customer_id) FROM visible_orders
+  shop/row-filter-customers-who-bought-in-visible-stores-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Every customer with an order, 108 included; 107 never ordered.
+    cites: *row_filter_buyer_cites
+    tags: [row-filter]
+    context: *unfiltered
+    query:
+      select: *buying_customers
+    expected_rows: [{buying_customers: 7}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM orders
+  shop/row-filter-visible-store-without-orders-reads-0:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Fir is a West store with no orders, so a West manager's revenue at Fir is data of nothing, 0, not NULL; orders hold revenue in the manager's scope.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.name, docs/QUERY_CALL.md#empty-groups-null-or-0, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, null-vs-zero]
+    context: *west
+    query:
+      select: *row_filter_revenue
+      where: [{field: dimension.shop_store_name, op: is, value: Fir}]
+    expected_rows: [{revenue: 0}]
+    reference_sql: |
+      WITH visible_stores AS (SELECT * FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores))
+      SELECT COALESCE(SUM(o.amount), 0)
+      FROM visible_orders AS o JOIN visible_stores AS s ON s.store_id = o.store_id
+      WHERE s.name = 'Fir'
+  shop/row-filter-store-listing-shows-visible-stores:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Listing stores reads the filtered stores alone; a West manager sees Elm and Fir, the store with no orders included, never Oak.
+    cites: &row_filter_store_cites [tests/integration/correctness/shop/models/stores.yml#model.dimensions.name, docs/QUERY_CALL.md#group_by, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *west
+    query: &store_listing
+      group_by: [dimension.shop_store_name]
+    expected_rows:
+      - {dimension.shop_store_id: a, dimension.shop_store_name: Elm}
+      - {dimension.shop_store_id: c, dimension.shop_store_name: Fir}
+    reference_sql: SELECT store_id, name FROM stores WHERE region = 'West'
+  shop/row-filter-store-listing-shows-visible-stores-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor lists all three stores.
+    cites: *row_filter_store_cites
+    tags: [row-filter]
+    context: *unfiltered
+    query: *store_listing
+    expected_rows:
+      - {dimension.shop_store_id: a, dimension.shop_store_name: Elm}
+      - {dimension.shop_store_id: b, dimension.shop_store_name: Oak}
+      - {dimension.shop_store_id: c, dimension.shop_store_name: Fir}
+    reference_sql: SELECT store_id, name FROM stores
+  shop/row-filter-customer-count-is-held:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: POLICY_DENIED
+    why: Customers hold no store, so no region reaches them; a regional count of customers is held (row_filter_uncovered_root) rather than answered with the company's count, and customers who bought in the caller's stores are offered instead. test_row_filter_visibility.py pins the reason.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, refusal]
+    context: *west
+    query:
+      select: &signup_count [measure.shop.signup_count]
+  shop/row-filter-customer-count-unfiltered:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An auditor counts all seven signed-up customers.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *unfiltered
+    query:
+      select: *signup_count
+    expected_rows: [{signup_count: 7}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups
+  shop/row-filter-listing-tags-is-held:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: POLICY_DENIED
+    why: Tags hold no store; the regional filter reaches tag links through their order but never the tags themselves, so listing tags is held (row_filter_uncovered_root) rather than showing every tag. test_row_filter_visibility.py pins the reason.
+    cites: [tests/integration/correctness/shop/models/tags.yml#model.dimensions.tag_name, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter, refusal]
+    context: *west
+    query:
+      group_by: [dimension.shop_tag_tag_name]

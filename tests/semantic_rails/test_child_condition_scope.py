@@ -951,35 +951,39 @@ ROW_POLICIES = {
 @pytest.mark.parametrize(
     ("policy", "where", "code"),
     [
-        ("child_policy", SAME_ROW, "POLICY_DENIED"),
-        ("child_policy", NO_SAME_ROW, "POLICY_DENIED"),
-        ("parent_policy", SAME_ROW, "POLICY_DENIED"),
-        ("parent_policy", NO_SAME_ROW, "POLICY_DENIED"),
-        # Every reading is a group, and the row policy denies groups: the query keeps the
-        # refusal it had before groups existed instead of asking a question with no answer.
-        ("parent_policy", [BEVERAGE, OVER_5], "MIXED_GRAIN_INVALID"),
-        ("parent_policy", [NOT_BEVERAGE], "MIXED_GRAIN_INVALID"),
+        # The filter is on order lines, which no route from customers reaches: counting
+        # customers under it is held.
+        ("child_policy", SAME_ROW, "row_filter_uncovered_root"),
+        ("child_policy", NO_SAME_ROW, "row_filter_uncovered_root"),
+        # The filter is on customers, which own their orders and lines: answered.
+        ("parent_policy", SAME_ROW, None),
+        ("parent_policy", NO_SAME_ROW, None),
+        # Every reading is a group, and each one answers under the filter: asked, as unfiltered.
+        ("parent_policy", [BEVERAGE, OVER_5], "AMBIGUOUS_CHILD_SCOPE"),
+        ("parent_policy", [NOT_BEVERAGE], "AMBIGUOUS_CHILD_SCOPE"),
     ],
     ids=["child_any", "child_none", "parent_any", "parent_none", "two_flat", "negated"],
 )
-def test_groups_are_denied_under_a_row_policy(
-    package: Path, policy: str, where: list[Any], code: str
+def test_groups_under_a_row_policy(
+    package: Path, policy: str, where: list[Any], code: str | None
 ) -> None:
     rule, attributes = ROW_POLICIES[policy]
     row_policy = SemanticPolicyConfig(id="policy.scope.rows", kind="row_filter", config=rule)
     config = _config(package, semantic_policies=[row_policy])
     context = RequestContext(attributes=attributes).to_policy_context()
-    error = _compile_error(
-        config, _query(where), row_filters=row_filters_for_context(config, context)
-    )
-    assert error.code == code
-    assert "clarification" not in error.details
-    if code == "POLICY_DENIED":
-        assert error.details["reason"] == "row_filter_unsupported_query"
-    else:  # Without the caller's row filters, the same query is asked about.
+    filters = row_filters_for_context(config, context)
+    if code is None:
+        assert "?" in _compile(config, _query(where), row_filters=filters)["sql"]
+        return
+    error = _compile_error(config, _query(where), row_filters=filters)
+    if code == "AMBIGUOUS_CHILD_SCOPE":
         asked = _compile_error(config, _query(where))
-        assert asked.code == "AMBIGUOUS_CHILD_SCOPE"
-        assert "clarification" in asked.details
+        assert (error.code, error.details["clarification"]) == (
+            asked.code,
+            asked.details["clarification"],
+        )
+    else:
+        assert (error.code, error.details["reason"]) == ("POLICY_DENIED", code)
 
 
 CLICKHOUSE_SQL = """WITH leaf_1__leaf_1_entity_rows AS (

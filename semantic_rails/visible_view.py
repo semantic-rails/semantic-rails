@@ -520,9 +520,13 @@ def _display_caveat(
     return replace(caveat, object_ids=listed)
 
 
-def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
-    """The package as a caller with ``hidden`` objects sees it."""
-    if not hidden:
+def build_view(
+    base: PackageConfig, hidden: frozenset[str], withheld: frozenset[str] = frozenset()
+) -> PackageConfig:
+    """The package as a caller with ``hidden`` objects sees it. A ``withheld`` dimension (one a
+    row filter restricts for this caller) keeps no declared value domain: its values are read
+    live, under the caller's filters, wherever a surface lists them."""
+    if not hidden and not withheld:
         return base
     tokens = token_pattern(base, hidden)
 
@@ -549,6 +553,16 @@ def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
             elif _mentions(value, tokens):
                 value = type(value)()
         changes[name] = value
+    if withheld:
+        changes["dimensions"] = [
+            replace(row, value_domain="") if row.id in withheld else row
+            for row in changes["dimensions"]
+        ]
+        domains = [
+            replace(row, dimensions=[dim for dim in row.dimensions if dim not in withheld])
+            for row in changes["value_domains"]
+        ]
+        changes["value_domains"] = [row for row in domains if row.dimensions]
     return VisiblePackageConfig(**changes, view=ViewOf(base, hidden, tokens))
 
 
@@ -664,28 +678,33 @@ def hidden_on_its_own(config: PackageConfig, object_id: str) -> bool:
 
 def _hidden_from(
     base: PackageConfig, context: RequestContext | Mapping[str, Any] | None
-) -> frozenset[str]:
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The objects hidden from this caller, and the dimensions whose declared values are
+    withheld from them (a row filter in their scope restricts the model)."""
+    from .row_filter_visibility import withheld_value_dimensions
+
     if not isinstance(context, RequestContext):
         context = context_from_policy_context(context)
-    return hidden_object_ids(
-        base, environment=context.environment, audience=context.audience, roles=context.roles
-    )
+    scope = {"environment": context.environment, "audience": context.audience}
+    hidden = hidden_object_ids(base, **scope, roles=context.roles)
+    return hidden, withheld_value_dimensions(base, **scope, roles=context.roles) - hidden
 
 
 def view_of(base: PackageConfig, context: RequestContext | Mapping[str, Any] | None) -> Any:
     """A caller's view of ``base``, uncached, for code that holds no runtime (the CLI)."""
-    return build_view(base, _hidden_from(base, context))
+    return build_view(base, *_hidden_from(base, context))
 
 
 def view_for(runtime: Any, context: RequestContext | Mapping[str, Any] | None) -> ViewEntry:
-    """The runtime's cached view for this caller's hidden set, built on first use."""
-    hidden = _hidden_from(runtime.package_config, context)
+    """The runtime's cached view for this caller's hidden set and withheld value domains,
+    built on first use."""
+    key = _hidden_from(runtime.package_config, context)
     with runtime._cache_lock:
-        entry = runtime._views.get(hidden)
+        entry = runtime._views.get(key)
     if entry is None:
-        config = build_view(runtime.package_config, hidden)
+        config = build_view(runtime.package_config, *key)
         with runtime._cache_lock:
-            entry = runtime._views.setdefault(hidden, ViewEntry(config, Registry(config), hidden))
+            entry = runtime._views.setdefault(key, ViewEntry(config, Registry(config), key[0]))
     return entry
 
 

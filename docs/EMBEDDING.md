@@ -91,7 +91,7 @@ headers and plans can't create or replace them (a caller's
 `request_context`, echoed queries, errors or audit events. The object is opaque
 and immutable: read it with `names` and `get(name)`. Attribute values partition
 the compile cache and bind to prepared-statement parameters at execution
-(DuckDB and Postgres; other adapters deny such statements). A package's `row_filter`
+(DuckDB, Postgres and Snowflake through ADBC; other adapters deny such statements). A package's `row_filter`
 policies produce those parameters: they limit a relation's rows to the
 attribute's value, or to any item of a list, and deny the request when it is missing (see
 [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)). `roles=` lists the data roles the host verified

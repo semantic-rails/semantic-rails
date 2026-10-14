@@ -456,13 +456,14 @@ def test_a_refused_coverage_read_is_not_swallowed(
 def test_a_balance_coverage_read_that_cannot_be_filtered_refuses_the_request(
     dense_by_building: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Coverage that would read another relation is refused under a row filter, never read
-    unfiltered; a caller with no filter still reads it."""
+    """Coverage that reads a relation no model reads (here a second spelling of the filtered
+    one) is refused under a row filter, never read unfiltered; a caller with no filter still
+    reads it."""
     real = empty_groups.coverage_select
 
     def joined(scope, dialect):
         select = real(scope, dialect)
-        return replace(select, joins=[SqlJoin("CROSS", SqlTableRef("inv_stagger"))])
+        return replace(select, joins=[SqlJoin("CROSS", SqlTableRef("main.inv_dense", "again"))])
 
     monkeypatch.setattr(empty_groups, "coverage_select", joined)
     with pytest.raises(SemanticLayerError) as caught:
@@ -533,12 +534,12 @@ def _tenant(**attributes: object) -> RequestContext:
 
 
 def test_a_refusal_names_no_row_filter_hidden_from_the_caller(hidden_region: Runtime) -> None:
-    """A balance read through a pipeline over a filtered relation can't have its coverage
-    filtered, so it is refused; the refusal names the caller's own filter and only the kind
-    of one hidden from them."""
+    """A balance read through a pipeline over a filtered relation is refused, timed or not;
+    the refusal names the caller's own filter and only the kind of one hidden from them."""
     context = _tenant(building="C", region="north")
-    # Untimed, the balance reads no coverage: the pipeline's own scan is filtered.
-    assert _values(hidden_region.query({"select": PIPE_AREA}, context=context)) == [50.0]
+    with pytest.raises(SemanticLayerError) as untimed:
+        hidden_region.query({"select": PIPE_AREA}, context=context)
+    assert untimed.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
     with pytest.raises(SemanticLayerError) as caught:
         hidden_region.query(PIPE_MONTHLY, context=context)
     assert caught.value.code == "POLICY_DENIED"

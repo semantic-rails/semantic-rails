@@ -9,6 +9,7 @@ module owns layout, indentation, identifier quoting, and CTE ordering.
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -31,6 +32,7 @@ from .sql_ast import (
     SqlIdentifier,
     SqlIn,
     SqlIndexAccess,
+    SqlInQuery,
     SqlInterval,
     SqlIsNull,
     SqlJsonExtract,
@@ -60,6 +62,7 @@ from .sql_identifiers import quote_identifier
 
 if TYPE_CHECKING:
     from .dialects import SqlDialect
+    from .sql_preparation import ParameterSlot
 
 # Which dialect's literal-quoting rules apply to the tree currently being
 # rendered. String-literal quoting is not portable:
@@ -154,6 +157,10 @@ def _quote_ident(value: str) -> str:
 # reads them, and an enclosing statement's), or to a table or table function, which hides an
 # enclosing CTE alias of that name. So a warehouse table named or aliased like a CTE elsewhere,
 # or like a CTE defined after it, is read as a table.
+# One render's parameter marker and the slot of each parameter it emits (``render_with_slots``).
+_EMITTED_SLOTS: ContextVar[tuple[str, list[ParameterSlot]] | None] = ContextVar(
+    "emitted_slots", default=None
+)
 _OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", default=frozenset())
 _DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
 _CTES: ContextVar[frozenset[str]] = ContextVar("ctes_in_view", default=frozenset())
@@ -256,7 +263,12 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             names[-1] = quote_identifier(column)
         return ".".join(names)
     if isinstance(expr, SqlParameter):
-        return "?"
+        emitting = _EMITTED_SLOTS.get()
+        if emitting is None:
+            return "?"
+        nonce, emitted = emitting
+        emitted.append(expr.slot)
+        return f"{nonce}{len(emitted) - 1}{nonce}"
     if isinstance(expr, SqlLiteral):
         if expr.value is None:
             return "NULL"
@@ -325,6 +337,10 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlExists):
         prefix = "NOT EXISTS" if expr.negated else "EXISTS"
         return f"{prefix} (\n{render_select(expr.query, flatten_ctes=False)}\n)"
+    if isinstance(expr, SqlInQuery):
+        return (
+            f"({render_expr(expr.expr)} IN (\n{render_select(expr.query, flatten_ctes=False)}\n))"
+        )
     if isinstance(expr, SqlIsNull):
         return f"({render_expr(expr.expr)} IS NULL)"
     if isinstance(expr, SqlCase):
@@ -547,3 +563,48 @@ def render_select_for_profile(
         if normalized == "compact":
             return re.sub(r"\s+", " ", rendered).strip()
         return rendered
+
+
+class _Slots:
+    """The parameters one render emits: each renders as a marker unique to the render."""
+
+    def __init__(self) -> None:
+        self.nonce = f"__slot_{secrets.token_hex(8)}__"
+        self.emitted: list[ParameterSlot] = []
+
+    def read(self, sql: str) -> tuple[str, tuple[ParameterSlot, ...]]:
+        """``sql`` with each marker back to ``?``, and their slots in the order the text holds
+        them: the order a driver binds them, whatever the render hoisted or nested."""
+        pattern = f"{self.nonce}([0-9]+){self.nonce}"
+        order = [int(index) for index in re.findall(pattern, sql)]
+        if sorted(order) != list(range(len(self.emitted))):
+            from .errors import SemanticLayerError
+
+            # Never run a statement whose binds can't be matched to its placeholders.
+            raise SemanticLayerError(
+                "POLICY_DENIED",
+                "A bound parameter's placeholder was lost or repeated while rendering, so the "
+                "statement can't be run.",
+                details={"reason": "row_filter_unsupported_query"},
+            )
+        return re.sub(pattern, "?", sql), tuple(self.emitted[index] for index in order)
+
+
+@contextmanager
+def collecting_slots() -> Iterator[_Slots]:
+    """Collect the slots of every parameter rendered inside, for ``_Slots.read``."""
+    slots = _Slots()
+    token = _EMITTED_SLOTS.set((slots.nonce, slots.emitted))
+    try:
+        yield slots
+    finally:
+        _EMITTED_SLOTS.reset(token)
+
+
+def render_with_slots(
+    query: SqlSelect, profile: str | None = None, *, dialect: SqlDialect | None = None
+) -> tuple[str, tuple[ParameterSlot, ...]]:
+    """``render_select_for_profile``, with the slot of each ``?`` in text order."""
+    with collecting_slots() as slots:
+        sql = render_select_for_profile(query, profile, dialect=dialect)
+    return slots.read(sql)

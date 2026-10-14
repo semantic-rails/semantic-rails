@@ -1348,6 +1348,17 @@ def _required_relation_ctes(config: PackageConfig, query: SqlSelect) -> list[Sql
     return ctes
 
 
+def pipeline_cte_names(config: PackageConfig) -> frozenset[str]:
+    """Every CTE name ``attach_relation_ctes`` may add: each pipeline's output and steps."""
+    if not config.relations:
+        return frozenset()
+    lowered = _lower_relations_for_config(config).values()
+    return frozenset(
+        {row.relation.output_name for row in lowered}
+        | {name for row in lowered for name in row.cte_names}
+    )
+
+
 def attach_relation_ctes(config: PackageConfig, query: SqlSelect) -> SqlSelect:
     if not config.relations:
         return query

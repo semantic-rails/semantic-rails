@@ -5,6 +5,7 @@ graph:
     customer_history: {label: Customer history, key: [customer_id, valid_from],
       model: customer_history, allowed_as_root: false}
     refund: {label: Refund, key: [refund_id], model: refunds}
+    store: {label: Store, key: [store_id], model: stores, display: name}
     tag: {label: Tag, key: [tag_id], model: tags}
     room: {label: Room, key: [room_id], model: rooms}
     person: {label: Person, key: [person_id], model: people}

@@ -99,6 +99,44 @@ def _row_marker(expr: Any) -> Any:
 
 
 _earlier_settlement: ContextVar[bool] = ContextVar("earlier_settlement", default=False)
+# The row filters a request binds under (their policy ids), while it binds: a row-level call
+# that can raise on a value is refused, since its error could tell a hidden row's value.
+_filtered_bind: ContextVar[tuple[str, ...]] = ContextVar("filtered_bind", default=())
+# The row-level calls that return a value for every input of their types on every warehouse
+# (a CAST only to text); under a row filter every other call is refused.
+_TOTAL_CALLS = frozenset(
+    {"COALESCE", "NULLIF", "CONCAT", "LOWER", "UPPER", "TRIM", "REPLACE", "LENGTH", "ROUND"}
+    | {"FLOOR", "CEIL", "CEILING", "DATE_TRUNC", "DATE_PART", "LEFT", "RIGHT"}
+)
+
+
+@contextmanager
+def refusing_fallible_calls(policy_ids: tuple[str, ...]) -> Iterator[None]:
+    """While a row-filtered request binds, refuse row-level calls that can raise on a value."""
+    with holding(_filtered_bind, policy_ids):
+        yield
+
+
+def _refuse_fallible_call(expr: CallExpr) -> None:
+    policies = _filtered_bind.get()
+    name = str(expr.name).upper()
+    cast_type = (
+        str(expr.args[1].value).strip().upper()
+        if name == "CAST" and len(expr.args) == 2 and isinstance(expr.args[1], LiteralExpr)
+        else ""
+    )
+    if policies and name not in _TOTAL_CALLS and not (name == "CAST" and cast_type == "VARCHAR"):
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            f"A row filter applies to this request, and {name} on each row can fail on a "
+            "value, so a failure could tell something about a row you can't see. Ask without "
+            "it, or ask the package author for a measure that doesn't need it.",
+            details={
+                "reason": "row_filter_fallible_expression",
+                "function": name,
+                "policy_ids": sorted(set(policies)),
+            },
+        )
 
 
 @contextmanager
@@ -424,6 +462,7 @@ def _config_expr_to_sql_inner(
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
+        _refuse_fallible_call(expr)
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [_config_expr_to_sql(arg, measure, config) for arg in expr.args],
