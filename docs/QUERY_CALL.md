@@ -648,7 +648,9 @@ call keeps the same rows, and the answer says ties were cut:
 ```
 
 Execution fetches one row past the limit to see the tie, so `tied` is a lower bound. A
-transport cap at or below `limit` takes precedence, and then ties cannot be reported.
+transport cap at or below `limit` takes precedence, and then ties cannot be reported. A `limit`
+with no `order_by` keeps the first rows by the same `group_by` columns, then `period`,
+ascending with NULLs last.
 
 ## `routes`
 
