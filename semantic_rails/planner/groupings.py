@@ -129,15 +129,16 @@ def _entity_stand_ins(config: Any, entity: Any, term: str = "") -> tuple[list[st
     one-column key), and the one that names a row beside them.
 
     That is its ``display`` dimension, else its one dimension (not a clock) whose own words name
-    ``term`` ("Store name" for "store"), else none. A composite key, or a key the caller can't
-    see, has no stand-ins. Drafting and every readiness check read the entity through this.
+    ``term`` ("Store name" for "store"), else none. A composite key, no key (row grain), or a
+    key the caller can't see has no stand-ins. Drafting and every readiness check read the
+    entity through this.
     """
 
-    if len(entity.key) != 1:
+    if len(entity.key_columns) != 1:
         return [], []
     owned = [row for row in visible_dimensions(config) if row.entity == entity.id]
-    keys = [row.id for row in owned if row.column == entity.key[0]]
-    others = [row for row in owned if row.column != entity.key[0]]
+    keys = [row.id for row in owned if row.column == entity.key_columns[0]]
+    others = [row for row in owned if row.column != entity.key_columns[0]]
     shown = [row.id for row in others if entity.display and row.id == entity.display]
     if not shown:
         clocks = {row.dimension for row in config.temporal_roles}

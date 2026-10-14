@@ -976,6 +976,12 @@ A clarification (`AMBIGUOUS_PATH`, `AMBIGUOUS_CHILD_SCOPE`, `MIXED_TIME_ROLES`,
 `ENTITY_FILTER_PERIOD_UNSTATED`) is a refusal whose options are ready to send: the engine
 never guesses which one the question meant.
 
+A [row-grain model](PACKAGE_AUTHORING.md#row-grain-models) has no key, and every stored row
+counts: its measures answer by its own, its parents' and their parents' columns, and a parent
+can be filtered by its rows. What has to tell its rows apart (an entity filter or a per-entity
+value on it, a segment, a conversion, a sum of an `additive: false` measure) is refused with
+`ROW_GRAIN_UNSUPPORTED`, whose message says what works instead.
+
 ## Retired keys
 
 A call written for the previous query shape is refused at the first retired key, with where it

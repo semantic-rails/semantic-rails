@@ -84,6 +84,31 @@ INSERT INTO refunds VALUES
   (5, 7, 'goods', 2.00, NULL, NULL),
   (6, 7, 'shipping', NULL, 1.00, NULL);
 
+-- Shipment scans have no key. Order 1's pickup is stored twice, an exact duplicate, and both rows
+-- count. One scan has no order and one names order 99, which doesn't exist. Orders 2, 4 and 6
+-- have a refund.
+CREATE TABLE shipment_scans (
+  order_id INTEGER, scanned_at TIMESTAMP, scan_type VARCHAR(16), weight DECIMAL(10, 2)
+);
+INSERT INTO shipment_scans VALUES
+  (1, TIMESTAMP '2023-11-04 08:00:00', 'pickup', 1.50),
+  (1, TIMESTAMP '2023-11-04 08:00:00', 'pickup', 1.50),
+  (1, TIMESTAMP '2023-11-06 17:00:00', 'delivery', 1.50),
+  (2, TIMESTAMP '2023-11-21 09:00:00', 'pickup', 2.00),
+  (4, TIMESTAMP '2024-01-16 10:00:00', 'pickup', 3.25),
+  (4, TIMESTAMP '2024-01-18 15:00:00', 'delivery', 3.25),
+  (6, TIMESTAMP '2024-04-01 11:00:00', 'pickup', 0.75),
+  (8, TIMESTAMP '2024-05-21 12:00:00', 'pickup', 1.00),
+  (NULL, TIMESTAMP '2024-05-22 12:00:00', 'pickup', 0.50),
+  (99, TIMESTAMP '2024-06-01 12:00:00', 'delivery', 4.00);
+
+-- Order tags link orders to tags with no key: order 1's gift tag is stored twice, and order 9's
+-- fragile tag is its only one.
+CREATE TABLE tags (tag_id INTEGER, tag_name VARCHAR(16));
+INSERT INTO tags VALUES (1, 'gift'), (2, 'rush'), (3, 'fragile');
+CREATE TABLE order_tags (order_id INTEGER, tag_id INTEGER);
+INSERT INTO order_tags VALUES (1, 1), (1, 1), (1, 2), (2, 2), (4, 1), (4, 3), (9, 3);
+
 -- Daily seats per account, a stock. In the week of 2024-01-01 account 1 is on plan builder
 -- Monday to Wednesday and pro from Thursday, account 2 is pro Monday and Tuesday and builder
 -- from Wednesday, and account 3's last snapshot is Friday's. Nobody is observed the next week.

@@ -101,22 +101,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     model_rows = {str(k): dict(v or {}) for k, v in model_rows.items()}
     time_calendar_ids_seen: set[str] = set()
 
-    # Split model rows by kind. Fact models declare a single time_entity
-    # join and never bind to a graph entity (they are not reachable via
-    # inferred multi-hop joins).
-    fact_models: dict[str, dict[str, Any]] = {}
-    regular_model_rows: dict[str, dict[str, Any]] = {}
     for model_id, model in model_rows.items():
         model_kind = str(model.get("kind", "model") or "model").strip().lower()
-        if model_kind == "fact":
-            fact_models[model_id] = model
-        elif model_kind == "model":
-            regular_model_rows[model_id] = model
-        else:
+        if model_kind != "model":
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{path}: model '{model_id}' has invalid kind '{model_kind}' "
-                f"(allowed: model, fact)",
+                f"{path}: model '{model_id}' has invalid kind '{model_kind}' (allowed: model)",
             )
 
     for entity_key, entity_spec_raw in graph_entities.items():
@@ -134,19 +124,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 "INVALID_CONFIG",
                 f"{path}: graph entity '{entity_key}' references unknown model '{model_id}'",
             )
-        if model_id in fact_models:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: graph entity '{entity_key}' references fact model "
-                f"'{model_id}' — fact models cannot be graph entities",
-            )
         model = model_rows[model_id]
         model_keys = dict(model.get("keys", {}) or {})
         key, primary_role = _key_columns_and_role(
             entity_spec.get("key") or model_keys.get("primary"),
             default_role="primary",
         )
-        if not key:
+        if not key and not entity_spec.get("_row_grain"):
             raise SemanticLayerError(
                 "INVALID_CONFIG", f"{path}: graph entity '{entity_key}' must declare key"
             )
@@ -186,10 +170,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             EntityConfig(
                 id=entity_id,
                 table=relation_table,
-                primary_key=key[0],
+                key_columns=list(key),
                 kind=entity_kind,
                 relation_id=relation_id,
-                key=key,
                 identifiers=list(key),
                 key_roles={column: primary_role for column in key},
                 foreign_keys=foreign_keys,
@@ -216,6 +199,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     if str(item).strip()
                 ],
                 bridge=model.get("_bridge_declared") is True,
+                model=model_id if entity_spec.get("_row_grain") else "",
             )
         )
         entity_lookup[str(entity_key)] = entity_id
@@ -246,49 +230,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
     model_default_times: dict[str, str] = {}
     for model_id, model in model_rows.items():
-        is_fact = model_id in fact_models
         model_meta = _normalize_meta(model.get("meta"), f"{path}: model '{model_id}'")
-        fact_source_relation = ""
-        if is_fact:
-            # Resolve the declared time entity for this fact model.
-            time_entity_ref = str(model.get("time_entity", "") or "").strip()
-            if not time_entity_ref:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' must declare time_entity",
-                )
-            time_entity_id = entity_lookup.get(time_entity_ref)
-            if time_entity_id is None:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' references unknown "
-                    f"time_entity '{time_entity_ref}'",
-                )
-            entity_cfg = next(row for row in entities if row.id == time_entity_id)
-            if entity_cfg.kind != "time":
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' time_entity must point at "
-                    f"a kind:time entity (got '{entity_cfg.kind}')",
-                )
-            entity_id = time_entity_id
-            # Resolve the fact model's own relation (its FROM table) — measures
-            # built from this model carry this as `source_relation`.
-            fact_relation_ref = str(model.get("relation", "")).strip()
-            fact_relation_id = relation_aliases.get(fact_relation_ref, "")
-            fact_source_relation = (
-                relations_by_id[fact_relation_id].output_name
-                if fact_relation_id
-                else str(model.get("relation", ""))
-            )
-            if not fact_source_relation:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' must declare relation",
-                )
-        else:
-            entity_id = model_to_entity[model_id]
-            entity_cfg = next(row for row in entities if row.id == entity_id)
+        entity_id = model_to_entity[model_id]
+        entity_cfg = next(row for row in entities if row.id == entity_id)
         model_topics = _ensure_list(model.get("topics"))
         model_operational_defaults = normalize_operational_payload(
             model.get("operational_defaults"),
@@ -424,12 +368,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         default_time = model_default_times[model_id]
         row_grain = _ensure_list(dict(model.get("keys", {}) or {}).get("primary"))
-        # Fact models infer grain from the declared time_column (the row's
-        # time-key on the fact table).
-        if is_fact and not row_grain:
-            time_column = str(model.get("time_column", "") or "").strip()
-            if time_column:
-                row_grain = [time_column]
         for measure_key, measure_spec_raw in dict(model.get("measures", {}) or {}).items():
             raw_measure_spec = dict(measure_spec_raw or {})
             measure_spec = {**measure_defaults, **raw_measure_spec}
@@ -444,6 +382,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             default_aggregation, allowed_aggregations, invalid_aggregations, measure_class = (
                 _derive_measure_semantics(measure_spec)
             )
+            if measure_class == "semi_additive" and entity_cfg.is_row_grain:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: measure '{measure_key}' is a stock, but model '{model_id}' is row "
+                    "grain (no key), and a stock sums one snapshot per series: the key minus the "
+                    f"clock. Declare a key on {model_id}, or make it a flow.",
+                )
             # Author-facing override: `default_agg:` is canonical.
             authored_default_agg = measure_spec.get("default_agg")
             if authored_default_agg is not None:
@@ -537,7 +482,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 id=measure_id,
                 entity=entity_id,
                 row_grain=list(row_grain),
-                source_relation=fact_source_relation,
                 expr=parse_config_expression(expr_raw),
                 default_aggregation=default_aggregation,
                 allowed_aggregations=allowed_aggregations,
@@ -603,6 +547,18 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 )
             local_cols = _ensure_list(join_spec.get("via") or foreign_keys.get(edge_key))
             target_cfg = next(row for row in entities if row.id == entity_lookup[target_ref])
+            rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
+            if target_cfg.is_row_grain:  # nothing can look up one row of a row-grain model
+                source = next(key for key, value in entity_lookup.items() if value == entity_id)
+                via = _ensure_list(join_spec.get("target")) or list(entity_cfg.key_columns)
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{rel_id} joins into '{target_ref}', a row-grain model (no key), so one row "
+                    f"can't be looked up there. Fix: write it from {target_ref}'s side (entities: "
+                    f"[{target_ref}, {source}], cardinality: many_to_one, via: "
+                    f"[{', '.join(via)}]), or declare a key on {target_ref} if its rows have one.",
+                    details={"relationship": rel_id, "model": target_ref},
+                )
             target_cols = _ensure_list(join_spec.get("target") or target_cfg.key)
             if len(local_cols) != len(target_cols):
                 raise SemanticLayerError(
@@ -612,8 +568,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             # An inferred cardinality rests on keys: a side is unique only where its columns
             # hold a whole key declared primary or unique, and off the target's key a target
             # row can repeat. Columns compare as written.
-            source_key = entity_cfg.key or [entity_cfg.primary_key]
-            target_key = target_cfg.key or [target_cfg.primary_key]
+            source_key = list(entity_cfg.key_columns)  # none for a row-grain source
+            target_key = target_cfg.key
             for columns, key in ((local_cols, source_key), (target_cols, target_key)):
                 misspelled = _case_only_misspelling(columns, key)
                 if misspelled:
@@ -665,7 +621,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: join '{model_id}.{edge_key}' has invalid safety '{safety}' (must be 'safe', 'requires_rewrite', or 'unsafe')",
                 )
-            rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
             relationships.append(
                 RelationshipConfig(
                     id=rel_id,

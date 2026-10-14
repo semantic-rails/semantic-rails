@@ -76,10 +76,10 @@ ENTITY_KIND_REGULAR = "regular"
 class EntityConfig:
     id: str
     table: str
-    primary_key: str
+    # Empty for a row-grain model: its rows have no declared key, and every stored row counts.
+    key_columns: list[str] = field(default_factory=list)
     kind: str = ENTITY_KIND_REGULAR
     relation_id: str = ""
-    key: list[str] = field(default_factory=list)
     identifiers: list[str] = field(default_factory=list)
     key_roles: dict[str, str] = field(default_factory=dict)
     foreign_keys: dict[str, list[str]] = field(default_factory=dict)
@@ -99,6 +99,32 @@ class EntityConfig:
     bridge: bool = False
     # The dimension (on the entity's own model, not its key) that names one row in an answer.
     display: str = ""
+    # A row-grain entity's model (its rows have no key, so it names nothing else).
+    model: str = ""
+
+    @property
+    def is_row_grain(self) -> bool:
+        return not self.key_columns
+
+    @property
+    def key(self) -> list[str]:
+        """The key columns. A row-grain model has none, so a read that must tell its rows apart
+        refuses here instead of reading an empty key."""
+        if not self.key_columns:
+            model = self.model or self.id
+            raise SemanticLayerError(
+                "ROW_GRAIN_UNSUPPORTED",
+                f"'{self.label or model}' is row grain (no key), and this needs to tell its rows "
+                "apart (a count of them as entities, a segment, a predicate, a conversion or a "
+                "stock). Count its rows, sum its values, or group by its or its parents' "
+                f"columns; or declare a key on {model} if its rows have one.",
+                details={"model": model, "entity": self.id},
+            )
+        return list(self.key_columns)
+
+    @property
+    def primary_key(self) -> str:
+        return self.key[0]
 
 
 @dataclass(frozen=True)
@@ -230,7 +256,6 @@ class MeasureConfig:
     expr: SemanticExpr
     default_aggregation: str
     allowed_aggregations: list[str]
-    source_relation: str = ""
     invalid_aggregations: list[str] = field(default_factory=list)
     measure_class: str = "additive"
     accumulation: AccumulationConfig = field(default_factory=AccumulationConfig)

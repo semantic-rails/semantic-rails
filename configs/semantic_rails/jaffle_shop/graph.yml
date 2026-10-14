@@ -78,6 +78,17 @@ graph:
       # as a path target.
       allowed_as_root: false
 
+    # Precomputed series, one row per day or month.
+    daily_metrics:
+      label: Daily metrics
+      key: [date_day]
+      model: daily_metrics
+
+    monthly_metrics:
+      label: Monthly metrics
+      key: [month_start]
+      model: monthly_metrics
+
   # Explicit relationships — only for pairs that need non-default rules.
   # Default relationships (cardinality=many_to_one, safety=safe) are
   # inferred from each model's entities: block.

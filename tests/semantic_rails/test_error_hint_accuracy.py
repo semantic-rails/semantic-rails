@@ -217,7 +217,9 @@ def test_path_hint_targets_pass_the_shared_resolver(
     )
     config = replace(
         config,
-        entities=[EntityConfig(id=node, table=node.lower(), primary_key="id") for node in "ABCDE"],
+        entities=[
+            EntityConfig(id=node, table=node.lower(), key_columns=["id"]) for node in "ABCDE"
+        ],
         dimensions=[
             DimensionConfig(id=f"dimension.{node}", entity=node, column="id", data_type="id")
             for node in "ABCDE"
@@ -275,7 +277,7 @@ def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
     nodes = [node for layer in layers for node in layer] + ["disconnected", "X", "Y", "Z"]
     config = replace(
         config,
-        entities=[EntityConfig(id=node, table=node, primary_key="id") for node in nodes],
+        entities=[EntityConfig(id=node, table=node, key_columns=["id"]) for node in nodes],
         dimensions=[
             DimensionConfig(id=f"dimension.{node}", entity=node, column="id", data_type="id")
             for node in nodes
@@ -408,7 +410,7 @@ def test_lightweight_path_eligibility_agrees_with_full_resolution(
     config, _ = package_config_factory("jaffle_shop")
     config = replace(
         config,
-        entities=[EntityConfig(id=node, table=node, primary_key="id") for node in "ABC"],
+        entities=[EntityConfig(id=node, table=node, key_columns=["id"]) for node in "ABC"],
         relationships=[
             RelationshipConfig(
                 id=f"edge_{index}",
@@ -450,7 +452,7 @@ def test_path_hints_list_every_single_route_target_in_a_large_tree(package_confi
     config = replace(
         config,
         entities=[
-            EntityConfig(id=node, table=node, primary_key="id")
+            EntityConfig(id=node, table=node, key_columns=["id"])
             for node in ["A_disconnected", "S", *targets]
         ],
         relationships=[

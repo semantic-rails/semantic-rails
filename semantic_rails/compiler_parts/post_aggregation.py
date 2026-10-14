@@ -139,13 +139,12 @@ def _summing_window_parts(
                         measure.row_grain == [counted.column]
                         or (
                             entity is not None
-                            and (entity.key or [entity.primary_key]) == [counted.column]
+                            and list(entity.key_columns) == [counted.column]
                             and _measure_has_source_row_key(measure, entity)
                         )
                     )
                     and counted.entity in {"", measure.entity}
-                    and counted.table
-                    in {"", measure.source_relation or (entity.table if entity else "")}
+                    and counted.table in {"", entity.table if entity else ""}
                 ):
                     allowed = set()
             if (

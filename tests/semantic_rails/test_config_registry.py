@@ -30,19 +30,16 @@ def test_package_config_loads_and_catalog_groups_objects(package_config_factory)
     }
 
     assert config.package.package_id == "jaffle_shop"
-    # Entity count dropped by 2 after daily_metric_rollup/monthly_metric_rollup
-    # were migrated to `kind: fact` models (they no longer claim entities).
-    assert len(grouped["entity"]) == 13
+    assert len(grouped["entity"]) == 15
     assert any(obj.id == "entity.jaffle_order" for obj in grouped["entity"])
     assert any(obj.id == "entity.jaffle_supply" for obj in grouped["entity"])
     assert any(obj.id == "entity.jaffle_time" for obj in grouped["entity"])
     assert any(obj.id == "entity.jaffle_customer_history" for obj in grouped["entity"])
     assert any(obj.id == "entity.jaffle_store_inventory_snapshot" for obj in grouped["entity"])
     assert any(obj.id == "entity.jaffle_order_lifecycle" for obj in grouped["entity"])
-    # Fact models do not produce graph entities — measures attach to the
-    # `time` entity via `source_relation`.
-    assert not any(obj.id == "entity.jaffle_daily_metric_rollup" for obj in grouped["entity"])
-    assert not any(obj.id == "entity.jaffle_monthly_metric_rollup" for obj in grouped["entity"])
+    # The precomputed daily and monthly series are keyed by their own day and month.
+    assert any(obj.id == "entity.jaffle_daily_metrics" for obj in grouped["entity"])
+    assert any(obj.id == "entity.jaffle_monthly_metrics" for obj in grouped["entity"])
     assert any(obj.id == "dimension.jaffle_store_name" for obj in grouped["dimension"])
     assert any(obj.id == "temporal_role.jaffle_order_time" for obj in grouped["temporal_role"])
     assert any(obj.id == "measure.jaffle.order_count" for obj in grouped["measure"])
@@ -69,10 +66,16 @@ def test_alias_resolution_exact_and_ambiguous(package_config_factory):
         ),
         entities=[
             EntityConfig(
-                id="foo.Account", table="foo_account", primary_key="account_id", aliases=["account"]
+                id="foo.Account",
+                table="foo_account",
+                key_columns=["account_id"],
+                aliases=["account"],
             ),
             EntityConfig(
-                id="bar.Account", table="bar_account", primary_key="account_id", aliases=["account"]
+                id="bar.Account",
+                table="bar_account",
+                key_columns=["account_id"],
+                aliases=["account"],
             ),
         ],
         dimensions=[

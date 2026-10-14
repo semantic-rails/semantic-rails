@@ -1,9 +1,8 @@
 model:
   id: monthly_metrics
-  kind: fact
   relation: jaffle_monthly_metric_rollup
-  time_entity: time
-  time_column: month_start
+  entities:
+    monthly_metrics: {}
   times:
     month_start:
       label: Monthly metric month

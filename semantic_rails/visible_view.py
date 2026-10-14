@@ -113,8 +113,8 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         identity="name",
     ),
     EntityConfig: _classes(
-        "id table primary_key kind relation_id key identifiers foreign_keys calendar_id "
-        "allowed_as_root freshness_sla_seconds bridge",
+        "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
+        "allowed_as_root freshness_sla_seconds bridge model",
         text="label description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names",
         identity="name aliases",
@@ -147,8 +147,8 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     MeasureValidityWindow: _classes("from_ to", text="semantics"),
     MeasureExternalDiscontinuity: _classes("from_ to magnitude_estimate_pct", text="what"),
     MeasureConfig: _classes(
-        "id entity row_grain expr default_aggregation allowed_aggregations source_relation "
-        "invalid_aggregations measure_class accumulation compatible_temporal_roles value_type "
+        "id entity row_grain expr default_aggregation allowed_aggregations invalid_aggregations "
+        "measure_class accumulation compatible_temporal_roles value_type "
         "suggested_aggregations preferred_companion_metrics "
         "default_temporal_role cross_window_policy additive lookup_from lookup_via publish",
         text="currency label description comparison_family comparison_mode",

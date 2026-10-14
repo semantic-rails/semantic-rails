@@ -230,8 +230,6 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "freshness_source",
         "freshness_sla_seconds",
         "freshness_as_of",
-        "time_entity",
-        "time_column",
         "variants",
         "zero_through",
     }
@@ -575,6 +573,12 @@ def _check_model_shape(
     """Authoring-shape checks for one model: unknown keys, list-typed fields, and the
     entities: block in place of keys and a singular entity."""
     label = f"{path_label}: model '{model_id}'"
+    if str(model.get("kind") or "").strip().lower() == "fact":
+        add_error(
+            errors,
+            f"{label} declares kind: fact, which no longer exists: give the model an entity keyed "
+            "by its time column, or leave it row grain (list only its parents under entities:)",
+        )
     _unknown_key_errors(model, _MODEL_KEYS, label=label, errors=errors, block="model")
     keys: dict[str, Any] = model["keys"] if isinstance(model.get("keys"), dict) else {}
     for problem, current in (

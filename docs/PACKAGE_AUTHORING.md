@@ -1065,14 +1065,15 @@ The graph is the canonical source for entity identity. It declares the entities
 the package exposes, their key column names, and any non-default relationships
 between them.
 
-Each graph entity must have a key, declared on the entity or through its own
+Each graph entity you author must have a key, declared on the entity or through its own
 model's `keys.primary:`. An explicit graph model binding makes that
 entity the model's primary entity, regardless of the order of its `entities:` block. A
 conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
 including for implicit bindings and bindings by model name. A
 keyless entity cannot borrow a foreign entity's key: loading fails with
 `INVALID_CONFIG` naming the entity and model before graph relationships are
-translated. Each model can be the primary home of only one graph entity.
+translated. Each model can be the primary home of only one graph entity; a model that is
+the home of none is a [row-grain model](#row-grain-models).
 
 ```yaml
 graph:
@@ -1295,19 +1296,62 @@ names the model (the jaffle and tpch packages author it this way), and the model
 are keyed by that entity's canonical key, or its `expr:` override.
 
 Without an explicit graph model binding, the loader resolves the primary from an
-authored `entity:` beside the `entities:` block, then an entity listed in the
-model's `entities:` block whose name matches the model and which has no explicit
-graph binding. It back-fills implicit graph bindings from the resolved identity.
-Declaration order never selects the primary; loading fails with `INVALID_CONFIG`
-if it cannot be resolved or two graph entities bind to one model. Two models
-claiming the same unbound graph entity also fail with `INVALID_CONFIG` naming both
-models.
+authored `entity:` beside the `entities:` block, then a graph entity named like the model,
+with no explicit binding, when the block is empty or lists the model's name. It back-fills
+implicit graph bindings from the resolved identity. Declaration order never selects the
+primary: a model none of these resolves is row grain, and two graph entities bound to one
+model fail with `INVALID_CONFIG`. Two models claiming the same unbound graph entity also
+fail with `INVALID_CONFIG` naming both models.
 
 Rows finer than an entity are an entity of their own: several payments of one
 order, or one snapshot of a repository per day. Key that entity by its rows
 (`[order_id, payment_id]`, `[repo, snapshot_date]`), bind it to the model, and list
 the parent entity in the model's `entities:` block so the relationship to it is
 inferred. A model `grain:` is refused (see [Refused legacy forms](#refused-legacy-forms)).
+
+### Row-grain models
+
+A model that no graph entity is homed on has no key. Its rows declare no identity, which is
+not a claim that the data has none: every stored row counts, duplicates included.
+
+```yaml
+model:                         # models/readings.yml: nothing in graph.entities names this model
+  id: readings
+  relation: device_readings
+  entities: {device: {}}       # its parents only
+  measures:
+    reading_rows: {kind: aggregate, expr: {kind: literal, value: 1}, default_agg: sum,
+      value_type: count}
+    devices_reporting: {kind: entity_count, entity_key: device_id}   # its parents, not its rows
+```
+
+- A model is row grain when its `entities:` block lists only entities homed on other models,
+  or is empty or names only the model while no graph entity has the model's name, or is absent
+  and nothing binds the model. A block entry `graph.entities` doesn't declare stays
+  `INVALID_CONFIG`, so a typo never reads as row grain.
+- Its graph entity is named after the model (`entity.<namespace>_<model>`), so a
+  `graph.relationships` row can name the model by its id, from its side: for a second role, or
+  a validity window. A graph entity already holding that name is `INVALID_CONFIG`.
+- Its joins to its parents are ordinary many-to-one joins. Its measures group by its own, its
+  parents' and their parents' columns, beside other facts; a parent can be filtered or ranked by
+  an aggregate of its rows (an entity filter on the parent, or a child group); its rows can be
+  filtered by a parent's other children; and it can be a link table (`bridge: true`), whose
+  duplicate rows count twice for its own measures and once for a parent's distinct count.
+- Nothing can look up one of its rows. A relationship into it (another model's `entities:`
+  entry or a `graph.relationships` row) is `INVALID_CONFIG`, and the message shows the row to
+  write from its side instead.
+- What has to tell its rows apart refuses with `ROW_GRAIN_UNSUPPORTED`, naming the model and the
+  fix: segments, entity filters, per-entity values and distributions, conversions and anchored
+  sets on it, lookups `via` it, and a sum, first or last of an `additive: false` measure on it.
+  An `entity_count` without `entity_key` and a stock (`accumulation: stock`, whose series is the
+  key minus the clock) are `INVALID_CONFIG`.
+- `inspect` shows `"key": []` and its `key_note`, what it looks up; `discover` doesn't offer it
+  as a grouping entity, and `semantic-rails project validate` lists it under "Row grain (no
+  key)". Answers carry nothing new.
+
+Declare a key, a graph entity homed on the model, when its rows have one. `kind: fact` is gone:
+give such a model an entity keyed by its time column (a daily series keyed by `[date_day]`), or
+leave it row grain.
 
 ### `bridge:` — link tables and junction tables
 
@@ -2495,8 +2539,7 @@ or dimensions differ from the transaction table.
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
 leaf to the rollup relation instead of the raw relation while preserving the
-same public measure and dimension IDs. Fact-model variants use the model's
-`time_entity` as their source entity. An optional variant `id:` preserves a
+same public measure and dimension IDs. An optional variant `id:` preserves a
 rollup's public relation ID. Hosts supplying managed rollups attach entries in
 this same `variants:` shape to the model.
 
@@ -2582,7 +2625,7 @@ Routing is conservative in the MVP:
   for an `entity_count` measure. `avg`, `median` and `percentile` queries, and
   stock (semi-additive) measures, run on the base tables.
 - A `count_distinct` routes across rollup rows only when it counts the
-  single-column row key of a model that isn't a fact model (for example distinct
+  single-column row key of a model (for example distinct
   `order_id` on an orders model keyed by `order_id`). Distinct counts of
   anything else, such as customers or one column of a composite key, can't be
   added up across rollup rows. A column declared `holds: count_distinct` still
@@ -3150,7 +3193,7 @@ named definition by hand before upgrading.
 | `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 | `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |
 | `measure-auto-publish` | 0.3.2 | A measure's `publish:` mapping | In a package without `schema_strict: true`, the metric it published, authored under `metrics:` with the mapping's overrides, and `publish: false` on the measure; in a strict package, where the mapping was never read, deleted. A mapping with `topics`, or a metric key or id already taken, stops. A measure with no `publish:` key or with `publish: true` is left unchanged, and the upgrade may report `up_to_date`: [author its metric by hand](#metrics-a-measure-published-implicitly) |
-| `model-grain` | 0.3.2 | A model `grain:` beside `entities:` (or on a fact model) | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
+| `model-grain` | 0.3.2 | A model `grain:` beside `entities:` | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
 | `model-primary-key` | 0.3.2 | `keys:` and a singular `entity:` (and a block-less model's `grain:`) | An `entities:` block that states the same keys (`bridge: false` when the legacy keys inferred no relationship). A key with a role, keys that disagree with the block, or a model with no row key stop |
 | `model-joins` | 0.3.2 | A model `joins:` block | `graph.relationships` rows with the same ids (`traversal` becomes `allowed_directions`). A join that never read its cardinality as one, names no columns under a different key, or isn't on its entity's home model stops |
 | `object-as` | 0.3.2 | `id:` on graph entities, dimensions and measures | Renamed to `as:`, or deleted when the key derives the same id |

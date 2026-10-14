@@ -29,7 +29,7 @@ class _RecordingAdapter(WarehouseAdapter):
 
 def _config(table: str, column: str) -> SimpleNamespace:
     return SimpleNamespace(
-        entities=[EntityConfig(id="entity.order", table=table, primary_key="order_id")],
+        entities=[EntityConfig(id="entity.order", table=table, key_columns=["order_id"])],
         dimensions=[
             DimensionConfig(
                 id="dimension.ordered_at", entity="entity.order", column=column, data_type="date"

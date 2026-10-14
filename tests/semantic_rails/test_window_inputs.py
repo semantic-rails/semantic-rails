@@ -166,7 +166,7 @@ def test_source_row_key_counts_still_feed_summing_windows(config, kind, measure_
     assert "SUM(base.m1) OVER" in compile_query(config, Registry(config), payload)["sql"]
 
 
-@pytest.mark.parametrize("key_source", ["row_grain", "entity_key", "primary_key"])
+@pytest.mark.parametrize("key_source", ["row_grain", "entity_key"])
 @pytest.mark.parametrize("other_key", [[], ["order_id", "customer_id"]])
 def test_distinct_count_requires_a_source_row_key(config, key_source, other_key):
     measure = next(m for m in config.measures if m.id == ORDERS["measure"])
@@ -180,15 +180,7 @@ def test_distinct_count_requires_a_source_row_key(config, key_source, other_key)
         ],
         entities=[
             replace(
-                e,
-                key=(
-                    ["order_id"]
-                    if key_source == "entity_key"
-                    else other_key
-                    if key_source == "row_grain"
-                    else []
-                ),
-                primary_key="order_id" if key_source == "primary_key" else "unrelated",
+                e, key_columns=["order_id"] if key_source == "entity_key" else other_key or ["x"]
             )
             if e.id == measure.entity
             else e
@@ -205,28 +197,22 @@ def test_distinct_count_requires_a_source_row_key(config, key_source, other_key)
 
 
 @pytest.mark.parametrize(
-    ("row_grain", "source_relation", "kind", "route"),
+    ("row_grain", "kind", "route"),
     [
-        (["order_id", "line_no"], "", "rolling", "compile"),
-        (["order_id", "line_no"], "", "cumulative", "lower"),
-        ([], "order_lines", "period_to_date", "compile"),
-        ([], "order_lines", "rolling", "lower"),
+        (["order_id", "line_no"], "rolling", "compile"),
+        (["order_id", "line_no"], "cumulative", "lower"),
     ],
 )
-def test_entity_key_cannot_override_the_measure_source_rows(
-    config, row_grain, source_relation, kind, route
-):
+def test_entity_key_cannot_override_the_measure_source_rows(config, row_grain, kind, route):
     measure = next(m for m in config.measures if m.id == ORDERS["measure"])
     config = replace(
         config,
         measures=[
-            replace(m, row_grain=row_grain, source_relation=source_relation)
-            if m.id == measure.id
-            else m
-            for m in config.measures
+            replace(m, row_grain=row_grain) if m.id == measure.id else m for m in config.measures
         ],
         entities=[
-            replace(e, key=["order_id"]) if e.id == measure.entity else e for e in config.entities
+            replace(e, key_columns=["order_id"]) if e.id == measure.entity else e
+            for e in config.entities
         ],
     )
     expression = window(ORDERS, kind)
@@ -280,8 +266,7 @@ def test_composite_key_components_cannot_feed_a_summing_window(
         entities=[
             replace(
                 e,
-                key=composite_key if key_source in {"entity_key", "both"} else [],
-                primary_key="order_id" if key_source in {"entity_key", "both"} else "unrelated",
+                key_columns=composite_key if key_source in {"entity_key", "both"} else ["x"],
             )
             if e.id == measure.entity
             else e

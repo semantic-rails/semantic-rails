@@ -58,14 +58,14 @@ VOLATILE = frozenset(
 ENGINE_READ = frozenset(
     {
         *("id", "package_id", "kind", "value", "expr", "expression", "steps", "accumulation"),
-        *("table", "primary_key", "relation_id", "key", "identifiers", "foreign_keys"),
+        *("table", "key_columns", "model", "relation_id", "identifiers", "foreign_keys"),
         *("calendar_id", "entity", "column", "data_type", "value_domain", "dimension"),
         *("temporal_class", "supported_grains", "timezone", "column_timezone", "unknown_values"),
         *("source_entity", "target_entity", "source_column", "target_column", "cardinality"),
         *("safety", "source_columns", "target_columns", "source_key_role", "target_key_role"),
         *("allowed_directions", "target_key_type", "rollup_safe_aggregations_reverse"),
         *("dimensions", "from_", "to", "row_grain", "default_aggregation", "value_type"),
-        *("allowed_aggregations", "source_relation", "invalid_aggregations", "measure_class"),
+        *("allowed_aggregations", "invalid_aggregations", "measure_class"),
         *("compatible_temporal_roles", "suggested_aggregations"),
         *("preferred_companion_metrics", "default_temporal_role"),
         *("cross_window_policy", "lookup_from", "lookup_via", "temporal_role", "filter_spec"),

@@ -604,7 +604,7 @@ def test_multi_fact_metrics_align_on_common_metric_time(config):
 
 def _primitive_channel_config() -> PackageConfig:
     def entity(name: str, table: str, key: str) -> EntityConfig:
-        return EntityConfig(id=f"entity.{name}", table=table, primary_key=key, key=[key])
+        return EntityConfig(id=f"entity.{name}", table=table, key_columns=[key])
 
     def to_account(source: str, target: str = "account", column: str = "account_id"):
         return RelationshipConfig(

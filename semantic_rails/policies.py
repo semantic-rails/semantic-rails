@@ -781,7 +781,7 @@ def _synthetic_constraint_sources(
 
     def rows(measure: MeasureConfig) -> tuple[str, ...]:
         # A one-part row token cannot collide with a two-part column token.
-        relation = measure.source_relation or relations[measure.entity]
+        relation = relations[measure.entity]
         return (identifier(relation.split(".")[-1]),)
 
     def columns(measure: MeasureConfig, seen: frozenset[str] = frozenset()) -> set[tuple[str, ...]]:

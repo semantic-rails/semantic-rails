@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +13,6 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject, _replaced
 from semantic_rails.architect_transactions import project_revision
-from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.dbt_warehouse import write_orders_package
 
 REPO = Path(__file__).resolve().parents[2]
@@ -172,23 +170,6 @@ def test_a_merge_keeps_unnamed_objects_and_lists_what_rewrites_drop(workspace: P
     # Only fields of the objects the call rewrote are listed, never whole objects.
     assert all(field.count(".") == 2 for field in report.report.get("dropped_fields", []))
     assert "status" in _yaml(workspace, "models/orders.yml")["model"]["dimensions"]
-
-
-def test_fact_models_are_refused(tmp_path: Path) -> None:
-    shutil.copytree(REPO / "configs" / "semantic_rails" / "jaffle_shop", tmp_path / "jaffle")
-    project = ArchitectProject(tmp_path / "jaffle", workspace_root=tmp_path)
-    before = project_revision(tmp_path / "jaffle")
-
-    for replace in (False, True):
-        with pytest.raises(SemanticLayerError, match="fact model"):
-            project.upsert_model(
-                model_id="daily_metrics",
-                entity_key="daily",
-                relation="jaffle_daily_metric_rollup",
-                primary_key=["date_day"],
-                replace=replace,
-            )
-    assert project_revision(tmp_path / "jaffle") == before
 
 
 def test_mcp_replace_keeps_public_ids(workspace: Path) -> None:

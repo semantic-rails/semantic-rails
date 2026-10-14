@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ...config import load_package_config
 from ...config_validation import PackageReference
 from ...errors import SemanticLayerError
 from ...local_config import init_local_profile, local_profile_report
@@ -556,6 +557,9 @@ def cmd_project_validate(args: argparse.Namespace) -> None:
         _print_json(report)
     else:
         _print_project_validation(report)
+        entities = load_package_config(ref.source_path).entities if report["ok"] else []
+        if row_grain := [row.model for row in entities if row.is_row_grain]:
+            print(f"Row grain (no key): {', '.join(row_grain)}")
         for hint in legacy_form_hint(ref.source_path, f"run `{_upgrade_command(ref)}`"):
             print(f"Hint: {hint}")
     if not report["ok"]:

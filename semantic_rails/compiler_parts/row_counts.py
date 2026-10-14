@@ -74,7 +74,7 @@ def _names_in_use(plan: LogicalPlan, config: PackageConfig) -> set[str]:
         *(
             column
             for row in config.entities
-            for column in [row.primary_key, *row.key, *row.identifiers]
+            for column in [*row.key_columns, *row.identifiers]
             + [column for columns in row.foreign_keys.values() for column in columns]
         ),
         *(row.column for row in config.dimensions),

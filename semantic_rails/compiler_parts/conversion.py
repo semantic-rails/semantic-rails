@@ -287,12 +287,6 @@ def _conversion_operand_problem(measure: MeasureConfig, entity: Any) -> tuple[st
         where = f" of '{qualifier}'" if qualifier not in {"", measure.entity, table} else ""
         what = f"counts column '{counted.column}'{where}, not {the_key} of '{measure.entity}'"
         return what, events_hint
-    if measure.source_relation not in {"", table}:
-        return (
-            f"counts rows of '{measure.source_relation}', not of the '{measure.entity}' "
-            f"table '{table}'",
-            events_hint,
-        )
     return None
 
 

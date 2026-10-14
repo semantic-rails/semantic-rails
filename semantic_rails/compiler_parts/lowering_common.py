@@ -127,30 +127,6 @@ def _dialect(config: PackageConfig):
     return dialect_for_warehouse(config.package.warehouse)
 
 
-def _measure_source_relation(measure, entity) -> str:
-    """Return the FROM-clause relation name for a measure.
-
-    Fact-model measures carry their own ``source_relation`` (the fact
-    table) because their ``entity`` points at a time entity whose own
-    ``.table`` is the calendar relation, not the fact's table. Regular
-    measures fall back to the entity's table (current behavior).
-    """
-    src = getattr(measure, "source_relation", "") or ""
-    return src if src else entity.table
-
-
-def _measure_owned_relation(measure, entities) -> str:
-    """Source relation for a column that belongs to a measure's own row.
-
-    For fact measures (with ``source_relation``), columns of the
-    measure's bound entity (typically the time entity whose ``.table``
-    is the calendar relation) actually live on the fact table. For
-    regular measures the bound entity's ``.table`` is correct.
-    """
-    src = getattr(measure, "source_relation", "") or ""
-    return src if src else entities[measure.entity].table
-
-
 def _aggregate_relation_index(config: PackageConfig) -> dict[str, AggregateRelationConfig]:
     return {row.id: row for row in config.aggregate_relations}
 
@@ -164,55 +140,10 @@ def _selected_aggregate_relation(
     return _aggregate_relation_index(config).get(relation_id)
 
 
-def _measure_dim_relation(measure, dim, entities) -> str:
-    """Relation to qualify a dimension's column with, from the
-    measure's source perspective.
-
-    When the dimension's entity is the measure's own entity AND the
-    measure has a ``source_relation`` (fact table), the column lives
-    on the fact table — NOT on the entity's ``.table`` (calendar).
-    Otherwise the dimension belongs to a foreign entity and its own
-    ``.table`` is correct.
-    """
-    src = getattr(measure, "source_relation", "") or ""
-    if src and dim.entity == measure.entity:
-        return src
-    return entities[dim.entity].table
-
-
-def _measure_owned_key_columns(measure, entities, temporal_roles, dimensions) -> list[str]:
-    """Columns that uniquely identify a row of the measure's source.
-
-    For fact measures (``source_relation`` set), the row grain is the
-    fact's own time column (declared via ``model.time_column`` and
-    surfaced through the measure's ``default_temporal_role`` -> its
-    bound time dimension's ``column``). The bound entity's
-    ``primary_key`` points at the calendar relation's key (e.g.
-    ``date_day``) and is NOT a valid column on the fact table.
-
-    For regular measures the entity's ``key`` / ``primary_key`` is
-    correct (the row lives on the entity's own table).
-    """
-    src = getattr(measure, "source_relation", "") or ""
-    if src:
-        role_id = getattr(measure, "default_temporal_role", "") or ""
-        role = temporal_roles.get(role_id) if role_id else None
-        if role is not None:
-            dim = dimensions.get(getattr(role, "dimension", ""))
-            if dim is not None and dim.column:
-                return [dim.column]
-    entity = entities[measure.entity]
-    return list(entity.key or [entity.primary_key])
-
-
 def _stock_row_key(measure, config: PackageConfig) -> list[str]:
     """The row key a stock's series come from: its declared grain, else its entity's key."""
     return [column for column in list(measure.row_grain or []) if column] or [
-        column
-        for column in _measure_owned_key_columns(
-            measure, _entity_index(config), _temporal_role_index(config), _dimension_index(config)
-        )
-        if column
+        column for column in _entity_index(config)[measure.entity].key if column
     ]
 
 
@@ -516,7 +447,6 @@ def _require_filtered_series_operand(
             measure.entity,
             str(item["field"]),
             config,
-            source_relation_override=measure.source_relation,
         ) or _resolve_dimension_expr(str(item["field"]), config)
         conditions.append(_value_filter_condition(value, item, config))
     aggregate = next(
@@ -543,7 +473,6 @@ def _edge_cap(
     config: PackageConfig,
     *,
     entity: str = "",
-    source_relation: str = "",
 ) -> list[Any]:
     """What a measure's declared edge (``zero_through``) lets the leaf that reads it on the
     clock ``role_id`` (an untimed read: the measure's default clock) read: the rows at or
@@ -557,17 +486,11 @@ def _edge_cap(
     refuse_declared_edges([measure], dialect)
     role = _temporal_role_index(config)[role_id]
     dim = _dimension_index(config)[role.dimension]
-    direct = _direct_dimension_source_expr(
-        entity or measure.entity, role.dimension, config, source_relation_override=source_relation
-    )
+    direct = _direct_dimension_source_expr(entity or measure.entity, role.dimension, config)
     if direct is None and dim.entity != (entity or measure.entity):
         return []
     entities = _entity_index(config)
-    raw = (
-        direct[0]
-        if direct is not None
-        else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
-    )
+    raw = direct[0] if direct is not None else _column_ref(entities[dim.entity].table, dim.column)
     zone = role.column_timezone or role.timezone or "UTC"
     local = _apply_role_timezone(raw, role, config)
     return declared_cap(measure.zero_through, raw, local, zone, dialect)
@@ -700,16 +623,15 @@ def _dataset_scope(
         )
     ):
         return None
-    override = getattr(measure, "source_relation", "") or ""
     where = []
     for item in _bound_filter_clauses(bound, config):
         expr, _ = _direct_dimension_source_expr(
-            measure.entity, str(item["field"]), config, source_relation_override=override
+            measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where.append(_value_filter_condition(expr, item, config))
     # Rows past a declared edge are never read, so they observe nothing either.
-    where.extend(_edge_cap(measure, role_id, config, source_relation=override))
-    relation = _measure_source_relation(measure, _entity_index(config)[measure.entity])
+    where.extend(_edge_cap(measure, role_id, config))
+    relation = _entity_index(config)[measure.entity].table
     joins = [*_joins_for_paths(measure.entity, paths, config, measure_entity=measure.entity)]
     if owned is not None and _bound_metric_predicates(bound):
         joins.extend(owned.joins)
@@ -1026,9 +948,7 @@ def _entity_in_terms_of_anchor_plan(
         return None
     if not isinstance(measure.expr, ColumnRefExpr) or measure.expr.entity or measure.expr.table:
         return None
-    measure_key_columns = list(
-        entities[measure.entity].key or [entities[measure.entity].primary_key]
-    )
+    measure_key_columns = list(entities[measure.entity].key_columns)
     if measure.expr.column not in set(measure_key_columns):
         return None
     if _all_metric_predicates(plan, measure_plan):
@@ -1236,7 +1156,6 @@ def _foldable_leaf_signature(
         "foldable_leaf",
         getattr(measure_plan, "aggregate_relation_id", "") or "",
         measure.entity,
-        getattr(measure, "source_relation", "") or "",
         measure.zero_through,  # one scan reads one edge
         _path_signature(measure_plan.path_selections),
         tuple(plan.group_by),

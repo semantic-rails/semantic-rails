@@ -359,7 +359,8 @@ def test_name_fallback_cannot_select_an_explicitly_bound_entity(tmp_path: Path) 
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "model 'reading' must identify its primary entity" in str(exc.value)
+    # Nothing is homed on 'reading', so it would be row grain under its own name: taken.
+    assert "graph.entities already declares 'reading'" in str(exc.value)
 
 
 @pytest.mark.parametrize("entities_block", [{}, {"device": {}}])
@@ -451,14 +452,12 @@ def test_shared_entity_keys_require_explicit_primary_identity(
         },
     )
     if identity is None:
-        message = (
-            "model 'parties' must identify its primary entity with a graph model binding "
-            "(graph.entities.<entity>.model), or list an unbound entity with the model's name"
-        )
+        # Listing entities homed elsewhere makes 'parties' row grain, so customer has no home.
+        message = "graph entity 'customer' references unknown model 'customer'"
         with pytest.raises(SemanticLayerError) as exc:
             load_package_config(str(pkg))
         assert exc.value.code == "INVALID_CONFIG"
-        assert str(exc.value) == message
+        assert message in str(exc.value)
         assert any(message in error for error in validate_runtime_package(pkg))
     else:
         config = load_package_config(str(pkg))
@@ -500,11 +499,7 @@ def test_architect_mutation_rolls_back_when_primary_remains_unidentified(tmp_pat
     assert report["parse"]["ok"] is False
     assert any(
         error["code"] == "INVALID_CONFIG"
-        and (
-            "model 'parties' must identify its primary entity with a graph model binding "
-            "(graph.entities.<entity>.model), or list an unbound entity with the model's name"
-        )
-        in error["message"]
+        and "graph entity 'customer' references unknown model 'customer'" in error["message"]
         for error in report["parse"]["errors"]
     )
     assert (pkg / "models" / "supplier.yml").read_bytes() == original
@@ -531,7 +526,8 @@ def test_model_primary_is_not_chosen_by_declaration_order(tmp_path: Path) -> Non
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "model 'widgets' must identify its primary entity" in str(exc.value)
+    # 'widgets' lists only an entity it isn't home to (row grain), so 'widget' has no home.
+    assert "graph entity 'widget' references unknown model 'widget'" in str(exc.value)
 
 
 @pytest.mark.parametrize(

@@ -1,9 +1,8 @@
 model:
   id: daily_metrics
-  kind: fact
   relation: jaffle_daily_metric_rollup
-  time_entity: time
-  time_column: date_day
+  entities:
+    daily_metrics: {}
   times:
     date_day:
       label: Daily metric day

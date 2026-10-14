@@ -1155,13 +1155,6 @@ def test_shipped_sales_policy_scopes_cuts_to_governed_objects(monkeypatch, shape
 def test_shared_scan_conditional_cut_counts_for_its_own_leaf(config, monkeypatch, governed):
     from semantic_rails.compiler_parts import sql_lowering
 
-    config = replace(
-        config,
-        measures=[
-            replace(m, source_relation="jaffle_order") if m.id == MEASURE else m
-            for m in config.measures
-        ],
-    )
     query = {
         "select": [
             {"expression": MEASURE, "as": "revenue"},

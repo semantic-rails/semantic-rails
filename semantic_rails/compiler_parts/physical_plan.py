@@ -48,7 +48,6 @@ from .lowering_common import (
     _all_metric_predicates,
     _dialect,
     _entity_in_terms_of_anchor_plan,
-    _measure_owned_relation,
     _measure_plan_groups,
     _plan_requires_agent_dag_lowering,
     _query_key_aliases,
@@ -80,7 +79,7 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
     anchored = _anchored_entity_set_plan(plan, config)
     if anchored is not None:
         measure = measures[anchored.denominator_measure_plan.bound_measure.measure_id]
-        source_relation = _measure_owned_relation(measure, entities)
+        source_relation = entities[measure.entity].table
         scan_id = "anchor_scan"
         nodes.append(
             PhysicalPlanNode(
@@ -428,7 +427,7 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
             else (
                 entities[scan_entity].table
                 if entity_terms_anchor is not None
-                else _measure_owned_relation(measure, entities)
+                else entities[measure.entity].table
             )
         )
         scan_id = f"{first_plan.cte_name}_scan"

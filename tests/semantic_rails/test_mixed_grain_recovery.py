@@ -52,7 +52,6 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         entity="entity.orders",
         row_grain=["order_id"],
         expr=ColumnRefExpr(column="amount"),
-        source_relation="orders",
         default_aggregation="sum",
         allowed_aggregations=["sum"],
         compatible_temporal_roles=[],
@@ -64,7 +63,6 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         id=f"measure.synthetic.{similar_id}",
         entity="entity.lines",
         row_grain=["line_id"],
-        source_relation="lines",
         name="",
         label="",
     )
@@ -89,10 +87,8 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
     config = replace(
         config,
         entities=[
-            EntityConfig(
-                id="entity.orders", table="orders", primary_key="order_id", key=["order_id"]
-            ),
-            EntityConfig(id="entity.lines", table="lines", primary_key="line_id", key=["line_id"]),
+            EntityConfig(id="entity.orders", table="orders", key_columns=["order_id"]),
+            EntityConfig(id="entity.lines", table="lines", key_columns=["line_id"]),
         ],
         relationships=[
             RelationshipConfig(

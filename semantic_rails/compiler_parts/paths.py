@@ -277,14 +277,12 @@ def _direct_entity_key_source_expr(
     target_entity: str,
     target_key_col: str,
     config: PackageConfig,
-    *,
-    source_relation_override: str = "",
 ) -> SqlIdentifier | None:
     entities = _entity_index(config)
     source = entities.get(source_entity)
     if source is None:
         return None
-    source_table = source_relation_override or source.table
+    source_table = source.table
     if source_entity == target_entity and target_key_col in set(source.key or [source.primary_key]):
         return _column_ref(source_table, target_key_col)
     # None: not readable here. Several pairings between the entities (role-playing keys, e.g.
@@ -320,8 +318,6 @@ def _direct_dimension_source_expr(
     source_entity: str,
     dim_id: str,
     config: PackageConfig,
-    *,
-    source_relation_override: str = "",
 ) -> tuple[Any, str] | None:
     dim_index = _dimension_index(config)
     dim = dim_index.get(dim_id)
@@ -332,15 +328,9 @@ def _direct_dimension_source_expr(
             details={"dimension": dim_id},
         )
     target = _entity_index(config).get(dim.entity)
-    if target is None or dim.column not in set(target.key or [target.primary_key]):
+    if target is None or dim.column not in set(target.key_columns):
         return None
-    expr = _direct_entity_key_source_expr(
-        source_entity,
-        dim.entity,
-        dim.column,
-        config,
-        source_relation_override=source_relation_override,
-    )
+    expr = _direct_entity_key_source_expr(source_entity, dim.entity, dim.column, config)
     if expr is None:
         return None
     return unknown_as_null(expr, dim), dim.id
@@ -352,19 +342,21 @@ def keyed_entity(config: PackageConfig, dimension_id: str) -> Any:
     if dimension is None:
         return None
     entity = _entity_index(config).get(dimension.entity)
-    if entity is None or entity.kind == "time" or len(entity.key) != 1:
+    if entity is None or entity.kind == "time" or len(entity.key_columns) != 1:
         return None
-    return entity if dimension.column == entity.key[0] else None
+    return entity if dimension.column == entity.key_columns[0] else None
 
 
 def display_key(config: PackageConfig, dimension_id: str) -> str:
     """The key dimension of the entity ``dimension_id`` names rows of (its ``display``), else
     ``""``: grouping by a name groups by the key too, so same-named entities stay apart."""
     entity = next((row for row in config.entities if row.display == dimension_id), None)
-    if entity is None or entity.kind == "time" or len(entity.key) != 1:
+    if entity is None or entity.kind == "time" or len(entity.key_columns) != 1:
         return ""
     keys = [
-        row for row in config.dimensions if row.entity == entity.id and row.column == entity.key[0]
+        row
+        for row in config.dimensions
+        if row.entity == entity.id and row.column == entity.key_columns[0]
     ]
     keys.sort(key=lambda row: row.semantic_kind != "id")
     return keys[0].id if keys else ""

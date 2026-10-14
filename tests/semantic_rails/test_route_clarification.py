@@ -965,8 +965,7 @@ def _many_route_config(tmp_path):
         EntityConfig(
             id=f"entity.bank_{name}",
             table=name,
-            primary_key="id",
-            key=["id"],
+            key_columns=["id"],
             name=name,
             label=name.title(),
         )

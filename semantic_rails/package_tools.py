@@ -600,7 +600,7 @@ def check_warehouse_column_reachability_report(
             table = entity_table.get(entity.id, "")
             if not table or table not in table_columns:
                 continue
-            for column in entity.key or []:
+            for column in entity.key_columns:
                 if str(column).lower() not in table_columns[table]:
                     errors.append(
                         {
@@ -643,33 +643,9 @@ def check_warehouse_column_reachability_report(
                     }
                 )
 
-        # Probe any extra tables referenced by measures via `source_relation`
-        # (fact-table models decouple a measure's source table from the
-        # entity it attaches to).
-        extra_tables: set[str] = set()
-        for measure in config.measures:
-            src = str(getattr(measure, "source_relation", "") or "")
-            if src and src not in table_columns:
-                extra_tables.add(src)
-        for table in sorted(extra_tables):
-            cols, err = _describe_table_columns(adapter, warehouse=warehouse, table=table)
-            if err:
-                errors.append(
-                    {
-                        "code": "WAREHOUSE_TABLE_NOT_FOUND",
-                        "message": err,
-                        "details": {"table": table},
-                    }
-                )
-                continue
-            table_columns[table] = cols
-
         # Check measure expr column refs against the measure's table.
-        # Prefer `source_relation` when set (fact-table models); fall back
-        # to the entity's table.
         for measure in config.measures:
-            src = str(getattr(measure, "source_relation", "") or "")
-            table = src or entity_table.get(measure.entity, "")
+            table = entity_table.get(measure.entity, "")
             if not table or table not in table_columns:
                 continue
             referenced: list[str] = []

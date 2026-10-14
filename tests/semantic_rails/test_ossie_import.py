@@ -29,7 +29,7 @@ WITHOUT_SIDECAR = {
     "jaffle_shop": {
         "dimensions typed by default": 67,
         "facts outside the supported expression grammar": 6,  # CASE WHEN facts
-        "measures given defaults": 27,
+        "measures given defaults": 35,
         "temporal roles with default grains": 26,
     },
     "tpch_sf1_showcase": {

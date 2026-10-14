@@ -1,0 +1,7 @@
+model:
+  id: tags
+  label: Tags
+  relation: tags
+  entities: {tag: {}}
+  dimensions:
+    tag_name: {label: Tag, kind: categorical}
