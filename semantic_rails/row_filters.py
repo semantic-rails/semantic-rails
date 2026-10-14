@@ -132,6 +132,8 @@ class Visibility:
         return self._predicate(relation_key(table), list(qualifier), ())
 
     def _predicate(self, table: str, qualifier: list[str], seen: tuple[str, ...]) -> SqlExpr:
+        if table in self.refused:  # the relation or an owner of it: no predicate is right
+            raise untraced(self.filters)
         if table in seen or len(seen) > 16:
             raise unsupported(self.filters)  # owners that own each other define nothing
         parts: list[SqlExpr] = [
@@ -373,15 +375,7 @@ def _verify(node: Any, visibility: Visibility, ctes: set[str], *, in_pipeline: b
         if name in ctes:
             continue
         if name in visibility.refused:
-            raise SemanticLayerError(
-                "POLICY_DENIED",
-                "A row filter applies to this request, and it reads a relation whose rows the "
-                "filter can't be traced to, so it can't be answered under it.",
-                details={
-                    "reason": "row_filter_coverage_unsupported",
-                    "policy_ids": sorted({row.policy_id for row in visibility.filters}),
-                },
-            )
+            raise untraced(visibility.filters)
         if _is_mark(node, position, table, visibility):
             if name in visibility.restricted:
                 raise _on_load_log()
@@ -463,6 +457,18 @@ def _observes(scan: SqlSelect) -> bool:
         scan.observation_scan
         and not (scan.joins or scan.ctes or scan.group_by)
         and all(_aggregate_only(item.expression) for item in scan.select)
+    )
+
+
+def untraced(filters: Sequence[RowFilter]) -> SemanticLayerError:
+    return SemanticLayerError(
+        "POLICY_DENIED",
+        "A row filter applies to this request, and it reads a relation whose rows the filter "
+        "can't be traced to by one package route, so it can't be answered under it.",
+        details={
+            "reason": "row_filter_coverage_unsupported",
+            "policy_ids": sorted({row.policy_id for row in filters}),
+        },
     )
 
 
