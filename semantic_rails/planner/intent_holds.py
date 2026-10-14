@@ -328,7 +328,7 @@ def _incomplete_period_why(runtime: Any, query: Call, start: Any = "") -> dict[s
     except SemanticLayerError:
         # A draft execution can't read proves no period complete: the check reads it as one
         # with no window, which runs to now.
-        engine = {"select": call.get("select"), "policy_context": {"now": now}}
+        engine = {**Call(select=query.select).to_call(), "policy_context": {"now": now}}
     return incomplete_period_why(runtime._config, engine, call=call, start=start)
 
 
