@@ -589,16 +589,16 @@ DAY_INFO = {
         "    label: {column: date_day, kind: categorical}\n"
     ),
 }
-# The warehouse resolves an unquoted column name without case, so these name the clock. The
-# key column in capitals is declared, so the loader adds no key dimension with the clock's id.
-DAY_KEY_LINE = "    day_key: {column: DATE_DAY, kind: categorical}\n"
+# The warehouse resolves an unquoted column name without case, so the key in capitals names
+# the label's column. A relationship spells its columns as the keys it holds are written (a
+# respelling in another case fails loading), so the snapshot's side names date_day.
 DAY_INFO_IN_CAPITALS = {
     "graph": {
         GRAPH_ENTITIES: GRAPH_ENTITIES + "    day_info: {key: [DATE_DAY], model: day_infos}\n"
     },
     "account_days": {
-        **DAY_INFO["account_days"],
-        ACCOUNT_LINE: ACCOUNT_LINE + DAY_KEY_LINE,
+        "entities: {account_day: {}, time: {}}": "entities: {account_day: {}, time: {}, "
+        "day_info: {expr: date_day}}"
     },
     "day_infos": DAY_INFO["day_infos"],
 }
@@ -609,13 +609,12 @@ OCCURRED_LABEL_EDITS = {
         + "    occurred_label: {column: OCCURRED_AT, kind: categorical}\n"
     }
 }
-# A relationship from the clock's column, in capitals, to a column of another name.
+# A relationship from the clock's column to a column of another name.
 INFO = {
     "graph": {GRAPH_ENTITIES: GRAPH_ENTITIES + "    info: {key: [info_day], model: infos}\n"},
     "account_days": {
         "entities: {account_day: {}, time: {}}": "entities: {account_day: {}, time: {}, "
-        "info: {expr: DATE_DAY}}",
-        ACCOUNT_LINE: ACCOUNT_LINE + DAY_KEY_LINE,
+        "info: {expr: date_day}}",
     },
     "infos": (
         "model:\n"
