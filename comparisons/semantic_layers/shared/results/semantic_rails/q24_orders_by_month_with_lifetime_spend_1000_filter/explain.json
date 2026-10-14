@@ -27,8 +27,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.085,
-      "compile_ms": 1.576,
+      "cache_lookup_ms": 1.111,
+      "compile_ms": 0.779,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -58,7 +58,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -101,7 +102,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [],
@@ -184,7 +186,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -262,7 +265,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
@@ -313,7 +317,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -340,7 +345,8 @@
             "last_value": 0,
             "start": null,
             "temporal_role": "temporal_role.jaffle_order_time",
-            "this": ""
+            "this": "",
+            "to_now": false
           }
         },
         {
@@ -350,6 +356,15 @@
           "pushed_to_scan": false,
           "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
+          "time_filter": {}
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": false,
+          "pushed_to_scan": true,
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_3",
           "time_filter": {}
         }
       ],
@@ -386,6 +401,19 @@
           ],
           "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": true,
+          "has_time_filter": false,
+          "large_relation_hint": false,
+          "measures": [],
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_3",
           "selected_relation_type": "raw",
           "source_entity": "entity.jaffle_order",
           "time_filter_has_end": false,
@@ -467,7 +495,8 @@
               "last_value": 0,
               "start": null,
               "temporal_role": "temporal_role.jaffle_order_time",
-              "this": ""
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -651,7 +680,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__revenue_usd_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__revenue_usd_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__revenue_usd_customer_source_1__leaf_1 AS base\n),\nleaf_1__revenue_usd_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__revenue_usd_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__revenue_usd_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 1000\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_revenue_usd_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_revenue_usd_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
+    "rendered_sql": "WITH leaf_1__revenue_usd_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__revenue_usd_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__revenue_usd_customer_source_1__leaf_1 AS base\n),\nleaf_1__revenue_usd_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__revenue_usd_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__revenue_usd_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 1000\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_revenue_usd_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_revenue_usd_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -759,6 +788,7 @@
                                   },
                                   "op": "/",
                                   "right": {
+                                    "temporal": false,
                                     "value": 100.0
                                   }
                                 }
@@ -772,6 +802,7 @@
                             "expression": {
                               "args": [
                                 {
+                                  "temporal": false,
                                   "value": 1
                                 }
                               ],
@@ -844,6 +875,7 @@
                                           },
                                           "op": ">",
                                           "right": {
+                                            "temporal": false,
                                             "value": 0
                                           }
                                         },
@@ -867,12 +899,14 @@
                                             },
                                             "op": "=",
                                             "right": {
+                                              "temporal": false,
                                               "value": 0
                                             }
                                           }
                                         }
                                       },
                                       "result": {
+                                        "temporal": false,
                                         "value": 0
                                       }
                                     }
@@ -960,6 +994,7 @@
                       },
                       "op": ">=",
                       "right": {
+                        "temporal": false,
                         "value": 1000
                       }
                     }
@@ -976,6 +1011,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -1027,6 +1063,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -1063,6 +1100,84 @@
           }
         },
         {
+          "name": "observed_1_rows",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "comparison_orders"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": 1,
+            "observation_scan": true,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "seen",
+                "expression": {
+                  "temporal": false,
+                  "value": 1
+                }
+              }
+            ],
+            "where": [
+              {
+                "left": {
+                  "parts": [
+                    "comparison_orders",
+                    "order_id"
+                  ]
+                },
+                "op": "IS NOT",
+                "right": {
+                  "temporal": false,
+                  "value": null
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "observed_1",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "observed_1_rows"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": false,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "seen",
+                "expression": {
+                  "args": [
+                    {
+                      "parts": [
+                        "observed_1_rows",
+                        "seen"
+                      ]
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "COUNT"
+                }
+              }
+            ],
+            "where": []
+          }
+        },
+        {
           "name": "guarded_base",
           "query": {
             "ctes": [],
@@ -1073,7 +1188,16 @@
             },
             "group_by": [],
             "having": [],
-            "joins": [],
+            "joins": [
+              {
+                "join_type": "CROSS",
+                "on": null,
+                "table": {
+                  "alias": "",
+                  "name": "observed_1"
+                }
+              }
+            ],
             "limit": null,
             "observation_scan": false,
             "order_by": [],
@@ -1096,25 +1220,42 @@
                     {
                       "condition": {
                         "left": {
-                          "frame": "",
-                          "function": {
-                            "args": [
-                              {
-                                "parts": [
-                                  "base",
-                                  "m1"
-                                ]
-                              }
-                            ],
-                            "distinct": false,
-                            "name": "MAX"
+                          "left": {
+                            "frame": "",
+                            "function": {
+                              "args": [
+                                {
+                                  "parts": [
+                                    "base",
+                                    "m1"
+                                  ]
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "MAX"
+                            },
+                            "order_by": [],
+                            "partition_by": []
                           },
-                          "order_by": [],
-                          "partition_by": []
+                          "op": ">",
+                          "right": {
+                            "temporal": false,
+                            "value": 0
+                          }
                         },
-                        "op": ">",
+                        "op": "OR",
                         "right": {
-                          "value": 0
+                          "left": {
+                            "parts": [
+                              "observed_1",
+                              "seen"
+                            ]
+                          },
+                          "op": ">",
+                          "right": {
+                            "temporal": false,
+                            "value": 0
+                          }
                         }
                       },
                       "result": {
@@ -1126,6 +1267,7 @@
                             ]
                           },
                           {
+                            "temporal": false,
                             "value": 0
                           }
                         ],
@@ -1233,7 +1375,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [],
@@ -1316,7 +1459,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -1394,7 +1538,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
@@ -1468,7 +1613,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
@@ -1502,15 +1648,15 @@
       }
     ]
   },
-  "rendered_sql": "WITH leaf_1__revenue_usd_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__revenue_usd_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__revenue_usd_customer_source_1__leaf_1 AS base\n),\nleaf_1__revenue_usd_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__revenue_usd_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__revenue_usd_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 1000\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_revenue_usd_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_revenue_usd_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
+  "rendered_sql": "WITH leaf_1__revenue_usd_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__revenue_usd_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__revenue_usd_customer_source_1__leaf_1 AS base\n),\nleaf_1__revenue_usd_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__revenue_usd_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__revenue_usd_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 1000\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_revenue_usd_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_revenue_usd_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
   "routes": [
     {
       "basis": "own_key",
       "conflicts_with": [
         {
           "relationship_path": [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_customer"
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer"
           ],
           "rows": [
             {
@@ -1525,8 +1671,8 @@
         },
         {
           "relationship_path": [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer"
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_customer"
           ],
           "rows": [
             {
@@ -1557,8 +1703,25 @@
         },
         {
           "relationship_path": [
+            "relationship.jaffle_order_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
+            "relationship.order_lifecycle_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
             "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.customer_history_customer"
           ],
           "rows": [
@@ -1574,23 +1737,6 @@
         },
         {
           "relationship_path": [
-            "relationship.order_to_customer_history",
-            "relationship.order_lifecycle_to_customer_history",
-            "relationship.order_lifecycle_customer"
-          ],
-          "rows": [
-            {
-              "relationship_path": [
-                "relationship.order_items_order",
-                "relationship.orders_customer"
-              ],
-              "source_entity": "entity.jaffle_item",
-              "target_entity": "entity.jaffle_customer"
-            }
-          ]
-        },
-        {
-          "relationship_path": [
             "relationship.orders_store",
             "relationship.order_lifecycle_store",
             "relationship.order_lifecycle_customer"
@@ -1645,7 +1791,7 @@
           "relationship_path": [
             "relationship.orders_store",
             "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.customer_history_customer"
           ],
           "rows": [
@@ -1685,8 +1831,8 @@
       ]
     }
   ],
-  "semantic_fingerprint": "sha256:0b2bdff03f9ce6864d6238146f155ac9732eda29857b050cab1f99de882b2da3",
-  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
+  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
       {
@@ -1743,6 +1889,7 @@
                                 },
                                 "op": "/",
                                 "right": {
+                                  "temporal": false,
                                   "value": 100.0
                                 }
                               }
@@ -1756,6 +1903,7 @@
                           "expression": {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": 1
                               }
                             ],
@@ -1828,6 +1976,7 @@
                                         },
                                         "op": ">",
                                         "right": {
+                                          "temporal": false,
                                           "value": 0
                                         }
                                       },
@@ -1851,12 +2000,14 @@
                                           },
                                           "op": "=",
                                           "right": {
+                                            "temporal": false,
                                             "value": 0
                                           }
                                         }
                                       }
                                     },
                                     "result": {
+                                      "temporal": false,
                                       "value": 0
                                     }
                                   }
@@ -1944,6 +2095,7 @@
                     },
                     "op": ">=",
                     "right": {
+                      "temporal": false,
                       "value": 1000
                     }
                   }
@@ -1960,6 +2112,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -2011,6 +2164,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -2047,6 +2201,84 @@
         }
       },
       {
+        "name": "observed_1_rows",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "",
+            "name": "comparison_orders"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": 1,
+          "observation_scan": true,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "seen",
+              "expression": {
+                "temporal": false,
+                "value": 1
+              }
+            }
+          ],
+          "where": [
+            {
+              "left": {
+                "parts": [
+                  "comparison_orders",
+                  "order_id"
+                ]
+              },
+              "op": "IS NOT",
+              "right": {
+                "temporal": false,
+                "value": null
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "observed_1",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "",
+            "name": "observed_1_rows"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": null,
+          "observation_scan": false,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "seen",
+              "expression": {
+                "args": [
+                  {
+                    "parts": [
+                      "observed_1_rows",
+                      "seen"
+                    ]
+                  }
+                ],
+                "distinct": false,
+                "name": "COUNT"
+              }
+            }
+          ],
+          "where": []
+        }
+      },
+      {
         "name": "guarded_base",
         "query": {
           "ctes": [],
@@ -2057,7 +2289,16 @@
           },
           "group_by": [],
           "having": [],
-          "joins": [],
+          "joins": [
+            {
+              "join_type": "CROSS",
+              "on": null,
+              "table": {
+                "alias": "",
+                "name": "observed_1"
+              }
+            }
+          ],
           "limit": null,
           "observation_scan": false,
           "order_by": [],
@@ -2080,25 +2321,42 @@
                   {
                     "condition": {
                       "left": {
-                        "frame": "",
-                        "function": {
-                          "args": [
-                            {
-                              "parts": [
-                                "base",
-                                "m1"
-                              ]
-                            }
-                          ],
-                          "distinct": false,
-                          "name": "MAX"
+                        "left": {
+                          "frame": "",
+                          "function": {
+                            "args": [
+                              {
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "MAX"
+                          },
+                          "order_by": [],
+                          "partition_by": []
                         },
-                        "order_by": [],
-                        "partition_by": []
+                        "op": ">",
+                        "right": {
+                          "temporal": false,
+                          "value": 0
+                        }
                       },
-                      "op": ">",
+                      "op": "OR",
                       "right": {
-                        "value": 0
+                        "left": {
+                          "parts": [
+                            "observed_1",
+                            "seen"
+                          ]
+                        },
+                        "op": ">",
+                        "right": {
+                          "temporal": false,
+                          "value": 0
+                        }
                       }
                     },
                     "result": {
@@ -2110,6 +2368,7 @@
                           ]
                         },
                         {
+                          "temporal": false,
                           "value": 0
                         }
                       ],
@@ -2215,6 +2474,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-11T20:14:31.984061Z"
+    "now": "2026-10-14T20:11:47.974738Z"
   }
 }

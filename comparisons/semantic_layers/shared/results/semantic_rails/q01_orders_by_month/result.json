@@ -30,8 +30,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.936,
-      "compile_ms": 1.224,
+      "cache_lookup_ms": 0.567,
+      "compile_ms": 4.386,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -61,7 +61,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -104,7 +105,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [],
@@ -168,7 +170,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -246,7 +249,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
@@ -279,7 +283,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -306,7 +311,8 @@
             "last_value": 0,
             "start": null,
             "temporal_role": "temporal_role.jaffle_order_time",
-            "this": ""
+            "this": "",
+            "to_now": false
           }
         }
       ],
@@ -395,7 +401,8 @@
               "last_value": 0,
               "start": null,
               "temporal_role": "temporal_role.jaffle_order_time",
-              "this": ""
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -535,6 +542,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -563,6 +571,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -650,6 +659,7 @@
                         },
                         "op": ">",
                         "right": {
+                          "temporal": false,
                           "value": 0
                         }
                       },
@@ -662,6 +672,7 @@
                             ]
                           },
                           {
+                            "temporal": false,
                             "value": 0
                           }
                         ],
@@ -769,7 +780,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [],
@@ -833,7 +845,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -911,7 +924,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
@@ -969,7 +983,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
@@ -1051,8 +1066,8 @@
       "period_partial": false
     }
   ],
-  "semantic_fingerprint": "sha256:0b2bdff03f9ce6864d6238146f155ac9732eda29857b050cab1f99de882b2da3",
-  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
+  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
       {
@@ -1068,6 +1083,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -1096,6 +1112,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -1183,6 +1200,7 @@
                       },
                       "op": ">",
                       "right": {
+                        "temporal": false,
                         "value": 0
                       }
                     },
@@ -1195,6 +1213,7 @@
                           ]
                         },
                         {
+                          "temporal": false,
                           "value": 0
                         }
                       ],
@@ -1295,7 +1314,7 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-11T20:14:29.315498Z",
+    "now": "2026-10-14T20:11:47.002987Z",
     "partial": false
   }
 }
