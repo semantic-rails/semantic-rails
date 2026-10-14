@@ -157,15 +157,17 @@ never create, seed or change it.
   The full row count and the sample's row count are reported separately; counting the full relation
   may inspect all its rows.
 - `suggest_model`: a key, time roles, dimensions, measures with an aggregation and foreign-key
-  links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. A declared primary
-  key is the key. Otherwise candidates are declared unique columns, then sets of at most three
-  never-null, non-float columns: an entity-named column (`id`, `<entity>_id`), a key-like column
-  with a line or sequence number, a key-like column with the time column (two with it), any other
+  links, each with a `confidence` (`high`, `medium`, `low`) and a `reason`. Key candidates are
+  a declared primary key, declared unique columns, then sets of at most three never-null,
+  non-float columns: an entity-named column (`id`, `<entity>_id`), a key-like column with a
+  line or sequence number, a key-like column with the time column (two with it), any other
   column but a measure, then two key-like columns; a set whose sample distinct counts multiply to
   fewer than the profiled rows is skipped. Each candidate is refuted on the profile's one sample,
   and a survivor is confirmed never null and unique on the whole relation, grouped by its
-  columns as joins compare them (so a case-insensitive collation's `a` and `A` repeat); a
-  rejection moves on to the next. The sample is a temporary table, dropped afterwards. One 60-second deadline covers the search. `key_search.status` says how it ended:
+  columns as joins compare them (so a case-insensitive collation's `a` and `A` repeat, even
+  under a declared primary key); a rejection moves on to the next. The sample is a temporary
+  table, dropped afterwards. One 60-second deadline covers sampling, profiling and the search;
+  out of time, the draft has no key. `key_search.status` says how it ended:
   `confirmed`, `none_found` (with the number `checked`), `timed_out` (with the `unconfirmed`
   sets, which you may declare yourself) or `empty_table`. Only a confirmed key is suggested;
   otherwise the draft is a [row-grain model](PACKAGE_AUTHORING.md#row-grain-models)
