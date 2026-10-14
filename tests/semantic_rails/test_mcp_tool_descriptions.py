@@ -49,7 +49,7 @@ def test_execute_schema_is_the_call_and_empty_select_lists_rows(runtime_factory)
     ):
         assert kind in kinds
     assert "group_by dimension ids (alone, it lists rows)" in execute_desc
-    assert "Skip validate; run a call directly" in execute_desc
+    assert "'validate' only checks (skip it: run a call directly)" in execute_desc
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
     adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
