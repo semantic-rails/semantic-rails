@@ -307,10 +307,12 @@ reference and `schemas/query.v2.json` its schema, generated from the parser's ow
   child group, and `routes` route decisions. `call_from_query` is the inverse, used for echoes,
   clarification options and plan drafts. A refusal names the path and carries one hint.
 - **Filter words.** `semantic_rails/operators.py` is the one table of filter operators (`is`,
-  `not`, `gt`, `gte`, `lt`, `lte`, `contains`, `missing`): value shape, whether an unknown
-  row matches, the exact complement and the SQL aliases. The parser, SQL lowering, planner,
-  clarification complements, policy checks and value probes all read it; `not` lowers to
-  `(x <> v OR x IS NULL)`. Expression kinds (`comparison`, `in`, `between`) keep SQL's own
+  `not`, `gt`, `gte`, `lt`, `lte`, the text words `contains`, `starts_with`, `ends_with` and
+  their `not_` forms, `missing`): value shape, whether an unknown row matches, the exact
+  complement and the SQL aliases. The parser, SQL lowering, planner, clarification complements,
+  policy checks and value probes all read it; `not` lowers to `(x <> v OR x IS NULL)`, and a
+  `not_` text word to `(fold(x) NOT LIKE fold(p) OR x IS NULL)`, both sides folded by the
+  dialect's one lowercase function. Expression kinds (`comparison`, `in`, `between`) keep SQL's own
   semantics.
 - **The clock.** `semantic_rails/clock.py` parses `now` and resolves `last`/`this`/`start`/
   `end` to half-open bounds in the clock's zone, period bounds and partial flags. It is the

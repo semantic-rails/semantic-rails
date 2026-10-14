@@ -32,6 +32,7 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     measure_column_ref,
 )
+from .compiler_parts.paths import dimensions_over_column
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -1081,11 +1082,7 @@ def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> 
     out: list[str] = []
     for ref in collect_column_refs(expr.condition):
         entity = _resolve_column_entity(ref, config)
-        over = [
-            row.id
-            for row in config.dimensions
-            if row.entity == entity and row.column.casefold() == ref.column.casefold()
-        ]
+        over = [row.id for row in dimensions_over_column(entity, ref.column, config)]
         out.extend(over or [f"{entity}.{ref.column}"])
     return out
 

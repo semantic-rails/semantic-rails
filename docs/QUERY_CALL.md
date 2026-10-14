@@ -196,6 +196,9 @@ condition on a date dimension is legal; for a time window, use `time`.
 | `not` | one value or a list | **is kept** | "excluding X", "other than X" |
 | `gt` `gte` `lt` `lte` | one number, string, ISO date or date-time | is dropped | "over", "at least", "under", "at most" |
 | `contains` | text | is dropped | "containing"; case-insensitive and literal (no wildcards) |
+| `starts_with` | text | is dropped | "starting with", "beginning with"; case-insensitive and literal |
+| `ends_with` | text | is dropped | "ending with", "ending in"; case-insensitive and literal |
+| `not_contains` `not_starts_with` `not_ends_with` | text | **is kept** | "not containing", "not starting with", "not ending with" |
 | `missing` | `true` | only unknown rows match | "with no X" |
 | `missing` | `false` | only known rows match | "only where X is known" |
 
@@ -204,11 +207,34 @@ condition on a date dimension is legal; for a time window, use `time`.
   `!=`, `<>`, `neq`, `NOT IN` → `not`; `>`, `>=`, `<`, `<=` → `gt`, `gte`, `lt`, `lte`. A
   spelling takes its word's meaning, so `!=` keeps unknown rows too. Answers, refusals and
   clarifications always write the word.
-- For `is` and `not`, a one-element list is the same value as the scalar; the ranges,
-  `contains` and `missing` take one value, never a list. A `null` value, a `null` inside a list
+- For `is` and `not`, a one-element list is the same value as the scalar; the ranges, the text
+  words and `missing` take one value, never a list. A `null` value, a `null` inside a list
   and an empty list are refused with the `missing` form. There is no `between`: a range is two
   conditions, `gte` and `lt`. `IS NULL`, `IS NOT NULL`, `LIKE` and `IS DISTINCT FROM` are refused
   with the word to write.
+- `LIKE`, `NOT LIKE` and `ILIKE`, in any case, are refused the same way here, in an entity
+  filter, in a condition inside a kind and in a `comparison`, with the text word for the
+  pattern's shape: `'X%'` is `starts_with`, `'%X'` is `ends_with` and `'%X%'` is `contains`
+  (`NOT LIKE` takes the `not_` form), each ignoring case. A pattern with `_` or an inner `%`
+  has no word; the hint is `is` (or `not`) with the exact values, which `valid-values` lists.
+  A package's own `comparison` (a measure's `expr`) refuses `LIKE` the same way.
+- A text word ignores case by lowering the value and the text with the same Unicode-aware
+  function on every warehouse: Postgres lowers both under its ICU root collation
+  (`und-x-icu`, which a Postgres built with ICU has), and ClickHouse reads the value as plain
+  text first, so a FixedString or Enum column works. `É` matches `é`; lowering never expands a
+  letter, so `ss` never matches `ß`.
+- Text holding a letter whose lower case depends on the next letter, or changes length, is
+  refused at its path, with the hint to match exact values with `is` (`valid-values` lists
+  them): Greek sigma (`Σ σ ς`), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining
+  dot above), the Kelvin, Ångström and Ohm signs, and a few rare Latin letters with a stroke,
+  hook or tail. Warehouses lower these differently, so no text word could give one answer. A
+  stored value holding one of them is lowered as its warehouse lowers it: text that lines up
+  with that letter (`is` against a stored `İs`) can match on one warehouse and not another.
+- A text word reads text: on an id, number, date, timestamp or boolean dimension it is refused
+  at its path with the words that compare one (`is` or `not` with the exact ids, the ranges for
+  a number, `time` or the ranges for a date). A result (`having`), an entity filter's `having`
+  and a per-entity value compare a number, so a text word or a `LIKE` there is refused with
+  the words that compare a number.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
 ### Unknown values
@@ -216,8 +242,9 @@ condition on a date dimension is legal; for a time window, use `time`.
 "Unknown" is SQL NULL, or a value the package declares as unknown for that dimension
 (`unknown_values`, see [Package authoring](PACKAGE_AUTHORING.md#dimensions)). `not` keeps
 unknown rows, because "sessions other than these two orders" includes the sessions that never
-converted. When it kept any, the answer counts them in `UNKNOWN_ROWS_KEPT` and says how to
-leave them out:
+converted; so do `not_contains`, `not_starts_with` and `not_ends_with`. When a `where` condition
+with one of them kept any, the answer counts them in `UNKNOWN_ROWS_KEPT`, naming the word, and
+says how to leave them out:
 
 ```json
 {
@@ -251,7 +278,8 @@ A value listed in `unknown_values` is refused in `is` and `not` with the `missin
 Normalising true unknowns to NULL in the warehouse models is the first choice;
 `unknown_values` is for sources you cannot change.
 
-`contains` matches a substring, ignoring case; `%`, `_` and `\` are literal characters:
+`contains` matches a substring, `starts_with` a prefix and `ends_with` a suffix, each ignoring
+case; `%`, `_` and `\` are literal characters:
 
 ```json
 {
@@ -263,6 +291,22 @@ Normalising true unknowns to NULL in the warehouse models is the first choice;
 
 ```jsonc
 {"rows": [{"dimension.jaffle_item_product_name": "chai and mighty", "item_count": 13576}]}
+```
+
+"Products starting with T" is `starts_with`. `contains` with `"T"` would also count "chai and
+mighty", "nutellaphone who dis?" and "doctor stew":
+
+```json
+{
+  "select": ["measure.jaffle.item_count"],
+  "group_by": ["dimension.jaffle_item_product_name"],
+  "where": [{"field": "dimension.jaffle_item_product_name", "op": "starts_with", "value": "T"}]
+}
+```
+
+```jsonc
+{"rows": [{"dimension.jaffle_item_product_name": "the krautback", "item_count": 5403},
+          {"dimension.jaffle_item_product_name": "tangaroo", "item_count": 13794}]}
 ```
 
 ### Entity filters
@@ -681,6 +725,12 @@ call keeps the same rows, and the answer says ties were cut:
 Execution fetches one row past the limit to see the tie, so `tied` is a lower bound. A
 transport cap at or below `limit` takes precedence, and then ties cannot be reported.
 
+With no `order_by`, a `limit` keeps the first rows of the call's own order, so the same call
+keeps the same rows. Without `time.grain` that order is the `group_by` columns, ascending with
+NULLs last. With `time.grain` it is the series order the answer always has: `period` first,
+then the `group_by` columns, ascending, with a NULL group placed by the warehouse's default
+(a monthly series by store with `limit: 2` keeps the first month's two stores).
+
 ## `routes`
 
 When two join routes between two entities would answer differently, the package's
@@ -774,7 +824,15 @@ Conditions inside a kind (`aggregate.filter.all`, `scoped_aggregate.where`, ...)
 [filter words](#filter-words); `over` uses the [entity filter](#entity-filters) words. Every
 inline condition passes the caller's allowed filters, as a `where` condition does. Comparison
 expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NULL compares
-unknown.
+unknown. A `comparison` also takes a text word as its `op`, with a text literal `right`
+(`{"kind": "comparison", "op": "starts_with", "left": <column>, "right": {"kind": "literal",
+"value": "K"}}`). Its `left` is a column that exactly one dimension declares, named as the
+warehouse names columns (the exact name first, then an unquoted name in any ASCII case on every
+warehouse but ClickHouse; never a Unicode casefold, so `straße` is not `strasse`). The word
+reads it as a filter on that dimension does: its `unknown_values` are unknown, and a `not_` form
+keeps unknown rows. A column that no dimension, or several, declares is refused.
+`LIKE` is refused there as in `where`. An `arithmetic` op other than `add`, `subtract`,
+`multiply` and `divide` (or `+`, `-`, `*`, `/`) is refused at its path with the closest op.
 
 ```json
 {"select": ["measure.jaffle.revenue_usd",
@@ -851,8 +909,9 @@ returned row's total spans the same number:
 
 In a `distribution`, `entity_value.where` filters each entity's computed value. Each item takes
 `op` and `value` (and optionally `kind: "value_filter"`); a `field` or any other key is refused
-with its index. Put dimension conditions in the call's `where`, so they apply before the
-per-entity aggregation.
+with its index. The value is a number, so `op` is `is`, `not`, a range word or `missing`; a text
+word or a `LIKE` is refused at its path. Put dimension conditions in the call's `where`, so they
+apply before the per-entity aggregation.
 
 ## The answer
 
@@ -908,7 +967,7 @@ corrected shape to send:
 ```jsonc
 // The same call written with "op": "IS NULL" is refused:
 {"code": "INVALID_QUERY",
- "message": "where[0].op must be one of ['is', 'not', 'gt', 'gte', 'lt', 'lte', 'contains', 'missing']; write {\"op\": \"missing\", \"value\": true}",
+ "message": "where[0].op must be one of ['is', 'not', 'gt', 'gte', 'lt', 'lte', 'contains', 'starts_with', 'ends_with', 'not_contains', 'not_starts_with', 'not_ends_with', 'missing']; write {\"op\": \"missing\", \"value\": true}",
  "details": {"path": "where[0].op", "received_value": "IS NULL"},
  "recovery_hints": [{"code": "USE_FILTER_WORD", "message": "Write {\"op\": \"missing\", \"value\": true}."}]}
 ```
@@ -922,9 +981,10 @@ never guesses which one the question meant.
 A call written for the previous query shape is refused at the first retired key, with where it
 went. Where the rewrite is mechanical the hint carries the caller's own values in the new shape:
 each `metric_filters` item as its `having` row or entity filter, `time.range` as the `time` to
-send, `route_decisions` as `routes`, a reference object as its id, `LIKE '%text%'` as
-`contains`, `BETWEEN` as `gte` and `lte` (it includes both ends). An item with no mechanical
-rewrite (a predicate grouped by the query's dimensions, say) gets the general hint.
+send, `route_decisions` as `routes`, a reference object as its id, `LIKE 'text%'` as
+`starts_with`, `'%text'` as `ends_with` and `'%text%'` as `contains`, `BETWEEN` as `gte` and
+`lte` (it includes both ends). An item with no mechanical rewrite (a predicate grouped by the
+query's dimensions, say) gets the general hint.
 
 | Retired | Now |
 |---|---|
@@ -942,7 +1002,8 @@ rewrite (a predicate grouped by the query's dimensions, say) gets the general hi
 | grain `""`, `hour`, `minute` | omit `grain` for one total |
 | `time.fill` on a named window | removed: a named window returns every period |
 | `order_by.field: "time"` or a clock id (`temporal_role.<id>__month`), `"ASC"`/`"DESC"` | `"period"`, `"asc"`/`"desc"` |
-| `where[].op` `IS NULL`, `IS NOT NULL`, `LIKE`, `IS DISTINCT FROM`, `BETWEEN` | `missing: true`, `missing: false`, `contains`, `not`, two conditions |
+| `where[].op` `IS NULL`, `IS NOT NULL`, `IS DISTINCT FROM`, `BETWEEN` | `missing: true`, `missing: false`, `not`, two conditions |
+| `LIKE`, `NOT LIKE`, `ILIKE` (in `where`, a kind's conditions or a `comparison`) | `starts_with` (`'X%'`), `ends_with` (`'%X'`), `contains` (`'%X%'`), or their `not_` forms; any other pattern: `is` with the exact values |
 | child group `{child, match, where}` | entity filter `{entity, any \| none}` |
 | `scope_mode`, `time_grain`, `time_alignment` on a predicate | `over` |
 | `{measure: ...}` / `{metric: ...}` objects, `kind: metric`, `measure_ref` | the id string; `{kind: measure, ...}` to override |
@@ -1175,7 +1236,7 @@ targets; ClickHouse renders nullable targets. Invalid conversions fail execution
 silently returns NULL. Argument types are checked by the warehouse at execution.
 
 A `comparison` with a literal `null` lowers `=` to `IS NULL` and `!=`/`<>` to `IS NOT NULL`;
-ordering comparisons and `LIKE` against `null` are refused (`USE_NULL_TEST_OR_SCALAR`).
+ordering comparisons against `null` are refused (`USE_NULL_TEST_OR_SCALAR`).
 `and`/`or` need at least two arguments. A `metric_predicate` whose `value` is null is refused
 with `INVALID_METRIC_PREDICATE`: its input reads `0` for an entity with no rows, so a count of
 none is `is 0`. A select of literals only, with no `group_by`, `where`, `time` or `having`, is

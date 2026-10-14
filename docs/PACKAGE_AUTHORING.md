@@ -755,7 +755,7 @@ kind names must match exactly.
   `"source": "inline_expression"`), and it always counts as a metric filter. It
   never satisfies `required_where`, which requires an outer `where` filter with
   the same word and, when the spec names them, the same values: a spec without an
-  `op` is met only by `is` (a `not`, range, `contains` or `missing` on the field
+  `op` is met only by `is` (a `not`, range, text word or `missing` on the field
   never meets it). An entity filter (`{entity, having, over}`) or a scoped
   aggregate's predicate takes its aggregate over the entity's rows, outside the
   outer `where`, so a governed object with `required_where` read there is refused
@@ -1142,10 +1142,11 @@ warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned e
   answer (not truncated, no `limit`, no `having` or entity filter on aggregates) with no
   empty value carries no warning; any other answer keeps the compiled one.
 - **Filtered by it** (`use: filter`): for a `where` condition that drops unknown rows
-  (`is`, `gt`, `gte`, `lt`, `lte`, `contains`, `missing: false`), every stage says
+  (`is`, `gt`, `gte`, `lt`, `lte`, `contains`, `starts_with`, `ends_with`, `missing: false`),
+  every stage says
   "Plan filter: rows with no Billing version valid at their time are left out by this filter."
-  `not` and `missing: true` keep those rows and carry no such warning. Several such
-  conditions on the same dimension produce one filter warning.
+  `not`, the `not_` text words and `missing: true` keep those rows and carry no such warning.
+  Several such conditions on the same dimension produce one filter warning.
 
 A path that only leaves the versioned table (`customer_history → customer` here) reads one
 version per row and gets no warning. A version written moments after its event (a billing
@@ -1829,7 +1830,7 @@ filter expression. Each `all:` item is either a dimension
 condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
 including `any:`, are unsupported. A condition uses the call's [filter words](QUERY_CALL.md#filter-words)
-(`is`, `not`, `gt`, `gte`, `lt`, `lte`, `contains`, `missing`) and accepts their SQL
+(`is`, `not`, `gt`, `gte`, `lt`, `lte`, the text words, `missing`) and accepts their SQL
 spellings (`=`, `!=`, `IN`, `NOT IN`, `>`, ...) with the same meaning: `not` and
 `!=` keep rows whose value is unknown; add `missing: false` to leave them out.
 A package `metric_predicate` states its scope with `scope_mode` where a call writes

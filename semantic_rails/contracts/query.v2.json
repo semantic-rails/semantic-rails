@@ -1208,7 +1208,7 @@
         {
           "properties": {
             "op": {
-              "pattern": "^\\s*(?:[cC][oO][nN][tT][aA][iI][nN][sS])\\s*$"
+              "pattern": "^\\s*(?:[cC][oO][nN][tT][aA][iI][nN][sS]|[sS][tT][aA][rR][tT][sS]_[wW][iI][tT][hH]|[eE][nN][dD][sS]_[wW][iI][tT][hH]|[nN][oO][tT]_[cC][oO][nN][tT][aA][iI][nN][sS]|[nN][oO][tT]_[sS][tT][aA][rR][tT][sS]_[wW][iI][tT][hH]|[nN][oO][tT]_[eE][nN][dD][sS]_[wW][iI][tT][hH])\\s*$"
             },
             "value": {
               "type": "string"
@@ -1226,7 +1226,7 @@
           }
         }
       ],
-      "description": "op is one of is, not, gt, gte, lt, lte, contains, missing or an alias (=, ==, eq, in, !=, <>, neq, not in, >, >=, <, <=), in any case. is and not take one value or a list; the ranges take one value; contains takes text; missing takes true or false.",
+      "description": "op is one of is, not, gt, gte, lt, lte, contains, starts_with, ends_with, not_contains, not_starts_with, not_ends_with, missing or an alias (=, ==, eq, in, !=, <>, neq, not in, >, >=, <, <=), in any case. is and not take one value or a list; the ranges take one value; contains, starts_with, ends_with and their not_ forms take text; missing takes true or false.",
       "properties": {
         "op": {
           "type": "string"

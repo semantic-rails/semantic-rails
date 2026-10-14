@@ -11,8 +11,9 @@ from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral,
 
 def limit_order(query: SqlSelect, groups: Sequence[str]) -> tuple[SqlSelect, tuple[str, ...]]:
     """Keep the requested order, then break ties by the remaining ``groups`` (the group_by
-    columns, then the period) ascending, NULLS LAST, so a cut-off keeps the same rows."""
-    if not query.order_by or query.limit is None:
+    columns, then the period) ascending, NULLS LAST, so a cut-off keeps the same rows. With no
+    requested order, the tie-break alone orders the rows, and no row ties on no terms."""
+    if query.limit is None:
         return query, ()
     keys = []
     for order in query.order_by:

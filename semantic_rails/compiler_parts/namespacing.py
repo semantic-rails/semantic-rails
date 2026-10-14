@@ -80,7 +80,7 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
         if isinstance(expr, SqlIsNull):
             return SqlIsNull(expr=_expr(expr.expr))
         if isinstance(expr, SqlLike):
-            return SqlLike(expr=_expr(expr.expr), pattern=expr.pattern)
+            return SqlLike(expr=_expr(expr.expr), pattern=expr.pattern, negated=expr.negated)
         if isinstance(expr, SqlCaseWhen):
             return SqlCaseWhen(condition=_expr(expr.condition), result=_expr(expr.result))
         if isinstance(expr, SqlCase):

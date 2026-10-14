@@ -135,7 +135,8 @@ MCP_SERVER_INSTRUCTIONS = (
     'mode "validate" only checks the call; mode "sql" also returns its SQL.\n'
     "\n"
     "The call: select measure or metric ids, group_by dimension ids, where "
-    "[{field, op, value}] with word ops (is, not, gt, gte, lt, lte, contains, missing), and "
+    "[{field, op, value}] with word ops (is, not, gt, gte, lt, lte, contains, starts_with, "
+    "ends_with, missing), and "
     "time {grain, last, this, start, end}; end is exclusive. A window without a grain "
     "returns one total. Relative windows resolve against the now argument.\n"
     "No time/where: the query adds no time window or filter; "

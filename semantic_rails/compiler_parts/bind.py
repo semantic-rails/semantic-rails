@@ -54,6 +54,7 @@ from ..sql_ast import (
     SqlIn,
     SqlLiteral,
     build_comparison_condition,
+    build_filter_condition,
     build_negation,
 )
 from .dependencies import binding_cut, holding, measure_cut_owners, measure_objects
@@ -66,7 +67,13 @@ from .indexes import (
     _relationship_index,
     _resolve_table_entity,
 )
-from .paths import _column_ref, _reaches_at_most_one
+from .paths import (
+    _column_ref,
+    _reaches_at_most_one,
+    dimensions_over_column,
+    text_dimension,
+    unknown_as_null,
+)
 
 
 def _freeze_payload(value: Any) -> str:
@@ -304,6 +311,28 @@ def _operand_sql(
     return _config_expr_to_sql(expr, measure, config)
 
 
+def _text_comparison(
+    expr: ComparisonExpr, word: str, measure: MeasureConfig, config: PackageConfig
+) -> Any:
+    """A text word on a column is the filter on the one dimension over it: its unknown values
+    read as NULL, so the comparison keeps the rows the dimension's filter keeps."""
+    column, text = expr.left, expr.right
+    if not (
+        isinstance(column, ColumnRefExpr)
+        and isinstance(text, LiteralExpr)
+        and isinstance(text.value, str)
+    ):
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"{measure.id}: '{word}' compares a dimension's column with a text literal",
+            details={"op": word},
+        )
+    entity = _resolve_expr_entity(column, measure, config)
+    dim = text_dimension(entity, column.column, word, config, measure.id)
+    value = unknown_as_null(_config_expr_to_sql(column, measure, config), dim)
+    return build_filter_condition(value, word, text.value)
+
+
 def _config_expr_to_sql_inner(
     expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig
 ) -> Any:
@@ -326,6 +355,8 @@ def _config_expr_to_sql_inner(
             op,
             _config_expr_to_sql(expr.right, measure, config),
         )
+    if isinstance(expr, ComparisonExpr) and operators.word_of(expr.op) in operators.TEXT_WORDS:
+        return _text_comparison(expr, operators.word_of(expr.op), measure, config)
     if isinstance(expr, ComparisonExpr):
         return build_comparison_condition(
             _operand_sql(expr.left, _temporal_result(expr.right, measure, config), measure, config),
@@ -1034,8 +1065,11 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(condition_entities))
 
 
-# A NULL operand makes these comparisons NULL, so a row with no match fails them.
-_NULL_REJECTING_OPS = frozenset({"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN"})
+# A NULL operand makes these comparisons NULL (or, for the text words, false), so a row with no
+# match fails them.
+_NULL_REJECTING_OPS = frozenset(
+    {"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN", "CONTAINS", "STARTS_WITH", "ENDS_WITH"}
+)
 
 
 def _and_terms(expr: SemanticExpr) -> list[SemanticExpr]:
@@ -1117,11 +1151,7 @@ def bind_conditional_aggregate_column(
     remains allowed, as a measure's value column usually has none.
     """
     joined = _measure_required_entities(measure, config) - {measure.entity}
-    dimensions = [
-        row.id
-        for row in config.dimensions
-        if row.entity == entity_id and row.column.casefold() == column.casefold()
-    ]
+    dimensions = [row.id for row in dimensions_over_column(entity_id, column, config)]
     if (
         not dimensions
         and entity_id in joined

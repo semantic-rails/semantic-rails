@@ -238,8 +238,9 @@ MCP reads tool arguments in one place: a `query` sent as a JSON string is parsed
 argument sent inside `query` (`now`, `mode`, `max_rows`, `row_format`, `verbosity`,
 `sql_profile`) is refused naming the argument, with the hint to pass it beside `query`. The call
 has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `lt`, `lte`,
-`contains`, `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused
-with the word form. A `"dimension.<id>"` string in `select` moves to `group_by` (a
+`contains`, `starts_with`, `ends_with`, `not_contains`, `not_starts_with`, `not_ends_with`,
+`missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused with the
+word form (a `LIKE` with the text word for its pattern). A `"dimension.<id>"` string in `select` moves to `group_by` (a
 `QUERY_SHORTHAND_NORMALIZED` warning with `details.canonical`); beside another grouping it is
 refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
 structured tool error. Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
@@ -394,7 +395,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   the most customers", where no measure is named "customers") is `ranked_measure_uncertain`;
 - excludes a value requested positively, or cannot prove that its filter keeps or drops
   each named value with the requested polarity (`filter_values_unrealized`). `is` and `not`,
-  with one value or a list, can prove it; `contains` cannot. The guard intersects top-level
+  with one value or a list, can prove it; the text words cannot. The guard intersects top-level
   filters on the same
   field, accounts for exclusions, and compares draft literals to stored values exactly;
   catalog labels and aliases only identify values named in the question. Nested filter

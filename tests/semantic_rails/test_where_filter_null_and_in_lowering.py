@@ -197,8 +197,8 @@ def test_reading_a_one_value_membership_keeps_one_value(op, value):
         ("missing", [1, 2], "where[0].value", "missing: true"),
         ("IS NULL", None, "where[0].op", '{"op": "missing", "value": true}'),
         ("IS NOT NULL", None, "where[0].op", '{"op": "missing", "value": false}'),
-        ("LIKE", "Phil%", "where[0].op", '{"op": "contains"'),
-        ("NOT LIKE", "Phil%", "where[0].op", "'not'"),
+        ("LIKE", "Phil%", "where[0].op", '{"op": "starts_with", "value": "Phil"}'),
+        ("NOT LIKE", "Phil%", "where[0].op", '{"op": "not_starts_with", "value": "Phil"}'),
     ],
 )
 def test_a_retired_or_null_spelling_is_refused_at_its_path(op, value, path, fix):

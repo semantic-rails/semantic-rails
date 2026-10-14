@@ -3827,6 +3827,42 @@ tests:
       where: [{field: dimension.shop_customer_channel, op: contains, value: _}]
     reference_sql: SELECT channel, COUNT(DISTINCT customer_id) FROM signups WHERE POSITION('_' IN channel) > 0 GROUP BY 1
     expected_rows: []
+  shop/starts-with-keeps-only-prefixes:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Customers 101 and 103 (Ann) start with A whatever its case; Bea holds an a but does not start with one, which contains would count.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.name, docs/QUERY_CALL.md#where]
+    query:
+      select: [measure.shop.signup_count]
+      where: [{field: dimension.shop_customer_name, op: starts_with, value: A}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups WHERE LOWER(name) LIKE 'a%'
+    expected_rows: [{signup_count: 2}]
+  shop/ends-with-keeps-only-suffixes:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Only Bea (102) ends with A whatever its case; Ann holds an a at its start.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.name, docs/QUERY_CALL.md#where]
+    query:
+      select: [measure.shop.signup_count]
+      where: [{field: dimension.shop_customer_name, op: ends_with, value: A}]
+    reference_sql: SELECT COUNT(DISTINCT customer_id) FROM signups WHERE LOWER(name) LIKE '%a'
+    expected_rows: [{signup_count: 1}]
+  shop/not-starts-with-keeps-unknown-channel:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Store signups 102, 104 and 107 do not start with W, and 105, which has no channel, is kept as not keeps it.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel, docs/QUERY_CALL.md#unknown-values]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.signup_count]
+      group_by: [dimension.shop_customer_channel]
+      where: [{field: dimension.shop_customer_channel, op: not_starts_with, value: W}]
+    reference_sql: |
+      SELECT channel, COUNT(DISTINCT customer_id) FROM signups
+      WHERE LOWER(channel) NOT LIKE 'w%' OR channel IS NULL GROUP BY 1
+    expected_rows:
+      - {dimension.shop_customer_channel: store, signup_count: 3}
+      - {dimension.shop_customer_channel: null, signup_count: 1}
   shop/lookup_by_channel:
     kind: query_matches_snapshot
     expect: answer

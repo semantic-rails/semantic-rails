@@ -140,3 +140,52 @@ def test_larger_tie_group_uses_nulls_last_and_an_observed_count(duckdb_backend, 
         assert [warning["details"] for warning in warnings] == [{"at": limit, "tied": limit + 1}]
     else:
         assert not warnings
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_limit_without_order_by_keeps_the_first_groups_by_the_tie_break(request, backend):
+    """With no order_by, a limit keeps the first rows by the group_by columns, then the period,
+    ascending with NULLs last: the same call keeps the same rows."""
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    query = {
+        "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
+        "group_by": ["dimension.shop_order_store_id"],
+        "limit": 2,
+    }
+    expected = source.reference(
+        "SELECT store_id, COUNT(order_id) FROM orders GROUP BY store_id "
+        "ORDER BY store_id ASC NULLS LAST LIMIT 2"
+    )
+    for _ in range(2):
+        result = runtime.query(query)
+        rows = [(row["dimension.shop_order_store_id"], row["orders"]) for row in result["rows"]]
+        assert rows == [tuple(row) for row in expected] == [("a", 6), ("b", 4)]
+        assert not [w for w in result.get("warnings", []) if w["code"] == "TIES_AT_LIMIT"]
+    order_by = " ".join(result["rendered_sql"].rsplit("ORDER BY", 1)[1].split())
+    assert order_by == '"dimension.shop_order_store_id" ASC NULLS LAST LIMIT 2'
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_time_bucketed_limit_without_order_by_keeps_the_series_order(request, backend):
+    """With a time grain and no order_by, a limit keeps the first rows of the series in its own
+    order, period first and then the group_by columns: November's two stores."""
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    query = {
+        "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
+        "group_by": ["dimension.shop_order_store_id"],
+        "time": {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"},
+        "limit": 2,
+    }
+    expected = source.reference(
+        "SELECT CAST(date_trunc('month', ordered_at) AS DATE), store_id, COUNT(order_id) "
+        "FROM orders GROUP BY 1, 2 ORDER BY 1, 2 LIMIT 2"
+    )
+    for _ in range(2):
+        rows = [
+            (row["period"], row["dimension.shop_order_store_id"], row["orders"])
+            for row in runtime.query(query)["rows"]
+        ]
+        assert rows == [(str(day), store, count) for day, store, count in expected]
+    assert rows == [("2023-11-01", "a", 1), ("2023-11-01", "b", 1)]

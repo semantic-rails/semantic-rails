@@ -5,13 +5,15 @@ lowering, the planner's keep/exclude reading, the clarification complements, the
 checks and the value probes. A filter is ``{field, op, value}`` with one of the words below.
 
 "Unknown" is SQL NULL (or a value the dimension declares in ``unknown_values``, which the
-lowering reads as NULL). ``not`` keeps unknown rows; every other comparison drops them.
+lowering reads as NULL). ``not`` and the ``not_`` text words keep unknown rows; every other
+comparison drops them.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,7 +23,7 @@ from .errors import SemanticLayerError
 @dataclass(frozen=True)
 class Operator:
     word: str
-    # "scalar_or_list" (is, not), "scalar" (ranges), "text" (contains), "boolean" (missing).
+    # "scalar_or_list" (is, not), "scalar" (ranges), "text" (the text words), "boolean" (missing).
     value_shape: str
     # Whether a row whose value is unknown matches.
     keeps_unknown: bool
@@ -39,13 +41,24 @@ OPERATORS: dict[str, Operator] = {
         Operator("gte", "scalar", False, "", "at least"),
         Operator("lt", "scalar", False, "", "under"),
         Operator("lte", "scalar", False, "", "at most"),
-        Operator("contains", "text", False, "", "containing"),
+        # The text words: case-insensitive and literal; each not_ form keeps unknown rows.
+        Operator("contains", "text", False, "not_contains", "containing"),
+        Operator("starts_with", "text", False, "not_starts_with", "starting with"),
+        Operator("ends_with", "text", False, "not_ends_with", "ending with"),
+        Operator("not_contains", "text", True, "contains", "not containing"),
+        Operator("not_starts_with", "text", True, "starts_with", "not starting with"),
+        Operator("not_ends_with", "text", True, "ends_with", "not ending with"),
         # ``missing: true`` matches only unknown rows; ``missing: false`` only known ones.
         Operator("missing", "boolean", True, "missing", "with no"),
     )
 }
 WORDS: tuple[str, ...] = tuple(OPERATORS)
 RANGE_WORDS = frozenset({"gt", "gte", "lt", "lte"})
+TEXT_WORDS: tuple[str, ...] = tuple(w for w, row in OPERATORS.items() if row.value_shape == "text")
+# The words that compare a number that may be unknown (a result, an entity's value).
+NUMBER_WORDS = tuple(w for w in WORDS if w not in TEXT_WORDS)
+# The words that keep the rows whose value is unknown, and say how many they kept.
+NEGATED_WORDS = frozenset(w for w, row in OPERATORS.items() if row.keeps_unknown) - {"missing"}
 # A comparison of two known values (an aggregate against a computed threshold), in SQL.
 COMPARISON_SQL = {"is": "=", "not": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
 
@@ -70,8 +83,14 @@ _SPELLING_HINTS: dict[str, str] = {
     "is null": '{"op": "missing", "value": true}',
     "is not null": '{"op": "missing", "value": false}',
     "not null": '{"op": "missing", "value": false}',
-    "not like": "a 'not' with the exact values, or an entity filter",
 }
+LIKE_SPELLINGS = frozenset({"like", "ilike", "not like", "not ilike"})
+# Each LIKE pattern a text word says: the text between its wildcards, with no other wildcard.
+_LIKE_SHAPES = (
+    ("contains", r"%([^%_\\]+)%"),
+    ("starts_with", r"([^%_\\]+)%"),
+    ("ends_with", r"%([^%_\\]+)"),
+)
 _NO_VALUE: Any = object()
 # Engine-internal spellings: the lowering's own null tests and null-safe comparisons.
 _INTERNAL_ALIASES: dict[str, tuple[str, Any]] = {
@@ -98,13 +117,8 @@ def _spelling_hint(spelling: str, value: Any) -> str:
         if value is None:
             return _SPELLING_HINTS["is not null"]
         return f'{{"op": "not", "value": {shown(value, "<value>")}}}'
-    if spelling in {"like", "ilike"}:
-        # Only a pattern that is plain text between two % reads as contains.
-        plain = isinstance(value, str) and re.fullmatch(r"%[^%_\\]+%", value)
-        text = shown(value[1:-1] if plain else _NO_VALUE, '"<text>"')
-        return f'{{"op": "contains", "value": {text}}}' + (
-            ", which ignores case" if spelling == "like" else ""
-        )
+    if spelling in LIKE_SPELLINGS:
+        return like_hint(spelling, value)
     if spelling == "between":
         low, high = (
             value if isinstance(value, (list, tuple)) and len(value) == 2 else [_NO_VALUE] * 2
@@ -114,6 +128,114 @@ def _spelling_hint(spelling: str, value: Any) -> str:
             f'{{"op": "lte", "value": {shown(high, "<high>")}}}'
         )
     return _SPELLING_HINTS.get(spelling, "")
+
+
+def like_hint(spelling: str, pattern: Any, *, operand: str = "value") -> str:
+    """The text word a LIKE ``pattern`` says: 'X%' starts_with, '%X' ends_with, '%X%' contains,
+    and their ``not_`` forms for a NOT LIKE; never contains for a prefix or a suffix. Any other
+    pattern has no word, so the hint is the exact values. ``operand`` is ``right`` for a
+    comparison expression."""
+    negated = spelling.startswith("not ")
+    for word, shape in _LIKE_SHAPES:
+        found = re.fullmatch(shape, pattern) if isinstance(pattern, str) else None
+        if found and not any(letter in UNSTABLE_CASE_LETTERS for letter in found.group(1)):
+            shown = json.dumps(found.group(1))
+            if operand == "right":
+                shown = f'{{"kind": "literal", "value": {shown}}}'
+            form = f'{{"op": "{"not_" if negated else ""}{word}", "{operand}": {shown}}}'
+            keeps = " and keeps rows with no value" if negated else ""
+            return f"{form}, which ignores case{keeps}"
+    exact = (
+        f'{{"kind": "{"not_in" if negated else "in"}", "expr": <the column>, "values": [...]}}'
+        if operand == "right"
+        else f'{{"op": "{"not" if negated else "is"}", "value": [...]}}'
+    )
+    if isinstance(pattern, str):
+        inner = "_" in pattern or "%" in pattern.strip("%")
+        return (
+            f"the exact values, {exact}, which valid-values lists: no filter word says "
+            f"{json.dumps(pattern)}" + (' ("_" or an inner "%")' if inner else "")
+        )
+    return (
+        "starts_with for 'X%', ends_with for '%X' or contains for '%X%', each ignoring case "
+        f"(their not_ forms for NOT LIKE), or the exact values, {exact}, for any other pattern"
+    )
+
+
+# Each data type a text word cannot read (it would fold a number, a date or a flag), and the
+# words that compare it. A text word reads only text ("string"), or a type nothing classified.
+_NOT_TEXT = {
+    "id": "is or not with the exact values",
+    "integer": "is, not, gt, gte, lt or lte",
+    "number": "is, not, gt, gte, lt or lte",
+    "date": "time with start and end, or gt, gte, lt or lte",
+    "timestamp": "time with start and end, or gt, gte, lt or lte",
+    "boolean": "is true or is false",
+}
+
+
+# A dimension kind's spellings, as the data type it reads (the loader maps kinds the same way).
+_KIND_TYPES = {
+    "categorical": "string",
+    "continuous": "number",
+    "percent": "number",
+    "currency": "number",
+}
+
+
+def check_text_operand(word: str, data_type: Any, path: str, subject: str) -> None:
+    """Refuse a text word at ``path`` (an op's) when ``subject`` is not text."""
+    canonical = str(data_type or "").strip().lower()
+    canonical = _KIND_TYPES.get(canonical, canonical)
+    use = _NOT_TEXT.get(canonical, "is or not with the exact values")
+    if word in TEXT_WORDS and canonical not in {"string", ""}:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}: '{word}' matches text, and {subject} is {data_type}",
+            details={
+                "path": path,
+                "data_type": data_type,
+                "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Use {use}."}],
+            },
+        )
+
+
+def refuse_text_on_number(op: Any, path: str, subject: str, words: tuple[str, ...]) -> None:
+    """``subject``, a number, compares with ``words``: a LIKE, a text word or another word is
+    refused at ``path`` with them, never with a text word."""
+    word = word_of(op)
+    if word.replace("_", " ") in LIKE_SPELLINGS or (word in OPERATORS and word not in words):
+        listed = f"{', '.join(words[:-1])} or {words[-1]}"
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}: compares {subject}, a number: use {listed}",
+            details={
+                "path": path,
+                "received_value": op,
+                "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Use {listed}."}],
+            },
+        )
+
+
+def like_refusal(
+    op: Any, right: Any, path: str, *, code: str = "INVALID_QUERY"
+) -> SemanticLayerError | None:
+    """The refusal of a LIKE comparison (or arithmetic) ``op`` at ``path``, hinting the text word
+    for its literal ``right``'s pattern; None for any other op. Calls and packages share it."""
+    spelling = _compact(op).replace("_", " ")
+    if spelling not in LIKE_SPELLINGS:
+        return None
+    literal = isinstance(right, Mapping) and right.get("kind") == "literal"
+    hint = like_hint(spelling, right.get("value") if literal else None, operand="right")
+    return SemanticLayerError(
+        code,
+        f"{path}: LIKE is not read; a comparison takes the text words {list(TEXT_WORDS)}",
+        details={
+            "path": path,
+            "received_value": op,
+            "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Write {hint}."}],
+        },
+    )
 
 
 def invalid_op(raw: Any, path: str, value: Any = _NO_VALUE) -> SemanticLayerError:
@@ -224,8 +346,38 @@ def check_value(word: str, value: Any, *, path: str = "where.value") -> Any:
             "Compute a threshold in its own query and pass the number here.",
         )
     if shape == "text" and not isinstance(value, str):
-        raise _invalid_value(path, "'contains' takes text", "Pass the text to look for.")
+        raise _invalid_value(path, f"'{word}' takes text", "Pass the text to look for.")
+    if shape == "text":
+        check_text_letters(value, path)
     return value
+
+
+# Letters a text word refuses: Greek sigma, whose lowercase depends on the next letter (final ς),
+# and letters whose lowercase, or whose other case's, changes length in code points or UTF-8
+# bytes, so warehouses fold them apart (ClickHouse leaves a length-changing letter as it is):
+# sharp s, dotted and dotless i and the dot above, the Kelvin, Angstrom and Ohm signs, and the
+# rare Latin letters with a stroke, hook or tail whose capitals are three bytes and small two.
+# Derived from Unicode 16's case mappings (SpecialCasing and UnicodeData); a letter whose only
+# expansion is to upper case (fi ligature) folds alike everywhere, so it stays readable.
+UNSTABLE_CASE_LETTERS = (
+    "\u03a3\u03c3\u03c2\u00df\u1e9e\u0130\u0131\u0307\u212a\u212b\u2126"
+    "\u023a\u2c65\u023e\u2c66\u2c62\u026b\u2c64\u027d\u2c6d\u0251\u2c6e\u0271"
+    "\u2c6f\u0250\u2c70\u0252\u2c7e\u023f\u2c7f\u0240\ua78d\u0265\ua7aa\u0266"
+    "\ua7ab\u025c\ua7ac\u0261\ua7ad\u026c\ua7ae\u026a\ua7b0\u029e\ua7b1\u0287"
+    "\ua7b2\u029d\ua7c5\u0282\ua7cb\u0264\ua7dc\u019b"
+)
+
+
+def check_text_letters(text: str, path: str) -> None:
+    """Refuse search text at ``path`` that holds a letter whose lowercase is unstable."""
+    found = sorted({letter for letter in text if letter in UNSTABLE_CASE_LETTERS})
+    if found:
+        raise _invalid_value(
+            path,
+            f"{' '.join(found)} folds to lower case differently on different warehouses (by the "
+            "next letter, or into a letter of another length), so no text word reads it",
+            'Match the exact values with {"op": "is", "value": [...]}, which valid-values lists.',
+        )
 
 
 def normalize_condition(
@@ -329,15 +481,17 @@ def excludes_values(word: str) -> bool:
 LIKE_ESCAPE = "\\"
 
 
-def contains_pattern(text: str) -> str:
-    """The case-folded LIKE pattern for ``contains``: literal text, ``%``/``_``/``\\`` escaped."""
+def like_pattern(word: str, text: str) -> str:
+    """The LIKE pattern for a text word (its ``not_`` form negates the match): literal text,
+    ``%``/``_``/``\\`` escaped, with ``%`` on the side or sides the word leaves open. The SQL folds
+    its case, as the column's, so both fold alike."""
     escaped = (
-        text.lower()
-        .replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
+        text.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
         .replace("%", LIKE_ESCAPE + "%")
         .replace("_", LIKE_ESCAPE + "_")
     )
-    return f"%{escaped}%"
+    shape = word.removeprefix("not_")
+    return f"{'' if shape == 'starts_with' else '%'}{escaped}{'' if shape == 'ends_with' else '%'}"
 
 
 def spec_matches(word: str, value: Any, spec: dict[str, Any], *, path: str) -> bool:
@@ -373,5 +527,10 @@ def describe(label: str, word: str, value: Any) -> str:
         "lt": "is under",
         "lte": "is at most",
         "contains": "contains",
+        "starts_with": "starts with",
+        "ends_with": "ends with",
+        "not_contains": "does not contain",
+        "not_starts_with": "does not start with",
+        "not_ends_with": "does not end with",
     }[word]
     return f"{label} {text} {shown}"

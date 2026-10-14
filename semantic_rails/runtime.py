@@ -816,7 +816,7 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
 
 
 def _unknown_rows_kept_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
-    """Say how many rows each ``not`` kept because their value is unknown.
+    """Say how many rows each ``not`` (or ``not_`` text word) kept because their value is unknown.
 
     ``not`` keeps unknown rows, so ``not web`` includes the rows with no channel. A probe
     replaces the condition with ``missing: true`` under the query's other filters, window,
@@ -833,7 +833,7 @@ def _unknown_rows_kept_warnings(runtime: Runtime, compiled, payload) -> list[dic
     negated = [
         (index, item)
         for index, item in enumerate(where)
-        if not is_child_group(item) and operators.word_of(item.get("op")) == "not"
+        if not is_child_group(item) and operators.word_of(item.get("op")) in operators.NEGATED_WORDS
     ]
     if not negated or not plan.measure_plans:
         return []
@@ -860,7 +860,7 @@ def _unknown_rows_kept_warnings(runtime: Runtime, compiled, payload) -> list[dic
     dimensions = {row.id: row for row in config.dimensions}
     warnings = []
     for index, item in negated:
-        field = str(item["field"])
+        field, word = str(item["field"]), operators.word_of(item.get("op"))
         unknown = {"field": field, "op": "missing", "value": True}
         try:
             result = runtime.query_internal(
@@ -877,7 +877,7 @@ def _unknown_rows_kept_warnings(runtime: Runtime, compiled, payload) -> list[dic
             semantic_issue(
                 code="UNKNOWN_ROWS_KEPT",
                 message=(
-                    f"'not' keeps rows whose {field} is unknown: the answer includes "
+                    f"'{word}' keeps rows whose {field} is unknown: the answer includes "
                     f"{rows}{'+' if result.get('truncated') else ''} with no value. Add "
                     f'{{"field": "{field}", "op": "missing", "value": false}} to leave them out.'
                 ),
