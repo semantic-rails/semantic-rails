@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import http.client
+import ipaddress
 import json
 import threading
 from contextlib import contextmanager
@@ -14,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from semantic_rails.api import Handler
-from semantic_rails.asgi import SemanticLayerASGIApp
+from semantic_rails.asgi import PackageLoadFailureApp, SemanticLayerASGIApp
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION, serve_stdio
 from semantic_rails.mcp_streamable_http import MCP_MAX_REQUEST_BYTES
@@ -55,12 +57,32 @@ def _frontends(runtime):
     def call(
         backend, message=PING, *, method="POST", path="/mcp", headers=None, raw=None, server=None
     ):
+        """Send one request; ``headers`` is a dict or raw pairs, and a None value omits one."""
         body = raw if raw is not None else json.dumps(message).encode()
-        request_headers = {**HEADERS, **(headers or {})}
+        extra = list(headers.items() if isinstance(headers, dict) else headers or [])
+        named = {name.lower() for name, _ in extra}
+        # What http.client sends unasked, so both transports see the same header list.
+        defaults = [
+            ("Host", "{}:{}".format(*httpd.server_address)),
+            ("Accept-Encoding", "identity"),
+        ]
+        if "transfer-encoding" not in named:
+            defaults.append(("Content-Length", str(len(body))))
+        request_headers = [
+            *(
+                (name, value)
+                for name, value in [*defaults, *HEADERS.items()]
+                if name.lower() not in named
+            ),
+            *((name, value) for name, value in extra if value is not None),
+        ]
         if backend == "serve":
             connection = http.client.HTTPConnection(*httpd.server_address, timeout=5)
             try:
-                connection.request(method, path, body=body, headers=request_headers)
+                connection.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+                for name, value in request_headers:
+                    connection.putheader(name, value)
+                connection.endheaders(body)
                 response = connection.getresponse()
                 return response.status, dict(response.getheaders()), response.read()
             finally:
@@ -70,6 +92,7 @@ def _frontends(runtime):
             sent = []
 
             async def receive():
+                call.reads.append(path)
                 return {"type": "http.request", "body": body, "more_body": False}
 
             async def send(event):
@@ -81,7 +104,7 @@ def _frontends(runtime):
                     "method": method,
                     "path": path,
                     "headers": [
-                        (k.lower().encode(), v.encode()) for k, v in request_headers.items()
+                        (k.lower().encode("latin1"), v.encode("latin1")) for k, v in request_headers
                     ],
                     # The address the connection reached, as uvicorn reports it.
                     "server": server or httpd.server_address,
@@ -95,6 +118,7 @@ def _frontends(runtime):
 
         return asyncio.run(request())
 
+    call.reads = []  # paths whose ASGI request body was read
     try:
         yield call
     finally:
@@ -308,13 +332,13 @@ def test_serve_head_refuses_streaming(frontends):
     assert headers["Allow"] == "POST, OPTIONS"
 
 
-# --- DNS rebinding: one Host/Origin check for /api/v1 and /mcp -----------------
+# --- DNS rebinding: one Host/Origin check for every response ------------------
 #
 # A page that points its own name at 127.0.0.1 is same-origin with the local
 # server in the browser's eyes, so CORS alone does not stop it from calling the
 # API. The server refuses a Host that is not loopback (or a listed host) and a
-# browser Origin that is not listed. Refused requests send no body: the local
-# server refuses before reading one, and unread bytes would reset the socket.
+# browser Origin that is not listed, before it reads a body: refused requests
+# announce a body they never send, which the local server would wait for.
 
 QUERY = {"select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]}
 SURFACES = [
@@ -323,37 +347,55 @@ SURFACES = [
     ("OPTIONS", "/api/v1/query", b""),
     ("POST", "/mcp", json.dumps(PING).encode()),
 ]
+UNREAD_BODY = ("Content-Length", "1000")
+HOSTILE = [
+    *(
+        ([("Host", host)], 421, "HOST_NOT_ALLOWED")
+        for host in [
+            "evil.example",
+            "evil.example:8090",
+            "127.0.0.1.evil.example",
+            "localhost@evil.example",
+            "[::1].evil.example",
+            "[::1",
+            "localhost:notaport",
+            "localhost:65536",
+            "localhost:80@evil.example",
+            "",
+            None,
+        ]
+    ),
+    ([("Host", "evil.example"), ("Host", "localhost")], 421, "HOST_NOT_ALLOWED"),
+    ([("Host", "localhost"), ("Host", "evil.example")], 421, "HOST_NOT_ALLOWED"),
+    ([("Origin", "https://attacker.example")], 403, "ORIGIN_NOT_ALLOWED"),
+    ([("Origin", "null")], 403, "ORIGIN_NOT_ALLOWED"),
+    ([("Origin", "")], 403, "ORIGIN_NOT_ALLOWED"),
+    ([("Origin", "https://attacker.example"), ("Origin", "")], 403, "ORIGIN_NOT_ALLOWED"),
+]
+
+
+def _assert_refused(response, path, status, code):
+    got, response_headers, body = response
+    assert got == status
+    payload = json.loads(body)
+    if path.endswith("/mcp"):
+        assert payload["error"]["code"] == -32003
+        assert {k.lower() for k in response_headers} >= {"mcp-protocol-version"}
+    else:
+        assert payload["errors"][0]["code"] == code
 
 
 @pytest.mark.parametrize("backend", ["serve", "asgi"])
 @pytest.mark.parametrize(("method", "path"), [surface[:2] for surface in SURFACES])
-@pytest.mark.parametrize(
-    ("headers", "status", "code"),
-    [
-        ({"Host": "evil.example"}, 421, "HOST_NOT_ALLOWED"),
-        ({"Host": "evil.example:8090"}, 421, "HOST_NOT_ALLOWED"),
-        ({"Host": "127.0.0.1.evil.example"}, 421, "HOST_NOT_ALLOWED"),
-        ({"Host": "localhost@evil.example"}, 421, "HOST_NOT_ALLOWED"),
-        ({"Origin": "https://attacker.example"}, 403, "ORIGIN_NOT_ALLOWED"),
-        ({"Origin": "null"}, 403, "ORIGIN_NOT_ALLOWED"),
-    ],
-)
+@pytest.mark.parametrize(("headers", "status", "code"), HOSTILE)
 def test_loopback_server_refuses_rebinding_requests(
     frontends, backend, method, path, headers, status, code
 ):
-    got, response_headers, body = frontends(
-        backend, method=method, path=path, headers=headers, raw=b""
+    response = frontends(
+        backend, method=method, path=path, headers=[*headers, UNREAD_BODY], raw=b""
     )
-    assert got == status
-    payload = json.loads(body)
-    if path == "/mcp":
-        assert payload["error"]["code"] == -32003
-        assert response_headers[
-            "MCP-Protocol-Version" if backend == "serve" else "mcp-protocol-version"
-        ]
-    else:
-        assert payload["errors"][0]["code"] == code
-        assert payload["request_id"] == "transport-parity"
+    _assert_refused(response, path, status, code)
+    assert frontends.reads == []
 
 
 @pytest.mark.parametrize("backend", ["serve", "asgi"])
@@ -382,10 +424,92 @@ def test_listed_hosts_and_origins_are_admitted(frontends, monkeypatch, backend):
 
 
 def test_server_beyond_loopback_checks_hosts_once_they_are_listed(frontends, monkeypatch):
-    exposed = {"server": ("10.0.0.5", 8080), "headers": {"Host": "semantic.example.com"}}
-    assert frontends("asgi", QUERY, path="/api/v1/query", **exposed)[0] == 200
-    refused = {**exposed, "headers": {"Origin": "https://attacker.example"}}
-    assert frontends("asgi", QUERY, path="/api/v1/query", **refused)[0] == 403
+    def status(headers, path="/api/v1/query"):
+        return frontends("asgi", QUERY, path=path, headers=headers, server=("10.0.0.5", 8080))[0]
+
+    assert status({"Host": "semantic.example.com"}) == 200
+    assert status({"Host": None}) == 200
+    assert status({"Origin": "https://attacker.example"}) == 403
+    assert status([("Host", "semantic.example.com"), ("Host", "localhost")]) == 421
     monkeypatch.setenv("SEMANTIC_RAILS_ALLOWED_HOSTS", "api.example.com")
-    assert frontends("asgi", QUERY, path="/api/v1/query", **exposed)[0] == 421
-    assert frontends("asgi", path="/mcp", **exposed)[0] == 421
+    assert status({"Host": "semantic.example.com"}) == 421
+    assert status({"Host": "semantic.example.com"}, path="/mcp") == 421
+    assert status({"Host": "api.example.com"}) == 200
+
+
+def test_mapped_loopback_listener_is_protected_on_every_python(frontends, monkeypatch):
+    # Python 3.11.0 calls only ::1 loopback, not ::ffff:127.0.0.1.
+    monkeypatch.setattr(ipaddress.IPv6Address, "is_loopback", property(lambda self: self._ip == 1))
+    mapped = ("::ffff:127.0.0.1", 8090)
+    hostile = frontends(
+        "asgi", path="/api/v1/query", headers={"Host": "evil.example"}, server=mapped
+    )
+    assert hostile[0] == 421
+    host = {"Host": "[::ffff:127.0.0.1]:8090"}
+    assert frontends("asgi", QUERY, path="/api/v1/query", headers=host, server=mapped)[0] == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "headers", "status"),
+    [
+        ("http://evil.example:8090/api/v1/catalog", {"Host": "localhost"}, 421),
+        ("http://evil.example:8090/api/v1/catalog", {"Host": None}, 421),
+        # The stdlib server reads a leading "//" as a path, not an authority.
+        ("//evil.example/api/v1/catalog", {"Host": "localhost"}, 404),
+        ("http://[::1/api/v1/catalog", {"Host": "localhost"}, None),
+        ("http://evil.example/mcp", {"Host": "localhost"}, 421),
+        ("http://localhost:8090/api/v1/catalog", {"Host": "localhost:8090"}, 200),
+    ],
+)
+def test_serve_checks_the_authority_of_an_absolute_target(frontends, path, headers, status):
+    if status is None:  # the target cannot be parsed: refused or dropped, never served
+        with contextlib.suppress(http.client.HTTPException, ConnectionError):
+            assert frontends("serve", method="GET", path=path, headers=headers, raw=b"")[0] >= 400
+        return
+    response = frontends(
+        "serve", method="GET", path=path, headers=[*headers.items(), UNREAD_BODY], raw=b""
+    )
+    if status == 421:
+        _assert_refused(response, path, 421, "HOST_NOT_ALLOWED")
+    else:
+        assert response[0] == status
+
+
+def test_serve_refuses_rebinding_for_methods_it_does_not_serve(frontends):
+    assert frontends("serve", method="BREW", headers={"Host": "evil.example"}, raw=b"")[0] == 421
+    assert frontends("serve", method="BREW", raw=b"")[0] == 501
+
+
+def test_package_load_failure_refuses_rebinding_before_its_diagnostics():
+    app = PackageLoadFailureApp(package_id="broken", error=RuntimeError("/private/path failed"))
+
+    def call(headers):
+        sent = []
+
+        async def receive():
+            raise AssertionError("a refused request's body is never read")
+
+        async def send(event):
+            sent.append(event)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/catalog",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers],
+            "server": ("127.0.0.1", 8080),
+        }
+        asyncio.run(app(scope, receive, send))
+        response_headers = {k.decode(): v.decode() for k, v in sent[0]["headers"]}
+        return sent[0]["status"], response_headers, sent[1]["body"]
+
+    for headers, status in [
+        ([("Host", "evil.example"), ("Origin", "https://evil.example")], 421),
+        ([("Host", "localhost"), ("Origin", "https://evil.example")], 403),
+        ([("Host", "localhost"), ("Host", "evil.example")], 421),
+    ]:
+        got, response_headers, body = call(headers)
+        assert got == status
+        assert b"/private/path" not in body and b"broken" not in body
+        assert "access-control-allow-origin" not in response_headers
+    assert call([("Host", "localhost:8080")])[0] == 503

@@ -17,9 +17,11 @@ re-exported here so external callers (``api``, ``asgi``,
 from __future__ import annotations
 
 import os
+import re
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import operations
 from .api_keys import api_key_auth_result
@@ -160,25 +162,58 @@ def allowed_hosts() -> tuple[str, ...]:
     return tuple(part.strip().lower() for part in raw.split(",") if part.strip())
 
 
+# A whole authority: a bracketed IPv6 address or a plain name, then an optional port.
+_AUTHORITY = re.compile(r"(?:\[([0-9a-f.]*:[0-9a-f:.]*)\]|([a-z0-9._~-]+))(?::([0-9]{1,5}))?")
+
+
+def _allowed_authority(authority: str, listed: tuple[str, ...]) -> bool:
+    match = _AUTHORITY.fullmatch(authority.lower())
+    if match is None or int(match[3] or 0) > 65535:
+        return False
+    name = match[1] or match[2]
+    return loopback_host(name) or name in listed
+
+
 def rebinding_refusal(
-    headers: Mapping[str, Any], server_host: str | None = None
+    headers: Mapping[str, Any] | Iterable[tuple[Any, Any]],
+    server_host: str | None = None,
+    *,
+    target: str = "",
 ) -> tuple[int, dict[str, Any]] | None:
     """The status and issue refusing a request a web page could send by DNS rebinding.
 
-    One check for `/api/v1` and `/mcp`. When the request reached the server on a
-    loopback address (`server_host`), or `SEMANTIC_RAILS_ALLOWED_HOSTS` is set, its
-    `Host` must name loopback or a listed host, with any port (421). A browser `Origin`
-    must be on `SEMANTIC_RAILS_CORS_ORIGINS` (403); clients that send none pass.
+    One check before every response, `/api/v1` and `/mcp` alike. Pass the raw header
+    pairs, so a repeated `Host` or `Origin` is refused rather than collapsed. When the
+    request reached the server on a loopback address (`server_host`), or
+    `SEMANTIC_RAILS_ALLOWED_HOSTS` is set, it needs one well-formed `Host` naming loopback
+    or a listed host, with any port, and so does the authority of an absolute-form
+    `target` (421). An `Origin`, even an empty one, must be on `SEMANTIC_RAILS_CORS_ORIGINS`
+    (403); clients that send none pass.
     """
-    host = header_value(headers, "Host").lower()
+    found: dict[str, list[str]] = {"host": [], "origin": []}
+    for name, value in headers.items() if isinstance(headers, Mapping) else headers:
+        if str(name).lower() in found:
+            found[str(name).lower()].append(str(value).strip())
+    hosts, origins = found["host"], found["origin"]
     listed = allowed_hosts()
-    if host and (listed or loopback_host(server_host or "")):
-        name = host[1:].partition("]")[0] if host.startswith("[") else host.partition(":")[0]
-        if not (loopback_host(name) or name in listed):
-            return 421, issue("HOST_NOT_ALLOWED", f"Host {host!r} is not allowed.")
-    origin = header_value(headers, "Origin")
-    if origin and not cors_origin_header(origin):
-        return 403, issue("ORIGIN_NOT_ALLOWED", f"Origin {origin!r} is not allowed.")
+    try:
+        authority = urlsplit(target).netloc
+    except ValueError:  # an unparsable target, such as an unclosed "[", names no host
+        authority = "["
+    authorities = [*hosts, authority] if authority else hosts
+    if len(hosts) > 1 or (
+        (listed or loopback_host(server_host or ""))
+        and not (hosts and all(_allowed_authority(a, listed) for a in authorities))
+    ):
+        return 421, issue(
+            "HOST_NOT_ALLOWED",
+            f"Host {' '.join(hosts)!r} is not allowed; list it in SEMANTIC_RAILS_ALLOWED_HOSTS.",
+        )
+    if origins and (len(origins) > 1 or not cors_origin_header(origins[0])):
+        return 403, issue(
+            "ORIGIN_NOT_ALLOWED",
+            f"Origin {' '.join(origins)!r} is not allowed; list it in SEMANTIC_RAILS_CORS_ORIGINS.",
+        )
     return None
 
 

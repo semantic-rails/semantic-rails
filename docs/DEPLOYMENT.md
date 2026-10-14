@@ -27,17 +27,19 @@ by default.
 Loopback binding keeps other *hosts* out; it does not keep *web pages* out.
 A page loaded in a browser on the same machine can reach `127.0.0.1`, so
 cross-origin browser access is off unless you set
-`SEMANTIC_RAILS_CORS_ORIGINS`. Requests to `/api/v1/*` and `/mcp` carrying an
-`Origin` header are refused with `403` until you list the origins you trust;
+`SEMANTIC_RAILS_CORS_ORIGINS`. Requests carrying an `Origin` header, even an
+empty one, are refused with `403` until you list the origins you trust;
 non-browser clients (the CLI, SDKs, MCP stdio clients, `curl`) send no `Origin`
 and are unaffected.
 
 A page can also point its own domain at `127.0.0.1` (DNS rebinding), so a
-request that reaches the server on a loopback address must name a loopback
-host (`localhost`, `127.0.0.1`, `[::1]`, any port) in `Host`, or it is refused
-with `421`. Behind a port mapping or a proxy, requests do not arrive on
-loopback: set `SEMANTIC_RAILS_ALLOWED_HOSTS` to the names clients use, which
-applies the same check to every request.
+request that reaches the server on a loopback address needs one well-formed
+`Host` naming a loopback host (`localhost`, `127.0.0.1`, `[::1]`, any port), or
+it is refused with `421`; so does an absolute request target. Behind a port
+mapping or a proxy, requests do not arrive on loopback: set
+`SEMANTIC_RAILS_ALLOWED_HOSTS` to the names clients use, which applies the same
+check to every request. A repeated `Host` or `Origin` is always refused. These
+checks run before any response, including a package-load failure.
 
 Run the Jaffle package:
 

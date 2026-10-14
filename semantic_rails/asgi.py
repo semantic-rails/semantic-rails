@@ -34,6 +34,7 @@ from .mcp import SemanticLayerMCPAdapter
 from .mcp_streamable_http import (
     MCP_MAX_REQUEST_BYTES,
     MCPHTTPResponse,
+    _error,
     handle_streamable_http_request,
     prepare_streamable_http_request,
 )
@@ -48,6 +49,15 @@ def _headers(scope: dict[str, Any]) -> dict[str, str]:
         key.decode("latin1"): value.decode("latin1")
         for key, value in list(scope.get("headers", []) or [])
     }
+
+
+def _rebinding_refusal(scope: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """The shared Host/Origin check on the raw headers and the address the connection reached."""
+    pairs = [
+        (bytes(key).decode("latin1"), bytes(value).decode("latin1"))
+        for key, value in scope.get("headers") or []
+    ]
+    return rebinding_refusal(pairs, str((scope.get("server") or ("",))[0] or ""))
 
 
 def _query_params(scope: dict[str, Any]) -> dict[str, Any]:
@@ -134,8 +144,25 @@ class SemanticLayerASGIApp:
         started = time.perf_counter()
         request_id = request_id_from_parts(headers, query_params)
         request_origin = headers.get("origin") or headers.get("Origin")
-        # The address this connection reached (uvicorn reports the local socket).
-        server_host = str((scope.get("server") or ("",))[0] or "")
+        refusal = _rebinding_refusal(scope)
+        if refusal is not None and raw_path.rstrip("/") == "/mcp":
+            mcp = _error(refusal[0], -32003, refusal[1]["message"])
+            return await self._send(
+                send,
+                mcp.status,
+                mcp.payload or {},
+                request_origin=request_origin,
+                request_id=request_id,
+                extra_headers=mcp.headers,
+                allow_methods="POST, OPTIONS",
+            )
+        if refusal is not None:
+            status, refused = refusal
+            response = service.envelope(
+                status, {"ok": False, "error": refused}, request_id=request_id, started=started
+            )
+            self._audit(method, raw_path, status, response)
+            return await self._send(send, status, response, request_origin=request_origin)
         if raw_path.rstrip("/") == "/mcp":
             return await self._handle_mcp(
                 method,
@@ -144,17 +171,7 @@ class SemanticLayerASGIApp:
                 send,
                 request_id=request_id,
                 request_origin=request_origin,
-                server_host=server_host,
             )
-
-        refusal = rebinding_refusal(headers, server_host)
-        if refusal is not None:
-            status, refused = refusal
-            response = service.envelope(
-                status, {"ok": False, "error": refused}, request_id=request_id, started=started
-            )
-            self._audit(method, raw_path, status, response)
-            return await self._send(send, status, response, request_origin=request_origin)
 
         route = public_api_route(raw_path)
         if route is None:
@@ -276,11 +293,8 @@ class SemanticLayerASGIApp:
         *,
         request_id: str,
         request_origin: str | None,
-        server_host: str = "",
     ) -> None:
-        context = prepare_streamable_http_request(
-            headers, request_id=request_id, server_host=server_host
-        )
+        context = prepare_streamable_http_request(headers, request_id=request_id)
         if isinstance(context, MCPHTTPResponse):
             return await self._send(
                 send,
@@ -288,7 +302,6 @@ class SemanticLayerASGIApp:
                 context.payload or {},
                 request_origin=request_origin,
                 request_id=request_id,
-                extra_headers=context.headers,
                 allow_methods="POST, OPTIONS",
             )
         body = b""
@@ -541,6 +554,16 @@ class PackageLoadFailureApp:
                     await send({"type": "lifespan.shutdown.complete"})
                     return None
         if scope_type != "http":
+            return None
+        refusal = _rebinding_refusal(scope)
+        if refusal is not None:  # no diagnostics, and no CORS header, for a refused request
+            body = json.dumps({"ok": False, "errors": [refusal[1]]}).encode("utf-8")
+            headers = [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ]
+            await send({"type": "http.response.start", "status": refusal[0], "headers": headers})
+            await send({"type": "http.response.body", "body": body})
             return None
         body = json.dumps(
             {

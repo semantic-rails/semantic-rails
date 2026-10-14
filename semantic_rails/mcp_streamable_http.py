@@ -61,15 +61,9 @@ def _valid_accept(value: str) -> bool:
 
 
 def prepare_streamable_http_request(
-    headers: Mapping[str, Any], *, request_id: str, server_host: str | None = None
+    headers: Mapping[str, Any], *, request_id: str
 ) -> RequestContext | MCPHTTPResponse:
-    """Refuse DNS rebinding and authenticate before reading a body, then resolve identity.
-
-    ``server_host`` is the address the request reached the server on.
-    """
-    refusal = rebinding_refusal(headers, server_host)
-    if refusal is not None:
-        return _error(refusal[0], -32003, refusal[1]["message"])
+    """Authenticate before reading a body and resolve transport-trusted identity."""
     auth_ok, _ = api_key_auth_result(headers)
     if not auth_ok:
         return MCPHTTPResponse(
