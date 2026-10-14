@@ -6,7 +6,9 @@
   conversion, a stock) is refused with `ROW_GRAIN_UNSUPPORTED`, naming the fix. See
   [Row-grain models](docs/PACKAGE_AUTHORING.md#row-grain-models).
 - `suggest_model` confirms an inferred key on the whole relation before suggesting it, under one
-  60-second deadline, and reports how the search ended in `key_search`; with no confirmed key it
-  drafts a row-grain model. `upsert_model` accepts `primary_key: []`.
+  60-second deadline checked between statements, and reports how the search ended in
+  `key_search`; a search that ends past the deadline suggests no key. With no confirmed key it
+  drafts a row-grain model; an empty table keeps only its declared primary key. `upsert_model`
+  accepts `primary_key: []`.
 - `plan` holds a ranking of an entity with no single key (a row-grain model or a composite
   key) with `PLAN_RANKING_NO_KEY` instead of drafting one total with a limit.
