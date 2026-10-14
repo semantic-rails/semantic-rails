@@ -132,7 +132,8 @@ def test_pieces_that_dont_connect_are_named_without_a_draft(
     jaffle: Runtime, question: str, subject: str, dimensions: list[str], code: str
 ) -> None:
     payload = _plan(jaffle, question)
-    assert payload["status"] == "low_confidence", payload.get("why")
+    # No draft is offered and the package can't answer as asked.
+    assert payload["status"] == "unrealizable", payload.get("why")
     why = payload["why"]
     assert why["code"] == "PLAN_UNCONNECTED"
     assert why["details"]["subjects"] == [subject]

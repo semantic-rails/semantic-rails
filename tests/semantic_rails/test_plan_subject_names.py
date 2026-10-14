@@ -212,7 +212,8 @@ def test_counting_words_name_the_count_measure(
     plan = plan_payload(jaffle, intent=question)
     if question == "number of customers by store":
         # A customer belongs to no store: plan names the pair, with the count measure.
-        assert_plan_held(plan, "PLAN_UNCONNECTED")
+        assert plan["status"] == "unrealizable", plan
+        assert plan["why"]["code"] == "PLAN_UNCONNECTED"
         assert plan["why"]["details"]["subjects"] == [measure]
         return
     if measure.endswith("_eop") and unconsumed:

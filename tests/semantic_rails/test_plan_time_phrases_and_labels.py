@@ -1002,7 +1002,8 @@ def test_an_exact_multi_word_label_outranks_a_partial_one(
     payload = plan_payload(runtime, intent=text, detail="query")
     if unconsumed is None:
         # Revenue, read per order, can't reach an item: plan names the pair, no draft.
-        _held(payload, "PLAN_UNCONNECTED")
+        assert payload["status"] == "unrealizable", payload
+        assert payload["why"]["code"] == "PLAN_UNCONNECTED"
         assert payload["why"]["details"]["subjects"] == [measure]
         return
     assert _measures(payload) == [measure]

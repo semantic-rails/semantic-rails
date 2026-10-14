@@ -450,9 +450,16 @@ def test_store_shortcut_removal_holds_before_the_shape_check(
     monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
     unchecked = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
 
-    # A comparison with the week before asks how to read it; the others are held.
+    # A comparison with the week before asks how to read it; pieces that don't connect can't
+    # be answered as asked; the others are held.
     asked = code == "PERIOD_COMPARISON"
-    assert payload["status"] == ("needs_clarification" if asked else "low_confidence")
+    assert payload["status"] == (
+        "needs_clarification"
+        if asked
+        else "unrealizable"
+        if code == "PLAN_UNCONNECTED"
+        else "low_confidence"
+    )
     assert "ready_for" not in payload["next"]
     assert payload["why"]["code"] == code
     assert payload == unchecked

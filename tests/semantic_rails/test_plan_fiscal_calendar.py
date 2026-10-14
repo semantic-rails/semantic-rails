@@ -122,10 +122,11 @@ def _hints(payload: dict[str, Any]) -> str:
 
 def _assert_fiscal_held(payload: dict[str, Any], says: str = "") -> None:
     """Held, never ready. Held by the coverage check, the fiscal gap is among its gaps and
-    its hint says ``says``."""
-    assert payload["status"] == "low_confidence", payload.get("why")
-    assert "execute" not in payload.get("next", {}).get("ready_for", [])
+    its hint says ``says``. Pieces that don't connect can't be answered as asked."""
     code = payload["why"]["code"]
+    status = "unrealizable" if code == "PLAN_UNCONNECTED" else "low_confidence"
+    assert payload["status"] == status, payload.get("why")
+    assert "execute" not in payload.get("next", {}).get("ready_for", [])
     assert code in HELD_BY, payload["why"]
     if code == "PLAN_INTENT_COVERAGE_GAP":
         assert "fiscal_calendar_unrealized" in _gap_kinds(payload), payload["why"]
