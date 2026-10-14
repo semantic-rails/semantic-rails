@@ -7414,6 +7414,24 @@ tests:
     expected_rows:
       - {period: '2024-01-01', seats: 1022}
       - {period: '2024-01-15', seats: 220}
+  shop/stock_untimed_reads_last_closing_day:
+    kind: query_matches_snapshot
+    expect: answer
+    why: With no window or grain, a balance reads its last day with a snapshot, January 15; account 2, last seen January 7, is not carried forward.
+    cites:
+      - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
+      - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
+      - docs/QUERY_CALL.md#time
+    tags: [clock]
+    variant: utc_authored
+    query:
+      select:
+      - measure.shop.seats
+    reference_sql: |-
+      SELECT SUM(a.seats) FROM account_days AS a
+      WHERE a.snapshot_day = (SELECT MAX(b.snapshot_day) FROM account_days AS b)
+    expected_rows:
+      - {seats: 220}
   shop/stock_by_snapshot_day:
     kind: query_matches_snapshot
     expect: answer

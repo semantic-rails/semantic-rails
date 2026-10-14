@@ -131,6 +131,7 @@ from .runtime_parts.answer_warnings import (
     _guard_probe_names,
     _history_result_warnings,
     _requested_window,
+    refuse_closing_day_zone,
 )
 from .runtime_parts.assumptions import call_assumptions, refuse_hidden_governors, split_hidden
 from .runtime_parts.filtered_series import filtered_series_warnings
@@ -514,10 +515,7 @@ def _scope_refusal(payload: dict[str, Any]) -> SemanticLayerError | None:
 def _compiled_cte_row(runtime, compiled, payload, columns):
     """Read the settlement's own CTEs (``columns``: each CTE's columns), preserving bound row
     filters and request limits."""
-    from .relation_pipelines import attach_relation_ctes
-    from .renderer import render_select_for_profile
-    from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlParameter, SqlSelect, SqlTableRef
-    from .sql_preparation import finalize_parameters
+    from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlSelect, SqlTableRef
 
     probes = sorted(columns)
     probe = SqlSelect(
@@ -534,6 +532,17 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
             if cte.name in probes or cte.name in {f"{p}_rows" for p in probes}
         ],
     )
+    return _probe_row(runtime, compiled, payload, probe)
+
+
+def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
+    """The first row of ``probe``, a select whose parameters are all in its CTEs, run as the
+    answer's own SQL is: bound row filters and request limits kept."""
+    from .relation_pipelines import attach_relation_ctes
+    from .renderer import render_select_for_profile
+    from .sql_ast import SqlParameter
+    from .sql_preparation import finalize_parameters
+
     probe = attach_relation_ctes(runtime._config, probe)
     dialect = dialect_for_warehouse(runtime.warehouse)
     prepared = replace(
@@ -556,6 +565,24 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
             policy_context=_policy_context(payload or {}),
         )
     return rows[0] if rows else {}
+
+
+def _closing_reads(runtime, compiled, payload) -> list[dict[str, Any]]:
+    """For each balance read on its closing day, its probe's row (keys case-folded), or no
+    counts when the read failed. Each distinct probe runs once, whatever reads share it."""
+    rows: list[tuple[Any, dict[str, Any]]] = []
+    reads = []
+    for read in compiled.get("closing_reads") or ():
+        row = next((row for probe, row in rows if probe == read["probe"]), None)
+        if row is None:
+            try:
+                row = _probe_row(runtime, compiled, payload, read["probe"])
+            except Exception:
+                row = {}
+            rows.append((read["probe"], row))
+        counts = {key.casefold(): value for key, value in row.items()}
+        reads.append({**counts, **{key: read[key] for key in ("measure", "outputs", "nested")}})
+    return reads
 
 
 def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
@@ -1554,6 +1581,7 @@ class Runtime:
                 "explain": replace(cached.compiled["explain"], compile_stats=stats),
             }
         compiled = compile_query(self._config, self.registry, payload, binding=binding)
+        refuse_closing_day_zone(self._config, compiled)
         stats = {
             **dict(compiled.get("compile_stats", {}) or {}),
             "cache_hit": False,
@@ -1829,6 +1857,7 @@ class Runtime:
             _no_data_yet_warnings,
             _partial_data_warnings,
             _zero_after_last_row_notes,
+            closing_day_disclosures,
         )
 
         refusal = _scope_refusal(payload)
@@ -1933,6 +1962,9 @@ class Runtime:
         coverage_outputs = [
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
         ]
+        closing_days, closing_warnings = closing_day_disclosures(
+            _closing_reads(self, compiled, payload), _withheld_columns(policy_effects)
+        )
         out: dict[str, Any] = {
             "ok": True,
             **result_rows(
@@ -1973,6 +2005,7 @@ class Runtime:
                     runtime=self,
                     payload=payload,
                 ),
+                *closing_warnings,
                 *_filter_value_warnings(self, compiled, payload),
                 *_unknown_rows_kept_warnings(self, compiled, payload),
                 *limits_warnings,
@@ -1992,6 +2025,7 @@ class Runtime:
             "hop_profile": _hop_profile(self._config, compiled),
             "normalized_query": compiled["explain"].normalized_query,
         }
+        out["assumptions"].extend(closing_days)
         metadata = compile_response_metadata(self, payload, compiled)
         execute_keep = {
             "semantic_fingerprint",

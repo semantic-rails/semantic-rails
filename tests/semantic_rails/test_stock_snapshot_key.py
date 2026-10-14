@@ -154,9 +154,10 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
     # these clocks warn at authoring time instead of refusing.
     package = _package(tmp_path, key="[repo_snapshot_key]", clock_class=clock_class)
     runtime = Runtime.from_path(str(package))
-    # Knowingly unrefused, and the answer says so. The balance reads only the week's closing
-    # day, which holds one of the two snapshots, so the week reads the true 1.
-    assert _weekly(runtime, "stars") == [1]
+    # Knowingly unrefused: on an event or state clock each series is read as keyed, so this
+    # sums the two snapshots (the true value is 1), which is also the right answer for a table
+    # with one row per series. The answer says so.
+    assert _weekly(runtime, "stars") == [2]
     assert _warning_codes(package).count(WARNING) == 2
     assert _query_warning_codes(runtime, "measure.f4stock.stars").count(WARNING) == 1
     # MCP execute returns it at its default (minimal) verbosity.

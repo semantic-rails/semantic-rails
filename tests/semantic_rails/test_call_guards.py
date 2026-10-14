@@ -306,6 +306,10 @@ STATED = {
     "AGGREGATION_OVERRIDE": {
         "select": [{"expression": {"kind": "measure", "measure": REVENUE, "aggregation": "max"}}]
     },
+    "BALANCE_CLOSING_DAY": {
+        "select": ["measure.jaffle.inventory_on_hand_eop"],
+        "time": {"start": "2017-03-01", "end": "2017-05-01", "grain": "month"},
+    },
     "ENTITY_FILTER_OVER": {
         "select": [REVENUE],
         "where": [

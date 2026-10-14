@@ -781,9 +781,11 @@ def test_runtime_binary_expression_can_compose_mixed_clock_metric_primitives(con
     assert "base.m1 + base.m2" in rendered
 
 
+# Start-of-period inventory: an end-of-period balance closes on a day, and its share filtered
+# by entity sets is refused (test_stock_closing_day_paths).
 INVENTORY = {
     "kind": "scoped_aggregate",
-    "measure": "measure.jaffle.inventory_on_hand_eop",
+    "measure": "measure.jaffle.inventory_on_hand_sop",
     "aggregation": "sum",
 }
 
@@ -846,7 +848,8 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(config):
     compiled = _compiled(snowflake, _inventory_share(ORDERING_STORES, **JANUARY_BY_STORE))
     rendered = compiled["sql"]
     assert "QUALIFY" in rendered
-    assert "ROW_NUMBER() OVER" in rendered
+    # RANK: rows tied on a series' snapshot are all read, as the join-back reads them.
+    assert "RANK() OVER" in rendered
     assert "latest_jaffle_store_inventory_snapshot_snapshot_complete" not in rendered
     assert any(
         row["kind"] == "snapshot_row_selection" and row["strategy"] == "qualify_row_number"
@@ -920,7 +923,8 @@ def test_semi_additive_snapshots_choose_period_row_before_summing(config):
     rendered = _sql(config, query)
     assert "snapshot_complete AS (" in rendered
     assert "MAX(leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order" in rendered
-    assert "SUM(leaf_1__snapshot_base.__snapshot_value) AS m1" in rendered
+    # The sum reads the chosen snapshots only.
+    assert "SUM(leaf_1__snapshot_rows.__snapshot_value) AS m1" in rendered
     assert "arg_max" not in rendered.lower()
 
 

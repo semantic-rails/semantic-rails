@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -416,6 +417,154 @@ def _crosses_boundary(start: str, end: str, window_start: str, window_end: str) 
     if window_start and start and start < window_start and (not end or end > window_start):
         return True
     return bool(window_end and (not start or start < window_end) and end and end > window_end)
+
+
+CLOSING_DAY_CODES = ("BALANCE_CLOSING_DAY", "BALANCE_SERIES_MISSING_ON_CLOSING_DAY")
+
+
+def closing_day_disclosures(
+    reads: list[dict[str, Any]], excluded_outputs: Iterable[str] = ()
+) -> tuple[list[dict], list[dict]]:
+    """What each balance read on its closing day says: the day it read (an assumption), and,
+    when series seen earlier in a period had no snapshot on its closing day, how many (a
+    warning). The engine can't tell a series that stopped, which is right to leave out, from
+    one that takes its snapshots on other days or a table that records only changes, which
+    are undercounted, so it never leaves them out silently. ``reads`` comes from
+    ``runtime._closing_reads``, nested reads included; one whose probe failed is still
+    disclosed, with no day. A read only for outputs whose values a policy withholds says
+    nothing, nor does a read whose owner is unknown (``outputs`` None) beside any withheld
+    output: it might be for that one."""
+    assumptions: list[dict] = []
+    warnings: list[dict] = []
+    excluded = set(excluded_outputs)
+    for read in reads:
+        day = _iso_day(read.get("closing_day"))
+        owned = read["outputs"]
+        outputs = None if owned is None else [name for name in owned if name not in excluded]
+        withheld = bool(excluded) if owned is None else bool(owned) and not outputs
+        if ("periods" in read and not day) or withheld:
+            continue  # nothing read on a closing day, or maybe only for withheld values
+        measure = read["measure"]
+        entry = {
+            "measure": measure,
+            "outputs": outputs,
+            "nested": read["nested"],
+            "closing_day": day,
+            "periods": int(read.get("periods") or 0),
+        }
+        assumptions.append(_closing_assumption(measure, entry))
+        missing = int(read.get("series_missing") or 0)
+        if day and not missing:
+            continue
+        details = {
+            **entry,
+            "closing_day": _iso_day(read.get("missing_day")),
+            "checked": bool(day),
+            "series": int(read.get("series") or 0),
+            "series_missing": missing,
+            "periods_missing": int(read.get("periods_missing") or 0),
+        }
+        warnings.append(_missing_warning(measure, details, [measure]))
+    return assumptions, warnings
+
+
+def granted_closing_day(entry: dict, columns: list[dict], permitted: set[str]) -> dict | None:
+    """A closing-day disclosure as a grant sees it: as is where its measure is granted (and,
+    for a read whose owner is unknown, every column of the answer is); where only an output
+    reading it is, with the day and counts but named by those outputs' ids; else nothing,
+    never named by a column that doesn't read it. Any other entry is returned as is."""
+    code = entry.get("code")
+    if code not in CLOSING_DAY_CODES:
+        return entry
+    fields = entry if code == "BALANCE_CLOSING_DAY" else entry["details"]
+    ids = {column.get("field"): column.get("semantic_id") for column in columns}
+    if fields["measure"] in permitted:
+        unknown = fields["outputs"] is None
+        return None if unknown and not set(ids.values()) <= permitted else entry
+    outputs = [name for name in fields["outputs"] or () if ids.get(name) in permitted]
+    if not outputs:
+        return None
+    granted = sorted({str(ids[name]) for name in outputs})
+    hidden = {"code", "message", "measure"}
+    shown = {**{k: v for k, v in fields.items() if k not in hidden}, "outputs": outputs}
+    subject = f"the balance read by {', '.join(granted)}"
+    if code == "BALANCE_CLOSING_DAY":
+        return _closing_assumption(subject, shown)
+    return _missing_warning(subject, shown, granted)
+
+
+def refuse_closing_day_zone(config: Any, compiled: dict[str, Any]) -> None:
+    """A balance closes on its clock's day bucket, which DuckDB and Postgres compute for a
+    zone-aware column in the session's zone: the zone the query runs in (UTC without a time
+    block). A closing-day read on a timestamp clock in another zone could close on another
+    day, so it is refused; a DATE clock (``zone`` "") never depends on the session."""
+    if not dialect_for_warehouse(config.package.warehouse).session_zone:
+        return
+    zone = _time_zone(config, compiled)
+    for read in compiled.get("closing_reads") or ():
+        if read["zone"] and read["zone"] != zone:
+            raise SemanticLayerError(
+                "MIXED_TIME_ROLES",
+                f"{read['measure']} is a balance read on its closing day in {read['zone']}, "
+                f"its clock's zone, but this query runs in {zone or 'UTC'}, so its day could "
+                "be another. Give the call a time window on the balance's own clock "
+                "(time.temporal_role) so it runs in that zone.",
+                details={
+                    "reason": "closing_day_zone",
+                    "measure": read["measure"],
+                    "clock_zone": read["zone"],
+                    "time_zone": zone,
+                },
+            )
+
+
+def _closing_assumption(subject: str, entry: dict) -> dict:
+    day, periods = entry["closing_day"], entry["periods"]
+    where = " (in an entity filter, predicate or branch of the call)" if entry["nested"] else ""
+    when = (
+        f"on its closing day, {day}, the last day with a snapshot"
+        if periods == 1
+        else f"on each period's closing day, its last day with a snapshot (the latest is {day})"
+        if day
+        else "on each period's closing day, its last day with a snapshot"
+    )
+    return {
+        "code": "BALANCE_CLOSING_DAY",
+        "message": f"{subject}{where} is read {when}: a series with no snapshot that day is "
+        "not counted, never carried forward from an earlier day.",
+        **entry,
+    }
+
+
+def _missing_warning(subject: str, details: dict, object_ids: list[str]) -> dict:
+    missing, seen, missed = details["series_missing"], details["series"], details["closing_day"]
+    periods, spans = details["periods"], details["periods_missing"]
+    found = (
+        f"Whether every series of {subject} had a snapshot on its closing day couldn't be checked."
+        if not details["checked"]
+        else f"{missing} of {seen} series of {subject} had a snapshot earlier in the period "
+        f"but none on its closing day, {missed}, so they are not counted."
+        if periods == 1
+        else f"In {spans} of {periods} periods, series of {subject} had a snapshot earlier in "
+        f"the period but none on its closing day ({missing} of the {seen} series read across "
+        f"the periods; the latest such day is {missed}), so they are not counted."
+    )
+    return semantic_issue(
+        code="BALANCE_SERIES_MISSING_ON_CLOSING_DAY",
+        message=f"{found} A series that stopped is right to leave out; one that takes its "
+        "snapshots on other days, or a table that records only changes, is undercounted. "
+        "Group by the clock's day to see each day's snapshots; model a change table as a "
+        "state_as_of relation.",
+        severity="warning",
+        stage="execution",
+        details=details,
+        object_ids=object_ids,
+    )
+
+
+def _iso_day(value: Any) -> str:
+    """A warehouse's DATE as ``YYYY-MM-DD`` ("" for none)."""
+    return value.isoformat()[:10] if isinstance(value, date) else str(value or "")[:10]
 
 
 def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:

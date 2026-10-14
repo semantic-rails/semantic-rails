@@ -49,10 +49,8 @@ from ..sql_ast import (
     SqlIsNull,
     SqlJoin,
     SqlLiteral,
-    SqlOrderTerm,
     SqlSelect,
     SqlTableRef,
-    SqlWindow,
 )
 from . import nested
 from .bind import (
@@ -132,6 +130,7 @@ from .predicate_sets import (
     _stock_period_split,
 )
 from .row_counts import _row_markers, _rows_fields
+from .snapshot_reads import ClosingDay, SnapshotRead, closing_day, select_snapshots
 
 
 def _aggregate_relation_time_expr(
@@ -270,6 +269,8 @@ def _semi_additive_leaf_select(
     aggregation_params: dict[str, Any],
     warehouse: str,
     ctes: list[SqlCte] | None = None,
+    day: ClosingDay | None = None,
+    measure_id: str = "",
 ) -> SqlSelect:
     # A snapshot series whose only row key is the ordering time column is a
     # singleton series: there is exactly one snapshot per point in time. The
@@ -284,21 +285,12 @@ def _semi_additive_leaf_select(
         row_grain_exprs = [order_expr]
     row_key_aliases = [f"__snapshot_key_{index + 1}" for index in range(len(row_grain_exprs))]
     key_aliases = [field.alias for field in key_fields]
-    # Each series' snapshot is chosen per period first (`period_aliases` name the key
-    # fields that split time), and the other grouping dimensions are read from that
-    # row. Choosing it per group too would count a series whose attribute changes
-    # within the period once under each value it held.
-    period_fields = [field for field in key_fields if field.alias in period_aliases]
-    partition_aliases = [*[field.alias for field in period_fields], *row_key_aliases]
-    order_function = "MIN" if window_choice == "first_value" else "MAX"
-
-    base_fields = [
+    fields = [
         *key_fields,
         *[
             SqlField(expr, alias)
             for expr, alias in zip(row_grain_exprs, row_key_aliases, strict=True)
         ],
-        SqlField(order_expr, "__snapshot_order"),
         SqlField(value_expr, "__snapshot_value"),
     ]
     # `snapshot_filters` (on attributes, never on time) keep or drop each chosen snapshot,
@@ -309,189 +301,54 @@ def _semi_additive_leaf_select(
         kept = SqlCase(
             [SqlCaseWhen(_and_conditions(snapshot_filters), SqlLiteral(1))], SqlLiteral(0)
         )
-        base_fields.append(SqlField(kept, "__snapshot_kept"))
+        fields.append(SqlField(kept, "__snapshot_kept"))
     settles = bool(snapshot_filters) and zero_unmatched and set(key_aliases) <= set(period_aliases)
     dialect = dialect_for_warehouse(warehouse)
-
-    def chosen_value(source: str) -> tuple[Any, list[Any]]:
-        """The leaf's value over the snapshots chosen in ``source``, and the filter on them."""
-        value: Any = SqlIdentifier(parts=[source, "__snapshot_value"])
-        flag = SqlIdentifier(parts=[source, "__snapshot_kept"])
-        kept_rows = [SqlBinary(flag, "=", SqlLiteral(1))] if snapshot_filters else []
-        if settles:
-            value = SqlCase([SqlCaseWhen(kept_rows[0], value)])
-        total = (
-            SqlCall("SUM", [value])
-            if final_aggregation in {"last_value", "first_value"}
-            else _aggregation_expr(
-                value, final_aggregation, parameters=aggregation_params, dialect=dialect
-            )
+    # Each series' snapshot is chosen per period first (`period_aliases` name the key
+    # fields that split time), and the other grouping dimensions are read from that
+    # row. Choosing it per group too would count a series whose attribute changes
+    # within the period once under each value it held. An end-of-period balance on an
+    # as-of clock (``day``) closes on the period's closing day (snapshot_reads).
+    closes = window_choice == "last_value" and final_aggregation in {"last_value", "sum"}
+    read = SnapshotRead(
+        fields=fields,
+        periods=[alias for alias in key_aliases if alias in period_aliases],
+        series=row_key_aliases,
+        order=order_expr,
+        day=day if closes else None,
+        first=window_choice == "first_value",
+        source=from_table,
+        joins=joins,
+        where=where_clauses,
+        ctes=list(ctes or []),
+    )
+    chosen, rows = select_snapshots(
+        read, name="snapshot_rows", prefix="snapshot", dialect=dialect, measure_id=measure_id
+    )
+    value: Any = SqlIdentifier(parts=[rows, "__snapshot_value"])
+    flag = SqlIdentifier(parts=[rows, "__snapshot_kept"])
+    kept_rows: list[Any] = [SqlBinary(flag, "=", SqlLiteral(1))] if snapshot_filters else []
+    if settles:
+        value = SqlCase([SqlCaseWhen(kept_rows[0], value)])
+    final_expr = (
+        SqlCall("SUM", [value])
+        if final_aggregation in {"last_value", "first_value"}
+        else _aggregation_expr(
+            value, final_aggregation, parameters=aggregation_params, dialect=dialect
         )
-        if not settles:
-            return total, kept_rows
+    )
+    if settles:
         none_kept = SqlBinary(SqlCall("MAX", [flag]), "=", SqlLiteral(0))
-        return SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], total), []
-
-    complete_fields = [
-        *[
-            SqlField(SqlIdentifier(parts=["snapshot_base", alias]), alias)
-            for alias in partition_aliases
-        ],
-        SqlField(
-            SqlCall(order_function, [SqlIdentifier(parts=["snapshot_base", "__snapshot_order"])]),
-            "__snapshot_order",
-        ),
-    ]
-    complete_group_by: list[SqlExpr] = [
-        SqlIdentifier(parts=["snapshot_base", alias]) for alias in partition_aliases
-    ]
-
-    # A balance is read on its period's closing day only (the last day with a snapshot, the
-    # edge day for a period still filling): a series without a snapshot that day is not
-    # carried forward from an earlier one. With no period (untimed), each series' latest.
-    closing = (
-        window_choice == "last_value"
-        and final_aggregation in {"last_value", "sum"}
-        and bool(period_fields)
-    )
-
-    if dialect.capabilities().get("qualify"):
-        direction = "ASC" if window_choice == "first_value" else "DESC"
-        snapshot_name = "snapshot_rows"
-        row_number = SqlWindow(
-            function=SqlCall("ROW_NUMBER", []),
-            partition_by=[field.expression for field in period_fields] + list(row_grain_exprs),
-            order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
-        )
-        qualify: list[Any] = [SqlBinary(row_number, "=", SqlLiteral(1))]
-        if closing:
-            last = SqlWindow(
-                function=SqlCall("MAX", [order_expr]),
-                partition_by=[field.expression for field in period_fields],
-            )
-            qualify.append(SqlBinary(SqlCast(order_expr, "DATE"), "=", SqlCast(last, "DATE")))
-        final_expr, kept_rows = chosen_value(snapshot_name)
-        return SqlSelect(
-            ctes=[
-                *list(ctes or []),
-                SqlCte(
-                    name=snapshot_name,
-                    query=SqlSelect(
-                        select=base_fields,
-                        from_table=from_table,
-                        joins=joins,
-                        where=where_clauses,
-                        qualify=[_and_conditions(qualify)],
-                    ),
-                ),
-            ],
-            select=[
-                *[
-                    SqlField(SqlIdentifier(parts=[snapshot_name, alias]), alias)
-                    for alias in key_aliases
-                ],
-                SqlField(final_expr, leaf_alias),
-            ],
-            from_table=SqlTableRef(name=snapshot_name),
-            where=kept_rows,
-            group_by=[SqlIdentifier(parts=[snapshot_name, alias]) for alias in key_aliases],
-        )
-
-    join_conditions = [
-        dialect.null_safe_eq(
-            SqlIdentifier(parts=["snapshot_base", alias]),
-            SqlIdentifier(parts=["snapshot_complete", alias]),
-        )
-        for alias in partition_aliases
-    ]
-    join_conditions.append(
-        SqlBinary(
-            SqlIdentifier(parts=["snapshot_base", "__snapshot_order"]),
-            "=",
-            SqlIdentifier(parts=["snapshot_complete", "__snapshot_order"]),
-        )
-    )
-    final_key_exprs: list[SqlExpr] = [
-        SqlIdentifier(parts=["snapshot_base", alias]) for alias in key_aliases
-    ]
-    final_expr, kept_rows = chosen_value("snapshot_base")
-    closing_ctes: list[SqlCte] = []
-    closing_joins: list[SqlJoin] = []
-    if closing:
-        periods = [SqlIdentifier(parts=["snapshot_base", f.alias]) for f in period_fields]
-        latest = SqlCall("MAX", [SqlIdentifier(parts=["snapshot_base", "__snapshot_order"])])
-        closing_ctes.append(
-            SqlCte(
-                name="snapshot_closing",
-                query=SqlSelect(
-                    select=[
-                        *(
-                            SqlField(ref, f.alias)
-                            for ref, f in zip(periods, period_fields, strict=True)
-                        ),
-                        SqlField(latest, "__closing"),
-                    ],
-                    from_table=SqlTableRef(name="snapshot_base"),
-                    group_by=list(periods),
-                ),
-            )
-        )
-        on_close = SqlBinary(
-            SqlCast(SqlIdentifier(parts=["snapshot_base", "__snapshot_order"]), "DATE"),
-            "=",
-            SqlCast(SqlIdentifier(parts=["snapshot_closing", "__closing"]), "DATE"),
-        )
-        same_period = [
-            dialect.null_safe_eq(ref, SqlIdentifier(parts=["snapshot_closing", f.alias]))
-            for ref, f in zip(periods, period_fields, strict=True)
-        ]
-        closing_joins.append(
-            SqlJoin(
-                join_type="INNER",
-                table=SqlTableRef(name="snapshot_closing"),
-                on=_and_conditions([*same_period, on_close]),
-            )
-        )
+        final_expr, kept_rows = SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], final_expr), []
     return SqlSelect(
-        ctes=[
-            *list(ctes or []),
-            SqlCte(
-                name="snapshot_base",
-                query=SqlSelect(
-                    select=base_fields,
-                    from_table=from_table,
-                    joins=joins,
-                    where=where_clauses,
-                ),
-            ),
-            SqlCte(
-                name="snapshot_complete",
-                query=SqlSelect(
-                    select=complete_fields,
-                    from_table=SqlTableRef(name="snapshot_base"),
-                    group_by=complete_group_by,
-                ),
-            ),
-            *closing_ctes,
-        ],
+        ctes=chosen,
         select=[
-            *[
-                SqlField(expr, alias)
-                for expr, alias in zip(final_key_exprs, key_aliases, strict=True)
-            ],
+            *[SqlField(SqlIdentifier(parts=[rows, alias]), alias) for alias in key_aliases],
             SqlField(final_expr, leaf_alias),
         ],
-        from_table=SqlTableRef(name="snapshot_base"),
-        joins=[
-            SqlJoin(
-                join_type="INNER",
-                table=SqlTableRef(name="snapshot_complete"),
-                on=_and_conditions(join_conditions),
-            ),
-            *closing_joins,
-        ],
+        from_table=SqlTableRef(name=rows),
         where=kept_rows,
-        group_by=final_key_exprs,
+        group_by=[SqlIdentifier(parts=[rows, alias]) for alias in key_aliases],
     )
 
 
@@ -1439,6 +1296,10 @@ def _measure_leaf_select(
             aggregation_params=dict(measure_plan.bound_measure.aggregation_params),
             warehouse=config.package.warehouse,
             ctes=predicate_ctes,
+            day=closing_day(
+                measure, temporal_roles[measure_plan.bound_measure.temporal_role], config
+            ),
+            measure_id=measure.id,
         )
 
     select_fields.append(

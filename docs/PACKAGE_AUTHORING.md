@@ -1381,7 +1381,9 @@ buckets, and a query's `start`/`end` bounds, are in that zone:
   MotherDuck, DuckLake and Postgres, each query runs with the session time zone
   set to its time role's zone (UTC for a query without one), and only for that
   query. So these columns bucket and filter in the role's zone whatever the
-  server's or machine's default. Leave `column_timezone:` off them. (MotherDuck
+  server's or machine's default. Never set `column_timezone:` on a zone-aware column:
+  the engine would read each instant as a wall-clock time in that zone and put it in
+  the wrong day, for every measure on the clock. (MotherDuck
   gets the setting on its client connection; this hasn't been checked against
   the service.)
 - Everything else zone-dependent in the query follows that zone too:
@@ -1515,13 +1517,47 @@ measure or under `defaults.measure`, and because a measure's own `accumulation:`
 `defaults.measure.accumulation` whole, under such a default it names its own `kind:`, and a
 stock its own `snapshot:` when the default sets one; anything else is refused at load.
 
-A `stock` measure answers with each series' last snapshot in each period (its first,
-with `snapshot: start_of_period`), then adds up the series. A series is the row key
-without the clock's column, so a snapshot table's entity key is the series columns plus
-the snapshot time: `key: [store_id, date_day]` for inventory per store per day, not a
-surrogate such as `inventory_row_id` that is unique per snapshot row, and the series
-columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
-check below but still sums). Give the snapshot time `class: as_of_time`.
+A `stock` measure reads one value per series in each period, then adds up the series. A
+series is the row key without the clock's column, so a snapshot table's entity key is the
+series columns plus the snapshot time: `key: [store_id, date_day]` for inventory per store
+per day, not a surrogate such as `inventory_row_id` that is unique per snapshot row, and the
+series columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes
+the check below but still sums). Give the snapshot time `class: as_of_time`.
+
+Which value a series gives depends on the clock the stock is read on:
+
+- On an `as_of_time` clock (a snapshot table), an end-of-period stock is read on each
+  period's **closing day**, the period's last day with a snapshot: the day bucket
+  `time.grain: day` puts the snapshot in. With no time window or grain, it is the last day
+  with a snapshot at all. A series with no snapshot that day is not counted: a series that
+  stops is never carried forward from an earlier day. A row whose clock is NULL is never a
+  snapshot, and rows of one series tied on its last clock value are all read, as the data
+  holds them. Its own column and a read inside an entity filter or a metric predicate all
+  choose this way. Two shapes are refused rather than risk another day:
+  - a share of such a balance filtered by entity sets (a ratio whose numerator adds
+    predicates to its denominator), with `REWRITE_NOT_SUPPORTED`, `details.reason:
+    entity_set_ratio_closing_day`: ask for the part and the whole as separate measures;
+  - on DuckDB, MotherDuck, DuckLake and Postgres, a read on a timestamp clock whose zone
+    isn't the one the call runs in (UTC without a `time` block), with `MIXED_TIME_ROLES`,
+    `details.reason: closing_day_zone`: give the call a window on the balance's own clock. A
+    DATE clock never depends on the session's zone and is never refused.
+
+  Every answer names the day each read used (`BALANCE_CLOSING_DAY`
+  under `assumptions`, with `measure`, `outputs` (the columns it counts for; empty for the
+  whole answer, `null` when the engine can't tell), `nested` (read inside an entity filter,
+  predicate or branch), `closing_day`,
+  the latest when there are several periods, and `periods`). When series seen earlier in a
+  period had no snapshot on its closing day, the answer also carries the warning
+  `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` with their count (`details`: the same fields, with
+  `closing_day` the latest such day, plus `checked`, `series`, `series_missing` and
+  `periods_missing`). The engine can't tell a series that stopped, which is right to leave out, from one that takes
+  its snapshots on other days (one store counted on the 5th, another on the 20th) or from a
+  table that records only changes; those two are undercounted. Snapshot every series on the
+  same days, or turn a table of changes into one row per series per day with a
+  `state_as_of` relation pipeline step.
+- On an `event_time` or `state_time` clock (a current-state table, one row per series), each
+  series' last row in the period is read, as keyed, whatever its day.
+- `snapshot: start_of_period` reads each series' first row in the period.
 
 `plan` reads such a balance on one day of that clock: the last complete day when a question
 names none ("What's our MRR?"), or the closing day of the period it names ("at the end of last
@@ -1570,7 +1606,8 @@ A stock that adds up its series (`last_value`, `first_value` or `sum`, and not
 but none passing the filters, and NULL in a period with no snapshot at all. Its other
 aggregations read NULL there, and grouped by an attribute, a group with no snapshot
 passing the filters is left out.
-An entity-set share using those snapshots also keeps an observed period and reads 0
+An entity-set share using those snapshots (of a start-of-period stock, or one on a clock
+that isn't as-of; an end-of-period balance's is refused, above) also keeps an observed period and reads 0
 when every chosen snapshot fails its attribute filters; a kept zero denominator still
 reads NULL. With `observation_scope: query`, unmatched periods have no data.
 

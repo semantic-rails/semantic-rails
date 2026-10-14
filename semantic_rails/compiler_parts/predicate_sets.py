@@ -58,10 +58,8 @@ from ..sql_ast import (
     SqlJoin,
     SqlLiteral,
     SqlOrder,
-    SqlOrderTerm,
     SqlSelect,
     SqlTableRef,
-    SqlWindow,
 )
 from . import nested
 from .bind import (
@@ -129,6 +127,7 @@ from .predicate import (
     _public_time_spec,
     _require_predicate_over_rows,
 )
+from .snapshot_reads import SnapshotRead, closing_day, select_snapshots
 from .time_series import _window_is_named
 
 
@@ -496,6 +495,19 @@ def _anchored_entity_set_plan(
     )
     if not safe_anchor_shape:
         return None
+    # A balance that closes on a day closes within each operand's own predicates, which one
+    # shared choice of snapshots can't do for both: the share is refused, never answered from
+    # another scope's closing day.
+    role = _temporal_role_index(config)[denominator_plan.bound_measure.temporal_role]
+    if closing_day(measure, role, config) is not None and (
+        measure.accumulation.snapshot != "start_of_period"
+    ):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"A share of the balance {measure.id} filtered by entity sets isn't supported yet: "
+            "ask for the part and the whole as separate measures.",
+            details={"reason": "entity_set_ratio_closing_day", "measure": measure.id},
+        )
 
     raw_time_expr, _, _, time_source_local, _ = _measure_time_components(
         plan, denominator_plan, config
@@ -702,7 +714,9 @@ def _snapshot_select_fields(
     plan: LogicalPlan,
     anchored: AnchoredEntitySetPlan,
     config: PackageConfig,
-) -> tuple[list[SqlField], list[Any], Any, Any, str, list[str], str]:
+) -> tuple[list[SqlField], list[str], Any, Any, str, str]:
+    """The fields each chosen snapshot carries, its series aliases, the clock, the query's
+    raw time, its time alias and the clock it is read on."""
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -723,13 +737,13 @@ def _snapshot_select_fields(
     row_grain_columns = _snapshot_series_columns(
         measure, measure_plan.bound_measure.temporal_role, config
     )
-    row_grain_exprs = [_column_ref(source_table, column) for column in row_grain_columns]
+    series = [f"__row_key_{_slug(column, fallback='item')}" for column in row_grain_columns]
 
     fields_by_alias: dict[str, Any] = {}
     if time_alias and time_expr is not None:
         fields_by_alias[time_alias] = time_expr
-    for column, expr in zip(row_grain_columns, row_grain_exprs, strict=True):
-        fields_by_alias[f"__row_key_{_slug(column, fallback='item')}"] = expr
+    for column, alias in zip(row_grain_columns, series, strict=True):
+        fields_by_alias[alias] = _column_ref(source_table, column)
     for column in _source_join_columns_for_paths(
         measure.entity, measure_plan.path_selections, config
     ):
@@ -756,23 +770,7 @@ def _snapshot_select_fields(
 
     fields_by_alias["__anchor_value"] = _config_expr_to_sql(measure.expr, measure, config)
     fields = [SqlField(expr, alias) for alias, expr in fields_by_alias.items()]
-    partition_exprs = []
-    if time_expr is not None:
-        partition_exprs.append(time_expr)
-    partition_exprs.extend(row_grain_exprs)
-    partition_aliases = [
-        *([time_alias] if time_alias else []),
-        *[f"__row_key_{_slug(column, fallback='item')}" for column in row_grain_columns],
-    ]
-    return (
-        fields,
-        partition_exprs,
-        order_expr,
-        raw_time_expr,
-        time_alias,
-        partition_aliases,
-        leaf_time_role,
-    )
+    return fields, series, order_expr, raw_time_expr, time_alias, leaf_time_role
 
 
 def _anchored_snapshot_ctes(
@@ -796,15 +794,9 @@ def _anchored_snapshot_ctes(
                 "Use the query's time grain instead.",
                 details={"reason": "entity_set_ratio_grouped_by_period", "dimension": dim_id},
             )
-    (
-        fields,
-        partition_exprs,
-        order_expr,
-        raw_time_expr,
-        time_alias,
-        partition_aliases,
-        leaf_time_role,
-    ) = _snapshot_select_fields(plan, anchored, config)
+    fields, series, order_expr, raw_time_expr, time_alias, leaf_time_role = _snapshot_select_fields(
+        plan, anchored, config
+    )
     filters = [
         *refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
         *_bound_filter_clauses(bound, config),
@@ -840,98 +832,23 @@ def _anchored_snapshot_ctes(
         window_choice = (
             "first_value" if measure.accumulation.snapshot == "start_of_period" else "last_value"
         )
-    direction = "ASC" if window_choice == "first_value" else "DESC"
-    dialect = _dialect(config)
-    if dialect.capabilities().get("qualify"):
-        row_number = SqlWindow(
-            function=SqlCall("ROW_NUMBER", []),
-            partition_by=partition_exprs,
-            order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
-        )
-        return (
-            [
-                SqlCte(
-                    name=snapshot_name,
-                    query=SqlSelect(
-                        select=fields,
-                        from_table=SqlTableRef(name=source_table),
-                        where=where_clauses,
-                        qualify=[SqlBinary(row_number, "=", SqlLiteral(1))],
-                    ),
-                )
-            ],
-            snapshot_name,
-            time_alias,
-            kept_rows,
-        )
-
-    base_name = f"{snapshot_name}_base"
-    complete_name = f"{snapshot_name}_complete"
-    order_function = "MIN" if window_choice == "first_value" else "MAX"
-    base_fields = [*fields, SqlField(order_expr, "__snapshot_order")]
-    complete_fields = [
-        *[SqlField(SqlIdentifier(parts=[base_name, alias]), alias) for alias in partition_aliases],
-        SqlField(
-            SqlCall(order_function, [SqlIdentifier(parts=[base_name, "__snapshot_order"])]),
-            "__snapshot_order",
-        ),
-    ]
-    complete_group_by: list[SqlExpr] = [
-        SqlIdentifier(parts=[base_name, alias]) for alias in partition_aliases
-    ]
-    join_conditions = [
-        dialect.null_safe_eq(
-            SqlIdentifier(parts=[base_name, alias]), SqlIdentifier(parts=[complete_name, alias])
-        )
-        for alias in partition_aliases
-    ]
-    join_conditions.append(
-        SqlBinary(
-            SqlIdentifier(parts=[base_name, "__snapshot_order"]),
-            "=",
-            SqlIdentifier(parts=[complete_name, "__snapshot_order"]),
-        )
+    # Chosen as a stock's own leaf chooses them (snapshot_reads): each series' last (or first)
+    # snapshot per period, which no entity scope changes. Never on a closing day: a share of
+    # a balance that closes on one is refused (_anchored_entity_set_plan).
+    read = SnapshotRead(
+        fields=fields,
+        periods=[time_alias] if time_alias in {item.alias for item in fields} else [],
+        series=series,
+        order=order_expr,
+        day=None,
+        first=window_choice == "first_value",
+        source=SqlTableRef(name=source_table),
+        where=where_clauses,
     )
-    return (
-        [
-            SqlCte(
-                name=base_name,
-                query=SqlSelect(
-                    select=base_fields,
-                    from_table=SqlTableRef(name=source_table),
-                    where=where_clauses,
-                ),
-            ),
-            SqlCte(
-                name=complete_name,
-                query=SqlSelect(
-                    select=complete_fields,
-                    from_table=SqlTableRef(name=base_name),
-                    group_by=complete_group_by,
-                ),
-            ),
-            SqlCte(
-                name=snapshot_name,
-                query=SqlSelect(
-                    select=[
-                        SqlField(SqlIdentifier(parts=[base_name, field.alias]), field.alias)
-                        for field in fields
-                    ],
-                    from_table=SqlTableRef(name=base_name),
-                    joins=[
-                        SqlJoin(
-                            join_type="INNER",
-                            table=SqlTableRef(name=complete_name),
-                            on=_and_conditions(join_conditions),
-                        )
-                    ],
-                ),
-            ),
-        ],
-        snapshot_name,
-        time_alias,
-        kept_rows,
+    ctes, snapshots = select_snapshots(
+        read, name=snapshot_name, prefix=snapshot_name, dialect=_dialect(config), measure_id=""
     )
+    return ctes, snapshots, time_alias, kept_rows
 
 
 def _dimension_expr_from_anchor(

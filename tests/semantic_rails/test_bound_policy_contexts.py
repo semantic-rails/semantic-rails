@@ -1198,7 +1198,8 @@ def test_object_cuts_fall_back_to_the_whole_query(config):
 @pytest.mark.parametrize("constraint", ["allowed_metric_filter_entities", "allow_metric_filters"])
 def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, constraint):
     # Predicates aligned to each query period have no call spelling: the engine's own form.
-    measure_id = "measure.jaffle.inventory_on_hand_eop"
+    # Start-of-period inventory: a share of the end-of-period balance is refused.
+    measure_id = "measure.jaffle.inventory_on_hand_sop"
     aggregate = {"kind": "scoped_aggregate", "measure": measure_id, "aggregation": "sum"}
     numerator = {
         **aggregate,
@@ -1414,7 +1415,7 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
     inventory = "entity.jaffle_store_inventory_snapshot"
     aggregate = {
         "kind": "scoped_aggregate",
-        "measure": "measure.jaffle.inventory_on_hand_eop",
+        "measure": "measure.jaffle.inventory_on_hand_sop",
         "aggregation": "sum",
     }
     numerator = {
@@ -1748,7 +1749,7 @@ def test_optimized_recipe_roles_keep_predicate_ownership(
     extra["input"]["temporal_role"] = prepared
     aggregate = {
         "kind": "scoped_aggregate",
-        "measure": "measure.jaffle.inventory_on_hand_eop",
+        "measure": "measure.jaffle.inventory_on_hand_sop",
         "aggregation": "sum",
     }
     recipes = [

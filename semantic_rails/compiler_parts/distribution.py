@@ -49,6 +49,7 @@ from .bind import (
 )
 from .dependencies import (
     binding_cut,
+    owning,
     project_is_cut,
     recipe_objects,
 )
@@ -79,6 +80,7 @@ from .post_aggregation import (
     _namespace_sql_select,
 )
 from .predicate_sets import _requested_order
+from .snapshot_reads import record_output_reads
 from .time_series import _calendar_fill_binding, _series_base_ctes, _window_is_named
 
 
@@ -275,9 +277,12 @@ def _lower_agent_dag_to_sql(
     for index, (alias, expr_payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
         expr = _parse_public_expr(expr_payload)
         branch_name = f"agent_branch_{index}"
-        branch_query = _single_expression_branch_select(
-            expr, alias=alias, plan=branch_plan, config=config
-        )
+        # A read inside the branch answers for this output only.
+        with owning(alias):
+            branch_query = _single_expression_branch_select(
+                expr, alias=alias, plan=branch_plan, config=config
+            )
+        record_output_reads(alias, {alias})
         branch_ctes.append(
             SqlCte(name=branch_name, query=_namespace_sql_select(branch_query, f"{branch_name}__"))
         )

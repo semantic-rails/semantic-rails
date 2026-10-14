@@ -571,10 +571,10 @@ period wholly after the edge is `NO_DATA_YET`'s to explain.
 
 ### Balances
 
-A balance (a measure declared `snapshot: end_of_period`, such as inventory on hand) reads each
-period's **closing day**: the period's last day with a snapshot. A series with no snapshot on
-that day is not carried forward from an earlier one. A month of inventory is its last snapshot
-in that month; "inventory right now" is the last closing day:
+A balance (a measure declared `snapshot: end_of_period`, such as inventory on hand) on an
+`as_of_time` clock reads each period's **closing day**: the period's last day with a snapshot.
+A series with no snapshot on that day is not carried forward from an earlier one. A month of
+inventory is its last snapshot in that month; "inventory right now" is the last closing day:
 
 ```json
 {"select": ["measure.jaffle.inventory_on_hand_eop"],
@@ -599,8 +599,39 @@ in that month; "inventory right now" is the last closing day:
 ```
 
 Without a grain, a window over a balance reads the window's closing day (`860` for March and
-April together), never the sum of its days. A period after the last snapshot reads `NULL` with
-`NO_DATA_YET`, as any measure's does.
+April together), never the sum of its days; with no `time` at all, it reads the last day with
+a snapshot. A period after the last snapshot reads `NULL` with `NO_DATA_YET`, as any measure's
+does.
+
+The closing day is the day bucket `time.grain: day` puts a snapshot in. A row whose clock is
+NULL is never a snapshot, and rows of a series tied on its last clock value are all read. A
+balance read inside an entity filter or a metric predicate reads the same way. Two shapes are
+refused rather than risk another day: a share of such a balance filtered by entity sets
+(`REWRITE_NOT_SUPPORTED`, `details.reason: entity_set_ratio_closing_day`; ask for the part and
+the whole as separate measures), and, on DuckDB and Postgres, a balance on a timestamp clock
+whose zone isn't the one the call runs in, UTC without a `time` block (`MIXED_TIME_ROLES`,
+`details.reason: closing_day_zone`; give the call a window on the balance's own clock). A
+DATE clock is never refused.
+
+Every such answer names the day each read used in `assumptions`: `BALANCE_CLOSING_DAY` with
+`measure`, `outputs` (the columns it counts for; empty for the whole answer, as an entity
+filter's read; `null` when the engine can't tell, and then the disclosure is dropped beside
+any withheld column), `nested`, `closing_day` (the latest, when there are several periods) and
+`periods`. When series seen earlier in a period had no snapshot on its closing day, it also
+carries the warning `BALANCE_SERIES_MISSING_ON_CLOSING_DAY`: "1 of 2 series of ... had a
+snapshot earlier in the period but none on its closing day, 2020-12-20, so they are not
+counted", with `details` `{measure, outputs, nested, closing_day, periods, checked, series,
+series_missing, periods_missing}`. Those series may have stopped, which is right to leave
+out, or take their snapshots on other days, or the table may record only changes; then the
+balance is undercounted. Group by the clock's day to see each day's snapshots. A caller
+granted a metric but not the measure behind it gets both with the day and counts, named by
+the granted metric that reads it instead of the measure; a read the engine can't tie to a
+granted column of the call says nothing to such a caller.
+
+A stock on an event- or state-time clock is a current-state table (a customer's lifetime
+spend, on the customers table) and is read as keyed: each series' last row in the period,
+whatever its day. Lifetime spend for the first quarter of 2017 on the clock
+`temporal_role.jaffle_customer_first_order_at` adds up all 341 customers who first ordered then.
 
 ## `order_by`
 

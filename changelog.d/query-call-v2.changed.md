@@ -56,10 +56,20 @@
     excluding web" now includes the signups with no channel, and a `not` through a lookup keeps
     the rows the lookup can't match (a "not operating" count through a lookup: 1 → 10). A dimension may declare
     `unknown_values` that read as unknown.
-  - A balance reads each period's closing day (its last day with a snapshot) and no longer
-    carries an earlier snapshot forward (a weekly stock 1,122 → 1,022); a window total over a
-    balance reads the window's closing day instead of adding days (the bundled `jaffle_shop`
-    inventory for March and April 2017: 1,945 → 860).
+  - A balance on an `as_of_time` clock reads each period's closing day (its last day with a
+    snapshot; with no `time`, the last day with a snapshot at all) and no longer carries an
+    earlier snapshot forward (a weekly stock 1,122 → 1,022); a window total over a balance
+    reads the window's closing day instead of adding days (the bundled `jaffle_shop` inventory
+    for March and April 2017: 1,945 → 860). The answer names the day (`BALANCE_CLOSING_DAY` in
+    `assumptions`) and warns with `BALANCE_SERIES_MISSING_ON_CLOSING_DAY`, with their count,
+    when series seen earlier in a period had no snapshot that day. The closing day is the day
+    bucket `time.grain: day` puts a snapshot in; a row with no clock is never a snapshot; rows
+    tied on a series' last clock value are all read; a balance read inside an entity filter
+    or metric predicate reads and discloses the same way. A share of such a balance filtered
+    by entity sets is refused (`REWRITE_NOT_SUPPORTED`), and so, on DuckDB and Postgres, is
+    a balance on a timestamp clock in another zone than the call runs in
+    (`MIXED_TIME_ROLES`). A stock on an event- or state-time clock is still read as keyed,
+    each series' last row in the period.
   - An entity filter's unknown aggregate fails every threshold, `not` included (before, `not 0`
     kept entities whose aggregate was unknown). Under `observation_scope: "dataset"` a period
     in which the filter keeps no entity reads 0 inside the data (before `NULL`); under
