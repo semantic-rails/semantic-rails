@@ -254,3 +254,33 @@ def test_plan_never_drafts_contains_for_a_prefix_or_suffix(runtime, intent):
     drafted = json.dumps(payload, default=str)
     assert '"op": "contains"' not in drafted
     assert payload["status"] != "ok"
+
+
+@pytest.mark.parametrize(
+    ("field", "data_type"),
+    [
+        ("dimension.jaffle_order_customer_order_number", "integer"),
+        ("dimension.jaffle_store_tax_rate", "number"),
+        ("dimension.jaffle_order_is_large_order", "boolean"),
+        ("dimension.jaffle_order_ordered_at", "timestamp"),
+    ],
+)
+def test_a_text_word_on_a_dimension_that_is_not_text_is_refused(runtime, field, data_type):
+    error = _error(
+        runtime, {"select": [ORDERS], "where": [{"field": field, "op": "contains", "value": "1"}]}
+    )
+    assert error["details"]["path"] == "where[0].op"
+    assert data_type in error["message"]
+
+
+@pytest.mark.parametrize("data_type", ["id", "integer", "number", "date", "timestamp", "boolean"])
+def test_each_type_that_is_not_text_names_the_words_that_compare_it(data_type):
+    from semantic_rails.errors import SemanticLayerError
+
+    with pytest.raises(SemanticLayerError) as caught:
+        operators.check_text_operand("starts_with", data_type, "where[0].op", "dimension.x")
+    hint = caught.value.details["recovery_hints"][0]["message"]
+    assert not any(word in hint for word in operators.TEXT_WORDS)
+    operators.check_text_operand("is", data_type, "where[0].op", "dimension.x")
+    operators.check_text_operand("starts_with", "string", "where[0].op", "dimension.x")
+    operators.check_text_operand("starts_with", "", "where[0].op", "dimension.x")

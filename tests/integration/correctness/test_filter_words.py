@@ -3,8 +3,14 @@ answer says about the unknown rows a `not` kept. Each answer is checked against 
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
+from semantic_rails.errors import SemanticLayerError
+
+from .conftest import SHOP
+from .conftest import _runtime as runtime_for
 from .test_correctness import BACKENDS, _backend
 
 CHANNEL = "dimension.shop_customer_channel"
@@ -289,3 +295,218 @@ def test_a_comparison_takes_a_text_word_with_its_meaning(request, backend_name, 
     expression = {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
     result = runtime.query({"select": [{"expression": expression, "as": "n"}]})
     assert [row["n"] for row in result["rows"]] == [expected]
+
+
+# --- A text word reads a dimension, in every place it is written ---------------------------
+
+CHANNEL_COLUMN = {"kind": "column", "column": "channel", "entity": "entity.shop_customer"}
+
+
+def _count_if(op, text, column=CHANNEL_COLUMN):
+    condition = {
+        "kind": "comparison",
+        "op": op,
+        "left": column,
+        "right": {"kind": "literal", "value": text},
+    }
+    expression = {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
+    return {"select": [{"expression": expression, "as": "n"}]}
+
+
+@pytest.fixture(scope="module")
+def unknown_channel(tmp_path_factory):
+    """The shop with customer 105's channel recorded as "N/A", which the dimension declares as
+    unknown: every reader of the channel must read it as NULL."""
+    package = tmp_path_factory.mktemp("unknown_channel") / "shop"
+    shutil.copytree(SHOP, package)
+    seed = package / "data" / "seed.sql"
+    text = seed.read_text(encoding="utf-8")
+    old = "(105, TIMESTAMP '2024-05-06 09:00:00', NULL)"
+    assert text.count(old) == 1
+    seed.write_text(text.replace(old, "(105, TIMESTAMP '2024-05-06 09:00:00', 'N/A')"))
+    signups = package / "models" / "signups.yml"
+    model = signups.read_text(encoding="utf-8")
+    old = "domain: [web, store]}"
+    assert model.count(old) == 1
+    signups.write_text(model.replace(old, "domain: [web, store], unknown_values: [N/A]}"))
+    runtime = runtime_for(package)
+    yield runtime
+    runtime.close()
+
+
+@pytest.mark.parametrize(("op", "expected"), [("not_starts_with", 7), ("starts_with", 0)])
+def test_a_comparison_text_word_reads_the_dimensions_unknown_values(unknown_channel, op, expected):
+    # 105's "N/A" is unknown: not_starts_with "N" keeps it (with every other signup), and
+    # starts_with "N" never matches it, exactly as the filter on the dimension reads it.
+    by_filter = unknown_channel.query(
+        {"select": [SIGNUPS], "where": [{"field": CHANNEL, "op": op, "value": "N"}]}
+    )
+    by_comparison = unknown_channel.query(_count_if(op, "N"))
+    assert [row["signups"] for row in by_filter["rows"]] == [expected]
+    assert [row["n"] for row in by_comparison["rows"]] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("column", "says"),
+    [
+        ({"kind": "column", "column": "amount", "entity": "entity.shop_order"}, "no dimension"),
+        (
+            {"kind": "column", "column": "source_day", "entity": "entity.shop_clock_edge"},
+            "several dimensions",
+        ),
+    ],
+)
+def test_a_comparison_text_word_on_a_column_no_one_dimension_declares_is_refused(
+    duckdb_backend, column, says
+):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    [error] = runtime.validate(_count_if("starts_with", "1", column))["errors"][:1]
+    assert error["details"]["path"] == "select[0].expression.condition.left"
+    assert says in error["message"]
+
+
+ORDER_COUNT = "measure.shop.order_count"
+NOT_TEXT = [
+    (ORDER_COUNT, "dimension.shop_order_customer_id", "id"),
+    (ORDER_COUNT, "dimension.shop_order_ordered_at", "timestamp"),
+    ("measure.shop.seats", "dimension.shop_account_day_snapshot_day", "date"),
+]
+
+
+@pytest.mark.parametrize(("measure", "field", "data_type"), NOT_TEXT)
+@pytest.mark.parametrize("op", ["starts_with", "not_contains"])
+def test_a_text_word_on_a_value_that_is_not_text_is_refused_at_its_path(
+    duckdb_backend, measure, field, data_type, op
+):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    condition = {"field": field, "op": op, "value": "1"}
+    expression = {"kind": "aggregate", "measure": measure, "filter": {"all": [condition]}}
+    calls = {
+        "where[0].op": {"select": [measure], "where": [condition]},
+        "select[0].expression.filter.all[0].op": {
+            "select": [{"expression": expression, "as": "n"}]
+        },
+    }
+    for path, call in calls.items():
+        report = runtime.validate(call)
+        assert not report["ok"], (path, call)
+        [error] = report["errors"][:1]
+        assert error["details"]["path"] == path
+        assert data_type in error["message"]
+        assert "starts_with" not in error["recovery_hints"][0]["message"]
+
+
+def test_a_comparison_text_word_on_a_timestamp_column_is_refused_at_its_path(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    column = {"kind": "column", "column": "ordered_at", "entity": "entity.shop_order"}
+    [error] = runtime.validate(_count_if("starts_with", "2024", column))["errors"][:1]
+    assert error["details"]["path"] == "select[0].expression.condition.left"
+    assert "timestamp" in error["message"]
+
+
+def _per_customer(op, value):
+    over = {
+        "kind": "entity_value",
+        "entity": "entity.shop_customer",
+        "input": REVENUE,
+        "where": [{"kind": "value_filter", "op": op, "value": value}],
+    }
+    expression = {"kind": "distribution", "function": "percentile", "p": 0.5, "over": over}
+    return {"select": [{"expression": expression, "as": "p50"}]}
+
+
+@pytest.mark.parametrize("op", ["starts_with", "contains", "LIKE", "not ilike"])
+def test_a_per_entity_value_filter_takes_only_words_that_compare_a_number(duckdb_backend, op):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    [error] = runtime.validate(_per_customer(op, "1%"))["errors"][:1]
+    assert error["details"]["path"] == "select[0].expression.over.where[0].op"
+    hint = error["recovery_hints"][0]["message"]
+    assert "gt" in hint
+    for word in ("starts_with", "ends_with", "contains"):
+        assert word not in hint
+    assert runtime.validate(_per_customer("gt", 1))["ok"]
+
+
+AGGREGATE_SURFACES = {
+    "entity-filter-having": (
+        lambda op: {
+            "select": [ORDER_COUNT],
+            "where": [
+                {
+                    "entity": "entity.shop_customer",
+                    "having": [{"field": ORDER_COUNT, "op": op, "value": "1%"}],
+                    "over": "all_time",
+                }
+            ],
+        },
+        "where[0].having[0].op",
+    ),
+    "scoped-predicate": (
+        lambda op: {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "scoped_aggregate",
+                        "measure": ORDER_COUNT,
+                        "predicates": [
+                            {
+                                "entity": "entity.shop_customer",
+                                "input": ORDER_COUNT,
+                                "op": op,
+                                "value": "1%",
+                                "over": "all_time",
+                            }
+                        ],
+                    },
+                    "as": "n",
+                }
+            ]
+        },
+        "select[0].expression.predicates[0].op",
+    ),
+    "having": (
+        lambda op: {
+            "select": [{"expression": ORDER_COUNT, "as": "orders"}],
+            "group_by": [STORE],
+            "having": [{"field": "orders", "op": op, "value": "1%"}],
+        },
+        "having[0].op",
+    ),
+}
+
+
+@pytest.mark.parametrize("surface", AGGREGATE_SURFACES)
+@pytest.mark.parametrize("op", ["LIKE", "ilike", "starts_with"])
+def test_an_aggregate_comparison_hints_the_words_that_compare_a_number(duckdb_backend, surface, op):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    build, path = AGGREGATE_SURFACES[surface]
+    [error] = runtime.validate(build(op))["errors"][:1]
+    assert error["details"]["path"] == path
+    hint = error["recovery_hints"][0]["message"]
+    assert "gt" in hint
+    for word in ("starts_with", "ends_with", "contains"):
+        assert word not in hint
+
+
+def test_a_package_authored_like_is_refused_with_the_word_for_its_pattern(tmp_path):
+    """A measure's own comparison takes the same LIKE rule as a call's: a case-sensitive
+    'A%' would miss store "a"."""
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    orders = package / "models" / "orders.yml"
+    model = orders.read_text(encoding="utf-8")
+    old = (
+        "op: '=',\n        left: {kind: column, column: store_id}, right: {kind: literal, "
+        "value: a}},\n        then: {kind: column, column: amount}"
+    )
+    assert model.count(old) == 1
+    orders.write_text(
+        model.replace(old, old.replace("op: '='", "op: LIKE").replace("a}}", "'A%'}}"))
+    )
+    with pytest.raises(SemanticLayerError) as caught:
+        runtime_for(package).validate({"select": ["measure.shop.store_a_amount"]})
+    hint = caught.value.details["recovery_hints"][0]["message"]
+    assert (
+        hint
+        == 'Write {"op": "starts_with", "right": {"kind": "literal", "value": "A"}}, which ignores case.'
+    )

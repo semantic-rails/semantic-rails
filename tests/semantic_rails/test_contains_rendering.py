@@ -16,14 +16,16 @@ from semantic_rails.sql_ast import (
 )
 
 TEXT = "50%_Off\\x'y"
-# Standard-conforming literals keep backslashes as they are and need ESCAPE; backslash-escaping
-# literals double them, and BigQuery and Spark also escape the quote with one (they read ''
-# as two literals); BigQuery and ClickHouse escape LIKE with a backslash by default.
-STANDARD = r"(LOWER(t.name) LIKE '%50\%\_off\\x''y%' ESCAPE '\')"
-BACKSLASH = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x''y%' ESCAPE '\\')"
-BACKSLASH_QUOTE = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x\'y%' ESCAPE '\\')"
-BACKSLASH_DEFAULT_ESCAPE = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x''y%')"
-BACKSLASH_QUOTE_DEFAULT_ESCAPE = r"(LOWER(t.name) LIKE '%50\\%\\_off\\\\x\'y%')"
+# Both sides fold through the dialect's own lowercase function (lowerUTF8 on ClickHouse, whose
+# LOWER is ASCII only), so a column and its own text always fold alike. Standard-conforming
+# literals keep backslashes as they are and need ESCAPE; backslash-escaping literals double
+# them, and BigQuery and Spark also escape the quote with one (they read '' as two literals);
+# BigQuery and ClickHouse escape LIKE with a backslash by default.
+STANDARD = r"(LOWER(t.name) LIKE LOWER('%50\%\_Off\\x''y%') ESCAPE '\')"
+BACKSLASH = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x''y%') ESCAPE '\\')"
+BACKSLASH_QUOTE = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x\'y%') ESCAPE '\\')"
+BACKSLASH_QUOTE_DEFAULT_ESCAPE = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x\'y%'))"
+UTF8_DEFAULT_ESCAPE = r"(lowerUTF8(t.name) LIKE lowerUTF8('%50\\%\\_Off\\\\x''y%'))"
 EXPECTED = {
     "duckdb": STANDARD,
     "motherduck": STANDARD,
@@ -33,7 +35,7 @@ EXPECTED = {
     "snowflake": BACKSLASH,
     "databricks": BACKSLASH_QUOTE,
     "bigquery": BACKSLASH_QUOTE_DEFAULT_ESCAPE,
-    "clickhouse": BACKSLASH_DEFAULT_ESCAPE,
+    "clickhouse": UTF8_DEFAULT_ESCAPE,
 }
 
 
@@ -63,7 +65,7 @@ def test_contains_renders_an_escaped_case_folded_pattern_that_matches_literally(
 # %, ends_with the trailing one, and each not_ form is NOT LIKE that keeps unknown rows, as `not`.
 SHAPES = {
     "contains": lambda sql: sql,
-    "starts_with": lambda sql: sql.replace("LIKE '%", "LIKE '"),
+    "starts_with": lambda sql: sql.replace("('%", "('", 1),
     "ends_with": lambda sql: sql.replace("y%'", "y'"),
 }
 
@@ -119,3 +121,45 @@ def test_each_text_word_matches_literally_ignoring_case_and_its_not_form_keeps_u
         sql = render_select_for_profile(select, dialect=dialect_for_warehouse("duckdb"))
         found = sorted(row[0] for row in connection.execute(sql).fetchall())
     assert found == expected
+
+
+# Each row folds alike on both sides: it meets every word with its own text, and the dotted
+# capital I, accented capitals and sharp s fold the same way in the column and in the text.
+UNICODE = ["İSTANBUL", "istanbul", "Émile", "ÉMILE", "émile", "Straße", "STRASSE"]
+
+
+def _matching(connection, word: str, text: str) -> list[str]:
+    select = SqlSelect(
+        select=[SqlField(SqlIdentifier(["t", "name"]), "name")],
+        from_table=SqlTableRef("t"),
+        where=[build_filter_condition(SqlIdentifier(["t", "name"]), word, text)],
+    )
+    sql = render_select_for_profile(select, dialect=dialect_for_warehouse("duckdb"))
+    return sorted(row[0] for row in connection.execute(sql).fetchall())
+
+
+@pytest.fixture
+def unicode_names():
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE t (name VARCHAR)")
+        connection.executemany("INSERT INTO t VALUES (?)", [(name,) for name in UNICODE])
+        yield connection
+
+
+def test_every_row_meets_each_text_word_with_its_own_text(unicode_names):
+    for name in UNICODE:
+        for word in SHAPES:
+            assert name in _matching(unicode_names, word, name), (word, name)
+            assert name not in _matching(unicode_names, f"not_{word}", name), (word, name)
+
+
+def test_unicode_capitals_fold_alike_in_the_column_and_the_text(unicode_names):
+    assert "İSTANBUL" in _matching(unicode_names, "starts_with", "İ")
+    assert "İSTANBUL" not in _matching(unicode_names, "not_starts_with", "İ")
+    accented = ["ÉMILE", "Émile", "émile"]
+    assert _matching(unicode_names, "starts_with", "é") == accented
+    assert _matching(unicode_names, "starts_with", "É") == accented
+    assert _matching(unicode_names, "ends_with", "MILE") == accented
+    # Folding never expands: sharp s matches only itself, never "ss".
+    assert _matching(unicode_names, "contains", "ß") == ["Straße"]
+    assert _matching(unicode_names, "contains", "SS") == ["STRASSE"]
