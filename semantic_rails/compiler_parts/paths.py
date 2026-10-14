@@ -148,15 +148,31 @@ def dimension_filter(
     return build_filter_condition(expr, op, value, path=path, temporal=temporal)
 
 
+def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
+    """The dimensions of ``entity`` over its physical ``column``, named as the warehouse names
+    columns: an exact name first; failing that, a name the SQL leaves unquoted (ASCII letters,
+    digits and underscores, not reserved) matches another unquoted name in any ASCII case, as
+    every warehouse but ClickHouse reads them. Never a Unicode casefold: "straße" is quoted, so
+    it is only itself."""
+    from ..renderer import _quote_ident
+
+    dims = [dim for dim in _dimension_index(config).values() if dim.entity == entity]
+    exact = [dim for dim in dims if dim.column == column]
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if exact or _quote_ident(column) != column or dialect.identifiers_case_sensitive:
+        return exact
+    return [
+        dim
+        for dim in dims
+        if _quote_ident(dim.column) == dim.column and dim.column.lower() == column.lower()
+    ]
+
+
 def text_dimension(entity: str, column: str, word: str, config: PackageConfig, path: str) -> Any:
     """The one dimension over ``entity``'s ``column`` that a text word compares, its type text.
     The word reads it as a filter on that dimension does; a column that no dimension, or
     several, declares is refused rather than guessed."""
-    dims = [
-        dim
-        for dim in _dimension_index(config).values()
-        if dim.entity == entity and str(dim.column or "").casefold() == column.casefold()
-    ]
+    dims = dimensions_over_column(entity, column, config)
     if len(dims) != 1:
         declared = "several dimensions" if dims else "no dimension"
         raise SemanticLayerError(

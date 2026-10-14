@@ -218,10 +218,18 @@ condition on a date dimension is legal; for a time window, use `time`.
   (`NOT LIKE` takes the `not_` form), each ignoring case. A pattern with `_` or an inner `%`
   has no word; the hint is `is` (or `not`) with the exact values, which `valid-values` lists.
   A package's own `comparison` (a measure's `expr`) refuses `LIKE` the same way.
-- A text word ignores case by folding both the value and the text with the warehouse's own
-  lowercase function (`lowerUTF8` on ClickHouse, whose `LOWER` folds ASCII only), so a value
-  always meets a word with its own text, accented and other non-ASCII capitals included.
-  Folding never expands a letter (`ß` is not `ss`); Postgres folds by the database's collation.
+- A text word ignores case by lowering the value and the text with the same Unicode-aware
+  function on every warehouse: Postgres lowers both under its ICU root collation
+  (`und-x-icu`, which a Postgres built with ICU has), and ClickHouse reads the value as plain
+  text first, so a FixedString or Enum column works. `É` matches `é`; lowering never expands a
+  letter, so `ss` never matches `ß`.
+- Text holding a letter whose lower case depends on the next letter, or changes length, is
+  refused at its path, with the hint to match exact values with `is` (`valid-values` lists
+  them): Greek sigma (`Σ σ ς`), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining
+  dot above), the Kelvin, Ångström and Ohm signs, and a few rare Latin letters with a stroke,
+  hook or tail. Warehouses lower these differently, so no text word could give one answer. A
+  stored value holding one of them is lowered as its warehouse lowers it: text that lines up
+  with that letter (`is` against a stored `İs`) can match on one warehouse and not another.
 - A text word reads text: on an id, number, date, timestamp or boolean dimension it is refused
   at its path with the words that compare one (`is` or `not` with the exact ids, the ranges for
   a number, `time` or the ranges for a date). A result (`having`), an entity filter's `having`
@@ -787,9 +795,11 @@ inline condition passes the caller's allowed filters, as a `where` condition doe
 expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NULL compares
 unknown. A `comparison` also takes a text word as its `op`, with a text literal `right`
 (`{"kind": "comparison", "op": "starts_with", "left": <column>, "right": {"kind": "literal",
-"value": "K"}}`). Its `left` is a column that exactly one dimension declares, and the word reads
-it as a filter on that dimension does: its `unknown_values` are unknown, and a `not_` form keeps
-unknown rows. A column that no dimension, or several, declares is refused.
+"value": "K"}}`). Its `left` is a column that exactly one dimension declares, named as the
+warehouse names columns (the exact name first, then an unquoted name in any ASCII case on every
+warehouse but ClickHouse; never a Unicode casefold, so `straße` is not `strasse`). The word
+reads it as a filter on that dimension does: its `unknown_values` are unknown, and a `not_` form
+keeps unknown rows. A column that no dimension, or several, declares is refused.
 `LIKE` is refused there as in `where`. An `arithmetic` op other than `add`, `subtract`,
 `multiply` and `divide` (or `+`, `-`, `*`, `/`) is refused at its path with the closest op.
 

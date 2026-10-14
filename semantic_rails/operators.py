@@ -138,7 +138,7 @@ def like_hint(spelling: str, pattern: Any, *, operand: str = "value") -> str:
     negated = spelling.startswith("not ")
     for word, shape in _LIKE_SHAPES:
         found = re.fullmatch(shape, pattern) if isinstance(pattern, str) else None
-        if found:
+        if found and not any(letter in UNSTABLE_CASE_LETTERS for letter in found.group(1)):
             shown = json.dumps(found.group(1))
             if operand == "right":
                 shown = f'{{"kind": "literal", "value": {shown}}}'
@@ -163,7 +163,7 @@ def like_hint(spelling: str, pattern: Any, *, operand: str = "value") -> str:
 
 
 # Each data type a text word cannot read (it would fold a number, a date or a flag), and the
-# words that compare it. A text or unclassified type is read.
+# words that compare it. A text word reads only text ("string"), or a type nothing classified.
 _NOT_TEXT = {
     "id": "is or not with the exact values",
     "integer": "is, not, gt, gte, lt or lte",
@@ -174,10 +174,21 @@ _NOT_TEXT = {
 }
 
 
+# A dimension kind's spellings, as the data type it reads (the loader maps kinds the same way).
+_KIND_TYPES = {
+    "categorical": "string",
+    "continuous": "number",
+    "percent": "number",
+    "currency": "number",
+}
+
+
 def check_text_operand(word: str, data_type: Any, path: str, subject: str) -> None:
     """Refuse a text word at ``path`` (an op's) when ``subject`` is not text."""
-    use = _NOT_TEXT.get(str(data_type or "").lower())
-    if word in TEXT_WORDS and use:
+    canonical = str(data_type or "").strip().lower()
+    canonical = _KIND_TYPES.get(canonical, canonical)
+    use = _NOT_TEXT.get(canonical, "is or not with the exact values")
+    if word in TEXT_WORDS and canonical not in {"string", ""}:
         raise SemanticLayerError(
             "INVALID_QUERY",
             f"{path}: '{word}' matches text, and {subject} is {data_type}",
@@ -336,7 +347,37 @@ def check_value(word: str, value: Any, *, path: str = "where.value") -> Any:
         )
     if shape == "text" and not isinstance(value, str):
         raise _invalid_value(path, f"'{word}' takes text", "Pass the text to look for.")
+    if shape == "text":
+        check_text_letters(value, path)
     return value
+
+
+# Letters a text word refuses: Greek sigma, whose lowercase depends on the next letter (final ς),
+# and letters whose lowercase, or whose other case's, changes length in code points or UTF-8
+# bytes, so warehouses fold them apart (ClickHouse leaves a length-changing letter as it is):
+# sharp s, dotted and dotless i and the dot above, the Kelvin, Angstrom and Ohm signs, and the
+# rare Latin letters with a stroke, hook or tail whose capitals are three bytes and small two.
+# Derived from Unicode 16's case mappings (SpecialCasing and UnicodeData); a letter whose only
+# expansion is to upper case (fi ligature) folds alike everywhere, so it stays readable.
+UNSTABLE_CASE_LETTERS = (
+    "\u03a3\u03c3\u03c2\u00df\u1e9e\u0130\u0131\u0307\u212a\u212b\u2126"
+    "\u023a\u2c65\u023e\u2c66\u2c62\u026b\u2c64\u027d\u2c6d\u0251\u2c6e\u0271"
+    "\u2c6f\u0250\u2c70\u0252\u2c7e\u023f\u2c7f\u0240\ua78d\u0265\ua7aa\u0266"
+    "\ua7ab\u025c\ua7ac\u0261\ua7ad\u026c\ua7ae\u026a\ua7b0\u029e\ua7b1\u0287"
+    "\ua7b2\u029d\ua7c5\u0282\ua7cb\u0264\ua7dc\u019b"
+)
+
+
+def check_text_letters(text: str, path: str) -> None:
+    """Refuse search text at ``path`` that holds a letter whose lowercase is unstable."""
+    found = sorted({letter for letter in text if letter in UNSTABLE_CASE_LETTERS})
+    if found:
+        raise _invalid_value(
+            path,
+            f"{' '.join(found)} folds to lower case differently on different warehouses (by the "
+            "next letter, or into a letter of another length), so no text word reads it",
+            'Match the exact values with {"op": "is", "value": [...]}, which valid-values lists.',
+        )
 
 
 def normalize_condition(

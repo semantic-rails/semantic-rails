@@ -6,8 +6,10 @@
   `aggregate_if`, `comparison` and a package's own measure expressions included, with the word
   for the pattern: `'X%'` is `starts_with`, `'%X'` is `ends_with` and `'%X%'` is `contains`. A
   prefix or suffix pattern is no longer hinted as `contains`, which matched more rows.
-- The text words, `contains` included, fold the value and the text with the same warehouse
-  function (`lowerUTF8` on ClickHouse), so non-ASCII capitals such as `İ` and `É` match on
-  both sides. A text word on an id, number, date, timestamp or boolean, or on a result or
-  per-entity value, is refused at its path with the words that compare it, instead of failing
-  in the warehouse.
+- The text words, `contains` included, lower the value and the text with the same Unicode-aware
+  warehouse function (under the ICU root collation on Postgres; `lowerUTF8` over the value read
+  as text on ClickHouse), so `É` matches `é` everywhere. Text holding a letter whose lower case
+  depends on the next letter or changes length (Greek sigma, `ß`, `İ`, `ı` and a few others)
+  is refused with the exact-values hint. A text word on an id, number, date, timestamp or
+  boolean (a numeric kind in any spelling), or on a result or per-entity value, is refused at
+  its path with the words that compare it, instead of failing in the warehouse.

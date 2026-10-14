@@ -284,3 +284,47 @@ def test_each_type_that_is_not_text_names_the_words_that_compare_it(data_type):
     operators.check_text_operand("is", data_type, "where[0].op", "dimension.x")
     operators.check_text_operand("starts_with", "string", "where[0].op", "dimension.x")
     operators.check_text_operand("starts_with", "", "where[0].op", "dimension.x")
+
+
+def test_the_refused_letters_are_every_letter_whose_lowercase_changes_length():
+    """Each letter whose lowercase is another number of code points or UTF-8 bytes, and the
+    lowercase of each such capital, is refused, with Greek sigma, sharp s and dotless i; the
+    common letters k, a with ring and omega stay readable (their odd capitals are refused)."""
+    import sys
+
+    unstable = set()
+    for point in range(sys.maxunicode + 1):
+        letter = chr(point)
+        lower = letter.lower()
+        if lower != letter and (len(lower) != 1 or len(lower.encode()) != len(letter.encode())):
+            unstable.add(letter)
+            if len(lower) == 1 and lower not in "kåω":
+                unstable.add(lower)
+    expected = unstable | set("Σσςßı̇")
+    refused = set(operators.UNSTABLE_CASE_LETTERS)
+    assert expected <= refused
+    # The list is Unicode 16's; an older Python's tables have no case pair for the rest.
+    assert all(letter.lower() == letter.upper() == letter for letter in refused - expected)
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "column", "found"),
+    [
+        ("duckdb", "store_name", True),
+        ("duckdb", "STORE_NAME", True),  # unquoted: every warehouse but ClickHouse folds it
+        ("snowflake", "Store_Name", True),
+        ("clickhouse", "STORE_NAME", False),  # ClickHouse names are case-sensitive
+        ("clickhouse", "store_name", True),
+        ("duckdb", "store_namé", False),  # quoted: only itself, never a Unicode casefold
+    ],
+)
+def test_a_column_is_named_by_the_warehouses_identifier_rules(warehouse, column, found):
+    from dataclasses import replace
+
+    from semantic_rails.compiler_parts.paths import dimensions_over_column
+    from semantic_rails.config import load_package_config
+
+    config = load_package_config("configs/semantic_rails/jaffle_shop")
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    dims = dimensions_over_column("entity.jaffle_store", column, config)
+    assert [dim.id for dim in dims] == (["dimension.jaffle_store_name"] if found else [])

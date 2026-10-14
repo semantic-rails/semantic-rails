@@ -67,7 +67,13 @@ from .indexes import (
     _relationship_index,
     _resolve_table_entity,
 )
-from .paths import _column_ref, _reaches_at_most_one, text_dimension, unknown_as_null
+from .paths import (
+    _column_ref,
+    _reaches_at_most_one,
+    dimensions_over_column,
+    text_dimension,
+    unknown_as_null,
+)
 
 
 def _freeze_payload(value: Any) -> str:
@@ -1145,11 +1151,7 @@ def bind_conditional_aggregate_column(
     remains allowed, as a measure's value column usually has none.
     """
     joined = _measure_required_entities(measure, config) - {measure.entity}
-    dimensions = [
-        row.id
-        for row in config.dimensions
-        if row.entity == entity_id and row.column.casefold() == column.casefold()
-    ]
+    dimensions = [row.id for row in dimensions_over_column(entity_id, column, config)]
     if (
         not dimensions
         and entity_id in joined

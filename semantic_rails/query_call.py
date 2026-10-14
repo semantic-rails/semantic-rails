@@ -882,6 +882,7 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
             f"'{word}' compares with text",
             fix='Write "right": {"kind": "literal", "value": "<text>"}.',
         )
+    operators.check_text_letters(text, f"{path}.right")
     left = raw.get("left")
     if not (isinstance(left, Mapping) and left.get("kind") == "column"):
         raise refusal(

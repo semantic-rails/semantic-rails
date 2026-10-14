@@ -135,9 +135,12 @@ class SqlDialect:
     # Whether LIKE needs an explicit ``ESCAPE '\\'`` (BigQuery and ClickHouse escape with a
     # backslash by default and have no ESCAPE clause).
     like_escape_clause = True
-    # The lowercase function a text word folds both its column and its text with, so the two
-    # always fold alike: Unicode-aware on every warehouse (Postgres by the database's collation).
-    case_fold = "LOWER"
+    # Whether names the SQL leaves unquoted are case-sensitive (ClickHouse); elsewhere a warehouse
+    # reads them in any ASCII case.
+    identifiers_case_sensitive = False
+    # How a text word folds both its column and its text ("{}" is the operand), so the two always
+    # fold alike: one Unicode-aware lowercase function on every warehouse.
+    case_fold = "LOWER({})"
     # The type a NULL boolean casts to.
     null_boolean_type = "BOOLEAN"
     # Whether the adapter runs each query in the zone of its time role (the runtime's
@@ -569,6 +572,11 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     name: str = "postgres"
     session_zone = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"}
+    # LOWER folds by its operand's collation, and a column's own collation can differ from a
+    # literal's: both read as text (an enum or char column too) and fold under the ICU root
+    # collation, built in wherever Postgres has ICU; without it the query fails rather than
+    # folding the two apart.
+    case_fold = 'LOWER(CAST({} AS TEXT) COLLATE "und-x-icu")'
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # Integer day offsets (DATE - DATE is an integer, DATE + integer a DATE), since
@@ -1320,7 +1328,10 @@ class ClickHouseDialect(SqlDialect):
     """
 
     like_escape_clause = False
-    case_fold = "lowerUTF8"  # LOWER folds ASCII only
+    # LOWER folds ASCII only, and lowerUTF8 refuses FixedString and Enum: toString reads any type
+    # as String (NULL stays NULL) and toStringCutToZero drops a FixedString's zero padding.
+    case_fold = "lowerUTF8(toStringCutToZero(toString({})))"
+    identifiers_case_sensitive = True
     null_boolean_type = "Nullable(Bool)"
     correlated_exists = False  # 24.8 has none
     label = "ClickHouse"

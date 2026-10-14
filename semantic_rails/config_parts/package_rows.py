@@ -303,7 +303,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             dim_id = str(dim_spec.get("id", f"dimension.{_slug(entity_cfg.name)}_{_slug(dim_key)}"))
             label = str(dim_spec.get("label", _titleize(dim_key)))
             name = str(dim_spec.get("name", f"{entity_cfg.name}.{dim_key}"))
-            kind = str(dim_spec.get("kind", "categorical"))
+            # Read in any case and spacing, as authoring validation reads it.
+            kind = str(dim_spec.get("kind") or "categorical").strip().lower()
             domain_values = list(dim_spec.get("domain", dim_spec.get("valid_values", [])) or [])
             value_domain_id = ""
             if domain_values:

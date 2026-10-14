@@ -23,12 +23,13 @@ TEXT = "50%_Off\\x'y"
 # them, and BigQuery and Spark also escape the quote with one (they read '' as two literals);
 # BigQuery and ClickHouse escape LIKE with a backslash by default.
 STANDARD = r"(LOWER(t.name) LIKE LOWER('%50\%\_Off\\x''y%') ESCAPE '\')"
+COLLATED = 'AS TEXT) COLLATE "und-x-icu")'
 POSTGRES = (
-    r"(LOWER((t.name) COLLATE "
-    + '"und-x-icu"'
-    + r") LIKE LOWER(('%50\%\_Off\\x''y%') COLLATE "
-    + '"und-x-icu"'
-    + r") ESCAPE '\')"
+    r"(LOWER(CAST(t.name "
+    + COLLATED
+    + r" LIKE LOWER(CAST('%50\%\_Off\\x''y%' "
+    + COLLATED
+    + r" ESCAPE '\')"
 )
 BACKSLASH = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x''y%') ESCAPE '\\')"
 BACKSLASH_QUOTE = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x\'y%') ESCAPE '\\')"
@@ -199,4 +200,4 @@ def test_clickhouse_reads_any_text_column_type_as_plain_text_before_folding():
 def test_postgres_folds_both_operands_under_one_explicit_collation():
     sql = _rendered("postgres", "É")
     assert sql.count('COLLATE "und-x-icu"') == 2
-    assert "LOWER((t.name) COLLATE" in sql
+    assert "LOWER(CAST(t.name AS TEXT) COLLATE" in sql

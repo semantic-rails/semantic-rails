@@ -158,7 +158,8 @@ def _map_dimension_kind(kind: str) -> str:
         "date": "date",
         "timestamp": "timestamp",
     }
-    return mapping.get(str(kind or "string"), str(kind or "string"))
+    canonical = str(kind or "string").strip().lower() or "string"
+    return mapping.get(canonical, canonical)
 
 
 def _with_displays(

@@ -281,10 +281,11 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             if dialect is None or dialect.like_escape_clause
             else ""
         )
-        fold = dialect.case_fold if dialect is not None else "LOWER"
+        fold = dialect.case_fold if dialect is not None else "LOWER({})"
         negated = " NOT" if expr.negated else ""
-        pattern = f"{fold}({_render_string_literal(expr.pattern)})"
-        return f"({fold}({render_expr(expr.expr)}){negated} LIKE {pattern}{escape})"
+        value = fold.format(render_expr(expr.expr))
+        pattern = fold.format(_render_string_literal(expr.pattern))
+        return f"({value}{negated} LIKE {pattern}{escape})"
     if isinstance(expr, SqlIn):
         operator = "NOT IN" if expr.negated else "IN"
         return (
