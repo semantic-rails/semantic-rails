@@ -26,7 +26,7 @@ from tests.semantic_rails.conftest import copy_package_config, write_single_file
 
 # Semantic fingerprints of the bundled packages, which refusing the retired spellings leaves
 # unchanged (re-pinned only when the snapshot gains or loses a field, such as an entity's
-# `display`).
+# `display`, or a package gains objects, such as the shop's stores and regional policy).
 FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
         "sha256:ec2e5203f5890ba883394ad0fd894956fa56fc5930ea0787997d43465dc4c9ae"
@@ -38,7 +38,7 @@ FINGERPRINTS = {
         "sha256:b87c36b660acfefef9f24ea5689962fdcf24a8518208b06def9d71d15b6bc75e"
     ),
     "tests/integration/correctness/shop": (
-        "sha256:d96437049b4fd97ea90054a799b3a16ccca46c9086751c674ccc6a5a129b0aef"
+        "sha256:7c65611029cd23e47c10b322ea7e69accb2066de8f21c2be4bfa2a2c518632eb"
     ),
     "configs/examples/semantic_rails_package_starter.yml": (
         "sha256:65e894499c75823dc66b3474286cc98d89f29b6157b749c6201012037f3ec9ea"

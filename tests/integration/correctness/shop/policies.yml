@@ -1,0 +1,9 @@
+# A regional manager sees only their region's stores, and through them those stores' orders,
+# refunds, scans and tag links. Every other caller is unfiltered.
+semantic_policies:
+  - id: policy.shop.regional_stores
+    kind: row_filter
+    dimension: dimension.shop_store_region
+    attribute: region
+    roles: [regional]
+    rationale: A regional manager sees only the stores of their region.

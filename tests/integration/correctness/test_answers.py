@@ -55,9 +55,15 @@ def test_engine_answer(request, backend, case_id, spec):
     runtime = request.getfixturevalue(f"{backend}_backend").runtimes[
         spec.get("variant", "utc_authored")
     ]
-    report = package_tools._run_test(runtime, case_id, spec)
-    assert report["ok"], report
     call = call_arguments(spec)
+    try:
+        report = package_tools._run_test(runtime, case_id, {**spec, **call})
+    except SemanticLayerError as error:
+        if spec["expect"] != "answer":
+            raise
+        # A refusal where the ledger freezes rows is a wrong answer, which known_wrong can mark.
+        raise AssertionError(f"{case_id} refused: {error.code} {error.details}") from error
+    assert report["ok"], report
     if spec["expect"] == "answer":
         if spec["query"].get("order_by"):
             assert comparable(runtime.query(spec["query"], **call), ordered=True) == comparable(

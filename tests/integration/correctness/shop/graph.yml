@@ -5,6 +5,7 @@ graph:
     customer_history: {label: Customer history, key: [customer_id, valid_from],
       model: customer_history, allowed_as_root: false}
     refund: {label: Refund, key: [refund_id], model: refunds}
+    store: {label: Store, key: [store_id], model: stores, display: name}
     tag: {label: Tag, key: [tag_id], model: tags}
     clock_edge: {label: Clock edge, key: [id], model: clock_edges}
     account_day: {label: Account day, key: [account_id, snapshot_day], model: account_days}

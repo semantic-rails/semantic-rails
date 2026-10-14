@@ -56,6 +56,7 @@ from typing import Any
 from semantic_rails.config import load_package_config
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.request_context import TrustedAttributes, context_from_policy_context
 from semantic_rails.runtime import Runtime
 from semantic_rails.yaml_loader import load_named_entries
 
@@ -213,6 +214,15 @@ def _config(package_path: str) -> Any:
     return load_package_config(package_path)
 
 
+def _trusted(context: Any) -> Any:
+    """An entry's context as an embedding host sends it: its ``attributes`` are trusted, so an
+    entry that names a row filter's attribute compiles under that filter."""
+    if isinstance(context, dict) and "attributes" in context:
+        attributes = TrustedAttributes(context["attributes"])
+        return context_from_policy_context({**context, "attributes": attributes})
+    return context
+
+
 def _compile(runtime: Runtime, query: Query) -> dict[str, Any]:
     try:
         if query.engine_form:
@@ -220,7 +230,7 @@ def _compile(runtime: Runtime, query: Query) -> dict[str, Any]:
             out = runtime.compile_internal(payload)
         else:
             out = runtime.compile(
-                query.call, now=query.now, context=query.context, verbosity="full"
+                query.call, now=query.now, context=_trusted(query.context), verbosity="full"
             )
     except SemanticLayerError as exc:  # a path is the call's, or a refused route's relationships
         return {"refusal": {"code": exc.code, "path": (exc.details or {}).get("path") or ""}}
