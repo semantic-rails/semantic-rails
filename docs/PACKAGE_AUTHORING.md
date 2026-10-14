@@ -256,6 +256,9 @@ Notes:
 
 - Measures and metrics use a **dot** between namespace and key; entities,
   dimensions, and temporal roles use underscores throughout.
+- Dimension and temporal-role ids use the **entity** name, not the model id: the
+  `orders` model's entity is `order`, so its `channel` dimension is
+  `dimension.mypkg_order_channel`, not `dimension.mypkg_orders_channel`.
 - Auto-created key dimensions collapse a duplicated entity prefix: the
   `customer` entity's `customer_id` key column becomes
   `dimension.mypkg_customer_id`, not `dimension.mypkg_customer_customer_id`.
@@ -288,7 +291,7 @@ graph:
   entities:
     order:
       label: Order
-      key: [order_id]                 # scalar and list forms both load; composite keys need the list
+      key: [order_id]                 # always a list; validation refuses a scalar
       model: orders                   # which model declares this entity as primary
       disallowed_names: [ord_id, orderid]
     customer:
@@ -411,6 +414,11 @@ defaults:
     supported_grains: [day, week, month, quarter, year]
 ```
 
+`default_db`, a seed's `source` and its `post_sql` are paths relative to the package directory,
+and stay inside it: an absolute path or a `..` segment fails to load with `INVALID_CONFIG`
+(an operator can allow them with `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`; see
+[Deployment](DEPLOYMENT.md)).
+
 Every package is checked with one set of authoring rules when it loads, in every layout;
 see [Refused legacy forms](#refused-legacy-forms) for the shapes earlier releases accepted.
 
@@ -518,6 +526,17 @@ meta:
 `meta.owner_team`, `meta.review_priority`, or `meta.change_risk`. The warnings
 are advisory — they never block loading — but a warning-free package gives
 reviewers an owner and a blast-radius signal for every governed object.
+
+To give every measure the same three fields once, write them under `defaults.measure.meta`;
+a measure with no `meta:` of its own takes them, and one with its own `meta:` replaces the
+default whole (it doesn't merge key by key):
+
+```yaml
+# package.yml (or defaults.yml)
+defaults:
+  measure:
+    meta: {owner_team: analytics, review_priority: low, change_risk: low}
+```
 
 For Snowflake-backed packages, replace `seed` with `connection`:
 
@@ -1080,22 +1099,22 @@ graph:
   entities:
     order:
       label: Order
-      key: order_id                             # scalar or list — both load
+      key: [order_id]                           # a list, even for one column
       model: orders                             # the model that declares order as primary
       disallowed_names: [ord_id, orderid]      # anti-pattern guard
     customer:
       label: Customer
-      key: customer_id
+      key: [customer_id]
       model: customers
       display: name                             # the dimension that names one customer
       disallowed_names: [cust_id, custid, customerid]
     product:
       label: Product
-      key: product_id
+      key: [product_id]
       model: products
     customer_history:
       label: Customer history
-      key: [customer_id, valid_from]            # composite keys need the list form
+      key: [customer_id, valid_from]            # a composite key
       model: customer_history
 
   # Explicit relationships — only for pairs that need non-default rules.
@@ -1225,6 +1244,15 @@ declared `natural` or `foreign`, is a foreign key. Column names compare as writt
 `target:` column that differs from a key column only in case fails loading, so spell it as the
 key does. Join columns must have the same type on both sides: a warehouse that coerces text to
 a number can match distinct keys, such as `'01'` and `'1'`.
+
+The engine trusts the join columns as they are stored ([known
+limitations](QUERY_CALL.md#known-limitations)):
+
+- Joining columns of different types or collations (a text id to an integer key, or a
+  case-insensitive collation) can match several parent rows, so totals can double. Keep join
+  columns the same type.
+- A child row whose parent id is missing from the parent table still counts in entity filters:
+  the engine trusts the child's id.
 
 ## Models
 
@@ -1988,7 +2016,7 @@ metrics:
 | `aggregate` | `measure: <key>` | publish a measure as a metric |
 | `ratio` | `numerator: <key>`, `denominator: <key>` | a zero denominator reads `NULL` |
 | `cumulative` | `measure: <key>`, optional `window:` | running total |
-| `prior_period` | `measure: <key>`, `period:` | comparison value at prior period |
+| `prior_period` | `measure: <key>`, `offset: {unit, value}` | the measure that many periods earlier (`offset: {unit: month, value: 1}`) |
 | `period_to_date` | `measure: <key>`, `period:` | MTD / QTD / YTD |
 | `rolling` | `measure: <key>`, `window:` | trailing window |
 | `semi_additive` | `measure: <key>`, kind-specific options | applies measure's snapshot policy |
@@ -2446,7 +2474,9 @@ Architect's `project_status`) carries `route_census`:
   their `count` and `pairs`. Record the route each pair means as a
   `graph.path_preferences` row with `record_route_decision` before a question
   needs it. The warning is
-  advisory and never blocks a promotion.
+  advisory and never blocks a promotion. Leaving a pair undecided is a valid end state: the
+  engine asks which route a question means when one needs it. Don't record a meaning the
+  business doesn't hold.
 - `assumed`: `[{source_entity, target_entity, relationship_path, basis}]`, the
   pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
