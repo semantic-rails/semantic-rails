@@ -29,6 +29,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -39,7 +40,7 @@ from .db_parts.common import materialized_duckdb_result
 from .db_parts.duckdb_setup import connect_duckdb
 from .errors import SemanticLayerError
 from .naming import slug
-from .sql_identifiers import quote_identifier, quote_relation, relation_parts
+from .sql_identifiers import quote_identifier, relation_parts
 
 MAX_SAMPLE_VALUES = 20
 MAX_SAMPLE_CHARS = 200
@@ -48,7 +49,6 @@ MAX_PROFILE_ROWS = 1_000_000
 MAX_SUGGESTION_KEY_COLUMNS = 8
 # One deadline covers a key search: sampling, refuting and confirming every candidate.
 KEY_SEARCH_SECONDS = 60.0
-_SAMPLE_TABLE = "__semantic_rails_sample"
 
 _KEY_SUFFIXES = ("_id", "_key", "_code", "_sk")
 _LINE_WORDS = ("line", "line_number", "line_no", "row_number", "seq", "sequence", "position")
@@ -301,7 +301,7 @@ def profile_columns(
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
-    source = quote_relation(f"{schema}.{name}")
+    source = _qualified(warehouse, schema, name)
     available = {column["name"]: column for column in described["columns"]}
     wanted = list(columns or available)
     unknown = [column for column in wanted if column not in available]
@@ -317,6 +317,12 @@ def profile_columns(
         return _profile(warehouse, described, wanted, scan, row_count, row_cap, limit)
 
 
+def _qualified(warehouse: DuckDBWarehouse, schema: str, name: str) -> str:
+    """The relation with its catalog, so no temporary table of the same name reads in its place."""
+    (catalog,) = warehouse.execute("SELECT system.main.current_database()")[1][0]
+    return ".".join(quote_identifier(str(part)) for part in (catalog, schema, name))
+
+
 @contextlib.contextmanager
 def _sample(warehouse: DuckDBWarehouse, source: str, row_cap: int) -> Iterator[tuple[str, int]]:
     """The relation, or above ``row_cap`` rows one repeatable reservoir sample of it in a
@@ -325,14 +331,15 @@ def _sample(warehouse: DuckDBWarehouse, source: str, row_cap: int) -> Iterator[t
     if int(row_count) <= row_cap:
         yield source, int(row_count)
         return
+    sample = quote_identifier(f"semantic_rails_sample_{uuid.uuid4().hex}")  # never a relation's
     warehouse.execute(
-        f"CREATE OR REPLACE TEMP TABLE {_SAMPLE_TABLE} AS SELECT * FROM {source} "
+        f"CREATE TEMP TABLE {sample} AS SELECT * FROM {source} "
         f"USING SAMPLE reservoir({row_cap} ROWS) REPEATABLE (0)"
     )
     try:
-        yield _SAMPLE_TABLE, int(row_count)
+        yield sample, int(row_count)
     finally:
-        warehouse.execute(f"DROP TABLE IF EXISTS {_SAMPLE_TABLE}")
+        warehouse.execute(f"DROP TABLE IF EXISTS {sample}")
 
 
 def _profile(
@@ -767,15 +774,16 @@ def _suggest_key(
         for index, columns in enumerate(candidates):
             if time.monotonic() >= deadline:
                 raise duckdb.InterruptException
-            row = ", ".join(quote_identifier(column) for column in columns)
+            keys = ", ".join(quote_identifier(column) for column in columns)
             null = " OR ".join(f"{quote_identifier(column)} IS NULL" for column in columns)
             for relation in [scan, *([source] if profile["sampled"] else [])]:
-                rows, distinct, nulls = warehouse.execute(
-                    f"SELECT system.main.count(*), system.main.count(DISTINCT "
-                    f"system.main.row({row})), system.main.count(*) FILTER (WHERE {null}) "
-                    f"FROM {relation}"
+                # Grouped by each column, as joins compare them (a collation's equal values).
+                rows, repeated, nulls = warehouse.execute(
+                    f"SELECT system.main.count(*), (SELECT system.main.count(*) FROM (SELECT 1 "
+                    f"FROM {relation} GROUP BY {keys} HAVING system.main.count(*) > 1) AS r), "
+                    f"system.main.count(*) FILTER (WHERE {null}) FROM {relation}"
                 )[1][0]
-                if nulls or distinct != rows:
+                if nulls or repeated:
                     break  # refuted on the sample, or rejected on the whole relation
             else:
                 reason = f"({', '.join(columns)}) is never null and unique in all {rows} rows"
@@ -864,7 +872,7 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
-    source = quote_relation(f"{schema}.{name}")
+    source = _qualified(warehouse, schema, name)
     entity = entity_name(name)
     columns = [column["name"] for column in described["columns"]]
     with _sample(warehouse, source, MAX_PROFILE_ROWS) as (scan, row_count):

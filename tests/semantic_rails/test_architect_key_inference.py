@@ -91,7 +91,7 @@ def test_a_key_unique_only_in_the_sample_is_rejected_and_the_search_goes_on(
     )
     suggested = suggest_model(warehouse, "events")
     assert suggested["sampled"]
-    whole = [sql for sql in queries if '"event_id"' in sql and 'FROM "main"."events"' in sql]
+    whole = [sql for sql in queries if '"event_id"' in sql and '"main"."events"' in sql]
     assert whole, "event_id survived the sample and was rejected on the whole relation"
     assert suggested["key_search"] == {"status": "confirmed", "checked": 2}
     assert suggested["primary_key"]["columns"] == ["event_id", "read_at"]  # the next candidate
