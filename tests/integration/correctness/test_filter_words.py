@@ -168,3 +168,124 @@ def test_an_upper_bound_on_the_clock_date_keeps_a_running_total(request, backend
     assert [row[0] for row in expected] == [15, 22]
     report = runtime.validate({**call, "where": [{**bound, "op": "gte"}]})
     assert report["errors"][0]["details"]["start"] == "2024-01-01"
+
+
+NAME = "dimension.shop_customer_name"
+SIGNUPS = {"expression": "measure.shop.signup_count", "as": "signups"}
+
+
+def _signups(runtime, where):
+    result = runtime.query({"select": [SIGNUPS], "where": where})
+    return [row["signups"] for row in result["rows"]], result
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(
+    ("op", "text", "pattern"),
+    [
+        ("starts_with", "A", "a%"),
+        ("starts_with", "an", "an%"),
+        ("ends_with", "A", "%a"),
+        ("ends_with", "N", "%n"),
+        ("contains", "A", "%a%"),
+    ],
+)
+def test_a_prefix_or_suffix_word_keeps_only_its_shape_ignoring_case(
+    request, backend_name, op, text, pattern
+):
+    # Names: Ann (101, 103), Bea, Cy, Di, Ed, Flo. "a" starts two names, ends one, is in three.
+    runtime = _runtime(request, backend_name)
+    found, _ = _signups(runtime, [{"field": NAME, "op": op, "value": text}])
+    [expected] = _reference(
+        request,
+        backend_name,
+        f"SELECT COUNT(DISTINCT customer_id) FROM signups WHERE LOWER(name) LIKE '{pattern}'",
+    )
+    assert found == [expected[0]]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_starts_with_is_narrower_than_contains_on_the_same_text(request, backend_name):
+    runtime = _runtime(request, backend_name)
+    counts = {
+        op: _signups(runtime, [{"field": NAME, "op": op, "value": "a"}])[0]
+        for op in ("starts_with", "ends_with", "contains")
+    }
+    assert counts == {"starts_with": [2], "ends_with": [1], "contains": [3]}
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("op", ["starts_with", "ends_with", "not_starts_with", "not_ends_with"])
+@pytest.mark.parametrize("text", ["%", "_"])
+def test_wildcards_in_a_text_word_are_literal(request, backend_name, op, text):
+    # As LIKE wildcards, '%' and '_' would match every name; no name holds either.
+    runtime = _runtime(request, backend_name)
+    found, _ = _signups(runtime, [{"field": NAME, "op": op, "value": text}])
+    assert found == ([7] if op.startswith("not_") else [0])
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(
+    ("op", "text", "known"),
+    [
+        ("not_contains", "E", "NOT LIKE '%e%'"),
+        ("not_starts_with", "W", "NOT LIKE 'w%'"),
+        ("not_ends_with", "RE", "NOT LIKE '%re'"),
+    ],
+)
+def test_a_not_text_word_keeps_unknown_rows_and_says_how_many(
+    request, backend_name, op, text, known
+):
+    # Order 7's customer (105) has no channel and order 11's (108) never signed up.
+    runtime = _runtime(request, backend_name)
+    result = runtime.query(
+        {
+            "select": [ORDERS],
+            "group_by": [CHANNEL],
+            "where": [{"field": CHANNEL, "op": op, "value": text}],
+        }
+    )
+    rows = {row[CHANNEL]: row["orders"] for row in result["rows"]}
+    expected = _reference(
+        request,
+        backend_name,
+        f"SELECT {CHANNEL_OF}, COUNT(*) FROM orders AS o "
+        f"WHERE LOWER({CHANNEL_OF}) {known} OR {CHANNEL_OF} IS NULL GROUP BY 1",
+    )
+    assert rows == dict(expected)
+    assert rows[None] == 2
+    [warning] = _warnings(result, "UNKNOWN_ROWS_KEPT")
+    assert warning["details"] == {"field": CHANNEL, "rows": 2, "values": [None]}
+    assert warning["message"].startswith(f"'{op}' keeps rows whose {CHANNEL} is unknown")
+    assert '"op": "missing", "value": false' in warning["message"]
+    # Beside missing: false, the unknown rows are left out and nothing is said.
+    known_only = runtime.query(
+        {
+            "select": [ORDERS],
+            "where": [
+                {"field": CHANNEL, "op": op, "value": text},
+                {"field": CHANNEL, "op": "missing", "value": False},
+            ],
+        }
+    )
+    [[count]] = _reference(
+        request, backend_name, f"SELECT COUNT(*) FROM orders AS o WHERE LOWER({CHANNEL_OF}) {known}"
+    )
+    assert [row["orders"] for row in known_only["rows"]] == [count]
+    assert not _warnings(known_only, "UNKNOWN_ROWS_KEPT")
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(("op", "expected"), [("starts_with", 3), ("not_starts_with", 4)])
+def test_a_comparison_takes_a_text_word_with_its_meaning(request, backend_name, op, expected):
+    # Web signups are 101, 103 and 106; not_starts_with also keeps 105, which has no channel.
+    runtime = _runtime(request, backend_name)
+    condition = {
+        "kind": "comparison",
+        "op": op,
+        "left": {"kind": "column", "column": "channel", "entity": "entity.shop_customer"},
+        "right": {"kind": "literal", "value": "W"},
+    }
+    expression = {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
+    result = runtime.query({"select": [{"expression": expression, "as": "n"}]})
+    assert [row["n"] for row in result["rows"]] == [expected]

@@ -56,19 +56,34 @@ def test_compiled_top_n_prepares_one_extra_row(package, warehouse, profile):
     assert compiled["limit_probe"].column_mapping == compiled["prepared_query"].column_mapping
 
 
-@pytest.mark.parametrize("limit,ordered", [(None, True), (2, False), (0, True)])
-def test_unlimited_or_unordered_queries_keep_their_order(limit, ordered):
+@pytest.mark.parametrize("limit,ordered", [(None, True), (None, False), (0, True)])
+def test_unlimited_queries_keep_their_order(limit, ordered):
     query = SqlSelect(
         select=[SqlField(SqlLiteral(1), "score"), SqlField(SqlLiteral(2), "name")],
         order_by=[SqlOrder(SqlIdentifier(["score"]), "DESC")] if ordered else [],
         limit=limit,
     )
     final, _ = limit_order(query, ["name"])
-    if limit is None or not ordered:
+    if limit is None:
         assert final is query
         assert "NULLS LAST" not in render_select(final)
     else:
         assert final.limit == 0
+
+
+def test_a_limit_without_an_order_takes_the_tie_break_order():
+    """No requested order: the group columns, then the period, ascending with NULLs last decide
+    which rows a limit keeps, so the same call keeps the same rows. Nothing ties on no terms."""
+    query = SqlSelect(
+        select=[SqlField(SqlLiteral(index), name) for index, name in enumerate(["m", "b", "a"])],
+        limit=2,
+    )
+    final, keys = limit_order(query, ["b", "a", "period"])
+    assert keys == ()
+    assert [(term.expression, term.direction, term.nulls_last) for term in final.order_by] == [
+        (SqlIdentifier(["b"]), "ASC", True),
+        (SqlIdentifier(["a"]), "ASC", True),
+    ]
 
 
 def test_tiebreaks_follow_the_group_columns_and_skip_requested_ones():

@@ -1,0 +1,215 @@
+"""One LIKE rule everywhere: a LIKE, NOT LIKE or ILIKE is refused in `where`, in an entity
+filter, in an inline condition and in a `comparison` expression, and its hint names the text
+word for the pattern's shape ('X%' starts_with, '%X' ends_with, '%X%' contains, the `not_` forms
+for NOT LIKE), never `contains` for a prefix or a suffix. The hinted call is valid.
+
+An arithmetic op the engine does not read is refused at its path with the closest op."""
+
+from __future__ import annotations
+
+import copy
+import json
+from typing import Any
+
+import pytest
+
+from semantic_rails import operators
+from semantic_rails.package_snapshot import load_package_snapshot
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config, opened
+
+NOW = "2017-09-04T12:00:00Z"
+ORDERS = "measure.jaffle.order_count"
+STORE = "dimension.jaffle_store_name"
+COLUMN = {"kind": "column", "column": "store_name", "entity": "entity.jaffle_store"}
+IGNORES_CASE = ", which ignores case."
+KEEPS_UNKNOWN = ", which ignores case and keeps rows with no value."
+
+
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    runtime = Runtime.from_snapshot(load_package_snapshot(path))
+    yield opened(runtime)
+    runtime.close()
+
+
+def _error(runtime: Runtime, call: dict[str, Any]) -> dict[str, Any]:
+    result = runtime.validate(call, now=NOW)
+    assert result["ok"] is False, result
+    return result["errors"][0]
+
+
+def _hint(error: dict[str, Any]) -> str:
+    (hint,) = error["recovery_hints"]
+    return str(hint["message"])
+
+
+def _where(op: str, value: Any) -> dict[str, Any]:
+    return {"select": [ORDERS], "where": [{"field": STORE, "op": op, "value": value}]}
+
+
+def _entity_filter(op: str, value: Any) -> dict[str, Any]:
+    condition = {"field": STORE, "op": op, "value": value}
+    return {"select": [ORDERS], "where": [{"entity": "entity.jaffle_store", "any": [condition]}]}
+
+
+def _aggregate_filter(op: str, value: Any) -> dict[str, Any]:
+    condition = {"field": STORE, "op": op, "value": value}
+    expression = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [condition]}}
+    return {"select": [{"expression": expression, "as": "n"}]}
+
+
+def _scoped(op: str, value: Any) -> dict[str, Any]:
+    condition = {"field": STORE, "op": op, "value": value}
+    expression = {"kind": "scoped_aggregate", "measure": ORDERS, "where": [condition]}
+    return {"select": [{"expression": expression, "as": "n"}]}
+
+
+def _aggregate_if(op: str, value: Any) -> dict[str, Any]:
+    condition = {
+        "kind": "comparison",
+        "op": op,
+        "left": COLUMN,
+        "right": {"kind": "literal", "value": value},
+    }
+    expression = {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
+    return {"select": [{"expression": expression, "as": "n"}]}
+
+
+# Each surface: the call, the path of the op, and the hinted fragment for a word and text.
+SURFACES = {
+    "where": (_where, "where[0].op", '{{"op": "{word}", "value": "{text}"}}'),
+    "entity-filter": (_entity_filter, "where[0].any[0].op", '{{"op": "{word}", "value": "{text}"}}'),
+    "aggregate-filter": (
+        _aggregate_filter,
+        "select[0].expression.filter.all[0].op",
+        '{{"op": "{word}", "value": "{text}"}}',
+    ),
+    "scoped-where": (_scoped, "select[0].expression.where[0].op", '{{"op": "{word}", "value": "{text}"}}'),
+    "aggregate-if": (
+        _aggregate_if,
+        "select[0].expression.condition.op",
+        '{{"op": "{word}", "right": {{"kind": "literal", "value": "{text}"}}}}',
+    ),
+}  # fmt: skip
+SHAPES = [
+    ("LIKE", "Phil%", "starts_with", "Phil", IGNORES_CASE),
+    ("like", "%lyn", "ends_with", "lyn", IGNORES_CASE),
+    ("ILIKE", "%cisco%", "contains", "cisco", IGNORES_CASE),
+    ("Not Like", "Phil%", "not_starts_with", "Phil", KEEPS_UNKNOWN),
+    ("NOT  ILIKE", "%lyn", "not_ends_with", "lyn", KEEPS_UNKNOWN),
+    ("not like", "%cisco%", "not_contains", "cisco", KEEPS_UNKNOWN),
+]
+
+
+def _with_op(call: dict[str, Any], path: str, op: str) -> dict[str, Any]:
+    """``call`` with the op at ``path`` (``a[0].b.op``) replaced."""
+    fixed = copy.deepcopy(call)
+    node: Any = fixed
+    for part in path.removesuffix(".op").replace("]", "").replace("[", ".").split("."):
+        node = node[int(part)] if part.isdigit() else node[part]
+    node["op"] = op
+    return fixed
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize(("op", "pattern", "word", "text", "says"), SHAPES)
+def test_like_is_refused_everywhere_with_the_word_for_its_pattern(
+    runtime, surface, op, pattern, word, text, says
+):
+    build, path, fragment = SURFACES[surface]
+    call = build(op, pattern)
+    error = _error(runtime, call)
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == path
+    hint = _hint(error)
+    assert hint == f"Write {fragment.format(word=word, text=text)}{says}"
+    if word.removeprefix("not_") != "contains":
+        assert "contains" not in hint
+    # The hinted word, with the hinted text, is a valid call on the same surface.
+    if surface == "aggregate-if":
+        fixed = build(word, text)
+    else:
+        fixed = _with_op(build(op, text), path, word)
+    assert runtime.validate(fixed, now=NOW)["ok"] is True, word
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize(("op", "pattern"), [("LIKE", "Phil_delphia"), ("ilike", "%a%n%"), ("not like", "B%n")])
+def test_a_like_pattern_no_word_says_hints_the_exact_values(runtime, surface, op, pattern):
+    build, path, _ = SURFACES[surface]
+    error = _error(runtime, build(op, pattern))
+    assert error["details"]["path"] == path
+    hint = _hint(error)
+    exact = "not" if op.lower().startswith("not") else "is"
+    shown = (
+        f'{{"kind": "{"not_in" if exact == "not" else "in"}", "expr": <the column>, "values": [...]}}'
+        if surface == "aggregate-if"
+        else f'{{"op": "{exact}", "value": [...]}}'
+    )
+    assert hint == (
+        f"Write the exact values, {shown}, which valid-values lists: no filter word says "
+        f'{json.dumps(pattern)} ("_" or an inner "%").'
+    )
+    for word in ("contains", "starts_with", "ends_with"):
+        assert word not in hint
+
+
+def test_a_like_with_no_pattern_names_every_shape(runtime):
+    expression = {
+        "kind": "aggregate_if",
+        "aggregation": "count",
+        "condition": {"kind": "comparison", "op": "LIKE", "left": COLUMN, "right": COLUMN},
+    }
+    hint = _hint(_error(runtime, {"select": [{"expression": expression, "as": "n"}]}))
+    assert "starts_with for 'X%', ends_with for '%X' or contains for '%X%'" in hint
+
+
+def test_like_in_a_binary_expression_is_refused_the_same_way(runtime):
+    expression = {"kind": "binary", "op": "LIKE", "left": ORDERS, "right": ORDERS}
+    error = _error(runtime, {"select": [{"expression": expression, "as": "n"}]})
+    assert error["details"]["path"] == "select[0].expression.op"
+    assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
+
+
+def test_a_comparison_text_word_needs_a_text_literal(runtime):
+    expression = _aggregate_if("starts_with", "Phil")["select"][0]["expression"]
+    expression["condition"]["right"] = {"kind": "literal", "value": 7}
+    error = _error(runtime, {"select": [{"expression": expression, "as": "n"}]})
+    assert error["details"]["path"] == "select[0].expression.condition.right"
+
+
+@pytest.mark.parametrize(
+    ("op", "closest"),
+    [("div", ["divide"]), ("mul", ["multiply"]), ("SUB", ["subtract"]), ("mod", [])],
+)
+def test_an_unknown_arithmetic_op_is_refused_at_its_path_with_the_closest(runtime, op, closest):
+    inner = {"kind": "arithmetic", "op": op, "left": ORDERS, "right": ORDERS}
+    expression = {"kind": "arithmetic", "op": "add", "left": ORDERS, "right": inner}
+    error = _error(runtime, {"select": [{"expression": expression, "as": "n"}]})
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "select[0].expression.right.op"
+    assert error["details"]["allowed"] == ["add", "subtract", "multiply", "divide"]
+    assert error["details"]["closest_matches"] == closest
+    hint = _hint(error)
+    if closest:
+        assert hint.startswith(f"Did you mean '{closest[0]}'?")
+    assert "add, subtract, multiply or divide" in hint
+
+
+@pytest.mark.parametrize("op", ["+", "minus", "Times", "DIVIDE"])
+def test_the_arithmetic_spellings_the_engine_reads_stay_valid(runtime, op):
+    expression = {"kind": "arithmetic", "op": op, "left": ORDERS, "right": ORDERS}
+    assert runtime.validate({"select": [{"expression": expression, "as": "n"}]}, now=NOW)["ok"]
+
+
+def test_every_text_word_describes_itself():
+    assert [operators.describe("Store", word, "Ph") for word in operators.TEXT_WORDS] == [
+        "Store contains Ph",
+        "Store starts with Ph",
+        "Store ends with Ph",
+        "Store does not contain Ph",
+        "Store does not start with Ph",
+        "Store does not end with Ph",
+    ]

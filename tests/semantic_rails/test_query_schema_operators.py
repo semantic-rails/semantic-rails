@@ -32,6 +32,10 @@ SPELLINGS = [
     "NOT   IN",
     "not\tin",
     "Missing",
+    "STARTS_WITH",
+    "Not_Ends_With",
+    "starts with",
+    "not contains",
     "is null",
     "like",
     "between",
@@ -139,7 +143,8 @@ def test_execute_takes_the_spellings_and_states_each_alias_and_value_once(valida
     }
     assert read_as == operators.ALIASES
     shapes = {"a value or a list": ["is", "not"], "one value": ["gt", "gte", "lt", "lte"]}
-    for phrase, words in {**shapes, "text": ["contains"], "true or false": ["missing"]}.items():
+    text = list(operators.TEXT_WORDS)
+    for phrase, words in {**shapes, "text": text, "true or false": ["missing"]}.items():
         assert f"{'/'.join(words)}: {phrase}" in op["description"]
 
 
