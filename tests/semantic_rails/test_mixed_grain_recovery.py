@@ -52,7 +52,6 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         entity="entity.orders",
         row_grain=["order_id"],
         expr=ColumnRefExpr(column="amount"),
-        source_relation="orders",
         default_aggregation="sum",
         allowed_aggregations=["sum"],
         compatible_temporal_roles=[],
@@ -64,7 +63,6 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         id=f"measure.synthetic.{similar_id}",
         entity="entity.lines",
         row_grain=["line_id"],
-        source_relation="lines",
         name="",
         label="",
     )

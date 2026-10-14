@@ -482,9 +482,8 @@ def _validate_split_package(
             elif relation_ref.startswith("relation.") or relation_ref in relation_refs:
                 relation_refs.add(relation_ref)
             # A model lists its entities under `entities:`, and the loader derives its keys
-            # from them; a fact model declares time_entity and time_column instead.
-            model_kind = str(model.get("kind", "model") or "model").strip().lower()
-            if model_kind == "fact" or ("entities" in model and model.get("keys") is None):
+            # from them.
+            if "entities" in model and model.get("keys") is None:
                 pass
             elif model.get("keys") is None:
                 add_error(errors, f"{model_path} must list its entities under entities:")
@@ -883,8 +882,6 @@ def _compiled_package_warnings(
     warnings: list[str | dict[str, Any]] = []
     if not list(config.package.environments or []):
         warnings.append(f"{source_path}: package does not declare package.environments")
-    # (Pseudo-entity smell warning removed — fact models with `kind: fact`
-    # are now the supported way to declare time-keyed rollup tables.)
     first_by_definition: dict[str, str] = {}
     for measure in config.measures:
         meta = dict(getattr(measure, "meta", {}) or {})
@@ -893,7 +890,6 @@ def _compiled_package_warnings(
         definition = json.dumps(
             [
                 measure.entity,
-                measure.source_relation,
                 measure.measure_class,
                 measure.default_aggregation,
                 measure.default_temporal_role or [*measure.compatible_temporal_roles, ""][0],

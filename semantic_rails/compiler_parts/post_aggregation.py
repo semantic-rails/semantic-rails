@@ -144,8 +144,7 @@ def _summing_window_parts(
                         )
                     )
                     and counted.entity in {"", measure.entity}
-                    and counted.table
-                    in {"", measure.source_relation or (entity.table if entity else "")}
+                    and counted.table in {"", entity.table if entity else ""}
                 ):
                     allowed = set()
             if (

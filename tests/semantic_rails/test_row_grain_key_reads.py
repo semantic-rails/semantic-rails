@@ -57,7 +57,7 @@ REFUSES = {
     ("compiler_parts/indexes.py", "_measure_has_source_row_key"),
     ("compiler_parts/leaves.py", "_fanout_dedup_leaf_select"),
     ("compiler_parts/leaves.py", "_parent_lookup_leaf_select"),
-    ("compiler_parts/lowering_common.py", "_measure_owned_key_columns"),
+    ("compiler_parts/lowering_common.py", "_stock_row_key"),
     ("compiler_parts/paths.py", "_direct_entity_key_source_expr"),
     ("compiler_parts/paths.py", "_entity_key_dimension_ids"),
     ("compiler_parts/plan_checks.py", "_can_project_entity_key_from_source"),

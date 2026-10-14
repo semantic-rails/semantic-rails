@@ -93,22 +93,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     model_rows = {str(k): dict(v or {}) for k, v in model_rows.items()}
     time_calendar_ids_seen: set[str] = set()
 
-    # Split model rows by kind. Fact models declare a single time_entity
-    # join and never bind to a graph entity (they are not reachable via
-    # inferred multi-hop joins).
-    fact_models: dict[str, dict[str, Any]] = {}
-    regular_model_rows: dict[str, dict[str, Any]] = {}
     for model_id, model in model_rows.items():
         model_kind = str(model.get("kind", "model") or "model").strip().lower()
-        if model_kind == "fact":
-            fact_models[model_id] = model
-        elif model_kind == "model":
-            regular_model_rows[model_id] = model
-        else:
+        if model_kind != "model":
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{path}: model '{model_id}' has invalid kind '{model_kind}' "
-                f"(allowed: model, fact)",
+                f"{path}: model '{model_id}' has invalid kind '{model_kind}' (allowed: model)",
             )
 
     for entity_key, entity_spec_raw in graph_entities.items():
@@ -125,12 +115,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{path}: graph entity '{entity_key}' references unknown model '{model_id}'",
-            )
-        if model_id in fact_models:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: graph entity '{entity_key}' references fact model "
-                f"'{model_id}' — fact models cannot be graph entities",
             )
         model = model_rows[model_id]
         model_keys = dict(model.get("keys", {}) or {})
@@ -238,49 +222,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
     model_default_times: dict[str, str] = {}
     for model_id, model in model_rows.items():
-        is_fact = model_id in fact_models
         model_meta = _normalize_meta(model.get("meta"), f"{path}: model '{model_id}'")
-        fact_source_relation = ""
-        if is_fact:
-            # Resolve the declared time entity for this fact model.
-            time_entity_ref = str(model.get("time_entity", "") or "").strip()
-            if not time_entity_ref:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' must declare time_entity",
-                )
-            time_entity_id = entity_lookup.get(time_entity_ref)
-            if time_entity_id is None:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' references unknown "
-                    f"time_entity '{time_entity_ref}'",
-                )
-            entity_cfg = next(row for row in entities if row.id == time_entity_id)
-            if entity_cfg.kind != "time":
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' time_entity must point at "
-                    f"a kind:time entity (got '{entity_cfg.kind}')",
-                )
-            entity_id = time_entity_id
-            # Resolve the fact model's own relation (its FROM table) — measures
-            # built from this model carry this as `source_relation`.
-            fact_relation_ref = str(model.get("relation", "")).strip()
-            fact_relation_id = relation_aliases.get(fact_relation_ref, "")
-            fact_source_relation = (
-                relations_by_id[fact_relation_id].output_name
-                if fact_relation_id
-                else str(model.get("relation", ""))
-            )
-            if not fact_source_relation:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: fact model '{model_id}' must declare relation",
-                )
-        else:
-            entity_id = model_to_entity[model_id]
-            entity_cfg = next(row for row in entities if row.id == entity_id)
+        entity_id = model_to_entity[model_id]
+        entity_cfg = next(row for row in entities if row.id == entity_id)
         model_topics = _ensure_list(model.get("topics"))
         model_operational_defaults = normalize_operational_payload(
             model.get("operational_defaults"),
@@ -415,12 +359,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         default_time = model_default_times[model_id]
         row_grain = _ensure_list(dict(model.get("keys", {}) or {}).get("primary"))
-        # Fact models infer grain from the declared time_column (the row's
-        # time-key on the fact table).
-        if is_fact and not row_grain:
-            time_column = str(model.get("time_column", "") or "").strip()
-            if time_column:
-                row_grain = [time_column]
         for measure_key, measure_spec_raw in dict(model.get("measures", {}) or {}).items():
             raw_measure_spec = dict(measure_spec_raw or {})
             measure_spec = {**measure_defaults, **raw_measure_spec}
@@ -535,7 +473,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 id=measure_id,
                 entity=entity_id,
                 row_grain=list(row_grain),
-                source_relation=fact_source_relation,
                 expr=parse_config_expression(expr_raw),
                 default_aggregation=default_aggregation,
                 allowed_aggregations=allowed_aggregations,

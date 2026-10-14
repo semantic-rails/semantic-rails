@@ -273,8 +273,6 @@ class _Exporter:
         entity = self.entities[measure.entity]
         if entity.relation_id:
             raise _Unsupported("measures over relation pipelines")
-        if measure.source_relation not in ("", entity.table):
-            raise _Unsupported("measures on other relations")
         refs = collect_column_refs(measure.expr)
         if any(ref.table or ref.entity not in ("", measure.entity) for ref in refs):
             raise _Unsupported("measures reading other entities")

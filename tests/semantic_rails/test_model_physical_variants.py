@@ -313,23 +313,23 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         **overrides.get("entity", {}),
     }
     entities = {"order": order}
-    if overrides.get("fact_days"):  # a fact model whose rows repeat a day across stores
+    if overrides.get("fact_days"):  # a day's rows, one per store
         entities["fiscal"] = {"kind": "time", "key": ["date_day"], "model": "fiscal_days"}
+        entities["order_day"] = {"key": ["date_day", "store_id"], "model": "order_days"}
         day = {"column": "date_day", "kind": "date", "class": "calendar_time"}
-        # A fact model's days bucket on the default calendar.
+        # The days bucket on the default calendar.
         calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": "default"}
         calendar |= {"entities": {"fiscal": {}}, "times": {"date_day": day}}
         calendar["dimensions"] = {"quarter_start": {"kind": "date"}}
         _write_yaml(package_dir / "models" / "fiscal_days.yml", {"model": calendar})
         day = {"id": "temporal_role.day", "column": "date_day", "kind": "date", "default": True}
-        fact = {"id": "order_days", "kind": "fact", "relation": "order_days"}
-        fact |= {"time_entity": "fiscal", "time_column": "date_day"}
+        fact = {"id": "order_days", "relation": "order_days", "entities": {"order_day": {}}}
         fact["times"] = {"date_day": {**day, "class": "event_time"}}
         fact["dimensions"] = {"store_id": {"as": "dimension.day_store_id", "kind": "categorical"}}
         fact["measures"] = {
-            "days": {"as": "measure.days", "kind": "entity_count", "time": "date_day"}
+            "days": {"as": "measure.days", "kind": "entity_count", "entity_key": "date_day"}
         }
-        fact["measures"]["days"].update(overrides.get("day_measure", {}))
+        fact["measures"]["days"].update(overrides.get("day_measure", {}), time="date_day")
         fact["variants"] = variants
         _write_yaml(package_dir / "models" / "order_days.yml", {"model": fact})
     graph: dict = {"entities": entities, "relationships": {}}
@@ -559,8 +559,8 @@ _SHIP_TO_KEY = {
         pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "month", start="2026-01-15", end="2026-03-31"), "time_bounds_not_aligned", id="bounds-not-on-month-boundaries"),
         pytest.param(_MONTHLY_ONLY, _PREDICATE_QUERY, "metric_predicate_filter", id="measure-metric-predicate"),
         pytest.param(_MONTHLY_ONLY, {**_rollup_query(_REVENUE, "sum", "month"), "metric_filters": [{"expression": _BIG_ORDERS, "op": "=", "value": True}]}, "metric_predicate_filter", id="query-metric-predicate"),
-        pytest.param(({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True}), _DAYS_QUERY, "aggregation_not_reaggregable", id="distinct-fact-model-row-key"),
-        pytest.param(({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True, "day_measure": {"kind": "aggregate", "expr": "1"}}), {**_DAYS_QUERY, "select": _rollup_query("measure.days", "sum", "quarter")["select"]}, None, id="fact-model-additive"),
+        pytest.param(({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True}), _DAYS_QUERY, "aggregation_not_reaggregable", id="distinct-day-keyed-row-key"),
+        pytest.param(({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True, "day_measure": {"kind": "aggregate", "expr": "1"}}), {**_DAYS_QUERY, "select": _rollup_query("measure.days", "sum", "quarter")["select"]}, None, id="day-keyed-additive"),
         pytest.param(_MONTHLY_ONLY, _NO_TIME_QUERY, "missing_query_time_grain", id="no-time"),
         pytest.param(({"hourly": _HOURLY},), _rollup_query(_REVENUE, "sum", "day", start="2026-01-10T05:00:00"), "time_bounds_not_aligned", id="hourly-bound-inside-a-day"),
         pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "month", start="2026-02-01T00:00:00.0000001"), "time_bounds_not_aligned", id="bound-past-microseconds"),

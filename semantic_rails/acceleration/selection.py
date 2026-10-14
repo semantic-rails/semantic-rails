@@ -355,7 +355,7 @@ def _select_aggregate_relation(
         join_paths=_join_paths(dimensions, measure.entity, path_selections, config),
         joins_undeclared=any(item.purpose in {"measure_expr", "time"} for item in path_selections),
         # Each value of a model's single-column row key sits in one rollup row.
-        counts_fact_key=len(key) == 1 and measure.row_grain == key and not measure.source_relation,
+        counts_fact_key=len(key) == 1 and measure.row_grain == key,
     )
     rejections = {
         row.id: reason

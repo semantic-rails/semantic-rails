@@ -223,14 +223,12 @@ def _direct_entity_key_source_expr(
     target_entity: str,
     target_key_col: str,
     config: PackageConfig,
-    *,
-    source_relation_override: str = "",
 ) -> SqlIdentifier | None:
     entities = _entity_index(config)
     source = entities.get(source_entity)
     if source is None:
         return None
-    source_table = source_relation_override or source.table
+    source_table = source.table
     if source_entity == target_entity and target_key_col in set(source.key or [source.primary_key]):
         return _column_ref(source_table, target_key_col)
     # None: not readable here. Several pairings between the entities (role-playing keys, e.g.
@@ -266,8 +264,6 @@ def _direct_dimension_source_expr(
     source_entity: str,
     dim_id: str,
     config: PackageConfig,
-    *,
-    source_relation_override: str = "",
 ) -> tuple[Any, str] | None:
     dim_index = _dimension_index(config)
     dim = dim_index.get(dim_id)
@@ -280,13 +276,7 @@ def _direct_dimension_source_expr(
     target = _entity_index(config).get(dim.entity)
     if target is None or dim.column not in set(target.key_columns):
         return None
-    expr = _direct_entity_key_source_expr(
-        source_entity,
-        dim.entity,
-        dim.column,
-        config,
-        source_relation_override=source_relation_override,
-    )
+    expr = _direct_entity_key_source_expr(source_entity, dim.entity, dim.column, config)
     if expr is None:
         return None
     return unknown_as_null(expr, dim), dim.id

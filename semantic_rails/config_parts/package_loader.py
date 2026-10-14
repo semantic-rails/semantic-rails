@@ -120,16 +120,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     # If `entities:` is absent, the singular-form fields stay untouched.
     row_grain_entries: dict[str, set[str]] = {}
     for model_id, model in list(models.items()):
-        # Fact models declare a single time_entity + time_column join and
-        # do NOT translate `model.entities:` → `graph.entities`. They are
-        # not reachable via inferred multi-hop joins.
-        model_kind = str(model.get("kind", "model") or "model").strip().lower()
-        if model_kind == "fact":
-            # Drop any informational `entities:` block authored on a fact
-            # model — it must not produce a graph-entity translation.
-            model.pop("entities", None)
-            models[model_id] = model
-            continue
         if model_id in bound_entities:
             authored_entity = str(model.get("entity", "") or "").strip()
             if authored_entity and authored_entity != bound_entities[model_id]:
@@ -245,10 +235,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     # entity is <x>. Authors can leave the binding implicit when the model's name
     # disambiguates which model owns each entity.
     for model_id, model in models.items():
-        # Fact models don't bind to a graph entity — skip the back-fill.
-        model_kind = str(model.get("kind", "model") or "model").strip().lower()
-        if model_kind == "fact":
-            continue
         primary = str(model.get("entity", "") or "").strip()
         if primary and primary in graph_entities:
             entity_dict = dict(graph_entities[primary] or {})
@@ -291,11 +277,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             continue
         model = dict(models[model_id] or {})
         primary = str(model.get("entity", "") or "").strip()
-        if (
-            str(model.get("kind", "model") or "model").strip().lower() == "model"
-            and primary
-            and primary != entity_key
-        ):
+        if primary and primary != entity_key:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"model '{model_id}' declares entity '{primary}' but is bound to "
@@ -450,50 +432,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         model["measures"] = measures
         models[model_id] = model
 
-    # Fact models — apply the same id/name normalization for their times,
-    # measures, and dimensions. They don't bind to a graph entity, so the
-    # graph-entities loop above skips them.
-    for model_id, model in list(models.items()):
-        model_kind = str(model.get("kind", "model") or "model").strip().lower()
-        if model_kind != "fact":
-            continue
-        # Use the model_id as the entity-name slug for id derivation.
-        entity_name_slug = _slug(str(model_id))
-        # Times.
-        times = dict(model.get("times", {}) or {})
-        for time_key, time_raw in list(times.items()):
-            time_spec = dict(time_raw or {})
-            if namespace:
-                _with_default(
-                    time_spec,
-                    "id",
-                    f"temporal_role.{namespace}_{entity_name_slug}_{_slug(str(time_key))}",
-                )
-                _with_default(
-                    time_spec,
-                    "dimension_id",
-                    f"dimension.{namespace}_{entity_name_slug}_{_slug(str(time_key))}",
-                )
-                _with_default(
-                    time_spec,
-                    "name",
-                    f"{namespace}.{_titleize(str(model_id)).replace(' ', '')}.{time_key}",
-                )
-            _apply_as_override(time_spec, "temporal_role", namespace=namespace)
-            times[time_key] = time_spec
-        model["times"] = times
-        # Measures.
-        measures = dict(model.get("measures", {}) or {})
-        for measure_key, measure_raw in list(measures.items()):
-            measure = dict(measure_raw or {})
-            if namespace:
-                _with_default(measure, "id", f"measure.{namespace}.{_slug(str(measure_key))}")
-                _with_default(measure, "name", f"{namespace}.{_slug(str(measure_key))}")
-            _apply_as_override(measure, "measure", namespace=namespace)
-            measures[measure_key] = measure
-        model["measures"] = measures
-        models[model_id] = model
-
     graph["entities"] = graph_entities
 
     # Top-level `graph.relationships:` block — translate the bidirectional
@@ -531,12 +469,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 )
             a, b = str(entities_pair[0]), str(entities_pair[1])
             for endpoint in (a, b):
-                endpoint_model = entity_to_model.get(endpoint, "")
-                if (
-                    endpoint_model not in models
-                    or str(models[endpoint_model].get("kind", "model") or "model").strip().lower()
-                    != "model"
-                ):
+                if entity_to_model.get(endpoint, "") not in models:
                     raise SemanticLayerError(
                         "INVALID_CONFIG",
                         f"graph relationship '{rel_name}' cannot attach entity '{endpoint}' "

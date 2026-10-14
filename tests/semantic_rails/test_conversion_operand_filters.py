@@ -87,8 +87,6 @@ _ADDED_MEASURES = {
             "expr": {**_ORDER_KEY, "entity": "entity.jaffle_order_lifecycle"},
         },
     },
-    # A fact-model count of the time column, the time entity's key, counts rollup rows.
-    "daily_metrics.yml": {"rollup_day_count": _EVENT_COUNT},
     "customers.yml": {
         "latest_customer_count": {
             **_EVENT_COUNT,
@@ -289,18 +287,6 @@ def _refused(measure: str, side: str = "base", column: str = "", entity: str = "
             ),
             None,
             id="key_of_another_entity",
-        ),
-        pytest.param(
-            # It used to validate on the time entity and read the calendar, not the rollup.
-            {
-                "base_measure": "measure.jaffle.rollup_day_count",
-                "converted_measure": "measure.jaffle.rollup_day_count",
-                "entity": "entity.jaffle_time",
-            },
-            "CONVERSION_NOT_SUPPORTED",
-            {**_refused("rollup_day_count"), "entity": "entity.jaffle_time"},
-            None,
-            id="fact_model_rows",
         ),
         # Each customer is one event on its first-order clock, so it converts to itself.
         pytest.param(

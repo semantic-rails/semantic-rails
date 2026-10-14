@@ -153,7 +153,6 @@ def test_every_read_uses_its_physical_source_column(config, monkeypatch, positio
         engine.close()
 
 
-@pytest.mark.parametrize("qualified", ["measure", "aggregate"])
 @pytest.mark.parametrize(
     "relation",
     [
@@ -165,23 +164,14 @@ def test_every_read_uses_its_physical_source_column(config, monkeypatch, positio
     ],
 )
 def test_relation_qualification_and_quoting_cannot_bypass_constraints(
-    config, monkeypatch, qualified, relation
+    config, monkeypatch, relation
 ):
     expression = deepcopy(SUM_REVENUE)
-    if qualified == "measure":
-        config = replace(
-            config,
-            measures=[
-                replace(row, source_relation=relation) if row.id == REVENUE else row
-                for row in config.measures
-            ],
-        )
-    else:
-        entity = next(row for row in config.entities if row.id == ORDER)
-        alias = replace(entity, id="entity.test.qualified_order", table=relation)
-        config = replace(config, entities=[*config.entities, alias])
-        for ref in (expression["condition"]["left"], expression["value"]):
-            ref["entity"] = alias.id
+    entity = next(row for row in config.entities if row.id == ORDER)
+    alias = replace(entity, id="entity.test.qualified_order", table=relation)
+    config = replace(config, entities=[*config.entities, alias])
+    for ref in (expression["condition"]["left"], expression["value"]):
+        ref["entity"] = alias.id
     query = _query(expression)
     _compiles(config, query)
     engine = Runtime.from_config(
@@ -196,13 +186,12 @@ def test_relation_qualification_and_quoting_cannot_bypass_constraints(
 
 @pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
 @pytest.mark.parametrize("governed_aggregation", ["count", "count_distinct"])
-@pytest.mark.parametrize("source_relation", ["", '"main"."JAFFLE_ORDER"', "other_orders"])
 @pytest.mark.parametrize(
     ("aggregation", "value"),
     [("count", None), ("count", "customer_id"), ("count_distinct", "customer_id")],
 )
 def test_counts_inherit_count_measure_constraints_on_their_relation(
-    config, monkeypatch, constraint_key, governed_aggregation, source_relation, aggregation, value
+    config, monkeypatch, constraint_key, governed_aggregation, aggregation, value
 ):
     config = replace(
         config,
@@ -211,7 +200,6 @@ def test_counts_inherit_count_measure_constraints_on_their_relation(
                 row,
                 default_aggregation=governed_aggregation,
                 allowed_aggregations=[governed_aggregation],
-                source_relation=source_relation,
             )
             if row.id == ORDER_COUNT
             else row
@@ -232,11 +220,7 @@ def test_counts_inherit_count_measure_constraints_on_their_relation(
         replace(config, semantic_policies=[_policy(constraint, ORDER_COUNT)]), source_path=PACKAGE
     )
     try:
-        if source_relation == "other_orders":
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
-        else:
-            _denied(engine, monkeypatch, query, kind)
+        _denied(engine, monkeypatch, query, kind)
     finally:
         engine.close()
 
@@ -303,16 +287,6 @@ def _order_aggregate(aggregation, value):
     }
 
 
-def _count_relation(config, source_relation):
-    return replace(
-        config,
-        measures=[
-            replace(row, source_relation=source_relation) if row.id == ORDER_COUNT else row
-            for row in config.measures
-        ],
-    )
-
-
 @pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
 @pytest.mark.parametrize("form", sorted(ROW_READS))
 def test_only_one_column_values_escape_count_constraints(config, monkeypatch, constraint_key, form):
@@ -356,18 +330,10 @@ def test_an_unrecognized_synthetic_shape_reads_rows(config, monkeypatch, shape):
 
 
 @pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
-@pytest.mark.parametrize(
-    ("source_relation", "form"),
-    [("", form) for form in sorted(COLUMN_VALUES)]
-    + [("other_orders", form) for form, (_, _, sql) in sorted(ROW_READS.items()) if sql],
-)
-def test_column_values_and_other_relations_match_reference_sql(
-    tmp_path, constraint_key, source_relation, form
-):
+@pytest.mark.parametrize("form", sorted(COLUMN_VALUES))
+def test_column_values_match_reference_sql(tmp_path, constraint_key, form):
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
-    config = _count_relation(
-        replace(load_package_config(str(package)), semantic_policies=[]), source_relation
-    )
+    config = replace(load_package_config(str(package)), semantic_policies=[])
     aggregation, value, value_sql = {**COLUMN_VALUES, **ROW_READS}[form]
     constraint, _, _ = CONSTRAINTS[constraint_key]
     engine = Runtime.from_config(
@@ -473,7 +439,6 @@ def test_columns_read_from_another_entity_inherit_constraints(config, monkeypatc
             revenue,
             id="measure.test.customer_revenue",
             entity=customer,
-            source_relation="jaffle_customer",
             expr=ColumnRefExpr(column="customer_id"),
             lookup_from=REVENUE,
             lookup_via=customer,
@@ -524,13 +489,10 @@ def test_an_unresolvable_constrained_lookup_never_admits_a_raw_aggregate(
 
 
 @pytest.mark.parametrize("table", [None, "jaffle_order"])
-@pytest.mark.parametrize("source_relation", ["jaffle_order", "other_orders"])
-def test_measure_relation_overrides_match_the_relation_sql_actually_reads(
-    config, table, source_relation
-):
+def test_a_measure_column_read_on_its_relation_is_constrained(config, table):
     revenue = next(row for row in config.measures if row.id == REVENUE)
     ref = ColumnRefExpr(column="order_total_cents", table=table or "")
-    changed = replace(revenue, expr=ref, source_relation=source_relation)
+    changed = replace(revenue, expr=ref)
     config = replace(
         config, measures=[changed if row.id == REVENUE else row for row in config.measures]
     )
@@ -542,10 +504,8 @@ def test_measure_relation_overrides_match_the_relation_sql_actually_reads(
         result = engine.validate(_query())
     finally:
         engine.close()
-    denied = bool(table) or source_relation == "jaffle_order"
-    assert result["ok"] is not denied, result
-    if denied:
-        assert result["errors"][0]["code"] == "POLICY_DENIED"
+    assert result["ok"] is False, result
+    assert result["errors"][0]["code"] == "POLICY_DENIED"
 
 
 @pytest.mark.parametrize("scoped", ["audiences", "roles", "environments"])

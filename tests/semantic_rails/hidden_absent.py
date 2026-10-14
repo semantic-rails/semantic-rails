@@ -65,7 +65,7 @@ ENGINE_READ = frozenset(
         *("safety", "source_columns", "target_columns", "source_key_role", "target_key_role"),
         *("allowed_directions", "target_key_type", "rollup_safe_aggregations_reverse"),
         *("dimensions", "from_", "to", "row_grain", "default_aggregation", "value_type"),
-        *("allowed_aggregations", "source_relation", "invalid_aggregations", "measure_class"),
+        *("allowed_aggregations", "invalid_aggregations", "measure_class"),
         *("compatible_temporal_roles", "suggested_aggregations"),
         *("preferred_companion_metrics", "default_temporal_role"),
         *("cross_window_policy", "lookup_from", "lookup_via", "temporal_role", "filter_spec"),

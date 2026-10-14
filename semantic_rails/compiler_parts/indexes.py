@@ -188,9 +188,7 @@ def _measure_has_source_row_key(measure: MeasureConfig, entity: EntityConfig) ->
     if entity.is_row_grain:
         return False
     key = entity.key
-    return measure.source_relation in {"", entity.table} and sorted(
-        measure.row_grain or key
-    ) == sorted(key)
+    return sorted(measure.row_grain or key) == sorted(key)
 
 
 def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:

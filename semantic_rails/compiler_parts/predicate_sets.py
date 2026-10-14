@@ -97,8 +97,6 @@ from .lowering_common import (
     _and_conditions,
     _apply_role_timezone,
     _dialect,
-    _measure_dim_relation,
-    _measure_owned_relation,
     _plan_requires_agent_dag_lowering,
     _query_key_aliases,
     _snapshot_series_columns,
@@ -112,7 +110,6 @@ from .paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
     _entity_key_dimension_ids,
-    _expression_root_entity,
     _join_condition,
     _joins_for_paths,
     _leaf_time_role,
@@ -138,7 +135,6 @@ class PredicateSetSql:
     set_name: str
     key_aliases: list[str]
     time_alias: str = ""
-    source_relation: str = ""
     metric_label: str = ""
 
 
@@ -215,7 +211,7 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
         measure = measures.get(measure_id)
         if measure is None:
             return []
-        relation = _measure_owned_relation(measure, entities)
+        relation = entities[measure.entity].table
         return [
             {
                 "source_entity": measure.entity,
@@ -408,13 +404,12 @@ def _measure_time_components(
         measure.entity,
         role.dimension,
         config,
-        source_relation_override=getattr(measure, "source_relation", "") or "",
     )
     time_source_local = dim.entity == measure.entity or direct_time is not None
     raw_expr = (
         direct_time[0]
         if direct_time is not None
-        else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
+        else _column_ref(entities[dim.entity].table, dim.column)
     )
     raw_expr = _apply_role_timezone(raw_expr, role, config)
     time_expr = _time_bucket_expr(plan.time, raw_expr, config)
@@ -687,13 +682,11 @@ def _minimal_predicate_set_ctes(
             distinct=True,
         ),
     )
-    root_entity = _expression_root_entity(predicate.input, config)
     return PredicateSetSql(
         ctes=[source_cte, *extra_ctes, set_cte],
         set_name=set_name,
         key_aliases=group_by_dims,
         time_alias=time_alias,
-        source_relation=_entity_index(config)[root_entity].table,
         metric_label=_last_token(expr_to_dict(predicate.input).get("metric", "predicate")),
     )
 
@@ -708,7 +701,7 @@ def _snapshot_select_fields(
     temporal_roles = _temporal_role_index(config)
     measure_plan = anchored.denominator_measure_plan
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
-    source_table = _measure_owned_relation(measure, entities)
+    source_table = entities[measure.entity].table
     raw_time_expr, time_expr, time_alias, time_source_local, leaf_time_role = (
         _measure_time_components(plan, measure_plan, config)
     )
@@ -719,7 +712,7 @@ def _snapshot_select_fields(
 
     order_role = temporal_roles[measure_plan.bound_measure.temporal_role]
     order_dim = dimensions[order_role.dimension]
-    order_expr = _column_ref(_measure_dim_relation(measure, order_dim, entities), order_dim.column)
+    order_expr = _column_ref(entities[order_dim.entity].table, order_dim.column)
     row_grain_columns = _snapshot_series_columns(
         measure, measure_plan.bound_measure.temporal_role, config
     )
@@ -784,7 +777,7 @@ def _anchored_snapshot_ctes(
     entities = _entity_index(config)
     bound = anchored.denominator_measure_plan.bound_measure
     measure = _measure_index(config)[bound.measure_id]
-    source_table = _measure_owned_relation(measure, entities)
+    source_table = entities[measure.entity].table
     # One snapshot is chosen per series and time bucket only, so a grouped clock, calendar
     # or other date would be read from that one snapshot, dropping the bucket's other periods.
     for dim_id in plan.group_by:

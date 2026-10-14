@@ -96,9 +96,6 @@ from .lowering_common import (
     _edge_cap,
     _entity_in_terms_of_anchor_plan,
     _filtered_series_operand,
-    _measure_dim_relation,
-    _measure_owned_relation,
-    _measure_source_relation,
     _owned_predicate_reads,
     _paths_are_single_hop_safe,
     _preserves_filtered_series,
@@ -645,7 +642,7 @@ def _fanout_dedup_leaf_select(
     entities = _entity_index(config)
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
     entity = entities[measure.entity]
-    table = _measure_owned_relation(measure, entities)
+    table = entities[measure.entity].table
     rows_name = f"{measure_plan.cte_name}_entity_rows"
     # Each de-duplicated row carries its own row marker, which the group counts.
     markers = _row_markers(measure_plan, measure, value_expr)
@@ -731,7 +728,7 @@ def _parent_lookup_leaf_select(
     with measure_objects(measure.id), recording_zero_outputs():
         record_bound_object(child_link, config)
         source_sql = nested.query_sql(config, payload, project_cut=project_is_cut())
-    table = _measure_source_relation(measure, _entity_index(config)[measure.entity])
+    table = _entity_index(config)[measure.entity].table
     occupied = {table.casefold()} | {
         node.name.casefold()
         for node in sql_nodes([source_sql, ctes, joins])
@@ -860,7 +857,7 @@ def _fanout_filter_leaf_select(
             ),
             *_rows_fields(measure_plan, measure, value_expr),
         ],
-        from_table=SqlTableRef(name=_measure_owned_relation(measure, _entity_index(config))),
+        from_table=SqlTableRef(name=_entity_index(config)[measure.entity].table),
         joins=joins,
         where=[*where, *conditions],
         group_by=[field.expression for field in key_fields],
@@ -1023,21 +1020,15 @@ def _source_rollup_leaf_select(
     if not source_join_columns:
         return None
 
-    source_table = _measure_owned_relation(measure, entities)
+    source_table = entities[measure.entity].table
     rollup_name = f"{measure_plan.cte_name}_source_rollup"
     preagg_fields: dict[str, Any] = {
         column: _column_ref(source_table, column) for column in source_join_columns
     }
     local_group_aliases: list[str] = []
-    measure_source_override = getattr(measure, "source_relation", "") or ""
     for dim_id in plan.group_by:
         dim = dimensions[dim_id]
-        direct = _direct_dimension_source_expr(
-            measure.entity,
-            dim_id,
-            config,
-            source_relation_override=measure_source_override,
-        )
+        direct = _direct_dimension_source_expr(measure.entity, dim_id, config)
         if dim.entity == measure.entity:
             preagg_fields[dim_id] = unknown_as_null(_column_ref(source_table, dim.column), dim)
             local_group_aliases.append(dim_id)
@@ -1166,9 +1157,7 @@ def _measure_leaf_select(
         and all(predicate.scope_mode != "contextual" for predicate in owned_predicates)
     ):
         owned_reads[measure_plan.bound_measure.alias] = LeafScope(
-            from_table=SqlTableRef(
-                name=_measure_source_relation(measure, entities[measure.entity])
-            ),
+            from_table=SqlTableRef(name=entities[measure.entity].table),
             joins=tuple(owned_joins),
             where=tuple(owned_conditions),
             value=None,
@@ -1182,10 +1171,9 @@ def _measure_leaf_select(
     leaf_time_role = _leaf_time_role(
         measure_plan.bound_measure, normalize_query(plan.query), config
     )
-    measure_source_override = getattr(measure, "source_relation", "") or ""
     for dim_id in plan.group_by:
         expr, alias = _direct_dimension_source_expr(
-            measure.entity, dim_id, config, source_relation_override=measure_source_override
+            measure.entity, dim_id, config
         ) or _resolve_dimension_expr(dim_id, config)
         select_fields.append(SqlField(expr, alias))
         group_fields.append(expr)
@@ -1197,13 +1185,12 @@ def _measure_leaf_select(
             measure.entity,
             role.dimension,
             config,
-            source_relation_override=measure_source_override,
         )
         time_source_local = dim.entity == measure.entity or direct_time is not None
         raw_expr = (
             direct_time[0]
             if direct_time is not None
-            else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
+            else _column_ref(entities[dim.entity].table, dim.column)
         )
         coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
@@ -1246,7 +1233,6 @@ def _measure_leaf_select(
             measure.entity,
             str(item["field"]),
             config,
-            source_relation_override=measure_source_override,
         ) or _resolve_dimension_expr(str(item["field"]), config)
         target = (
             child_where
@@ -1261,7 +1247,6 @@ def _measure_leaf_select(
             measure.entity,
             str(item["field"]),
             config,
-            source_relation_override=measure_source_override,
         ) or _resolve_dimension_expr(str(item["field"]), config)
         target = (
             child_where
@@ -1273,9 +1258,7 @@ def _measure_leaf_select(
         target.append(condition := _value_filter_condition(expr, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
-    where_clauses.extend(
-        _edge_cap(measure, leaf_time_role, config, source_relation=measure_source_override)
-    )
+    where_clauses.extend(_edge_cap(measure, leaf_time_role, config))
     untimed = [*where_clauses, *authored_conditions, *predicate_row_conditions]
     if plan.time:
         where_clauses.extend(
@@ -1287,9 +1270,7 @@ def _measure_leaf_select(
     if measure_plan.bound_measure.temporal_role:
         role = temporal_roles[measure_plan.bound_measure.temporal_role]
         time_dim = dimensions[role.dimension]
-        order_expr = _column_ref(
-            _measure_dim_relation(measure, time_dim, entities), time_dim.column
-        )
+        order_expr = _column_ref(entities[time_dim.entity].table, time_dim.column)
 
     def path_joins() -> list[SqlJoin]:
         """The leaf's joins along its paths; built in the branch that uses them, since building
@@ -1367,7 +1348,7 @@ def _measure_leaf_select(
                 f"{measure_plan.bound_measure.aggregation} requires an ordering temporal role",
             )
         row_grain_exprs = [
-            _column_ref(_measure_owned_relation(measure, entities), column)
+            _column_ref(entities[measure.entity].table, column)
             for column in _snapshot_series_columns(
                 measure, measure_plan.bound_measure.temporal_role, config
             )
@@ -1408,7 +1389,7 @@ def _measure_leaf_select(
                 plan,
                 config,
                 measure_plan,
-                _measure_source_relation(measure, entities[measure.entity]),
+                entities[measure.entity].table,
                 coverage_time,
                 time_expr,
             )
@@ -1419,9 +1400,7 @@ def _measure_leaf_select(
             order_expr=order_expr,
             value_expr=leaf_value_expr,
             leaf_alias=leaf_alias,
-            from_table=SqlTableRef(
-                name=_measure_source_relation(measure, entities[measure.entity])
-            ),
+            from_table=SqlTableRef(name=entities[measure.entity].table),
             joins=joins,
             where_clauses=[
                 clause
@@ -1457,7 +1436,7 @@ def _measure_leaf_select(
     leaf = SqlSelect(
         ctes=predicate_ctes,
         select=select_fields,
-        from_table=SqlTableRef(name=_measure_source_relation(measure, entities[measure.entity])),
+        from_table=SqlTableRef(name=entities[measure.entity].table),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,
@@ -1670,7 +1649,7 @@ def _measure_group_leaf_select(
         raw_expr = (
             direct_time[0]
             if direct_time is not None
-            else _column_ref(_measure_dim_relation(first_measure, dim, entities), dim.column)
+            else _column_ref(entities[dim.entity].table, dim.column)
         )
         coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
@@ -1694,14 +1673,7 @@ def _measure_group_leaf_select(
         (authored_conditions if preserve_buckets else where_clauses).append(
             _value_filter_condition(expr, item, config)
         )
-    where_clauses.extend(
-        _edge_cap(
-            first_measure,
-            leaf_time_role,
-            config,
-            source_relation=getattr(first_measure, "source_relation", "") or "",
-        )
-    )
+    where_clauses.extend(_edge_cap(first_measure, leaf_time_role, config))
     untimed = [*where_clauses, *authored_conditions]
     if plan.time:
         where_clauses.extend(
@@ -1714,9 +1686,7 @@ def _measure_group_leaf_select(
         if measure_plan.bound_measure.temporal_role:
             role = temporal_roles[measure_plan.bound_measure.temporal_role]
             time_dim = dimensions[role.dimension]
-            order_expr = _column_ref(
-                _measure_dim_relation(measure, time_dim, entities), time_dim.column
-            )
+            order_expr = _column_ref(entities[time_dim.entity].table, time_dim.column)
         value_expr = _config_expr_to_sql(measure.expr, measure, config)
         value_expr = _filtered_series_operand(value_expr, authored_conditions)
         select_fields.append(
@@ -1744,7 +1714,7 @@ def _measure_group_leaf_select(
     )
     leaf = SqlSelect(
         select=select_fields,
-        from_table=SqlTableRef(name=_measure_owned_relation(first_measure, entities)),
+        from_table=SqlTableRef(name=entities[first_measure.entity].table),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,

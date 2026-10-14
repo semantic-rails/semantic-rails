@@ -18,19 +18,25 @@ from tests.semantic_rails.conftest import copy_package_config
 
 
 @pytest.mark.parametrize(
-    ("old", "new", "field"),
+    ("old", "new", "object_id", "field"),
     [
-        ("expr: revenue_ytd_cents / 100.0", "expr: revenue_ytd_cents / 1000.0", "expression"),
+        (
+            "expr: revenue_ytd_cents / 100.0",
+            "expr: revenue_ytd_cents / 1000.0",
+            "measure.jaffle.revenue_ytd_usd",
+            "expression",
+        ),
         (
             "relation: jaffle_daily_metric_rollup",
             "relation: jaffle_daily_metric_rollup_v2",
-            "source_relation",
+            "entity.jaffle_daily_metrics",
+            "table",
         ),
     ],
     ids=["measure-expression", "model-relation"],
 )
 def test_expression_and_relation_edits_are_high_risk_behavior_changes(
-    tmp_path: Path, old: str, new: str, field: str
+    tmp_path: Path, old: str, new: str, object_id: str, field: str
 ) -> None:
     base_dir = copy_package_config(tmp_path, "jaffle_shop")
     changed_dir = copy_package_config(tmp_path, "jaffle_shop")
@@ -41,9 +47,7 @@ def test_expression_and_relation_edits_are_high_risk_behavior_changes(
     changed = resolve_package_reference(path=str(changed_dir))
 
     diff = diff_package_report(changed, compare_path=str(base_dir))
-    (row,) = [
-        row for row in diff["changes"] if row["object_id"] == "measure.jaffle.revenue_ytd_usd"
-    ]
+    (row,) = [row for row in diff["changes"] if row["object_id"] == object_id]
     assert row["behavior_change"] is True
     assert field in row["changed_fields"]
     assert impact_report(changed, compare_path=str(base_dir))["impact"]["risk"] == "high"

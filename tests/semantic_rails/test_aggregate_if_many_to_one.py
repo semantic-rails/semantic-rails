@@ -738,19 +738,9 @@ def test_inside_a_metric_recipe_it_is_refused(runtime):
 def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(package, gold):
     # The authored measure reads the customer through a lookup that keeps its rows, so rows 7
     # and 8 (no customer) have no currency and count, as `where currency IS NULL` counts them.
-    # Named with its own table as its source, as a fact model names it and as the
-    # aggregate_if's measure is, it still never shares one scan with it.
+    # It reads its own table, as the aggregate_if's measure does, yet never shares one scan.
     config = load_package_config(str(package))
-    authored = "measure.shop.null_currency_amount"
-    measures = [
-        dataclasses.replace(measure, source_relation="consumption")
-        if measure.id == authored
-        else measure
-        for measure in config.measures
-    ]
-    runtime = Runtime.from_config(
-        dataclasses.replace(config, measures=measures), source_path=str(package)
-    )
+    runtime = Runtime.from_config(config, source_path=str(package))
     select = [
         {"as": "authored", "expression": _measure("null_currency_amount")},
         {"as": "value", "expression": SUM_EUR},

@@ -260,9 +260,7 @@ def measure_column_ref(
     """The source column shared by SQL lowering and column-aggregate constraints."""
     entity_id = _resolve_expr_entity(ref, measure, config)
     entity = _entity_index(config)[entity_id]
-    # A measure's own fact relation can differ from its entity's relation.
-    source = measure.source_relation if entity_id == measure.entity and not ref.table else ""
-    return _column_ref(source or entity.table, ref.column)
+    return _column_ref(entity.table, ref.column)
 
 
 def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> Any:
@@ -1253,9 +1251,7 @@ def _synthetic_conditional_measure(
     # per key refuses this measure as it refuses theirs. With no such measure it is unknown.
     key = sorted(entity.key_columns)
     grains = sorted(
-        list(row.row_grain)
-        for row in config.measures
-        if row.entity == entity_id and row.source_relation in {"", entity.table} and row.row_grain
+        list(row.row_grain) for row in config.measures if row.entity == entity_id and row.row_grain
     )
     row_grain = next(
         (grain for grain in grains if sorted(grain) != key), grains[0] if grains else []
@@ -1291,7 +1287,6 @@ def _synthetic_conditional_measure(
         expr=expr_for_measure,
         default_aggregation=aggregation,
         allowed_aggregations=[aggregation],
-        source_relation=entity.table,
         measure_class="additive",
         value_type="number",
         name=f"aggregate_if[{aggregation}]",

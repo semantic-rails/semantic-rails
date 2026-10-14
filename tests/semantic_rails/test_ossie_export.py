@@ -111,10 +111,9 @@ def test_jaffle_mapping_and_warning_counts_are_golden() -> None:
         "conversion metrics": 3,
         "cumulative metrics": 1,
         "dimension attributes": 67,
-        "entity attributes": 13,
+        "entity attributes": 15,
         "filtered metrics": 2,
-        "measure attributes": 33,
-        "measures on other relations": 8,
+        "measure attributes": 41,
         "metric attributes": 5,
         "metrics on semi-additive measures": 1,
         "metrics using prior_period": 1,
@@ -252,7 +251,7 @@ COST = AggregateExpr(measure="measure.jaffle.order_cost_usd", aggregation="sum")
         (replace(REVENUE, aggregation="median"), "metrics using median"),
         (replace(REVENUE, temporal_role="temporal_role.jaffle_order_time"), "metrics with clock or parameter overrides"),
         (MetricRecipeRefExpr("metric.sales.cumulative_revenue"), "metrics built on omitted objects"),
-        (AggregateExpr(measure="measure.jaffle.revenue_ytd_usd"), "metrics built on omitted objects"),
+        (AggregateExpr(measure="measure.jaffle.revenue_ytd_usd"), "metrics on semi-additive measures"),
     ],
 )  # fmt: skip
 def test_metrics_export_their_sql_or_stay_in_the_sidecar(expression, expected) -> None:

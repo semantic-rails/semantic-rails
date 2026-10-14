@@ -1062,13 +1062,6 @@ class ArchitectProject:
                 f"{entity_slug!r} exists; remove it first, or give its key",
                 details={"model": model_slug, "entity": entity_slug},
             )
-        if str(model.get("kind") or "").strip().lower() == "fact":
-            # upsert_model manages entity models; a replace would also drop kind: fact.
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{model_slug!r} is a fact model; upsert_model manages entity models",
-                details={"model": model_slug},
-            )
         previous = model
         if replace:
             model = {field: model[field] for field in _KEPT_ON_REPLACE if field in model}
@@ -1990,7 +1983,7 @@ class ArchitectProject:
             raw["entities"], self._primary_entity_for_model(owner, raw["entities"])
         )
         if entity is None or str(entity.spec.get("model") or owner.key) != owner.key:
-            return  # a fact model, or a model without an entity of its own
+            return  # a model without an entity of its own (row grain)
         graph_doc = self._document(documents, entity.source_path)
         graph = dict(graph_doc.get("graph", {}) or {})
         entities = dict(graph.get("entities", {}) or {})

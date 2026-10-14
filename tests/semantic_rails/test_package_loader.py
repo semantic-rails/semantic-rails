@@ -231,7 +231,7 @@ def test_jaffle_shop_package_surface_remains_stable():
         "semantic_policies": len(config.semantic_policies),
         "semantic_caveats": len(config.semantic_caveats),
     } == {
-        "entities": 13,
+        "entities": 15,
         "dimensions": 67,
         "temporal_roles": 18,
         "relationships": 16,

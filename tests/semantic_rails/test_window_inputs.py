@@ -197,25 +197,18 @@ def test_distinct_count_requires_a_source_row_key(config, key_source, other_key)
 
 
 @pytest.mark.parametrize(
-    ("row_grain", "source_relation", "kind", "route"),
+    ("row_grain", "kind", "route"),
     [
-        (["order_id", "line_no"], "", "rolling", "compile"),
-        (["order_id", "line_no"], "", "cumulative", "lower"),
-        ([], "order_lines", "period_to_date", "compile"),
-        ([], "order_lines", "rolling", "lower"),
+        (["order_id", "line_no"], "rolling", "compile"),
+        (["order_id", "line_no"], "cumulative", "lower"),
     ],
 )
-def test_entity_key_cannot_override_the_measure_source_rows(
-    config, row_grain, source_relation, kind, route
-):
+def test_entity_key_cannot_override_the_measure_source_rows(config, row_grain, kind, route):
     measure = next(m for m in config.measures if m.id == ORDERS["measure"])
     config = replace(
         config,
         measures=[
-            replace(m, row_grain=row_grain, source_relation=source_relation)
-            if m.id == measure.id
-            else m
-            for m in config.measures
+            replace(m, row_grain=row_grain) if m.id == measure.id else m for m in config.measures
         ],
         entities=[
             replace(e, key_columns=["order_id"]) if e.id == measure.entity else e

@@ -344,10 +344,14 @@ def test_cards_of_visible_objects_name_revenue_only_for_finance(engine, roles, e
 @pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
 def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eligible):
     root = copy_package_config(tmp_path, "jaffle_shop")
-    # Keep only regular models in this catalog fixture.
+    # Keep the precomputed series out of this catalog fixture.
     (root / "models" / "core" / "daily_metrics.yml").unlink()
     (root / "models" / "core" / "monthly_metrics.yml").unlink()
     (root / "metrics" / "core" / "time_series_metrics.yml").unlink()
+    graph = yaml.safe_load((root / "graph.yml").read_text())
+    for name in ("daily_metrics", "monthly_metrics"):
+        del graph["graph"]["entities"][name]
+    _write(root / "graph.yml", graph)
     path = root / "metrics" / "core" / "core_metrics.yml"
     data = yaml.safe_load(path.read_text())
     keys = ("preferred_companion_metrics",)

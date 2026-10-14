@@ -75,7 +75,6 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
-from .lowering_common import _measure_owned_relation
 from .paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
@@ -1528,7 +1527,7 @@ def child_group_route(
                 route=lookup.chosen_path,
             )
         lookups.append(lookup)
-    route_tables = {_measure_owned_relation(measure, entities)} | {
+    route_tables = {entities[measure.entity].table} | {
         join.table.name for join in _joins_for_paths(start, [route], config, measure_entity=None)
     }
     lookup_tables = {

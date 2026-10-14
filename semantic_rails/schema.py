@@ -256,7 +256,6 @@ class MeasureConfig:
     expr: SemanticExpr
     default_aggregation: str
     allowed_aggregations: list[str]
-    source_relation: str = ""
     invalid_aggregations: list[str] = field(default_factory=list)
     measure_class: str = "additive"
     accumulation: AccumulationConfig = field(default_factory=AccumulationConfig)
