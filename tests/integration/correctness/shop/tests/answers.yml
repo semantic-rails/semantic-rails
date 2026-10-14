@@ -1,6 +1,6 @@
 fixture:
-  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports]
-  data_sha256: c5dec6658f5436086b09d9a6de69cb7bb836ebf2ef4fd8222155f11ef5b37456
+  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days, tickets, ticket_loads, ticket_audits, ticket_exports, shipment_scans, order_tags, tags]
+  data_sha256: 96e8f1fbe6f1c3bd06f0fa6b1a3b1e25843b1c77c3ce58348d4f19b02ab4df19
 tests:
   shop/sibling-input-clock-filter-keeps-independent-history:
     kind: query_matches_snapshot
@@ -8154,3 +8154,384 @@ tests:
     reference_sql: |
       SELECT g.b FROM generate_series(TIMESTAMP '2024-02-01', TIMESTAMP '2024-02-29', INTERVAL '1 day') AS g(b)
       WHERE NOT EXISTS (SELECT 1 FROM orders AS o WHERE o.ordered_at >= g.b AND o.ordered_at < g.b + INTERVAL '1 day')
+  shop/row-grain-duplicate-rows-count-twice:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A model with no key counts every stored row, so order 1's duplicated pickup counts twice.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, docs/QUERY_CALL.md#select]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.scan_count]
+    expected_rows:
+      - {scan_count: 10}
+    reference_sql: |
+      SELECT COUNT(*) AS scan_count FROM shipment_scans
+  shop/row-grain-weight-by-own-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A sum grouped by the model's own column reads every row once.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, tests/integration/correctness/shop/models/shipment_scans.yml#model.dimensions.scan_type]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.scan_weight]
+      group_by: [dimension.shop_shipment_scans_scan_type]
+    expected_rows:
+      - {dimension.shop_shipment_scans_scan_type: delivery, scan_weight: 8.75}
+      - {dimension.shop_shipment_scans_scan_type: pickup, scan_weight: 10.5}
+    reference_sql: |
+      SELECT scan_type, SUM(weight) FROM shipment_scans GROUP BY scan_type
+  shop/row-grain-rows-by-parent-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each scan looks up its order. A scan with no order, one whose order doesn't exist, and order 8 (no store) read NULL.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id]
+    tags: [row-grain, null-vs-zero]
+    query:
+      select: [measure.shop.scan_count]
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: null, scan_count: 3}
+      - {dimension.shop_order_store_id: a, scan_count: 6}
+      - {dimension.shop_order_store_id: b, scan_count: 1}
+    reference_sql: |
+      SELECT o.store_id, COUNT(*) FROM shipment_scans AS s
+      LEFT JOIN orders AS o ON o.order_id = s.order_id GROUP BY o.store_id
+  shop/row-grain-rows-by-grandparent-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Two lookups, scan to order to customer, each matching at most one row.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.scan_count]
+      group_by: [dimension.shop_customer_channel]
+    expected_rows:
+      - {dimension.shop_customer_channel: null, scan_count: 2}
+      - {dimension.shop_customer_channel: web, scan_count: 6}
+      - {dimension.shop_customer_channel: store, scan_count: 2}
+    reference_sql: |
+      SELECT c.channel, COUNT(*) FROM shipment_scans AS s
+      LEFT JOIN orders AS o ON o.order_id = s.order_id
+      LEFT JOIN signups AS c ON c.customer_id = o.customer_id GROUP BY c.channel
+  shop/row-grain-distinct-parents-by-grandparent-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A distinct count of the scans' order ids counts orders, not scans; a scan with no order counts none.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scanned_orders, tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.scanned_orders]
+      group_by: [dimension.shop_customer_channel]
+    expected_rows:
+      - {dimension.shop_customer_channel: null, scanned_orders: 1}
+      - {dimension.shop_customer_channel: web, scanned_orders: 3}
+      - {dimension.shop_customer_channel: store, scanned_orders: 2}
+    reference_sql: |
+      SELECT c.channel, COUNT(DISTINCT s.order_id) FROM shipment_scans AS s
+      LEFT JOIN orders AS o ON o.order_id = s.order_id
+      LEFT JOIN signups AS c ON c.customer_id = o.customer_id GROUP BY c.channel
+  shop/row-grain-aggregate-if:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A conditional count reads the model's own rows, duplicates included.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.dimensions.scan_type, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [row-grain]
+    query:
+      select:
+        - as: pickups
+          expression:
+            kind: aggregate_if
+            aggregation: count
+            condition: {kind: comparison, op: '=', left: {kind: column, column: scan_type, entity: entity.shop_shipment_scans}, right: {kind: literal, value: pickup}}
+    expected_rows:
+      - {pickups: 7}
+    reference_sql: |
+      SELECT COUNT(*) FROM shipment_scans WHERE scan_type = 'pickup'
+  shop/row-grain-monthly-rows:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The model's own clock buckets its rows; a month with no scan has no row.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, tests/integration/correctness/shop/models/shipment_scans.yml#model.times.scanned_at]
+    tags: [row-grain, time-window]
+    query:
+      select: [measure.shop.scan_count]
+      time: {temporal_role: temporal_role.shop_shipment_scans_scanned_at, grain: month}
+    expected_rows:
+      - {period: '2023-11-01', period_partial: false, scan_count: 4}
+      - {period: '2024-01-01', period_partial: false, scan_count: 2}
+      - {period: '2024-04-01', period_partial: false, scan_count: 1}
+      - {period: '2024-05-01', period_partial: false, scan_count: 2}
+      - {period: '2024-06-01', period_partial: false, scan_count: 1}
+    reference_sql: |
+      SELECT CAST(date_trunc('month', scanned_at) AS DATE) AS period, COUNT(*) FROM shipment_scans
+      GROUP BY 1
+  shop/row-grain-cumulative-rows:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A running total over the model's own clock sums its monthly row counts.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [row-grain, time-window]
+    query:
+      select:
+        - {as: running, expression: {kind: cumulative, input: measure.shop.scan_count}}
+      time: {temporal_role: temporal_role.shop_shipment_scans_scanned_at, grain: month}
+    expected_rows:
+      - {period: '2023-11-01', period_partial: false, running: 4}
+      - {period: '2024-01-01', period_partial: false, running: 6}
+      - {period: '2024-04-01', period_partial: false, running: 7}
+      - {period: '2024-05-01', period_partial: false, running: 9}
+      - {period: '2024-06-01', period_partial: false, running: 10}
+    reference_sql: |
+      WITH monthly AS (
+        SELECT CAST(date_trunc('month', scanned_at) AS DATE) AS period, COUNT(*) AS scans
+        FROM shipment_scans GROUP BY 1
+      )
+      SELECT period, SUM(scans) OVER (ORDER BY period ROWS UNBOUNDED PRECEDING) FROM monthly
+  shop/row-grain-parent-filtered-by-child-aggregate:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Customers with at least one scan, ever. The scans are counted per customer key before they meet the customers, so the duplicate never doubles a customer.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_CALL.md#entity-filters]
+    tags: [row-grain, child-scope]
+    query:
+      select: [measure.shop.signup_count]
+      where:
+        - entity: entity.shop_customer
+          having: [{field: measure.shop.scan_count, op: gte, value: 1}]
+          over: all_time
+    expected_rows:
+      - {signup_count: 3}
+    reference_sql: |
+      SELECT COUNT(DISTINCT c.customer_id) FROM signups AS c
+      WHERE EXISTS (SELECT 1 FROM shipment_scans AS s JOIN orders AS o ON o.order_id = s.order_id
+        WHERE o.customer_id = c.customer_id)
+  shop/row-grain-parent-filtered-by-child-rows:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Customers with a pickup scan, two hops down; EXISTS keeps each customer once.
+    cites: [tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, tests/integration/correctness/shop/models/shipment_scans.yml#model.dimensions.scan_type, docs/QUERY_CALL.md#entity-filters]
+    tags: [row-grain, child-scope]
+    query:
+      select: [measure.shop.signup_count]
+      where:
+        - entity: entity.shop_shipment_scans
+          any: [{field: dimension.shop_shipment_scans_scan_type, op: is, value: pickup}]
+    expected_rows:
+      - {signup_count: 3}
+    reference_sql: |
+      SELECT COUNT(DISTINCT c.customer_id) FROM signups AS c
+      WHERE EXISTS (SELECT 1 FROM shipment_scans AS s JOIN orders AS o ON o.order_id = s.order_id
+        WHERE o.customer_id = c.customer_id AND s.scan_type = 'pickup')
+  shop/row-grain-parents-ranked-by-child-rows:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The top customers by scans, ranked on their key; scans with no customer share the NULL row.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, docs/QUERY_CALL.md#order_by]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.scan_count]
+      group_by: [dimension.shop_customer_id]
+      order_by: [{field: scan_count, direction: desc}, {field: dimension.shop_customer_id, direction: asc}]
+      limit: 5
+    expected_rows:
+      - {dimension.shop_customer_id: 101, scan_count: 4}
+      - {dimension.shop_customer_id: 102, scan_count: 2}
+      - {dimension.shop_customer_id: 103, scan_count: 2}
+      - {dimension.shop_customer_id: null, scan_count: 2}
+    reference_sql: |
+      SELECT c.customer_id, COUNT(*) AS scans FROM shipment_scans AS s
+      LEFT JOIN orders AS o ON o.order_id = s.order_id
+      LEFT JOIN signups AS c ON c.customer_id = o.customer_id
+      GROUP BY c.customer_id ORDER BY scans DESC, c.customer_id ASC NULLS LAST LIMIT 5
+  shop/row-grain-filtered-by-sibling-child:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Scan weight of orders that had a refund. EXISTS on the refunds never repeats a scan for order 2's two refunds.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_CALL.md#entity-filters]
+    tags: [row-grain, child-scope, second-fact]
+    query:
+      select: [measure.shop.scan_weight]
+      where:
+        - entity: entity.shop_refund
+          any: [{field: dimension.shop_refund_refund_type, op: is, value: [goods, shipping]}]
+    expected_rows:
+      - {scan_weight: 9.25}
+    reference_sql: |
+      SELECT SUM(s.weight) FROM shipment_scans AS s
+      WHERE EXISTS (SELECT 1 FROM refunds AS r WHERE r.order_id = s.order_id
+        AND r.refund_type IN ('goods', 'shipping'))
+  shop/row-grain-bridge-distinct-parents:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Orders by tag through a link table with no key. Order 1's duplicate gift link is absorbed by the distinct order count.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/tags.yml#model.dimensions.tag_name]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.order_count]
+      group_by: [dimension.shop_tag_tag_name]
+    expected_rows:
+      - {dimension.shop_tag_tag_name: rush, order_count: 2}
+      - {dimension.shop_tag_tag_name: gift, order_count: 2}
+      - {dimension.shop_tag_tag_name: fragile, order_count: 2}
+    reference_sql: |
+      SELECT t.tag_name, COUNT(DISTINCT o.order_id) FROM orders AS o
+      JOIN order_tags AS l ON l.order_id = o.order_id JOIN tags AS t ON t.tag_id = l.tag_id
+      GROUP BY t.tag_name
+  shop/row-grain-bridge-rows-by-parent-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The link table's own rows by their order's store; the duplicate link counts twice, and order 9's link counts under store b.
+    cites: [tests/integration/correctness/shop/models/order_tags.yml#model.measures.tag_links, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.tag_links]
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: a, tag_links: 5}
+      - {dimension.shop_order_store_id: b, tag_links: 2}
+    reference_sql: |
+      SELECT o.store_id, COUNT(*) FROM order_tags AS l
+      LEFT JOIN orders AS o ON o.order_id = l.order_id GROUP BY o.store_id
+  shop/row-grain-parents-by-child-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Orders by scan type, each order counted once per type it has a scan of, de-duplicated on the order key.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/shipment_scans.yml#model.dimensions.scan_type]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.order_count]
+      group_by: [dimension.shop_shipment_scans_scan_type]
+    expected_rows:
+      - {dimension.shop_shipment_scans_scan_type: pickup, order_count: 5}
+      - {dimension.shop_shipment_scans_scan_type: delivery, order_count: 2}
+    reference_sql: |
+      SELECT s.scan_type, COUNT(DISTINCT o.order_id) FROM orders AS o
+      JOIN shipment_scans AS s ON s.order_id = o.order_id GROUP BY s.scan_type
+  shop/row-grain-three-facts-by-grandparent-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Scans, revenue and refunds by signup channel, each aggregated before they meet; the NULL channel holds what no signed-up channel reaches.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_count, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count]
+    tags: [row-grain, second-fact, null-vs-zero]
+    query:
+      select: [measure.shop.scan_count, measure.shop.revenue, measure.shop.refund_count]
+      group_by: [dimension.shop_customer_channel]
+    expected_rows:
+      - {dimension.shop_customer_channel: null, scan_count: 2, revenue: 2, refund_count: 2}
+      - {dimension.shop_customer_channel: store, scan_count: 2, revenue: 17, refund_count: 3}
+      - {dimension.shop_customer_channel: web, scan_count: 6, revenue: 55, refund_count: 1}
+    reference_sql: |
+      WITH scans AS (
+        SELECT c.channel, COUNT(*) AS n FROM shipment_scans AS s
+        LEFT JOIN orders AS o ON o.order_id = s.order_id
+        LEFT JOIN signups AS c ON c.customer_id = o.customer_id GROUP BY c.channel
+      ), revenue AS (
+        SELECT c.channel, SUM(o.amount) AS n FROM orders AS o
+        LEFT JOIN signups AS c ON c.customer_id = o.customer_id GROUP BY c.channel
+      ), refunded AS (
+        SELECT c.channel, COUNT(DISTINCT r.refund_id) AS n FROM refunds AS r
+        LEFT JOIN orders AS o ON o.order_id = r.order_id
+        LEFT JOIN signups AS c ON c.customer_id = o.customer_id GROUP BY c.channel
+      ), channels AS (
+        SELECT channel FROM scans UNION SELECT channel FROM revenue UNION SELECT channel FROM refunded
+      )
+      SELECT k.channel, s.n, v.n, f.n FROM channels AS k
+      LEFT JOIN scans AS s ON s.channel IS NOT DISTINCT FROM k.channel
+      LEFT JOIN revenue AS v ON v.channel IS NOT DISTINCT FROM k.channel
+      LEFT JOIN refunded AS f ON f.channel IS NOT DISTINCT FROM k.channel
+  shop/row-grain-pinned-route-filter:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A pinned route from scans through their order to its refunds filters the scans with EXISTS; order 2's two goods refunds keep its scan once.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/QUERY_CALL.md#where]
+    tags: [row-grain, child-scope]
+    query:
+      select: [measure.shop.scan_weight]
+      where: [{field: dimension.shop_refund_refund_type, op: is, value: goods}]
+      routes: [{from: entity.shop_shipment_scans, to: entity.shop_refund, via: [relationship.shipment_scans_order, relationship.refunds_order]}]
+    expected_rows:
+      - {scan_weight: 2.75}
+    reference_sql: |
+      SELECT SUM(s.weight) FROM shipment_scans AS s
+      WHERE EXISTS (SELECT 1 FROM refunds AS r WHERE r.order_id = s.order_id AND r.refund_type = 'goods')
+  shop/row-grain-pinned-route-grouped-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: Grouping scans by a refund dimension would split each scan over its order's refunds; the lookup before the one-to-many hop is refused.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/QUERY_CALL.md#group_by]
+    tags: [row-grain, refusal]
+    query:
+      select: [measure.shop.scan_weight]
+      group_by: [dimension.shop_refund_refund_type]
+      routes: [{from: entity.shop_shipment_scans, to: entity.shop_refund, via: [relationship.shipment_scans_order, relationship.refunds_order]}]
+  shop/row-grain-distinct-count-across-a-lookup-and-fan-out-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: The scans' distinct orders grouped by refund type cross a lookup and then a one-to-many hop, which relates the two many-to-many.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scanned_orders, docs/QUERY_CALL.md#group_by]
+    tags: [row-grain, refusal]
+    query:
+      select: [measure.shop.scanned_orders]
+      group_by: [dimension.shop_refund_refund_type]
+  shop/row-grain-parent-sum-by-child-column-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: Revenue by scan type would split or repeat each order's amount over its scans, as for any child.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#group_by]
+    tags: [row-grain, refusal]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_shipment_scans_scan_type]
+  shop/row-grain-entity-filter-on-its-rows-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: ROW_GRAIN_UNSUPPORTED
+    why: An aggregate per scan needs to tell scans apart, which a model with no key can't.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/QUERY_CALL.md#entity-filters]
+    tags: [row-grain, refusal]
+    query:
+      select: [measure.shop.scan_count]
+      where:
+        - entity: entity.shop_shipment_scans
+          having: [{field: measure.shop.scan_weight, op: gte, value: 1}]
+          over: all_time
+  shop/row-grain-per-row-distribution-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: ROW_GRAIN_UNSUPPORTED
+    why: A distribution over each scan's value needs to tell scans apart.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [row-grain, refusal]
+    query:
+      select:
+        - as: median_scan
+          expression: {kind: distribution, function: median, over: {kind: entity_value, entity: entity.shop_shipment_scans, input: measure.shop.scan_weight}}
+  shop/row-grain-non-additive-sum-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: ROW_GRAIN_UNSUPPORTED
+    why: Summing a value that must not be summed needs each row's key fixed, and a model with no key has none.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.heaviest_scan, docs/QUERY_CALL.md#inline-expression-kinds]
+    tags: [row-grain, refusal]
+    query:
+      select:
+        - {as: total, expression: {kind: measure, measure: measure.shop.heaviest_scan, aggregation: sum}}
+  shop/row-grain-non-additive-default-answers:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The non-additive measure's own maximum reads every row and needs no key.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.heaviest_scan, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.heaviest_scan]
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: null, heaviest_scan: 4}
+      - {dimension.shop_order_store_id: a, heaviest_scan: 3.25}
+      - {dimension.shop_order_store_id: b, heaviest_scan: 2}
+    reference_sql: |
+      SELECT o.store_id, MAX(s.weight) FROM shipment_scans AS s
+      LEFT JOIN orders AS o ON o.order_id = s.order_id GROUP BY o.store_id

@@ -1,0 +1,20 @@
+# A table with no key: nothing in graph.entities names this model, so every stored row counts,
+# exact duplicates included. Its scans look up their order, and through it the customer.
+model:
+  id: shipment_scans
+  label: Shipment scans
+  relation: shipment_scans
+  entities: {order: {}}
+  times:
+    scanned_at: {label: Scan time, column: scanned_at, kind: timestamp, class: event_time,
+      supported_grains: [day, week, month, quarter, year], default: true}
+  dimensions:
+    scan_type: {label: Scan type, kind: categorical}
+  measures:
+    scan_count: {label: Scans, kind: aggregate, expr: {kind: literal, value: 1},
+      accumulation: {kind: flow}, value_type: count}
+    scan_weight: {label: Scan weight, kind: aggregate, expr: weight, accumulation: {kind: flow}}
+    scanned_orders: {label: Scanned orders, kind: entity_count, entity_key: order_id,
+      accumulation: {kind: flow}}
+    heaviest_scan: {label: Heaviest scan, kind: aggregate, expr: weight, default_agg: max,
+      additive: false}
