@@ -325,24 +325,6 @@ def recording_stock_key_gaps() -> Iterator[list[dict[str, Any]]]:
         yield gaps
 
 
-_closing_reads: ContextVar[list[dict[str, Any]] | None] = ContextVar("closing_reads", default=None)
-
-
-@contextmanager
-def recording_closing_reads() -> Iterator[list[dict[str, Any]]]:
-    """Collect each balance the query reads on its closing day, with the probe the runtime
-    runs to say which day that was and how many series had no snapshot on it."""
-    reads: list[dict[str, Any]] = []
-    with holding(_closing_reads, reads):
-        yield reads
-
-
-def record_closing_read(measure_id: str, probe: SqlSelect) -> None:
-    reads = _closing_reads.get()
-    if reads is not None and plan_is_root() and all(row["probe"] != probe for row in reads):
-        reads.append({"measure": measure_id, "probe": probe})
-
-
 def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConfig) -> list[str]:
     """The columns that identify one snapshot series of a stock measure.
 

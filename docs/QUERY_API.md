@@ -207,7 +207,10 @@ dependency descriptions, and related-object suggestions. Grant responses carry o
 listed engine diagnostics (`NO_DATA_YET`, `PARTIAL_DATA`, `ZERO_AFTER_LAST_ROW`, `NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
 `FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`,
 `FILTERED_SERIES_BUCKETS_UNVERIFIED` and `BALANCE_SERIES_MISSING_ON_CLOSING_DAY`) whose named
-objects are all granted, and a `BALANCE_CLOSING_DAY` assumption only when its measure is granted. Bucket diagnostics
+objects are all granted. A balance's closing-day disclosures (`BALANCE_CLOSING_DAY`,
+`BALANCE_SERIES_MISSING_ON_CLOSING_DAY`) are kept where the measure or a granted output
+reading it is granted, with the day and counts; a measure not granted is named by those
+outputs, never by its id. Bucket diagnostics
 re-enter authorization and reveal no bucket keys when the source read is denied. Requests
 cannot replace the resolved grants: a `policy_context` claim, top-level or nested, is refused over
 HTTP and hosted MCP with `IDENTITY_CLAIM_REFUSED`.

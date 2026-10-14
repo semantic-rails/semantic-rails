@@ -117,6 +117,7 @@ from .row_counts import (
     override_row_counts,
     share_group_counts,
 )
+from .snapshot_reads import record_output_reads
 from .temporal import (
     refuse_authored_calendar,
     window_total_refusal,
@@ -527,6 +528,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         ):
             record_zero_output(alias, lookups)
         reads = base_reads(compiled_output)
+        record_output_reads(alias, reads)
         record_balance_output(
             alias,
             reads,

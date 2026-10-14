@@ -112,6 +112,11 @@ def cut_owners(*aliases: str) -> Iterator[None]:
         yield
 
 
+def current_cut_owners() -> frozenset[str] | None:
+    """The root leaves or outputs a cut recorded now counts for; None is the whole query."""
+    return _cut_owners.get()
+
+
 def measure_cut_owners(measure_id: str) -> AbstractContextManager[None]:
     """Narrow a cut inside one measure's expression to that measure's root leaves."""
     plan = _plan.get()

@@ -83,13 +83,14 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
-from .lowering_common import recording_closing_reads, recording_stock_key_gaps
+from .lowering_common import recording_stock_key_gaps
 from .paths import (
     _leaf_time_role,
     display_key,
 )
 from .plan_checks import _object_default_query_temporal_role
 from .planning import plan_query, resolve_compile_config
+from .snapshot_reads import closing_reads_by_output, recording_closing_reads
 from .sql_lowering import lower_to_sql
 from .temporal import (
     _requires_query_time,
@@ -167,8 +168,9 @@ class BoundQuery:
     # query's SQL) that say where their data ends.
     balance_edges: tuple[dict[str, Any], ...] = ()
     balance_coverage: tuple[SqlCte, ...] = ()
-    # Each balance read on its closing day, with the probe (row-filtered like the query) that
-    # says which day that was and how many series had no snapshot on it.
+    # Each balance read on its closing day (nested reads included), the outputs it counts for,
+    # and the probe (row-filtered like the query) that names the day and counts the series
+    # with no snapshot on it.
     closing_reads: tuple[dict[str, Any], ...] = ()
     # Root leaves only package metrics' own definitions compute (:func:`_authored_leaves`).
     authored_leaves: frozenset[str] = frozenset()
@@ -592,6 +594,6 @@ def _bind_query(
         coverage_now=clock.literal if clock.read else "",
         balance_edges=tuple(balance_edges["outputs"]),
         balance_coverage=tuple(balance_edges["ctes"].values()),
-        closing_reads=tuple(closing_reads),
+        closing_reads=closing_reads_by_output(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
     )

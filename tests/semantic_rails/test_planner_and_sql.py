@@ -920,7 +920,8 @@ def test_semi_additive_snapshots_choose_period_row_before_summing(config):
     rendered = _sql(config, query)
     assert "snapshot_complete AS (" in rendered
     assert "MAX(leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order" in rendered
-    assert "SUM(leaf_1__snapshot_base.__snapshot_value) AS m1" in rendered
+    # The sum reads the chosen snapshots only.
+    assert "SUM(leaf_1__snapshot_rows.__snapshot_value) AS m1" in rendered
     assert "arg_max" not in rendered.lower()
 
 

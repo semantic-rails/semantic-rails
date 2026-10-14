@@ -24,6 +24,7 @@ from .policy_rules import check_request_environment
 from .query_call import EXPRESSION_SHAPES
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
+from .runtime_parts.answer_warnings import granted_closing_day
 from .runtime_parts.responses import (
     apply_response_verbosity,
     resolve_sql_profile,
@@ -493,7 +494,8 @@ _GRANTED_WARNING_KEYS = {
         {"code", "severity", "stage", "message", "object_ids", "details"}
     ),
     # answer_warnings.closing_day_disclosures: fixed text, the measure ID, its closing day and
-    # series counts, read under the caller's row filters; dropped unless the measure is granted.
+    # series counts, read under the caller's row filters; granted_closing_day names a measure
+    # that isn't granted by the granted outputs reading it, or drops the warning.
     "BALANCE_SERIES_MISSING_ON_CLOSING_DAY": frozenset(
         {"code", "severity", "stage", "message", "object_ids", "details"}
     ),
@@ -605,18 +607,27 @@ def _run_in_view(
             )
             if result.get("clock") in permitted:
                 response["clock"] = result["clock"]
+            # A balance's closing day and counts stay with the granted outputs that read it;
+            # a measure not granted is named by them, never by its own id.
+            columns = result.get("output_columns", [])
             if "assumptions" in response:
-                # A balance's closing day names its measure: kept only where it is granted.
                 response["assumptions"] = [
-                    row
+                    shown
                     for row in response["assumptions"]
-                    if row.get("code") != "BALANCE_CLOSING_DAY" or row.get("measure") in permitted
+                    if (shown := granted_closing_day(row, columns, permitted)) is not None
                 ]
             if "withheld" in result:
                 response["withheld"] = [
                     object_id for object_id in result["withheld"] if object_id in permitted
                 ]
-            warnings = _granted_warnings(result.get("warnings", []), permitted)
+            warnings = _granted_warnings(
+                [
+                    shown
+                    for row in result.get("warnings", [])
+                    if (shown := granted_closing_day(row, columns, permitted)) is not None
+                ],
+                permitted,
+            )
             if warnings:
                 response["warnings"] = warnings
             else:

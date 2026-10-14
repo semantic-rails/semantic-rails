@@ -568,14 +568,19 @@ def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
 
 def _closing_reads(runtime, compiled, payload) -> list[dict[str, Any]]:
     """For each balance read on its closing day, its probe's row (keys case-folded), or no
-    counts when the read failed."""
+    counts when the read failed. Each distinct probe runs once, whatever reads share it."""
+    rows: list[tuple[Any, dict[str, Any]]] = []
     reads = []
     for read in compiled.get("closing_reads") or ():
-        try:
-            row = _probe_row(runtime, compiled, payload, read["probe"])
-        except Exception:
-            row = {}
-        reads.append({"measure": read["measure"], **{k.casefold(): v for k, v in row.items()}})
+        row = next((row for probe, row in rows if probe == read["probe"]), None)
+        if row is None:
+            try:
+                row = _probe_row(runtime, compiled, payload, read["probe"])
+            except Exception:
+                row = {}
+            rows.append((read["probe"], row))
+        counts = {key.casefold(): value for key, value in row.items()}
+        reads.append({**counts, **{key: read[key] for key in ("measure", "outputs", "nested")}})
     return reads
 
 
@@ -1956,7 +1961,7 @@ class Runtime:
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
         ]
         closing_days, closing_warnings = closing_day_disclosures(
-            _closing_reads(self, compiled, payload)
+            _closing_reads(self, compiled, payload), _withheld_columns(policy_effects)
         )
         out: dict[str, Any] = {
             "ok": True,

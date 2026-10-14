@@ -1525,15 +1525,19 @@ the check below but still sums). Give the snapshot time `class: as_of_time`.
 Which value a series gives depends on the clock the stock is read on:
 
 - On an `as_of_time` clock (a snapshot table), an end-of-period stock is read on each
-  period's **closing day**, the period's last day with a snapshot; with no time window or
-  grain, the last day with a snapshot at all. A series with no snapshot that day is not
-  counted: a series that stops is never carried forward from an earlier day. Every answer
-  names the day it read (`BALANCE_CLOSING_DAY` under `assumptions`, with `closing_day`, the
-  latest when there are several periods, and `periods`). When series seen earlier in a period
-  had no snapshot on its closing day, the answer also carries the warning
-  `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` with their count (`details`: `measure`,
-  `closing_day`, the latest such day, `series`, `series_missing`, `periods_missing`). The
-  engine can't tell a series that stopped, which is right to leave out, from one that takes
+  period's **closing day**, the period's last day with a snapshot, a day in the clock's own
+  `timezone`; with no time window or grain, the last day with a snapshot at all. A series
+  with no snapshot that day is not counted: a series that stops is never carried forward from
+  an earlier day. A row whose clock is NULL is never a snapshot. Every read of the stock
+  chooses this way: its own column, an entity-set ratio, and a read inside an entity filter
+  or a metric predicate. Every answer names the day each read used (`BALANCE_CLOSING_DAY`
+  under `assumptions`, with `measure`, `outputs` (the columns it counts for; empty for the
+  whole answer), `nested` (read inside an entity filter, predicate or branch), `closing_day`,
+  the latest when there are several periods, and `periods`). When series seen earlier in a
+  period had no snapshot on its closing day, the answer also carries the warning
+  `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` with their count (`details`: the same fields, with
+  `closing_day` the latest such day, plus `checked`, `series`, `series_missing` and
+  `periods_missing`). The engine can't tell a series that stopped, which is right to leave out, from one that takes
   its snapshots on other days (one store counted on the 5th, another on the 20th) or from a
   table that records only changes; those two are undercounted. Snapshot every series on the
   same days, or turn a table of changes into one row per series per day with a

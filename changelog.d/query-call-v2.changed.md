@@ -62,8 +62,11 @@
     reads the window's closing day instead of adding days (the bundled `jaffle_shop` inventory
     for March and April 2017: 1,945 → 860). The answer names the day (`BALANCE_CLOSING_DAY` in
     `assumptions`) and warns with `BALANCE_SERIES_MISSING_ON_CLOSING_DAY`, with their count,
-    when series seen earlier in a period had no snapshot that day. A stock on an event- or
-    state-time clock is still read as keyed, each series' last row in the period.
+    when series seen earlier in a period had no snapshot that day. The closing day is a day in
+    the clock's own time zone, a row with no clock is never a snapshot, and an entity-set
+    ratio or a balance read inside an entity filter or metric predicate reads and discloses
+    the same snapshots. A stock on an event- or state-time clock is still read as keyed,
+    each series' last row in the period.
   - An entity filter's unknown aggregate fails every threshold, `not` included (before, `not 0`
     kept entities whose aggregate was unknown). Under `observation_scope: "dataset"` a period
     in which the filter keeps no entity reads 0 inside the data (before `NULL`); under

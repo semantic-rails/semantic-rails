@@ -603,15 +603,22 @@ April together), never the sum of its days; with no `time` at all, it reads the 
 a snapshot. A period after the last snapshot reads `NULL` with `NO_DATA_YET`, as any measure's
 does.
 
-Every such answer names the day it read in `assumptions`, `BALANCE_CLOSING_DAY` with
-`closing_day` (the latest, when there are several periods) and `periods`. When series seen
-earlier in a period had no snapshot on its closing day, it also carries the warning
-`BALANCE_SERIES_MISSING_ON_CLOSING_DAY`: "1 of 2 series of ... had a snapshot earlier in the
-period but none on its closing day, 2020-12-20, so they are not counted", with `details`
-`{measure, closing_day, series, series_missing, periods_missing}`. Those series may have
-stopped, which is right to leave out, or take their snapshots on other days, or the table may
-record only changes; then the balance is undercounted. Group by the clock's day to see each
-day's snapshots.
+The closing day is a day in the clock's own `timezone`, and a row whose clock is NULL is
+never a snapshot. An entity-set ratio and a balance read inside an entity filter or a metric
+predicate read the same snapshots.
+
+Every such answer names the day each read used in `assumptions`: `BALANCE_CLOSING_DAY` with
+`measure`, `outputs` (the columns it counts for; empty for the whole answer, as an entity
+filter's read), `nested`, `closing_day` (the latest, when there are several periods) and
+`periods`. When series seen earlier in a period had no snapshot on its closing day, it also
+carries the warning `BALANCE_SERIES_MISSING_ON_CLOSING_DAY`: "1 of 2 series of ... had a
+snapshot earlier in the period but none on its closing day, 2020-12-20, so they are not
+counted", with `details` `{measure, outputs, nested, closing_day, periods, checked, series,
+series_missing, periods_missing}`. Those series may have stopped, which is right to leave
+out, or take their snapshots on other days, or the table may record only changes; then the
+balance is undercounted. Group by the clock's day to see each day's snapshots. A caller
+granted a metric but not the measure behind it gets both with the day and counts, named by
+the granted metric instead of the measure.
 
 A stock on an event- or state-time clock is a current-state table (a customer's lifetime
 spend, on the customers table) and is read as keyed: each series' last row in the period,

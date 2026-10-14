@@ -180,7 +180,11 @@ def test_staggered_snapshot_days_are_never_dropped_silently(stocks: Runtime) -> 
     assert warning["severity"] == "warning"
     assert warning["details"] == {
         "measure": "measure.inv.inv_stagger_area",
+        "outputs": ["v"],
+        "nested": False,
         "closing_day": day,
+        "periods": 1,
+        "checked": True,
         "series": seen,
         "series_missing": missing,
         "periods_missing": 1,
@@ -191,7 +195,11 @@ def test_staggered_snapshot_days_are_never_dropped_silently(stocks: Runtime) -> 
     assert _values(result) == [200, 200, 200, 200]
     assert _one(result, "warnings", MISSING)["details"] == {
         "measure": "measure.inv.inv_stagger_area",
+        "outputs": ["v"],
+        "nested": False,
         "closing_day": "2020-12-20",
+        "periods": 4,
+        "checked": True,
         "series": 8,
         "series_missing": 4,
         "periods_missing": 4,
@@ -258,7 +266,11 @@ def test_every_closing_day_read_names_its_day(stocks: Runtime) -> None:
     assert _values(result) == [350, 330, 330, 330]
     assert _one(result, "warnings", MISSING)["details"] == {
         "measure": "measure.inv.inv_dense_area",
+        "outputs": ["v"],
+        "nested": False,
         "closing_day": "2020-06-01",
+        "periods": 4,
+        "checked": True,
         "series": 13,
         "series_missing": 1,
         "periods_missing": 1,
@@ -356,11 +368,25 @@ def test_the_closing_day_and_its_counts_are_read_under_the_callers_row_filter(
 def test_a_probe_that_fails_still_discloses_the_rule() -> None:
     """A failed probe can't name the day or count the series: the answer says the rule and
     that it couldn't check, never nothing."""
-    (assumption,), (warning,) = closing_day_disclosures([{"measure": "measure.inv.x"}])
+    read = {"measure": "measure.inv.x", "outputs": ["v"], "nested": False}
+    (assumption,), (warning,) = closing_day_disclosures([read])
     assert assumption["code"] == CLOSING and assumption["closing_day"] == ""
     assert warning["code"] == MISSING and "couldn't be checked" in warning["message"]
     # A window with no snapshot read no closing day: nothing to say.
-    assert closing_day_disclosures([{"measure": "m", "closing_day": None, "periods": 0}]) == (
+    assert closing_day_disclosures([{**read, "closing_day": None, "periods": 0}]) == (
         [],
         [],
     )
+
+
+def test_a_read_only_for_withheld_values_says_nothing() -> None:
+    """A policy withholding an output's values withholds its closing day and counts too; a
+    read for the whole answer (an entity filter's) still says them."""
+    read = {"measure": "m", "outputs": ["rank"], "nested": False, "closing_day": "2020-01-20",
+            "periods": 1, "series": 2, "series_missing": 1, "periods_missing": 1,
+            "missing_day": "2020-01-20"}  # fmt: skip
+    assert closing_day_disclosures([read], ["rank"]) == ([], [])
+    whole = {**read, "outputs": []}
+    assumptions, warnings = closing_day_disclosures([whole], ["rank"])
+    assert [row["closing_day"] for row in assumptions] == ["2020-01-20"]
+    assert [row["details"]["series_missing"] for row in warnings] == [1]
