@@ -166,7 +166,7 @@ class BoundQuery:
     # The request's ``now`` the SQL's loaded coverage caps at ("" when it reads none).
     coverage_now: str = ""
     # Each output that reads only balances, with the coverage CTEs (kept apart from the
-    # query's SQL) that say where their data ends.
+    # query's SQL, row-filtered like it) that say where their data ends.
     balance_edges: tuple[dict[str, Any], ...] = ()
     balance_coverage: tuple[SqlCte, ...] = ()
     # Each balance read on its closing day (nested reads included), the outputs it counts for,
@@ -375,10 +375,17 @@ def _bind_with_row_filters(
         if row.zero_through is not None and row.zero_through.kind == "loaded"
     }
     sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters, load_logs=load_logs)
-    # A closing-day probe reads the stock's rows as its leaf does, under the same filters.
+
+    def filtered(statement: Any) -> SqlSelect:
+        return apply_row_filters(statement, row_filters, load_logs=load_logs)[0]
+
+    # A closing-day probe reads the stock's rows as its leaf does, under the same filters, and
+    # so does a balance's coverage (its data_through); one that can't be filtered is refused.
     closing_reads = tuple(
-        {**read, "probe": apply_row_filters(read["probe"], row_filters, load_logs=load_logs)[0]}
-        for read in bound.closing_reads
+        {**read, "probe": filtered(read["probe"])} for read in bound.closing_reads
+    )
+    balance_coverage = tuple(
+        replace(cte, query=filtered(cte.query)) for cte in bound.balance_coverage
     )
     if row_filters:
         # Enforcement reads the whole package; a refusal names only policies the caller sees.
@@ -397,6 +404,7 @@ def _bind_with_row_filters(
         bound,
         sql_ast=sql_ast,
         parameters=parameters,
+        balance_coverage=balance_coverage,
         closing_reads=closing_reads,
         route_decisions=tuple(
             {

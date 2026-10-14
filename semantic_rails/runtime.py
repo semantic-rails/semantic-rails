@@ -571,7 +571,8 @@ def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
 
 def _closing_reads(runtime, compiled, payload) -> list[dict[str, Any]]:
     """For each balance read on its closing day, its probe's row (keys case-folded), or no
-    counts when the read failed. Each distinct probe runs once, whatever reads share it."""
+    counts when the read failed (a policy's refusal is raised). Each distinct probe runs once,
+    whatever reads share it."""
     rows: list[tuple[Any, dict[str, Any]]] = []
     reads = []
     for read in compiled.get("closing_reads") or ():
@@ -579,7 +580,9 @@ def _closing_reads(runtime, compiled, payload) -> list[dict[str, Any]]:
         if row is None:
             try:
                 row = _probe_row(runtime, compiled, payload, read["probe"])
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, SemanticLayerError) and exc.code == "POLICY_DENIED":
+                    raise
                 row = {}
             rows.append((read["probe"], row))
         counts = {key.casefold(): value for key, value in row.items()}
@@ -596,7 +599,7 @@ def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
     ``edge_source`` (``loaded`` or ``now``) and how the answer names it (``declared``); a
     coverage CTE that only declared edges read keeps its last row as ``last_row`` instead.
     ``{}`` when the SQL reads no coverage or the read fails: a failed disclosure read never
-    changes the answer or its warnings.
+    changes the answer or its warnings, but a policy's refusal of it is raised.
     """
     by_alias, _ = _guard_probe_names(compiled, "coverage_")
     edges, _ = _guard_probe_names(compiled, "edge_")
@@ -612,7 +615,9 @@ def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
     }
     try:
         coverage = _compiled_cte_row(runtime, compiled, payload, columns)
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, SemanticLayerError) and exc.code == "POLICY_DENIED":
+            raise
         return {}
     zone = ZoneInfo(_time_zone(runtime._config, compiled) or "UTC")
     ctes = {cte.name: cte.query for cte in compiled["sql_ast"].ctes}
