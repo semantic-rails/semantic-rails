@@ -1438,8 +1438,8 @@ def test_growth_offers_the_units_its_calendar_can_fill(
         )
         assert plan["status"] == "ok", plan.get("why")
         assert "execute" in plan["next"]["ready_for"]
-        assert plan["best"]["query_ir"]["time"]["grain"] == "month"
-        assert typed_rows(runtime.query(plan["best"]["query_ir"]))
+        assert plan["best"]["query"]["time"]["grain"] == "month"
+        assert typed_rows(runtime.query(plan["best"]["query"]))
     finally:
         runtime.close()
     # Its saved unit stays on offer, so an edit that keeps it still goes through.

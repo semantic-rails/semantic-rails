@@ -12,6 +12,7 @@ from ..visible_view import pinned_view
 from ._base import RuntimeCompositionDraft
 from .call import Call
 from .coverage import _strings
+from .intent_holds import _incomplete_period_why
 from .intent_ir import IntentIR, ResolvedTerm, compose_hints
 from .plan_query import _merge_partial_query, _trim_why_errors, _validate_query
 from .plan_trace import _slim_best
@@ -131,11 +132,13 @@ def example_plan(
     )
     row = planned_row(runtime, draft, "package_example", query, [], question)
     validation = row["validation"]
-    ready = bool(validation["ok"])
+    # An authored period comparison is held like a planned one until each period has ended.
+    period_why = _incomplete_period_why(runtime, row["draft"].query) if validation["ok"] else None
+    ready = bool(validation["ok"]) and period_why is None
     best = _slim_best(
         row["draft"],
         pattern="package_example",
-        validation_ok=ready,
+        validation_ok=bool(validation["ok"]),
         intent_ir=intent_ir,
         warnings=validation.get("warnings", []),
     )
@@ -149,5 +152,5 @@ def example_plan(
     if detail == "debug":
         payload["compose_hints"] = compose_hints(intent_ir)
     if not ready:
-        payload["why"] = _trim_why_errors(validation.get("errors", []))
+        payload["why"] = period_why or _trim_why_errors(validation.get("errors", []))
     return payload, invalid

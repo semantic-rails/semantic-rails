@@ -19,6 +19,7 @@ from .catalog_format import format_catalog_payload
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
+from .period_completeness import incomplete_period_why
 from .policies import enforce_query_policies, withheld_rank_order
 from .policy_rules import check_request_environment
 from .query_call import EXPRESSION_SHAPES
@@ -446,6 +447,10 @@ def _restricted_plan(
         "resolved": [row],
         "rationale": ["Uses an explicitly granted metric."],
     }
+    # The check reads the draft's engine form, on the request's now, as execution reads it.
+    period_why = incomplete_period_why(runtime.package_config, query, call=call)
+    if period_why is not None:
+        return {**base, "status": "low_confidence", "best": best, "why": period_why}
     return {
         **base,
         "status": "ok",

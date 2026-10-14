@@ -1193,6 +1193,11 @@ single value of a temporal column (`details.filter_source: "policy"`). These ref
 patch that removes a policy or an authored filter; query an unwindowed measure or ask the
 package author for a supported metric.
 
+A call runs the periods it asks for, including one still in progress. `plan` calls a period
+comparison ready only when `time.end` closes its last bucket no later than `now`; otherwise it
+holds the draft with `PERIOD_COMPARISON_INCOMPLETE` (see [MCP_INTERFACE.md](MCP_INTERFACE.md)),
+so a month so far never reads as a change from the whole previous month.
+
 Summing windows (`rolling`, `cumulative`, `period_to_date`) need values that add up across
 periods: additive flows (`sum`, `count`), event counts (`count_distinct` of a complete row key),
 and sums, differences and literal multiples of them. A ratio windows its parts:

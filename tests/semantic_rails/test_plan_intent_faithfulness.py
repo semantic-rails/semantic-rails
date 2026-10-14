@@ -141,10 +141,6 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
 ) -> None:
     payload = plan_payload(runtime, intent=intent)
 
-    if intent == "revenue vs prior year by store":
-        # Its window runs to now, so the month in progress would sit beside a complete one.
-        assert_plan_held(payload, "PERIOD_COMPARISON_INCOMPLETE")
-        return
     assert payload["best"]["pattern"] == pattern
     assert payload["status"] == status, payload.get("why")
     if status == "ok":

@@ -7,11 +7,14 @@ from typing import Any
 
 import yaml
 
+from ..errors import SemanticLayerError
 from ..naming import last_token
+from ..period_completeness import incomplete_period_why
 from ._base import _object_by_id, _runtime_composition_terms
 from .call import Call, QueryBuilder
 from .groupings import _requested_grouping_terms
 from .intent_ir import IntentIR
+from .time_reference import time_policy_context
 from .time_windows import _time_window
 
 # Window forms the planner can resolve from natural language. Surfaced
@@ -311,6 +314,22 @@ def _time_assumptions(intent: str, query: Call) -> list[str]:
     if any(time.get(key) != window.bounds.get(key) for key in ("start", "end")):
         return []
     return list(window.assumptions)
+
+
+def _incomplete_period_why(runtime: Any, query: Call, start: Any = "") -> dict[str, Any] | None:
+    """Hold a draft that compares periods until each period it returns has ended at the
+    request's ``now`` (``period_completeness``), read as execution reads the draft."""
+
+    call = query.to_call()
+    context = dict(time_policy_context() or {})
+    now = context.pop("now", None)
+    try:
+        engine = runtime.engine_payload(call, now=now, context=context or None, partial=True)
+    except SemanticLayerError:
+        # A draft execution can't read proves no period complete: the check reads it as one
+        # with no window, which runs to now.
+        engine = {"select": call.get("select"), "policy_context": {"now": now}}
+    return incomplete_period_why(runtime._config, engine, call=call, start=start)
 
 
 def _start_dropped_why(start: Any) -> dict[str, Any] | None:

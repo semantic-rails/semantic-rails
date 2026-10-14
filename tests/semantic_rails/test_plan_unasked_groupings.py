@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any
 
@@ -471,6 +471,12 @@ class _Case:
     partial: dict[str, Any] | None = None
 
 
+def _ended(case: _Case) -> _Case:
+    """A period comparison over months that have ended, the only one plan calls ready
+    (test_plan_period_completeness.py)."""
+    return replace(case, partial={"time": {"end": "2018-01-01"}})
+
+
 def _ranking(intent: str) -> _Case:
     return _Case(intent, OK, RANKING)
 
@@ -492,7 +498,7 @@ _CASES = [
     _Case("top 5 stores by revenue in 2017", OK),
     _Case("new customer orders over time", OK),
     _Case("revenue trend over time", OK),
-    _Case("month over month revenue growth by month", OK),
+    _ended(_Case("month over month revenue growth by month", OK)),
     _Case("revenue by store in each month", OK),
     # The comparison names no prior period to compare with.
     _Case("revenue vs order count by store last quarter", OK, GAP),
@@ -592,7 +598,7 @@ def test_the_check_only_holds_a_plan_that_was_ready(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, case: _Case
 ) -> None:
     monkeypatch.setattr(jaffle, "_package_examples", [])  # generic grouping checks
-    after = plan_payload(jaffle, intent=case.intent)
+    after = plan_payload(jaffle, intent=case.intent, partial_query=case.partial)
     with monkeypatch.context() as without_checks:
         # The two checks are the only readers of the listed groupings, with the answer-shape
         # check after them, which only holds a plan (test_plan_answer_shape.py).
