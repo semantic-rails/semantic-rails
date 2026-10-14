@@ -1369,6 +1369,66 @@ Declare a key, a graph entity homed on the model, when its rows have one. `kind:
 give such a model an entity keyed by its time column (a daily series keyed by `[date_day]`), or
 leave it row grain.
 
+### One row per key
+
+A table whose rows repeat a key (a membership table, one row per person and department) has no
+key of its own, so nothing can look up a person in it. Model the same relation twice: once with
+`one_per_key: true`, read as one row per its entity's key, for what is fixed per person; and
+once row grain, for what varies, with a foreign key on that same key.
+
+```yaml
+# graph.yml
+entities:
+  person: {key: [person_id], model: people}
+# models/people.yml: one row per person, read from memberships
+model:
+  id: people
+  relation: memberships
+  one_per_key: true
+  entities: {person: {}}
+  dimensions:
+    person_name: {kind: categorical}            # fixed per person
+  measures:
+    headcount: {kind: aggregate, expr: {kind: literal, value: 1}, value_type: count}
+    salary: {kind: aggregate, expr: salary}
+# models/memberships.yml: every stored row, as row grain
+model:
+  id: memberships
+  relation: memberships
+  entities: {person: {}}                        # on the person's own key: a link
+  dimensions:
+    department: {kind: categorical}             # can differ across a person's rows
+```
+
+- The loader reads the relation as `source → where every key column is set → group by the key`.
+  Each other column is the key's one value: `{NULL, x}` reads `x`, and two values read NULL, so
+  a measure column with two values in a key adds nothing (no pick, no double count). The data is
+  the owner's to fix; nothing checks or warns at answer time. A row with no key is no entity,
+  though the row-grain model still counts it.
+- Lookups into the model are ordinary many-to-one joins (`entities: {person: {}}` on any other
+  model), unique by construction. A lookup that finds no row reads NULL.
+- The row-grain model over the same relation, with a foreign key on the one-per-key model's key,
+  is its **link**. Its columns are reached from the person one to many; how groups across a link
+  count is in [QUERY_CALL.md](QUERY_CALL.md#groups-across-a-link). "Headcount by department"
+  counts each person once in every department they have a row in, and a person with no row
+  there is the NULL group.
+- The link is walked in reverse, from the person to their rows. A package whose
+  `defaults.relationship.traversal` allows only `forward` refuses that walk with
+  `PATH_NOT_FOUND`, naming the link; allow it with `allowed_directions: [forward, reverse]` on a
+  `graph.relationships` row for the link (`entities: [memberships, person]`).
+- Put each column on one model: on the one-per-key model when it is fixed per key, on the
+  row-grain model when it can vary. A row filter on a one-per-key model's dimension and
+  `variants:` on a one-per-key model are `INVALID_CONFIG` (a stored rollup isn't read one row per
+  key). Its rows hold only the columns the package reads on it (its dimensions, measures and
+  joins), so a measure on any model, or an `aggregate_if`, reading another column of the relation
+  is refused with a hint to declare it. Its relation is read under a name starting
+  `sr_one_per_key__` (`sr_one_per_key__shop_person` for `entity.shop_person`): once a package has
+  a one-per-key model, a table, relation or pipeline string holding `sr_one_per_key` (in any
+  case, padded or with other punctuation) is `INVALID_CONFIG`. On Postgres, a key with very many
+  distinct values in a one-per-key column can fail the query (out of memory or array size)
+  instead of reading NULL. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
+  under "One row per key".
+
 ### `bridge:` — link tables and junction tables
 
 `bridge: true` on the entities block declares the model a link table: a route

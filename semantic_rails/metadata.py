@@ -37,6 +37,7 @@ from .compiler import (
     query_route_rows,
 )
 from .config_parts.measure_governance import unoffered_measures
+from .config_parts.one_per_key import one_per_key_source
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
@@ -925,7 +926,23 @@ def _object_card(
                 "No key: every stored row counts. It looks up "
                 f"{', '.join(sorted(looks_up)) or 'nothing'}; nothing can look up one of its rows."
             )
+            linked = sorted(
+                entity_label(config, row.target_entity)
+                for row in config.relationships
+                if row.source_entity == entity.id and row.link
+            )
+            if linked:
+                base["key_note"] += (
+                    f" Its columns are reached from {', '.join(linked)} one to many: each counts "
+                    "once in every group it has a row in."
+                )
             base["recommended_next_actions"] = _recommended_actions("row_grain_entity")
+        elif entity.one_per_key:
+            base["key_note"] = (
+                f"One row per {', '.join(entity.key_columns)}, read from "
+                f"{one_per_key_source(config, entity)}. A column with several values within a key "
+                "reads NULL."
+            )
     elif obj.kind == "relationship":
         base.update(_relationship_card_payload(config, object_id))
     elif obj.kind == "segment":

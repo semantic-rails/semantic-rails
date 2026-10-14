@@ -28,8 +28,8 @@ from .conftest import SHOP, VARIANTS, _rows, _runtime, _write_variant
 ROOT = SHOP.parents[3]
 LEDGER = SHOP / "tests" / "answers.yml"
 KEYS = {"kind", "query", "now", "context", "expected_rows", "expected_rows_by_backend", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "partial_query", "known_wrong"}  # fmt: skip
-TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result", "row-grain"}  # fmt: skip
-TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days", "tickets", "ticket_loads", "ticket_audits", "ticket_exports", "shipment_scans", "order_tags", "tags"]  # fmt: skip
+TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result", "row-grain", "one-per-key", "link"}  # fmt: skip
+TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days", "tickets", "ticket_loads", "ticket_audits", "ticket_exports", "shipment_scans", "order_tags", "tags", "room_rows", "people", "room_bookings"]  # fmt: skip
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
 DECISIONS = {
     "docs/QUERY_CALL.md#select",
@@ -40,6 +40,8 @@ DECISIONS = {
     "docs/QUERY_CALL.md#order_by",
     "docs/QUERY_CALL.md#inline-expression-kinds",
     "docs/QUERY_CALL.md#empty-groups-null-or-0",
+    "docs/QUERY_CALL.md#groups-across-a-link",
+    "docs/PACKAGE_AUTHORING.md#one-row-per-key",
 }
 KINDS = {
     "answer": "query_matches_snapshot",

@@ -175,6 +175,42 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
+### Groups across a link
+
+A [link](PACKAGE_AUTHORING.md#one-row-per-key) reaches the columns that can hold several values
+per key: a person's departments, read from the rows of the person's own relation. Grouped by
+one, each entity counts once in every group it has a row in.
+
+- A measure of the person, or of a fact that looks the person up (people in rooms, rooms in
+  departments), is a sum, count, average or distinct count over one row per (entity, group):
+  an average is over the entities in the group, a distinct count over their values, and a
+  ratio divides each group's own totals. A row with no value there, or that finds no row, is
+  the NULL group (ClickHouse joins a link as it joins lookups, inner, and drops a row that finds
+  none).
+- The groups can overlap, so their sum can exceed the total; the answer's `REWRITE_APPLIED`
+  says so. A call with no such grouping crosses no link, so its total counts each entity once.
+- A filter on such a column keeps the entities with a row that meets it (`EXISTS`), each
+  counted once. Beside a grouping on the same link, the filter and the grouping read the same
+  stored row, and two groupings are the values one row holds together, never every pairing of
+  an entity's values. A `not` or `missing` test there asks which reading is meant, or is refused
+  beside a grouping, as across any one-to-many hop.
+- A share, a window (`cumulative`, `rolling`, ...), a per-entity value or a distribution across
+  a link is refused with `MIXED_GRAIN_INVALID`: it would add overlapping groups. Ask for the
+  total in its own query.
+- A model with no key reaching a link answers a distinct count only; its sums and row counts are
+  refused, since nothing tells its rows apart.
+
+#### Known limitations
+
+- An entity counts under each of its groups, so groups across a link don't add up to the
+  total.
+- A one-per-key model's column with two values in one key reads NULL, so a sum of it leaves that
+  key out.
+- A model with no key that reaches a link answers distinct counts only; its sums and row counts
+  are refused.
+- On Postgres, a key with very many distinct values in a one-per-key column can fail the query
+  (out of memory or array size) instead of reading NULL.
+
 ## `where`
 
 Items are ANDed. Each is a condition on a dimension or an [entity filter](#entity-filters).

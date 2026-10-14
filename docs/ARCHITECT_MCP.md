@@ -101,7 +101,8 @@ package with one model, its count and amount metrics, an example, a package test
    logical mutation and reuse that key only when retrying the identical call.
    `upsert_model` with `primary_key: []` writes a row-grain model: no graph entity, an
    `entities` block of its parents only. It is refused while a graph entity named `entity_key`
-   exists.
+   exists. `one_per_key: true` writes a [one-per-key model](PACKAGE_AUTHORING.md#one-row-per-key)
+   (refused with `primary_key: []`); `false` removes it, and `replace` keeps it.
    `upsert_relationship` relates `from_entity` to `to_entity`: `columns` on `from_entity`'s
    model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
    `expr` when named differently). That is a many-to-one relationship; `cardinality:

@@ -313,6 +313,7 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "freshness_as_of",
         "variants",
         "zero_through",
+        "one_per_key",
     }
 )
 _MODEL_VARIANT_KEYS: frozenset[str] = frozenset(
@@ -661,6 +662,8 @@ def _check_model_shape(
             "by its time column, or leave it row grain (list only its parents under entities:)",
         )
     _unknown_key_errors(model, _MODEL_KEYS, label=label, errors=errors, block="model")
+    if "one_per_key" in model and not isinstance(model["one_per_key"], bool):
+        add_error(errors, f"{label} one_per_key must be true or false")
     keys: dict[str, Any] = model["keys"] if isinstance(model.get("keys"), dict) else {}
     for problem, current in (
         ("entity" in model and "entities" not in model, "a singular 'entity:'"),

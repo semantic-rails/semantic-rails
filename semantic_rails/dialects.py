@@ -154,6 +154,9 @@ class SqlDialect:
     reads_coverage = False
     # Whether an EXISTS subquery may sit in a select expression, not only in WHERE.
     exists_in_select = False
+    # The aggregates that read a true/false column's lowest and highest value in a group (a
+    # one-per-key model's single value): MIN and MAX where they take a boolean.
+    boolean_bounds: ClassVar[tuple[str, str]] = ("MIN", "MAX")
     # How a refusal that only this warehouse makes names it.
     label: ClassVar[str] = "This warehouse"
     # The scalar calls a package or query expression may name (``scalar_call``).
@@ -312,6 +315,13 @@ class SqlDialect:
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlBinary(left, "IS NOT DISTINCT FROM", right)
 
+    def single_value(self, expr: Any, *, boolean: bool = False) -> Any:
+        """A group's one value of ``expr``, NULL where its known values differ: a one-per-key
+        model's column. ``boolean`` marks a column a dimension declares true/false."""
+        names = self.boolean_bounds if boolean else ("MIN", "MAX")
+        least, most = (SqlCall(name, [expr]) for name in names)
+        return SqlCase([SqlCaseWhen(SqlBinary(least, "=", most), most)])
+
     @property
     def outer_lookup_joins(self) -> bool:
         """Whether a many-to-one lookup may be a LEFT JOIN, keeping rows it finds no match for.
@@ -438,6 +448,7 @@ class _NestedTimezone:
 class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     name: str = "snowflake"
     reads_coverage = True
+    boolean_bounds = ("BOOLAND_AGG", "BOOLOR_AGG")
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
     # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
     case_fold = "LOWER(COLLATE({}, ''))"
@@ -640,6 +651,17 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     def last_value(self, expr: Any, order_expr: Any) -> Any:
         return self._value_by(expr, order_expr, "DESC")
 
+    def single_value(self, expr: Any, *, boolean: bool = False) -> Any:
+        # No MIN or MAX of a boolean, and a column only a measure reads has no declared type:
+        # count the known distinct values, and read the one there is from an array of them
+        # (never of every row).
+        from .sql_ast import SqlIndexAccess
+
+        distinct = SqlCall("ARRAY_AGG", [expr], distinct=True)
+        known = SqlAggregateFilter(distinct, SqlBinary(expr, "IS NOT", SqlLiteral(None)))
+        one = SqlBinary(SqlCall("COUNT", [expr], distinct=True), "=", SqlLiteral(1))
+        return SqlCase([SqlCaseWhen(one, SqlIndexAccess(known, SqlLiteral(1)))])
+
     def _date_of(self, expr: Any) -> Any:
         return SqlCast(expr, "DATE")
 
@@ -835,6 +857,7 @@ class BigQueryDialect(SqlDialect):
 
     like_escape_clause = False
     reads_coverage = True
+    boolean_bounds = ("LOGICAL_AND", "LOGICAL_OR")
     call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
     # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
     case_fold = "LOWER(COLLATE({}, ''))"
@@ -1167,6 +1190,7 @@ class AthenaDialect(SqlDialect):
 
     name: str = "athena"
     reads_coverage = True
+    boolean_bounds = ("BOOL_AND", "BOOL_OR")
     call_names = PORTABLE_CALL_NAMES | {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"}
     date_diff_units = ()  # its native date_diff counts complete elapsed units
 

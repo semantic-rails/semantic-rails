@@ -1,0 +1,14 @@
+# The stored room table, with no key: one row per room, department and use. A room's department
+# and use can differ across its rows, so they are this model's columns, reached from a room one
+# to many (a link). What is fixed per room is on rooms.
+model:
+  id: room_rows
+  label: Room rows
+  relation: room_rows
+  entities: {room: {}}
+  dimensions:
+    department: {label: Department, kind: categorical}
+    room_use: {label: Room use, kind: categorical}
+  measures:
+    room_row_count: {label: Room rows, kind: aggregate, expr: {kind: literal, value: 1},
+      accumulation: {kind: flow}, value_type: count}

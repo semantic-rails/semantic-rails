@@ -28,6 +28,7 @@ from typing import Any
 from .ast import PERIOD_PARTIAL
 from .cache import package_fingerprint
 from .config import load_package_config, package_root_for_source, resolve_repo_path
+from .config_parts.one_per_key import one_per_key_source
 from .config_validation import (
     PackageReference,
     parse_config_report,
@@ -570,8 +571,14 @@ def check_warehouse_column_reachability_report(
         # relations (date spines, computed pipelines): those won't probe
         # cleanly via DESCRIBE.
         relation_ids = {rel.id for rel in config.relations}
+        outputs = {rel.output_name for rel in config.relations}
         entity_table: dict[str, str] = {}
         for entity in config.entities:
+            # A one-per-key model reads its columns from the relation it names.
+            source = one_per_key_source(config, entity)
+            if source and source not in outputs:
+                entity_table[entity.id] = source
+                continue
             if not entity.table or entity.relation_id in relation_ids:
                 # Skip relations — pipelines may not exist as plain tables.
                 continue

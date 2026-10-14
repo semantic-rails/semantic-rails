@@ -503,11 +503,16 @@ def _fanout_dedup_leaf_select(
     rows_name = f"{measure_plan.cte_name}_entity_rows"
     # Each de-duplicated row carries its own row marker, which the group counts.
     markers = _row_markers(measure_plan, measure, value_expr)
+    # A distinct count keeps each value once per group whatever row it came from, so a
+    # row-grain model's rows (which the checks let through only for that) need no key.
+    values_only = entity.is_row_grain and measure_plan.bound_measure.aggregation == "count_distinct"
     rows = SqlSelect(
         select=[
             *(
                 SqlField(_column_ref(table, column), f"__entity_key_{index + 1}")
-                for index, column in enumerate(entity.key or [entity.primary_key])
+                for index, column in enumerate(
+                    [] if values_only else entity.key or [entity.primary_key]
+                )
             ),
             *key_fields,
             SqlField(value_expr, "__entity_value"),

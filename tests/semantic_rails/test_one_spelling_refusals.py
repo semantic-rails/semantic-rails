@@ -29,19 +29,19 @@ from tests.semantic_rails.conftest import copy_package_config, write_single_file
 # `display`).
 FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
-        "sha256:ec2e5203f5890ba883394ad0fd894956fa56fc5930ea0787997d43465dc4c9ae"
+        "sha256:df83907a288962a634b26af52a1e5f0b560a086ca0fa982f6281a00c50970be8"
     ),
     "configs/semantic_rails/tpch_sf1_showcase": (
-        "sha256:0a5a42fec9361dce19048be0145b85ceb175e3766cff0f45a2d265d2530c0fb5"
+        "sha256:5c262ee4eac461c84d55e0d0dbff51e2cd15271cc3e31b44cb7fdd2aa2ab787c"
     ),
     "comparisons/semantic_layers/semantic_rails/package": (
-        "sha256:b87c36b660acfefef9f24ea5689962fdcf24a8518208b06def9d71d15b6bc75e"
+        "sha256:0c63cea0aa64dc870c51aac7ec1b2bd307e05d7c8d330b3cf1d6fe46915750ff"
     ),
     "tests/integration/correctness/shop": (
-        "sha256:d96437049b4fd97ea90054a799b3a16ccca46c9086751c674ccc6a5a129b0aef"
+        "sha256:01f4c9d35b7072993ee3a5bc2149b244a7aa4f65bd132f6e82c276ba37377510"
     ),
     "configs/examples/semantic_rails_package_starter.yml": (
-        "sha256:65e894499c75823dc66b3474286cc98d89f29b6157b749c6201012037f3ec9ea"
+        "sha256:5b46c11ddd8ac5ed70f1e7e3ceef118cefce7ce689cc95247362932315a95ddb"
     ),
 }
 

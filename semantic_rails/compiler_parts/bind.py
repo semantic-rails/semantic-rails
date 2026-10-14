@@ -243,15 +243,52 @@ def _aggregation_expr(
 
 def _resolve_expr_entity(ref: ColumnRefExpr, measure: MeasureConfig, config: PackageConfig) -> str:
     if ref.entity:
-        return ref.entity
-    if ref.table:
-        entity_id = _resolve_table_entity(config, ref.table, owner=measure.entity)
-        if entity_id:
-            return entity_id
-        raise SemanticLayerError(
-            "INVALID_CONFIG", f"Unknown table reference '{ref.table}' in measure '{measure.id}'"
-        )
-    return measure.entity
+        entity_id = ref.entity
+    elif ref.table:
+        entity_id = _resolve_table_entity(config, ref.table, owner=measure.entity) or ""
+        if not entity_id:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"Unknown table reference '{ref.table}' in measure '{measure.id}'",
+            )
+    else:
+        entity_id = measure.entity
+    _require_projected_column(ref.column, entity_id, measure, config)
+    return entity_id
+
+
+def _require_projected_column(
+    column: str, entity_id: str, measure: MeasureConfig, config: PackageConfig
+) -> None:
+    """A one-per-key model's rows hold only the columns the package reads on it (its dimensions,
+    its own measures and its joins): an expression, of any measure or an aggregate_if, reading
+    another column of its relation is refused, naming the declaration that adds it."""
+    entity = _entity_index(config).get(entity_id)
+    if entity is None or not entity.one_per_key:
+        return
+    relation = next((row for row in config.relations if row.id == entity.relation_id), None)
+    if relation is None or column in relation.columns:
+        return
+    conditional = is_conditional_aggregate(measure)
+    reader = "aggregate_if" if conditional else f"Measure '{measure.id}'"
+    raise SemanticLayerError(
+        "UNSUPPORTED_CONDITIONAL_AGGREGATE" if conditional else "INVALID_CONFIG",
+        f"{reader} reads column '{column}' of '{entity.id}', a one-per-key model whose rows hold "
+        "only the columns the package declares on it.",
+        details={
+            "column": column,
+            "entity": entity.id,
+            "recovery_hints": [
+                {
+                    "kind": "declare_column",
+                    "message": (
+                        f"In the package, declare a dimension or measure on '{column}' in the "
+                        f"model of '{entity.id}', so its one-per-key rows read it."
+                    ),
+                }
+            ],
+        },
+    )
 
 
 def _measure_required_entities(measure: MeasureConfig, config: PackageConfig) -> set[str]:

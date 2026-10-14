@@ -56,9 +56,11 @@ from .plan_checks import (
     _entity_in_terms_of_rewrite_supported,
     _fanout_dedup_refusal,
     _hop_conditions,
+    _one_link_conditions,
     _two_hop_conditions,
     _validate_where_value_type,
     child_group_route,
+    crosses_link,
 )
 from .predicate import _path_selection
 from .temporal import (
@@ -148,24 +150,32 @@ def _leaf_path_selections(
     unsupported = [row for row in selections if row.analysis.get("status") != "ok"]
     if not unsupported:
         return selections, sorted(required_entities), ""
-    # A child group is a filter: only the semi-join leaf applies it.
-    if not groups and all(
-        _entity_in_terms_of_rewrite_supported(
-            measure=measure, bound=bound, selection=row, config=config, query=query
+    # A child group is a filter: only the semi-join leaf applies it. Across a link, groups
+    # overlap: only the de-duplicated leaf's checks (no share, no window) and disclosure apply.
+    if (
+        not groups
+        and not any(crosses_link(row) for row in unsupported)
+        and all(
+            _entity_in_terms_of_rewrite_supported(
+                measure=measure, bound=bound, selection=row, config=config, query=query
+            )
+            for row in unsupported
         )
-        for row in unsupported
     ):
         conditions = _hop_conditions(bound, unsupported, config, query)
         if len(conditions) <= 1:
             return selections, sorted(required_entities), "entity_in_terms_of"
-        why_invalid, row = _two_hop_conditions(conditions)
+        # Conditions on one link read one row together, which the de-duplicated leaf answers.
+        refusal = None if _one_link_conditions(conditions) else _two_hop_conditions(conditions)
     else:
+        refusal = None
+    if refusal is None:
         refusal = _fanout_dedup_refusal(
             measure=measure, bound=bound, selections=selections, config=config, query=query
         )
         if refusal is None:
             return selections, sorted(required_entities), "fanout_dedup"
-        why_invalid, row = refusal
+    why_invalid, row = refusal
     raise _mixed_grain_error(
         target_entity=row.target_entity,
         purpose=row.purpose,

@@ -1,0 +1,17 @@
+# People and the room each sits in (none for person 7, a room no row has for person 6).
+model:
+  id: people
+  label: People
+  relation: people
+  entities: {person: {}, room: {}}
+  times:
+    started_on: {label: Start date, column: started_on, kind: date, class: event_time,
+      supported_grains: [day, month, year], default: true}
+  dimensions:
+    title: {label: Title, kind: categorical}
+  measures:
+    headcount: {label: Headcount, kind: aggregate, expr: {kind: literal, value: 1},
+      accumulation: {kind: flow}, value_type: count}
+    salary: {label: Salary, kind: aggregate, expr: salary, accumulation: {kind: flow}}
+    average_salary: {label: Average salary, kind: aggregate, expr: salary, default_agg: avg}
+    titles: {label: Titles, kind: entity_count, expr: title, accumulation: {kind: flow}}
