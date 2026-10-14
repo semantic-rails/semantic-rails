@@ -6,6 +6,7 @@ import duckdb
 import pytest
 
 from semantic_rails.dialects import dialect_for_warehouse
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.renderer import render_select_for_profile
 from semantic_rails.sql_ast import (
     SqlField,
@@ -22,15 +23,25 @@ TEXT = "50%_Off\\x'y"
 # them, and BigQuery and Spark also escape the quote with one (they read '' as two literals);
 # BigQuery and ClickHouse escape LIKE with a backslash by default.
 STANDARD = r"(LOWER(t.name) LIKE LOWER('%50\%\_Off\\x''y%') ESCAPE '\')"
+POSTGRES = (
+    r"(LOWER((t.name) COLLATE "
+    + '"und-x-icu"'
+    + r") LIKE LOWER(('%50\%\_Off\\x''y%') COLLATE "
+    + '"und-x-icu"'
+    + r") ESCAPE '\')"
+)
 BACKSLASH = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x''y%') ESCAPE '\\')"
 BACKSLASH_QUOTE = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x\'y%') ESCAPE '\\')"
 BACKSLASH_QUOTE_DEFAULT_ESCAPE = r"(LOWER(t.name) LIKE LOWER('%50\\%\\_Off\\\\x\'y%'))"
-UTF8_DEFAULT_ESCAPE = r"(lowerUTF8(t.name) LIKE lowerUTF8('%50\\%\\_Off\\\\x''y%'))"
+UTF8_DEFAULT_ESCAPE = (
+    r"(lowerUTF8(toStringCutToZero(toString(t.name))) LIKE "
+    r"lowerUTF8(toStringCutToZero(toString('%50\\%\\_Off\\\\x''y%'))))"
+)
 EXPECTED = {
     "duckdb": STANDARD,
     "motherduck": STANDARD,
     "ducklake": STANDARD,
-    "postgres": STANDARD,
+    "postgres": POSTGRES,
     "athena": STANDARD,
     "snowflake": BACKSLASH,
     "databricks": BACKSLASH_QUOTE,
@@ -65,7 +76,7 @@ def test_contains_renders_an_escaped_case_folded_pattern_that_matches_literally(
 # %, ends_with the trailing one, and each not_ form is NOT LIKE that keeps unknown rows, as `not`.
 SHAPES = {
     "contains": lambda sql: sql,
-    "starts_with": lambda sql: sql.replace("('%", "('", 1),
+    "starts_with": lambda sql: sql.replace("'%", "'", 1),
     "ends_with": lambda sql: sql.replace("y%'", "y'"),
 }
 
@@ -123,9 +134,11 @@ def test_each_text_word_matches_literally_ignoring_case_and_its_not_form_keeps_u
     assert found == expected
 
 
-# Each row folds alike on both sides: it meets every word with its own text, and the dotted
-# capital I, accented capitals and sharp s fold the same way in the column and in the text.
-UNICODE = ["İSTANBUL", "istanbul", "Émile", "ÉMILE", "émile", "Straße", "STRASSE"]
+# Each row folds alike on both sides: it meets every word with its own text, and accented
+# capitals fold the same way in the column and in the text.
+UNICODE = ["Émile", "ÉMILE", "émile", "ΟΣΑ", "Straße", "STRASSE", "İSTANBUL", "istanbul"]
+# Letters whose lowercase depends on the next letter or changes length on some warehouse.
+TRICKY = ["Σ", "σ", "ς", "ß", "ẞ", "İ", "ı", "K", "Å", "Ω", "̇"]
 
 
 def _matching(connection, word: str, text: str) -> list[str]:
@@ -147,19 +160,43 @@ def unicode_names():
 
 
 def test_every_row_meets_each_text_word_with_its_own_text(unicode_names):
-    for name in UNICODE:
+    for name in ["Émile", "ÉMILE", "émile", "STRASSE", "istanbul"]:
         for word in SHAPES:
             assert name in _matching(unicode_names, word, name), (word, name)
             assert name not in _matching(unicode_names, f"not_{word}", name), (word, name)
 
 
-def test_unicode_capitals_fold_alike_in_the_column_and_the_text(unicode_names):
-    assert "İSTANBUL" in _matching(unicode_names, "starts_with", "İ")
-    assert "İSTANBUL" not in _matching(unicode_names, "not_starts_with", "İ")
+def test_accented_capitals_fold_alike_in_the_column_and_the_text(unicode_names):
     accented = ["ÉMILE", "Émile", "émile"]
     assert _matching(unicode_names, "starts_with", "é") == accented
     assert _matching(unicode_names, "starts_with", "É") == accented
     assert _matching(unicode_names, "ends_with", "MILE") == accented
-    # Folding never expands: sharp s matches only itself, never "ss".
-    assert _matching(unicode_names, "contains", "ß") == ["Straße"]
+    others = sorted(set(UNICODE) - set(accented))
+    assert _matching(unicode_names, "not_starts_with", "É") == others
+    # Text with no tricky letter matches a value that holds one away from it.
+    assert _matching(unicode_names, "starts_with", "ο") == ["ΟΣΑ"]
     assert _matching(unicode_names, "contains", "SS") == ["STRASSE"]
+
+
+@pytest.mark.parametrize("letter", TRICKY)
+@pytest.mark.parametrize("word", [*SHAPES, *(f"not_{word}" for word in SHAPES)])
+def test_text_with_a_letter_whose_lowercase_is_unstable_is_refused(word, letter):
+    with pytest.raises(SemanticLayerError) as caught:
+        build_filter_condition(SqlIdentifier(["t", "name"]), word, f"Ο{letter}A", path="where[0]")
+    assert caught.value.details["path"] == "where[0].value"
+    hint = caught.value.details["recovery_hints"][0]["message"]
+    assert '"op": "is"' in hint and "valid-values" in hint
+
+
+def test_clickhouse_reads_any_text_column_type_as_plain_text_before_folding():
+    """FixedString (padded with zero bytes) and Enum are refused by lowerUTF8: toString reads any
+    type as String, NULL kept, and toStringCutToZero drops a FixedString's padding."""
+    sql = _rendered("clickhouse", "web")
+    assert "lowerUTF8(toStringCutToZero(toString(t.name)))" in sql
+    assert "lowerUTF8(toStringCutToZero(toString('%web%')))" in sql
+
+
+def test_postgres_folds_both_operands_under_one_explicit_collation():
+    sql = _rendered("postgres", "É")
+    assert sql.count('COLLATE "und-x-icu"') == 2
+    assert "LOWER((t.name) COLLATE" in sql

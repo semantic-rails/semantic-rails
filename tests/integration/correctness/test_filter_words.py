@@ -516,3 +516,117 @@ def test_a_package_authored_like_is_refused_with_the_word_for_its_pattern(tmp_pa
         hint
         == 'Write {"op": "starts_with", "right": {"kind": "literal", "value": "A"}}, which ignores case.'
     )
+
+
+# --- Round three: the warehouse's identifier rules, kind spellings, unstable letters ---------
+
+
+def _shop_with(tmp_path, seed_sql: str, model: str, old: str, new: str):
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    seed = package / "data" / "seed.sql"
+    seed.write_text(seed.read_text(encoding="utf-8") + seed_sql, encoding="utf-8")
+    path = package / "models" / model
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    return runtime_for(package)
+
+
+# "strasse" and "straße" are two columns: "straße" is quoted in SQL, so it is only itself.
+STREETS = (
+    "\nALTER TABLE signups ADD COLUMN strasse VARCHAR(8);\n"
+    'ALTER TABLE signups ADD COLUMN "straße" INTEGER;\n'
+    "UPDATE signups SET strasse = 'N/A';\n"
+    'UPDATE signups SET "straße" = customer_id;\n'
+)
+CHANNEL_DIMENSION = "channel: {label: Signup channel, kind: categorical, domain: [web, store]}"
+
+
+def _street(column: str) -> dict:
+    return {"kind": "column", "column": column, "entity": "entity.shop_customer"}
+
+
+def test_a_comparison_column_is_named_by_the_warehouses_rules_not_a_unicode_casefold(tmp_path):
+    runtime = _shop_with(
+        tmp_path,
+        STREETS,
+        "signups.yml",
+        CHANNEL_DIMENSION,
+        CHANNEL_DIMENSION
+        + "\n    strasse: {label: Street, kind: categorical, unknown_values: [N/A]}",
+    )
+    try:
+        # The integer "straße" is no dimension's column: refused, never read as "strasse".
+        report = runtime.validate(_count_if("starts_with", "1", _street("straße")))
+        assert not report["ok"]
+        [error] = report["errors"][:1]
+        assert error["details"]["path"] == "select[0].expression.condition.left"
+        assert "no dimension" in error["message"]
+        # The declared column reads its own unknown values.
+        assert runtime.query(_count_if("not_starts_with", "N", _street("strasse")))["rows"] == [
+            {"n": 7}
+        ]
+    finally:
+        runtime.close()
+
+
+def test_two_columns_that_casefold_alike_are_two_dimensions(tmp_path):
+    seed = STREETS.replace('"straße" INTEGER', '"straße" VARCHAR(8)').replace(
+        'SET "straße" = customer_id', "SET \"straße\" = 'Nord'"
+    )
+    runtime = _shop_with(
+        tmp_path,
+        seed,
+        "signups.yml",
+        CHANNEL_DIMENSION,
+        CHANNEL_DIMENSION
+        + "\n    strasse: {label: Street, kind: categorical, unknown_values: [N/A]}"
+        + '\n    "straße": {label: Strasse, kind: categorical}',
+    )
+    try:
+        # No false ambiguity: each column names its own dimension, unknown values and all.
+        assert runtime.query(_count_if("starts_with", "N", _street("straße")))["rows"] == [{"n": 7}]
+        assert runtime.query(_count_if("starts_with", "N", _street("strasse")))["rows"] == [
+            {"n": None}
+        ]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("kind", ["CURRENCY", "CONTINUOUS", "PERCENT", "'integer '", "Number"])
+def test_a_numeric_kind_in_any_spelling_refuses_a_text_word(tmp_path, kind):
+    runtime = _shop_with(
+        tmp_path,
+        "",
+        "orders.yml",
+        "store_id: {label: Store, kind: categorical}",
+        f"store_id: {{label: Store, kind: categorical}}\n    amount: {{label: Amount, kind: {kind}}}",
+    )
+    try:
+        dimension = next(row for row in runtime.package_config.dimensions if row.column == "amount")
+        assert dimension.data_type in {"number", "integer"}
+        report = runtime.validate(
+            {
+                "select": [ORDER_COUNT],
+                "where": [{"field": dimension.id, "op": "starts_with", "value": "1"}],
+            }
+        )
+        assert not report["ok"]
+        assert report["errors"][0]["details"]["path"] == "where[0].op"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("text", ["ΟΣ", "Σ", "straße", "İst", "ı"])
+def test_text_with_an_unstable_letter_is_refused_at_its_path(duckdb_backend, text):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    report = runtime.validate(
+        {"select": [SIGNUPS], "where": [{"field": NAME, "op": "starts_with", "value": text}]}
+    )
+    [error] = report["errors"][:1]
+    assert error["details"]["path"] == "where[0].value"
+    hint = error["recovery_hints"][0]["message"]
+    assert '"op": "is"' in hint and "valid-values" in hint
+    [error] = runtime.validate(_count_if("ends_with", text))["errors"][:1]
+    assert error["details"]["path"] == "select[0].expression.condition.right"
