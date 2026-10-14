@@ -33,6 +33,7 @@ from ._base import QUOTED, _governed_target, _resolved
 from .answer_shape import _answer_shape_why, _listed_entity_terms
 from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
+from .coverage import CoverageGap, _coverage_why
 from .examples import example_plan
 from .faithfulness import (
     hidden_governor_why,
@@ -384,7 +385,7 @@ def _question_payload(
                 break
 
     best = _select_best_plan(planned, intent_ir=intent_ir)
-    best = _with_named_rows(runtime, intent_str, best, planned, blocked, partial_query, intent_ir)
+    best, name_ask = _with_named_rows(runtime, intent_str, best, planned, partial_query, intent_ir)
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
@@ -526,6 +527,9 @@ def _question_payload(
     # A balance compared, or asked per week or month where the package reads it per day; or the
     # question a draft asks once it is otherwise ready (``RuntimeCompositionDraft.ask``).
     clarify_why = best.get("clarify") or (best.get("ask") if ready else None)
+    if name_ask and (value_why or {}).get("details", {}).get("kind") == "filter_values_unrealized":
+        # The question's one name, read as several rows, is all that holds the draft: ask which.
+        clarify_why = clarify_why or name_ask
     ready = ready and clarify_why is None
     # A named period with explicit readings to choose from.
     time_details = (time_why or {}).get("details")
@@ -737,6 +741,9 @@ def _planned_row(
             "start_dropped": "",
         }
     require_visible_objects(config, merged_draft.query, merged_draft.resolved)
+    if merged_draft.interpreted_intent.get("lists") and partial_query and partial_query.having:
+        # Which rows a list keeps is the caller's having or the list's own rule, never both.
+        return _blocked_row(merged_draft, pattern, _list_beside_having_why(), blocked)
     if merged_draft.blocked_reason:
         why = _with_ready_options(runtime, dict(merged_draft.blocked_reason), partial_query)
         clarify = "clarification" in (why.get("details") or {})
@@ -809,6 +816,30 @@ def _planned_row(
         "start_dropped": start_dropped,
         **({"ask": ask} if ask else {}),
     }
+
+
+def _list_beside_having_why() -> dict[str, Any]:
+    """Why plan holds a list whose caller sends a ``having`` of their own: the list keeps the
+    rows with a known value that isn't 0, which may drop rows the caller's having keeps."""
+
+    gap = CoverageGap(
+        kind="list_unrealized",
+        clause="having",
+        message=(
+            "The question lists rows, and the call's own having says which rows to keep; the "
+            "list keeps only rows with a known value that isn't 0, which may contradict it, so "
+            "plan doesn't call the draft ready."
+        ),
+        expected={"answer": "rows"},
+        recovery_hint={
+            "kind": "list_with_having",
+            "message": (
+                "Group best.query by the listed entity's key and keep only your having, then "
+                "validate; or plan again without the having."
+            ),
+        },
+    )
+    return _coverage_why([gap]) or {}
 
 
 def _child_scope_ask(query: Call, validation: dict[str, Any]) -> dict[str, Any] | None:
@@ -927,38 +958,36 @@ def _with_named_rows(
     question: str,
     best: dict[str, Any],
     planned: list[dict[str, Any]],
-    blocked: list[dict[str, Any]],
     partial_query: Call | None,
     intent_ir: Any,
-) -> dict[str, Any]:
-    """The best draft reading the one row each name in the question gives (``name_filters``).
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The best draft reading the one row each name in the question gives (``name_filters``),
+    and why plan asks which row a name means, if it does.
 
     Only the words the draft would be held on as unknown (``_dropped_value_why``) are looked up,
-    and only when the caller's ``partial_query`` sets no filter or grouping. Several rows ask
-    which; a draft the filter makes invalid stays as it was, for readiness to hold.
+    and only when the caller's ``partial_query`` sets no filter or grouping. A draft the filter
+    makes invalid stays as it was, for readiness to hold. The ask leaves the draft as it is:
+    plan asks only when that hold is all that holds the draft, and offers no call.
     """
 
     if not best["validation"].get("ok") or (
         partial_query is not None and (partial_query.where or partial_query.group_by)
     ):
-        return best
+        return best, None
     draft = best["draft"]
     unknown = unconsumed_unknown_words(runtime, question, draft.query)
     held = _dropped_value_why(question, unknown, set(intent_ir.unresolved))
     if held is None:
-        return best
+        return best, None
     query, ask = name_filters(runtime, question, draft.query, held["details"]["terms"])
-    if ask is not None:
-        row = _blocked_row(draft, best["pattern"], ask, blocked, clarify=True)
-    elif query is draft.query:
-        return best
-    else:
-        validation = _validate_query(runtime, query)
-        if not validation["ok"]:
-            return best
-        row = {**best, "draft": replace(draft, query=query), "validation": validation}
+    if ask is not None or query is draft.query:
+        return best, ask
+    validation = _validate_query(runtime, query)
+    if not validation["ok"]:
+        return best, None
+    row = {**best, "draft": replace(draft, query=query), "validation": validation}
     planned[next(index for index, item in enumerate(planned) if item is best)] = row
-    return row
+    return row, None
 
 
 def _blocked_row(

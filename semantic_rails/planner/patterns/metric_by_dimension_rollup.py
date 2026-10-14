@@ -164,9 +164,10 @@ def _listed(
     stores the open store count counts): as for a ranking, nothing is listed. "who" lists the
     one entity with a display the draft's subject reaches, when its clause names no entity: in
     "who placed an order" the order may be what was placed, so nothing is listed. Several such
-    entities ask which, with one whole call per entity; none, or a term naming no single
-    entity, lists nothing (the answer-shape check holds the draft). A superlative no ranking
-    reads ("who had the most MRR") lists nothing either.
+    entities ask which, naming them, with no call to run: one built here would miss what plan
+    adds to the draft later (filters, the governed metric, a balance's day). None, or a term
+    naming no single entity, lists nothing (the answer-shape check holds the draft). A
+    superlative no ranking reads ("who had the most MRR") lists nothing either.
     """
 
     from ..answer_shape import _clause_entity, _list_clauses  # noqa: WPS433 - imports patterns
@@ -191,21 +192,23 @@ def _listed(
             return [], {}
         entities = _display_entities(runtime, query)
         if len(entities) != 1:
-            return [], _whose_rows_why(config, word, query, entities) if entities else {}
+            return [], _whose_rows_why(word, query, entities) if entities else {}
         return [ids for part in _entity_stand_ins(config, entities[0]) for ids in part], {}
     return [], {}
 
 
 def _as_list(config: Any, query: Call, listed: list[str]) -> Call:
     """``query`` listing the rows of ``listed`` (an entity's stand-ins, the name last): grouped
-    by them, keeping only the rows whose value isn't 0 (or unknown), ordered by the name, then
-    by period and the other groupings."""
+    by them, keeping only the rows whose value is known and isn't 0 (a member has a value:
+    ``not`` alone keeps unknown ones), ordered by the name, then by period and the other
+    groupings."""
 
     builder = QueryBuilder(config, query).group(*listed)
     group_by = builder.build().group_by
     first = listed[-1]
+    value = query.select[0].alias
     return (
-        builder.having([condition(query.select[0].alias, "not", 0)])
+        builder.having([condition(value, "missing", False), condition(value, "not", 0)])
         .orders(
             [
                 Order(first),
@@ -217,21 +220,12 @@ def _as_list(config: Any, query: Call, listed: list[str]) -> Call:
     )
 
 
-def _whose_rows_why(config: Any, word: str, query: Call, entities: list[Any]) -> dict[str, Any]:
+def _whose_rows_why(word: str, query: Call, entities: list[Any]) -> dict[str, Any]:
     """Why plan asks whose rows "who" lists when the subject reaches several entities with a
-    display: one option per entity, each a whole call listing its rows."""
+    display: the entities, and no call (``_listed``)."""
 
     labels = ", ".join(str(row.label) for row in entities)
-    options = []
-    for row in entities:
-        stand_ins = [ids for part in _entity_stand_ins(config, row) for ids in part]
-        options.append(
-            {
-                "entity": row.id,
-                "label": row.label,
-                "call": _as_list(config, query, stand_ins).to_call(),
-            }
-        )
+    options = [{"entity": row.id, "label": row.label} for row in entities]
     gap = CoverageGap(
         kind="list_unrealized",
         clause=f'"{word}"',
@@ -242,19 +236,13 @@ def _whose_rows_why(config: Any, word: str, query: Call, entities: list[Any]) ->
         expected={"answer": "rows", "entities": [row.id for row in entities]},
         recovery_hint={
             "kind": "ask_whose_rows",
-            "message": "Ask the user which they mean, then send that option's call, or plan "
-            "again naming it.",
+            "message": 'Ask the user which they mean, then plan again naming it ("which '
+            'accounts …").',
         },
     )
     why = _coverage_why([gap]) or {}
-    return {
-        **why,
-        "details": {
-            **why.get("details", {}),
-            "clarification": {"question": f"Whose rows: {labels}?"},
-            "options": options,
-        },
-    }
+    clarification = {"question": f"Whose rows: {labels}?", "options": options}
+    return {**why, "details": {**why.get("details", {}), "clarification": clarification}}
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
@@ -422,6 +410,8 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             "group_by": list(group_by),
             "is_top_intent": is_top,
             "top_n": top_n if is_top else None,
+            # A list's own having says which rows are members (``_as_list``).
+            **({"lists": listed} if listed else {}),
         },
         score=_CATCH_ALL_SCORE,
         blocked_reason=held or ask,

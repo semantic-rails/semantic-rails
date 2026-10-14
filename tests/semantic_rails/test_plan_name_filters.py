@@ -314,6 +314,14 @@ GROUP BY a.name
         ("MRR of the Globex account", "Globex", "b", _MRR_ON_OCTOBER_4, [("Globex", 0.0)]),
         # A sentence's first word, with its possessive.
         ("Globex's MRR", "Globex", "b", _MRR_ON_OCTOBER_4, [("Globex", 0.0)]),
+        # A sentence's first word that only the sentence capitalizes starts no name.
+        (
+            "Did Acme have new accounts last month?",
+            "Acme",
+            "a",
+            _NEW_ACCOUNTS_IN_SEPTEMBER,
+            [("Acme Data Co", 1)],
+        ),
     ],
 )
 def test_a_name_reads_the_one_row_it_gives(

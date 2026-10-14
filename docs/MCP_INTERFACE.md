@@ -649,11 +649,14 @@ another one, except the "s" ending a contraction or possessive that plan reads a
 word ("What's revenue last month?"): every check reads that retry again. No other ending is
 offered: without its "t", "can't" says the opposite. A single unknown
 value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan
-never guesses its dimension. The one exception is a name: capitalized or quoted words, held as
-unknown this way, that may name a row of an entity with a text `display` dimension
-([PACKAGE_AUTHORING](PACKAGE_AUTHORING.md#display--the-name-of-one-row)). A sentence's first
-word alone is a name only with a possessive ("Acme's MRR") or a capital past its first letter
-("ACME"), since every sentence capitalizes it ("Roughly how many …" names nothing). Plan looks
+never guesses its dimension. The one exception is a name: quoted words, or a run of
+capitalized words side by side, holding a word held as unknown this way, that may name a row of
+an entity with a text `display` dimension
+([PACKAGE_AUTHORING](PACKAGE_AUTHORING.md#display--the-name-of-one-row)). Every word of the run
+is the name, a catalog word too: "Acme Accounts" is looked up whole, and matches no "Acme Data
+Co". A sentence's first word starts a run only when it is held itself ("Did Acme …" names
+"Acme"), and alone is a name only with a possessive ("Acme's MRR") or a capital past its first
+letter ("ACME"), since every sentence capitalizes it ("Roughly how many …" names nothing). Plan looks
 each such name up once, in the display of every entity the draft's measure reaches: one
 select-less call per name and entity, run through `execute`'s own path under the caller's
 identity (so row filters and policies apply), reading at most 6 rows whose display `contains`
@@ -663,10 +666,12 @@ answer. A row whose display holds the name as whole words side by side, in any c
 - one match, on a read of fewer than 6 rows: the draft filters on the row's key (`is`) and
   groups by its display, so the answer names it; the words are consumed, and an assumption line
   says "'Acme' is read as Account 'Acme Data Co'.";
-- several: `status="needs_clarification"`, `next.action="clarify"`, with a `name_ambiguous` gap
-  whose `expected.matches` lists each row's `entity`, `display`, `key` and `call`, the draft
-  filtered to that row and grouped by its display (`complete: false` when the read was full),
-  and `why.details.clarification.question` asking which one;
+- several, for the question's one name when its words are all that hold the draft:
+  `status="needs_clarification"`, `next.action="clarify"`, with a `name_ambiguous` gap whose
+  `expected.matches` lists each row's `entity`, `display` and `key` (`complete: false` when the
+  read was full), and `why.details.clarification.question` asking which one. No match is a
+  call to run: plan again with the full name. With another name or another hold beside it
+  ("Acme and Globex", "… at 9am"), the hold stands instead;
 - none, a full read with one match, a failed lookup, or names giving two rows of one entity
   ("Acme and Globex"): the hold above. A caller's `partial_query` with a `where` or `group_by`
   turns the lookup off.
@@ -892,11 +897,14 @@ noun names ("top 5 customers", "the 3 stores that sold the most") has no value t
 groups by nothing and stays held. Any other ranking is ready only when its value is named (see
 `ranking_unrealized` above). A list ("Which accounts closed last week?", "Who upgraded last
 week?") also keeps only rows whose value is known and isn't 0 (`having: [{"field": <the select's
-alias>, "op": "not", "value": 0}]`) and orders them by name. "who" naming no entity lists the one
+alias>, "op": "missing", "value": false}, {"field": <the same>, "op": "not", "value": 0}]`) and
+orders them by name. A caller's own `having` beside a list is held (`list_unrealized`): plan
+doesn't decide which of the two says which rows to keep. "who" naming no entity lists the one
 entity with a `display` that the subject reaches; when several do, `plan` returns
-`needs_clarification` with `why.details.clarification.question` and one option per entity in
-`why.details.options` (`entity`, `label` and a whole `call` listing its rows), and when none
-does it is held. A superlative no ranking reads ("who had the most MRR"), "per" (it may be a
+`needs_clarification` with `why.details.clarification`: its `question` and one option per
+entity (`entity`, `label`), and no call to run, since a call built for one entity would miss
+what plan adds to the draft (filters, the governed metric, a balance's day): plan again naming
+the entity ("which accounts …"). When none does it is held. A superlative no ranking reads ("who had the most MRR"), "per" (it may be a
 ratio) and a "which" naming a dimension rather than an entity draft no list. A term after "each"
 or "every" ends at the first word that names nothing more ("each plan make" groups by plan). The
 readiness checks read the same stand-ins, so a draft grouped by another entity's column stays

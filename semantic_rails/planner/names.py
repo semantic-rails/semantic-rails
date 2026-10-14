@@ -101,11 +101,13 @@ def with_name_lookups(operation: Callable[_P, _R]) -> Callable[_P, _R]:
 
 
 def _runs(question: str, held: set[str]) -> list[_Run]:
-    """Quoted text holding a held word, and each longest run of capitalized held words side by
-    side, with the possessive "'s" after it.
+    """Quoted text holding a held word, and each complete run of capitalized words side by side
+    holding one, with the possessive "'s" after it. Every word of a run is its name: "Acme
+    Accounts" is looked up whole, even though "Accounts" alone is a catalog word.
 
-    A sentence capitalizes its first word, so one word there is a name only with a possessive
-    ("Acme's MRR") or a capital past its first letter ("ACME"); "Roughly how many …" is none.
+    A sentence capitalizes its first word, so a run there leaves it out unless it is held
+    ("Did Acme …" is "Acme"), and one word there is a name only with a possessive ("Acme's
+    MRR") or a capital past its first letter ("ACME"); "Roughly how many …" is none.
     """
 
     quoted = [match.span() for match in re.finditer(QUOTED, question)]
@@ -118,26 +120,26 @@ def _runs(question: str, held: set[str]) -> list[_Run]:
     current: list[re.Match[str]] = []
 
     def close() -> None:
-        if current:
+        first = bool(current) and bool(_SENTENCE_START_RE.search(question[: current[0].start()]))
+        if first and len(current) > 1 and current[0].group().lower() not in held:
+            del current[0]
+            first = False
+        words = tuple(match.group().lower() for match in current)
+        if current and set(words) & held:
             start, end = current[0].start(), current[-1].end()
             tail = _POSSESSIVE_RE.match(question, end)
-            words = tuple(match.group().lower() for match in current)
             if (
                 tail
                 or len(current) > 1
                 or any(char.isupper() for char in current[0].group()[1:])
-                or not _SENTENCE_START_RE.search(question[:start])
+                or not first
             ):
                 runs.append(_Run(words, question[start:end], (start, tail.end() if tail else end)))
-            current.clear()
+        current.clear()
 
     for match in _WORD_RE.finditer(question):
         word = match.group()
-        if (
-            any(start <= match.start() < end for start, end in quoted)
-            or not word[0].isupper()
-            or word.lower() not in held
-        ):
+        if any(start <= match.start() < end for start, end in quoted) or not word[0].isupper():
             close()
             continue
         if current and not question[current[-1].end() : match.start()].isspace():
@@ -204,13 +206,16 @@ def name_filters(
     """The draft filtered to the one row each name in the question gives, or why plan asks.
 
     ``held`` are the words readiness would hold the draft on. A name naming several rows (of one
-    entity or of several) returns the draft with a why that lists them. The draft comes back
-    unchanged when no name finds exactly one row on a whole read, or when the names give two rows
-    of one entity ("Acme and Globex"), which one filter can't read.
+    entity or of several) returns the draft with a why that lists them, when it is the question's
+    only name and its words are all ``held`` holds; the why offers no call to run (each would
+    read one row and nothing else plan must still settle). The draft comes back unchanged when
+    no name finds exactly one row on a whole read, when the names give two rows of one entity
+    ("Acme and Globex"), which one filter can't read, or when an ambiguous name has company.
     """
 
+    held = set(held)
     state = _lookups.get()
-    runs = _runs(question, set(held)) if state is not None else []
+    runs = _runs(question, held) if state is not None else []
     entities = _named_entities(runtime, query) if runs else []
     if state is None or not entities:
         return query, None
@@ -237,7 +242,10 @@ def name_filters(
             elif matches and whole:
                 named.extend(matches)
     if asks:
-        return query, _ask_why(runtime._config, query, asks)
+        # One name, the only words held, asks which row it is; with another name or word beside
+        # it, a choice of row would still leave the question held, so plan holds.
+        alone = len(runs) == 1 and set(held) <= set(runs[0].words)
+        return query, _ask_why(asks) if alone else None
     rows = {(row.key_dimension, repr(row.value)) for row in named}
     if not named or len(rows) > len({row.key_dimension for row in named}):
         return query, None
@@ -247,9 +255,8 @@ def name_filters(
     return query, None
 
 
-def _ask_why(config: Any, query: Call, asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
-    """Why plan asks which row a name means, listing each row it found with the draft that
-    reads it, a whole call."""
+def _ask_why(asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
+    """Why plan asks which row a name means, listing each row it found."""
 
     gaps = [
         CoverageGap(
@@ -261,12 +268,7 @@ def _ask_why(config: Any, query: Call, asks: list[tuple[list[NamedRow], bool]]) 
             ),
             expected={
                 "matches": [
-                    {
-                        "entity": match.entity.id,
-                        "display": match.display,
-                        "key": match.value,
-                        "call": match.read(config, query).build().to_call(),
-                    }
+                    {"entity": match.entity.id, "display": match.display, "key": match.value}
                     for match in matches
                 ],
                 **({} if whole else {"complete": False}),
@@ -274,8 +276,8 @@ def _ask_why(config: Any, query: Call, asks: list[tuple[list[NamedRow], bool]]) 
             recovery_hint={
                 "kind": "name_one_row",
                 "message": (
-                    "Ask the user which one they mean, then send that match's call; or plan "
-                    "again with its full name."
+                    "Ask the user which one they mean, then plan again with its full name "
+                    "(quoted, when it has words the catalog uses)."
                 ),
             },
         )
