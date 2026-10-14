@@ -115,7 +115,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     ),
     EntityConfig: _classes(
         "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
-        "allowed_as_root freshness_sla_seconds bridge model",
+        "allowed_as_root freshness_sla_seconds bridge model one_per_key",
         text="label description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names",
         identity="name aliases",
@@ -135,7 +135,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     RelationshipConfig: _classes(
         "id source_entity target_entity source_column target_column cardinality safety "
         "source_columns target_columns source_key_role target_key_role allowed_directions "
-        "target_key_type rollup_safe_aggregations_reverse",
+        "target_key_type rollup_safe_aggregations_reverse link",
         text="label description join_semantics",
         identity="name aliases",
         typed="temporal_validity",
