@@ -764,6 +764,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
         raise refusal(path, "prior_period has one spelling", fix=f"Write {shape}.")
     if not (kind == "prior_period" and "measure" in raw):
         _check_keys(raw, tuple(dict.fromkeys(("kind", *kinds[kind]))), path)
+    text_word = _check_op(raw, kind, path) if kind in _OP_KINDS else None
     if kind == "share":
         _check_share(raw, path, context)
     node: dict[str, Any] = {}
@@ -794,6 +795,8 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             node[key] = _operand(value, child, context)
         else:
             node[key] = value
+    if text_word:
+        node["op"] = text_word
     if node.get("aggregation") and "measure" in node:
         _check_aggregation(node, path, context)
     if kind in {"metric_predicate"}:
@@ -825,6 +828,61 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             for key, value in dict(node["filter"]).items()
         }
     return node
+
+
+_OP_KINDS = frozenset({"comparison", "arithmetic", "binary"})
+
+
+def _check_op(raw: Mapping[str, Any], kind: str, path: str) -> str | None:
+    """A comparison's or arithmetic's op, refused at its path when the engine reads no such op:
+    a LIKE with the text word its pattern says, as in where; an arithmetic op with the closest
+    of add, subtract, multiply and divide. Returns a comparison's text word, or None."""
+    from .expressions import ARITHMETIC_OPS
+
+    op = raw.get("op")
+    spelling = " ".join(str(op if op is not None else "").lower().split())
+    right = raw.get("right")
+    text = (
+        right.get("value")
+        if isinstance(right, Mapping) and right.get("kind") == "literal"
+        else None
+    )
+    if spelling in operators.LIKE_SPELLINGS:
+        hint = operators.like_hint(spelling, text, operand="right")
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}.op: LIKE is not read; a comparison takes the text words "
+            f"{list(operators.TEXT_WORDS)}",
+            details={
+                "path": f"{path}.op",
+                "received_value": op,
+                "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Write {hint}."}],
+            },
+        )
+    if kind != "comparison":
+        if spelling in ARITHMETIC_OPS:
+            return None
+        words = list(dict.fromkeys(ARITHMETIC_OPS.values()))
+        closest = [word for word in words if spelling and word.startswith(spelling[:3])]
+        closest = closest or _closest(spelling, words)
+        raise refusal(
+            f"{path}.op",
+            f"'{spelling}' is not an arithmetic op",
+            fix=(f"Did you mean '{closest[0]}'? " if closest else "")
+            + "Use add, subtract, multiply or divide.",
+            allowed=words,
+            closest_matches=closest,
+        )
+    word = operators.word_of(spelling)
+    if word not in operators.TEXT_WORDS:
+        return None
+    if not isinstance(text, str):
+        raise refusal(
+            f"{path}.right",
+            f"'{word}' compares with text",
+            fix='Write "right": {"kind": "literal", "value": "<text>"}.',
+        )
+    return word
 
 
 # The keys of a reference object: ``{"metric": id}``, or ``{"measure": id}`` with overrides.
@@ -1189,6 +1247,12 @@ def _having(raw: Any, aliases: Mapping[str, Any]) -> list[dict[str, Any]]:
                 fix=f"Use one of {sorted(aliases)}." if aliases else "Name a measure or metric.",
             )
         word, value = operators.normalize_condition(item.get("op"), item.get("value"), path=path)
+        if word in operators.TEXT_WORDS:
+            raise refusal(
+                f"{path}.op",
+                f"'{word}' matches text; a result is a number",
+                fix="Use gt, gte, lt, lte, is or not.",
+            )
         out.append({"expression": expression, "op": word, "value": value})
     return out
 

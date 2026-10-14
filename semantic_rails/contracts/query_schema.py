@@ -110,7 +110,8 @@ def query_call_schema_document() -> dict[str, Any]:
         "description": (
             f"op is one of {', '.join(operators.WORDS)} or an alias "
             f"({', '.join(operators.ALIASES)}), in any case. is and not take one value or a "
-            "list; the ranges take one value; contains takes text; missing takes true or false."
+            "list; the ranges take one value; contains, starts_with, ends_with and their not_ "
+            "forms take text; missing takes true or false."
         ),
         "properties": {"op": {"type": "string"}},
         "anyOf": [

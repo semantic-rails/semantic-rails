@@ -891,22 +891,25 @@ def parse_config_expression(raw: Any) -> SemanticExpr:
     return parse_semantic_expression(raw, context="config")
 
 
+# The arithmetic ops an expression reads, by each spelling.
+ARITHMETIC_OPS = {
+    "+": "add",
+    "plus": "add",
+    "add": "add",
+    "-": "subtract",
+    "minus": "subtract",
+    "subtract": "subtract",
+    "*": "multiply",
+    "times": "multiply",
+    "multiply": "multiply",
+    "/": "divide",
+    "divide": "divide",
+}
+
+
 def _normalize_arithmetic_op(op: Any) -> str:
-    mapping = {
-        "+": "add",
-        "plus": "add",
-        "add": "add",
-        "-": "subtract",
-        "minus": "subtract",
-        "subtract": "subtract",
-        "*": "multiply",
-        "times": "multiply",
-        "multiply": "multiply",
-        "/": "divide",
-        "divide": "divide",
-    }
     text = str(op or "").strip().lower()
-    return mapping.get(text, text)
+    return ARITHMETIC_OPS.get(text, text)
 
 
 # Valid top-level keys per expression `kind`. Used by

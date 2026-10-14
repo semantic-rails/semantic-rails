@@ -714,7 +714,8 @@ _FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
 
 def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
     """A filter whose EXISTS reading ("has a row that is not X") differs from "has no row that
-    is X": ``not``, ``missing: true``, or on a boolean dimension anything but ``is true``."""
+    is X": ``not`` or a ``not_`` text word, ``missing: true``, or on a boolean dimension anything
+    but ``is true``."""
     op, value = operators.normalize_condition(
         item.get("op", "is"), item.get("value"), path="where", internal=True
     )
@@ -725,7 +726,7 @@ def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
         )
     if op == "missing":
         return bool(value)  # "has a row with a value" reads one way
-    return op == "not"
+    return op in operators.NEGATED_WORDS
 
 
 def _fanout_dedup_refusal(
@@ -1374,8 +1375,8 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
                 ],
             },
         )
-    # ``missing`` takes a boolean, not a value of the dimension; ``contains`` takes text.
-    if item.op in {"missing", "contains"}:
+    # ``missing`` takes a boolean, not a value of the dimension; the text words take text.
+    if item.op == "missing" or item.op in operators.TEXT_WORDS:
         return
     if str(getattr(dim, "data_type", "") or "").lower() == "boolean" and item.op in (
         operators.RANGE_WORDS

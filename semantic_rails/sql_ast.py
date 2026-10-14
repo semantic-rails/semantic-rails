@@ -349,10 +349,11 @@ class SqlBinary:
 
 @dataclass(frozen=True)
 class SqlLike:
-    """``expr LIKE pattern``; ``\\`` escapes ``%``, ``_`` and itself in ``pattern``."""
+    """``expr [NOT] LIKE pattern``; ``\\`` escapes ``%``, ``_`` and itself in ``pattern``."""
 
     expr: SqlExpr
     pattern: str
+    negated: bool = False
 
 
 @dataclass(frozen=True)
@@ -643,7 +644,8 @@ def build_filter_condition(
 
     The single home for the op/value → condition mapping used by every filter lowering
     site. ``not`` keeps rows whose value is unknown: ``(x <> v OR x IS NULL)``, the
-    portable form on every dialect. ``contains`` is a case-insensitive literal match.
+    portable form on every dialect. The text words are case-insensitive literal matches, and
+    their ``not_`` forms keep unknown rows the same way.
     ``temporal`` says the field is a date or timestamp, so its text values are temporal
     literals.
     """
@@ -672,7 +674,9 @@ def build_filter_condition(
         return SqlBinary(differs, "OR", SqlIsNull(expr=expr))
     if word in operators.RANGE_WORDS:
         return SqlBinary(expr, operators.COMPARISON_SQL[word], literal(value))
-    return SqlLike(SqlCall("LOWER", [expr]), operators.contains_pattern(str(value)))
+    negated = word in operators.NEGATED_WORDS
+    like = SqlLike(SqlCall("LOWER", [expr]), operators.like_pattern(word, str(value)), negated)
+    return SqlBinary(like, "OR", SqlIsNull(expr=expr)) if negated else like
 
 
 def is_null_literal(expr: object) -> bool:
@@ -682,7 +686,17 @@ def is_null_literal(expr: object) -> bool:
 def build_comparison_condition(
     left: SqlExpr, op: str, right: SqlExpr, *, path: str = "expression"
 ) -> SqlExpr:
-    """``left <op> right``, where a null literal on either side follows the op's class."""
+    """``left <op> right``, where a null literal on either side follows the op's class. A text
+    word compares ``left`` with a text literal, with the meaning it has in a filter."""
+    word = operators.word_of(op)
+    if word in operators.TEXT_WORDS:
+        if not (isinstance(right, SqlLiteral) and isinstance(right.value, str)):
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST",
+                f"{path}: '{word}' compares with a text literal",
+                details={"path": path, "op": word},
+            )
+        return build_filter_condition(left, word, right.value, path=path)
     op_normalized = normalize_sql_binary_operator(op)
     if not (is_null_literal(left) or is_null_literal(right)):
         return SqlBinary(left, op_normalized, right)

@@ -3,7 +3,9 @@ filter, in an inline condition and in a `comparison` expression, and its hint na
 word for the pattern's shape ('X%' starts_with, '%X' ends_with, '%X%' contains, the `not_` forms
 for NOT LIKE), never `contains` for a prefix or a suffix. The hinted call is valid.
 
-An arithmetic op the engine does not read is refused at its path with the closest op."""
+A text word on a result (`having`) is refused, an arithmetic op the engine does not read is
+refused at its path with the closest op, and plan never drafts `contains` for a prefix or a
+suffix."""
 
 from __future__ import annotations
 
@@ -50,8 +52,8 @@ def _where(op: str, value: Any) -> dict[str, Any]:
 
 
 def _entity_filter(op: str, value: Any) -> dict[str, Any]:
-    condition = {"field": STORE, "op": op, "value": value}
-    return {"select": [ORDERS], "where": [{"entity": "entity.jaffle_store", "any": [condition]}]}
+    condition = {"field": "dimension.jaffle_item_product_name", "op": op, "value": value}
+    return {"select": [ORDERS], "where": [{"entity": "entity.jaffle_item", "any": [condition]}]}
 
 
 def _aggregate_filter(op: str, value: Any) -> dict[str, Any]:
@@ -136,7 +138,9 @@ def test_like_is_refused_everywhere_with_the_word_for_its_pattern(
 
 
 @pytest.mark.parametrize("surface", SURFACES)
-@pytest.mark.parametrize(("op", "pattern"), [("LIKE", "Phil_delphia"), ("ilike", "%a%n%"), ("not like", "B%n")])
+@pytest.mark.parametrize(
+    ("op", "pattern"), [("LIKE", "Phil_delphia"), ("ilike", "%a%n%"), ("not like", "B%n")]
+)
 def test_a_like_pattern_no_word_says_hints_the_exact_values(runtime, surface, op, pattern):
     build, path, _ = SURFACES[surface]
     error = _error(runtime, build(op, pattern))
@@ -154,6 +158,14 @@ def test_a_like_pattern_no_word_says_hints_the_exact_values(runtime, surface, op
     )
     for word in ("contains", "starts_with", "ends_with"):
         assert word not in hint
+
+
+def test_a_like_with_no_wildcard_hints_the_exact_values_without_a_reason(runtime):
+    hint = _hint(_error(runtime, _where("LIKE", "Brooklyn")))
+    assert hint == (
+        'Write the exact values, {"op": "is", "value": [...]}, which valid-values lists: no '
+        'filter word says "Brooklyn".'
+    )
 
 
 def test_a_like_with_no_pattern_names_every_shape(runtime):
@@ -213,3 +225,32 @@ def test_every_text_word_describes_itself():
         "Store does not start with Ph",
         "Store does not end with Ph",
     ]
+
+
+@pytest.mark.parametrize("op", ["contains", "starts_with", "not_ends_with"])
+def test_a_text_word_on_a_result_is_refused(runtime, op):
+    call = {
+        "select": [{"expression": ORDERS, "as": "orders"}],
+        "group_by": [STORE],
+        "having": [{"field": "orders", "op": op, "value": "1"}],
+    }
+    error = _error(runtime, call)
+    assert error["details"]["path"] == "having[0].op"
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "order count for customers whose name starts with K",
+        "order count for customers beginning with K",
+        "items sold for products ending in tea",
+        "revenue for stores with a name ending with n",
+    ],
+)
+def test_plan_never_drafts_contains_for_a_prefix_or_suffix(runtime, intent):
+    from semantic_rails.planner.plan import plan_payload
+
+    payload = plan_payload(runtime, intent=intent, detail="full")
+    drafted = json.dumps(payload, default=str)
+    assert '"op": "contains"' not in drafted
+    assert payload["status"] != "ok"

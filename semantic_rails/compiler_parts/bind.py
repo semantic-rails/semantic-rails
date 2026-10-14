@@ -1034,8 +1034,11 @@ def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: Packag
     return next(iter(condition_entities))
 
 
-# A NULL operand makes these comparisons NULL, so a row with no match fails them.
-_NULL_REJECTING_OPS = frozenset({"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN"})
+# A NULL operand makes these comparisons NULL (or, for the text words, false), so a row with no
+# match fails them.
+_NULL_REJECTING_OPS = frozenset(
+    {"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN", "CONTAINS", "STARTS_WITH", "ENDS_WITH"}
+)
 
 
 def _and_terms(expr: SemanticExpr) -> list[SemanticExpr]:

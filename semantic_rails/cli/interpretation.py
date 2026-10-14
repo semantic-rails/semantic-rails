@@ -34,6 +34,11 @@ _OP_WORDS = {
     "lt": "<",
     "lte": "<=",
     "contains": "contains",
+    "starts_with": "starts with",
+    "ends_with": "ends with",
+    "not_contains": "does not contain",
+    "not_starts_with": "does not start with",
+    "not_ends_with": "does not end with",
 }
 
 

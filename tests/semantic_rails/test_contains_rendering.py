@@ -71,7 +71,7 @@ SHAPES = {
 def _expected(word: str, warehouse: str) -> str:
     sql = SHAPES[word.removeprefix("not_")](EXPECTED[warehouse])
     if word.startswith("not_"):
-        return f"{sql.replace(' LIKE ', ' NOT LIKE ')} OR (t.name IS NULL)"
+        return f"({sql.replace(' LIKE ', ' NOT LIKE ')} OR (t.name IS NULL))"
     return sql
 
 
