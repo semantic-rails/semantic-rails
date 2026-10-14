@@ -908,3 +908,19 @@ def test_a_predicate_through_a_refused_owner_is_refused():
     # A statement built under a visibility without the refusal fails the check too.
     built = enforce_row_filters(statement, replace(refused, refused={}))
     assert _denied(lambda: verify_row_filters(built, refused)) == "row_filter_coverage_unsupported"
+
+
+def test_a_filter_value_on_a_model_no_filter_reaches_adds_no_warning(runtime):
+    """Checking a filter value lists the dimension's model, which a row filter holds when no
+    filter reaches it: the answered query gets no "unverified" warning its unfiltered twin
+    wouldn't get."""
+    where = [{"field": "dimension.rj_customer_segment", "op": "is", "value": "Retail"}]
+    query = {**_query({"revenue": REVENUE}), "where": where}
+
+    def codes(result):
+        return [row["code"] for row in result.get("warnings") or []]
+
+    west = runtime.query(query, context=WEST)
+    assert _rows(west) == [(40,)]
+    assert "FILTER_VALUE_UNVERIFIED" not in codes(west)
+    assert codes(west) == codes(runtime.query(query, context=EVERYONE))
