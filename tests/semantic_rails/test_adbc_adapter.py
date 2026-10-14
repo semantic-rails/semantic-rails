@@ -340,19 +340,43 @@ def test_list_items_bind_one_value_per_postgres_placeholder(monkeypatch):
     assert (cursor.statements[-1], cursor.parameters[-1]) == (prepared.sql, values)
 
 
-@pytest.mark.parametrize(
-    ("connection_kind", "limit"), [("postgres_native", 65_535), ("snowflake_adbc", 16_384)]
-)
-def test_a_statement_binds_at_most_what_its_warehouse_accepts(connection_kind, limit):
-    sql = "SELECT " + ", ".join(["?"] * limit)
-    final = finalize_parameters(PreparedQuery(sql, parameters=(SLOT,) * limit), connection_kind)
-    assert final.sql.endswith(f", ${limit}" if connection_kind == "postgres_native" else ", ?")
-    over = PreparedQuery(sql + ", ?", parameters=(SLOT,) * (limit + 1))
+def _list(size, extra=()):
+    """A statement binding one list of ``size`` items, plus ``extra`` scalar slots."""
+    slots = (*(ParameterSlot("regions", "string", index) for index in range(size)), *extra)
+    return PreparedQuery("SELECT " + ", ".join(["?"] * len(slots)), parameters=slots)
+
+
+def _over_limit(call):
     with pytest.raises(SemanticLayerError) as caught:
-        finalize_parameters(over, connection_kind)
+        call()
     assert caught.value.code == "POLICY_DENIED"
-    assert caught.value.details == {"reason": "parameter_limit_exceeded", "limit": limit}
-    assert finalize_parameters(over, "") is over  # DuckDB states no limit
+    assert "documented limit" in str(caught.value)
+    return caught.value.details
+
+
+def test_postgres_binds_at_most_its_documented_parameters_per_statement():
+    limit = 65_535
+    at_limit = PreparedQuery("SELECT " + ", ".join(["?"] * limit), parameters=(SLOT,) * limit)
+    assert finalize_parameters(at_limit, "postgres_native").sql.endswith(f", ${limit}")
+    over = _list(2, extra=(SLOT,) * (limit - 1))
+    assert _over_limit(lambda: finalize_parameters(over, "postgres_native")) == {
+        "reason": "parameter_limit_exceeded",
+        "limit": limit,
+    }
+    assert finalize_parameters(over, "") is over  # DuckDB documents no limit
+
+
+def test_snowflake_binds_at_most_its_documented_values_per_list():
+    limit = 200_000
+    # Past any statement-wide count Postgres allows: Snowflake documents only the list limit.
+    for prepared in (_list(18_000), _list(limit), _list(30_000, extra=(SLOT,) * 70_000)):
+        assert finalize_parameters(prepared, "snowflake_adbc") is prepared
+    over = _list(limit + 1)
+    assert _over_limit(lambda: finalize_parameters(over, "snowflake_adbc")) == {
+        "reason": "parameter_limit_exceeded",
+        "limit": limit,
+    }
+    assert finalize_parameters(over, "") is over
 
 
 MISMATCH = {"reason": "parameter_placeholder_mismatch"}

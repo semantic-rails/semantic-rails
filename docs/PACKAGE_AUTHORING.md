@@ -863,8 +863,9 @@ kind names must match exactly.
   attribute's value as a parameter; values never enter SQL text. A list value
   (strings or integers, for example a manager's regions) adds
   `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the rows
-  of any of them; a statement that would bind more parameters than its warehouse
-  accepts (Postgres 65,535, Snowflake 16,384) is refused before it runs. The
+  of any of them; a statement over the warehouse's documented limit (Postgres: 65,535
+  parameters in one statement; Snowflake: 200,000 values in one list) is refused before
+  it runs. The
   dimension must be a plain `string`, `integer` or `boolean`
   column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value.
   The policy takes no `object_ids`, `action` or operator. A request it applies to is
