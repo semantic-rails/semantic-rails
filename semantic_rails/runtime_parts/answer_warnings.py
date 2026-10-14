@@ -495,19 +495,20 @@ def granted_closing_day(entry: dict, columns: list[dict], permitted: set[str]) -
 
 def refuse_closing_day_zone(config: Any, compiled: dict[str, Any]) -> None:
     """A balance closes on its clock's day bucket, which DuckDB and Postgres compute for a
-    zone-aware column in the session's zone: the zone the query runs in. A closing-day read
-    on a clock in another zone would close on another day, so it is refused."""
+    zone-aware column in the session's zone: the zone the query runs in (UTC without a time
+    block). A closing-day read on a timestamp clock in another zone could close on another
+    day, so it is refused; a DATE clock (``zone`` "") never depends on the session."""
     if not dialect_for_warehouse(config.package.warehouse).session_zone:
         return
     zone = _time_zone(config, compiled)
     for read in compiled.get("closing_reads") or ():
-        if read["zone"] != zone:
+        if read["zone"] and read["zone"] != zone:
             raise SemanticLayerError(
                 "MIXED_TIME_ROLES",
                 f"{read['measure']} is a balance read on its closing day in {read['zone']}, "
                 f"its clock's zone, but this query runs in {zone or 'UTC'}, so its day could "
-                "be another. Read the balance in a call of its own, or set "
-                "time.temporal_role to its clock.",
+                "be another. Give the call a time window on the balance's own clock "
+                "(time.temporal_role) so it runs in that zone.",
                 details={
                     "reason": "closing_day_zone",
                     "measure": read["measure"],

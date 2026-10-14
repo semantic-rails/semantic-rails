@@ -781,9 +781,11 @@ def test_runtime_binary_expression_can_compose_mixed_clock_metric_primitives(con
     assert "base.m1 + base.m2" in rendered
 
 
+# Start-of-period inventory: an end-of-period balance closes on a day, and its share filtered
+# by entity sets is refused (test_stock_closing_day_paths).
 INVENTORY = {
     "kind": "scoped_aggregate",
-    "measure": "measure.jaffle.inventory_on_hand_eop",
+    "measure": "measure.jaffle.inventory_on_hand_sop",
     "aggregation": "sum",
 }
 
@@ -817,12 +819,9 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(config):
     rendered = compiled["sql"]
     assert "predicate_jaffle_store_set_1 AS (" in rendered
     assert 'base.t AS "period"' in rendered or 'anchor.t AS "period"' in rendered
-    # Inventory is a balance that closes on a day: the part chooses its own snapshots among
-    # the ordering stores' rows, and its total joins the whole's.
-    assert "INNER JOIN predicate_jaffle_store_set_1" in rendered
-    assert "LEFT JOIN jaffle_store_entity_set_part_totals" in rendered
+    assert "LEFT JOIN predicate_jaffle_store_set_1" in rendered
     assert "FULL OUTER JOIN" not in rendered
-    assert rendered.count("FROM jaffle_store_inventory_snapshot") == 2
+    assert rendered.count("FROM jaffle_store_inventory_snapshot") == 1
     assert any(
         row["kind"] == "anchored_entity_set" for row in compiled["physical_plan"].optimizations
     )
@@ -839,7 +838,7 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(conf
     predicate_section = rendered.split("predicate_jaffle_store_set_1 AS (", 1)[0]
     assert "jaffle_store.store_name" not in predicate_section
     assert "LEFT JOIN jaffle_store ON" in rendered
-    assert "LEFT JOIN jaffle_store_entity_set_part_totals" in rendered
+    assert "LEFT JOIN predicate_jaffle_store_set_1" in rendered
     assert "FULL OUTER JOIN" not in rendered
     assert compiled["explain"].performance_plan["full_outer_alignments"] == 0
 
@@ -849,7 +848,7 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(config):
     compiled = _compiled(snowflake, _inventory_share(ORDERING_STORES, **JANUARY_BY_STORE))
     rendered = compiled["sql"]
     assert "QUALIFY" in rendered
-    # RANK: rows tied on a series' last snapshot are all read, as the join-back reads them.
+    # RANK: rows tied on a series' snapshot are all read, as the join-back reads them.
     assert "RANK() OVER" in rendered
     assert "latest_jaffle_store_inventory_snapshot_snapshot_complete" not in rendered
     assert any(

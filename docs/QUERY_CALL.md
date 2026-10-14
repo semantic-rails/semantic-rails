@@ -603,13 +603,15 @@ April together), never the sum of its days; with no `time` at all, it reads the 
 a snapshot. A period after the last snapshot reads `NULL` with `NO_DATA_YET`, as any measure's
 does.
 
-The closing day is the day bucket `time.grain: day` puts a snapshot in, in the clock's own
-`timezone`; a call with no `time` runs in that zone. A row whose clock is NULL is never a
-snapshot, and rows of a series tied on its last clock value are all read. Each operand of an
-entity-set ratio closes within its own predicates, so the ratio equals its operands read
-alone, and a balance read inside an entity filter or a metric predicate reads the same way. A
-call that runs in another zone than such a balance's clock is refused with
-`MIXED_TIME_ROLES` (`details.reason: closing_day_zone`).
+The closing day is the day bucket `time.grain: day` puts a snapshot in. A row whose clock is
+NULL is never a snapshot, and rows of a series tied on its last clock value are all read. A
+balance read inside an entity filter or a metric predicate reads the same way. Two shapes are
+refused rather than risk another day: a share of such a balance filtered by entity sets
+(`REWRITE_NOT_SUPPORTED`, `details.reason: entity_set_ratio_closing_day`; ask for the part and
+the whole as separate measures), and, on DuckDB and Postgres, a balance on a timestamp clock
+whose zone isn't the one the call runs in, UTC without a `time` block (`MIXED_TIME_ROLES`,
+`details.reason: closing_day_zone`; give the call a window on the balance's own clock). A
+DATE clock is never refused.
 
 Every such answer names the day each read used in `assumptions`: `BALANCE_CLOSING_DAY` with
 `measure`, `outputs` (the columns it counts for; empty for the whole answer, as an entity

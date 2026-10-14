@@ -431,60 +431,37 @@ def test_a_time_bound_applies_before_the_snapshot_is_chosen(
     assert answer == reference("true", before=before)
 
 
-def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) -> None:
-    # The share of active accounts' fees from accounts paying over 100 in the period: a ratio
-    # over one choice of snapshots, which a's 500 over a's and c's 599 reads, not over b's
-    # Tuesday too (698).
-    fee = {"kind": "scoped_aggregate", "measure": "measure.fees.fee", "aggregation": "sum"}
-    predicate = {
-        "entity": "entity.fees_account",
-        "input": "measure.fees.fee",
-        "op": "gt",
-        "value": 100,
-        "over": "period",
+def test_an_entity_set_share_of_a_closing_balance_is_refused(runtime: Runtime) -> None:
+    # The share of active accounts' fees from accounts paying over 100 in the period: each
+    # operand of a balance that closes on a day closes within its own predicates, which one
+    # shared choice of snapshots can't do for both, so the share is refused.
+    with pytest.raises(SemanticLayerError) as raised:
+        _query(runtime, [_is(STATE, "active")], expression=_share(), time={"grain": "week"})
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details == {
+        "reason": "entity_set_ratio_closing_day",
+        "measure": "measure.fees.fee",
     }
-    query = {
-        "select": [
-            {
-                "expression": {
-                    "kind": "ratio",
-                    "numerator": {**fee, "predicates": [predicate]},
-                    "denominator": fee,
-                },
-                "as": "v",
-            }
-        ],
-        "time": {"temporal_role": ROLE, "grain": "week"},
-        "where": [_is(STATE, "active")],
-    }
-    result = runtime.query(query)
-    assert "latest_fees_account_day_snapshot" in result["rendered_sql"]
-    answer = [(_day(row["period"]), row["v"]) for row in result["rows"]]
-    with duckdb.connect() as connection:
-        _load(connection)
-        reference = connection.execute(
-            "select period, coalesce(sum(fee) filter (where fee > 100), 0) * 1.0 / sum(fee) "
-            "from (select *, date_trunc('week', date_day)::date as period, row_number() over ("
-            "  partition by account_id, date_trunc('week', date_day) order by date_day desc) as rn"
-            "  from account_day"
-            ") where rn = 1 and state = 'active' group by period order by period"
-        ).fetchall()
-    assert sorted(answer) == reference
-    assert reference[1] == (WEEK, 500 / 599)
+    assert "part and the whole" in str(raised.value)
 
 
-def _share(filter_item: dict[str, Any] | None = None, over: str = "period") -> dict[str, Any]:
-    """The share of fees from accounts paying over 100, per output period (or over all time)."""
+def _share(
+    filter_item: dict[str, Any] | None = None, over: str = "period", measure: str = "fee"
+) -> dict[str, Any]:
+    """The share of fees from accounts paying over 100, per output period (or over all time).
+
+    On ``fee``, a balance that closes on a day, such a share is refused; ``fee_sop`` (each
+    series' first snapshot) is read through the anchored entity set."""
     fee: dict[str, Any] = {
         "kind": "scoped_aggregate",
-        "measure": "measure.fees.fee",
+        "measure": f"measure.fees.{measure}",
         "aggregation": "sum",
     }
     if filter_item:
         fee["where"] = [filter_item]
     predicate = {
         "entity": "entity.fees_account",
-        "input": "measure.fees.fee",
+        "input": f"measure.fees.{measure}",
         "op": "gt",
         "value": 100,
         "over": over,
@@ -561,7 +538,9 @@ def test_lowering_cannot_bypass_the_date_attribute_refusal(
 ) -> None:
     # Force a caller to bypass the planning check: both stock choices must refuse too.
     query = {
-        "select": [{"expression": _share() if anchored else "measure.fees.fee", "as": "v"}],
+        "select": [
+            {"expression": _share(measure="fee_sop") if anchored else "measure.fees.fee", "as": "v"}
+        ],
         "time": {"temporal_role": ROLE, "grain": "week"},
     }
     plan = plan_query(runtime.config, runtime.registry, read_call(query, config=runtime.config)[0])
@@ -687,7 +666,7 @@ def test_an_anchored_share_reads_its_measure_filter_and_keeps_observed_periods(
     runtime: Runtime, placement: str, scope: str, state: str
 ) -> None:
     item = _is(STATE, state)
-    expression = _share(item if placement == "measure_filter" else None)
+    expression = _share(item if placement == "measure_filter" else None, measure="fee_sop")
     where = [item] if placement == "where" else []
     answer = _query(
         runtime, where, expression=expression, time={"grain": "week"}, observation_scope=scope
@@ -697,7 +676,7 @@ def test_an_anchored_share_reads_its_measure_filter_and_keeps_observed_periods(
         reference = connection.execute(
             "with chosen as (select *, date_trunc('week', date_day)::date period, "
             "row_number() over (partition by account_id, date_trunc('week', date_day) "
-            "order by date_day desc) rn from account_day) "
+            "order by date_day asc) rn from account_day) "
             f"select period, case when count(*) filter (where state = '{state}') = 0 then 0 "
             f"else coalesce(sum(fee) filter (where state = '{state}' and fee > 100), 0) * 1.0 "
             f"/ nullif(sum(fee) filter (where state = '{state}'), 0) end "
@@ -710,7 +689,7 @@ def test_an_anchored_share_reads_its_measure_filter_and_keeps_observed_periods(
         if state == "enterprise" and scope == "query"
         else [
             (date(2026, 9, 7), 0),
-            (WEEK, 500 / 599 if state == "active" else 0),
+            (WEEK, 0),
             (date(2026, 9, 21), 500 / 599 if state == "active" else 0),
         ]
     )
@@ -737,7 +716,7 @@ def test_an_anchored_share_grouped_by_a_period_refuses(
         _query(
             runtime,
             where,
-            expression=_share(over="period" if grain else "all_time"),
+            expression=_share(over="period" if grain else "all_time", measure="fee_sop"),
             group_by=[dimension],
             time={"grain": grain} if grain else None,
         )
@@ -780,7 +759,7 @@ def test_an_anchored_share_grouped_by_a_series_attribute_runs(runtime: Runtime) 
     answer = _query(
         runtime,
         [_is(STATE, "active")],
-        expression=_share(),
+        expression=_share(measure="fee_sop"),
         group_by=[SEGMENT],
         time={"grain": "week"},
     )
@@ -789,21 +768,21 @@ def test_an_anchored_share_grouped_by_a_series_attribute_runs(runtime: Runtime) 
         reference = connection.execute(
             "with chosen as (select *, date_trunc('week', date_day)::date period, "
             "row_number() over (partition by account_id, date_trunc('week', date_day) "
-            "order by date_day desc) rn from account_day) "
+            "order by date_day asc) rn from account_day) "
             "select period, segment, coalesce(sum(fee) filter (where fee > 100), 0) * 1.0 "
             "/ nullif(sum(fee), 0) from chosen join accounts using (account_id) "
             "where rn = 1 and state = 'active' group by period, segment order by period, segment"
         ).fetchall()
     assert answer == reference
     assert len(answer) == 6
-    assert (WEEK, "customer", 1) in answer
+    assert (date(2026, 9, 21), "customer", 1) in answer
 
 
 def test_lowering_cannot_bypass_the_period_grouping_refusal(runtime: Runtime) -> None:
     # Force a plan past planning: the share's own lowering, under either snapshot choice,
     # refuses a period group that planning never saw.
     query = {
-        "select": [{"expression": _share(), "as": "v"}],
+        "select": [{"expression": _share(measure="fee_sop"), "as": "v"}],
         "group_by": [SEGMENT],
         "time": {"temporal_role": ROLE, "grain": "week"},
     }
@@ -834,7 +813,7 @@ def test_an_anchored_share_keeps_a_matched_zero_or_unknown_denominator_null(
         reference = connection.execute(
             "with chosen as (select *, date_trunc('week', date_day)::date period, "
             "row_number() over (partition by account_id, date_trunc('week', date_day) "
-            "order by date_day desc) rn from account_day) "
+            "order by date_day asc) rn from account_day) "
             "select period, coalesce(sum(fee) filter (where fee > 100), 0) * 1.0 "
             "/ nullif(sum(fee), 0) from chosen where rn = 1 and state = 'active' "
             "group by period order by period"
@@ -842,7 +821,11 @@ def test_an_anchored_share_keeps_a_matched_zero_or_unknown_denominator_null(
     runtime = Runtime.from_path(str(package))
     try:
         assert (
-            _query(runtime, expression=_share(_is(STATE, "active")), time={"grain": "week"})
+            _query(
+                runtime,
+                expression=_share(_is(STATE, "active"), measure="fee_sop"),
+                time={"grain": "week"},
+            )
             == reference
         )
         assert reference == [(date(2026, 9, 7), None), (WEEK, None)]

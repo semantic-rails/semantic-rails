@@ -37,6 +37,7 @@ from ..sql_ast import (
     sql_nodes,
 )
 from .dependencies import current_read_owners, holding, plan_is_root
+from .indexes import _dimension_index
 from .lowering_common import _and_conditions, _apply_role_timezone, _time_bucket_expr
 
 
@@ -64,8 +65,9 @@ class SnapshotRead:
 @dataclass(frozen=True)
 class ClosingDay:
     """The day a balance on an as-of clock closes on: a clock value's day bucket, the very
-    expression ``time.grain: day`` buckets that clock by. On a warehouse that evaluates
-    zone-aware values in the session's zone, the query must run in ``zone``."""
+    expression ``time.grain: day`` buckets that clock by. A timestamp clock may hold
+    zone-aware values, which a warehouse with session zones buckets in the session's zone,
+    so the query must run in ``zone``; a DATE clock never depends on it (``zone`` "")."""
 
     role: Any
     config: PackageConfig
@@ -76,7 +78,8 @@ class ClosingDay:
 
     @property
     def zone(self) -> str:
-        return str(self.role.timezone or "UTC").strip()
+        clock = _dimension_index(self.config)[self.role.dimension]
+        return "" if clock.data_type == "date" else str(self.role.timezone or "UTC").strip()
 
 
 def closing_day(measure: Any, role: Any, config: PackageConfig) -> ClosingDay | None:
