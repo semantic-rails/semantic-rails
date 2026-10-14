@@ -222,15 +222,14 @@ def coverage_report(config: PackageConfig) -> list[dict[str, Any]]:
     return out
 
 
-_GENERIC_HOLDS = {
-    "row_filter_coverage_unsupported": "A row filter applies to this request, and it reads a "
-    "model the filter can't be traced to by one package route, so it can't be answered under it.",
-    "row_filter_uncovered_root": "A row filter applies to this request, and it counts or lists "
-    "a model no filter reaches, so it can't be answered under it. Ask about the rows the filter "
-    "does reach.",
-    "row_filter_route_not_owned": "A row filter applies to this request, and it looks a model "
-    "up along a route that isn't how the model is owned, so rows you can see would land under "
-    "rows you can't. Ask by the route its owner is reached through instead.",
+_HOLDS = {
+    "row_filter_coverage_unsupported": "it reads a model the filter can't be traced to by one "
+    "package route",
+    "row_filter_uncovered_root": "it counts or lists a model no filter reaches. Ask about the "
+    "rows the filter does reach, or ask the package author to list the model as shared",
+    "row_filter_route_not_owned": "it looks a model up along a route that isn't how the "
+    "walking model is owned, so rows you can see would land under rows you can't. Ask by "
+    "the route its owner is reached through instead",
 }
 
 
@@ -244,53 +243,38 @@ def hold_unowned_reads(
     """Refuse (POLICY_DENIED) a filtered question the visible database answers but the package
     holds: a value starting from a model no applying filter restricts, unless every one of them
     declares it ``shared``; an N:1 hop into a restricted model that isn't the walking model's
-    own owner (its answer would put visible rows under owners the caller can't see); or a
-    model the filters can't be traced through. This never authorizes a read: the pass does.
-    Refusals name routes and the policies the caller's view shows, never values."""
+    own owner; or a model the filters can't be traced through. This never authorizes a read:
+    the pass does. A refusal names the models and relationships it read only when the caller's
+    view shows them, and only the policies it shows; never values."""
     base = base_of(config)
     analysis = get_package_analysis(base)
-    entities = analysis.entities
-    policies = sorted({row.policy_id for row in visibility.filters})
-
-    def table(model: str) -> str:
-        return relation_key(entities[model].table) if model in entities else ""
-
     view = get_package_analysis(config).view
     hidden = view.hidden if view is not None else frozenset()
 
-    def hold(reason: str, message: str, **details: Any) -> SemanticLayerError:
-        named = {
-            str(details.get(key, ""))
-            for key in ("entity", "source_entity", "target_entity", "via", "owner", "model")
-        } | set(details.get("relationship_path") or ())
-        if named & hidden:  # the caller's view hides one: say only what happened
-            message, details = _GENERIC_HOLDS[reason], {}
+    def table(model: str) -> str:
+        return relation_key(analysis.entities[model].table) if model in analysis.entities else ""
+
+    def hold(reason: str, *named: str) -> SemanticLayerError:
+        shown = not set(named) & hidden
         return SemanticLayerError(
-            "POLICY_DENIED", message, details={"reason": reason, "policy_ids": policies, **details}
+            "POLICY_DENIED",
+            f"A row filter applies to this request, and {_HOLDS[reason]}."
+            + (f" (Read: {', '.join(named)}.)" if shown else ""),
+            details={
+                "reason": reason,
+                "policy_ids": sorted({row.policy_id for row in visibility.filters}),
+                **({"objects": list(named)} if shown else {}),
+            },
         )
 
     for model in sorted(roots):
         relation = table(model)
         if relation in visibility.refused:
-            raise hold(
-                "row_filter_coverage_unsupported",
-                f"A row filter applies to this request, and '{model}' can't be traced to the "
-                "filtered model by one package route, so it can't be read under it.",
-                entity=model,
-            )
-        if relation in visibility.restricted or not relation:
-            continue
-        if all(model in row.shared for row in visibility.filters):
-            continue
-        raise hold(
-            "row_filter_uncovered_root",
-            f"A row filter applies to this request, and no filter reaches '{model}', so the "
-            "package doesn't say which of its rows you may count. Ask about the rows the "
-            "filter does reach (for instance those that have records you can see), or ask "
-            "the package author to list it as shared.",
-            entity=model,
-        )
-    for start, target, route in routes:
+            raise hold("row_filter_coverage_unsupported", model)
+        shared = all(model in row.shared for row in visibility.filters)
+        if relation and relation not in visibility.restricted and not shared:
+            raise hold("row_filter_uncovered_root", model)
+    for start, _, route in routes:
         current = start
         for rel_id in route:
             rel = analysis.relationships.get(rel_id)
@@ -299,28 +283,12 @@ def hold_unowned_reads(
             far = _far_end(analysis, current, rel_id)
             into = table(far)
             if into in visibility.refused:
-                raise hold(
-                    "row_filter_coverage_unsupported",
-                    f"A row filter applies to this request, and '{far}' can't be traced to "
-                    "the filtered model by one package route, so it can't be read under it.",
-                    entity=far,
-                )
+                raise hold("row_filter_coverage_unsupported", far)
             owned = table(current) == into or _walk(analysis, current, [rel_id])[1] in (
                 visibility.parents.get(table(current), ())
             )
             if into in visibility.restricted and _reaches_at_most_one(rel, current) and not owned:
-                raise hold(
-                    "row_filter_route_not_owned",
-                    f"A row filter applies to this request, and the route from '{start}' to "
-                    f"'{target}' looks up '{far}' through '{rel_id}', which isn't how "
-                    f"'{current}' is owned, so rows you can see would land under '{far}' rows "
-                    "you can't. Ask by the route its owner is reached through instead.",
-                    source_entity=start,
-                    target_entity=target,
-                    relationship_path=list(route),
-                    model=current,
-                    owner=far,
-                )
+                raise hold("row_filter_route_not_owned", current, rel_id, far)
             current = far
 
 

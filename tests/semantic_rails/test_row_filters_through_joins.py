@@ -26,7 +26,12 @@ from semantic_rails.policies import row_filters_for_context
 from semantic_rails.renderer import render_with_slots
 from semantic_rails.request_context import TrustedAttributes
 from semantic_rails.row_filter_visibility import visibility_for
-from semantic_rails.row_filters import RowFilter, enforce_row_filters, verify_row_filters
+from semantic_rails.row_filters import (
+    ParentHop,
+    RowFilter,
+    enforce_row_filters,
+    verify_row_filters,
+)
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import (
     SqlBinary,
@@ -610,3 +615,35 @@ def test_an_ambiguous_route_is_offered_only_if_every_option_answers(home_stores)
     with pytest.raises(SemanticLayerError) as held:
         home_stores.compile(by_store, context=WEST)
     assert held.value.code == "POLICY_DENIED" and "clarification" not in held.value.details
+
+
+def test_a_shared_model_is_read_whole_by_every_filtered_caller(tmp_path):
+    root = _package(tmp_path / "rj", [{**REGION, "shared": ["entity.rj_customer"]}])
+    with duckdb.connect(str(root / "rj.duckdb")) as connection:
+        connection.execute(SEED)
+    runtime = Runtime.from_path(str(root))
+    customers = {"kind": "aggregate", "measure": "measure.rj.customer_count",
+                 "aggregation": "count_distinct"}  # fmt: skip
+    assert _rows(runtime.query(_query({"n": customers}), context=WEST)) == [(3,)]
+    # Shared only loosens what the filter doesn't reach: orders stay the caller's own.
+    assert _rows(runtime.query(_query({"revenue": REVENUE}), context=WEST)) == [(60,)]
+    report, _ = parse_config_report(resolve_package_reference(path=str(root)))
+    (coverage,) = [
+        row["details"] for row in report["warnings"] if row["code"] == "ROW_FILTER_COVERAGE"
+    ] or [None]
+    assert coverage is None or "entity.rj_customer" not in coverage["uncovered"]
+
+
+def test_a_warehouse_without_subqueries_in_on_refuses_an_optional_covered_lookup():
+    owner = ParentHop("k", "u", "k")
+    on = SqlBinary(SqlIdentifier(["other", "k"]), "=", SqlIdentifier(["t", "k"]))
+    left = _scan(SqlTableRef("other"), joins=[SqlJoin("LEFT", SqlTableRef("t"), on)])
+    covered = _vis(OTHER, parents={"t": (owner,)}, subquery_in_join_on=False)
+    assert _denied(lambda: enforce_row_filters(left, covered)) == (
+        "row_filter_shape_unsupported_by_warehouse"
+    )
+    # A directly filtered relation needs no subquery, and an INNER read puts it in WHERE.
+    direct = _vis(ROW, subquery_in_join_on=False)
+    verify_row_filters(enforce_row_filters(left, direct), direct)
+    inner = replace(left, joins=[SqlJoin("INNER", SqlTableRef("t"), on)])
+    verify_row_filters(enforce_row_filters(inner, covered), covered)
