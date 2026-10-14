@@ -85,7 +85,7 @@ def test_a_one_per_key_model_reads_its_relation_once_per_key() -> None:
     room = next(entity for entity in config.entities if entity.id == ROOM)
     assert (room.one_per_key, room.key_columns, room.is_row_grain) == (True, ["room_id"], False)
     relation = next(row for row in config.relations if row.id == room.relation_id)
-    assert room.table == relation.output_name == "shop_room__one_per_key"
+    assert room.table == relation.output_name == "sr_one_per_key__shop_room"
     columns = ["building", "floor", "accessible", "area"]
     assert [(step.kind, step.config) for step in relation.steps] == [
         ("source", {"relation": "room_rows", "columns": ["room_id", *columns]}),
@@ -527,8 +527,9 @@ def test_a_grouping_across_a_link_keeps_one_row_per_entity_and_joins_left(shop):
     sql = _sql(shop, {"select": [HEADCOUNT], "group_by": [DEPARTMENT]})
     assert "SELECT DISTINCT people.person_id AS __entity_key_1, room_rows.department AS g1" in sql
     assert (
-        "FROM people LEFT JOIN shop_room__one_per_key ON people.room_id = shop_room__one_per_key.room_id "
-        "LEFT JOIN room_rows ON shop_room__one_per_key.room_id = room_rows.room_id"
+        "FROM people LEFT JOIN sr_one_per_key__shop_room ON people.room_id = "
+        "sr_one_per_key__shop_room.room_id LEFT JOIN room_rows ON "
+        "sr_one_per_key__shop_room.room_id = room_rows.room_id"
     ) in sql
     result = shop.query({"select": [HEADCOUNT], "group_by": [DEPARTMENT]})
     [step] = [w for w in result["warnings"] if w["code"] == "REWRITE_APPLIED"]
@@ -704,7 +705,7 @@ def test_the_architect_declares_a_one_per_key_model(tmp_path):
     assert yaml.safe_load(written.read_text(encoding="utf-8"))["model"]["one_per_key"] is True
     config = load_package_config(str(project))
     customers = next(row for row in config.entities if row.id == "entity.shop_order_customer")
-    assert customers.one_per_key and customers.table == "shop_order_customer__one_per_key"
+    assert customers.one_per_key and customers.table == "sr_one_per_key__shop_order_customer"
     with pytest.raises(SemanticLayerError) as raised:
         architect.upsert_model(
             model_id="order_rows",

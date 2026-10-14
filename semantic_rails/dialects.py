@@ -653,9 +653,14 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
 
     def single_value(self, expr: Any, *, boolean: bool = False) -> Any:
         # No MIN or MAX of a boolean, and a column only a measure reads has no declared type:
-        # every column's least and greatest known value is read by sorting.
-        least, most = self.first_value(expr, expr), self.last_value(expr, expr)
-        return SqlCase([SqlCaseWhen(SqlBinary(least, "=", most), most)])
+        # count the known distinct values, and read the one there is from an array of them
+        # (never of every row).
+        from .sql_ast import SqlIndexAccess
+
+        distinct = SqlCall("ARRAY_AGG", [expr], distinct=True)
+        known = SqlAggregateFilter(distinct, SqlBinary(expr, "IS NOT", SqlLiteral(None)))
+        one = SqlBinary(SqlCall("COUNT", [expr], distinct=True), "=", SqlLiteral(1))
+        return SqlCase([SqlCaseWhen(one, SqlIndexAccess(known, SqlLiteral(1)))])
 
     def _date_of(self, expr: Any) -> Any:
         return SqlCast(expr, "DATE")

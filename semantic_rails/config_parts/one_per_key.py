@@ -10,6 +10,7 @@ hold several values per key.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
@@ -26,6 +27,10 @@ from ..schema import (
     RelationPipelineStep,
     RelationshipConfig,
 )
+
+# Every name a one-per-key relation and its steps are read under starts with this, and no
+# authored name may hold it (check_one_per_key_names).
+RESERVED = "sr_one_per_key__"
 
 
 def one_per_key_source(config: PackageConfig, entity: EntityConfig) -> str:
@@ -77,10 +82,10 @@ def one_per_key_relation(
     booleans = {
         row.column for row in dimensions if row.entity == entity.id and row.data_type == "boolean"
     }
-    name = slug(entity.id.removeprefix("entity."))
+    name = RESERVED + slug(entity.id.removeprefix("entity."))
     return RelationConfig(
-        id=f"relation.one_per_key.{name}",
-        output_name=f"{name}__one_per_key",
+        id=f"relation.{name}",
+        output_name=name,
         steps=[
             RelationPipelineStep("source", {"relation": source, "columns": [*key, *columns]}),
             RelationPipelineStep(
@@ -156,36 +161,45 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(item)
 
 
+def _normalized(name: str) -> str:
+    """A name as any warehouse might read it: unpadded, in one case, and with each character a
+    warehouse would quote or replace (a schema dot, a dash) read as an underscore."""
+    return re.sub(r"[^0-9a-z]", "_", str(name).strip().casefold())
+
+
 def check_one_per_key_names(config: PackageConfig) -> None:
-    """Refuse a name a one-per-key model's relation is read under (or one of its steps is) that
-    the package also reads or defines as another relation or table: a query reading that name
-    would read the one-per-key rows instead. Names compare in any case, as most warehouses read
-    an unquoted name, and a pipeline's every string counts, so nothing it reads is missed."""
-    for entity in config.entities:
-        relation = next((row for row in config.relations if row.id == entity.relation_id), None)
-        if not entity.one_per_key or relation is None:
+    """Keep the names one-per-key relations are read under apart from every authored one.
+
+    Each generated name (the relation's and each step's) starts with :data:`RESERVED`, which a
+    warehouse's identifier shortening keeps (Postgres keeps a name's first 52 bytes). No authored
+    table, relation or pipeline string may hold it, read as :func:`_normalized` reads it, so no
+    query reading an authored name can read one-per-key rows instead, whatever the warehouse."""
+    generated = {entity.relation_id for entity in config.entities if entity.one_per_key}
+    if not generated:
+        return
+    authored = [row.table for row in config.entities if not row.one_per_key]
+    for row in config.relations:
+        if row.id in generated:  # the relation its model names
+            authored.append(str(row.steps[0].config.get("relation", "")))
             continue
-        others = [row.table for row in config.entities if row.id != entity.id]
-        others += [
-            name
-            for row in config.relations
-            if row is not relation
-            for name in (row.id, row.output_name)
-        ]
-        others += [
-            name for row in config.relations for step in row.steps for name in _strings(step.config)
-        ]
-        others += [row.relation for row in config.aggregate_relations]
-        others += [row.zero_through.relation for row in config.measures if row.zero_through]
-        own = relation.output_name.casefold()
-        for name in others:
-            folded = name.casefold()
-            if folded in {own, relation.id.casefold()} or folded.startswith(own + "__"):
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"'{entity.id}' is one_per_key, and its relation is read under the name "
-                    f"'{relation.output_name}', which the package also reads or names as "
-                    f"'{name}': a query would read one as the other. Rename that table or "
-                    "relation.",
-                    details={"entity": entity.id, "name": name},
-                )
+        authored += [row.id, row.output_name]
+        authored += [name for step in row.steps for name in _strings(step.config)]
+    authored += [row.relation for row in config.aggregate_relations]
+    authored += [row.zero_through.relation for row in config.measures if row.zero_through]
+    for name in authored:
+        if RESERVED in _normalized(name):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"The table or relation name '{name}' holds '{RESERVED}', but {RESERVED} is "
+                "reserved for the names one-per-key models' relations are read under: a query "
+                "could read one as the other. Rename it.",
+                details={"name": name},
+            )
+    outputs = [_normalized(row.output_name) for row in config.relations if row.id in generated]
+    if repeated := sorted({name for name in outputs if outputs.count(name) > 1}):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"Two one-per-key models' relations would be read under the name '{repeated[0]}': "
+            "give their entities ids that differ in more than case and punctuation.",
+            details={"name": repeated[0]},
+        )

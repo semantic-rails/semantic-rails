@@ -1259,6 +1259,38 @@ def check_conditional_aggregate_path(
         current = following
 
 
+def _require_one_per_key_columns(expr: ConditionalAggregateExpr, config: PackageConfig) -> None:
+    """A one-per-key model's rows hold only the columns the package reads on it (its dimensions,
+    measures and joins): another column of its relation isn't there to aggregate."""
+    entities = _entity_index(config)
+    relations = {row.id: row for row in config.relations}
+    refs = collect_column_refs(expr.condition)
+    refs += collect_column_refs(expr.value) if expr.value is not None else []
+    for ref in refs:
+        entity = entities[_resolve_column_entity(ref, config)]
+        relation = relations.get(entity.relation_id)
+        if entity.one_per_key and relation is not None and ref.column not in relation.columns:
+            raise SemanticLayerError(
+                "UNSUPPORTED_CONDITIONAL_AGGREGATE",
+                f"aggregate_if reads column '{ref.column}' of '{entity.id}', a one-per-key model "
+                "whose rows hold only the columns the package declares on it.",
+                details={
+                    "column": ref.column,
+                    "entity": entity.id,
+                    "recovery_hints": [
+                        {
+                            "kind": "declare_column",
+                            "message": (
+                                f"In the package, declare a dimension or measure on "
+                                f"'{ref.column}' in the model of '{entity.id}', so its "
+                                "one-per-key rows read it."
+                            ),
+                        }
+                    ],
+                },
+            )
+
+
 def _synthetic_conditional_measure(
     expr: ConditionalAggregateExpr, config: PackageConfig
 ) -> tuple[str, MeasureConfig]:
@@ -1274,6 +1306,7 @@ def _synthetic_conditional_measure(
         )
     entity_id = _conditional_aggregate_entity(expr, config)
     _require_null_rejecting_condition(expr, entity_id, config)
+    _require_one_per_key_columns(expr, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
     # It aggregates the rows of its entity's table, whose grain the measures of that table
