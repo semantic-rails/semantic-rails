@@ -647,3 +647,14 @@ def test_a_warehouse_without_subqueries_in_on_refuses_an_optional_covered_lookup
     verify_row_filters(enforce_row_filters(left, direct), direct)
     inner = replace(left, joins=[SqlJoin("INNER", SqlTableRef("t"), on)])
     verify_row_filters(enforce_row_filters(inner, covered), covered)
+
+
+@pytest.mark.parametrize("model", ["entity.rj_store", "entity.rj_order"], ids=["filtered", "covered"])
+def test_shared_naming_a_model_the_filter_reaches_is_invalid_config(tmp_path, model):
+    root = _package(tmp_path / "rj", [{**REGION, "shared": [model]}])
+    with pytest.raises(SemanticLayerError) as caught:
+        Runtime.from_path(str(root))
+    assert caught.value.code == "INVALID_CONFIG" and model in str(caught.value)
+    report, _ = parse_config_report(resolve_package_reference(path=str(root)))
+    assert [row["code"] for row in report["errors"]] == ["INVALID_CONFIG"]
+    assert "shared" in report["errors"][0]["message"]
