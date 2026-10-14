@@ -9,10 +9,10 @@ module owns layout, indentation, identifier quoting, and CTE ordering.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from .operators import LIKE_ESCAPE
@@ -54,7 +54,6 @@ from .sql_ast import (
     normalize_sql_set_operator,
     normalize_sql_sort_direction,
     normalize_sql_window_frame,
-    sql_nodes,
 )
 from .sql_identifiers import quote_identifier
 
@@ -144,36 +143,89 @@ def _quote_ident(value: str) -> str:
     return quote_identifier(raw)
 
 
-# The answer's own column names (the outermost SELECT's aliases), and the names that qualify a
-# derived relation (a CTE, or an alias of one). An output alias is always quoted where it is
-# defined and wherever it is referenced (unqualified, or through a derived relation), so a
-# keyword such as end, user or order is a name on every warehouse; a physical column keeps
-# the selective quoting above, since Snowflake folds an unquoted name to upper case.
+# The answer's own column names (the outermost SELECT's aliases). An output alias is always
+# quoted where a SELECT defines it and wherever a reference reads that definition, so a keyword
+# such as end, user or order is a name on every warehouse. A warehouse table's column keeps the
+# selective quoting above even when it shares a name with an output alias, since Snowflake folds
+# an unquoted name to upper case and Postgres to lower case.
 _OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", default=frozenset())
-_DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
+
+
+@dataclass(frozen=True)
+class _Scope:
+    """One SELECT's relations, by the name a reference reads each through (its alias, else its
+    dotted name): a CTE's column names, or None for a warehouse table or a table function.
+    ``ordered`` holds the SELECT's own column names while its ORDER BY renders, where a bare
+    name reads them first."""
+
+    relations: dict[tuple[str, ...], frozenset[str] | None]
+    ordered: frozenset[str] = frozenset()
+
+
+# Whether a reference reads a definition is decided as the warehouse resolves the reference: in
+# its own SELECT's scope, then each enclosing one (innermost last). A relation name is a CTE only
+# where that CTE is in view: a WITH's earlier CTEs, as a WITH without RECURSIVE reads them, so a
+# table that shares its name with a later CTE, or its alias with a CTE's elsewhere, stays a table.
+_SCOPES: ContextVar[tuple[_Scope, ...]] = ContextVar("sql_scopes", default=())
+_CTES: ContextVar[Mapping[str, frozenset[str]]] = ContextVar("ctes_in_view")
+
+
+@contextmanager
+def _reading(scopes: tuple[_Scope, ...], ctes: Mapping[str, frozenset[str]]) -> Iterator[None]:
+    scopes_token, ctes_token = _SCOPES.set(scopes), _CTES.set(ctes)
+    try:
+        yield
+    finally:
+        _CTES.reset(ctes_token)
+        _SCOPES.reset(scopes_token)
 
 
 def _alias_name(value: str) -> str:
     return quote_identifier(value) if value in _OUTPUT_ALIASES.get() else _quote_ident(value)
 
 
-def _derived_relations(query: SqlSelect) -> frozenset[str]:
-    """Every CTE name in ``query``, and every alias a FROM or JOIN gives one."""
-    nodes = list(sql_nodes(query))
-    ctes = {node.name for node in nodes if isinstance(node, SqlCte)}
-    refs = [node for node in nodes if isinstance(node, SqlTableRef)]
-    return frozenset(ctes | {ref.alias for ref in refs if ref.name in ctes and ref.alias})
+def _reads_output_alias(qualifier: tuple[str, ...], column: str) -> bool:
+    """Whether ``column``, read through ``qualifier`` or bare, is an output alias a SELECT
+    defines rather than a warehouse table's column. A qualified name no scope holds is a table's;
+    a bare one, the SELECT's own column."""
+    if column not in _OUTPUT_ALIASES.get():
+        return False
+    for scope in reversed(_SCOPES.get()):
+        if qualifier:
+            if qualifier in scope.relations:
+                return scope.relations[qualifier] is not None
+        elif column in scope.ordered or any(
+            column in columns for columns in scope.relations.values() if columns is not None
+        ):
+            return True
+        elif None in scope.relations.values():
+            return False
+    return not qualifier
+
+
+def _scope(query: SqlSelect, ctes: Mapping[str, frozenset[str]]) -> _Scope:
+    relations: dict[tuple[str, ...], frozenset[str] | None] = {}
+    for table in [query.from_table, *(join.table for join in query.joins)]:
+        if isinstance(table, SqlTableRef):
+            name = (table.alias,) if table.alias else tuple(str(table.name).split("."))
+            relations[name] = ctes.get(table.name)
+        elif table is not None:
+            relations[(table.alias or table.name,)] = None
+    return _Scope(relations)
+
+
+def _column_names(query: SqlQuery) -> frozenset[str]:
+    first = query.queries[0] if isinstance(query, SqlSetQuery) else query
+    return frozenset(field.alias for field in first.select)
 
 
 @contextmanager
 def quoting_output_aliases(query: SqlSelect) -> Iterator[None]:
     """Quote ``query``'s output aliases, and every reference to them, for one render."""
     aliases = _OUTPUT_ALIASES.set(frozenset(field.alias for field in query.select))
-    derived = _DERIVED.set(_derived_relations(query))
     try:
         yield
     finally:
-        _DERIVED.reset(derived)
         _OUTPUT_ALIASES.reset(aliases)
 
 
@@ -225,9 +277,7 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlIdentifier):
         names = [_quote_ident(part) for part in expr.parts]
         *qualifier, column = expr.parts or [""]
-        if column in _OUTPUT_ALIASES.get() and (
-            not qualifier or (len(qualifier) == 1 and qualifier[0] in _DERIVED.get())
-        ):
+        if _reads_output_alias(tuple(qualifier), column):
             names[-1] = quote_identifier(column)
         return ".".join(names)
     if isinstance(expr, SqlParameter):
@@ -422,13 +472,39 @@ def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
     if flatten_ctes:
         query = _flatten_ctes(query)
     chunks: list[str] = []
+    outer, ctes_in_view = _SCOPES.get(), dict(_CTES.get({}))
     if query.ctes:
         ctes = []
         for cte in query.ctes:
-            ctes.append(
-                f"{_quote_ident(cte.name)} AS (\n{render_query(cte.query, flatten_ctes=False)}\n)"
-            )
+            # A CTE reads the CTEs before it, never this SELECT's own relations.
+            with _reading(outer, ctes_in_view):
+                ctes.append(
+                    f"{_quote_ident(cte.name)} AS (\n{render_query(cte.query, flatten_ctes=False)}\n)"
+                )
+            ctes_in_view[cte.name] = _column_names(cte.query)
         chunks.append("WITH " + ",\n".join(ctes))
+    scope = _scope(query, ctes_in_view)
+    with _reading((*outer, scope), ctes_in_view):
+        chunks.extend(_render_clauses(query))
+    if query.order_by:
+        ordered = replace(scope, ordered=frozenset(field.alias for field in query.select))
+        with _reading((*outer, ordered), ctes_in_view):
+            chunks.append(
+                "ORDER BY\n  "
+                + ",\n  ".join(
+                    f"{render_expr(order.expression)} {normalize_sql_sort_direction(order.direction)}"
+                    + (" NULLS LAST" if order.nulls_last else "")
+                    for order in query.order_by
+                )
+            )
+    if query.limit is not None:
+        chunks.append(f"LIMIT {query.limit}")
+    return "\n".join(chunks)
+
+
+def _render_clauses(query: SqlSelect) -> list[str]:
+    """``query``'s SELECT list through its QUALIFY, in its own scope."""
+    chunks: list[str] = []
     select_sql = ",\n  ".join(
         f"{render_expr(field.expression)} AS {_alias_name(field.alias)}" for field in query.select
     )
@@ -456,18 +532,7 @@ def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
         chunks.append(
             "QUALIFY\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.qualify)
         )
-    if query.order_by:
-        chunks.append(
-            "ORDER BY\n  "
-            + ",\n  ".join(
-                f"{render_expr(order.expression)} {normalize_sql_sort_direction(order.direction)}"
-                + (" NULLS LAST" if order.nulls_last else "")
-                for order in query.order_by
-            )
-        )
-    if query.limit is not None:
-        chunks.append(f"LIMIT {query.limit}")
-    return "\n".join(chunks)
+    return chunks
 
 
 def render_query(query: SqlQuery, *, flatten_ctes: bool = True) -> str:
