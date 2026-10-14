@@ -24,7 +24,10 @@ from semantic_rails.embedding import RequestContext
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_select_for_profile
 from semantic_rails.runtime import Runtime
-from semantic_rails.runtime_parts.answer_warnings import closing_day_disclosures
+from semantic_rails.runtime_parts.answer_warnings import (
+    closing_day_disclosures,
+    granted_closing_day,
+)
 from tests.semantic_rails import shared_seed
 from tests.semantic_rails.conftest import opened
 
@@ -390,3 +393,23 @@ def test_a_read_only_for_withheld_values_says_nothing() -> None:
     assumptions, warnings = closing_day_disclosures([whole], ["rank"])
     assert [row["closing_day"] for row in assumptions] == ["2020-01-20"]
     assert [row["details"]["series_missing"] for row in warnings] == [1]
+
+
+def test_a_read_whose_owner_is_unknown_never_sits_beside_a_withheld_or_ungranted_value() -> None:
+    """outputs None: nobody declared which column the read is for, so it says nothing beside
+    a withheld column, and a grant sees it only when it holds the measure and every column."""
+    read = {"measure": "m", "outputs": None, "nested": True, "closing_day": "2020-01-20",
+            "periods": 1, "series": 2, "series_missing": 1, "periods_missing": 1,
+            "missing_day": "2020-01-20"}  # fmt: skip
+    assert closing_day_disclosures([read], ["rank"]) == ([], [])
+    (assumption,), (warning,) = closing_day_disclosures([read])
+    assert assumption["outputs"] is None
+    columns = [{"field": "v", "semantic_id": "metric.v"}, {"field": "d", "semantic_id": "dim.d"}]
+    for entry in (assumption, warning):
+        assert granted_closing_day(entry, columns, {"m", "metric.v", "dim.d"}) == entry
+        assert granted_closing_day(entry, columns, {"m", "metric.v"}) is None
+        # A measure not granted is never named by a column that may not read it.
+        assert granted_closing_day(entry, columns, {"metric.v", "dim.d"}) is None
+    # A whole-answer read (an entity filter's) of a measure not granted says nothing either.
+    whole, _ = closing_day_disclosures([{**read, "outputs": []}])
+    assert granted_closing_day(whole[0], columns, {"metric.v", "dim.d"}) is None

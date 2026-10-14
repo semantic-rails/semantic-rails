@@ -75,6 +75,7 @@ from .dependencies import (
     binding_cut,
     capture_objects,
     leaf_predicate_roles,
+    owning,
     project_is_cut,
     recipe_objects,
     record_ids,
@@ -127,7 +128,7 @@ from .predicate import (
     _public_time_spec,
     _require_predicate_over_rows,
 )
-from .snapshot_reads import SnapshotRead, closing_day, select_snapshots
+from .snapshot_reads import SnapshotRead, closing_day, record_output_reads, select_snapshots
 from .time_series import _window_is_named
 
 
@@ -764,8 +765,13 @@ def _anchored_snapshot_ctes(
     plan: LogicalPlan,
     anchored: AnchoredEntitySetPlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], str, str, list[Any]]:
-    """The chosen snapshots, their CTE and time alias, and the condition that keeps one."""
+    *,
+    scope: list[PredicateSetSql],
+    name: str = "",
+) -> tuple[list[SqlCte], str, str, list[Any], bool]:
+    """The chosen snapshots, their CTE and time alias, the condition that keeps one, and
+    whether they close on a day. A balance that closes on one closes within ``scope``: only
+    rows of the entities in those predicate sets are read when finding each period's day."""
     entities = _entity_index(config)
     bound = anchored.denominator_measure_plan.bound_measure
     measure = _measure_index(config)[bound.measure_id]
@@ -813,34 +819,54 @@ def _anchored_snapshot_ctes(
             _source_time_window(raw_time_expr, plan.time, config, role_id=leaf_time_role)
         )
 
-    snapshot_name = f"latest_{_slug(_last_token(measure.entity).replace('entity_', ''), fallback='entity')}_snapshot"
+    snapshot_name = (
+        name
+        or f"latest_{_slug(_last_token(measure.entity).replace('entity_', ''), fallback='entity')}_snapshot"
+    )
     window_choice = anchored.denominator_measure_plan.bound_measure.aggregation
     if window_choice not in {"first_value", "last_value"}:
         window_choice = (
             "first_value" if measure.accumulation.snapshot == "start_of_period" else "last_value"
         )
-    # The same snapshots a stock's own leaf reads (snapshot_reads): the closing day of each
-    # period on an as-of clock, each series' last in the period on any other.
+    # Chosen as a stock's own leaf chooses them (snapshot_reads). A balance that closes on a
+    # day finds it among the rows of its scope's entities only, as an operand read on its own
+    # does; other reads keep each series' last snapshot, which no entity scope changes.
+    day = closing_day(measure, _temporal_role_index(config)[bound.temporal_role], config)
+    day = day if window_choice == "last_value" else None
+    exprs = {item.alias: item.expression for item in fields}
+    dialect = _dialect(config)
+    joins = [
+        SqlJoin(
+            join_type="INNER",
+            table=SqlTableRef(name=member.set_name),
+            on=_and_conditions(
+                [
+                    dialect.null_safe_eq(exprs[key], SqlIdentifier([member.set_name, key]))
+                    for key in [
+                        *member.key_aliases,
+                        *([member.time_alias] if member.time_alias else []),
+                    ]
+                ]
+            ),
+        )
+        for member in (scope if day is not None else [])
+    ]
     read = SnapshotRead(
         fields=fields,
-        periods=[time_alias] if time_alias in {item.alias for item in fields} else [],
+        periods=[time_alias] if time_alias in exprs else [],
         series=series,
         order=order_expr,
-        day=closing_day(measure, _temporal_role_index(config)[bound.temporal_role], config)
-        if window_choice == "last_value"
-        else None,
+        day=day,
         first=window_choice == "first_value",
         source=SqlTableRef(name=source_table),
+        joins=joins,
         where=where_clauses,
+        ctes=[cte for member in (scope if day is not None else []) for cte in member.ctes],
     )
-    ctes = select_snapshots(
-        read,
-        name=snapshot_name,
-        prefix=snapshot_name,
-        dialect=_dialect(config),
-        measure_id=measure.id,
+    ctes, snapshots = select_snapshots(
+        read, name=snapshot_name, prefix=snapshot_name, dialect=dialect, measure_id=measure.id
     )
-    return ctes, snapshot_name, time_alias, kept_rows
+    return ctes, snapshots, time_alias, kept_rows, day is not None
 
 
 def _dimension_expr_from_anchor(
@@ -872,9 +898,20 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     base_predicate_sets = predicate_sets[:base_predicate_count]
     extra_predicate_sets = predicate_sets[base_predicate_count:]
 
-    snapshot_ctes, snapshot_name, time_alias, kept_rows = _anchored_snapshot_ctes(
-        plan, anchored, config
-    )
+    # Each operand is read in its own scope: the whole within the denominator's predicates;
+    # for a balance that closes on a day, the part chooses its own snapshots within the
+    # numerator's, so it closes on its own day, as the operand read alone does.
+    with owning(anchored.output_alias):
+        snapshot_ctes, snapshot_name, time_alias, kept_rows, closes = _anchored_snapshot_ctes(
+            plan, anchored, config, scope=base_predicate_sets
+        )
+        part_ctes: list[SqlCte] = []
+        part_name = ""
+        if closes:
+            part_ctes, part_name, *_ = _anchored_snapshot_ctes(
+                plan, anchored, config, scope=predicate_sets, name=f"{snapshot_name}_part"
+            )
+    record_output_reads(anchored.output_alias, {anchored.output_alias})
     if project_is_cut():
         # This path returns before the normal projection loop. Both operands
         # consume the snapshot value; their predicates record separate cuts.
@@ -934,19 +971,47 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
             )
         )
 
-    anchor_cte = SqlCte(
-        name=anchor_name,
-        query=SqlSelect(
+    def anchor_select(snapshots: str) -> SqlSelect:
+        return SqlSelect(
             select=[SqlField(expr, alias) for alias, expr in anchor_select_fields.items()],
-            from_table=SqlTableRef(name=snapshot_name, alias="snapshot"),
+            from_table=SqlTableRef(name=snapshots, alias="snapshot"),
             joins=joins,
             where=anchor_where,
-        ),
-    )
+        )
 
+    anchor_cte = SqlCte(name=anchor_name, query=anchor_select(snapshot_name))
+    key_aliases = _query_key_aliases(plan)
     final_joins: list[SqlJoin] = []
     numerator_conditions: list[Any] = []
-    for predicate_set in extra_predicate_sets:
+    part_ctes_named: list[SqlCte] = []
+    if closes:
+        # The part's own snapshots, totalled per output row and joined to the whole's.
+        part_rows, part_totals = f"{anchor_name}_part", f"{anchor_name}_part_totals"
+        part_ctes_named = [
+            SqlCte(name=part_rows, query=anchor_select(part_name)),
+            SqlCte(
+                name=part_totals,
+                query=SqlSelect(
+                    select=[
+                        *(SqlField(SqlIdentifier([part_rows, key]), key) for key in key_aliases),
+                        SqlField(
+                            SqlCall("SUM", [SqlIdentifier([part_rows, "__anchor_value"])]),
+                            "__part_value",
+                        ),
+                    ],
+                    from_table=SqlTableRef(name=part_rows),
+                    group_by=[SqlIdentifier([part_rows, key]) for key in key_aliases],
+                ),
+            ),
+        ]
+        final_joins.append(
+            SqlJoin(
+                join_type="LEFT",
+                table=SqlTableRef(name=part_totals),
+                on=_join_condition(key_aliases, "anchor", part_totals, dialect=_dialect(config)),
+            )
+        )
+    for predicate_set in extra_predicate_sets if not closes else []:
         keys = predicate_set.key_aliases + (
             [predicate_set.time_alias] if predicate_set.time_alias else []
         )
@@ -994,6 +1059,9 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
             ],
         )
         denominator_expr = SqlCall("SUM", [value_expr])
+    if closes:
+        part_value = SqlIdentifier([f"{anchor_name}_part_totals", "__part_value"])
+        numerator_expr = SqlCall("COALESCE", [SqlCall("MAX", [part_value]), SqlLiteral(0)])
     ratio_expr: SqlExpr = SqlBinary(
         numerator_expr, "/", SqlCall("NULLIF", [denominator_expr, SqlLiteral(0)])
     )
@@ -1005,7 +1073,6 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
         )
         ratio_expr = SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], ratio_expr)
 
-    key_aliases = _query_key_aliases(plan)
     final_fields = [
         SqlField(SqlIdentifier(parts=["anchor", alias]), alias) for alias in key_aliases
     ]
@@ -1013,10 +1080,15 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     group_by: list[SqlExpr] = [SqlIdentifier(parts=["anchor", alias]) for alias in key_aliases]
     order_by = _requested_order(plan, "anchor")
     ctes: list[SqlCte] = []
-    for predicate_set in predicate_sets:
-        ctes.extend(predicate_set.ctes)
-    ctes.extend(snapshot_ctes)
-    ctes.append(anchor_cte)
+    for cte in [
+        *(cte for predicate_set in predicate_sets for cte in predicate_set.ctes),
+        *snapshot_ctes,
+        *part_ctes,
+        anchor_cte,
+        *part_ctes_named,
+    ]:
+        if all(cte.name != kept.name for kept in ctes):  # a scope's sets come once
+            ctes.append(cte)
     return SqlSelect(
         ctes=ctes,
         select=final_fields,

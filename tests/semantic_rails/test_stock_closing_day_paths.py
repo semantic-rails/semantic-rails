@@ -20,6 +20,7 @@ import pytest
 
 from semantic_rails.compiler_parts.bind import _parse_public_expr
 from semantic_rails.dialects import DuckDbDialect
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig, SemanticPolicyConfig
@@ -366,3 +367,47 @@ def test_duplicate_snapshots_on_the_closing_day_are_all_read(lowering, tmp_path:
         assert _values(runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})) == [400.0]
     finally:
         runtime.close()
+
+
+def test_a_balance_closing_in_another_zone_than_the_query_is_refused(tmp_path: Path) -> None:
+    """Accounts filtered by a Los Angeles balance in a call that runs in UTC (a hits clock):
+    a zone-aware clock would close on a UTC day, so the call is refused, never answered."""
+    root = _package(tmp_path / "x", clock=LA)
+    (root / "models" / "hits.yml").write_text(
+        "model:\n  id: hits\n  relation: hits\n  entities: {hit: {}, account: {}}\n  dimensions: {hit_id: {kind: categorical}}\n"
+        "  times:\n    at: {column: at, kind: timestamp, class: event_time, default: true}\n"
+        '  measures:\n    hits: {kind: aggregate, expr: "1", default_agg: sum,\n'
+        "      accumulation: {kind: flow}, value_type: count}\n"
+    )
+    graph = (root / "graph.yml").read_text() + "    hit: {key: [hit_id], model: hits}\n"
+    (root / "graph.yml").write_text(graph)
+    with duckdb.connect(str(root / "x.duckdb")) as con:
+        con.execute(
+            "CREATE TABLE hits AS SELECT 1 AS hit_id, 'Y' AS id, TIMESTAMP '2020-01-21' AS at"
+        )
+    runtime = _runtime(root)
+    try:
+        where = [{"entity": "entity.x_account", "having": [{"field": BALANCE, "op": "gt", "value": 50}],
+                  "over": "all_time"}]  # fmt: skip
+        call = {"select": [{"expression": "measure.x.hits", "as": "v"}], "where": where}
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(call)
+        assert caught.value.code == "MIXED_TIME_ROLES"
+        assert caught.value.details["reason"] == "closing_day_zone"
+        # Read on its own clock, the balance answers.
+        assert _values(runtime.query({"select": [{"expression": BALANCE, "as": "v"}]})) == [200.0]
+    finally:
+        runtime.close()
+
+
+def test_an_entity_set_ratio_equals_its_operands_read_alone(x: Runtime) -> None:
+    """The part keeps X only and closes on X's January 5 (100); the whole closes on
+    January 20, where only Y has a snapshot (200). The ratio is the ratio of the two, each
+    read on its own day."""
+    is_100 = {"entity": "entity.x_account", "input": "measure.x.flow", "op": "is",
+              "value": 100, "over": "all_time"}  # fmt: skip
+    part = {**FEE, "predicates": [is_100]}
+    alone = [_values(x.query({"select": [{"expression": e, "as": "v"}]}))[0] for e in (part, FEE)]
+    assert alone == [100.0, 200.0]
+    ratio = {"kind": "ratio", "numerator": part, "denominator": FEE}
+    assert _values(x.query({"select": [{"expression": ratio, "as": "v"}]})) == [0.5]

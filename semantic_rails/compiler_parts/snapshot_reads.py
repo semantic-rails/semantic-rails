@@ -1,18 +1,19 @@
 """Which snapshots a stock reads: one selection for every path that reads one.
 
 A stock reads one snapshot per series per period: the last (its first, for a start-of-period
-stock). On an ``as_of_time`` clock (a snapshot table) an end-of-period read also closes on
-the period's closing day, the last day with a snapshot in the clock's own zone (with no
-period, the last such day of everything read): a series with no snapshot that day is not
-counted, never carried forward. A row with no clock is never a snapshot. A measure's own leaf
-and an entity-set ratio both choose through :func:`select_snapshots`, on either lowering
-(QUALIFY, or an aggregate joined back), and each closing-day read records the probe the
-runtime runs to name its day and count the series it left out.
+stock); rows tied on that clock value are all read, as the data holds them. On an
+``as_of_time`` clock (a snapshot table) an end-of-period read also closes on the period's
+closing day: the last day bucket with a snapshot, the very bucket ``time.grain: day`` puts it
+in (with no period, the last such day of everything read). A series with no snapshot that day
+is not counted, never carried forward. A row with no clock is never a snapshot. A measure's
+own leaf and an entity-set ratio both choose through :func:`select_snapshots`, on either
+lowering (QUALIFY, or an aggregate joined back), and each closing-day read records the probe
+the runtime runs to name its day and count the series it left out.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -24,7 +25,6 @@ from ..sql_ast import (
     SqlCall,
     SqlCase,
     SqlCaseWhen,
-    SqlCast,
     SqlCte,
     SqlField,
     SqlIdentifier,
@@ -34,9 +34,10 @@ from ..sql_ast import (
     SqlSelect,
     SqlTableRef,
     SqlWindow,
+    sql_nodes,
 )
-from .dependencies import current_cut_owners, holding, plan_is_root
-from .lowering_common import _and_conditions, _apply_role_timezone
+from .dependencies import current_read_owners, holding, plan_is_root
+from .lowering_common import _and_conditions, _apply_role_timezone, _time_bucket_expr
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class SnapshotRead:
     """A stock's rows and how one snapshot is chosen from them.
 
     ``fields`` are carried on each chosen row; ``periods`` and ``series`` name the ones that
-    split time and identify a series. ``day`` maps the clock to its local date when the read
+    split time and identify a series. ``day`` gives a clock value's day bucket when the read
     closes on a day (:func:`closing_day`), else None.
     """
 
@@ -52,7 +53,7 @@ class SnapshotRead:
     periods: list[str]
     series: list[str]
     order: Any
-    day: Callable[[Any], Any] | None
+    day: ClosingDay | None
     first: bool
     source: SqlTableRef
     joins: list[SqlJoin] = field(default_factory=list)
@@ -60,25 +61,64 @@ class SnapshotRead:
     ctes: list[SqlCte] = field(default_factory=list)
 
 
-def closing_day(measure: Any, role: Any, config: PackageConfig) -> Callable[[Any], Any] | None:
-    """The date in the clock's own zone a stock on ``role`` closes on; None for anything but a
-    stock, and for a clock that isn't as-of: a current-state table, read as keyed."""
+@dataclass(frozen=True)
+class ClosingDay:
+    """The day a balance on an as-of clock closes on: a clock value's day bucket, the very
+    expression ``time.grain: day`` buckets that clock by. On a warehouse that evaluates
+    zone-aware values in the session's zone, the query must run in ``zone``."""
+
+    role: Any
+    config: PackageConfig
+
+    def __call__(self, clock: Any) -> Any:
+        converted = _apply_role_timezone(clock, self.role, self.config)
+        return _time_bucket_expr({"grain": "day"}, converted, self.config)
+
+    @property
+    def zone(self) -> str:
+        return str(self.role.timezone or "UTC").strip()
+
+
+def closing_day(measure: Any, role: Any, config: PackageConfig) -> ClosingDay | None:
+    """The day a stock on ``role`` closes on; None for anything but a stock, and for a clock
+    that isn't as-of: a current-state table, read as keyed."""
     if measure.measure_class != "semi_additive" or role.temporal_class != "as_of_time":
         return None
-    return lambda clock: SqlCast(_apply_role_timezone(clock, role, config), "DATE")
+    return ClosingDay(role, config)
 
 
 def select_snapshots(
     read: SnapshotRead, *, name: str, prefix: str, dialect: Any, measure_id: str
-) -> list[SqlCte]:
-    """The CTEs whose last, ``name``, holds the chosen rows with ``read.fields``."""
+) -> tuple[list[SqlCte], str]:
+    """The CTEs choosing the snapshots, and the one of them holding the chosen rows with
+    ``read.fields``. Their names (``name``, ``{prefix}_base``, ...) are taken unless a
+    relation or CTE the read uses already has one: then a numbered one is."""
+    taken = {
+        label
+        for node in sql_nodes([read.source, read.joins, read.where, read.ctes])
+        if isinstance(node, SqlTableRef | SqlCte)
+        for label in (node.name, getattr(node, "alias", "") or "")
+        if label
+    }
+
+    def free(wanted: str) -> str:
+        label, number = wanted, 2
+        while label in taken:
+            label, number = f"{wanted}_{number}", number + 1
+        taken.add(label)
+        return label
+
     exprs = {item.alias: item.expression for item in read.fields}
     where = [*read.where, SqlBinary(read.order, "IS NOT", SqlLiteral(None))]
     if read.day is not None:
-        record_closing_read(measure_id, _closing_day_probe(read, exprs, where))
+        probe = _closing_day_probe(read, exprs, where, free("closing_rows"))
+        record_closing_read(measure_id, probe, read.day.zone)
+    name = free(name)
     if dialect.capabilities().get("qualify"):
+        # RANK, not ROW_NUMBER: rows tied on a series' last clock value are all read, as the
+        # aggregate joined back reads them.
         rank = SqlWindow(
-            SqlCall("ROW_NUMBER", []),
+            SqlCall("RANK", []),
             partition_by=[exprs[alias] for alias in [*read.periods, *read.series]],
             order_by=[SqlOrderTerm(read.order, "ASC" if read.first else "DESC")],
         )
@@ -96,9 +136,9 @@ def select_snapshots(
             where=where,
             qualify=[_and_conditions(chosen)],
         )
-        return [*read.ctes, SqlCte(name=name, query=rows)]
+        return [*read.ctes, SqlCte(name=name, query=rows)], name
 
-    base, complete, closing = f"{prefix}_base", f"{prefix}_complete", f"{prefix}_closing"
+    base, complete, closing = (free(f"{prefix}_{step}") for step in ("base", "complete", "closing"))
 
     def column(relation: str, alias: str) -> SqlIdentifier:
         return SqlIdentifier(parts=[relation, alias])
@@ -164,10 +204,12 @@ def select_snapshots(
         from_table=SqlTableRef(name=base),
         joins=joins,
     )
-    return [*ctes, SqlCte(name=name, query=rows)]
+    return [*ctes, SqlCte(name=name, query=rows)], name
 
 
-def _closing_day_probe(read: SnapshotRead, exprs: dict[str, Any], where: list[Any]) -> SqlSelect:
+def _closing_day_probe(
+    read: SnapshotRead, exprs: dict[str, Any], where: list[Any], name: str
+) -> SqlSelect:
     """One row on a closing-day read, over the very rows it chooses from: its latest closing
     day, its periods, the series seen in them, and those whose last snapshot in a period is
     earlier than that period's closing day (how many, in how many periods, the latest such
@@ -195,7 +237,7 @@ def _closing_day_probe(read: SnapshotRead, exprs: dict[str, Any], where: list[An
     )
 
     def column(alias: str) -> SqlIdentifier:
-        return SqlIdentifier(["closing_rows", alias])
+        return SqlIdentifier([name, alias])
 
     last = SqlBinary(column("series_rank"), "=", SqlLiteral(1))
     missed = _and_conditions([last, SqlBinary(column("day"), "<", column("closing"))])
@@ -205,7 +247,7 @@ def _closing_day_probe(read: SnapshotRead, exprs: dict[str, Any], where: list[An
 
     when_missed = SqlCase([SqlCaseWhen(missed, column("closing"))])
     return SqlSelect(
-        ctes=[*read.ctes, SqlCte(name="closing_rows", query=rows)],
+        ctes=[*read.ctes, SqlCte(name=name, query=rows)],
         select=[
             SqlField(SqlCall("MAX", [column("closing")]), "closing_day"),
             SqlField(SqlCall("COUNT", [column("closing")], distinct=True), "periods"),
@@ -214,7 +256,7 @@ def _closing_day_probe(read: SnapshotRead, exprs: dict[str, Any], where: list[An
             SqlField(SqlCall("COUNT", [when_missed], distinct=True), "periods_missing"),
             SqlField(SqlCall("MAX", [when_missed]), "missing_day"),
         ],
-        from_table=SqlTableRef(name="closing_rows"),
+        from_table=SqlTableRef(name=name),
     )
 
 
@@ -230,22 +272,29 @@ def recording_closing_reads() -> Iterator[dict[str, Any]]:
         yield recorded
 
 
-def record_closing_read(measure_id: str, probe: SqlSelect) -> None:
+def record_closing_read(measure_id: str, probe: SqlSelect, zone: str) -> None:
     """One read per measure and probe: each stock keeps its own disclosure. ``owners`` are
-    the root leaves or outputs the read counts for (None: the whole answer, as an entity
-    filter's), the attribution its cuts use; ``nested`` says the read is inside another."""
+    the root leaves or outputs it answers for (``dependencies.owning``: an empty set is the
+    whole answer, None an owner nobody declared); ``nested`` says it is inside another read;
+    ``zone`` is the zone its day buckets are in."""
     recorded = _closing_reads.get()
     if recorded is None:
         return
-    owners, nested = current_cut_owners(), not plan_is_root()
+    owners, nested = current_read_owners(), not plan_is_root()
     for read in recorded["reads"]:
         if (read["measure"], read["probe"]) == (measure_id, probe):
             mine = read["owners"]
-            read["owners"] = None if mine is None or owners is None else mine | owners
+            read["owners"] = (
+                None
+                if mine is None or owners is None
+                else frozenset()
+                if not mine or not owners
+                else mine | owners
+            )
             read["nested"] = read["nested"] and nested
             return
     recorded["reads"].append(
-        {"measure": measure_id, "probe": probe, "owners": owners, "nested": nested}
+        {"measure": measure_id, "probe": probe, "owners": owners, "nested": nested, "zone": zone}
     )
 
 
@@ -257,20 +306,21 @@ def record_output_reads(output: str, leaves: set[str]) -> None:
 
 
 def closing_reads_by_output(recorded: dict[str, Any]) -> tuple[dict[str, Any], ...]:
-    """Each read with the outputs it counts for; an empty list is the whole answer (an entity
-    filter's read, or a lowering that records no outputs)."""
+    """Each read with the outputs it answers for: an empty list is the whole answer (a query
+    filter's read), None an owner that is unknown, or matches no output."""
     outputs: dict[str, set[str]] = recorded["outputs"]
-    return tuple(
-        {
-            "measure": read["measure"],
-            "probe": read["probe"],
-            "nested": read["nested"],
-            "outputs": sorted(
-                name
-                for name, leaves in outputs.items()
-                if read["owners"] is not None
-                and (name in read["owners"] or leaves & read["owners"])
-            ),
-        }
-        for read in recorded["reads"]
-    )
+    reads = []
+    for read in recorded["reads"]:
+        owners = read["owners"]
+        names = (
+            sorted(name for name, leaves in outputs.items() if name in owners or leaves & owners)
+            if owners
+            else []
+        )
+        reads.append(
+            {
+                **{key: read[key] for key in ("measure", "probe", "nested", "zone")},
+                "outputs": None if owners is None or (owners and not names) else names,
+            }
+        )
+    return tuple(reads)

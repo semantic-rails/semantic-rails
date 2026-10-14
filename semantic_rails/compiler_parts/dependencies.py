@@ -59,6 +59,9 @@ _role_targets: ContextVar[tuple[set[str], ...]] = ContextVar("role_targets", def
 _recipes: ContextVar[tuple[str, ...]] = ContextVar("binding_recipes", default=())
 _cut_owners: ContextVar[frozenset[str] | None] = ContextVar("cut_owners", default=None)
 _open_cuts: ContextVar[tuple[Cut, ...]] = ContextVar("open_cuts", default=())
+# Whom a read lowered now answers for, for its disclosures: root leaf or output aliases; an
+# empty set is the whole answer (a query-level filter); None, no owner was declared.
+_read_owners: ContextVar[frozenset[str] | None] = ContextVar("read_owners", default=None)
 
 
 def record_ids(ids: set[str]) -> None:
@@ -108,13 +111,26 @@ def cut_owners(*aliases: str) -> Iterator[None]:
     """
     plan = _plan.get()
     root = plan is not None and plan.root
-    with holding(_cut_owners, (frozenset(aliases) or None) if root else _cut_owners.get()):
+    with (
+        holding(_cut_owners, (frozenset(aliases) or None) if root else _cut_owners.get()),
+        owning(*aliases),
+    ):
         yield
 
 
-def current_cut_owners() -> frozenset[str] | None:
-    """The root leaves or outputs a cut recorded now counts for; None is the whole query."""
-    return _cut_owners.get()
+@contextmanager
+def owning(*aliases: str) -> Iterator[None]:
+    """Attribute the reads lowered in this block to these root leaves or outputs (none: the
+    whole answer). A nested compile keeps its parent's owners."""
+    plan = _plan.get()
+    root = plan is not None and plan.root
+    with holding(_read_owners, frozenset(aliases) if root else _read_owners.get()):
+        yield
+
+
+def current_read_owners() -> frozenset[str] | None:
+    """Whom a read lowered now answers for (see ``owning``); None when nobody declared it."""
+    return _read_owners.get()
 
 
 def measure_cut_owners(measure_id: str) -> AbstractContextManager[None]:

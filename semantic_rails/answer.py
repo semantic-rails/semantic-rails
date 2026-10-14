@@ -511,7 +511,9 @@ def _query_execution_error_details(
 
 
 def _time_zone(config: Any, compiled: dict[str, Any]) -> str:
-    """The zone a query runs in: its time role's, else UTC ("" if the name isn't a zone).
+    """The zone a query runs in: its time role's; without a ``time`` block, the zone of the
+    one clock its measures read (a balance closes on that clock's day); else UTC ("" if the
+    name isn't a zone).
 
     DuckDB and Postgres evaluate zone-dependent SQL in the session's zone: the clock of a
     ``TIMESTAMP WITH TIME ZONE`` value, its comparison with a plain timestamp, ``now()``.
@@ -519,7 +521,11 @@ def _time_zone(config: Any, compiled: dict[str, Any]) -> str:
     in the role's zone at every grain. Naive ``TIMESTAMP`` and ``DATE`` values don't
     depend on the session zone.
     """
-    role_id = (compiled["logical_plan"].time or {}).get("temporal_role")
+    plan = compiled["logical_plan"]
+    clocks = {row.temporal_role for row in plan.bound_measures if row.temporal_role}
+    role_id = (plan.time or {}).get("temporal_role") or (
+        next(iter(clocks)) if len(clocks) == 1 else ""
+    )
     zone = next((role.timezone for role in config.temporal_roles if role.id == role_id), "")
     zone = str(zone or "UTC").strip()
     try:

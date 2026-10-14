@@ -5,7 +5,7 @@ with its filters, child groups and time bucket.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any
@@ -130,7 +130,7 @@ from .predicate_sets import (
     _stock_period_split,
 )
 from .row_counts import _row_markers, _rows_fields
-from .snapshot_reads import SnapshotRead, closing_day, select_snapshots
+from .snapshot_reads import ClosingDay, SnapshotRead, closing_day, select_snapshots
 
 
 def _aggregate_relation_time_expr(
@@ -269,7 +269,7 @@ def _semi_additive_leaf_select(
     aggregation_params: dict[str, Any],
     warehouse: str,
     ctes: list[SqlCte] | None = None,
-    day: Callable[[Any], Any] | None = None,
+    day: ClosingDay | None = None,
     measure_id: str = "",
 ) -> SqlSelect:
     # A snapshot series whose only row key is the ordering time column is a
@@ -322,9 +322,8 @@ def _semi_additive_leaf_select(
         where=where_clauses,
         ctes=list(ctes or []),
     )
-    rows = "snapshot_rows"
-    chosen = select_snapshots(
-        read, name=rows, prefix="snapshot", dialect=dialect, measure_id=measure_id
+    chosen, rows = select_snapshots(
+        read, name="snapshot_rows", prefix="snapshot", dialect=dialect, measure_id=measure_id
     )
     value: Any = SqlIdentifier(parts=[rows, "__snapshot_value"])
     flag = SqlIdentifier(parts=[rows, "__snapshot_kept"])

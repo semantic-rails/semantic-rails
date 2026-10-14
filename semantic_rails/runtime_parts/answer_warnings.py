@@ -432,15 +432,18 @@ def closing_day_disclosures(
     are undercounted, so it never leaves them out silently. ``reads`` comes from
     ``runtime._closing_reads``, nested reads included; one whose probe failed is still
     disclosed, with no day. A read only for outputs whose values a policy withholds says
-    nothing."""
+    nothing, nor does a read whose owner is unknown (``outputs`` None) beside any withheld
+    output: it might be for that one."""
     assumptions: list[dict] = []
     warnings: list[dict] = []
     excluded = set(excluded_outputs)
     for read in reads:
         day = _iso_day(read.get("closing_day"))
-        outputs = [name for name in read["outputs"] if name not in excluded]
-        if ("periods" in read and not day) or (read["outputs"] and not outputs):
-            continue  # nothing read on a closing day, or only for withheld values
+        owned = read["outputs"]
+        outputs = None if owned is None else [name for name in owned if name not in excluded]
+        withheld = bool(excluded) if owned is None else bool(owned) and not outputs
+        if ("periods" in read and not day) or withheld:
+            continue  # nothing read on a closing day, or maybe only for withheld values
         measure = read["measure"]
         entry = {
             "measure": measure,
@@ -466,17 +469,19 @@ def closing_day_disclosures(
 
 
 def granted_closing_day(entry: dict, columns: list[dict], permitted: set[str]) -> dict | None:
-    """A closing-day disclosure as a grant sees it: as is where its measure is granted; where
-    only an output reading it is, with the day and counts but named by those outputs' ids;
-    else nothing. Any other entry is returned as is."""
+    """A closing-day disclosure as a grant sees it: as is where its measure is granted (and,
+    for a read whose owner is unknown, every column of the answer is); where only an output
+    reading it is, with the day and counts but named by those outputs' ids; else nothing,
+    never named by a column that doesn't read it. Any other entry is returned as is."""
     code = entry.get("code")
     if code not in CLOSING_DAY_CODES:
         return entry
     fields = entry if code == "BALANCE_CLOSING_DAY" else entry["details"]
-    if fields["measure"] in permitted:
-        return entry
     ids = {column.get("field"): column.get("semantic_id") for column in columns}
-    outputs = [name for name in fields["outputs"] or ids if ids.get(name) in permitted]
+    if fields["measure"] in permitted:
+        unknown = fields["outputs"] is None
+        return None if unknown and not set(ids.values()) <= permitted else entry
+    outputs = [name for name in fields["outputs"] or () if ids.get(name) in permitted]
     if not outputs:
         return None
     granted = sorted({str(ids[name]) for name in outputs})
@@ -486,6 +491,30 @@ def granted_closing_day(entry: dict, columns: list[dict], permitted: set[str]) -
     if code == "BALANCE_CLOSING_DAY":
         return _closing_assumption(subject, shown)
     return _missing_warning(subject, shown, granted)
+
+
+def refuse_closing_day_zone(config: Any, compiled: dict[str, Any]) -> None:
+    """A balance closes on its clock's day bucket, which DuckDB and Postgres compute for a
+    zone-aware column in the session's zone: the zone the query runs in. A closing-day read
+    on a clock in another zone would close on another day, so it is refused."""
+    if not dialect_for_warehouse(config.package.warehouse).session_zone:
+        return
+    zone = _time_zone(config, compiled)
+    for read in compiled.get("closing_reads") or ():
+        if read["zone"] != zone:
+            raise SemanticLayerError(
+                "MIXED_TIME_ROLES",
+                f"{read['measure']} is a balance read on its closing day in {read['zone']}, "
+                f"its clock's zone, but this query runs in {zone or 'UTC'}, so its day could "
+                "be another. Read the balance in a call of its own, or set "
+                "time.temporal_role to its clock.",
+                details={
+                    "reason": "closing_day_zone",
+                    "measure": read["measure"],
+                    "clock_zone": read["zone"],
+                    "time_zone": zone,
+                },
+            )
 
 
 def _closing_assumption(subject: str, entry: dict) -> dict:

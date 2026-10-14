@@ -131,6 +131,7 @@ from .runtime_parts.answer_warnings import (
     _guard_probe_names,
     _history_result_warnings,
     _requested_window,
+    refuse_closing_day_zone,
 )
 from .runtime_parts.assumptions import call_assumptions, refuse_hidden_governors, split_hidden
 from .runtime_parts.filtered_series import filtered_series_warnings
@@ -1580,6 +1581,7 @@ class Runtime:
                 "explain": replace(cached.compiled["explain"], compile_stats=stats),
             }
         compiled = compile_query(self._config, self.registry, payload, binding=binding)
+        refuse_closing_day_zone(self._config, compiled)
         stats = {
             **dict(compiled.get("compile_stats", {}) or {}),
             "cache_hit": False,

@@ -1379,7 +1379,8 @@ buckets, and a query's `start`/`end` bounds, are in that zone:
   converts it.
 - A zone-aware column (`TIMESTAMP WITH TIME ZONE`) holds instants. On DuckDB,
   MotherDuck, DuckLake and Postgres, each query runs with the session time zone
-  set to its time role's zone (UTC for a query without one), and only for that
+  set to its time role's zone (for a query without one, the zone of the one clock its
+  measures read, else UTC), and only for that
   query. So these columns bucket and filter in the role's zone whatever the
   server's or machine's default. Leave `column_timezone:` off them. (MotherDuck
   gets the setting on its client connection; this hasn't been checked against
@@ -1525,14 +1526,20 @@ the check below but still sums). Give the snapshot time `class: as_of_time`.
 Which value a series gives depends on the clock the stock is read on:
 
 - On an `as_of_time` clock (a snapshot table), an end-of-period stock is read on each
-  period's **closing day**, the period's last day with a snapshot, a day in the clock's own
-  `timezone`; with no time window or grain, the last day with a snapshot at all. A series
-  with no snapshot that day is not counted: a series that stops is never carried forward from
-  an earlier day. A row whose clock is NULL is never a snapshot. Every read of the stock
-  chooses this way: its own column, an entity-set ratio, and a read inside an entity filter
-  or a metric predicate. Every answer names the day each read used (`BALANCE_CLOSING_DAY`
+  period's **closing day**, the period's last day with a snapshot: the day bucket
+  `time.grain: day` puts the snapshot in, in the clock's `timezone` (a query with no `time`
+  runs in that zone too). With no time window or grain, it is the last day with a snapshot at
+  all. A series with no snapshot that day is not counted: a series that stops is never
+  carried forward from an earlier day. A row whose clock is NULL is never a snapshot, and
+  rows of one series tied on its last clock value are all read, as the data holds them.
+  Every read of the stock chooses this way: its own column, each operand of an entity-set
+  ratio (within that operand's own predicates, so the ratio equals its operands read
+  alone), and a read inside an entity filter or a metric predicate. A query running in
+  another zone than such a read's clock is refused with `MIXED_TIME_ROLES` (`details.reason:
+  closing_day_zone`). Every answer names the day each read used (`BALANCE_CLOSING_DAY`
   under `assumptions`, with `measure`, `outputs` (the columns it counts for; empty for the
-  whole answer), `nested` (read inside an entity filter, predicate or branch), `closing_day`,
+  whole answer, `null` when the engine can't tell), `nested` (read inside an entity filter,
+  predicate or branch), `closing_day`,
   the latest when there are several periods, and `periods`). When series seen earlier in a
   period had no snapshot on its closing day, the answer also carries the warning
   `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` with their count (`details`: the same fields, with
