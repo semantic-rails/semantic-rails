@@ -10,6 +10,7 @@ their public names are re-exported here until 0.3.3.
 
 from __future__ import annotations
 
+import ipaddress
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -288,8 +289,12 @@ def set_policy_context_resolver(resolver: PolicyContextResolver) -> None:
 
 
 def loopback_host(host: str) -> bool:
+    """Whether ``host`` is ``localhost`` or a loopback address (not ``127.x.example``)."""
     text = str(host or "").strip().lower().strip("[]")
-    return text in {"localhost", "::1"} or text.startswith("127.")
+    try:
+        return text == "localhost" or ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
 
 
 def warn_if_default_policy_resolver_exposed(host: str, *, transport: str) -> bool:

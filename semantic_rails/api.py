@@ -31,6 +31,7 @@ from .http_core import (
     cors_origin_header,
     header_value,
     public_api_route,
+    rebinding_refusal,
     request_id_from_parts,
 )
 from .mcp import SemanticLayerMCPAdapter
@@ -70,6 +71,22 @@ class Handler(BaseHTTPRequestHandler):
     def _request_headers(self) -> dict[str, str]:
         return {str(key): str(value) for key, value in self.headers.items()}
 
+    def _server_host(self) -> str:
+        """The address this connection reached, as the ASGI ``server`` scope reports it."""
+        return str(self.connection.getsockname()[0])
+
+    def parse_request(self) -> bool:
+        """Parse the request, then refuse DNS rebinding of the v1 API (``/mcp`` refuses its own)."""
+        if not super().parse_request():
+            return False
+        if self._is_mcp_route():
+            return True
+        refusal = rebinding_refusal(self._request_headers(), self._server_host())
+        if refusal is not None:
+            self._prepare_request()
+            _json(self, refusal[0], {"ok": False, "error": refusal[1]})
+        return refusal is None
+
     def _prepare_request(self, payload: dict[str, Any] | None = None) -> None:
         if not hasattr(self, "_request_started_at"):
             self._request_started_at = time.perf_counter()
@@ -105,7 +122,9 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_mcp(self) -> None:
         headers = self._request_headers()
         request_id = request_id_from_parts(headers, self._query_params())
-        context = prepare_streamable_http_request(headers, request_id=request_id)
+        context = prepare_streamable_http_request(
+            headers, request_id=request_id, server_host=self._server_host()
+        )
         if isinstance(context, MCPHTTPResponse):
             response = context
         else:

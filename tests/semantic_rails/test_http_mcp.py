@@ -52,7 +52,9 @@ def _frontends(runtime):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
 
-    def call(backend, message=PING, *, method="POST", path="/mcp", headers=None, raw=None):
+    def call(
+        backend, message=PING, *, method="POST", path="/mcp", headers=None, raw=None, server=None
+    ):
         body = raw if raw is not None else json.dumps(message).encode()
         request_headers = {**HEADERS, **(headers or {})}
         if backend == "serve":
@@ -81,6 +83,8 @@ def _frontends(runtime):
                     "headers": [
                         (k.lower().encode(), v.encode()) for k, v in request_headers.items()
                     ],
+                    # The address the connection reached, as uvicorn reports it.
+                    "server": server or httpd.server_address,
                 },
                 receive,
                 send,
@@ -105,6 +109,7 @@ def frontends(runtime_factory, monkeypatch):
     monkeypatch.delenv("SEMANTIC_RAILS_API_KEYS", raising=False)
     monkeypatch.delenv("SEMANTIC_RAILS_API_KEY_FILE", raising=False)
     monkeypatch.delenv("SEMANTIC_RAILS_CORS_ORIGINS", raising=False)
+    monkeypatch.delenv("SEMANTIC_RAILS_ALLOWED_HOSTS", raising=False)
     with _frontends(runtime_factory("jaffle_shop")) as call:
         yield call
 
@@ -301,3 +306,86 @@ def test_serve_head_refuses_streaming(frontends):
     status, headers, body = frontends("serve", method="HEAD")
     assert status == 405 and not body
     assert headers["Allow"] == "POST, OPTIONS"
+
+
+# --- DNS rebinding: one Host/Origin check for /api/v1 and /mcp -----------------
+#
+# A page that points its own name at 127.0.0.1 is same-origin with the local
+# server in the browser's eyes, so CORS alone does not stop it from calling the
+# API. The server refuses a Host that is not loopback (or a listed host) and a
+# browser Origin that is not listed. Refused requests send no body: the local
+# server refuses before reading one, and unread bytes would reset the socket.
+
+QUERY = {"select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]}
+SURFACES = [
+    ("GET", "/api/v1/catalog", b""),
+    ("POST", "/api/v1/query", json.dumps(QUERY).encode()),
+    ("OPTIONS", "/api/v1/query", b""),
+    ("POST", "/mcp", json.dumps(PING).encode()),
+]
+
+
+@pytest.mark.parametrize("backend", ["serve", "asgi"])
+@pytest.mark.parametrize(("method", "path"), [surface[:2] for surface in SURFACES])
+@pytest.mark.parametrize(
+    ("headers", "status", "code"),
+    [
+        ({"Host": "evil.example"}, 421, "HOST_NOT_ALLOWED"),
+        ({"Host": "evil.example:8090"}, 421, "HOST_NOT_ALLOWED"),
+        ({"Host": "127.0.0.1.evil.example"}, 421, "HOST_NOT_ALLOWED"),
+        ({"Host": "localhost@evil.example"}, 421, "HOST_NOT_ALLOWED"),
+        ({"Origin": "https://attacker.example"}, 403, "ORIGIN_NOT_ALLOWED"),
+        ({"Origin": "null"}, 403, "ORIGIN_NOT_ALLOWED"),
+    ],
+)
+def test_loopback_server_refuses_rebinding_requests(
+    frontends, backend, method, path, headers, status, code
+):
+    got, response_headers, body = frontends(
+        backend, method=method, path=path, headers=headers, raw=b""
+    )
+    assert got == status
+    payload = json.loads(body)
+    if path == "/mcp":
+        assert payload["error"]["code"] == -32003
+        assert response_headers[
+            "MCP-Protocol-Version" if backend == "serve" else "mcp-protocol-version"
+        ]
+    else:
+        assert payload["errors"][0]["code"] == code
+        assert payload["request_id"] == "transport-parity"
+
+
+@pytest.mark.parametrize("backend", ["serve", "asgi"])
+@pytest.mark.parametrize("host", [None, "localhost", "127.0.0.1:8090", "[::1]:8090", "LOCALHOST"])
+def test_loopback_hosts_without_origin_are_served(frontends, backend, host):
+    headers = {"Host": host} if host else {}
+    for method, path, raw in SURFACES:
+        expected = 204 if method == "OPTIONS" else 200
+        assert frontends(backend, method=method, path=path, headers=headers, raw=raw)[0] == expected
+
+
+@pytest.mark.parametrize("backend", ["serve", "asgi"])
+def test_listed_hosts_and_origins_are_admitted(frontends, monkeypatch, backend):
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOWED_HOSTS", "semantic.example.com, API.example.com")
+    monkeypatch.setenv("SEMANTIC_RAILS_CORS_ORIGINS", "https://app.example.com")
+    headers = {"Host": "api.example.com:8443", "Origin": "https://app.example.com"}
+    for method, path, raw in SURFACES:
+        got, response_headers, _ = frontends(
+            backend, method=method, path=path, headers=headers, raw=raw
+        )
+        assert got == (204 if method == "OPTIONS" else 200)
+        normalized = {k.lower(): v for k, v in response_headers.items()}
+        assert normalized["access-control-allow-origin"] == "https://app.example.com"
+    refused = {"Host": "x.example"}
+    assert frontends(backend, path="/api/v1/query", headers=refused, raw=b"")[0] == 421
+
+
+def test_server_beyond_loopback_checks_hosts_once_they_are_listed(frontends, monkeypatch):
+    exposed = {"server": ("10.0.0.5", 8080), "headers": {"Host": "semantic.example.com"}}
+    assert frontends("asgi", QUERY, path="/api/v1/query", **exposed)[0] == 200
+    refused = {**exposed, "headers": {"Origin": "https://attacker.example"}}
+    assert frontends("asgi", QUERY, path="/api/v1/query", **refused)[0] == 403
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOWED_HOSTS", "api.example.com")
+    assert frontends("asgi", QUERY, path="/api/v1/query", **exposed)[0] == 421
+    assert frontends("asgi", path="/mcp", **exposed)[0] == 421

@@ -27,6 +27,7 @@ from .http_core import (
     SemanticHTTPService,
     cors_origin_header,
     public_api_route,
+    rebinding_refusal,
     request_id_from_parts,
 )
 from .mcp import SemanticLayerMCPAdapter
@@ -133,6 +134,8 @@ class SemanticLayerASGIApp:
         started = time.perf_counter()
         request_id = request_id_from_parts(headers, query_params)
         request_origin = headers.get("origin") or headers.get("Origin")
+        # The address this connection reached (uvicorn reports the local socket).
+        server_host = str((scope.get("server") or ("",))[0] or "")
         if raw_path.rstrip("/") == "/mcp":
             return await self._handle_mcp(
                 method,
@@ -141,7 +144,17 @@ class SemanticLayerASGIApp:
                 send,
                 request_id=request_id,
                 request_origin=request_origin,
+                server_host=server_host,
             )
+
+        refusal = rebinding_refusal(headers, server_host)
+        if refusal is not None:
+            status, refused = refusal
+            response = service.envelope(
+                status, {"ok": False, "error": refused}, request_id=request_id, started=started
+            )
+            self._audit(method, raw_path, status, response)
+            return await self._send(send, status, response, request_origin=request_origin)
 
         route = public_api_route(raw_path)
         if route is None:
@@ -263,8 +276,11 @@ class SemanticLayerASGIApp:
         *,
         request_id: str,
         request_origin: str | None,
+        server_host: str = "",
     ) -> None:
-        context = prepare_streamable_http_request(headers, request_id=request_id)
+        context = prepare_streamable_http_request(
+            headers, request_id=request_id, server_host=server_host
+        )
         if isinstance(context, MCPHTTPResponse):
             return await self._send(
                 send,
@@ -272,6 +288,7 @@ class SemanticLayerASGIApp:
                 context.payload or {},
                 request_origin=request_origin,
                 request_id=request_id,
+                extra_headers=context.headers,
                 allow_methods="POST, OPTIONS",
             )
         body = b""

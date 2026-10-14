@@ -8,6 +8,7 @@ FROM python:3.12.13-slim-trixie AS runtime
 # non-local deployment set:
 #   SEMANTIC_RAILS_API_KEYS / SEMANTIC_RAILS_API_KEY_FILE  (require API keys)
 #   SEMANTIC_RAILS_CORS_ORIGINS                            (CORS allow-list)
+#   SEMANTIC_RAILS_ALLOWED_HOSTS                           (Host allow-list)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     SEMANTIC_RAILS_PACKAGE=jaffle_shop \

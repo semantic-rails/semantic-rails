@@ -181,7 +181,8 @@ Runtime confinement is off.
 answers one stateless MCP Streamable HTTP request and returns an `MCPHTTPResponse`
 (`status`, `payload`, `headers`) for the host's web framework to send. Before dispatching
 it applies the transport rules: a request with an `Origin` must match
-`SEMANTIC_RAILS_CORS_ORIGINS`; only `POST` is served (`OPTIONS` gets 204); the body must
+`SEMANTIC_RAILS_CORS_ORIGINS`; when `SEMANTIC_RAILS_ALLOWED_HOSTS` is set, `Host` must
+name loopback or a listed host; only `POST` is served (`OPTIONS` gets 204); the body must
 be `application/json` of at most 64 KiB; `Accept` must list both `application/json` and
 `text/event-stream`; and an `MCP-Protocol-Version` header must name a supported version.
 The function does not authenticate the caller: the host does that first. A multi-tenant

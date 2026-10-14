@@ -51,6 +51,7 @@ from .query_call import EXPRESSION_SHAPES
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
+    loopback_host,
     request_context_payload,
 )
 from .request_payload import identity_claim_refusal, refuse_identity_claims
@@ -62,6 +63,7 @@ __all__ = [
     "HTTPInputError",
     "PUBLIC_V1_ROUTES",
     "SemanticHTTPService",
+    "allowed_hosts",
     "clean_request_id",
     "coerce_bool",
     "coerce_int",
@@ -72,6 +74,7 @@ __all__ = [
     "issue",
     "normalize_route",
     "public_api_route",
+    "rebinding_refusal",
     "request_id_from_parts",
     "status_label",
 ]
@@ -149,6 +152,34 @@ def cors_origin_header(request_origin: str | None) -> str:
     if origin and origin in allowed:
         return origin
     return ""
+
+
+def allowed_hosts() -> tuple[str, ...]:
+    """Parse `SEMANTIC_RAILS_ALLOWED_HOSTS`: host names a request may name besides loopback."""
+    raw = os.environ.get("SEMANTIC_RAILS_ALLOWED_HOSTS", "")
+    return tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+def rebinding_refusal(
+    headers: Mapping[str, Any], server_host: str | None = None
+) -> tuple[int, dict[str, Any]] | None:
+    """The status and issue refusing a request a web page could send by DNS rebinding.
+
+    One check for `/api/v1` and `/mcp`. When the request reached the server on a
+    loopback address (`server_host`), or `SEMANTIC_RAILS_ALLOWED_HOSTS` is set, its
+    `Host` must name loopback or a listed host, with any port (421). A browser `Origin`
+    must be on `SEMANTIC_RAILS_CORS_ORIGINS` (403); clients that send none pass.
+    """
+    host = header_value(headers, "Host").lower()
+    listed = allowed_hosts()
+    if host and (listed or loopback_host(server_host or "")):
+        name = host[1:].partition("]")[0] if host.startswith("[") else host.partition(":")[0]
+        if not (loopback_host(name) or name in listed):
+            return 421, issue("HOST_NOT_ALLOWED", f"Host {host!r} is not allowed.")
+    origin = header_value(headers, "Origin")
+    if origin and not cors_origin_header(origin):
+        return 403, issue("ORIGIN_NOT_ALLOWED", f"Origin {origin!r} is not allowed.")
+    return None
 
 
 # Options a REST call may set beside its query (``{"query": ..., "options": {...}}``).

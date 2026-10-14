@@ -1073,7 +1073,8 @@ The local `serve` and ASGI servers use the same stateless Streamable HTTP
 handler at `/mcp`. When `SEMANTIC_RAILS_API_KEYS` or `SEMANTIC_RAILS_API_KEY_FILE`
 is configured, `/mcp` requires `Authorization: Bearer ...`, `X-API-Key`, or
 `X-Semantic-API-Key`. Without configured keys, authentication is disabled for
-local use. `/health` stays public. The endpoint validates Origin and MCP headers,
+local use. `/health` stays public. The endpoint validates Host, Origin and MCP headers
+(see [DEPLOYMENT.md](DEPLOYMENT.md)),
 refuses bodies larger than 64 KiB, and resolves policy context from trusted
 transport headers rather than tool arguments. Install a trusted policy-context
 resolver before exposing either server to callers with different permissions.
