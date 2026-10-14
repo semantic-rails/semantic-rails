@@ -9,11 +9,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from semantic_rails.ast import _QUERY_VALUE_KINDS
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.config_parts.shape_checks import _RELATION_RENAMED_KEYS
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.package_snapshot import json_fingerprint, load_package_snapshot
+from semantic_rails.query_call import call_kinds
 from semantic_rails.relation_pipelines import lower_relation
 from semantic_rails.renderer import render_select
 from semantic_rails.runtime import Runtime
@@ -532,3 +534,8 @@ def test_retired_spec_file_shapes_are_refused(tmp_path, block, expected, shape):
         load_package_config(str(package))
     assert exc.value.code == "INVALID_CONFIG"
     assert expected in str(exc.value)
+
+
+def test_a_refusal_offers_only_kinds_a_call_may_use():
+    offered = {name for names in _QUERY_VALUE_KINDS.values() for name in names}
+    assert offered <= set(call_kinds())

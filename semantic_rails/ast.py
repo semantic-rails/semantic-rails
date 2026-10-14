@@ -339,7 +339,7 @@ _QUERY_VALUE_KINDS: dict[type, tuple[str, ...]] = {
     LiteralExpr: ("literal",),
     RatioExpr: ("ratio",),
     DistributionExpr: ("distribution",),
-    ArithmeticExpr: ("arithmetic", "binary"),
+    ArithmeticExpr: ("arithmetic",),
     ComparisonExpr: ("comparison",),
     BooleanExpr: ("boolean", "between", "not_between"),
     CallExpr: ("call", "nullif"),
