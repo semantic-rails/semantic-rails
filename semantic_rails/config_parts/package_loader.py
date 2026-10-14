@@ -141,7 +141,9 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             model["entity"] = bound_entities[model_id]
         entities_block_raw = model.get("entities")
         if not isinstance(entities_block_raw, dict):
-            continue
+            if model.get("entity") or model_id in graph_entities:
+                continue
+            entities_block_raw = {}  # a model nothing binds reads as an empty block
         entities_block = dict(entities_block_raw)
         # Block-level options
         bridge = entities_block.pop("bridge", True)
@@ -177,38 +179,26 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         if (
             not primary_entity
             and (model_id in per_entity or not per_entity)
+            and model_id in graph_entities
             and not (graph_entities.get(model_id) or {}).get("model")
         ):
             primary_entity = model_id
-        # No graph entity is homed on the model, and each entity it lists has a home of its own:
-        # the model is row grain, its rows have no declared key, and the loader gives it an
-        # entity of its own name with no key.
-        row_grain = primary_entity not in graph_entities and all(
-            name == model_id or str((graph_entities.get(name) or {}).get("model") or name) in models
-            for name in per_entity
-        )
-        if not primary_entity and not row_grain:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"model '{model_id}' must identify its primary entity with a graph model "
-                "binding (graph.entities.<entity>.model), or list an unbound entity with the "
-                "model's name",
-            )
+        row_grain = not primary_entity
         if row_grain:
-            primary_entity = model_id
+            # No graph entity is homed on the model: it is row grain, under a graph entity
+            # named after it that relationships can name and nothing can target.
             if model_id in graph_entities:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"model '{model_id}' lists no entity of its own, so it is row grain (no key), "
-                    f"but graph entity '{model_id}' has its name: rename one, or list it in the "
-                    "model's entities if it keys the model",
+                    f"model '{model_id}' lists no entity of its own, so it is row grain under a "
+                    "graph entity named after it, but graph.entities already declares "
+                    f"'{model_id}'; rename one of them",
                 )
+            graph_entities[model_id] = {"model": model_id, "_row_grain": True}
+            if model.get("label"):
+                graph_entities[model_id]["label"] = model["label"]
             row_grain_entries[model_id] = set(per_entity) - {model_id}
-            graph_entities[model_id] = {
-                "model": model_id,
-                "_row_grain": True,
-                **{k: model[k] for k in ("label", "description") if model.get(k)},
-            }
+            primary_entity = model_id
 
         # Translate to canonical singular-entity shape.
         model.setdefault("entity", primary_entity)
@@ -245,9 +235,10 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         models[model_id] = model
 
     for model_id, names in row_grain_entries.items():
-        if unknown := sorted(names - set(graph_entities)):
+        if unknown := sorted(names - set(graph_entities)):  # a typo never reads as row grain
             raise SemanticLayerError(
-                "INVALID_CONFIG", f"model '{model_id}' lists unknown entities {unknown}"
+                "INVALID_CONFIG",
+                f"model '{model_id}' lists entities {unknown} that graph.entities doesn't declare",
             )
 
     # Back-fill `graph.entities.<x>.model:` from the model whose primary

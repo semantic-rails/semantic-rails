@@ -70,20 +70,6 @@ from .temporal_rows import (
 from .zero_through import FieldOf, field_reader, zero_through
 
 
-def _join_into_row_grain(
-    rel_id: str, model: str, parent: str, via: list[str], path: str
-) -> SemanticLayerError:
-    """Nothing can look up one row of a row-grain model, so a join into one is refused; the fix
-    writes it from that model's side."""
-    return SemanticLayerError(
-        "INVALID_CONFIG",
-        f"{path}: {rel_id} joins into '{model}', a row-grain model (no key), so one row can't be "
-        f"looked up there. Fix: write it from {model}'s side (entities: [{model}, {parent}], "
-        f"cardinality: many_to_one, via: [{', '.join(via)}]), or declare a key on {model} if "
-        "its rows have one.",
-    )
-
-
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     package_raw = dict(raw.get("package", {}) or {})
     namespace = str(package_raw.get("namespace", package_raw.get("id", "")) or "").strip()
@@ -452,9 +438,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             if measure_class == "semi_additive" and entity_cfg.is_row_grain:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"{path}: measure '{measure_key}' is a stock on row-grain model '{model_id}' "
-                    "(no key): a balance reads one snapshot per series, and a series is the key "
-                    f"minus the clock. Declare a key on {model_id}.",
+                    f"{path}: measure '{measure_key}' is a stock, but model '{model_id}' is row "
+                    "grain (no key), and a stock sums one snapshot per series: the key minus the "
+                    f"clock. Declare a key on {model_id}, or make it a flow.",
                 )
             # Author-facing override: `default_agg:` is canonical.
             authored_default_agg = measure_spec.get("default_agg")
@@ -616,10 +602,17 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             local_cols = _ensure_list(join_spec.get("via") or foreign_keys.get(edge_key))
             target_cfg = next(row for row in entities if row.id == entity_lookup[target_ref])
             rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
-            if target_cfg.is_row_grain:
-                parent = next(k for k, v in graph_entities.items() if v.get("model") == model_id)
+            if target_cfg.is_row_grain:  # nothing can look up one row of a row-grain model
+                source = next(key for key, value in entity_lookup.items() if value == entity_id)
                 via = _ensure_list(join_spec.get("target")) or list(entity_cfg.key_columns)
-                raise _join_into_row_grain(rel_id, target_cfg.model, parent, via, path)
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{rel_id} joins into '{target_ref}', a row-grain model (no key), so one row "
+                    f"can't be looked up there. Fix: write it from {target_ref}'s side (entities: "
+                    f"[{target_ref}, {source}], cardinality: many_to_one, via: "
+                    f"[{', '.join(via)}]), or declare a key on {target_ref} if its rows have one.",
+                    details={"relationship": rel_id, "model": target_ref},
+                )
             target_cols = _ensure_list(join_spec.get("target") or target_cfg.key)
             if len(local_cols) != len(target_cols):
                 raise SemanticLayerError(

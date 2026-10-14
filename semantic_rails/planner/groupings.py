@@ -161,21 +161,6 @@ def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
     return (named[0], [*keys, *shown]) if len(keys) == 1 else None
 
 
-def _unrankable_entity(config: Any, clause: str) -> Any | None:
-    """The one entity the last words of a ranking clause name whole ("top 5 account days") when
-    it has no single key column to rank its rows by: a composite key, or none (row grain)."""
-
-    words = clause.split()
-    named = {
-        row.id: row
-        for row in config.entities
-        for size in (1, 2)
-        if _names_whole_entity(" ".join(words[-size:]), row)
-    }
-    entity = next(iter(named.values())) if len(named) == 1 else None
-    return entity if entity is not None and len(entity.key_columns) != 1 else None
-
-
 def _key_only_assumptions(
     config: Any, question: str, query: Call, partial_query: Call | None = None
 ) -> list[str]:

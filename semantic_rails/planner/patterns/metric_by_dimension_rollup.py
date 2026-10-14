@@ -40,8 +40,8 @@ from ..groupings import (
     _entity_grouping,
     _explicit_grain,
     _maybe_group_by,
+    _names_whole_entity,
     _time_spec,
-    _unrankable_entity,
 )
 from ..intent_ir import _FALLBACK_STOPWORDS
 from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
@@ -271,13 +271,12 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         ranked = _entity_grouping(config, str(request["noun"]))
         if ranked is not None and not _named_by_rows(target, str(request["noun"]), question):
             group_by = list(dict.fromkeys([*group_by, *ranked[1]]))
-        elif ranked is None and (entity := _unrankable_entity(config, request["clause"])):
-            held = {
-                "code": "PLAN_RANKING_NO_KEY",
-                "message": f"{entity.label} has no single key to rank by; rank by one of its "
-                "dimensions.",
-                "details": {"entity": entity.id},
-            }
+        noun = [row for row in config.entities if _names_whole_entity(str(request["noun"]), row)]
+        if ranked is None and len(noun) == 1:  # a row-grain or composite key: no rows to rank
+            message = (
+                f"{noun[0].label} has no single key to rank by; rank by one of its dimensions."
+            )
+            held, is_top = {"code": "PLAN_RANKING_NO_KEY", "message": message}, False
     builder.groups(group_by)
     drafted = builder.build()
     builder = QueryBuilder(

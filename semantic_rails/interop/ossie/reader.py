@@ -203,7 +203,6 @@ class _Importer:
         self.datasets: dict[str, str] = {}
         self.fields: dict[str, str] = {}
         self.role_entities: dict[str, str] = {}
-        self.dropped: list[dict[str, str]] = []  # datasets not imported, and why
         self.ns = ""
 
     def skip(self, construct: str, name: str) -> None:
@@ -264,8 +263,6 @@ class _Importer:
             source, key = str(dataset.get("source", "")), list(dataset.get("primary_key") or [])
             if not source or re.search(r"\s", source) or not key:
                 self.skip("datasets without a primary key or defined by a query", name)
-                reason = "defined by a query" if key else "no primary key"
-                self.dropped.append({"dataset": name, "reason": reason})
                 continue
             entity_id = self.sr_id("datasets", name, f"entity.{self.ns}_{_slug(name)}")
             document = {"table": source, "key_columns": key}
@@ -597,5 +594,4 @@ def import_ossie(
         for c, ids in sorted(importer.warnings.items())
         if ids
     ]
-    report["dropped"] = importer.dropped
     return report

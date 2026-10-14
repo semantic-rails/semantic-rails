@@ -61,7 +61,7 @@ from .expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
-from .fanout import query_route_decisions
+from .fanout import entity_label, query_route_decisions
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
@@ -521,6 +521,7 @@ def _recommended_actions(kind: str) -> list[str]:
         "metric": ["inspect metric card", "add breakdown dimension", "validate query"],
         "dimension": ["group by this dimension", "filter this dimension", "list valid values"],
         "entity": ["inspect related measures", "use as grouping entity"],
+        "row_grain_entity": ["inspect related measures"],  # no key to group its rows by
         "dimension_value": ["apply as a filter", "discover related measures"],
         "segment": ["validate segment", "preview members", "explain derived query"],
     }
@@ -912,16 +913,17 @@ def _object_card(
                 ][:20],
             }
         )
-        if entity.is_row_grain:  # nothing groups by one of its rows
-            parents = {
-                row.target_entity for row in config.relationships if row.source_entity == object_id
+        if entity.is_row_grain:
+            looks_up = {
+                entity_label(config, row.target_entity)
+                for row in config.relationships
+                if row.source_entity == entity.id
             }
-            base["row_grain"] = (
+            base["key_note"] = (
                 "No key: every stored row counts. It looks up "
-                f"{', '.join(sorted(parents)) or 'no other entity'}; nothing can look up one of "
-                "its rows."
+                f"{', '.join(sorted(looks_up)) or 'nothing'}; nothing can look up one of its rows."
             )
-            base["recommended_next_actions"] = ["inspect related measures"]
+            base["recommended_next_actions"] = _recommended_actions("row_grain_entity")
     elif obj.kind == "relationship":
         base.update(_relationship_card_payload(config, object_id))
     elif obj.kind == "segment":
@@ -2018,7 +2020,9 @@ def discover_payload(
             "blocked_reason": availability.get("reason", ""),
             "root_entity": entity.id,
             "default_temporal_role": "",
-            "recommended_next_actions": _recommended_actions("entity"),
+            "recommended_next_actions": _recommended_actions(
+                "row_grain_entity" if entity.is_row_grain else "entity"
+            ),
         }
         score, reasons = _relevance_score(
             terms,

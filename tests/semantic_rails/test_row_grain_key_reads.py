@@ -17,7 +17,7 @@ EXCLUDED = ("architect_", "dbt_artifacts.py", "upgrade/", "repl/")
 
 # Reads where an empty key is a legitimate "no": they read `key_columns` or `is_row_grain`.
 SWITCHED = {
-    ("cli/commands/project.py", "_print_row_grain"),
+    ("cli/commands/project.py", "cmd_project_validate"),
     ("compiler_parts/bind.py", "_measure_count_distinct_key_columns"),
     ("compiler_parts/bind.py", "_synthetic_conditional_measure"),
     ("compiler_parts/indexes.py", "_measure_has_source_row_key"),
@@ -37,9 +37,9 @@ SWITCHED = {
     ("interop/package_writer.py", "_Writer.graph"),
     ("interop/package_writer.py", "_Writer.model"),
     ("metadata.py", "_object_card"),
+    ("metadata.py", "discover_payload"),
     ("package_tools.py", "check_warehouse_column_reachability_report"),
     ("planner/groupings.py", "_entity_stand_ins"),
-    ("planner/groupings.py", "_unrankable_entity"),
     ("planner/unmatched_words.py", "_grouped_entities"),
     ("runtime.py", "_named_key_refusal"),
     ("runtime.py", "_unknown_rows_kept_warnings"),
@@ -60,7 +60,6 @@ REFUSES = {
     ("compiler_parts/paths.py", "_direct_entity_key_source_expr"),
     ("compiler_parts/paths.py", "_entity_key_dimension_ids"),
     ("compiler_parts/plan_checks.py", "_can_project_entity_key_from_source"),
-    ("compiler_parts/plan_checks.py", "_fanout_dedup_refusal"),
     ("compiler_parts/plan_checks.py", "_validate_non_additive_sums"),
     ("compiler_parts/predicate.py", "_predicate_ctes_and_join"),
     ("compiler_parts/predicate_sets.py", "_anchored_entity_set_plan"),

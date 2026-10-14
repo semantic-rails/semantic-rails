@@ -8,6 +8,7 @@ refuses and how, and what the other surfaces say.
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 from pathlib import Path
@@ -16,15 +17,14 @@ from typing import Any
 import pytest
 import yaml
 
-from semantic_rails.cli.commands.project import _print_row_grain
+from semantic_rails.cli.commands import project as project_commands
 from semantic_rails.config import load_package_config, load_package_snapshot
-from semantic_rails.config_validation import PackageReference
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.interop.ossie.reader import import_ossie
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.metadata import inspect_payload
+from semantic_rails.metadata import discover_payload, inspect_payload
 from semantic_rails.planner import plan_payload
 from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
@@ -135,23 +135,23 @@ def test_which_entities_blocks_make_a_model_row_grain(tmp_path, entities, same_n
     [
         (  # a typo can't make a model row grain
             [_scans(lambda model: model.update(entities={"ordr": {}}))],
-            "model 'shipment_scans' must identify its primary entity",
+            "model 'shipment_scans' lists entities ['ordr'] that graph.entities doesn't declare",
         ),
         (
             [_scans(lambda model: model.update(entities={"bridge": False, "ordr": {}}))],
-            "model 'shipment_scans' must identify its primary entity",
+            "model 'shipment_scans' lists entities ['ordr'] that graph.entities doesn't declare",
         ),
         (  # the model's name is taken by a graph entity of another model's rows
             [
                 _graph(lambda graph: graph["entities"].update(shipment_scans={"key": ["x"]})),
                 _scans(lambda model: model.update(entities={"order": {}})),
             ],
-            "model 'shipment_scans' lists no entity of its own, so it is row grain (no key), but "
-            "graph entity 'shipment_scans' has its name",
+            "model 'shipment_scans' lists no entity of its own, so it is row grain under a graph "
+            "entity named after it, but graph.entities already declares 'shipment_scans'",
         ),
         (  # a model's name is not an entity
             [_scans(lambda model: model.update(entities={"order": {}, "orders": {}}))],
-            "model 'shipment_scans' lists unknown entities ['orders']",
+            "model 'shipment_scans' lists entities ['orders'] that graph.entities doesn't declare",
         ),
         (  # a balance reads one snapshot per series, and a series is the key minus the clock
             [
@@ -165,7 +165,7 @@ def test_which_entities_blocks_make_a_model_row_grain(tmp_path, entities, same_n
                     )
                 )
             ],
-            "measure 'balance' is a stock on row-grain model 'shipment_scans' (no key)",
+            "measure 'balance' is a stock, but model 'shipment_scans' is row grain (no key)",
         ),
         (  # counting the model's rows as entities needs a key
             [_scans(lambda model: model["measures"].update(rows={"kind": "entity_count"}))],
@@ -340,19 +340,32 @@ def test_a_not_filter_answers_and_counts_no_unknown_rows_it_cant_tell_apart(shop
 def test_the_card_says_it_has_no_key_and_whom_it_looks_up(shop):
     card = inspect_payload(shop, object_id=SCANS)["card"]
     assert card["key"] == []
-    assert card["row_grain"] == (
-        "No key: every stored row counts. It looks up entity.shop_order; nothing can look up one "
-        "of its rows."
+    assert card["key_note"] == (
+        "No key: every stored row counts. It looks up Order; nothing can look up one of its rows."
     )
     assert card["recommended_next_actions"] == ["inspect related measures"]
     keyed = inspect_payload(shop, object_id="entity.shop_order")["card"]
-    assert keyed["key"] == ["order_id"] and "row_grain" not in keyed
+    assert keyed["key"] == ["order_id"] and "key_note" not in keyed
     assert "use as grouping entity" in keyed["recommended_next_actions"]
 
 
-def test_validate_names_the_row_grain_models(capsys):
-    _print_row_grain(PackageReference(source_path=str(SHOP)))
-    assert capsys.readouterr().out.startswith("Row grain (no key): order_tags, shipment_scans.")
+def test_discover_offers_no_grouping_by_it(shop):
+    rows = discover_payload(shop, terms="shipment scans", kinds=["entity"])["entities"]
+    scans = next(row for row in rows if row["id"] == SCANS)
+    assert scans["recommended_next_actions"] == ["inspect related measures"]
+
+
+def test_validate_names_the_row_grain_models(tmp_path, capsys):
+    args = argparse.Namespace(
+        package="",
+        path=str(_shop(tmp_path)),
+        json=False,
+        mode="parse",
+        compare_path="",
+        base_ref="",
+    )
+    project_commands.cmd_project_validate(args)
+    assert "Row grain (no key): order_tags, shipment_scans" in capsys.readouterr().out
 
 
 def test_policies_hide_it_and_filter_its_rows(tmp_path):
@@ -391,25 +404,37 @@ def test_policies_hide_it_and_filter_its_rows(tmp_path):
         runtime.close()
 
 
+@pytest.fixture(scope="module")
+def relabeled(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """One-word labels, so a ranking's noun names the row-grain and composite-key entities."""
+    package = _shop(
+        tmp_path_factory.mktemp("relabeled"),
+        _scans(lambda model: model.update(label="Scans")),
+        _graph(lambda graph: graph["entities"]["account_day"].update(label="Snapshot")),
+    )
+    runtime = _runtime(package)
+    yield runtime
+    runtime.close()
+
+
 @pytest.mark.parametrize(
-    ("intent", "held"),
-    [
-        ("top 5 shipment scans by scan weight", "Shipment scans has no single key"),
-        ("top 3 account days by seats", "Account day has no single key"),
-        ("top 5 scans", ""),  # names the measure, not the model: not drafted ready either
-        ("scans by scan type", None),
-    ],
+    ("intent", "entity"), [("top 5 scans", "Scans"), ("top 2 snapshots by seats", "Snapshot")]
 )
-def test_ranking_rows_without_a_single_key_is_held(shop, intent, held):
-    plan = plan_payload(shop, intent=intent)
-    if held is None:
-        assert plan["status"] == "ok"
-        assert plan["best"]["query"]["group_by"] == [SCAN_TYPE]
-        return
+def test_ranking_rows_without_a_single_key_is_held(relabeled, intent, entity):
+    plan = plan_payload(relabeled, intent=intent)
     assert plan["status"] != "ok"
-    if held:
-        assert plan["why"]["code"] == "PLAN_RANKING_NO_KEY"
-        assert plan["why"]["message"].startswith(held)
+    error = (plan["why"].get("errors") or [plan["why"]])[0]
+    assert error["code"] == "PLAN_RANKING_NO_KEY"
+    assert (
+        error["message"] == f"{entity} has no single key to rank by; rank by one of its dimensions."
+    )
+    assert "limit" not in plan["best"]["query"]
+
+
+def test_grouping_row_grain_by_its_own_column_drafts(relabeled):
+    plan = plan_payload(relabeled, intent="scans by scan type")
+    assert plan["status"] == "ok", plan
+    assert plan["best"]["query"]["group_by"] == [SCAN_TYPE]
 
 
 def test_an_authored_example_on_a_row_grain_measure_answers(tmp_path):
@@ -483,7 +508,8 @@ def test_ossie_import_reports_the_datasets_it_drops(tmp_path):
         encoding="utf-8",
     )
     report = import_ossie(document, tmp_path / "imported")
-    assert report["dropped"] == [{"dataset": "scans", "reason": "no primary key"}]
+    dropped = {row["construct"]: row["ids"] for row in report["warnings"]}
+    assert dropped["datasets without a primary key or defined by a query"] == ["scans"]
 
 
 def test_kind_fact_is_refused_with_the_two_ways_to_write_it(tmp_path):

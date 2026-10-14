@@ -109,15 +109,15 @@ class _Writer:
             key, alias = self.keys[entity.id]
             model = self.model(entity.id)[1]
             model.update(_authored(entity, skip={f.name for f in fields(entity)} - _MODEL_FIELDS))
-            if entity.foreign_keys:  # graph.relationships states every join, so infer none
+            if entity.foreign_keys:  # graph.relationships states every join, which replaces
                 model["entities"].update({n: {"expr": c} for n, c in entity.foreign_keys.items()})
-                model["entities"]["bridge"] = False
+                model["entities"]["bridge"] = entity.bridge  # each one a link table infers
             if entity.is_row_grain:  # the loader names a row-grain model's entity from the model
-                model.update(label=entity.label, description=entity.description)
+                model["label"] = entity.label
                 continue
             role = next(iter(entity.key_roles.values()), "primary")
             columns = list(entity.key_columns)
-            skip = {"table", "key_columns", "relation_id", "identifiers", "key_roles"}
+            skip = {"table", "key_columns", "relation_id", "identifiers", "key_roles", "bridge"}
             entities[key] = {
                 **alias,
                 "key": columns if role == "primary" else {"columns": columns, "role": role},

@@ -1055,6 +1055,13 @@ class ArchitectProject:
         model, model_wrapper = self._model_for_update(
             model_doc, existing_model, model_slug=model_slug
         )
+        if not keys and existing_entity is not None:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"primary_key [] makes {model_slug!r} row grain, but graph entity "
+                f"{entity_slug!r} exists; remove it first, or give its key",
+                details={"model": model_slug, "entity": entity_slug},
+            )
         if str(model.get("kind") or "").strip().lower() == "fact":
             # upsert_model manages entity models; a replace would also drop kind: fact.
             raise SemanticLayerError(
@@ -1065,19 +1072,16 @@ class ArchitectProject:
         previous = model
         if replace:
             model = {field: model[field] for field in _KEPT_ON_REPLACE if field in model}
-        entries = {**dict(model.get("entities", {}) or {}), entity_slug: {}}
-        if not keys:
-            entries.pop(entity_slug)
         model.update(
             {
                 "id": model_slug,
                 "relation": relation,
-                "entities": entries,
+                "entities": {
+                    **dict(model.get("entities", {}) or {}),
+                    **({entity_slug: {}} if keys else {}),
+                },
                 "description": description
-                or model.get(
-                    "description",
-                    f"One row per {_title(entity_slug)}." if keys else "Every stored row counts.",
-                ),
+                or model.get("description", f"One row per {_title(entity_slug)}."),
             }
         )
         if label:
@@ -1143,8 +1147,8 @@ class ArchitectProject:
             desired_entity["allowed_as_root"] = True
         if keys:
             entities[entity_slug] = desired_entity
-        else:  # a row-grain model has no graph entity
-            desired_entity = existing_spec
+        else:  # a row-grain model's graph entity is named after it, and never authored
+            entity_slug, desired_entity = model_slug, existing_spec
         graph["entities"] = entities
         graph_doc["graph"] = graph
         return {
@@ -2041,7 +2045,7 @@ class ArchitectProject:
             self._row(singular, name, owner.source_path, entry, id=ids[owner.key], model=owner.key)
         )
         if singular == "relationship":
-            source = self._primary_entity_for_model(owner, raw["entities"]) or owner.key
+            source = self._primary_entity_for_model(owner, raw["entities"])
             self._drop_graph_relationships(raw, name, documents, removed, source=source)
 
     def _pop_model_entry(
@@ -2483,10 +2487,7 @@ class ArchitectProject:
             "measures": [],
         }
         for model_entry in models:
-            # A row-grain model's objects take their ids from the model.
-            primary_entity = (
-                self._primary_entity_for_model(model_entry, entities) or model_entry.key
-            )
+            primary_entity = self._primary_entity_for_model(model_entry, entities)
             for plural, singular in (
                 ("dimensions", "dimension"),
                 ("times", "time"),
@@ -2627,16 +2628,12 @@ class ArchitectProject:
 
     @staticmethod
     def _primary_entity_for_model(model: _RawObject, entities: list[_RawObject]) -> str:
-        """The graph entity homed on the model, or "" for a row-grain model (no key)."""
         for entity in entities:
             if str(entity.spec.get("model", "") or "") == model.key:
                 return entity.key
         explicit = str(model.spec.get("entity", "") or "").strip()
-        if explicit:
-            return explicit
-        exposed = [str(key) for key in dict(model.spec.get("entities") or {}) if key != "bridge"]
-        named = any(entity.key == model.key for entity in entities)
-        return model.key if named and (model.key in exposed or not exposed) else ""
+        # Else a same-named graph entity, or a row-grain model's own, named after it.
+        return explicit or model.key
 
     @staticmethod
     def _find_raw(rows: list[_RawObject], key: str) -> _RawObject | None:

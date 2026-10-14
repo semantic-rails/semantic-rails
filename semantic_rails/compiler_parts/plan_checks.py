@@ -822,7 +822,7 @@ def _fanout_dedup_refusal(
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and (row_grain_filter or (entity.key and _measure_has_source_row_key(measure, entity)))
+        and (row_grain_filter or _measure_has_source_row_key(measure, entity))
     ):
         return (
             f"'{aggregation}' of {subject} is not defined over one row per "

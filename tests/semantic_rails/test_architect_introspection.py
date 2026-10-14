@@ -372,11 +372,15 @@ def test_key_suggestion_states_what_was_checked_at_the_profile_cap(
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "fct_orders")
 
-    key = suggested["primary_key"]
-    assert key["columns"] == ["order_id"]
-    assert suggested["upsert_model"]["primary_key"] == ["order_id"]
+    # Refuted on the sample, then confirmed on every row: only a confirmed key is suggested.
     assert suggested["sampled"] is (offset > 0)
-    assert key["confidence"] == "high" and "every row" in key["reason"]
+    assert suggested["key_search"] == {"status": "confirmed", "checked": 1}
+    assert suggested["primary_key"] == {
+        "columns": ["order_id"],
+        "confidence": "high",
+        "reason": f"(order_id) is never null and unique in all {rows} rows",
+    }
+    assert suggested["upsert_model"]["primary_key"] == ["order_id"]
 
 
 def test_declared_key_is_certain_above_the_profile_cap(tmp_path: Path) -> None:
@@ -432,10 +436,13 @@ def test_composite_key_suggestion_has_bounded_and_honest_evidence(
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "fct_order_lines")
 
-    key = suggested["primary_key"]
-    assert key["columns"] == ["order_id", "line_number"]
+    assert suggested["key_search"]["status"] == "confirmed"
+    assert suggested["primary_key"] == {
+        "columns": ["order_id", "line_number"],
+        "confidence": "high",
+        "reason": f"(order_id, line_number) is never null and unique in all {rows} rows",
+    }
     assert suggested["upsert_model"]["primary_key"] == ["order_id", "line_number"]
-    assert key["confidence"] == "high" and "every row" in key["reason"]
 
 
 def test_composite_duplicate_outside_the_sample_is_rejected_on_every_row(tmp_path: Path) -> None:
@@ -450,8 +457,9 @@ def test_composite_duplicate_outside_the_sample_is_rejected_on_every_row(tmp_pat
     with open_duckdb(db_path) as warehouse:
         suggested = suggest_model(warehouse, "fct_order_lines")
 
+    assert suggested["sampled"] is True
+    assert suggested["key_search"] == {"status": "none_found", "checked": 1}
     assert suggested["primary_key"] is None
-    assert suggested["key_search"]["status"] == "none_found"
     assert suggested["upsert_model"]["primary_key"] == []
 
 
