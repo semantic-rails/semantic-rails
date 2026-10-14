@@ -1612,10 +1612,11 @@ def rewrite_warning_payload(step: Any) -> dict[str, Any]:
             "Safe cross-fact alignment: independent leaf aggregates were joined on final "
             "grain keys."
         )
+    # A disclosure of how a correct answer was computed: a note, not a warning to act on.
     return semantic_issue(
         code="REWRITE_APPLIED",
         message=message,
-        severity="warning",
+        severity="info",
         stage="planning",
         details=details,
         object_ids=[str(getattr(step, "measure_id", "") or "")],

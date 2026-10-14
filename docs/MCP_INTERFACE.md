@@ -1206,8 +1206,9 @@ Each issue carries `code` and `message`, plus at least one of `details`, `recove
 
 At MCP verbosity `minimal`, `MIXED_GRAIN_INVALID` omits the relationship analysis
 dump while retaining offending dimensions, compatible measures and dimensions,
-time-axis recovery, and every recovery hint. `REWRITE_APPLIED` omits `details.analysis`
-and `details.path`, retaining its code, message, and `details.rewrite_kind`.
+time-axis recovery, and every recovery hint. `REWRITE_APPLIED`, a note (severity `info`) that
+discloses how a correct answer was computed, omits `details.analysis` and `details.path`,
+retaining its code, message, and `details.rewrite_kind`.
 Request `compact` or `full` for analysis details within the same response budget. An unsupported
 expression kind names the received kind and its request path (for example,
 `query.select[0].expression.left`); recovery hints include the request shape to send.
