@@ -344,10 +344,17 @@ def test_a_name_of_several_rows_asks_which(subscriptions: Callable[..., Runtime]
     assert payload["next"] == {"action": "clarify"}
     [gap] = payload["why"]["details"]["gaps"]
     assert gap["kind"] == "name_ambiguous"
-    assert [(row["display"], row["key"], row["where"]) for row in gap["expected"]["matches"]] == [
-        ("Acme Data Co", "a", {"field": ACCOUNT_ID, "op": "is", "value": "a"}),
-        ("Acme Labs", "e", {"field": ACCOUNT_ID, "op": "is", "value": "e"}),
+    matches = gap["expected"]["matches"]
+    assert [(row["display"], row["key"]) for row in matches] == [
+        ("Acme Data Co", "a"),
+        ("Acme Labs", "e"),
     ]
+    # Each match is a whole call: the draft filtered to its row and grouped by its name.
+    for row in matches:
+        call = row["call"]
+        assert {"field": ACCOUNT_ID, "op": "is", "value": row["key"]} in call["where"]
+        assert call["group_by"][-1] == ACCOUNT_NAME
+        assert runtime.validate(call, now=NOW["now"])["ok"]
     assert payload["why"]["details"]["clarification"]["question"] == (
         "Which one does 'Acme' mean: Account Acme Data Co (a) or Account Acme Labs (e)?"
     )
