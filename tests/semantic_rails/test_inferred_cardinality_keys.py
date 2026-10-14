@@ -35,6 +35,16 @@ CREATE TABLE parents (id INTEGER, category VARCHAR, region VARCHAR);
 INSERT INTO parents VALUES (1, 'x', 'east'), (2, 'x', 'east'), (3, 'y', 'west');
 CREATE TABLE children (child_id INTEGER, category VARCHAR, weight INTEGER);
 INSERT INTO children VALUES (1, 'x', 5), (2, 'x', 7), (3, 'y', 100);
+ALTER TABLE parents ADD COLUMN "ﬀ" INTEGER;
+ALTER TABLE parents ADD COLUMN ff VARCHAR;
+ALTER TABLE parents ADD COLUMN "straße" INTEGER;
+ALTER TABLE parents ADD COLUMN strasse VARCHAR;
+UPDATE parents SET "ﬀ" = id, ff = category, "straße" = id, strasse = category;
+ALTER TABLE children ADD COLUMN "ﬀ" INTEGER;
+ALTER TABLE children ADD COLUMN ff VARCHAR;
+ALTER TABLE children ADD COLUMN "straße" INTEGER;
+ALTER TABLE children ADD COLUMN strasse VARCHAR;
+UPDATE children SET "ﬀ" = child_id, ff = category, "straße" = child_id, strasse = category;
 CREATE TABLE ords (order_id INTEGER, amount INTEGER, status VARCHAR);
 INSERT INTO ords VALUES (1, 100, 'open'), (2, 50, 'open');
 CREATE TABLE lines (order_id INTEGER, line_no INTEGER, sku VARCHAR, qty INTEGER);
@@ -197,6 +207,12 @@ def test_a_target_off_the_key_is_refused_without_a_cardinality(
             "Order ID",
         ),
         (
+            {"entities": ["child", "parent"], "via": ["child_id"], "target": ["Straße"]},
+            {"parent": ["straße"]},
+            "Straße",
+            "straße",
+        ),
+        (
             {"entities": ["line", "ord"], "via": ["order_id"], "target": ["ORDER_ID"]},
             {},
             "ORDER_ID",
@@ -213,6 +229,7 @@ def test_a_target_off_the_key_is_refused_without_a_cardinality(
         "target_in_another_case",
         "under_an_authored_cardinality",
         "a_quoted_name_in_another_case",
+        "a_non_ascii_name_in_another_case",
         "many_to_one_in_another_case",
         "via_in_another_case",
     ],
@@ -258,6 +275,50 @@ def test_a_column_spelled_in_another_case_than_the_key_is_refused(
 def test_a_join_on_the_key_loads_in_any_column_order(
     tmp_path: Path, relationship: dict[str, Any], keys: dict[str, Any]
 ) -> None:
+    root = _package(tmp_path, relationship, **keys)
+    assert _probe(root).cardinality == "1:1"
+    assert _totals(root, WEIGHT_BY_REGION) == {"east": 12, "west": 100}
+
+
+@pytest.mark.parametrize(
+    ("relationship", "keys"),
+    [
+        (
+            {
+                "entities": ["child", "parent"],
+                "via": ["child_id", "category"],
+                "target": ["ﬀ", "ff"],
+            },
+            {"parent": ["ﬀ"]},
+        ),
+        (
+            {
+                "entities": ["child", "parent"],
+                "via": ["child_id", "category"],
+                "target": ["straße", "strasse"],
+            },
+            {"parent": ["straße"]},
+        ),
+        (
+            {"entities": ["child", "parent"], "via": ["ﬀ", "ff"], "target": ["id", "category"]},
+            {"child": ["ﬀ"]},
+        ),
+        (
+            {
+                "entities": ["child", "parent"],
+                "via": ["straße", "strasse"],
+                "target": ["id", "category"],
+            },
+            {"child": ["straße"]},
+        ),
+    ],
+    ids=["target_ligature", "target_sharp_s", "via_ligature", "via_sharp_s"],
+)
+def test_names_a_case_fold_would_expand_are_other_columns(
+    tmp_path: Path, relationship: dict[str, Any], keys: dict[str, Any]
+) -> None:
+    """A key column ``ﬀ`` or ``straße`` and a column ``ff`` or ``strasse`` are two columns:
+    only a one-to-one change of case makes a column a misspelling of the key's."""
     root = _package(tmp_path, relationship, **keys)
     assert _probe(root).cardinality == "1:1"
     assert _totals(root, WEIGHT_BY_REGION) == {"east": 12, "west": 100}
