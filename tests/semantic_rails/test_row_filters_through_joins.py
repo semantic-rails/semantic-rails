@@ -511,23 +511,30 @@ def _literal(value):
     return {"kind": "literal", "value": value}
 
 
+def _call(name, *args):
+    return {"kind": "call", "name": name, "args": list(args)}
+
+
 @pytest.mark.parametrize(
     ("call", "refused"),
     [
-        ({"kind": "call", "name": "CAST", "args": [_order_column("order_id"), _literal("INTEGER")]},
-         True),
-        ({"kind": "call", "name": "LN", "args": [_order_column("amount")]}, True),
-        ({"kind": "call", "name": "CAST", "args": [_order_column("amount"), _literal("VARCHAR")]},
-         False),
-        ({"kind": "call", "name": "COALESCE", "args": [_order_column("order_id"), _literal("x")]},
-         False),
+        (_call("CAST", _order_column("order_id"), _literal("INTEGER")), True),
+        (_call("LN", _order_column("amount")), True),
+        (_call("ABS", _order_column("amount")), True),  # overflows on the least integer
+        (_call("JSON_EXTRACT", _order_column("order_id"), _literal("$.a")), True),
+        (_call("SUBSTRING", _order_column("order_id"), _literal(1), _literal(1)), True),
+        (_call("CAST", _order_column("amount"), _literal("VARCHAR")), False),
+        (_call("COALESCE", _order_column("order_id"), _literal("x")), False),
+        (_call("LOWER", _order_column("order_id")), False),
+        (_call("ROUND", _order_column("amount")), False),
     ],
-    ids=["cast_to_integer", "ln", "cast_to_text", "coalesce"],
+    ids=["cast_to_integer", "ln", "abs", "json_extract", "substring", "cast_to_text",
+         "coalesce", "lower", "round"],
 )  # fmt: skip
 def test_a_row_level_call_that_can_fail_on_a_value_is_refused(runtime, call, refused):
     """A hidden order whose id isn't a number would make CAST(order_id AS INTEGER) fail,
-    telling a caller something about a row they can't see: refused under a filter, whoever
-    wrote it."""
+    telling a caller something about a row they can't see: under a filter only calls that
+    can't fail on any value are read, whoever wrote them."""
     condition = {"kind": "comparison", "op": "IS NOT", "left": call, "right": _literal(None)}
     aggregate = {"kind": "aggregate_if", "aggregation": "sum", "condition": condition,
                  "value": _order_column("amount")}  # fmt: skip
