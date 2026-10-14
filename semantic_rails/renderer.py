@@ -529,7 +529,15 @@ class _Slots:
         pattern = f"{self.nonce}([0-9]+){self.nonce}"
         order = [int(index) for index in re.findall(pattern, sql)]
         if sorted(order) != list(range(len(self.emitted))):
-            raise ValueError("A rendered parameter marker was lost or repeated.")
+            from .errors import SemanticLayerError
+
+            # Never run a statement whose binds can't be matched to its placeholders.
+            raise SemanticLayerError(
+                "POLICY_DENIED",
+                "A bound parameter's placeholder was lost or repeated while rendering, so the "
+                "statement can't be run.",
+                details={"reason": "row_filter_unsupported_query"},
+            )
         return re.sub(pattern, "?", sql), tuple(self.emitted[index] for index in order)
 
 

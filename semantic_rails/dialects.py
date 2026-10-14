@@ -559,7 +559,6 @@ class DuckDbDialect(_NestedTimezone, SqlDialect):
 
 @dataclass(frozen=True)
 class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
-    subquery_in_join_on = True
     """PostgreSQL (ADBC, ``postgres_native``).
 
     Quirks covered here (each verified against PostgreSQL 16):
@@ -578,6 +577,8 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     - ``IS NOT DISTINCT FROM``, ``TIMESTAMP``, and the portable
       ``<AGG>(CASE WHEN …)`` conditional-aggregate default are native.
     """
+
+    subquery_in_join_on = True
 
     name: str = "postgres"
     session_zone = True

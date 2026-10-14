@@ -69,14 +69,15 @@ def _coverage(base: PackageConfig, entity_id: str) -> Coverage:
         except SemanticLayerError as exc:
             options = (exc.details.get("clarification") or {}).get("options") or []
             if exc.code == "AMBIGUOUS_PATH" and any(
-                _walk(analysis, model, option.get("relationship_path") or ())[0] != "uncovered"
+                _route_ownership(analysis, model, option.get("relationship_path") or ())[0]
+                != "uncovered"
                 for option in options
             ):
                 unsupported_models[model] = "its route to the filtered model is undecided"
             else:
                 uncovered.append(model)
             continue
-        status, hop = _walk(analysis, model, route)
+        status, hop = _route_ownership(analysis, model, route)
         if status == "covered" and hop is not None:
             routes[model], first[model] = route, hop
         elif status == "uncovered":
@@ -133,7 +134,9 @@ def _far_end(analysis: Any, current: str, rel_id: str) -> str:
     return rel.target_entity if current == rel.source_entity else rel.source_entity
 
 
-def _walk(analysis: Any, start: str, route: Iterable[str]) -> tuple[str, ParentHop | None]:
+def _route_ownership(
+    analysis: Any, start: str, route: Iterable[str]
+) -> tuple[str, ParentHop | None]:
     """Whether ``route`` from ``start`` is ownership ("covered", with its first hop), no
     ownership ("uncovered": a hop may reach several rows) or unsupported (why)."""
     current, hop = start, None
@@ -290,7 +293,7 @@ def hold_unowned_reads(
             into = table(far)
             if into in visibility.refused:
                 raise hold("row_filter_coverage_unsupported", far)
-            owned = table(current) == into or _walk(analysis, current, [rel_id])[1] in (
+            owned = table(current) == into or _route_ownership(analysis, current, [rel_id])[1] in (
                 visibility.parents.get(table(current), ())
             )
             if into in visibility.restricted and _reaches_at_most_one(rel, current) and not owned:

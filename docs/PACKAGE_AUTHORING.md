@@ -845,9 +845,9 @@ kind names must match exactly.
     row-level call other than `COALESCE`, `NULLIF`, `CONCAT`, `LOWER`, `UPPER`, `TRIM`,
     `REPLACE`, `LENGTH`, `ROUND`, `FLOOR`, `CEIL`, `DATE_TRUNC`, `DATE_PART`, `LEFT`,
     `RIGHT` and a `CAST` to text (`row_filter_fallible_expression`), whoever wrote it, since
-    an error on a hidden row would tell something about it. Rollups are not routed to; the query reads its base
-    relations. When a window returns no rows, the data coverage the answer reports is the
-    caller's own visible rows'.
+    an error on a hidden row would tell something about it. Rollups are not routed to; the
+    query reads its base relations. When a window returns no rows, the data coverage the
+    answer reports is that of the caller's own visible rows.
   - A filtered or covered model's declared value `domain:` is withheld from every caller in
     the filter's scope, including those its `unless_roles` exempts: a value list (valid
     values, the inspect card, search) is read live, from the caller's own rows, so a West

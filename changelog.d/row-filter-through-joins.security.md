@@ -15,4 +15,7 @@
   Known limitations in this release: SQL output for a row-filtered caller can show the
   names of filter tables and columns, never values, so hosts that hide them should not grant
   SQL output to filtered callers; and on Snowflake, optional (`LEFT`) lookups into tables a
-  filter covers are refused.
+  filter covers are refused. Under a row filter, a filter value on a model no filter reaches
+  isn't checked against the data, so such a query gets no "value not found" warning; this
+  never changes a number. An empty window reports the data coverage of the caller's own
+  rows.
