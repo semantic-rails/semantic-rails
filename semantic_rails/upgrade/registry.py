@@ -2,6 +2,7 @@
 
 from . import (
     rules_authoring,
+    rules_calls,
     rules_canonical,
     rules_expressions,
     rules_retired,
@@ -15,6 +16,7 @@ RULES: tuple[Rule, ...] = (
     *rules_canonical.RULES,
     *rules_authoring.RULES,
     *rules_expressions.RULES,
+    *rules_calls.RULES,
     *rules_time.RULES,
     *rules_strict.RULES,
 )

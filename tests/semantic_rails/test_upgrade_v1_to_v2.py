@@ -336,12 +336,23 @@ def test_operand_lists_fold_left(jaffle, key):
         {"kind": "arithmetic", "op": "add", "operands": [REV]},
         {"kind": "arithmetic", "op": "add", "operands": [REV, REV], "left": REV},
         {"kind": "arithmetic", "op": "add", "operands": [REV, REV], "terms": [REV, REV]},
+        {"kind": "arithmetic", "operator": "+", "operands": [REV, REV]},
     ],
 )
 def test_operand_lists_the_previous_engine_refused_are_kept(expression):
     query = {"select": [{"as": "x", "expression": expression}]}
     r = tq(query)
     assert (r.query, codes(r)) == (query, ["INVALID_V1_SHAPE"])
+
+
+def test_an_op_no_arithmetic_has_is_kept():
+    query = {
+        "select": [
+            {"as": "x", "expression": {"kind": "arithmetic", "op": "sum", "operands": [REV, REV]}}
+        ]
+    }
+    r = tq(query)
+    assert (r.query, codes(r)) == (query, ["UNTRANSLATABLE_OP"])
 
 
 def test_comparison_op_aliases_become_symbols(jaffle):
@@ -410,7 +421,6 @@ def test_retired_expression_spellings_are_rewritten():
                 },
             }
         ],
-        "where": [{"kind": "in", "left": {"kind": "column", "column": "c"}, "values": [1]}],
         "path_policy": {"max_hops": 2},
     }
     r = tq(v1)
@@ -426,7 +436,25 @@ def test_retired_expression_spellings_are_rewritten():
                 "as": "c",
             }
         ],
-        "where": [{"kind": "in", "expr": {"kind": "column", "column": "c"}, "values": [1]}],
+    }
+    assert sorted(codes(r)) == ["RETIRED_KEY_DROPPED", "RETIRED_KEY_DROPPED"]
+    condition = {"kind": "not_in", "left": {"kind": "column", "column": "c"}, "values": [1]}
+    v1 = {
+        "select": [
+            {
+                "as": "n",
+                "expression": {
+                    "kind": "aggregate_if",
+                    "aggregation": "count",
+                    "condition": condition,
+                },
+            }
+        ]
+    }
+    assert tq(v1).query["select"][0]["expression"]["condition"] == {
+        "kind": "not_in",
+        "expr": {"kind": "column", "column": "c"},
+        "values": [1],
     }
 
 

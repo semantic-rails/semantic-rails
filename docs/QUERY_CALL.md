@@ -1024,7 +1024,9 @@ each `metric_filters` item as its `having` row or entity filter, `time.range` as
 send, `route_decisions` as `routes`, a reference object as its id, `LIKE 'text%'` as
 `starts_with`, `'%text'` as `ends_with` and `'%text%'` as `contains`, `BETWEEN` as `gte` and
 `lte` (it includes both ends). An item with no mechanical rewrite (a predicate grouped by the
-query's dimensions, say) gets the general hint.
+query's dimensions, say) gets the general hint. `semantic-rails project upgrade` rewrites a
+package's example and test queries written in the previous shape
+([rule `query-call-v2`](PACKAGE_AUTHORING.md#upgrading-a-package)).
 
 | Retired | Now |
 |---|---|

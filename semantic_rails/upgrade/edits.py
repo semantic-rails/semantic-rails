@@ -102,6 +102,31 @@ def _render(value: Any, *, flow: bool = False) -> str:
     return rendered.removesuffix("...\n").rstrip("\n")
 
 
+def _replace_block(text: str, parent: Node, target: Node, edit: Any) -> str | None:
+    """Replace a value of a block mapping or sequence with the edit's value, rendered at the
+    same indentation, keeping every other line; None for a flow value or a scalar that stays
+    one, which the callers splice."""
+    if not edit.path or getattr(parent, "flow_style", True) or getattr(target, "flow_style", False):
+        return None
+    if isinstance(target, ScalarNode) and not isinstance(edit.value, (dict, list)):
+        return None
+    if isinstance(parent, MappingNode):
+        key = _entries(parent)[edit.path[-1]][0]
+        start = text.rfind("\n", 0, key.start_mark.index) + 1
+        if text[start : key.start_mark.index].strip():
+            return None
+        lines = [
+            " " * key.start_mark.column + line
+            for line in _render({edit.path[-1]: edit.value}).splitlines()
+        ]
+    else:  # an item of a block sequence, after its "- "
+        start = target.start_mark.index
+        first, *rest = _render(edit.value).splitlines()
+        lines = [first, *(" " * target.start_mark.column + line for line in rest)]
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return text[:start] + newline.join(lines) + newline + text[_line_end(text, _end(target)) :]
+
+
 @lru_cache(maxsize=1)
 def _document(text: str) -> tuple[Any, Node | None]:
     return safe_load(text), yaml.compose(text, Loader=Yaml12SafeLoader)
@@ -175,6 +200,8 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
             if scalar.style in {"|", ">"} and span.endswith("\n"):
                 rendered += "\r\n" if span.endswith("\r\n") else "\n"
             return text[: scalar.start_mark.index] + rendered + text[scalar.end_mark.index :], False
+    if edit.op == "replace" and (block := _replace_block(text, parent, target, edit)) is not None:
+        return block, False
     mapping = (
         target
         if edit.op == "insert"

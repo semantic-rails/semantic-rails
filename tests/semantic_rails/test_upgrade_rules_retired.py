@@ -257,7 +257,7 @@ tests:
       # The route policy an earlier release read.
       path_policy:
         max_hops: 2
-      select: [{expression: {metric: metric.shop.revenue}, as: revenue}]
+      select: [{expression: metric.shop.revenue, as: revenue}]
     columns: [revenue]
 """,
         },
@@ -278,7 +278,7 @@ tests:
     query:
       version: 1
       # The route policy an earlier release read.
-      select: [{expression: {metric: metric.shop.revenue}, as: revenue}]
+      select: [{expression: metric.shop.revenue, as: revenue}]
     columns: [revenue]
 """,
         },

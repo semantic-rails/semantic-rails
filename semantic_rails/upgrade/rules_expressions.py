@@ -5,15 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from .model import Edit, Finding, PackageFiles, Row, Rule, _walk
-
-# Retired expression kinds, and the kind that parses to the same node.
-_KINDS = {"binary": "arithmetic", "measure_ref": "measure"}
-# Retired expression keys by kind, as (retired, current); the current key wins when both appear.
-_KEYS = {
-    "conversion": ("matching", "matching_mode"),
-    "in": ("left", "expr"),
-    "not_in": ("left", "expr"),
-}
+from .rules_calls import rewritten
+from .v1_to_v2 import RENAMED_KEYS as _KEYS
+from .v1_to_v2 import RENAMED_KINDS as _KINDS
 
 
 def _expression_nodes(files: PackageFiles) -> Iterator[Row]:
@@ -31,7 +25,12 @@ def _expression_nodes(files: PackageFiles) -> Iterator[Row]:
         for file, path, relation in files.relations()
         if isinstance(relation.get("steps"), list)
     ]
-    trees += [row for row in files.queries() if row[1][-1:] != ("membership",)]
+    # A query in the previous call shape is rewritten whole, these spellings included.
+    trees += [
+        row
+        for row in files.queries()
+        if row[1][-1:] != ("membership",) and rewritten(files, *row) is None
+    ]
     for file, path, tree in trees:
         for child_path, child in _walk(tree, path, expression=True):
             if isinstance(child, dict):
