@@ -492,6 +492,11 @@ _GRANTED_WARNING_KEYS = {
     "FILTERED_SERIES_BUCKETS_UNVERIFIED": frozenset(
         {"code", "severity", "stage", "message", "object_ids", "details"}
     ),
+    # answer_warnings.closing_day_disclosures: fixed text, the measure ID, its closing day and
+    # series counts, read under the caller's row filters; dropped unless the measure is granted.
+    "BALANCE_SERIES_MISSING_ON_CLOSING_DAY": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
 }
 
 
@@ -600,6 +605,13 @@ def _run_in_view(
             )
             if result.get("clock") in permitted:
                 response["clock"] = result["clock"]
+            if "assumptions" in response:
+                # A balance's closing day names its measure: kept only where it is granted.
+                response["assumptions"] = [
+                    row
+                    for row in response["assumptions"]
+                    if row.get("code") != "BALANCE_CLOSING_DAY" or row.get("measure") in permitted
+                ]
             if "withheld" in result:
                 response["withheld"] = [
                     object_id for object_id in result["withheld"] if object_id in permitted

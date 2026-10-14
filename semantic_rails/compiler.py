@@ -240,4 +240,5 @@ def compile_query(
         "coverage_now": bound.coverage_now,
         "balance_edges": list(bound.balance_edges),
         "balance_coverage": list(bound.balance_coverage),
+        "closing_reads": list(bound.closing_reads),
     }

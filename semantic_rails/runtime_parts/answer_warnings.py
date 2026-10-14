@@ -418,6 +418,79 @@ def _crosses_boundary(start: str, end: str, window_start: str, window_end: str) 
     return bool(window_end and (not start or start < window_end) and end and end > window_end)
 
 
+def closing_day_disclosures(reads: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
+    """What each balance read on its closing day says: the day it read (an assumption), and,
+    when series seen earlier in a period had no snapshot on its closing day, how many (a
+    warning). The engine can't tell a series that stopped, which is right to leave out, from
+    one that takes its snapshots on other days or a table that records only changes, which
+    are undercounted, so it never leaves them out silently. ``reads`` comes from
+    ``runtime._closing_reads``; one whose probe failed is still disclosed, with no day."""
+    assumptions: list[dict] = []
+    warnings: list[dict] = []
+    for read in reads:
+        measure, day = read["measure"], _iso_day(read.get("closing_day"))
+        if "periods" in read and not day:
+            continue  # no snapshot in the window: nothing was read on a closing day
+        periods = int(read.get("periods") or 0)
+        when = (
+            f"on its closing day, {day}, the last day with a snapshot"
+            if periods == 1
+            else f"on each period's closing day, its last day with a snapshot (the latest is {day})"
+            if day
+            else "on each period's closing day, its last day with a snapshot"
+        )
+        assumptions.append(
+            {
+                "code": "BALANCE_CLOSING_DAY",
+                "message": f"{measure} is read {when}: a series with no snapshot that day is "
+                "not counted, never carried forward from an earlier day.",
+                "measure": measure,
+                "closing_day": day,
+                "periods": periods,
+            }
+        )
+        missing, seen = int(read.get("series_missing") or 0), int(read.get("series") or 0)
+        if day and not missing:
+            continue
+        missed, spans = _iso_day(read.get("missing_day")), int(read.get("periods_missing") or 0)
+        found = (
+            f"Whether every series of {measure} had a snapshot on its closing day couldn't be "
+            "checked."
+            if not day
+            else f"{missing} of {seen} series of {measure} had a snapshot earlier in the period "
+            f"but none on its closing day, {missed}, so they are not counted."
+            if periods == 1
+            else f"In {spans} of {periods} periods, series of {measure} had a snapshot earlier "
+            f"in the period but none on its closing day ({missing} of the {seen} series read "
+            f"across the periods; the latest such day is {missed}), so they are not counted."
+        )
+        warnings.append(
+            semantic_issue(
+                code="BALANCE_SERIES_MISSING_ON_CLOSING_DAY",
+                message=f"{found} A series that stopped is right to leave out; one that takes "
+                "its snapshots on other days, or a table that records only changes, is "
+                "undercounted. Group by the clock's day to see each day's snapshots; model a "
+                "change table as a state_as_of relation.",
+                severity="warning",
+                stage="execution",
+                details={
+                    "measure": measure,
+                    "closing_day": missed,
+                    "series": seen,
+                    "series_missing": missing,
+                    "periods_missing": spans,
+                },
+                object_ids=[measure],
+            )
+        )
+    return assumptions, warnings
+
+
+def _iso_day(value: Any) -> str:
+    """A warehouse's DATE as ``YYYY-MM-DD`` ("" for none)."""
+    return value.isoformat()[:10] if isinstance(value, date) else str(value or "")[:10]
+
+
 def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     """Say when a stock answered as if each row were its own series.
 

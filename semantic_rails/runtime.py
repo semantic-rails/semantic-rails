@@ -514,10 +514,7 @@ def _scope_refusal(payload: dict[str, Any]) -> SemanticLayerError | None:
 def _compiled_cte_row(runtime, compiled, payload, columns):
     """Read the settlement's own CTEs (``columns``: each CTE's columns), preserving bound row
     filters and request limits."""
-    from .relation_pipelines import attach_relation_ctes
-    from .renderer import render_select_for_profile
-    from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlParameter, SqlSelect, SqlTableRef
-    from .sql_preparation import finalize_parameters
+    from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlSelect, SqlTableRef
 
     probes = sorted(columns)
     probe = SqlSelect(
@@ -534,6 +531,17 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
             if cte.name in probes or cte.name in {f"{p}_rows" for p in probes}
         ],
     )
+    return _probe_row(runtime, compiled, payload, probe)
+
+
+def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
+    """The first row of ``probe``, a select whose parameters are all in its CTEs, run as the
+    answer's own SQL is: bound row filters and request limits kept."""
+    from .relation_pipelines import attach_relation_ctes
+    from .renderer import render_select_for_profile
+    from .sql_ast import SqlParameter
+    from .sql_preparation import finalize_parameters
+
     probe = attach_relation_ctes(runtime._config, probe)
     dialect = dialect_for_warehouse(runtime.warehouse)
     prepared = replace(
@@ -556,6 +564,19 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
             policy_context=_policy_context(payload or {}),
         )
     return rows[0] if rows else {}
+
+
+def _closing_reads(runtime, compiled, payload) -> list[dict[str, Any]]:
+    """For each balance read on its closing day, its probe's row (keys case-folded), or no
+    counts when the read failed."""
+    reads = []
+    for read in compiled.get("closing_reads") or ():
+        try:
+            row = _probe_row(runtime, compiled, payload, read["probe"])
+        except Exception:
+            row = {}
+        reads.append({"measure": read["measure"], **{k.casefold(): v for k, v in row.items()}})
+    return reads
 
 
 def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
@@ -1829,6 +1850,7 @@ class Runtime:
             _no_data_yet_warnings,
             _partial_data_warnings,
             _zero_after_last_row_notes,
+            closing_day_disclosures,
         )
 
         refusal = _scope_refusal(payload)
@@ -1933,6 +1955,9 @@ class Runtime:
         coverage_outputs = [
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
         ]
+        closing_days, closing_warnings = closing_day_disclosures(
+            _closing_reads(self, compiled, payload)
+        )
         out: dict[str, Any] = {
             "ok": True,
             **result_rows(
@@ -1973,6 +1998,7 @@ class Runtime:
                     runtime=self,
                     payload=payload,
                 ),
+                *closing_warnings,
                 *_filter_value_warnings(self, compiled, payload),
                 *_unknown_rows_kept_warnings(self, compiled, payload),
                 *limits_warnings,
@@ -1992,6 +2018,7 @@ class Runtime:
             "hop_profile": _hop_profile(self._config, compiled),
             "normalized_query": compiled["explain"].normalized_query,
         }
+        out["assumptions"].extend(closing_days)
         metadata = compile_response_metadata(self, payload, compiled)
         execute_keep = {
             "semantic_fingerprint",

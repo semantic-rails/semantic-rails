@@ -110,6 +110,7 @@ from .lowering_common import (
     _source_time_window,
     _time_bucket_expr,
     _value_filter_condition,
+    record_closing_read,
 )
 from .paths import (
     _column_ref,
@@ -270,6 +271,8 @@ def _semi_additive_leaf_select(
     aggregation_params: dict[str, Any],
     warehouse: str,
     ctes: list[SqlCte] | None = None,
+    closing_day: bool = False,
+    measure_id: str = "",
 ) -> SqlSelect:
     # A snapshot series whose only row key is the ordering time column is a
     # singleton series: there is exactly one snapshot per point in time. The
@@ -346,14 +349,27 @@ def _semi_additive_leaf_select(
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in partition_aliases
     ]
 
-    # A balance is read on its period's closing day only (the last day with a snapshot, the
-    # edge day for a period still filling): a series without a snapshot that day is not
-    # carried forward from an earlier one. With no period (untimed), each series' latest.
+    # A balance on an as-of clock (``closing_day``: a snapshot table) is read on its period's
+    # closing day only (the last day with a snapshot, the edge day for a period still filling;
+    # with no period, the last day read): a series without a snapshot that day is not carried
+    # forward from an earlier one. The answer names the day and counts the series it left out.
+    # On another clock each series' last row in the period is read, as keyed.
     closing = (
-        window_choice == "last_value"
-        and final_aggregation in {"last_value", "sum"}
-        and bool(period_fields)
+        closing_day and window_choice == "last_value" and final_aggregation in {"last_value", "sum"}
     )
+    if closing:
+        record_closing_read(
+            measure_id,
+            _closing_day_probe(
+                [field.expression for field in period_fields],
+                list(row_grain_exprs),
+                order_expr,
+                from_table=from_table,
+                joins=joins,
+                where=where_clauses,
+                ctes=list(ctes or []),
+            ),
+        )
 
     if dialect.capabilities().get("qualify"):
         direction = "ASC" if window_choice == "first_value" else "DESC"
@@ -492,6 +508,68 @@ def _semi_additive_leaf_select(
         ],
         where=kept_rows,
         group_by=final_key_exprs,
+    )
+
+
+def _closing_day_probe(
+    periods: list[Any],
+    series: list[Any],
+    order_expr: Any,
+    *,
+    from_table: SqlTableRef,
+    joins: list[SqlJoin],
+    where: list[Any],
+    ctes: list[SqlCte],
+) -> SqlSelect:
+    """One row on a closing-day read, over the rows the leaf reads: its latest closing day,
+    its periods, the series seen in them, and those whose last snapshot in a period is earlier
+    than that period's closing day (how many, in how many periods, and the latest such day)."""
+    rows = SqlSelect(
+        select=[
+            SqlField(
+                SqlCast(SqlWindow(SqlCall("MAX", [order_expr]), partition_by=periods), "DATE"),
+                "closing",
+            ),
+            SqlField(
+                SqlWindow(
+                    SqlCall("ROW_NUMBER", []),
+                    partition_by=[*periods, *series],
+                    order_by=[SqlOrderTerm(order_expr, "DESC")],
+                ),
+                "series_rank",
+            ),
+            SqlField(SqlCast(order_expr, "DATE"), "day"),
+        ],
+        from_table=from_table,
+        joins=joins,
+        where=where,
+    )
+
+    def column(name: str) -> SqlIdentifier:
+        return SqlIdentifier(["closing_rows", name])
+
+    last = SqlBinary(column("series_rank"), "=", SqlLiteral(1))
+    missed = _and_conditions([last, SqlBinary(column("day"), "<", column("closing"))])
+
+    def count(condition: Any) -> SqlCall:
+        return SqlCall("SUM", [SqlCase([SqlCaseWhen(condition, SqlLiteral(1))], SqlLiteral(0))])
+
+    def when_missed(expr: Any) -> SqlCase:
+        return SqlCase([SqlCaseWhen(missed, expr)])
+
+    return SqlSelect(
+        ctes=[*ctes, SqlCte(name="closing_rows", query=rows)],
+        select=[
+            SqlField(SqlCall("MAX", [column("closing")]), "closing_day"),
+            SqlField(SqlCall("COUNT", [column("closing")], distinct=True), "periods"),
+            SqlField(count(last), "series"),
+            SqlField(count(missed), "series_missing"),
+            SqlField(
+                SqlCall("COUNT", [when_missed(column("closing"))], distinct=True), "periods_missing"
+            ),
+            SqlField(SqlCall("MAX", [when_missed(column("closing"))]), "missing_day"),
+        ],
+        from_table=SqlTableRef(name="closing_rows"),
     )
 
 
@@ -1439,6 +1517,9 @@ def _measure_leaf_select(
             aggregation_params=dict(measure_plan.bound_measure.aggregation_params),
             warehouse=config.package.warehouse,
             ctes=predicate_ctes,
+            closing_day=temporal_roles[measure_plan.bound_measure.temporal_role].temporal_class
+            == "as_of_time",
+            measure_id=measure.id,
         )
 
     select_fields.append(

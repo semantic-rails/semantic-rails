@@ -56,10 +56,14 @@
     excluding web" now includes the signups with no channel, and a `not` through a lookup keeps
     the rows the lookup can't match (a "not operating" count through a lookup: 1 → 10). A dimension may declare
     `unknown_values` that read as unknown.
-  - A balance reads each period's closing day (its last day with a snapshot) and no longer
-    carries an earlier snapshot forward (a weekly stock 1,122 → 1,022); a window total over a
-    balance reads the window's closing day instead of adding days (the bundled `jaffle_shop`
-    inventory for March and April 2017: 1,945 → 860).
+  - A balance on an `as_of_time` clock reads each period's closing day (its last day with a
+    snapshot; with no `time`, the last day with a snapshot at all) and no longer carries an
+    earlier snapshot forward (a weekly stock 1,122 → 1,022); a window total over a balance
+    reads the window's closing day instead of adding days (the bundled `jaffle_shop` inventory
+    for March and April 2017: 1,945 → 860). The answer names the day (`BALANCE_CLOSING_DAY` in
+    `assumptions`) and warns with `BALANCE_SERIES_MISSING_ON_CLOSING_DAY`, with their count,
+    when series seen earlier in a period had no snapshot that day. A stock on an event- or
+    state-time clock is still read as keyed, each series' last row in the period.
   - An entity filter's unknown aggregate fails every threshold, `not` included (before, `not 0`
     kept entities whose aggregate was unknown). Under `observation_scope: "dataset"` a period
     in which the filter keeps no entity reads 0 inside the data (before `NULL`); under

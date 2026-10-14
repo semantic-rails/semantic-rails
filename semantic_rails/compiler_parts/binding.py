@@ -83,7 +83,7 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
-from .lowering_common import recording_stock_key_gaps
+from .lowering_common import recording_closing_reads, recording_stock_key_gaps
 from .paths import (
     _leaf_time_role,
     display_key,
@@ -167,6 +167,9 @@ class BoundQuery:
     # query's SQL) that say where their data ends.
     balance_edges: tuple[dict[str, Any], ...] = ()
     balance_coverage: tuple[SqlCte, ...] = ()
+    # Each balance read on its closing day, with the probe (row-filtered like the query) that
+    # says which day that was and how many series had no snapshot on it.
+    closing_reads: tuple[dict[str, Any], ...] = ()
     # Root leaves only package metrics' own definitions compute (:func:`_authored_leaves`).
     authored_leaves: frozenset[str] = frozenset()
 
@@ -363,14 +366,16 @@ def _bind_with_row_filters(
                     "refusal offered, with the same source_entity and target_entity.",
                 },
             )
-    sql_ast, parameters = apply_row_filters(
-        bound.sql_ast,
-        row_filters,
-        load_logs={
-            row.zero_through.relation
-            for row in config.measures
-            if row.zero_through is not None and row.zero_through.kind == "loaded"
-        },
+    load_logs = {
+        row.zero_through.relation
+        for row in config.measures
+        if row.zero_through is not None and row.zero_through.kind == "loaded"
+    }
+    sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters, load_logs=load_logs)
+    # A closing-day probe reads the stock's rows as its leaf does, under the same filters.
+    closing_reads = tuple(
+        {**read, "probe": apply_row_filters(read["probe"], row_filters, load_logs=load_logs)[0]}
+        for read in bound.closing_reads
     )
     if row_filters:
         # Enforcement reads the whole package; a refusal names only policies the caller sees.
@@ -389,6 +394,7 @@ def _bind_with_row_filters(
         bound,
         sql_ast=sql_ast,
         parameters=parameters,
+        closing_reads=closing_reads,
         route_decisions=tuple(
             {
                 "source_entity": row.source_entity,
@@ -552,6 +558,7 @@ def _bind_query(
         plan_bindings(plan) as leaves,
         recording_rollup_scans() as rollup_scans,
         recording_stock_key_gaps() as stock_key_gaps,
+        recording_closing_reads() as closing_reads,
         recording_zero_outputs() as zero_outputs,
         recording_balance_edges() as balance_edges,
         recording_route_choices() as route_choices,
@@ -585,5 +592,6 @@ def _bind_query(
         coverage_now=clock.literal if clock.read else "",
         balance_edges=tuple(balance_edges["outputs"]),
         balance_coverage=tuple(balance_edges["ctes"].values()),
+        closing_reads=tuple(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
     )

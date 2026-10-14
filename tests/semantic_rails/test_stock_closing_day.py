@@ -12,10 +12,19 @@ Every expected number below comes from the hand SQL beside it.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 import duckdb
 import pytest
 
+from semantic_rails.compiler import compile_query
+from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
+from semantic_rails.embedding import RequestContext
+from semantic_rails.registry import Registry
+from semantic_rails.renderer import render_select_for_profile
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts.answer_warnings import closing_day_disclosures
 from tests.semantic_rails import shared_seed
 from tests.semantic_rails.conftest import opened
 
@@ -75,9 +84,7 @@ CUSTOMERS = """model:
 """
 
 
-@pytest.fixture(scope="module")
-def stocks(tmp_path_factory: pytest.TempPathFactory) -> Runtime:
-    root = tmp_path_factory.mktemp("closing") / "inv"
+def _write_package(root: Path, policies: str = "") -> Path:
     (root / "models").mkdir(parents=True)
     (root / "data").mkdir()
     (root / "package.yml").write_text(
@@ -96,8 +103,16 @@ def stocks(tmp_path_factory: pytest.TempPathFactory) -> Runtime:
     for name in ("inv_dense", "inv_stagger", "inv_changes"):
         (root / "models" / f"{name}.yml").write_text(_snapshot_model(name))
     (root / "models" / "customers.yml").write_text(CUSTOMERS)
+    if policies:
+        (root / "policies.yml").write_text(policies)
     with duckdb.connect(str(root / "data" / "inv.duckdb")) as con:
         con.execute(SEED)
+    return root
+
+
+@pytest.fixture(scope="module")
+def stocks(tmp_path_factory: pytest.TempPathFactory) -> Runtime:
+    root = _write_package(tmp_path_factory.mktemp("closing") / "inv")
     # The hand SQL runs on its own copy of the seed, never the runtime's connection.
     hand = duckdb.connect()
     hand.execute(SEED)
@@ -279,3 +294,73 @@ def test_jaffle_lifetime_spend_reads_every_customer_in_the_quarter(runtime_facto
     result = runtime.query(call)
     assert [round(value, 2) for value in _values(result)] == [267324.55]
     assert CLOSING not in _codes(result, "assumptions")
+
+
+@pytest.mark.parametrize("warehouse", supported_warehouses())
+def test_closing_day_reads_lower_on_every_dialect(stocks: Runtime, warehouse: str) -> None:
+    """The read and its probe compile on every warehouse: by period, over a window, and with
+    no period at all (the last closing day over every row)."""
+    on = replace(stocks.config, package=replace(stocks.config.package, warehouse=warehouse))
+    runtime = Runtime.from_config(on, source_path=stocks.source_path)
+    dialect = dialect_for_warehouse(warehouse)
+    try:
+        for time in ({}, YEAR, {"grain": "quarter", **YEAR}):
+            payload = runtime.engine_payload(_call("inv_stagger", **time))
+            compiled = compile_query(on, Registry(on), payload)
+            (read,) = compiled["closing_reads"]
+            assert read["measure"] == "measure.inv.inv_stagger_area"
+            probe = render_select_for_profile(read["probe"], dialect=dialect)
+            assert "ROW_NUMBER() OVER" in probe and "closing_rows" in probe
+            # The answer's own SQL chooses the closing day; with no period, over every row.
+            qualify = dialect.capabilities().get("qualify")
+            closing = "MAX(inv_stagger.snap_date) OVER (" + ("" if time else ")")
+            assert (closing if qualify else "__closing") in compiled["sql"]
+            # An event-clock stock is read as keyed, with nothing to probe.
+            payload = runtime.engine_payload(_call("customers", **time))
+            assert compile_query(on, Registry(on), payload)["closing_reads"] == []
+    finally:
+        runtime.close()
+
+
+ONE_BUILDING = """semantic_policies:
+  - id: policy.inv.one_building
+    kind: row_filter
+    dimension: dimension.inv_inv_stagger_building
+    attribute: building
+    type: string
+    audiences: [tenant]
+"""
+
+
+def test_the_closing_day_and_its_counts_are_read_under_the_callers_row_filter(
+    tmp_path: Path,
+) -> None:
+    """A caller who sees only X reads X's own closing day, and no series of another caller
+    counts as missing."""
+    runtime = opened(Runtime.from_path(str(_write_package(tmp_path / "inv", ONE_BUILDING))))
+    try:
+        for building, day, total in (("X", "2020-12-05", 100), ("Y", "2020-12-20", 200)):
+            context = RequestContext(
+                actor="u", audience="tenant", attributes={"building": building}
+            )
+            result = runtime.query(_call("inv_stagger", **YEAR), context=context)
+            assert _values(result) == [total], building
+            assert _one(result, "assumptions", CLOSING)["closing_day"] == day, building
+            assert MISSING not in _codes(result, "warnings"), building
+        # Unfiltered, the same call leaves X out and says so.
+        assert _one(runtime.query(_call("inv_stagger", **YEAR)), "warnings", MISSING)
+    finally:
+        runtime.close()
+
+
+def test_a_probe_that_fails_still_discloses_the_rule() -> None:
+    """A failed probe can't name the day or count the series: the answer says the rule and
+    that it couldn't check, never nothing."""
+    (assumption,), (warning,) = closing_day_disclosures([{"measure": "measure.inv.x"}])
+    assert assumption["code"] == CLOSING and assumption["closing_day"] == ""
+    assert warning["code"] == MISSING and "couldn't be checked" in warning["message"]
+    # A window with no snapshot read no closing day: nothing to say.
+    assert closing_day_disclosures([{"measure": "m", "closing_day": None, "periods": 0}]) == (
+        [],
+        [],
+    )
