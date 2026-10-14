@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 
 from semantic_rails.diagnostics import enrich_path_not_found, exception_issue, filter_value_miss
@@ -300,6 +301,42 @@ def test_a_date_filter_value_that_cant_be_read_is_refused_at_its_value(runtime, 
 def test_a_date_filter_value_in_iso_form_still_reads(runtime, value):
     where = [{"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": value}]
     assert runtime.validate({"select": [ORDERS], "where": where})["ok"]
+
+
+@pytest.mark.parametrize("value", ["2017-09-04 12:00:00 UTC", "2017-09-04T24:00:00"])
+def test_a_warehouse_timestamp_literal_keeps_its_reference_answer(runtime, value):
+    call = {
+        "select": [{"expression": ORDERS, "as": "n"}],
+        "where": [{"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": value}],
+    }
+    assert runtime.validate(call)["ok"]
+    assert runtime.compile(call)["ok"]
+    with duckdb.connect(str(runtime.db_path), read_only=True) as connection:
+        expected = connection.execute(
+            "SELECT count(DISTINCT order_id) FROM jaffle_order WHERE ordered_at >= CAST(? AS TIMESTAMP)",
+            [value],
+        ).fetchone()[0]
+    result = runtime.query(call)
+    assert result["ok"]
+    assert result["rows"] == [{"n": expected}]
+
+
+@pytest.mark.parametrize("value", ["2017-09-04T25:00:00", "2017-02-30"])
+def test_a_warehouse_timestamp_cast_failure_names_the_callers_value(runtime, value):
+    call = {
+        "select": [STORE, ORDERS],
+        "where": [
+            {"field": STORE, "op": "is", "value": "Brooklyn"},
+            {"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": value},
+        ],
+    }
+    assert runtime.validate(call)["ok"]
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(call)
+    assert raised.value.code == "QUERY_EXECUTION_ERROR"
+    assert raised.value.details["path"] == "where[1].value"
+    assert raised.value.details["sql_redacted"] is True
+    assert "sql" not in raised.value.details
 
 
 def test_an_unknown_arithmetic_op_in_a_package_metric_is_refused_at_its_path(tmp_path: Path):
