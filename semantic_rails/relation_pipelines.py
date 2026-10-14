@@ -545,12 +545,9 @@ def _aggregate_expr(spec: Any, *, warehouse: str) -> SqlExpr:
         raise SemanticLayerError("INVALID_CONFIG", "group_by aggregate requires function")
     expr_raw = config.get("expr", config.get("expression", "*"))
     if function == "SINGLE_VALUE":  # the group's one value, NULL where it holds two
-        value = _expr(expr_raw, warehouse=warehouse)
-        bounds = ("MIN", "MAX")
-        if config.get("boolean"):
-            bounds = dialect_for_warehouse(warehouse).boolean_bounds
-        least, most = (SqlCall(name, [value]) for name in bounds)
-        return SqlCase([SqlCaseWhen(SqlBinary(least, "=", most), most)])
+        return dialect_for_warehouse(warehouse).single_value(
+            _expr(expr_raw, warehouse=warehouse), boolean=bool(config.get("boolean"))
+        )
     if expr_raw == "*":
         return SqlCall(function, [SqlLiteral(1)], distinct=bool(config.get("distinct", False)))
     return SqlCall(

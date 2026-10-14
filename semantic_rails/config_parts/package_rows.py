@@ -53,7 +53,7 @@ from .model_rows import (
     _parse_relations,
     _with_displays,
 )
-from .one_per_key import with_one_per_key
+from .one_per_key import check_one_per_key_names, with_one_per_key
 from .policy_rows import (
     _parse_caveats,
     _parse_path_policy,
@@ -99,7 +99,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     entities: list[EntityConfig] = []
     entity_lookup: dict[str, str] = {}
     model_to_entity: dict[str, str] = {}
-    one_per_key: dict[str, tuple[str, str]] = {}  # entity id -> its model and relation
+    one_per_key: dict[str, str] = {}  # entity id -> the relation its model names
     model_rows = {str(k): dict(v or {}) for k, v in model_rows.items()}
     time_calendar_ids_seen: set[str] = set()
 
@@ -222,7 +222,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         entity_lookup[entity_name] = entity_id
         model_to_entity[model_id] = entity_id
         if model.get("one_per_key") is True:
-            one_per_key[entity_id] = (model_id, relation_table)
+            one_per_key[entity_id] = relation_table
 
     dimensions: list[DimensionConfig] = []
     temporal_roles: list[TemporalRoleConfig] = []
@@ -1330,6 +1330,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         meta_contract=meta_contract,
     )
     config = with_published_flags(config)
+    check_one_per_key_names(config)
     _ensure_unique_object_ids(config, path=path)
     _validate_caveat_refs(config, path=path)
     validate_row_filters(config)

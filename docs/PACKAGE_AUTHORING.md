@@ -1403,8 +1403,10 @@ model:
 - Put each column on one model: on the one-per-key model when it is fixed per key, on the
   row-grain model when it can vary. A row filter on a one-per-key model's dimension and
   `variants:` on a one-per-key model are `INVALID_CONFIG` (a stored rollup isn't read one row per
-  key). `inspect` shows its `key_note`, and `semantic-rails project validate` lists it under "One
-  row per key".
+  key). Its relation is read under the name `<entity id>__one_per_key` (`shop_person__one_per_key`
+  for `entity.shop_person`); a table or relation the package names so, in any case, is
+  `INVALID_CONFIG`. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
+  under "One row per key".
 
 ### `bridge:` — link tables and junction tables
 

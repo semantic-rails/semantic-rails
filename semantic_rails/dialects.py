@@ -315,6 +315,13 @@ class SqlDialect:
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlBinary(left, "IS NOT DISTINCT FROM", right)
 
+    def single_value(self, expr: Any, *, boolean: bool = False) -> Any:
+        """A group's one value of ``expr``, NULL where its known values differ: a one-per-key
+        model's column. ``boolean`` marks a column a dimension declares true/false."""
+        names = self.boolean_bounds if boolean else ("MIN", "MAX")
+        least, most = (SqlCall(name, [expr]) for name in names)
+        return SqlCase([SqlCaseWhen(SqlBinary(least, "=", most), most)])
+
     @property
     def outer_lookup_joins(self) -> bool:
         """Whether a many-to-one lookup may be a LEFT JOIN, keeping rows it finds no match for.
@@ -577,7 +584,6 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
 
     name: str = "postgres"
     session_zone = True
-    boolean_bounds = ("BOOL_AND", "BOOL_OR")  # it has no MIN or MAX of a boolean
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"}
     # LOWER folds by its operand's collation, and a column's own collation can differ from a
     # literal's: both read as text (an enum or char column too) and fold under the ICU root
@@ -644,6 +650,12 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
         return self._value_by(expr, order_expr, "DESC")
+
+    def single_value(self, expr: Any, *, boolean: bool = False) -> Any:
+        # No MIN or MAX of a boolean, and a column only a measure reads has no declared type:
+        # every column's least and greatest known value is read by sorting.
+        least, most = self.first_value(expr, expr), self.last_value(expr, expr)
+        return SqlCase([SqlCaseWhen(SqlBinary(least, "=", most), most)])
 
     def _date_of(self, expr: Any) -> Any:
         return SqlCast(expr, "DATE")

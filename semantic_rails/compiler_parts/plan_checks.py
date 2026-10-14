@@ -725,6 +725,14 @@ _FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
 _LINK_GROUPED_AGGREGATIONS = frozenset({"sum", "count", "avg", "count_distinct"})
 
 
+def crosses_link(selection: PathSelection) -> bool:
+    """Whether the path walks a link to the rows of a one-per-key model's relation."""
+    return any(
+        row.get("link") and row.get("directional_safety") == "requires_rewrite"
+        for row in selection.analysis.get("relationships", []) or []
+    )
+
+
 def _link_hops(selection: PathSelection) -> list[dict[str, Any]] | None:
     """The one-to-many hops of the path when every one is a link, else None."""
     hops = [
