@@ -1450,10 +1450,10 @@ _CHECKED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _NEITHER_SHAPE = frozenset({"INVALID_V1_SHAPE", "UNKNOWN_KEY", "UNKNOWN_KIND"})
 
 
-def refusal(query: Any) -> SemanticLayerError | None:
+def refusal(query: Any, now: Any = None) -> SemanticLayerError | None:
     """The current reader's refusal of ``query`` as a call (its shape only), or None."""
     try:
-        read_call(query, now=_CHECKED_AT)
+        read_call(query, now=now or _CHECKED_AT)
     except SemanticLayerError as exc:
         return exc
     return None

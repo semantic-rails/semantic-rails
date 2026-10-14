@@ -91,7 +91,8 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
         entry = _at(files.documents[file], entry_path)
         # Each site the rewrite can't make, as (its path, why).
         stops = [((*path, *_site(flag["path"])), flag["detail"]) for flag in result.kept_flags]
-        if not stops and (error := refusal(result.query)) is not None:
+        now = result.call.get("now") or entry.get("now")
+        if not stops and (error := refusal(result.query, now)) is not None:
             where = str(error.details.get("path") or "")
             text, hint = refusal_text(str(error), error.details)
             detail = text.removeprefix(f"{where}: ") + (f" Hint: {hint}" if hint else "")

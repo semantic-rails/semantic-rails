@@ -19,12 +19,13 @@ from semantic_rails import embedding
 PACKAGE = Path(__file__).resolve().parents[2] / "semantic_rails"
 
 # Filter meaning lives in operators.py (the word table) and sql_ast.py (its SQL): string
-# literals spelling a filter operator, outside them.
+# literals spelling a filter operator, outside them. upgrade/v1_to_v2.py holds the previous
+# call shape's spellings, which stay as they were whatever the word table becomes.
 FILTER_OP_SPELLINGS = frozenset(
     {"!=", "<>", "IN", "NOT IN", "IS DISTINCT FROM", "IS NOT DISTINCT FROM", "LIKE", "NOT LIKE"}
     | {"ILIKE", "eq", "neq", "gt", "gte", "lt", "lte", "not_in", "nin"}
 )
-FILTER_OP_OWNERS = frozenset({"operators.py", "sql_ast.py"})
+FILTER_OP_OWNERS = frozenset({"operators.py", "sql_ast.py", "upgrade/v1_to_v2.py"})
 # Identity comes from credentials, parsed at ingress: request_context.py and the transports.
 INGRESS = frozenset(
     {"request_context.py", "request_payload.py", "api.py", "asgi.py", "http_core.py"}
