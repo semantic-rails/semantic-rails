@@ -117,11 +117,11 @@ def _package(root, policies=(REGION, SEGMENT)):
                      "allowed_as_root": False},
         },
         "relationships": {
-            "orders_store": {"id": "relationship.orders_store", "entities": ["order", "store"],
+            "orders_store": {"as": "relationship.orders_store", "entities": ["order", "store"],
                              **many_to_one},
-            "orders_customer": {"id": "relationship.orders_customer",
+            "orders_customer": {"as": "relationship.orders_customer",
                                 "entities": ["order", "customer"], **many_to_one},
-            "lines_order": {"id": "relationship.lines_order", "entities": ["line", "order"],
+            "lines_order": {"as": "relationship.lines_order", "entities": ["line", "order"],
                             **many_to_one},
         },
     }})  # fmt: skip
@@ -597,7 +597,7 @@ def home_stores(tmp_path):
     root = _package(tmp_path / "rj_home")
     graph = yaml.safe_load((root / "graph.yml").read_text())
     graph["graph"]["relationships"]["customers_home_store"] = {
-        "id": "relationship.customers_home_store",
+        "as": "relationship.customers_home_store",
         "entities": ["customer", "store"],
         "cardinality": "many_to_one",
     }
@@ -896,7 +896,7 @@ def two_spellings(tmp_path):
     graph = yaml.safe_load((root / "graph.yml").read_text())
     graph["graph"]["entities"]["store_main"] = {"key": ["store_id"], "model": "stores_main"}
     graph["graph"]["relationships"]["orders_store_main"] = {
-        "id": "relationship.orders_store_main",
+        "as": "relationship.orders_store_main",
         "entities": ["order", "store_main"],
         "cardinality": "many_to_one",
     }
