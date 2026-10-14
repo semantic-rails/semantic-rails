@@ -56,6 +56,14 @@ PREVIOUS = {
         "      - {expression: {measure: measure.shop.event_count}, as: row_count}\n"
         "      time: {temporal_role: temporal_role.shop_event_occurred_at, grain: day}\n"
         "    columns: [temporal_role.shop_event_occurred_at__day, row_count]\n"
+        "  daily_amounts:\n"
+        "    kind: query_matches_snapshot\n"
+        "    query:\n"
+        "      select: [{measure: measure.shop.total_amount}]\n"
+        "      time: {temporal_role: temporal_role.shop_event_occurred_at, grain: day}\n"
+        "    expected_rows:\n"
+        "    - {temporal_role.shop_event_occurred_at__day: '2024-01-01', total_amount: 3}\n"
+        "    - {temporal_role.shop_event_occurred_at__day: '2024-01-02', total_amount: 4}\n"
         "  # A refusal test keeps the call it expects to be refused.\n"
         "  overrides_are_refused:\n"
         "    kind: validate_fails_with_code\n"
@@ -99,7 +107,12 @@ CURRENT = {
     .replace(
         "    columns: [temporal_role.shop_event_occurred_at__day, row_count]\n",
         "    columns: [period, row_count]\n",
-    ),
+    )
+    .replace(
+        "      select: [{measure: measure.shop.total_amount}]\n",
+        "      select: [measure.shop.total_amount]\n",
+    )
+    .replace("{temporal_role.shop_event_occurred_at__day: ", "{period: "),
 }
 
 
@@ -127,6 +140,7 @@ def test_previous_call_examples_and_tests_are_rewritten(tmp_path, monkeypatch, c
         ("examples/core.yml", 5),
         ("examples/core.yml", 17),
         ("tests/core.yml", 4),
+        ("tests/core.yml", 11),
     ]
     assert "LIKE 'sign%' became starts_with, which ignores case" in hits[("examples/core.yml", 5)]
     assert _contents(project) == PREVIOUS
@@ -269,5 +283,6 @@ def test_current_calls_and_refusal_tests_are_not_touched(tmp_path):
     findings = plan(files, RULES, {}).findings
 
     assert [(f.rule, f.file, f.path[:2]) for f in findings] == [
-        ("query-call-v2", "tests/core.yml", ("tests", "count_by_day"))
+        ("query-call-v2", "tests/core.yml", ("tests", "count_by_day")),
+        ("query-call-v2", "tests/core.yml", ("tests", "daily_amounts")),
     ]

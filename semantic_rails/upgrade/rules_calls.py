@@ -118,7 +118,8 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
             if (outputs := _at(entry, keys)) is not None:
                 renamed, flags = translate(outputs, ".".join(keys))
                 stops += [((*entry_path, *_site(flag["path"])), flag["detail"]) for flag in flags]
-                edits += _edits(file, (*entry_path, *keys), outputs, renamed)
+                if renamed != outputs:  # one edit for the whole list: each edit reparses the file
+                    edits.append(Edit(file, "replace", (*entry_path, *keys), value=renamed))
         if stops:
             details: dict[YamlPath, list[str]] = {}
             for site, detail in stops:

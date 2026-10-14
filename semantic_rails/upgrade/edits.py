@@ -119,6 +119,14 @@ def _replace_block(text: str, parent: Node, target: Node, edit: Any) -> str | No
             " " * key.start_mark.column + line
             for line in _render({edit.path[-1]: edit.value}).splitlines()
         ]
+        if isinstance(edit.value, list) and len(edit.value) == len(getattr(target, "value", ())):
+            # Item for item, each keeps its style: a one-line flow row stays one line.
+            dash = " " * target.start_mark.column + "- "
+            lines = [text[start : text.index(":", key.end_mark.index) + 1]]
+            for node, value in zip(target.value, edit.value, strict=True):
+                block = isinstance(node, (MappingNode, SequenceNode)) and not node.flow_style
+                first, *rest = _render(value, flow=not block).splitlines()
+                lines += [dash + first, *(" " * len(dash) + line for line in rest)]
     else:  # an item of a block sequence, after its "- "
         start = target.start_mark.index
         first, *rest = _render(edit.value).splitlines()
