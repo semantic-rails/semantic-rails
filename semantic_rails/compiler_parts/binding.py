@@ -64,6 +64,7 @@ from ..sql_ast import (
 )
 from .bind import (
     _expression_alias,
+    refusing_fallible_calls,
 )
 from .dependencies import (
     binding_dependencies,
@@ -338,15 +339,31 @@ def _bind_with_row_filters(
     row_filters: Sequence[RowFilter],
 ) -> BoundQuery:
     decided = query_route_rows(config, payload, row_filters=row_filters)
+    # Enforcement reads the whole package; a refusal names only policies the caller sees (a
+    # hidden one by its kind), whichever statement it refuses.
+    shown = {row.id for row in config.semantic_policies}
+    shown_filters = [
+        row if row.policy_id in shown else replace(row, policy_id="row_filter")
+        for row in row_filters
+    ]
     try:
         # A rollup may not hold the filter column, so a row-filtered query reads its base relation.
         with (
             aggregate_routing(not row_filters),
+            refusing_fallible_calls(tuple(row.policy_id for row in shown_filters)),
             query_route_decisions(
                 {pair: row.relationship_path for pair, (_, row) in decided.items()}
             ),
         ):
             bound = _bind_query(config, registry, payload)
+    except SemanticLayerError as exc:
+        if row_filters and exc.code == "AMBIGUOUS_PATH":
+            # Offered only if every option answers under the caller's filters.
+            visibility = visibility_for(config, shown_filters)
+            for option in (exc.details.get("clarification") or {}).get("options") or []:
+                route = (exc.details["start"], exc.details["target"], option["relationship_path"])
+                hold_unowned_reads(config, visibility, roots=(), routes=[route])
+        raise
     except RecursionError as exc:
         raise SemanticLayerError(
             "INVALID_CONFIG", "Expression dependencies are cyclic or too deep."
@@ -371,13 +388,7 @@ def _bind_with_row_filters(
                     "refusal offered, with the same source_entity and target_entity.",
                 },
             )
-    # Enforcement reads the whole package; a refusal names only policies the caller sees (a
-    # hidden one by its kind), whichever statement it refuses.
-    shown = {row.id for row in bound.config.semantic_policies}
-    row_filters = [
-        row if row.policy_id in shown else replace(row, policy_id="row_filter")
-        for row in row_filters
-    ]
+    row_filters = shown_filters
     visibility = visibility_for(config, row_filters)
     sql_ast = apply_row_filters(bound.sql_ast, visibility)
     if row_filters:

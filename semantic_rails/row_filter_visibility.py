@@ -299,3 +299,25 @@ def hold_unowned_reads(
                     relationship_path=list(route),
                 )
             current = far
+
+
+def withheld_value_dimensions(
+    config: PackageConfig, *, environment: str, audience: str, roles: Iterable[str]
+) -> frozenset[str]:
+    """The dimensions of every model a row filter in this caller's scope restricts: their
+    declared value domains are withheld, so a value list comes from the caller's own rows."""
+    from .policy_rules import policy_matches
+    from .row_filters import is_row_filter, row_filter
+
+    base = base_of(config)
+    models: set[str] = set()
+    for policy in base.semantic_policies:
+        if not is_row_filter(policy):
+            continue
+        row = row_filter(base, policy)
+        if policy_matches(
+            policy, object_id="", environment=environment, audience=audience, roles=roles
+        ) and not row.exempts(roles):
+            reach = coverage(base, row.entity)
+            models.update(reach.filtered, reach.covered, reach.unsupported)
+    return frozenset(row.id for row in base.dimensions if row.entity in models)

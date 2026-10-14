@@ -1061,7 +1061,7 @@ class Runtime:
 
     def _view(self) -> visible_view.ViewEntry:
         pinned = visible_view.pinned_view(self)
-        return pinned.entry if pinned is not None else self._views[frozenset()]
+        return pinned.entry if pinned is not None else self._views[frozenset(), frozenset()]
 
     def _replace_base(self, config: Any) -> None:
         """Serve ``config`` as the whole package (``package_config``); every view of the
@@ -1069,8 +1069,9 @@ class Runtime:
         with self._cache_lock:
             self.package_config = config
             self._generation += 1
-            self._views: dict[frozenset[str], visible_view.ViewEntry] = {
-                frozenset(): visible_view.ViewEntry(config, Registry(config))
+            # Keyed by the caller's hidden objects and withheld value domains.
+            self._views: dict[tuple[frozenset[str], frozenset[str]], visible_view.ViewEntry] = {
+                (frozenset(), frozenset()): visible_view.ViewEntry(config, Registry(config))
             }
 
     def view_for(self, context: Any) -> Any:

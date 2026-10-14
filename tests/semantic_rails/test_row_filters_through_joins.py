@@ -21,6 +21,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config_validation import parse_config_report, resolve_package_reference
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.renderer import render_with_slots
 from semantic_rails.row_filter_visibility import visibility_for
@@ -131,12 +132,13 @@ def _package(root, policies=(REGION, SEGMENT)):
     }})  # fmt: skip
     _put(root, "models/stores.yml", {"model": {
         "id": "stores", "relation": "store_dim", "entities": {"store": {}},
-        "dimensions": {"store_name": {"kind": "categorical"}, "region": {"kind": "categorical"}},
+        "dimensions": {"store_name": {"kind": "categorical", "domain": ["Elm", "Oak", "Pine"]},
+                       "region": {"kind": "categorical"}},
         "measures": {"sqft": {"kind": "aggregate", "expr": "sqft", "rollup": "additive"}},
     }})  # fmt: skip
     _put(root, "models/customers.yml", {"model": {
         "id": "customers", "relation": "customer_dim", "entities": {"customer": {}},
-        "dimensions": {"segment": {"kind": "categorical"}},
+        "dimensions": {"segment": {"kind": "categorical", "domain": ["Pro", "Retail"]}},
         "measures": {"customer_count": {"kind": "entity_count", "entity_key": "customer_id",
                                         "rollup": "additive"}},
     }})  # fmt: skip
@@ -490,3 +492,117 @@ def test_compile_query_reports_slots_from_the_render(package):
     prepared = compiled["prepared_query"]
     assert prepared.sql.count("?") == len(prepared.parameters) > 2
     assert {slot.attribute for slot in prepared.parameters} == {"region", "segment"}
+
+
+def _order_column(column):
+    return {"kind": "column", "entity": "entity.rj_order", "column": column}
+
+
+def _literal(value):
+    return {"kind": "literal", "value": value}
+
+
+@pytest.mark.parametrize(
+    ("call", "refused"),
+    [
+        ({"kind": "call", "name": "CAST", "args": [_order_column("order_id"), _literal("INTEGER")]},
+         True),
+        ({"kind": "call", "name": "LN", "args": [_order_column("amount")]}, True),
+        ({"kind": "call", "name": "CAST", "args": [_order_column("amount"), _literal("VARCHAR")]},
+         False),
+        ({"kind": "call", "name": "COALESCE", "args": [_order_column("order_id"), _literal("x")]},
+         False),
+    ],
+    ids=["cast_to_integer", "ln", "cast_to_text", "coalesce"],
+)  # fmt: skip
+def test_a_row_level_call_that_can_fail_on_a_value_is_refused(runtime, call, refused):
+    """A hidden order whose id isn't a number would make CAST(order_id AS INTEGER) fail,
+    telling a caller something about a row they can't see: refused under a filter, whoever
+    wrote it."""
+    condition = {"kind": "comparison", "op": "IS NOT", "left": call, "right": _literal(None)}
+    aggregate = {"kind": "aggregate_if", "aggregation": "sum", "condition": condition,
+                 "value": _order_column("amount")}  # fmt: skip
+    query = _query({"n": aggregate})
+    if refused:
+        reason = _denied(lambda: runtime.compile(query, context=WEST))
+        assert reason == "row_filter_fallible_expression"
+        assert runtime.compile(query, context=EVERYONE)["ok"] is True
+    else:
+        assert runtime.compile(query, context=WEST)["ok"] is True
+
+
+def test_a_restricted_models_declared_values_are_read_live_under_the_filter(runtime):
+    """The store picker lists only the caller's stores, read live under their filter, even
+    though the author typed every store; a model no filter reaches keeps its declared list."""
+    adapter = SemanticLayerMCPAdapter(runtime)
+
+    def values(context, dimension, live=True):
+        arguments = {"dimension_id": dimension, "allow_live_query": live}
+        if live:
+            arguments["query"] = {"select": [{"expression": REVENUE, "as": "revenue"}]}
+        result = adapter.call_tool("valid-values", arguments, request_context=context)
+        return sorted(str(row["value"]) for row in result.get("values") or [])
+
+    # Without a live read, the declared list is withheld from the filtered caller.
+    assert values(EVERYONE, "dimension.rj_store_store_name", live=False) == ["Elm", "Oak", "Pine"]
+    assert values(WEST, "dimension.rj_store_store_name", live=False) == []
+    assert values(WEST, "dimension.rj_customer_segment", live=False) == ["Pro", "Retail"]
+
+    assert values(EVERYONE, "dimension.rj_store_store_name") == ["Elm", "Oak", "Pine"]
+    assert values(WEST, "dimension.rj_store_store_name") == ["Elm", "Oak"]
+    assert values(WEST, "dimension.rj_customer_segment") == ["Pro", "Retail"]
+    card = adapter.call_tool(
+        "inspect", {"object_id": "dimension.rj_store_store_name", "verbosity": "full"},
+        request_context=WEST,
+    )  # fmt: skip
+    assert "Pine" not in str(card)
+
+
+@pytest.fixture
+def home_stores(tmp_path):
+    """Customers have a home store too (c1 Pine, c2 Elm, c3 Pine), so the region filter
+    reaches customers through their home store, which isn't how an order is owned."""
+    root = _package(tmp_path / "rj")
+    graph = yaml.safe_load((root / "graph.yml").read_text())
+    graph["graph"]["relationships"]["customers_home_store"] = {
+        "id": "relationship.customers_home_store",
+        "entities": ["customer", "store"],
+        "cardinality": "many_to_one",
+    }
+    _put(root, "graph.yml", graph)
+    model = yaml.safe_load((root / "models/customers.yml").read_text())
+    model["model"]["entities"]["store"] = {}
+    _put(root, "models/customers.yml", model)
+    with duckdb.connect(str(root / "rj.duckdb")) as connection:
+        connection.execute(SEED)
+        connection.execute("ALTER TABLE customer_dim ADD COLUMN store_id VARCHAR")
+        connection.execute(
+            "UPDATE customer_dim SET store_id = CASE customer_id WHEN 'c2' THEN 's1' ELSE 's3' END"
+        )
+    return Runtime.from_path(str(root))
+
+
+def test_a_lookup_that_is_not_the_owners_route_is_held(home_stores, monkeypatch):
+    by_segment = _query({"revenue": REVENUE}, ["dimension.rj_customer_segment"])
+    assert _denied(lambda: home_stores.query(by_segment, context=WEST)) == (
+        "row_filter_route_not_owned"
+    )
+    # Held for what it would disclose, not for safety: without the hold, the visible orders
+    # of customers homed in a hidden store land in the unknown group.
+    from semantic_rails.compiler_parts import binding
+
+    monkeypatch.setattr(binding, "hold_unowned_reads", lambda *a, **k: None)
+    assert sorted(_rows(home_stores.query(by_segment, context=WEST)), key=str) == [
+        ("Pro", 20),
+        (None, 40),
+    ]
+
+
+def test_an_ambiguous_route_is_offered_only_if_every_option_answers(home_stores):
+    by_store = _query({"qty": QTY}, ["dimension.rj_store_store_name"])
+    with pytest.raises(SemanticLayerError) as asked:
+        home_stores.compile(by_store, context=EVERYONE)
+    assert asked.value.code == "AMBIGUOUS_PATH"
+    with pytest.raises(SemanticLayerError) as held:
+        home_stores.compile(by_store, context=WEST)
+    assert held.value.code == "POLICY_DENIED" and "clarification" not in held.value.details
