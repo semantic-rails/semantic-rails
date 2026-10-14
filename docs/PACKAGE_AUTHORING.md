@@ -788,14 +788,15 @@ kind names must match exactly.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.
-<<<<<<< HEAD
 - **`row_filter`** — limits the rows a caller can see to one customer, region or other
   principal, by comparing a `dimension` with a trusted request `attribute` that the
   embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The compiler compares
   `<column> = ?` and the runtime binds the attribute's value as a parameter; values never
   enter SQL text. A list value (strings or integers, for example a manager's regions)
   compares `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the
-  rows of any of them. The dimension must be a plain `string`, `integer` or `boolean`
+  rows of any of them; a statement over the warehouse's documented limit (Postgres: 65,535
+  parameters in one statement; Snowflake: 200,000 values in one list) is refused before it
+  runs. The dimension must be a plain `string`, `integer` or `boolean`
   column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value. The
   policy takes no `object_ids`, `action` or operator. A request it applies to is denied
   (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
@@ -844,43 +845,25 @@ kind names must match exactly.
     (`row_filter_fallible_expression`), whoever wrote it, since an error on a hidden row
     would tell something about it. Rollups are not routed to; the query reads its base
     relations. The zero-row data-coverage probe is skipped.
-  - A filtered or covered model's declared value `domain:` is withheld from callers the
-    filter applies to: a value list (valid values, the inspect card, search) is read live,
-    from the caller's own rows, so a West manager's store picker lists only West stores.
+  - A filtered or covered model's declared value `domain:` is withheld from every caller in
+    the filter's scope, including those its `unless_roles` exempts: a value list (valid
+    values, the inspect card, search) is read live, from the caller's own rows, so a West
+    manager's store picker lists only West stores, and an exempt caller's lists every store.
 
   Every statement a filtered request runs is checked before it runs: each read of a
   filtered or covered relation must carry its visibility condition, and anything the check
   can't prove is refused, never run unfiltered. Such a policy loads for any warehouse, but
-  only DuckDB and Postgres execute these statements today; every other adapter refuses
-  them, and Snowflake also refuses an optional (`LEFT`) lookup into a covered model until
-  its tests prove the subquery that condition needs. Postgres finalizes the placeholders as
-  `$1`, `$2`, … before execution and binds trusted values through ADBC.
-=======
-- **`row_filter`** — limits a relation's rows to one customer (or other
-  principal) by comparing a `dimension` with a trusted request `attribute`
-  that the embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The
-  compiler adds `<column> = ?` to the relation's scan and the runtime binds the
-  attribute's value as a parameter; values never enter SQL text. A list value
-  (strings or integers, for example a manager's regions) adds
-  `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the rows
-  of any of them; a statement over the warehouse's documented limit (Postgres: 65,535
-  parameters in one statement; Snowflake: 200,000 values in one list) is refused before
-  it runs. The
-  dimension must be a plain `string`, `integer` or `boolean`
-  column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value.
-  The policy takes no `object_ids`, `action` or operator. A request it applies to is
-  denied (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty
-  list (a grant of nothing), and so is any query outside the qualified family: the
-  compiled statement must read one ordinary scan of the filtered relation, as its only
-  relation. Engine-generated
-  observation and coverage scans may repeat that relation; each receives the same policy
-  filter. Joins, entity filters, calendar spines (prior-period comparisons, fill) and
-  other second scans are refused, and rollups are not routed to. The zero-row
-  data-coverage probe is skipped. Such a policy loads for any warehouse, but only
-  DuckDB and Postgres execute these statements today; every other adapter
-  refuses them. Postgres finalizes the placeholders as `$1`, `$2`, … before
-  execution and binds trusted values through ADBC.
->>>>>>> oss/row-filter-value-lists
+  only DuckDB, Postgres and Snowflake (through ADBC) execute these statements today; every
+  other adapter refuses them. Known limitation in this release: on Snowflake, an optional
+  (`LEFT`) lookup into a model a filter covers (refunds by their order's region, order lines
+  by store) is refused, until its tests prove the subquery that condition needs there.
+  Postgres finalizes the placeholders as `$1`, `$2`, … before execution and binds trusted
+  values through ADBC.
+
+  Known limitation: the SQL a row-filtered caller can see (`mode: sql`, `rendered_sql`)
+  shows the names of the filter's tables and columns, and of the tables it reaches, never
+  their values. A host that hides those from a caller should not grant that caller SQL
+  output.
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host

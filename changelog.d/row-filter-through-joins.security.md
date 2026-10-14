@@ -12,3 +12,7 @@
   refused under a filter. Declared value domains of filtered and covered models are read
   live under the filter, and `validate` lists each filter's covered, held and refused
   models. See [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
+  Known limitations in this release: SQL output for a row-filtered caller can show the
+  names of filter tables and columns, never values, so hosts that hide them should not grant
+  SQL output to filtered callers; and on Snowflake, optional (`LEFT`) lookups into tables a
+  filter covers are refused.
