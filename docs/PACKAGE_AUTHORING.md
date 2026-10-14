@@ -1166,6 +1166,15 @@ whose own name names it ("Store name" for "store"), if exactly one does; otherwi
 alone, with an assumption line saying so. A caller who can't see the display dimension gets
 the same answer as a package without `display:`; the entity itself stays visible.
 
+A text `display:` dimension also makes the entity's rows findable by name. When a question
+names a row with capitalized or quoted words that match nothing in the catalog ("How many
+orders did Acme place last month?", "What's Globex's MRR?"), `plan` looks the words up in the
+display of each entity the question's measure reaches, under the caller's row filters. One
+row whose display holds the words, as whole words in any case ("Acme" finds "Acme Data Co",
+not "Acmeco"), is answered: the draft filters on that row's key and groups by its display, so
+the answer names it. Several rows ask which one; none leaves the question held. Declare a
+`domain:` instead for a short fixed list of values, which needs no lookup.
+
 A call that groups by the `display` dimension itself groups by the entity's one-column key
 too, just before the name, so two customers named Ann stay two rows; the answer carries the
 key column and the assumption `GROUPED_BY_KEY {dimension, key, message}`. When the caller can't

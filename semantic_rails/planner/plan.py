@@ -29,7 +29,7 @@ from typing import Any
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import _governed_target, _resolved
+from ._base import QUOTED, _governed_target, _resolved
 from .answer_shape import _answer_shape_why, _listed_entity_terms
 from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
@@ -58,6 +58,7 @@ from .intent_holds import (
     _with_time_gap,
 )
 from .intent_ir import compose_hints, parse_intent
+from .names import name_filters, name_readings, with_name_lookups
 from .orchestrator import compose
 from .plan_query import (
     _merge_partial_query,
@@ -72,7 +73,7 @@ from .plan_trace import (
     _select_best_plan,
     _slim_best,
 )
-from .question_parts import MAX_PARTS, QUOTED, QuestionSplit, split_question
+from .question_parts import MAX_PARTS, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
 from .unasked_groupings import _unasked_grouping_why
@@ -117,6 +118,7 @@ def _normalize_question(text: str, declared: Iterable[str] = ()) -> str:
 @runtime_request_scope
 @with_dimension_visibility
 @with_time_reference
+@with_name_lookups
 def plan_payload(
     runtime: Any,
     *,
@@ -381,6 +383,7 @@ def _question_payload(
                 break
 
     best = _select_best_plan(planned, intent_ir=intent_ir)
+    best = _with_named_rows(runtime, intent_str, best, planned, blocked, partial_query, intent_ir)
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
@@ -596,6 +599,7 @@ def _question_payload(
         assumptions += _key_only_assumptions(
             runtime._config, intent_str, best_draft.query, partial_query
         )
+        assumptions += name_readings(intent_str, best_draft.query)
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:
@@ -901,6 +905,45 @@ def _governed_draft(config: Any, question: str, draft: Any, partial_query: Call 
         resolved=[_resolved(metric) if row.get("id") in drafted else row for row in draft.resolved],
         interpreted_intent=intent,
     )
+
+
+def _with_named_rows(
+    runtime: Any,
+    question: str,
+    best: dict[str, Any],
+    planned: list[dict[str, Any]],
+    blocked: list[dict[str, Any]],
+    partial_query: Call | None,
+    intent_ir: Any,
+) -> dict[str, Any]:
+    """The best draft reading the one row each name in the question gives (``name_filters``).
+
+    Only the words the draft would be held on as unknown (``_dropped_value_why``) are looked up,
+    and only when the caller's ``partial_query`` sets no filter or grouping. Several rows ask
+    which; a draft the filter makes invalid stays as it was, for readiness to hold.
+    """
+
+    if not best["validation"].get("ok") or (
+        partial_query is not None and (partial_query.where or partial_query.group_by)
+    ):
+        return best
+    draft = best["draft"]
+    unknown = unconsumed_unknown_words(runtime, question, draft.query)
+    held = _dropped_value_why(question, unknown, set(intent_ir.unresolved))
+    if held is None:
+        return best
+    query, ask = name_filters(runtime, question, draft.query, held["details"]["terms"])
+    if ask is not None:
+        row = _blocked_row(draft, best["pattern"], ask, blocked, clarify=True)
+    elif query is draft.query:
+        return best
+    else:
+        validation = _validate_query(runtime, query)
+        if not validation["ok"]:
+            return best
+        row = {**best, "draft": replace(draft, query=query), "validation": validation}
+    planned[next(index for index, item in enumerate(planned) if item is best)] = row
+    return row
 
 
 def _blocked_row(
