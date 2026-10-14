@@ -337,6 +337,115 @@ def test_a_retired_spelling_is_hinted_with_the_callers_values(
         assert runtime.validate(fixed, now=NOW)["ok"] is True
 
 
+TOP_REVENUE = {
+    "expression": {"kind": "measure", "measure": REVENUE, "aggregation": "max"},
+    "as": "top",
+}
+
+
+@pytest.mark.parametrize(
+    ("select", "field", "column"),
+    [
+        ([ORDERS, REVENUE], REVENUE, "revenue_usd"),
+        ([ORDERS, {"expression": REVENUE, "as": "revenue"}], REVENUE, "revenue"),
+        ([ORDERS, TOP_REVENUE], REVENUE, "top"),
+        ([ORDERS, AOV], AOV, "aov_usd"),
+    ],
+    ids=["measure", "named-measure", "statistic-override", "metric"],
+)  # fmt: skip
+def test_order_by_a_selected_id_orders_by_its_column(
+    runtime: Runtime, select: list[Any], field: str, column: str
+) -> None:
+    call = {"select": select, "group_by": [STORE], "limit": 1}
+    by_id = {**call, "order_by": [{"field": field, "direction": "desc"}]}
+    by_column = {**call, "order_by": [{"field": column, "direction": "desc"}]}
+    assert runtime.engine_payload(by_id, now=NOW)["order_by"] == [{"field": column, "direction": "DESC"}]  # fmt: skip
+    assert runtime.query(by_id, now=NOW)["rows"] == runtime.query(by_column, now=NOW)["rows"]
+
+
+def test_order_by_an_id_selected_twice_names_its_columns(runtime: Runtime) -> None:
+    call = {"select": [REVENUE, TOP_REVENUE], "group_by": [STORE], "order_by": [{"field": REVENUE}]}
+    error = _error(runtime, call)
+    assert (error["code"], error["details"]["path"]) == ("INVALID_ORDER_BY", "order_by[0].field")
+    assert error["details"]["closest_matches"] == ["revenue_usd", "top"]
+    assert all(column in _hint(error) for column in ("revenue_usd", "top"))
+    for column in error["details"]["closest_matches"]:
+        assert runtime.validate({**call, "order_by": [{"field": column}]}, now=NOW)["ok"] is True
+    # An id no select item reads is refused as before, with the columns the call can name.
+    unselected = _error(runtime, {**call, "order_by": [{"field": ORDERS}]})
+    assert unselected["details"]["available_select_aliases"] == ["revenue_usd", "top"]
+
+
+STORE_IDS = [
+    "dimension.jaffle_order_lifecycle_store_id",
+    "dimension.jaffle_order_store_id",
+    "dimension.jaffle_store_id",
+    "dimension.jaffle_store_inventory_snapshot_store_id",
+    "dimension.jaffle_storefront_session_store_id",
+]
+
+
+@pytest.mark.parametrize(
+    ("column", "dimensions"),
+    [
+        ({"column": "store_name"}, [STORE]),
+        ({"column": "store_id"}, STORE_IDS),
+        ({"column": "store_id", "entity": "entity.jaffle_order"}, ["dimension.jaffle_order_store_id"]),
+        ({"column": "store_id", "table": "jaffle_order"}, ["dimension.jaffle_order_store_id"]),
+        ({"column": "store_name", "entity": "entity.jaffle_order"}, [STORE]),
+        ({"column": "no_such_column"}, None),
+    ],
+    ids=["column", "column-on-many-entities", "entity", "table", "column-on-another-entity", "unknown-column"],
+)  # fmt: skip
+def test_a_raw_column_names_the_query_kinds_and_its_dimensions(
+    runtime: Runtime, column: dict[str, str], dimensions: list[str] | None
+) -> None:
+    error = _error(runtime, {"select": [{"expression": {"kind": "column", **column}, "as": "x"}]})
+    assert (error["code"], error["message"]) == ("INVALID_QUERY", "Unsupported query expression kind 'column'")  # fmt: skip
+    assert error["details"].get("closest_matches") == dimensions
+    kinds = error["details"]["supported_kinds"]
+    assert "column" not in kinds and {"measure", "ratio", "aggregate", "share"} <= set(kinds)
+    hint = _hint(error)
+    assert all(f"'{kind}'" in hint for kind in kinds) and "group_by" in hint
+    for dimension in dimensions or []:
+        assert (
+            runtime.validate({"select": [ORDERS], "group_by": [dimension]}, now=NOW)["ok"] is True
+        )
+
+
+ORDER = "entity.jaffle_order"
+CUSTOMER = "entity.jaffle_customer"
+
+
+@pytest.mark.parametrize(
+    ("route", "relationships"),
+    [
+        ({"from": ORDER, "to": CUSTOMER, "via": ["customer_id"]}, ["relationship.orders_customer"]),
+        (
+            {"from": "entity.jaffle_item", "to": CUSTOMER, "via": [ORDER, CUSTOMER]},
+            [
+                "relationship.customer_history_customer",
+                "relationship.order_items_order",
+                "relationship.order_items_product",
+                "relationship.order_lifecycle_customer",
+                "relationship.orders_customer",
+                "relationship.storefront_sessions_customer",
+            ],
+        ),
+    ],
+    ids=["column-joining-the-pair", "entity-ids-no-direct-join"],
+)  # fmt: skip
+def test_a_route_via_that_names_no_relationship_lists_the_relationships_at_its_pair(
+    runtime: Runtime, route: dict[str, Any], relationships: list[str]
+) -> None:
+    call = {"select": [ORDERS], "group_by": ["dimension.jaffle_customer_name"], "routes": [route]}
+    error = _error(runtime, call)
+    assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", "routes[0]")
+    assert error["details"]["reason"] == "invalid_route_decision"
+    assert error["details"]["closest_matches"] == relationships
+    assert "relationship ids" in _hint(error)
+
+
 # The modules that write refusal messages, hints and answer disclosures, and the call words
 # that left the call. A word is matched in prose (a string literal with a space; docstrings are
 # not emitted); ALLOWED lists the phrases where one means something else.
