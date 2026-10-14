@@ -97,6 +97,10 @@ _KIND_PLURALS = {
 }
 
 
+# Every spelling accepted by ranked discovery or the empty-terms catalog listing.
+DISCOVER_KIND_NAMES = frozenset(_KIND_PLURALS) | frozenset(_KIND_PLURALS.values())
+
+
 def singular_kinds(kinds: Sequence[str] | None) -> list[str]:
     """``kinds`` with each plural read as its singular, in order."""
     return [_KIND_PLURALS.get(kind, kind) for kind in kinds or []]

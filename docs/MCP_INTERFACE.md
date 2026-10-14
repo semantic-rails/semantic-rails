@@ -215,7 +215,9 @@ and blocked metadata are retained with `verbosity="full"`, subject to the respon
 question uses an object's whole name ("revenue by store"), that object ranks
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 `kinds` takes an array or a comma-separated string, and also a JSON array sent as a string; its
-schema lists the ranked kinds, and a plural (`measures`, `relationships`) means its singular.
+schema accepts both forms and lists singular and plural ranked and catalog kinds
+(including `temporal_role` and `value_domain` for empty terms). A plural (`measures`,
+`relationships`) means its singular; the handler checks which kinds the call can produce.
 Relationships are ranked only when `kinds` names `relationship` (the response then has a
 `relationships` bucket): each card keeps `source_entity`, `target_entity`, `cardinality`,
 `allowed_directions`, `source_columns` and `target_columns` at every verbosity, and a search

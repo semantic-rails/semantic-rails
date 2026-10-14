@@ -23,7 +23,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import discover_payload
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.request_context import context_from_policy_context
-from semantic_rails.request_payload import parse_string_list
+from semantic_rails.request_payload import DISCOVER_RANKED_KINDS, parse_string_list
 from semantic_rails.resource_access import GRANT_DISCOVER_KINDS
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
