@@ -143,7 +143,7 @@ def _with_calendar(config, *, key=None, keep_date_day=True):
     """The package with its calendar re-keyed or without its date_day dimension."""
     calendar = next(row for row in config.entities if row.id == "entity.jaffle_time")
     entities = [
-        dataclasses.replace(row, key=key) if row is calendar and key else row
+        dataclasses.replace(row, key_columns=key) if row is calendar and key else row
         for row in config.entities
     ]
     dimensions = [
