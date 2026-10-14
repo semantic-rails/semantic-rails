@@ -468,7 +468,72 @@ def test_a_balance_coverage_read_that_cannot_be_filtered_refuses_the_request(
         dense_by_building.query(MONTHLY_DENSE, context=_building("C"))
     assert caught.value.code == "POLICY_DENIED"
     assert caught.value.details["reason"] == "row_filter_unsupported_query"
+    assert caught.value.details["policy_ids"] == ["policy.inv.one_building"]
     assert dense_by_building.query(MONTHLY_DENSE)["window"]["data_through"] == "2020-12-01"
+
+
+HIDDEN_REGION_RULE = f"""{ONE_DENSE_BUILDING}  - id: policy.inv.secret_region_rule
+    kind: row_filter
+    dimension: dimension.inv_inv_dense_region
+    attribute: region
+    type: string
+    audiences: [tenant]
+  - id: policy.inv.hide_region
+    kind: object_visibility
+    action: hidden
+    object_ids: [dimension.inv_inv_dense_region]
+    audiences: [tenant]
+"""
+PIPELINE_BALANCE = """model:
+  id: dense_pipe
+  relation: dense_pipe
+  entities: {dense_pipe: {}}
+  times:
+    snap_date: {column: snap_date, kind: date, class: event_time, default: true}
+  measures:
+    pipe_area: {kind: aggregate, expr: area, value_type: number,
+      accumulation: {kind: stock, snapshot: end_of_period}}
+"""
+
+
+def test_a_refusal_names_no_row_filter_hidden_from_the_caller(tmp_path: Path) -> None:
+    """A balance read through a pipeline over a filtered relation can't have its coverage
+    filtered, so it is refused; the refusal names the caller's own filter and only the kind
+    of one hidden from them."""
+    root = _write_package(tmp_path / "inv", HIDDEN_REGION_RULE)
+    (root / "relations.yml").write_text(
+        "relations:\n  dense_pipe:\n    columns: [building, snap_date, area]\n"
+        "    steps:\n      - source: inv_dense\n"
+    )
+    (root / "models" / "dense_pipe.yml").write_text(PIPELINE_BALANCE)
+    (root / "models" / "inv_dense.yml").write_text(
+        _snapshot_model("inv_dense").replace(
+            "{building:", "{region: {kind: categorical}, building:"
+        )
+    )
+    with (root / "graph.yml").open("a") as graph:
+        graph.write("    dense_pipe: {key: [building, snap_date], model: dense_pipe}\n")
+    with duckdb.connect(str(root / "data" / "inv.duckdb")) as con:
+        con.execute("ALTER TABLE inv_dense ADD COLUMN region VARCHAR DEFAULT 'north'")
+    runtime = Runtime.from_path(str(root))
+    call = {
+        "select": [{"expression": {"kind": "measure", "measure": "measure.inv.pipe_area"}, "as": "v"}],
+        "time": {"temporal_role": "temporal_role.inv_dense_pipe_snap_date", "grain": "month", **YEAR},
+    }  # fmt: skip
+    context = RequestContext(
+        actor="u", audience="tenant", attributes={"building": "C", "region": "north"}
+    )
+    try:
+        # Untimed, the balance reads no coverage: the pipeline's own scan is filtered.
+        untimed = runtime.query({"select": call["select"]}, context=context)
+        assert _values(untimed) == [50.0]
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(call, context=context)
+    finally:
+        runtime.close()
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
+    assert "region" not in f"{caught.value} {caught.value.details}"
 
 
 def test_a_probe_that_fails_still_discloses_the_rule() -> None:

@@ -374,6 +374,13 @@ def _bind_with_row_filters(
         for row in config.measures
         if row.zero_through is not None and row.zero_through.kind == "loaded"
     }
+    # Enforcement reads the whole package; a refusal names only policies the caller sees (a
+    # hidden one by its kind), whichever statement it refuses.
+    shown = {row.id for row in bound.config.semantic_policies}
+    row_filters = [
+        row if row.policy_id in shown else replace(row, policy_id="row_filter")
+        for row in row_filters
+    ]
     sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters, load_logs=load_logs)
 
     def filtered(statement: Any) -> SqlSelect:
@@ -388,14 +395,12 @@ def _bind_with_row_filters(
         replace(cte, query=filtered(cte.query)) for cte in bound.balance_coverage
     )
     if row_filters:
-        # Enforcement reads the whole package; a refusal names only policies the caller sees.
-        shown = {row.id for row in bound.config.semantic_policies}
         _validate_restrictive_time_semantics(
             normalize_query(bound.plan.query, config=bound.config),
             base_of(bound.config),
             # Original slots identify applied policies; missing slots keep the guard conservative.
             row_filters=[
-                row if row.policy_id in shown else replace(row, policy_id="row_filter")
+                row
                 for row in row_filters
                 if not parameters or any(slot is row.slot for slot in parameters)
             ],
