@@ -394,6 +394,14 @@ class SqlExists:
 
 
 @dataclass(frozen=True)
+class SqlInQuery:
+    """``expr IN (SELECT …)``: an uncorrelated subquery returning one column."""
+
+    expr: SqlExpr
+    query: SqlSelect
+
+
+@dataclass(frozen=True)
 class SqlIsNull:
     expr: SqlExpr
 
@@ -522,6 +530,7 @@ SqlExpr = (
     | SqlDatePart
     | SqlInterval
     | SqlExists
+    | SqlInQuery
     | SqlIsNull
     | SqlCase
     | SqlCast

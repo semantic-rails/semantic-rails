@@ -9,6 +9,7 @@ module owns layout, indentation, identifier quoting, and CTE ordering.
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -30,6 +31,7 @@ from .sql_ast import (
     SqlIdentifier,
     SqlIn,
     SqlIndexAccess,
+    SqlInQuery,
     SqlInterval,
     SqlIsNull,
     SqlJsonExtract,
@@ -60,6 +62,7 @@ from .sql_identifiers import quote_identifier
 
 if TYPE_CHECKING:
     from .dialects import SqlDialect
+    from .sql_preparation import ParameterSlot
 
 # Which dialect's literal-quoting rules apply to the tree currently being
 # rendered. String-literal quoting is not portable:
@@ -149,6 +152,10 @@ def _quote_ident(value: str) -> str:
 # defined and wherever it is referenced (unqualified, or through a derived relation), so a
 # keyword such as end, user or order is a name on every warehouse; a physical column keeps
 # the selective quoting above, since Snowflake folds an unquoted name to upper case.
+# One render's parameter marker and the slot of each parameter it emits (``render_with_slots``).
+_EMITTED_SLOTS: ContextVar[tuple[str, list[ParameterSlot]] | None] = ContextVar(
+    "emitted_slots", default=None
+)
 _OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", default=frozenset())
 _DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
 
@@ -231,7 +238,12 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             names[-1] = quote_identifier(column)
         return ".".join(names)
     if isinstance(expr, SqlParameter):
-        return "?"
+        emitting = _EMITTED_SLOTS.get()
+        if emitting is None:
+            return "?"
+        nonce, emitted = emitting
+        emitted.append(expr.slot)
+        return f"{nonce}{len(emitted) - 1}{nonce}"
     if isinstance(expr, SqlLiteral):
         if expr.value is None:
             return "NULL"
@@ -300,6 +312,10 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlExists):
         prefix = "NOT EXISTS" if expr.negated else "EXISTS"
         return f"{prefix} (\n{render_select(expr.query, flatten_ctes=False)}\n)"
+    if isinstance(expr, SqlInQuery):
+        return (
+            f"({render_expr(expr.expr)} IN (\n{render_select(expr.query, flatten_ctes=False)}\n))"
+        )
     if isinstance(expr, SqlIsNull):
         return f"({render_expr(expr.expr)} IS NULL)"
     if isinstance(expr, SqlCase):
@@ -498,3 +514,22 @@ def render_select_for_profile(
         if normalized == "compact":
             return re.sub(r"\s+", " ", rendered).strip()
         return rendered
+
+
+def render_with_slots(
+    query: SqlSelect, profile: str | None = None, *, dialect: SqlDialect | None = None
+) -> tuple[str, tuple[ParameterSlot, ...]]:
+    """``render_select_for_profile``, with the slot of each ``?`` in the order the text holds
+    them, which is the order a driver binds them, whatever the profile hoists or nests: each
+    parameter renders as a marker unique to this call, read back in text order."""
+    nonce = f"__slot_{secrets.token_hex(8)}__"
+    emitted: list[ParameterSlot] = []
+    token = _EMITTED_SLOTS.set((nonce, emitted))
+    try:
+        sql = render_select_for_profile(query, profile, dialect=dialect)
+    finally:
+        _EMITTED_SLOTS.reset(token)
+    order = [int(index) for index in re.findall(f"{nonce}([0-9]+){nonce}", sql)]
+    if sorted(order) != list(range(len(emitted))):
+        raise ValueError("A rendered parameter marker was lost or repeated.")
+    return re.sub(f"{nonce}[0-9]+{nonce}", "?", sql), tuple(emitted[index] for index in order)

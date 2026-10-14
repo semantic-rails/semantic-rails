@@ -75,7 +75,6 @@ from .compiler_parts.empty_groups import (
     CoverageClock,
     observation_scope,
     observed_outside_filters,
-    sql_nodes,
 )
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -538,24 +537,21 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
 
 
 def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
-    """The first row of ``probe``, a select whose parameters are all in its CTEs, run as the
-    answer's own SQL is: bound row filters and request limits kept."""
+    """The first row of ``probe``, run as the answer's own SQL is: held to its row filters
+    again (after its relation CTEs are attached), its slots read from its render, and the
+    request's limits kept."""
     from .relation_pipelines import attach_relation_ctes
-    from .renderer import render_select_for_profile
-    from .sql_ast import SqlParameter
+    from .renderer import render_with_slots
+    from .row_filters import apply_row_filters
     from .sql_preparation import finalize_parameters
 
     probe = attach_relation_ctes(runtime._config, probe)
+    visibility = compiled.get("row_filter_visibility")
+    if visibility is not None:
+        probe = apply_row_filters(probe, visibility)
     dialect = dialect_for_warehouse(runtime.warehouse)
-    prepared = replace(
-        dialect.prepare_query(render_select_for_profile(probe, dialect=dialect)),
-        parameters=tuple(
-            node.slot
-            for cte in probe.ctes
-            for node in sql_nodes(cte.query)
-            if isinstance(node, SqlParameter)
-        ),
-    )
+    rendered, slots = render_with_slots(probe, dialect=dialect)
+    prepared = replace(dialect.prepare_query(rendered), parameters=slots)
     prepared = finalize_parameters(prepared, runtime._config.package.connection.kind)
     with runtime._query_lock:
         rows = _adapter_query(
@@ -2095,7 +2091,7 @@ class Runtime:
                 # round-three "signal only, no probes" rule still holds.
                 # The probe reads the whole relation, so a row-filtered query skips it.
                 actual_data_coverage: dict[str, str] = {}
-                if not compiled["prepared_query"].parameters:
+                if compiled.get("row_filter_visibility") is None:
                     with self._query_lock:
                         actual_data_coverage = _data_coverage_probe(
                             self._get_adapter(),

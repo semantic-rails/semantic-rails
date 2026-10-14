@@ -85,6 +85,8 @@ class PackageAnalysis:
     declared_references: dict[str, frozenset[str]] | None = None
     # Set on a caller's visible view only.
     view: ViewOf | None = None
+    # Filter model id -> its row-filter coverage (``row_filter_visibility.coverage``).
+    row_filter_coverage: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:

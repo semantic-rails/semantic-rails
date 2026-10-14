@@ -455,13 +455,14 @@ def test_a_refused_coverage_read_is_not_swallowed(
 def test_a_balance_coverage_read_that_cannot_be_filtered_refuses_the_request(
     dense_by_building: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Coverage that would read another relation is refused under a row filter, never read
-    unfiltered; a caller with no filter still reads it."""
+    """Coverage that reads a relation no model reads (here a second spelling of the filtered
+    one) is refused under a row filter, never read unfiltered; a caller with no filter still
+    reads it."""
     real = empty_groups.coverage_select
 
     def joined(scope, dialect):
         select = real(scope, dialect)
-        return replace(select, joins=[SqlJoin("CROSS", SqlTableRef("inv_stagger"))])
+        return replace(select, joins=[SqlJoin("CROSS", SqlTableRef("main.inv_dense", "again"))])
 
     monkeypatch.setattr(empty_groups, "coverage_select", joined)
     with pytest.raises(SemanticLayerError) as caught:
@@ -497,9 +498,8 @@ PIPELINE_BALANCE = """model:
 
 
 def test_a_refusal_names_no_row_filter_hidden_from_the_caller(tmp_path: Path) -> None:
-    """A balance read through a pipeline over a filtered relation can't have its coverage
-    filtered, so it is refused; the refusal names the caller's own filter and only the kind
-    of one hidden from them."""
+    """A balance read through a pipeline over a filtered relation is refused; the refusal
+    names the caller's own filter and only the kind of one hidden from them."""
     root = _write_package(tmp_path / "inv", HIDDEN_REGION_RULE)
     (root / "relations.yml").write_text(
         "relations:\n  dense_pipe:\n    columns: [building, snap_date, area]\n"
@@ -524,13 +524,14 @@ def test_a_refusal_names_no_row_filter_hidden_from_the_caller(tmp_path: Path) ->
         actor="u", audience="tenant", attributes={"building": "C", "region": "north"}
     )
     try:
-        # Untimed, the balance reads no coverage: the pipeline's own scan is filtered.
-        untimed = runtime.query({"select": call["select"]}, context=context)
-        assert _values(untimed) == [50.0]
+        # A pipeline over a filtered relation is refused under it, timed or not.
+        with pytest.raises(SemanticLayerError) as untimed:
+            runtime.query({"select": call["select"]}, context=context)
         with pytest.raises(SemanticLayerError) as caught:
             runtime.query(call, context=context)
     finally:
         runtime.close()
+    assert untimed.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
     assert caught.value.code == "POLICY_DENIED"
     assert caught.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
     assert "region" not in f"{caught.value} {caught.value.details}"

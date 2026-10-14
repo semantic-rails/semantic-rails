@@ -322,6 +322,12 @@ class SqlDialect:
         return True
 
     @property
+    def subquery_in_join_on(self) -> bool:
+        """Whether a join's ON may hold an uncorrelated ``IN (SELECT …)``, keeping a LEFT
+        join's unmatched rows. Each warehouse declares it once its tests prove it."""
+        return False
+
+    @property
     def has_implicit_calendar(self) -> bool:
         return type(self).day_series is not SqlDialect.day_series
 
@@ -520,6 +526,7 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
 
 @dataclass(frozen=True)
 class DuckDbDialect(_NestedTimezone, SqlDialect):
+    subquery_in_join_on = True
     name: str = "duckdb"
     session_zone = True
     call_names = PORTABLE_CALL_NAMES | {
@@ -552,6 +559,7 @@ class DuckDbDialect(_NestedTimezone, SqlDialect):
 
 @dataclass(frozen=True)
 class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
+    subquery_in_join_on = True
     """PostgreSQL (ADBC, ``postgres_native``).
 
     Quirks covered here (each verified against PostgreSQL 16):

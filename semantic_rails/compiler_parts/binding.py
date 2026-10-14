@@ -48,6 +48,7 @@ from ..ir import (
 from ..query_call import engine_where, refusal
 from ..registry import Registry
 from ..relation_pipelines import attach_relation_ctes
+from ..row_filter_visibility import Visibility, hold_unowned_reads, visibility_for
 from ..row_filters import RowFilter, apply_row_filters
 from ..schema import (
     PackageConfig,
@@ -57,9 +58,10 @@ from ..schema import (
 )
 from ..sql_ast import (
     SqlCte,
+    SqlParameter,
     SqlSelect,
+    sql_nodes,
 )
-from ..sql_preparation import ParameterSlot
 from .bind import (
     _expression_alias,
 )
@@ -150,8 +152,8 @@ class BoundQuery:
     leaf_objects: dict[str, frozenset[str]]
     # Every rollup the SQL reads, including separately compiled branches.
     rollup_scans: frozenset[str] = frozenset()
-    # The statement's ``?`` placeholders, in order: one per applied row filter.
-    parameters: tuple[ParameterSlot, ...] = ()
+    # What the request's row filters let it read; every statement it runs is held to it.
+    visibility: Visibility | None = None
     # The key gap of every event/state-clock stock the SQL reads, nested compiles included.
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
     # Every output that reads 0 or NULL for an empty group, with the measures behind it.
@@ -369,11 +371,6 @@ def _bind_with_row_filters(
                     "refusal offered, with the same source_entity and target_entity.",
                 },
             )
-    load_logs = {
-        row.zero_through.relation
-        for row in config.measures
-        if row.zero_through is not None and row.zero_through.kind == "loaded"
-    }
     # Enforcement reads the whole package; a refusal names only policies the caller sees (a
     # hidden one by its kind), whichever statement it refuses.
     shown = {row.id for row in bound.config.semantic_policies}
@@ -381,10 +378,19 @@ def _bind_with_row_filters(
         row if row.policy_id in shown else replace(row, policy_id="row_filter")
         for row in row_filters
     ]
-    sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters, load_logs=load_logs)
+    visibility = visibility_for(config, row_filters)
+    if row_filters:
+        # Holds only: a refusal here never authorizes anything the pass below doesn't prove.
+        hold_unowned_reads(
+            config,
+            visibility,
+            roots=_row_roots(bound),
+            routes=read_routes(bound.plan, bound.route_choices),
+        )
+    sql_ast = apply_row_filters(bound.sql_ast, visibility)
 
     def filtered(statement: Any) -> SqlSelect:
-        return apply_row_filters(statement, row_filters, load_logs=load_logs)[0]
+        return apply_row_filters(statement, visibility)
 
     # A closing-day probe reads the stock's rows as its leaf does, under the same filters, and
     # so does a balance's coverage (its data_through); one that can't be filtered is refused.
@@ -395,6 +401,7 @@ def _bind_with_row_filters(
         replace(cte, query=filtered(cte.query)) for cte in bound.balance_coverage
     )
     if row_filters:
+        bound_slots = [node.slot for node in sql_nodes(sql_ast) if isinstance(node, SqlParameter)]
         _validate_restrictive_time_semantics(
             normalize_query(bound.plan.query, config=bound.config),
             base_of(bound.config),
@@ -402,13 +409,13 @@ def _bind_with_row_filters(
             row_filters=[
                 row
                 for row in row_filters
-                if not parameters or any(slot is row.slot for slot in parameters)
+                if not bound_slots or any(slot is row.slot for slot in bound_slots)
             ],
         )
     return replace(
         bound,
         sql_ast=sql_ast,
-        parameters=parameters,
+        visibility=visibility if row_filters else None,
         balance_coverage=balance_coverage,
         closing_reads=closing_reads,
         route_decisions=tuple(
@@ -421,6 +428,17 @@ def _bind_with_row_filters(
             for pair, (_, row) in decided.items()
         ),
     )
+
+
+def _row_roots(bound: BoundQuery) -> set[str]:
+    """The models whose rows a value starts from: the root, every measure's model (nested
+    reads and predicates included) and the root of each route the SQL reads."""
+    measures = get_package_analysis(bound.config).measures
+    return {
+        bound.plan.root_entity,
+        *(plan.source_entity for plan in bound.plan.measure_plans),
+        *(measures[oid].entity for oid in bound.object_ids if oid in measures),
+    } - {""}
 
 
 def query_route_rows(

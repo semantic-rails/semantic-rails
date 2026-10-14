@@ -973,6 +973,30 @@ def _compiled_package_warnings(
         for policy in config.semantic_policies
         if policy.kind == "row_filter" and policy.roles
     )
+    from .row_filter_visibility import coverage_report
+
+    warnings.extend(
+        _error_payload(
+            "ROW_FILTER_COVERAGE",
+            f"{source_path}: row filter {row['policy_id']} filters {row['filtered']} and "
+            f"reaches {row['covered']} through their owners. Under it, "
+            + (
+                f"{row['uncovered']} are held (no filter reaches them; list one in shared: "
+                "to let every filtered caller read all of its rows); "
+                if row["uncovered"]
+                else ""
+            )
+            + (
+                f"{sorted(row['unsupported'])} are refused (decide their route with a "
+                "graph.path_preferences row, or give them one owner)."
+                if row["unsupported"]
+                else "every other model is answered."
+            ),
+            details=row,
+        )
+        for row in coverage_report(config)
+        if row["uncovered"] or row["unsupported"]
+    )
     if undecided := _undecided_routes_warning(census, source_path):
         warnings.append(undecided)
     warnings.extend(

@@ -25,8 +25,9 @@ from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION
 from semantic_rails.policies import row_filters_for_context
-from semantic_rails.renderer import render_select
+from semantic_rails.renderer import render_select, render_with_slots
 from semantic_rails.request_context import get_policy_context_resolver, set_policy_context_resolver
+from semantic_rails.row_filter_visibility import Visibility
 from semantic_rails.row_filters import RowFilter, apply_row_filters
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -39,10 +40,12 @@ from semantic_rails.sql_ast import (
     SqlIdentifier,
     SqlJoin,
     SqlLiteral,
+    SqlParameter,
     SqlSelect,
     SqlSetQuery,
     SqlTableFunction,
     SqlTableRef,
+    sql_nodes,
 )
 from semantic_rails.sql_preparation import ParameterSlot
 
@@ -266,24 +269,30 @@ def test_the_filter_stays_outside_an_or_in_existing_conditions():
     either = SqlBinary(SqlLiteral(True), "OR", SqlLiteral(True))
     scan = SqlSelect([SqlField(SqlIdentifier(["t", "v"]), "v")], SqlTableRef("t"), where=[either])
     slot = ParameterSlot("customer_id", "string")
-    filtered, slots = apply_row_filters(scan, [RowFilter("p", "t", "c", slot)])
+    filtered, slots = _apply(scan, RowFilter("p", "t", "c", slot))
     assert slots == (slot,)
-    assert render_select(filtered).endswith("WHERE\n  t.c = ? AND (TRUE OR TRUE)")
+    assert render_select(filtered).endswith("WHERE\n  t.c = ?\n  AND (TRUE OR TRUE)")
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        {**BY_STORE, "group_by": ["dimension.rf_store_store_name"], "order_by": []},  # join
-        {**BY_STORE, "where": [BIG_STORES]},  # a second scan of the filtered relation
-    ],
-    ids=["join", "metric_filter"],
-)
-def test_unqualified_shapes_are_denied_not_answered_unfiltered(runtime, query):
-    internal = _as(runtime.compile, query, audience="internal")
-    assert internal["ok"] is True
-    assert _denied(lambda: _as(runtime.compile, query, customer_id=A)) == (
-        "row_filter_unsupported_query"
+def test_a_lookup_and_a_metric_filter_read_only_the_callers_rows(runtime):
+    """Stores are reference data no filter reaches: orders may look them up, and a predicate
+    on stores reads only the caller's orders."""
+    by_name = {**BY_STORE, "group_by": ["dimension.rf_store_store_name"], "order_by": []}
+    rows = _as(runtime.query, by_name, customer_id=A)["rows"]
+    assert sorted((r["dimension.rf_store_store_name"], r["revenue"]) for r in rows) == [
+        ("East", 20),
+        ("North", 10),
+    ]
+    big = _as(runtime.query, {**BY_STORE, "where": [BIG_STORES]}, customer_id=B)
+    assert _revenue(big) == [("s1", 400), ("s3", 300)]
+    assert _revenue(_as(runtime.query, {**BY_STORE, "where": [BIG_STORES]}, customer_id=A)) == []
+
+
+def test_listing_a_model_no_filter_reaches_is_held(runtime):
+    listing = {"select": [], "group_by": ["dimension.rf_store_store_name"]}
+    assert _as(runtime.compile, listing, audience="internal")["ok"] is True
+    assert _denied(lambda: _as(runtime.compile, listing, customer_id=A)) == (
+        "row_filter_uncovered_root"
     )
 
 
@@ -331,10 +340,8 @@ def test_segment_preview_and_count_bind_the_filter(runtime):
         [{"dimension.rf_order_order_ref": 1}],
         [{"dimension.rf_order_order_ref": 4}],
     )
-    assert (
-        _denied(lambda: runtime.segment_preview("segment.rf.big_store", policy_context=context))
-        == "row_filter_unsupported_query"
-    )
+    big = runtime.segment_preview("segment.rf.big_store", policy_context=context)
+    assert (big["member_count"], big["rows"]) == (0, [])
 
 
 def test_rollups_are_not_routed_under_a_row_filter(runtime):
@@ -563,7 +570,7 @@ def test_a_scalar_slot_never_binds_a_list():
             ParameterSlot("customer_id", "string", index=index)  # type: ignore[arg-type]
     listed = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string")).for_value((A, B))
     assert [slot.index for slot in listed.slots] == [0, 1]
-    filtered, slots = apply_row_filters(_scan(SqlTableRef("t")), [listed])
+    filtered, slots = _apply(_scan(SqlTableRef("t")), listed)
     assert slots == listed.slots
     assert render_select(filtered).endswith("WHERE\n  (t.c IN (?, ?))")
 
@@ -603,51 +610,72 @@ def _scan(source, joins=(), where=(), ctes=()):
                      ctes=list(ctes))  # fmt: skip
 
 
+def _apply(statement, *filters, modeled=("t", "other", "parents", "grandchildren")):
+    """``statement`` held to ``filters``, rendered: (statement, slots in render order)."""
+    filtered = apply_row_filters(statement, Visibility(filters, modeled=frozenset(modeled)))
+    return filtered, render_with_slots(filtered)[1]
+
+
 @pytest.mark.parametrize(
     "statement",
     [
         _scan(SqlTableFunction("UNNEST", alias="t")),
-        _scan(SqlTableRef("other")),  # reads only a relation no filter covers
-        _scan(SqlTableRef("other"), [SqlJoin("INNER", SqlTableRef("t"), SqlLiteral(True))]),
-        _scan(SqlTableRef("t"), where=[SqlExists(_scan(SqlTableRef("t")))]),
-        _scan(SqlTableRef("u"), ctes=[SqlCte("u", SqlSetQuery("UNION ALL", [_scan(SqlTableRef("t"))] * 2))]),
+        _scan(SqlTableRef("unmodeled")),  # a relation no model reads
+        _scan(SqlTableRef("t"), [SqlJoin("RIGHT", SqlTableRef("other"), SqlLiteral(True))]),
         _scan(SqlTableRef("t"), ctes=[SqlCte("t", _scan(SqlTableRef("raw")))]),
     ],
-    ids=["table_function", "unfiltered_relation", "filtered_relation_joined",
-         "second_read_in_exists", "second_read_in_set_query", "filtered_name_is_a_cte"],
+    ids=["table_function", "unmodeled_relation", "right_join", "filtered_name_is_a_cte"],
 )  # fmt: skip
-def test_only_one_filtered_from_is_filterable(statement):
-    with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(statement, [ROW])
+def test_reads_the_filter_cannot_be_proven_for_are_refused(statement):
+    assert _denied(lambda: _apply(statement, ROW)) == "row_filter_unsupported_query"
+
+
+@pytest.mark.parametrize(
+    ("statement", "reads"),
+    [
+        (_scan(SqlTableRef("other"), [SqlJoin("INNER", SqlTableRef("t"), SqlLiteral(True))]), 1),
+        (_scan(SqlTableRef("t"), where=[SqlExists(_scan(SqlTableRef("t")))]), 2),
+        (_scan(SqlTableRef("u"), ctes=[SqlCte("u", SqlSetQuery("UNION ALL", [_scan(SqlTableRef("t"))] * 2))]), 2),
+        (SqlSelect([SqlField(SqlExists(_scan(SqlTableRef("t"))), "value")], SqlTableRef("parents")), 1),
+        (_scan(SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableRef("t")), negated=True)]), 1),
+    ],
+    ids=["joined", "second_read_in_exists", "set_query_branches", "projected_exists", "not_exists"],
+)  # fmt: skip
+def test_every_read_of_a_filtered_relation_is_filtered_where_it_is(statement, reads):
+    filtered, slots = _apply(statement, ROW)
+    assert (
+        slots
+        == (ROW.slot,) * reads
+        == tuple(node.slot for node in sql_nodes(filtered) if isinstance(node, SqlParameter))
+    )
 
 
 def test_a_read_inside_a_cte_is_filtered_there():
     statement = _scan(SqlTableRef("c"), ctes=[SqlCte("c", _scan(SqlTableRef("t")))])
-    filtered, slots = apply_row_filters(statement, [ROW])
+    filtered, slots = _apply(statement, ROW)
     assert slots == (ROW.slot,)
     assert "FROM t\nWHERE\n  t.c = ?\n)" in render_select(filtered)
     shadowed = RowFilter("p2", "c", "c", ROW.slot)  # its relation's name is the CTE's
-    with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(statement, [ROW, shadowed])
+    assert _denied(lambda: _apply(statement, ROW, shadowed)) == "row_filter_unsupported_query"
 
 
 @pytest.mark.parametrize(
     "statement",
     [
-        # An unrelated physical scan cannot hide beside an EXISTS scan.
+        # An unmodeled physical scan cannot hide beside an EXISTS scan.
         _scan(
             SqlTableRef("parents"),
             where=[SqlExists(_scan(SqlTableRef("t")))],
             ctes=[SqlCte("extra", _scan(SqlTableRef("extra_rows")))],
         ),
-        # A join inside EXISTS still falls outside the qualified family.
+        # Nor inside one.
         _scan(
             SqlTableRef("parents"),
             where=[
                 SqlExists(
                     _scan(
                         SqlTableRef("t"),
-                        joins=[SqlJoin("INNER", SqlTableRef("other"), SqlLiteral(True))],
+                        joins=[SqlJoin("INNER", SqlTableRef("unmodeled"), SqlLiteral(True))],
                     )
                 )
             ],
@@ -655,50 +683,16 @@ def test_a_read_inside_a_cte_is_filtered_there():
         _scan(
             SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableFunction("UNNEST", alias="t")))]
         ),
-        # An EXISTS in the projection is not a child-row filter.
-        SqlSelect([SqlField(SqlExists(_scan(SqlTableRef("t"))), "value")], SqlTableRef("parents")),
-        # Nor is one projected by a child scan inside the parent's EXISTS.
-        _scan(
-            SqlTableRef("parents"),
-            where=[
-                SqlExists(
-                    SqlSelect(
-                        [SqlField(SqlExists(_scan(SqlTableRef("grandchildren"))), "match")],
-                        SqlTableRef("t"),
-                        where=[
-                            SqlBinary(
-                                SqlIdentifier(["t", "parent_id"]),
-                                "=",
-                                SqlIdentifier(["parents", "id"]),
-                            )
-                        ],
-                    )
-                )
-            ],
-        ),
-        # "Has no matching child" is not "has a matching child".
-        _scan(SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableRef("t")), negated=True)]),
     ],
-    ids=[
-        "extra_scan",
-        "joined_child",
-        "table_function",
-        "projected_exists",
-        "nested_projected_exists",
-        "not_exists",
-    ],
+    ids=["extra_scan", "joined_child", "table_function"],
 )
 def test_exists_does_not_bypass_row_filter_scan_guard(statement):
-    with pytest.raises(SemanticLayerError) as caught:
-        apply_row_filters(statement, [ROW])
-    assert caught.value.code == "POLICY_DENIED"
-    assert caught.value.details["reason"] == "row_filter_unsupported_query"
+    assert _denied(lambda: _apply(statement, ROW)) == "row_filter_unsupported_query"
 
 
 def test_a_rewrite_that_misses_the_scan_is_denied(monkeypatch):
-    monkeypatch.setattr(row_filters_module, "_rewrite", lambda node, target, new: node)
-    with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(_scan(SqlTableRef("t")), [ROW])
+    monkeypatch.setattr(row_filters_module, "_add_predicates", lambda select, *_: select)
+    assert _denied(lambda: _apply(_scan(SqlTableRef("t")), ROW)) == "row_filter_unsupported_query"
 
 
 @pytest.fixture
@@ -820,10 +814,10 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
     assert tenant not in result["rendered_sql"]
 
 
-def test_a_tagged_row_returning_scan_is_still_refused():
+def test_a_tagged_row_returning_scan_is_filtered_too():
     extra = replace(_scan(SqlTableRef("t")), observation_scan=True)
     statement = replace(_scan(SqlTableRef("t")), where=[SqlExists(extra)])
-    assert _denied(lambda: apply_row_filters(statement, [ROW])) == "row_filter_unsupported_query"
+    assert _apply(statement, ROW)[1] == (ROW.slot, ROW.slot)
 
 
 def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
@@ -913,14 +907,13 @@ def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
     with duckdb.connect(str(package / "rf.duckdb")) as connection:
         connection.execute("DELETE FROM order_fact WHERE customer_id = ?", [A])
         for tenant, expected in [(A, [(None,)]), (B, [(300,)])]:
-            filtered, slots = apply_row_filters(
+            filtered, slots = _apply(
                 statement,
-                [
-                    RowFilter("own_orders", "order_fact", "customer_id", ROW.slot),
-                    RowFilter(
-                        "own_store", "order_fact", "store_id", ParameterSlot("store_id", "string")
-                    ),
-                ],
+                RowFilter("own_orders", "order_fact", "customer_id", ROW.slot),
+                RowFilter(
+                    "own_store", "order_fact", "store_id", ParameterSlot("store_id", "string")
+                ),
+                modeled=("order_fact",),
             )
             sql = render_select(filtered)
             assert sql.count("customer_id = ?") == sql.count("store_id = ?") == 3
