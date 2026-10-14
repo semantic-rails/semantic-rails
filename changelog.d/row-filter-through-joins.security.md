@@ -8,8 +8,8 @@
   unfiltered. Counting a model no filter reaches is refused unless the filter lists it in
   the new `shared:` key; a lookup along a route that isn't how the model is owned, a
   model whose ownership is undecided, relation pipelines over a filtered relation, and
-  row-level calls that can fail on a value (`CAST` to a number, `LN`, `SQRT`, ...) are
-  refused under a filter. Declared value domains of filtered and covered models are read
+  row-level calls that could fail on a value (anything but a short list of calls that
+  can't, such as `COALESCE`, `LOWER` or a `CAST` to text) are refused under a filter. Declared value domains of filtered and covered models are read
   live under the filter, and `validate` lists each filter's covered, held and refused
   models. See [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
   Known limitations in this release: SQL output for a row-filtered caller can show the

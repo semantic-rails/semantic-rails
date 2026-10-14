@@ -841,10 +841,11 @@ kind names must match exactly.
   - Refused under a filter too (`row_filter_unsupported_query` unless noted): relation
     pipelines over a filtered or covered relation, relations no model reads, table
     functions other than the engine's day series, a `RIGHT` or `FULL` join beside a
-    filtered relation, a load log the filter restricts (`row_filter_on_load_log`), and a
-    row-level `CAST` to a non-text type, `LN`, `LOG`, `SQRT`, `POWER` or `EXP`
-    (`row_filter_fallible_expression`), whoever wrote it, since an error on a hidden row
-    would tell something about it. Rollups are not routed to; the query reads its base
+    filtered relation, a load log the filter restricts (`row_filter_on_load_log`), and any
+    row-level call other than `COALESCE`, `NULLIF`, `CONCAT`, `LOWER`, `UPPER`, `TRIM`,
+    `REPLACE`, `LENGTH`, `ROUND`, `FLOOR`, `CEIL`, `DATE_TRUNC`, `DATE_PART`, `LEFT`,
+    `RIGHT` and a `CAST` to text (`row_filter_fallible_expression`), whoever wrote it, since
+    an error on a hidden row would tell something about it. Rollups are not routed to; the query reads its base
     relations. The zero-row data-coverage probe is skipped.
   - A filtered or covered model's declared value `domain:` is withheld from every caller in
     the filter's scope, including those its `unless_roles` exempts: a value list (valid

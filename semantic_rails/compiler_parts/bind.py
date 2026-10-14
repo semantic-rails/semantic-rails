@@ -102,7 +102,12 @@ _earlier_settlement: ContextVar[bool] = ContextVar("earlier_settlement", default
 # The row filters a request binds under (their policy ids), while it binds: a row-level call
 # that can raise on a value is refused, since its error could tell a hidden row's value.
 _filtered_bind: ContextVar[tuple[str, ...]] = ContextVar("filtered_bind", default=())
-_FALLIBLE_CALLS = frozenset({"LN", "LOG", "LOG10", "LOG2", "SQRT", "POWER", "POW", "EXP"})
+# The row-level calls that return a value for every input of their types on every warehouse
+# (a CAST only to text); under a row filter every other call is refused.
+_TOTAL_CALLS = frozenset(
+    {"COALESCE", "NULLIF", "CONCAT", "LOWER", "UPPER", "TRIM", "REPLACE", "LENGTH", "ROUND"}
+    | {"FLOOR", "CEIL", "CEILING", "DATE_TRUNC", "DATE_PART", "LEFT", "RIGHT"}
+)
 
 
 @contextmanager
@@ -120,7 +125,7 @@ def _refuse_fallible_call(expr: CallExpr) -> None:
         if name == "CAST" and len(expr.args) == 2 and isinstance(expr.args[1], LiteralExpr)
         else ""
     )
-    if policies and (name in _FALLIBLE_CALLS or (name == "CAST" and cast_type != "VARCHAR")):
+    if policies and name not in _TOTAL_CALLS and not (name == "CAST" and cast_type == "VARCHAR"):
         raise SemanticLayerError(
             "POLICY_DENIED",
             f"A row filter applies to this request, and {name} on each row can fail on a "
