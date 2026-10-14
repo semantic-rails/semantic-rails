@@ -16,28 +16,30 @@ from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.package_snapshot import json_fingerprint, load_package_snapshot
 from semantic_rails.relation_pipelines import lower_relation
 from semantic_rails.renderer import render_select
+from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PackageConfig
 from semantic_rails.sql_ast import SqlField, SqlLiteral, SqlSelect
 from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.conftest import copy_package_config, write_single_file_package
 
 # Semantic fingerprints of the bundled packages, which refusing the retired spellings leaves
-# unchanged (re-pinned only when main adds a snapshot field, such as an entity's `display`).
+# unchanged (re-pinned only when the snapshot gains or loses a field, such as an entity's
+# `display`).
 FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
-        "sha256:b4ecb69f5b11043e5ee7398af1fac9a082e510e33ccfd27ad5865cf8d3f9e46d"
+        "sha256:ec2e5203f5890ba883394ad0fd894956fa56fc5930ea0787997d43465dc4c9ae"
     ),
     "configs/semantic_rails/tpch_sf1_showcase": (
-        "sha256:01d3f52c240e4a19b21229f2d248a39f36af5d1721f207d8bb131b58d67f96e9"
+        "sha256:0a5a42fec9361dce19048be0145b85ceb175e3766cff0f45a2d265d2530c0fb5"
     ),
     "comparisons/semantic_layers/semantic_rails/package": (
-        "sha256:1a5d94abd3a0f8af654bb4cf3ac84b8dd8170810b83f826b57a9d890b5beb450"
+        "sha256:b87c36b660acfefef9f24ea5689962fdcf24a8518208b06def9d71d15b6bc75e"
     ),
     "tests/integration/correctness/shop": (
-        "sha256:8e6b8a0d9e0cc8b9bf0dcef16c55705f953fe3b2c5503d98b291a5fe18a059b8"
+        "sha256:d96437049b4fd97ea90054a799b3a16ccca46c9086751c674ccc6a5a129b0aef"
     ),
     "configs/examples/semantic_rails_package_starter.yml": (
-        "sha256:481652e9ddd60ced3dd89a335d3128a7c65249383b81adb4037839ab747af341"
+        "sha256:65e894499c75823dc66b3474286cc98d89f29b6157b749c6201012037f3ec9ea"
     ),
 }
 
@@ -94,6 +96,57 @@ def test_retired_expression_spellings_are_refused(expression, code, message):
         parse_semantic_expression(expression, context="metric", path="expression")
     assert exc.value.code == code
     assert message in str(exc.value)
+
+
+CALL_REVENUE = "measure.shop.revenue_usd"
+
+
+@pytest.mark.parametrize(
+    ("expression", "path", "fix"),
+    [
+        (
+            {"kind": "binary", "op": "add", "left": CALL_REVENUE, "right": CALL_REVENUE},
+            "select[0].expression.kind",
+            "Use 'arithmetic'.",
+        ),
+        (
+            {"kind": "measure_ref", "measure": CALL_REVENUE},
+            "select[0].expression",
+            f'Write "{CALL_REVENUE}".',
+        ),
+        (
+            {
+                "kind": "aggregate_if",
+                "aggregation": "count",
+                "condition": {"kind": "in", "left": COLUMN, "values": ["web"]},
+            },
+            "select[0].expression.condition.left",
+            "Remove 'left'.",
+        ),
+        (
+            {
+                "kind": "conversion",
+                "base": CALL_REVENUE,
+                "converted": CALL_REVENUE,
+                "entity": "entity.shop_customer",
+                "window": {"unit": "day", "value": 7},
+                "matching": "first_converted_after_base",
+            },
+            "select[0].expression.matching",
+            "Use 'matching_mode'.",
+        ),
+    ],
+    ids=["binary", "measure_ref", "in-left", "conversion-matching"],
+)
+def test_retired_expression_spellings_are_refused_in_a_call(tmp_path, expression, path, fix):
+    runtime = Runtime.from_path(str(write_single_file_package(tmp_path / "project")))
+    try:
+        report = runtime.validate({"select": [{"expression": expression, "as": "v"}]})
+    finally:
+        runtime.close()
+    (error,) = report["errors"]
+    assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
+    assert error["recovery_hints"][0]["message"] == fix
 
 
 def _load_with(tmp_path: Path, **blocks) -> PackageConfig:
@@ -386,8 +439,9 @@ def test_predicate_and_expression_rows_still_load_and_filter(tmp_path):
         return _relation_sql(_load_with(tmp_path / name, relations={"recent": {"steps": steps}}))
 
     predicate = sql("predicate", {"field": "status", "op": "!=", "value": "cancelled"})
-    assert "WHERE\n  src.status != 'cancelled'\n" in predicate
-    assert "AND \"right\".status != 'cancelled'\n" in predicate
+    # A `!=` row keeps the rows whose value is unknown.
+    assert "WHERE\n  ((src.status <> 'cancelled') OR (src.status IS NULL))\n" in predicate
+    assert 'AND (("right".status <> \'cancelled\') OR ("right".status IS NULL))\n' in predicate
     expression = sql("expression", "status != 'cancelled'")
     assert "WHERE\n  (src.status <> 'cancelled')\n" in expression
     assert "AND (\"right\".status <> 'cancelled')\n" in expression

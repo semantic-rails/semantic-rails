@@ -300,8 +300,8 @@ def _preserved(spec: Any, tables: _Lineages) -> str | None:
     (:data:`_TYPE_PRESERVING`) over a column read unchanged, or None."""
     if not isinstance(spec, dict):
         return None
-    function = str(spec.get("function", spec.get("agg", spec.get("kind", ""))) or "").upper()
-    expr_raw = spec.get("expr", spec.get("expression"))
+    function = str(spec.get("function", "") or "").upper()
+    expr_raw = spec.get("expr")
     if function not in _TYPE_PRESERVING or expr_raw is None or spec.get("distinct"):
         return None
     return _bare_column(expr_raw, tables, "src")
@@ -327,12 +327,12 @@ def _lineage(
         columns = config.get("columns", config.get("value", config))
         carried = {str(alias): _bare_column(raw, src, "src") for alias, raw in columns.items()}
     elif step.kind == "group_by":
-        dimensions = config.get("dimensions", config.get("group_by", {})) or {}
-        aggregates = config.get("aggregates", config.get("measures", {})) or {}
+        dimensions = config.get("dimensions", {}) or {}
+        aggregates = config.get("aggregates", {}) or {}
         carried = {str(alias): _bare_column(raw, src, "src") for alias, raw in dimensions.items()}
         carried |= {str(alias): _preserved(spec, src) for alias, spec in aggregates.items()}
     elif step.kind == "window":
-        windows = config.get("windows", config.get("columns", config))
+        windows = config.get("windows", config)
         carried = dict(before.lineage)
         carried |= {str(alias): _preserved(spec, src) for alias, spec in windows.items()}
     elif step.kind == "join":
@@ -1111,7 +1111,7 @@ def _lower_step_sql(
             temporal={
                 "src": _stage_temporal(state, lineages),
                 "right": tables.get(
-                    str(config.get("relation", config.get("table", "")) or "").strip(),
+                    str(config.get("relation", "") or "").strip(),
                     frozenset(),
                 ),
             },

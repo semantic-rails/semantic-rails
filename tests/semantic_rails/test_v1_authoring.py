@@ -771,7 +771,7 @@ def test_direct_authoring_fields_resolve_package_relative_ids(tmp_path: Path) ->
                 "derived",
                 "count",
                 expression={
-                    "kind": "binary",
+                    "kind": "arithmetic",
                     "op": "multiply",
                     "left": premium_metric,
                     "right": premium_metric,

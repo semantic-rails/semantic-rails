@@ -144,6 +144,8 @@ V2_POINTER = f"See the query schema at {SCHEMA_ID}."
 
 # Inline kinds a call may not use, and keys of a kind that left the call.
 RETIRED_KINDS: frozenset[str] = frozenset({"metric", "measure_ref"})
+# A kind with one current spelling: the retired name is refused with the current one as its fix.
+_RENAMED_KINDS: dict[str, str] = {"binary": "arithmetic"}
 RETIRED_KIND_KEYS: dict[str, frozenset[str]] = {
     "prior_period": frozenset({"measure", "grain", "aggregation"}),
     "metric_predicate": frozenset(_PREDICATE_RETIRED),
@@ -158,7 +160,6 @@ KIND_REQUIRED: dict[str, tuple[str, ...]] = {
     "column": ("column",),
     "literal": ("value",),
     "arithmetic": ("op", "left", "right"),
-    "binary": ("op", "left", "right"),
     "comparison": ("op", "left", "right"),
     "boolean": ("op", "args"),
     "call": ("name",),
@@ -753,7 +754,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
         raise refusal(path, f"'{kind}' objects are retired", fix=fix or f'Write "{name}".')
     kinds = call_kinds()
     if kind not in kinds:
-        matches = _closest(kind, kinds)
+        matches = [_RENAMED_KINDS[kind]] if kind in _RENAMED_KINDS else _closest(kind, kinds)
         raise refusal(
             f"{path}.kind",
             f"unknown kind '{kind}'",
@@ -840,7 +841,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
     return node
 
 
-_OP_KINDS = frozenset({"comparison", "arithmetic", "binary"})
+_OP_KINDS = frozenset({"comparison", "arithmetic"})
 
 
 def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext) -> str | None:

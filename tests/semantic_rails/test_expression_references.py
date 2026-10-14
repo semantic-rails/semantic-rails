@@ -47,7 +47,6 @@ OPEN_VALUES: dict[str, Any] = {
 }
 KIND_OPEN_VALUES: dict[tuple[str, str], Any] = {
     ("arithmetic", "op"): "add",
-    ("binary", "op"): "add",
     ("boolean", "op"): "and",
     ("date_add", "value"): LITERAL,
 }
@@ -479,8 +478,9 @@ def test_shape_vocabulary_follows_the_expression_parser():
         if kind is not None
     }
     assert schema_kinds <= parser_kinds
-    # The schema lists every kind a call may use: all the parser's but the retired ones.
-    assert parser_kinds - schema_kinds == query_call.RETIRED_KINDS
+    # The schema lists every kind a call may use: all the parser's but the retired ones. A call
+    # also names `measure_ref` retired, which the parser no longer reads at all.
+    assert parser_kinds - schema_kinds == query_call.RETIRED_KINDS - {"measure_ref"}
     assert expressions._reference_expression_kinds() == parser_kinds | SHAPE_DATA_TAGS
     for kind in parser_kinds | SHAPE_DATA_TAGS:
         for spelling in (kind, f" {kind} "):

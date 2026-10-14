@@ -140,18 +140,6 @@
               "if": {
                 "properties": {
                   "kind": {
-                    "const": "binary"
-                  }
-                }
-              },
-              "then": {
-                "$ref": "#/$defs/Kind_binary"
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "kind": {
                     "const": "boolean"
                   }
                 }
@@ -444,7 +432,6 @@
                 "aggregate_if",
                 "arithmetic",
                 "between",
-                "binary",
                 "boolean",
                 "call",
                 "case",
@@ -574,28 +561,6 @@
         "expr",
         "low",
         "high"
-      ],
-      "type": "object"
-    },
-    "Kind_binary": {
-      "additionalProperties": false,
-      "properties": {
-        "kind": {
-          "const": "binary"
-        },
-        "left": {
-          "$ref": "#/$defs/Expression"
-        },
-        "op": {},
-        "right": {
-          "$ref": "#/$defs/Expression"
-        }
-      },
-      "required": [
-        "kind",
-        "op",
-        "left",
-        "right"
       ],
       "type": "object"
     },
@@ -729,7 +694,6 @@
         "kind": {
           "const": "conversion"
         },
-        "matching": {},
         "matching_mode": {},
         "window": {}
       },
@@ -849,9 +813,6 @@
         "kind": {
           "const": "in"
         },
-        "left": {
-          "$ref": "#/$defs/Expression"
-        },
         "negated": {},
         "values": {
           "items": {
@@ -961,9 +922,6 @@
         },
         "kind": {
           "const": "not_in"
-        },
-        "left": {
-          "$ref": "#/$defs/Expression"
         },
         "negated": {},
         "values": {

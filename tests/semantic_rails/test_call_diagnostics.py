@@ -115,8 +115,8 @@ def set_warehouse(package, warehouse, connection=None):
 
 def project(package, columns, select):
     """Write a ``projected`` relation selecting ``select`` from the numbers table."""
-    steps = [{"select": {"columns": select}}]
-    relations = {"projected": {"source": "numbers", "columns": columns, "steps": steps}}
+    steps = [{"source": "numbers"}, {"select": {"columns": select}}]
+    relations = {"projected": {"columns": columns, "steps": steps}}
     (package / "relations.yml").write_text(yaml.safe_dump({"relations": relations}))
 
 

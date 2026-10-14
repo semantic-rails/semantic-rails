@@ -834,7 +834,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `cumulative` | `{kind: cumulative, input, partition_by?, window_scope?}` |
 | `ratio` | `{kind: ratio, numerator, denominator}` |
 | `share` | `{kind: share, input: <id>, over: [<group_by id> \| "period"]}` |
-| `arithmetic` (`binary`) | `{kind: arithmetic, op, left, right}` |
+| `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition, value?}` |
 | `scoped_aggregate` | `{kind: scoped_aggregate, measure, where?, predicates?, anchor?, window?, ...}`; each predicate carries `over` |
@@ -1037,6 +1037,7 @@ query's dimensions, say) gets the general hint.
 | child group `{child, match, where}` | entity filter `{entity, any \| none}` |
 | `scope_mode`, `time_grain`, `time_alignment` on a predicate | `over` |
 | `{measure: ...}` / `{metric: ...}` objects, `kind: metric`, `measure_ref` | the id string; `{kind: measure, ...}` to override |
+| `kind: binary`; a conversion's `matching`; an `in`/`not_in` `left` | `kind: arithmetic`; `matching_mode`; `expr` |
 | `prior_period` with `measure`, an integer `offset` and `grain` | `{kind: prior_period, input, offset: {unit, value}}` |
 | `limit: 0`, `limit: null` | omit `limit` |
 

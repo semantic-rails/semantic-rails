@@ -178,8 +178,8 @@ def test_a_like_with_no_pattern_names_every_shape(runtime):
     assert "starts_with for 'X%', ends_with for '%X' or contains for '%X%'" in hint
 
 
-def test_like_in_a_binary_expression_is_refused_the_same_way(runtime):
-    expression = {"kind": "binary", "op": "LIKE", "left": ORDERS, "right": ORDERS}
+def test_like_in_an_arithmetic_expression_is_refused_the_same_way(runtime):
+    expression = {"kind": "arithmetic", "op": "LIKE", "left": ORDERS, "right": ORDERS}
     error = _error(runtime, {"select": [{"expression": expression, "as": "n"}]})
     assert error["details"]["path"] == "select[0].expression.op"
     assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
