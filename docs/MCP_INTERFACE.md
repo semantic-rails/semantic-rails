@@ -389,7 +389,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   that day's start and end. A stock keyed by its clock alone (a
   daily rollup) is one series and isn't held. `plan` drafts most balance questions on one
   day itself (see "How plan reads a balance" below); an as-of cue on anything else ("new
-  accounts right now") stays `TIME_WINDOW_UNRESOLVED`;
+  accounts right now") stays `TIME_WINDOW_UNRESOLVED`. For a "current" or "now", its
+  `use_current_state` hint names the package's current-state flags (true or false dimensions
+  named current or active) and snapshot measures (on an as-of clock) that share a word with
+  the question;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue". The ranked value must be

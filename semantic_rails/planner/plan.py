@@ -426,7 +426,9 @@ def _question_payload(
     )
     time_why = (
         atemporal_why
-        or _unresolved_time_why(intent_str, partial_query, read.spans if read else ())
+        or _unresolved_time_why(
+            intent_str, partial_query, read.spans if read else (), config=runtime._config
+        )
         # A period comparison is ready only when each period it returns has ended; keeping
         # the rows from a dropped start would still return the one in progress.
         or _incomplete_period_why(runtime, best_draft.query, dropped_start)
