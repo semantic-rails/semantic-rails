@@ -28,6 +28,7 @@ from semantic_rails.metadata import inspect_payload
 from semantic_rails.package_tools import check_warehouse_column_reachability_report
 from semantic_rails.relation_pipelines import lower_relation
 from semantic_rails.runtime import Runtime
+from semantic_rails.sql_preparation import _shortened_identifier
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders_package
 
 SHOP = Path(__file__).resolve().parents[1] / "integration" / "correctness" / "shop"
@@ -258,13 +259,16 @@ def test_a_boolean_column_reads_its_one_value_on_every_warehouse(tmp_path, wareh
     ],
 )
 def test_postgres_reads_every_one_per_key_column_without_min_or_max(tmp_path, edits):
+    """Any type, booleans included, and only its distinct values held: never a sorted array of
+    every row (Sol round 2, finding 4)."""
     config = _on("postgres", *edits, tmp_path=tmp_path)
     sql = _single_value_sql(config, {"select": [ROOM_COUNT]})
-    assert "MIN(" not in sql.upper() and "MAX(" not in sql.upper()
+    assert "MIN(" not in sql.upper() and "MAX(" not in sql.upper() and "ORDER BY" not in sql
     for column in ("building", "floor", "accessible", "area"):
-        assert f"ARRAY_AGG(src.{column}) WITHIN GROUP" not in sql  # an ordered ARRAY_AGG
-        assert f"ARRAY_AGG(src.{column} ORDER BY src.{column} ASC)" in sql, column
-        assert f"ARRAY_AGG(src.{column} ORDER BY src.{column} DESC)" in sql, column
+        assert (
+            f"CASE WHEN COUNT(DISTINCT src.{column}) = 1 THEN (ARRAY_AGG(DISTINCT src.{column}) "
+            f"FILTER (WHERE src.{column} IS NOT NULL))[1] END AS {column}"
+        ) in sql, column
 
 
 def test_a_parent_count_across_a_link_keeps_the_link_rules(tmp_path):
@@ -305,20 +309,150 @@ def test_a_parent_count_across_a_link_keeps_the_link_rules(tmp_path):
     assert "the groups can overlap and need not add up to the total" in str(step)
 
 
+GENERATED = "sr_one_per_key__shop_room"  # the name rooms' one-per-key relation is read under
+
+
 @pytest.mark.parametrize(
-    "table", ["shop_room__one_per_key", "SHOP_ROOM__One_Per_Key", "shop_room__one_per_key__2_where"]
+    "table",
+    [
+        GENERATED,
+        f"  {GENERATED.upper()}  ",  # padded, in another case
+        f"main.{GENERATED}",  # in a schema
+        GENERATED.replace("_", "-", 3),  # a name a warehouse would make legal by underscores
+        f"{GENERATED}__2_where",  # one of its steps
+        _shortened_identifier("sr_one_per_key__" + "r" * 64),  # as Postgres shortens one
+    ],
 )
-def test_a_name_the_one_per_key_relation_reads_under_can_t_be_a_table(tmp_path, table):
-    """Sol round 1, finding 2: a physical table under the generated name would read as rooms."""
+def test_a_name_one_per_key_relations_are_read_under_can_t_be_authored(tmp_path, table):
+    """Sol rounds 1 and 2, finding 2 and findings 1-2: an authored table or relation read under a
+    generated name would read the one-per-key rows instead. Every generated name starts with the
+    reserved prefix, shortened or not, and every authored name holding it is refused."""
     renamed = ("models/people.yml", lambda doc: doc["model"].update(relation=table))
     with pytest.raises(SemanticLayerError) as raised:
         load_package_config(str(_shop(tmp_path, renamed)))
     assert raised.value.code == "INVALID_CONFIG"
-    assert (
-        "'entity.shop_room' is one_per_key, and its relation is read under the name "
-        "'shop_room__one_per_key'"
-    ) in str(raised.value)
-    assert f"'{table}'" in str(raised.value)
+    assert "sr_one_per_key__ is reserved" in str(raised.value)
+    assert raised.value.details["name"] == table
+
+
+def test_a_pipeline_source_padded_to_a_generated_name_is_refused(tmp_path):
+    """Sol round 2, finding 1: a pipeline's source is stripped where it is read."""
+    staff = {
+        "source": f" {GENERATED} ",
+        "columns": ["person_id", "room_id", "title", "salary", "started_on"],
+    }
+    package = _shop(
+        tmp_path,
+        ("relations.yml", lambda doc: doc.update(relations={"staff": staff})),
+        ("models/people.yml", lambda doc: doc["model"].update(relation="staff")),
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        load_package_config(str(package))
+    assert raised.value.code == "INVALID_CONFIG"
+    assert "sr_one_per_key__ is reserved" in str(raised.value)
+
+
+def test_every_generated_name_keeps_the_reserved_prefix_once_shortened(tmp_path):
+    """Sol round 2, finding 2: a 64-character entity id's generated names, shortened as Postgres
+    shortens an identifier, still start with the reserved prefix; the old shortened name is an
+    ordinary table and reads as one."""
+    long_id = "entity." + "r" * 64
+    package = _shop(
+        tmp_path,
+        ("graph.yml", lambda doc: doc["graph"]["entities"]["room"].update({"as": long_id})),
+    )
+    seed = package / "data" / "seed.sql"
+    old = _shortened_identifier("r" * 64 + "__one_per_key")
+    seed.write_text(
+        seed.read_text(encoding="utf-8") + f"\nALTER TABLE people RENAME TO {old};\n",
+        encoding="utf-8",
+    )
+    people = package / "models" / "people.yml"
+    people.write_text(
+        people.read_text(encoding="utf-8").replace("relation: people", f"relation: {old}"),
+        encoding="utf-8",
+    )
+    config = load_package_config(str(package))
+    room = next(entity for entity in config.entities if entity.id == long_id)
+    relation = next(row for row in config.relations if row.id == room.relation_id)
+    ctes, _ = lower_relation(relation, warehouse="postgres")
+    for name in [relation.output_name, *(cte.name for cte in ctes)]:
+        shortened = _shortened_identifier(name) if len(name.encode()) > 63 else name
+        assert shortened.startswith("sr_one_per_key__"), name
+    runtime = Runtime.from_config(config, source_path=str(package), package_id="shop")
+    try:
+        rows = runtime.query({"select": [HEADCOUNT, ROOM_COUNT]})["rows"]
+    finally:
+        runtime.close()
+    assert rows == [{"headcount": 7, "room_count": 5}]
+
+
+def test_a_table_under_the_old_generated_name_is_an_ordinary_table(tmp_path):
+    """Sol round 1, finding 2's table now reads as itself: seven people, five rooms."""
+    seed_package = _shop(tmp_path)
+    seed = seed_package / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text(encoding="utf-8")
+        + "\nALTER TABLE people RENAME TO shop_room__one_per_key;\n",
+        encoding="utf-8",
+    )
+    people = seed_package / "models" / "people.yml"
+    people.write_text(
+        people.read_text(encoding="utf-8").replace(
+            "relation: people", "relation: shop_room__one_per_key"
+        ),
+        encoding="utf-8",
+    )
+    runtime = _runtime(seed_package)
+    try:
+        rows = runtime.query({"select": [HEADCOUNT, ROOM_COUNT]})["rows"]
+    finally:
+        runtime.close()
+    assert rows == [{"headcount": 7, "room_count": 5}]
+
+
+def _aggregate_if(value: str) -> dict[str, Any]:
+    accessible = {"kind": "column", "column": "accessible", "entity": ROOM}
+    return {
+        "as": "kept",
+        "expression": {
+            "kind": "aggregate_if",
+            "aggregation": "sum",
+            "condition": {
+                "kind": "comparison",
+                "op": "=",
+                "left": accessible,
+                "right": {"kind": "literal", "value": True},
+            },
+            "value": {"kind": "column", "column": value, "entity": ROOM},
+        },
+    }
+
+
+def test_an_aggregate_if_reads_only_the_columns_a_one_per_key_model_declares(tmp_path):
+    """Sol round 2, finding 3: a column the model declares nothing on isn't in its rows, so the
+    call is refused while binding, naming the declaration that adds it."""
+    package = _shop(tmp_path)
+    seed = package / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text(encoding="utf-8")
+        + "\nALTER TABLE room_rows ADD COLUMN bonus INTEGER;\nUPDATE room_rows SET bonus = 42;\n",
+        encoding="utf-8",
+    )
+    runtime = _runtime(package)
+    try:
+        report = runtime.validate({"select": [_aggregate_if("bonus")]})
+        error = _refusal(runtime, {"select": [_aggregate_if("bonus")]})
+        declared = runtime.query({"select": [_aggregate_if("area")]})["rows"]
+    finally:
+        runtime.close()
+    assert not report["ok"]
+    assert report["errors"][0]["code"] == error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
+    assert "'bonus'" in str(error)
+    [hint] = error.details["recovery_hints"]
+    assert hint["kind"] == "declare_column"
+    assert "declare a dimension or measure on 'bonus'" in hint["message"]
+    assert declared == [{"kept": 200}]  # r1 and r3, 100 each
 
 
 def test_a_lookup_into_a_one_per_key_model_on_another_column_reads_it(tmp_path):
