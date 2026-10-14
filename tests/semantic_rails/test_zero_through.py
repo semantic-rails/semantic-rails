@@ -137,7 +137,7 @@ def test_a_load_log_read_through_a_relation_pipeline_is_refused(shop):
     spine = {"start": "2024-09-01", "end": "2024-09-29", "column": "through_day"}
     (shop / "relations").mkdir()
     (shop / "relations" / "loads_view.yml").write_text(
-        yaml.safe_dump({"relation": {"id": "loads_view", "date_spine": spine}})
+        yaml.safe_dump({"relations": {"loads_view": {"steps": [{"date_spine": spine}]}}})
     )
     _edit(shop, "models/ticket_loads.yml", lambda doc: doc["model"].update(relation="loads_view"))
     with pytest.raises(SemanticLayerError, match="reads a relation pipeline"):

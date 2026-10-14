@@ -652,7 +652,7 @@ def test_athena_relation_filters_read_each_stage_by_its_own_lineage():
     renamed = {"columns": {"id": "id", "day": "observed_day"}}
     sql = _relation_sql(
         ["id", "day", "observed_day"],
-        ("where", {"where": [{"field": "day", "op": "is", "value": "2026-01-01"}]}),
+        ("where", {"predicates": [{"field": "day", "op": "is", "value": "2026-01-01"}]}),
         ("select", renamed),
         tables={"out": frozenset({"day"})},
     )
@@ -661,7 +661,7 @@ def test_athena_relation_filters_read_each_stage_by_its_own_lineage():
     sql = _relation_sql(
         ["id", "observed_day"],
         ("select", {"columns": {"id": "id", "seen": "observed_day"}}),
-        ("where", {"where": [{"field": "seen", "op": "gte", "value": "2026-01-01"}]}),
+        ("where", {"predicates": [{"field": "seen", "op": "gte", "value": "2026-01-01"}]}),
         ("select", {"columns": {"id": "id", "day": "seen"}}),
         tables={"out": frozenset({"day"})},
     )
@@ -695,7 +695,7 @@ def _join(**columns: Any) -> tuple[str, dict[str, Any]]:
 
 
 def _is_day(column: str) -> tuple[str, dict[str, Any]]:
-    return "where", {"where": [{"field": column, "op": "is", "value": "2026-01-01"}]}
+    return "where", {"predicates": [{"field": column, "op": "is", "value": "2026-01-01"}]}
 
 
 def _ref(column: str, table: str | None = None) -> dict[str, Any]:
@@ -727,10 +727,10 @@ def test_athena_relation_filters_type_a_column_only_where_its_lineage_is_certain
 
     dates = {"raw_events": frozenset({"day"})}
     lowest = {"function": "min", "expr": _ref("day")}
-    previous = {"function": "lag", "expr": _ref("day"), "order_by": [{"column": "id"}]}
+    previous = {"function": "lag", "expr": _ref("day"), "order_by": [{"expr": "id"}]}
     derived = [
         ("group_by", {"dimensions": {"id": _ref("id")}, "aggregates": {"mid": lowest}}),
-        ("window", {"columns": {"mid": previous}}),
+        ("window", {"windows": {"mid": previous}}),
         _join(id=_ref("id", "left"), mid=_ref("day", "left")),
     ]
     for step in derived:
@@ -743,11 +743,11 @@ def test_athena_relation_filters_leave_a_name_two_columns_share_untyped():
     under one name: the text ``day`` beside ``LAG(dt)`` or ``MIN(dt)`` is never typed by the
     date ``dt``."""
     dates = {"raw_events": frozenset({"dt"})}
-    previous = {"function": "lag", "expr": _ref("dt"), "order_by": [{"column": "id"}]}
+    previous = {"function": "lag", "expr": _ref("dt"), "order_by": [{"expr": "id"}]}
     lowest = {"function": "min", "expr": _ref("dt")}
     keys = {"id": _ref("id"), "day": _ref("day")}
     for step in (
-        ("window", {"columns": {"day": previous}}),
+        ("window", {"windows": {"day": previous}}),
         ("group_by", {"dimensions": keys, "aggregates": {"day": lowest}}),
     ):
         sql = _relation_sql(["id", "day", "dt"], step, _is_day("day"), tables=dates)
@@ -758,7 +758,7 @@ def test_athena_relation_filters_leave_types_through_unions_and_other_relations_
     """Known limits, left untyped (Athena refuses the comparison, never miscounts): a union
     of declared dates, and a type a relation infers for a relation that reads it."""
     branches = [
-        {"source": table, "columns": {"id": _ref("id"), "mid": _ref("day")}}
+        {"relation": table, "columns": {"id": _ref("id"), "mid": _ref("day")}}
         for table in ("raw_events", "right_dates")
     ]
     dates = {"raw_events": frozenset({"day"}), "right_dates": frozenset({"day"})}
