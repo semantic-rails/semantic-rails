@@ -345,19 +345,53 @@ def test_a_name_of_several_rows_asks_which(subscriptions: Callable[..., Runtime]
     [gap] = payload["why"]["details"]["gaps"]
     assert gap["kind"] == "name_ambiguous"
     matches = gap["expected"]["matches"]
-    assert [(row["display"], row["key"]) for row in matches] == [
-        ("Acme Data Co", "a"),
-        ("Acme Labs", "e"),
+    assert matches == [
+        {"entity": "entity.subscriptions_account", "display": "Acme Data Co", "key": "a"},
+        {"entity": "entity.subscriptions_account", "display": "Acme Labs", "key": "e"},
     ]
-    # Each match is a whole call: the draft filtered to its row and grouped by its name.
-    for row in matches:
-        call = row["call"]
-        assert {"field": ACCOUNT_ID, "op": "is", "value": row["key"]} in call["where"]
-        assert call["group_by"][-1] == ACCOUNT_NAME
-        assert runtime.validate(call, now=NOW["now"])["ok"]
     assert payload["why"]["details"]["clarification"]["question"] == (
         "Which one does 'Acme' mean: Account Acme Data Co (a) or Account Acme Labs (e)?"
     )
+    # No match is a call to run; the full name settles it.
+    assert '"call"' not in json.dumps(payload["why"])
+    full = _plan(runtime, "How many new accounts did Acme Data Co have last month?")
+    assert full["status"] == "ok", full.get("why")
+
+
+def test_a_capitalized_name_is_read_whole(subscriptions: Callable[..., Runtime]) -> None:
+    # "Accounts" is a catalog word, but it is part of the name: no display holds "Acme
+    # Accounts", so plan holds, as it does for the quoted name.
+    runtime = subscriptions()
+    for question in (
+        "How many new accounts did Acme Accounts have last month?",
+        'How many new accounts did "Acme Accounts" have last month?',
+    ):
+        payload = _plan(runtime, question)
+        assert payload["status"] != "ok", question
+        assert "execute" not in payload["next"].get("ready_for", [])
+        assert "Acme Data Co" not in json.dumps(payload), question
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # The options would read Acme's row alone and drop Globex.
+        "How many new accounts did Acme and Globex have last month?",
+        # They would drop the hour.
+        "How many new accounts did Acme have last month at 9am?",
+    ],
+)
+def test_an_ambiguous_name_never_offers_a_call_that_drops_a_constraint(
+    subscriptions: Callable[..., Runtime], question: str
+) -> None:
+    runtime = subscriptions(
+        "INSERT INTO accounts VALUES ('e','Acme Labs','customer'); "
+        "INSERT INTO events VALUES (7,'e','signup','2026-09-15');"
+    )
+    payload = _plan(runtime, question)
+    assert payload["status"] != "ok"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert '"call"' not in json.dumps(payload.get("why") or {})
 
 
 def test_a_name_of_rows_of_two_entities_asks_which(subscriptions: Callable[..., Runtime]) -> None:

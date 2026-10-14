@@ -49,7 +49,10 @@ INSERT INTO account_day SELECT a.account_id, d::DATE,
 
 
 def _files(
-    display: Any, account_dimensions: dict[str, Any], event_display: str | None
+    display: Any,
+    account_dimensions: dict[str, Any],
+    event_display: str | None,
+    event_region: bool = False,
 ) -> dict[str, str]:
     account: dict[str, Any] = {"key": ["account_id"], "model": "accounts"}
     if display is not None:
@@ -101,6 +104,11 @@ def _files(
             "dimensions": {
                 "kind": {"kind": "categorical", "domain": ["signup", "close", "upgrade"]},
                 "reference": {"kind": "categorical", "column": "kind"},
+                **(
+                    {"region": {"kind": "categorical", "domain": ["north", "south"]}}
+                    if event_region
+                    else {}
+                ),
             },
             "measures": {
                 "events_all": {
@@ -210,16 +218,19 @@ def subscriptions(
         display: Any = "name",
         account_dimensions: dict[str, Any] | None = None,
         event_display: str | None = None,
+        extra: str = "",
+        event_region: bool = False,
     ) -> Runtime:
-        key = repr((display, account_dimensions, event_display))
+        key = repr((display, account_dimensions, event_display, extra, event_region))
         if key not in roots:
             roots[key] = root = tmp_path_factory.mktemp("subscriptions")
-            for name, text in _files(display, account_dimensions or {}, event_display).items():
+            files = _files(display, account_dimensions or {}, event_display, event_region)
+            for name, text in files.items():
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text, encoding="utf-8")
             with duckdb.connect(str(root / "subscriptions.duckdb")) as connection:
-                connection.execute(SEED)
+                connection.execute(SEED + extra)
         runtime = Runtime.from_path(str(roots[key]))
         runtimes.append(runtime)
         return runtime
@@ -272,8 +283,11 @@ def test_a_list_answers_with_the_rows_of_the_entity_it_lists(
     runtime = subscriptions()
     query = _ready(_plan(runtime, question))
     assert query["group_by"] == [ACCOUNT_ID, ACCOUNT_NAME]
-    # A list keeps the rows the subject counts: "not 0" also drops an unknown value.
-    assert query["having"] == [{"field": metric, "op": "not", "value": 0}]
+    # A list keeps the rows the subject counts: a known value, not 0.
+    assert query["having"] == [
+        {"field": metric, "op": "missing", "value": False},
+        {"field": metric, "op": "not", "value": 0},
+    ]
     assert query["order_by"][0] == {"field": ACCOUNT_NAME, "direction": "asc"}
     rows = runtime.query(query, now=NOW["now"])["rows"]
     actual = [(row[ACCOUNT_ID], row[ACCOUNT_NAME], row[metric]) for row in rows]
@@ -451,21 +465,69 @@ def test_who_reaching_two_entities_with_a_display_asks_which(
     payload = _plan(runtime, "Who upgraded last week?")
     assert payload["status"] == "needs_clarification"
     assert payload["next"] == {"action": "clarify"}
-    assert payload["why"]["details"]["clarification"]["question"] == "Whose rows: Account, Event?"
-    options = payload["why"]["details"]["options"]
-    assert [(row["entity"], row["call"]["group_by"]) for row in options] == [
-        ("entity.subscriptions_account", [ACCOUNT_ID, ACCOUNT_NAME]),
-        (
-            "entity.subscriptions_event",
-            ["dimension.subscriptions_event_id", "dimension.subscriptions_event_reference"],
-        ),
+    clarification = payload["why"]["details"]["clarification"]
+    assert clarification["question"] == "Whose rows: Account, Event?"
+    assert clarification["options"] == [
+        {"entity": "entity.subscriptions_account", "label": "Account"},
+        {"entity": "entity.subscriptions_event", "label": "Event"},
     ]
-    # Each option is a whole call that runs.
-    for row in options:
-        assert runtime.validate(row["call"], now=NOW["now"])["ok"]
-    # Naming the entity settles it.
+    # No option is a call to run: naming the entity settles it.
+    assert "options" not in payload["why"]["details"]
     query = _ready(_plan(runtime, "Which accounts upgraded last week?"))
     assert query["group_by"] == [ACCOUNT_ID, ACCOUNT_NAME]
+
+
+def test_who_keeps_the_questions_filters_and_offers_no_call(
+    subscriptions: Callable[..., Runtime],
+) -> None:
+    # Every event is in the south: the question's north keeps no row, whoever it lists.
+    runtime = subscriptions(
+        event_display="reference",
+        event_region=True,
+        extra="ALTER TABLE events ADD COLUMN region VARCHAR; UPDATE events SET region = 'south';",
+    )
+    payload = _plan(runtime, "Who upgraded last week in north?")
+    assert payload["status"] == "needs_clarification", payload.get("why")
+    region = {"field": "dimension.subscriptions_event_region", "op": "is", "value": "north"}
+    assert region in payload["best"]["query"]["where"]
+    # An option that ran without the north filter would answer another question.
+    assert '"call"' not in json.dumps(payload["why"])
+    query = _ready(_plan(runtime, "Which accounts upgraded last week in north?"))
+    assert region in query["where"]
+    assert runtime.query(query, now=NOW["now"])["rows"] == []
+
+
+_MRR_LISTED = """
+SELECT a.account_id, a.name, SUM(d.mrr) FROM account_day d JOIN accounts a USING (account_id)
+WHERE a.segment = 'customer' AND d.day = DATE '2026-10-04'
+GROUP BY 1, 2 HAVING SUM(d.mrr) IS NOT NULL AND SUM(d.mrr) != 0 ORDER BY 2
+"""
+
+
+def test_a_list_keeps_only_rows_with_a_known_value(subscriptions: Callable[..., Runtime]) -> None:
+    # Initech's MRR is unknown on the day: it had no MRR the list can show.
+    runtime = subscriptions(
+        extra="UPDATE account_day SET mrr = NULL WHERE account_id = 'd' AND day = '2026-10-04';"
+    )
+    query = _ready(_plan(runtime, "Which accounts had MRR on 2026-10-04?"))
+    rows = runtime.query(query, now=NOW["now"])["rows"]
+    actual = [(row[ACCOUNT_ID], row[ACCOUNT_NAME], row["mrr"]) for row in rows]
+    assert actual == _reference(runtime, _MRR_LISTED) == [("a", "Acme Data Co", 500.0)]
+
+
+def test_a_callers_having_beside_a_list_is_held(subscriptions: Callable[..., Runtime]) -> None:
+    # The caller keeps the accounts at 0 MRR (Globex); the list's own rule would drop them.
+    payload = plan_payload(
+        subscriptions(),
+        intent="Which accounts had MRR on 2026-10-04?",
+        partial_query={
+            "select": ["metric.subscriptions.mrr"],
+            "having": [{"field": "mrr", "op": "is", "value": 0}],
+            "policy_context": NOW,
+        },
+    )
+    assert payload["status"] != "ok"
+    assert "execute" not in payload["next"].get("ready_for", [])
 
 
 @pytest.mark.parametrize(
