@@ -154,15 +154,19 @@ def _named_by_rows(target: Any, noun: str, question: str) -> bool:
     return bool(names & said) and names & said <= rows
 
 
-def _listed(runtime: Any, question: str, query: Call) -> tuple[list[str], dict[str, Any]]:
+def _listed(
+    runtime: Any, question: str, query: Call, target: Any
+) -> tuple[list[str], dict[str, Any]]:
     """The stand-ins of what a clause opening with "which" or "who" lists, or why plan asks.
 
-    "which" lists the entity named right after it ("which accounts"). "who" lists the one entity
-    with a display the draft's subject reaches, when its clause names no entity: in "who placed
-    an order" the order may be what was placed, so nothing is listed. Several such entities ask
-    which, with one whole call per entity; none, or a term naming no single entity, lists
-    nothing (the answer-shape check holds the draft). A superlative no ranking reads ("who had
-    the most MRR") lists nothing either.
+    "which" lists the entity named right after it ("which accounts"), unless that noun is the
+    only word naming ``target``, the draft's subject ("which stores are there" would list the
+    stores the open store count counts): as for a ranking, nothing is listed. "who" lists the
+    one entity with a display the draft's subject reaches, when its clause names no entity: in
+    "who placed an order" the order may be what was placed, so nothing is listed. Several such
+    entities ask which, with one whole call per entity; none, or a term naming no single
+    entity, lists nothing (the answer-shape check holds the draft). A superlative no ranking
+    reads ("who had the most MRR") lists nothing either.
     """
 
     from ..answer_shape import _clause_entity, _list_clauses  # noqa: WPS433 - imports patterns
@@ -178,8 +182,11 @@ def _listed(runtime: Any, question: str, query: Call) -> tuple[list[str], dict[s
             continue
         if word == "which":
             run = _named_run(config, lowered, clause[0])
-            entity = _entity_grouping(config, lowered[run[0] : run[1]]) if run else None
-            return (entity[1] if entity is not None else []), {}
+            noun = lowered[run[0] : run[1]] if run else ""
+            entity = _entity_grouping(config, noun) if run else None
+            if entity is None or _named_by_rows(target, noun, question):
+                return [], {}
+            return entity[1], {}
         if _clause_entity(config, lowered, windows, clause) is not None:
             return [], {}
         entities = _display_entities(runtime, query)
@@ -380,7 +387,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             )
             held, is_top = {"code": "PLAN_RANKING_NO_KEY", "message": message}, False
     builder.groups(group_by)
-    listed, ask = ([], {}) if is_top else _listed(runtime, question, builder.build())
+    listed, ask = ([], {}) if is_top else _listed(runtime, question, builder.build(), target)
     drafted = builder.build()
     builder = QueryBuilder(
         config,

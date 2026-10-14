@@ -882,9 +882,15 @@ refusals (`OUT_OF_SCOPE`) from relevance-floor refusals
 never counts toward relevance or appears in the sample.
 
 For `status="low_confidence"`, inspect `why` before execution. In particular,
-`PLAN_FALLBACK_SEMANTIC_DRIFT` means a fallback draft validated but changed or dropped requested
-intent slots such as target, grouping, qualification, filters, or time scope; the runtime keeps the
-closest primary draft instead of silently returning a semantically different answer.
+`PLAN_FALLBACK_SEMANTIC_DRIFT` means the named pattern's draft, which `best.query` holds, fails
+validation (`why.details.primary_errors`), and a fallback draft validated but changed or dropped
+requested intent slots such as target, grouping, qualification, filters, or time scope; the
+runtime keeps the closest primary draft instead of silently returning a semantically different
+answer. Two holds offer no draft (`best: null`): `PLAN_UNCONNECTED` when the draft's measure
+can't reach a dimension it groups or filters by (`why.details` names the `subjects`, the
+`dimensions` and the engine's `error`), and `PLAN_SUBJECT_UNMATCHED` when no word the question
+asks about names the measure or metric the draft would read (`why.details.terms`, with the
+`candidates` whose names or descriptions mention them; `unrealizable` when there are none).
 Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort
 and time scope can be proven. Grouping by entity keys or selecting a key count alone does not
 prove that the qualification was applied. Store grouping terms use the same

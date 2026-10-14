@@ -59,6 +59,7 @@ from .intent_holds import (
 )
 from .intent_ir import compose_hints, parse_intent
 from .names import name_filters, name_readings, with_name_lookups
+from .no_draft import unconnected_why, unmatched_subject_why, unnamed_subject_terms
 from .orchestrator import compose
 from .plan_query import (
     _merge_partial_query,
@@ -529,6 +530,20 @@ def _question_payload(
     # A named period with explicit readings to choose from.
     time_details = (time_why or {}).get("details")
     readings = isinstance(time_details, dict) and bool(time_details.get("possible_readings"))
+    if not ready and clarify_why is None and not readings:
+        # A held draft on a subject the question doesn't name, or on pieces that don't
+        # connect, is no help to fix: plan offers none and says why (planner/no_draft.py).
+        no_draft = unmatched_subject_why(runtime, intent_str, best, partial_query) or (
+            unconnected_why(runtime, best, partial_query) if not best_ok else None
+        )
+        if no_draft is not None:
+            return finish(_no_draft_payload(intent, intent_ir.to_dict(), no_draft))
+    for row in planned:
+        # A fallback shown on a subject the question doesn't name says it is a placeholder.
+        if row["pattern"] == "catalog_fallback" and unnamed_subject_terms(
+            runtime._config, intent_str, row["draft"].query
+        ):
+            row["placeholder"] = True
     payload = {
         "plan_version": _VERSION,
         "intent": intent,
@@ -1028,6 +1043,25 @@ def _valid_values_next_steps(query: Call) -> list[dict[str, Any]]:
         for row in entity_filter.conditions
     ]
     return [{"dimension_id": field_id} for field_id in fields]
+
+
+def _no_draft_payload(
+    intent: str, intent_ir: dict[str, Any], why: dict[str, Any]
+) -> dict[str, Any]:
+    """A held plan that offers no draft (``no_draft``): ``unrealizable`` when nothing in the
+    catalog matches what the question asks about, else ``low_confidence``."""
+
+    terms = list(why["details"].get("terms") or [])
+    unmatched = why["code"] == "PLAN_SUBJECT_UNMATCHED" and not why["details"]["candidates"]
+    return {
+        "plan_version": _VERSION,
+        "intent": intent,
+        "intent_ir": intent_ir,
+        "status": "unrealizable" if unmatched else "low_confidence",
+        "best": None,
+        "why": why,
+        "next": {"discover": {"terms": " ".join(terms)}} if terms else {},
+    }
 
 
 def _out_of_scope_envelope(runtime: Any, intent: str, why: dict[str, Any]) -> dict[str, Any]:

@@ -226,14 +226,20 @@ Statuses are:
   plan again), a period comparison would put a period still in progress beside a complete one
   (`PERIOD_COMPARISON_INCOMPLETE`: its option's call compares the complete periods),
   or a validating fallback would drift from the requested target, grouping, qualification,
-  filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
+  filters, or time scope (`PLAN_FALLBACK_SEMANTIC_DRIFT`: `best.query` is then the draft that
+  fails, and `why.details.primary_errors` says why). Some holds offer no draft at all
+  (`best: null`): `PLAN_UNCONNECTED` names a measure and a dimension it reads that don't
+  connect, and `PLAN_SUBJECT_UNMATCHED` names the question's words no measure matches, with the
+  catalog objects that mention them. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
   `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
   June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
   resolves.) On a package without time, every plan with a draft yields `low_confidence`,
   including plain catalogue questions. The draft is retained, with the same
   `INVALID_TEMPORAL_ROLE` warning: "This package has no time; check the question doesn't ask
   for a time breakdown or window."
-- `unrealizable`: the intent parsed, but no pattern or fallback produced a call.
+- `unrealizable`: the intent parsed, but no pattern or fallback produced a call, or the words
+  the question asks about name no measure or metric and nothing in the catalog mentions them
+  (`PLAN_SUBJECT_UNMATCHED`).
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 
 Use `detail="query"` for a compact MCP QA loop, `detail="best"` for normal clients,

@@ -180,3 +180,18 @@ def test_a_fallback_shown_says_what_it_is() -> None:
     # A fallback checked against a primary that failed keeps saying so.
     failed = {**primary, "validation": {"ok": False}}
     assert "preserved" in _fallback_trace(related, [failed, related])["reason"]
+
+
+def test_a_callers_own_grouping_keeps_its_validation_errors(jaffle: Runtime) -> None:
+    # The caller wrote the grouping that can't be reached: the draft is their call, and the
+    # engine's refusal is the why.
+    status = "dimension.jaffle_membership_status"
+    payload = plan_payload(
+        jaffle,
+        intent="orders by customer status",
+        partial_query={"group_by": [status], "policy_context": NOW},
+    )
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] != "PLAN_UNCONNECTED"
+    assert payload["best"]["query"]["group_by"] == [status]
+    assert payload["best"]["validation_ok"] is False

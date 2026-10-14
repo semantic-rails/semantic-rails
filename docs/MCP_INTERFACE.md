@@ -682,7 +682,40 @@ holds every word of the measure the question otherwise asks for: "large order re
 still revenue (and `low_confidence` until the draft filters on large orders). If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
-`why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
+`why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it: `best.query` is then
+the named pattern's draft, which fails validation, and `why.details.primary_errors` says why.
+
+A held plan offers no draft (`best: null`, no alternatives) in two cases, since neither draft
+is one to fix:
+- **The draft's measure can't reach a dimension it reads** (`PLAN_UNCONNECTED`,
+  `low_confidence`): validation refuses it with `PATH_NOT_FOUND` or `MIXED_GRAIN_INVALID`.
+  `why.details` names the `subjects`, the `dimensions` on the entity they can't reach, that
+  `entity`, and the engine's `error` ("Orders can't reach Membership status on Customer segment
+  membership"). Group by a dimension the measure reaches, or pick a measure that reaches the
+  dimension. A dimension the caller's `query` names keeps the validation errors instead, with
+  the caller's call as the draft.
+- **No word the question asks about names the draft's measure or metric**
+  (`PLAN_SUBJECT_UNMATCHED`): "How many employees work at each store?" would draft the open
+  store count, which shares only "store", a word the grouping says. The words the question asks
+  about are its words outside the groupings it asks for and its windows, other than stopwords,
+  aggregation words ("count", "total", "average"), units of time and numbers; a measure is
+  named when one of them is a word of its label, id or synonyms, never its description. Only
+  the catch-all drafts are read this way, and never when the caller's `query` selects. The why
+  names the words that name nothing in the catalog (`details.terms`) and the measures and
+  metrics whose names or descriptions mention them (`details.candidates`); with none, the
+  status is `unrealizable`, else `low_confidence`. A measure sharing any word the question asks
+  about counts as named, even an entity's name ("customer satisfaction score" names Customer
+  count): that draft stays held, with the words it misses.
+A plan that is `ok` never changes this way. A fallback draft that `detail="full"` still shows on
+a measure the question doesn't name says so: its `trace.fallback` has `placeholder: true` and a
+reason saying not to run it.
+
+`plan` drafts no listing without a measure ("List the stores", "Which stores are there?": a
+list whose only word naming a measure is the listed noun is held, as a ranking is), no lookup
+of a dimension's value ("What is Globex's segment?"), and no ranking by a dimension ("top 5
+products by price"). Write those calls directly: a call with no `select` and a `group_by`
+lists the rows of its dimensions, and `order_by` a `group_by` dimension with `limit` ranks
+them.
 `plan` resolves a time window only when the question names exactly one, in a form it reads
 unambiguously: a year after "in", "for" or "during", or after the word "year" where no word
 qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "model year 2017"
