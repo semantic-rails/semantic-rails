@@ -330,7 +330,7 @@ EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
         ),
         "example": {
             "kind": "between",
-            "expr": {"kind": "column", "column": "<col>"},
+            "expr": "measure.<id>",
             "low": {"kind": "literal", "value": 0},
             "high": {"kind": "literal", "value": 100},
         },
