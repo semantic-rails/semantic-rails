@@ -107,7 +107,7 @@ def _history_result_warnings(config, compiled, rows, warnings, *, truncated=Fals
     by the share in the empty group, or dropped from a complete answer without one."""
     plan = compiled["logical_plan"]
     root, measures = plan.root_entity, {row.id: row for row in config.measures}
-    root_key = getattr(get_package_analysis(config).entities.get(root), "key", [])
+    root_key = getattr(get_package_analysis(config).entities.get(root), "key_columns", ())
     complete = not (truncated or getattr(rows, "truncated", False))
     complete = complete and compiled["sql_ast"].limit is None
     complete = complete and not plan.query.get("metric_filters")

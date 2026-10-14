@@ -773,7 +773,7 @@ def _measure_count_distinct_key_columns(measure: MeasureConfig, config: PackageC
     entity = _entity_index(config).get(measure.entity)
     if entity is None:
         return []
-    key_cols = list(entity.key or [entity.primary_key])
+    key_cols = list(entity.key_columns)
     return key_cols if measure.expr.column in set(key_cols) else []
 
 
@@ -1251,7 +1251,7 @@ def _synthetic_conditional_measure(
     # It aggregates the rows of its entity's table, whose grain the measures of that table
     # declare. A grain other than the entity's key wins, so a rewrite that relies on one row
     # per key refuses this measure as it refuses theirs. With no such measure it is unknown.
-    key = sorted(entity.key or [entity.primary_key])
+    key = sorted(entity.key_columns)
     grains = sorted(
         list(row.row_grain)
         for row in config.measures

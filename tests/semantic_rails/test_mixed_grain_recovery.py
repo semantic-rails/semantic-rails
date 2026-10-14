@@ -89,10 +89,8 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
     config = replace(
         config,
         entities=[
-            EntityConfig(
-                id="entity.orders", table="orders", primary_key="order_id", key=["order_id"]
-            ),
-            EntityConfig(id="entity.lines", table="lines", primary_key="line_id", key=["line_id"]),
+            EntityConfig(id="entity.orders", table="orders", key_columns=["order_id"]),
+            EntityConfig(id="entity.lines", table="lines", key_columns=["line_id"]),
         ],
         relationships=[
             RelationshipConfig(

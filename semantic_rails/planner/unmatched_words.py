@@ -255,7 +255,7 @@ def _grouped_entities(config: Any, query: Call) -> set[str]:
         for row in config.dimensions
         if row.id in grouped
         and row.entity in owners
-        and list(owners[row.entity].key) == [row.column]
+        and list(owners[row.entity].key_columns) == [row.column]
     }
 
 

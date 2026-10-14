@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ...config import load_package_config
 from ...config_validation import PackageReference
 from ...errors import SemanticLayerError
 from ...local_config import init_local_profile, local_profile_report
@@ -556,10 +557,26 @@ def cmd_project_validate(args: argparse.Namespace) -> None:
         _print_json(report)
     else:
         _print_project_validation(report)
+        _print_row_grain(ref)
         for hint in legacy_form_hint(ref.source_path, f"run `{_upgrade_command(ref)}`"):
             print(f"Hint: {hint}")
     if not report["ok"]:
         raise SystemExit(1)
+
+
+def _print_row_grain(ref: PackageReference) -> None:
+    """Name the models with no key, as information: every stored row of each counts."""
+    try:
+        models = [
+            row.model for row in load_package_config(ref.source_path).entities if row.is_row_grain
+        ]
+    except SemanticLayerError:
+        return
+    if models:
+        print(
+            f"Row grain (no key): {', '.join(models)}. Every stored row counts, and nothing can "
+            "look up one of their rows; declare a key on a model whose rows have one."
+        )
 
 
 def _upgrade_command(ref: PackageReference) -> str:

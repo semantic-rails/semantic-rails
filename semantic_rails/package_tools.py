@@ -600,7 +600,7 @@ def check_warehouse_column_reachability_report(
             table = entity_table.get(entity.id, "")
             if not table or table not in table_columns:
                 continue
-            for column in entity.key or []:
+            for column in entity.key_columns:
                 if str(column).lower() not in table_columns[table]:
                     errors.append(
                         {

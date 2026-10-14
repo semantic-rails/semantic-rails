@@ -233,18 +233,23 @@ def pass_through_disclosure(
     meaning, first = route_reading(config, start, path), crossings[0]["entity"]
     start_label, target_label = entity_label(config, start), entity_label(config, target)
     through = " and ".join(entity_label(config, row["entity"]) for row in crossings)
-    keys = list(get_package_analysis(config).entities[target].key)
+    # A row-grain target has no key to declare on the start.
+    keys = list(get_package_analysis(config).entities[target].key_columns)
     read = {row.column for row in config.dimensions if row.entity == start}
     found = "`, `".join(column for column in keys if column in read)
     has = f" (its table has `{found}`)" if found else ""
     links = [{"entity": row["entity"], "entities": {"bridge": True}} for row in crossings]
     fixes: dict[str, Any] = {
-        "declare_key": {"entity": start, "target_entity": target, "columns": keys},
+        **(
+            {"declare_key": {"entity": start, "target_entity": target, "columns": keys}}
+            if keys
+            else {}
+        ),
         "declare_link_table": links,
         "record_route": route_pin(start, target, list(path)),
     }
     advice = [
-        f"declare the {start_label}'s own {target_label} key{has}",
+        *([f"declare the {start_label}'s own {target_label} key{has}"] if keys else []),
         f"declare {through} a link table (`bridge: true`)",
         "record this route (graph.path_preferences)",
     ]

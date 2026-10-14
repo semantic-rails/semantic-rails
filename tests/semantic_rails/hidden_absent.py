@@ -58,7 +58,7 @@ VOLATILE = frozenset(
 ENGINE_READ = frozenset(
     {
         *("id", "package_id", "kind", "value", "expr", "expression", "steps", "accumulation"),
-        *("table", "primary_key", "relation_id", "key", "identifiers", "foreign_keys"),
+        *("table", "key_columns", "model", "relation_id", "identifiers", "foreign_keys"),
         *("calendar_id", "entity", "column", "data_type", "value_domain", "dimension"),
         *("temporal_class", "supported_grains", "timezone", "column_timezone", "unknown_values"),
         *("source_entity", "target_entity", "source_column", "target_column", "cardinality"),

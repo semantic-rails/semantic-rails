@@ -88,7 +88,7 @@ def _claims_config() -> PackageConfig:
         version=3,
         package=PackageMeta(package_id="claims", name="Claims", description="", warehouse="duckdb"),
         entities=[
-            EntityConfig(id="entity.claim", table="claims", primary_key="claim_id"),
+            EntityConfig(id="entity.claim", table="claims", key_columns=["claim_id"]),
         ],
         dimensions=[
             DimensionConfig(

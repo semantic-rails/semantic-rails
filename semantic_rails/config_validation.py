@@ -525,12 +525,6 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
     if not config.metric_recipes:
         add_error(errors, f"{source_path}: compiled package must declare metric recipes")
 
-    for entity in config.entities:
-        if not entity.key:
-            add_error(
-                errors, f"{source_path}: entity {entity.id} must declare at least one key column"
-            )
-
     for measure in config.measures:
         prefix = f"{source_path}: public measure {measure.id}"
         if not str(measure.description or "").strip():

@@ -203,6 +203,7 @@ class _Importer:
         self.datasets: dict[str, str] = {}
         self.fields: dict[str, str] = {}
         self.role_entities: dict[str, str] = {}
+        self.dropped: list[dict[str, str]] = []  # datasets not imported, and why
         self.ns = ""
 
     def skip(self, construct: str, name: str) -> None:
@@ -263,9 +264,11 @@ class _Importer:
             source, key = str(dataset.get("source", "")), list(dataset.get("primary_key") or [])
             if not source or re.search(r"\s", source) or not key:
                 self.skip("datasets without a primary key or defined by a query", name)
+                reason = "defined by a query" if key else "no primary key"
+                self.dropped.append({"dataset": name, "reason": reason})
                 continue
             entity_id = self.sr_id("datasets", name, f"entity.{self.ns}_{_slug(name)}")
-            document = {"table": source, "primary_key": key[0], "key": key}
+            document = {"table": source, "key_columns": key}
             document.update(
                 description=str(dataset.get("description") or ""), aliases=_synonyms(dataset)
             )
@@ -341,7 +344,9 @@ class _Importer:
             rel_id = self.sr_id("relationships", name, f"relationship.{_slug(name)}")
             if (self.residual("relationships", rel_id) or {}).get("cardinality") == "1:N":
                 ends, columns = ends[::-1], columns[::-1]  # the export writes 1:N joins reversed
-            elif not self.sidecar and set(columns[1]) != set(self.rows["entities"][ends[1]]["key"]):
+            elif not self.sidecar and set(columns[1]) != set(
+                self.rows["entities"][ends[1]]["key_columns"]
+            ):
                 self.skip("relationships not to their target's primary key", name)  # maybe not N:1
                 continue
             document: dict[str, Any] = {"source_entity": ends[0], "target_entity": ends[1]}
@@ -350,7 +355,7 @@ class _Importer:
             document.update(target_column=columns[1][0], target_columns=columns[1])
             document.update(cardinality="N:1", safety="safe")
             # The key roles the loader derives: a join on the source's own key is primary.
-            key = self.rows["entities"][ends[0]]["key"]
+            key = self.rows["entities"][ends[0]]["key_columns"]
             source_role = "primary" if set(columns[0]) <= set(key) else "foreign"
             defaults = {"name": name, "label": _titleize(name), "source_key_role": source_role}
             self.row("relationships", rel_id, document, **defaults, target_key_role="primary")
@@ -592,4 +597,5 @@ def import_ossie(
         for c, ids in sorted(importer.warnings.items())
         if ids
     ]
+    report["dropped"] = importer.dropped
     return report

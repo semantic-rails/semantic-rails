@@ -1026,9 +1026,7 @@ def _entity_in_terms_of_anchor_plan(
         return None
     if not isinstance(measure.expr, ColumnRefExpr) or measure.expr.entity or measure.expr.table:
         return None
-    measure_key_columns = list(
-        entities[measure.entity].key or [entities[measure.entity].primary_key]
-    )
+    measure_key_columns = list(entities[measure.entity].key_columns)
     if measure.expr.column not in set(measure_key_columns):
         return None
     if _all_metric_predicates(plan, measure_plan):

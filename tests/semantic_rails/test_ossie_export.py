@@ -291,7 +291,7 @@ def test_entities_over_relation_pipelines_stay_in_the_sidecar_with_their_objects
     entities = [
         replace(row, relation_id="relation.orders", table="rel_orders")
         if row.id == "entity.jaffle_order"
-        else replace(row, key=[], primary_key="")
+        else replace(row, key_columns=[])
         if row.id == "entity.jaffle_supply"
         else row
         for row in config.entities

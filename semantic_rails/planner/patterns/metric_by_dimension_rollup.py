@@ -36,7 +36,13 @@ from .._base import (
 )
 from ..call import QueryBuilder, Time
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
-from ..groupings import _entity_grouping, _explicit_grain, _maybe_group_by, _time_spec
+from ..groupings import (
+    _entity_grouping,
+    _explicit_grain,
+    _maybe_group_by,
+    _time_spec,
+    _unrankable_entity,
+)
 from ..intent_ir import _FALLBACK_STOPWORDS
 from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
 from ..ranking_checks import _dimension_nouns, _ranking_request
@@ -258,12 +264,20 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # ("bottom", "least") and the entity it ranks ("which 2 accounts had the most MRR").
     request = _ranking_request(question, _dimension_nouns(config))
     direction = "desc"
+    held: dict[str, Any] = {}
     if request is not None and request["direction"] and (is_top or request["limit"] is not None):
         is_top, direction = True, str(request["direction"]).lower()
         top_n = request["limit"] if request["limit"] is not None else top_n
         ranked = _entity_grouping(config, str(request["noun"]))
         if ranked is not None and not _named_by_rows(target, str(request["noun"]), question):
             group_by = list(dict.fromkeys([*group_by, *ranked[1]]))
+        elif ranked is None and (entity := _unrankable_entity(config, request["clause"])):
+            held = {
+                "code": "PLAN_RANKING_NO_KEY",
+                "message": f"{entity.label} has no single key to rank by; rank by one of its "
+                "dimensions.",
+                "details": {"entity": entity.id},
+            }
     builder.groups(group_by)
     drafted = builder.build()
     builder = QueryBuilder(
@@ -300,6 +314,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             "top_n": top_n if is_top else None,
         },
         score=_CATCH_ALL_SCORE,
+        blocked_reason=held,
     )
 
 

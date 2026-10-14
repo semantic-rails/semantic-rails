@@ -257,14 +257,13 @@ class _Exporter:
                 self.omit("entities", entity, "entities over relation pipelines")
                 continue
             row: dict[str, Any] = {"name": dataset_names[entity.id], "source": entity.table}
-            key = [column for column in entity.key or [entity.primary_key] if column]
-            if key:
-                row["primary_key"] = key
+            if entity.key_columns:
+                row["primary_key"] = list(entity.key_columns)
             row.update(_described(entity, ("description", "aliases")))
             if entity_fields[entity.id]:
                 row["fields"] = entity_fields[entity.id]
             datasets.append(row)
-            carried = {"table", "primary_key", "key", "description", "aliases"}
+            carried = {"table", "key_columns", "description", "aliases"}
             self.keep("entities", entity, dataset_names[entity.id], carried)
         return datasets
 

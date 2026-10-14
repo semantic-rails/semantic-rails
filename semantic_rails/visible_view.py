@@ -113,8 +113,8 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         identity="name",
     ),
     EntityConfig: _classes(
-        "id table primary_key kind relation_id key identifiers foreign_keys calendar_id "
-        "allowed_as_root freshness_sla_seconds bridge",
+        "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
+        "allowed_as_root freshness_sla_seconds bridge model",
         text="label description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names",
         identity="name aliases",

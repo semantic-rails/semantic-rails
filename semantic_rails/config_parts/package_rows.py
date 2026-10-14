@@ -70,6 +70,20 @@ from .temporal_rows import (
 from .zero_through import FieldOf, field_reader, zero_through
 
 
+def _join_into_row_grain(
+    rel_id: str, model: str, parent: str, via: list[str], path: str
+) -> SemanticLayerError:
+    """Nothing can look up one row of a row-grain model, so a join into one is refused; the fix
+    writes it from that model's side."""
+    return SemanticLayerError(
+        "INVALID_CONFIG",
+        f"{path}: {rel_id} joins into '{model}', a row-grain model (no key), so one row can't be "
+        f"looked up there. Fix: write it from {model}'s side (entities: [{model}, {parent}], "
+        f"cardinality: many_to_one, via: [{', '.join(via)}]), or declare a key on {model} if "
+        "its rows have one.",
+    )
+
+
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     package_raw = dict(raw.get("package", {}) or {})
     namespace = str(package_raw.get("namespace", package_raw.get("id", "")) or "").strip()
@@ -138,7 +152,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             entity_spec.get("key") or model_keys.get("primary"),
             default_role="primary",
         )
-        if not key:
+        if not key and not entity_spec.get("_row_grain"):
             raise SemanticLayerError(
                 "INVALID_CONFIG", f"{path}: graph entity '{entity_key}' must declare key"
             )
@@ -178,10 +192,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             EntityConfig(
                 id=entity_id,
                 table=relation_table,
-                primary_key=key[0],
+                key_columns=list(key),
                 kind=entity_kind,
                 relation_id=relation_id,
-                key=key,
                 identifiers=list(key),
                 key_roles={column: primary_role for column in key},
                 foreign_keys=foreign_keys,
@@ -208,6 +221,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     if str(item).strip()
                 ],
                 bridge=model.get("_bridge_declared") is True,
+                model=model_id if entity_spec.get("_row_grain") else "",
             )
         )
         entity_lookup[str(entity_key)] = entity_id
@@ -435,6 +449,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             default_aggregation, allowed_aggregations, invalid_aggregations, measure_class = (
                 _derive_measure_semantics(measure_spec)
             )
+            if measure_class == "semi_additive" and entity_cfg.is_row_grain:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: measure '{measure_key}' is a stock on row-grain model '{model_id}' "
+                    "(no key): a balance reads one snapshot per series, and a series is the key "
+                    f"minus the clock. Declare a key on {model_id}.",
+                )
             # Author-facing override: `default_agg:` is canonical.
             authored_default_agg = measure_spec.get("default_agg")
             if authored_default_agg is not None:
@@ -594,6 +615,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 )
             local_cols = _ensure_list(join_spec.get("via") or foreign_keys.get(edge_key))
             target_cfg = next(row for row in entities if row.id == entity_lookup[target_ref])
+            rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
+            if target_cfg.is_row_grain:
+                parent = next(k for k, v in graph_entities.items() if v.get("model") == model_id)
+                via = _ensure_list(join_spec.get("target")) or list(entity_cfg.key_columns)
+                raise _join_into_row_grain(rel_id, target_cfg.model, parent, via, path)
             target_cols = _ensure_list(join_spec.get("target") or target_cfg.key)
             if len(local_cols) != len(target_cols):
                 raise SemanticLayerError(
@@ -606,10 +632,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             if not local_role:
                 local_role = (
                     "primary"
-                    if all(
-                        column in set(entity_cfg.key or [entity_cfg.primary_key])
-                        for column in local_cols
-                    )
+                    if all(column in set(entity_cfg.key_columns) for column in local_cols)
                     else "foreign"
                 )
             target_role = str(join_spec.get("target_key_role", "") or "").lower()
@@ -635,7 +658,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: join '{model_id}.{edge_key}' has invalid safety '{safety}' (must be 'safe', 'requires_rewrite', or 'unsafe')",
                 )
-            rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
             relationships.append(
                 RelationshipConfig(
                     id=rel_id,

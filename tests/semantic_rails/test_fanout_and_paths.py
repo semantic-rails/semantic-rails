@@ -48,7 +48,7 @@ def _graph(
             EntityConfig(
                 id=name,
                 table=name.lower(),
-                primary_key="id",
+                key_columns=["id"],
                 allowed_as_root=not roots or name in roots,
             )
             for name in names

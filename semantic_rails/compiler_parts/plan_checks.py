@@ -472,17 +472,22 @@ def _validate_non_additive_sums(
         if measure.additive:
             continue
         aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-        key = list(measure.row_grain or []) or list(_entity_index(config)[measure.entity].key or [])
+        entity = _entity_index(config)[measure.entity]
         if measure.lookup_from:
             # One carried total per output row: its via foreign key, or its own row, is fixed.
             single_valued = _single_valued_columns(measure, bound, query, config)
             via_key = lookup_links(measure, config)[0]
             via_columns = via_key.source_columns or [via_key.source_column]
-            if not (set(via_columns) <= single_valued or set(key) <= single_valued):
+            if not (
+                set(via_columns) <= single_valued
+                or set(measure.row_grain or entity.key) <= single_valued
+            ):
                 _raise_non_additive_sum(measure, "parent_lookup", via_columns, config)
             continue
         if aggregation not in {"sum", "last_value", "first_value"}:
             continue
+        # Read only here: a row-grain model's rows have no key to fix, so this refuses for it.
+        key = list(measure.row_grain or entity.key)
         required = key
         if measure.measure_class == "semi_additive":
             # A stock takes one snapshot per series per bucket, then sums the series.
@@ -775,7 +780,7 @@ def _fanout_dedup_refusal(
             "measure's own grain.",
             grouped[0],
         )
-    keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
+    keys = {entity.id: list(entity.key_columns) for entity in config.entities}
     dialect = dialect_for_warehouse(config.package.warehouse)
     correlated_exists = dialect.correlated_exists
     for row in selections:
@@ -810,11 +815,14 @@ def _fanout_dedup_refusal(
             grouped[0],
         )
     entity = _entity_index(config)[measure.entity]
+    # A filter-only leaf reads EXISTS on the authored joins and never a row key, so a row-grain
+    # model's rows need none there. Grouped de-duplication and the one-row-per-key leaf of a
+    # warehouse without correlated EXISTS read the key.
+    row_grain_filter = entity.is_row_grain and not grouped and correlated_exists
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and _measure_has_source_row_key(measure, entity)
-        and (entity.key or entity.primary_key)
+        and (row_grain_filter or (entity.key and _measure_has_source_row_key(measure, entity)))
     ):
         return (
             f"'{aggregation}' of {subject} is not defined over one row per "
@@ -1481,7 +1489,7 @@ def child_group_route(
             why_invalid="A child group is for rows across a one-to-many hop; use a plain where.",
             route=route.chosen_path,
         )
-    keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
+    keys = {entity.id: list(entity.key_columns) for entity in config.entities}
     if len(route.candidate_paths) > 1 and not one_to_many_descent(route.analysis, keys):
         raise SemanticLayerError(
             "AMBIGUOUS_PATH",

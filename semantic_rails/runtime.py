@@ -160,7 +160,7 @@ def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveR
     try:
         measure = next(row for row in config.measures if row.id == refusal.details["measure_id"])
         entity = next(row for row in config.entities if row.id == measure.entity)
-        key = list(measure.row_grain or entity.key or [])
+        key = list(measure.row_grain or entity.key_columns)
         key_dimensions = [
             dimension
             for dimension in config.dimensions
@@ -810,7 +810,11 @@ def _unknown_rows_kept_warnings(runtime: Runtime, compiled, payload) -> list[dic
     ]
     if not negated or not plan.measure_plans:
         return []
-    keys = _entity_key_dimension_ids(plan.measure_plans[0].source_entity, config)
+    source = plan.measure_plans[0].source_entity
+    # A row-grain source has no key to tell its rows apart by, so nothing is said.
+    if not any(row.id == source and row.key_columns for row in config.entities):
+        return []
+    keys = _entity_key_dimension_ids(source, config)
     time = {key: value for key, value in dict(query.get("time") or {}).items() if key != "fill"}
     probe: dict[str, Any] = {
         "version": 1,

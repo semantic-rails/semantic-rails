@@ -905,13 +905,23 @@ def _object_card(
         base.update(
             {
                 "root_entity": entity.id,
-                "key": list(entity.key),
+                "key": list(entity.key_columns),
                 "allowed_as_root": entity.allowed_as_root,
                 "related_measures": [
                     measure.id for measure in config.measures if measure.entity == entity.id
                 ][:20],
             }
         )
+        if entity.is_row_grain:  # nothing groups by one of its rows
+            parents = {
+                row.target_entity for row in config.relationships if row.source_entity == object_id
+            }
+            base["row_grain"] = (
+                "No key: every stored row counts. It looks up "
+                f"{', '.join(sorted(parents)) or 'no other entity'}; nothing can look up one of "
+                "its rows."
+            )
+            base["recommended_next_actions"] = ["inspect related measures"]
     elif obj.kind == "relationship":
         base.update(_relationship_card_payload(config, object_id))
     elif obj.kind == "segment":

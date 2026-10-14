@@ -404,7 +404,7 @@ def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkey
     the ceiling. The note scans edges a bounded number of times and caches only a boolean.
     """
     base = load_package_config(str(_write_package(tmp_path)))
-    entities = [EntityConfig(id=f"e{i}", table=f"e{i}", primary_key="id") for i in range(11)]
+    entities = [EntityConfig(id=f"e{i}", table=f"e{i}", key_columns=["id"]) for i in range(11)]
     relationships = [
         RelationshipConfig(
             id=f"r{i}_{j}",

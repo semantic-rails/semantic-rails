@@ -184,8 +184,10 @@ def _default_temporal_role(measure: MeasureConfig) -> str:
 
 
 def _measure_has_source_row_key(measure: MeasureConfig, entity: EntityConfig) -> bool:
-    """Whether the measure's source rows are at its entity's key."""
-    key = entity.key or [entity.primary_key]
+    """Whether the measure's source rows are at its entity's key (never: a row-grain model)."""
+    if entity.is_row_grain:
+        return False
+    key = entity.key
     return measure.source_relation in {"", entity.table} and sorted(
         measure.row_grain or key
     ) == sorted(key)

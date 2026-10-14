@@ -359,7 +359,7 @@ def test_name_fallback_cannot_select_an_explicitly_bound_entity(tmp_path: Path) 
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(pkg))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "model 'reading' must identify its primary entity" in str(exc.value)
+    assert "graph entity 'reading' has its name" in str(exc.value)
 
 
 @pytest.mark.parametrize("entities_block", [{}, {"device": {}}])
@@ -539,7 +539,6 @@ def test_model_primary_is_not_chosen_by_declaration_order(tmp_path: Path) -> Non
     [
         {"entities": ["missing", "widget"]},
         {"entities": ["widget", "missing"]},
-        {"entities": ["orphan", "widget"], "via": "widget_id"},
         {"entities": ["widget"]},
         {"entities": "widget"},
         {"from": "widget", "to": "widget"},

@@ -278,7 +278,7 @@ def _direct_dimension_source_expr(
             details={"dimension": dim_id},
         )
     target = _entity_index(config).get(dim.entity)
-    if target is None or dim.column not in set(target.key or [target.primary_key]):
+    if target is None or dim.column not in set(target.key_columns):
         return None
     expr = _direct_entity_key_source_expr(
         source_entity,
@@ -298,19 +298,21 @@ def keyed_entity(config: PackageConfig, dimension_id: str) -> Any:
     if dimension is None:
         return None
     entity = _entity_index(config).get(dimension.entity)
-    if entity is None or entity.kind == "time" or len(entity.key) != 1:
+    if entity is None or entity.kind == "time" or len(entity.key_columns) != 1:
         return None
-    return entity if dimension.column == entity.key[0] else None
+    return entity if dimension.column == entity.key_columns[0] else None
 
 
 def display_key(config: PackageConfig, dimension_id: str) -> str:
     """The key dimension of the entity ``dimension_id`` names rows of (its ``display``), else
     ``""``: grouping by a name groups by the key too, so same-named entities stay apart."""
     entity = next((row for row in config.entities if row.display == dimension_id), None)
-    if entity is None or entity.kind == "time" or len(entity.key) != 1:
+    if entity is None or entity.kind == "time" or len(entity.key_columns) != 1:
         return ""
     keys = [
-        row for row in config.dimensions if row.entity == entity.id and row.column == entity.key[0]
+        row
+        for row in config.dimensions
+        if row.entity == entity.id and row.column == entity.key_columns[0]
     ]
     keys.sort(key=lambda row: row.semantic_kind != "id")
     return keys[0].id if keys else ""

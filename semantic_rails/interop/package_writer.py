@@ -95,7 +95,9 @@ class _Writer:
 
     def model(self, entity_id: str, relation: str = "") -> tuple[str, dict[str, Any]]:
         entity, key = self.entities[entity_id], self.keys[entity_id][0]
-        spec: dict[str, Any] = {"relation": entity.table, "entities": {key: None}}
+        # A row-grain model lists only its parents: no graph entity is homed on it.
+        own = {} if entity.is_row_grain else {key: None}
+        spec: dict[str, Any] = {"relation": entity.table, "entities": own}
         if relation and relation != entity.table:  # a fact model bound to the entity's calendar
             spec = {"kind": "fact", "relation": relation, "time_entity": key}
             key = f"{key}_{_slug(relation)}"
@@ -105,9 +107,17 @@ class _Writer:
         entities: dict[str, Any] = {}
         for entity in self.config.entities:
             key, alias = self.keys[entity.id]
+            model = self.model(entity.id)[1]
+            model.update(_authored(entity, skip={f.name for f in fields(entity)} - _MODEL_FIELDS))
+            if entity.foreign_keys:  # graph.relationships states every join, so infer none
+                model["entities"].update({n: {"expr": c} for n, c in entity.foreign_keys.items()})
+                model["entities"]["bridge"] = False
+            if entity.is_row_grain:  # the loader names a row-grain model's entity from the model
+                model.update(label=entity.label, description=entity.description)
+                continue
             role = next(iter(entity.key_roles.values()), "primary")
-            columns = list(entity.key or [entity.primary_key])
-            skip = {"table", "primary_key", "key", "relation_id", "identifiers", "key_roles"}
+            columns = list(entity.key_columns)
+            skip = {"table", "key_columns", "relation_id", "identifiers", "key_roles"}
             entities[key] = {
                 **alias,
                 "key": columns if role == "primary" else {"columns": columns, "role": role},
@@ -119,18 +129,16 @@ class _Writer:
             }
             if entity.display:  # the display dimension's key on this entity's model
                 entities[key]["display"] = _keyed(entity.display, f"dimension.{self.ns}_{key}_")[0]
-            model = self.model(entity.id)[1]
-            model.update(_authored(entity, skip={f.name for f in fields(entity)} - _MODEL_FIELDS))
-            if entity.foreign_keys:  # graph.relationships states every join, so infer none
-                model["entities"].update({n: {"expr": c} for n, c in entity.foreign_keys.items()})
-                model["entities"]["bridge"] = False
         return {"entities": entities}
 
     def dimensions(self) -> None:
         roles = {role.dimension: role for role in self.config.temporal_roles}
         for dimension in self.config.dimensions:
             entity = self.entities[dimension.entity]
-            keys = {*entity.key, *(c for cols in entity.foreign_keys.values() for c in cols)}
+            keys = {
+                *entity.key_columns,
+                *(c for cols in entity.foreign_keys.values() for c in cols),
+            }
             if dimension.semantic_kind == "id" and dimension.column in keys:
                 continue  # the loader creates key and foreign-key dimensions itself
             prefix = f"dimension.{self.ns}_{self.keys[entity.id][0]}_"

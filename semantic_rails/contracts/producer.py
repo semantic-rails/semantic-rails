@@ -276,7 +276,7 @@ def _resources_from_normalized(
         measures_by_entity.setdefault(measure.entity, []).append(measure)
     for entity in sorted(fallback_config.entities, key=lambda item: item.id):
         columns: dict[str, dict[str, Any]] = {}
-        for key in [entity.primary_key, *entity.key, *entity.identifiers]:
+        for key in [*entity.key_columns, *entity.identifiers]:
             _add_column(columns, key, required_by=entity.id)
         for foreign_columns in entity.foreign_keys.values():
             for key in foreign_columns:

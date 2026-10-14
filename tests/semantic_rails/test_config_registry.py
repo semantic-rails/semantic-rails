@@ -69,10 +69,16 @@ def test_alias_resolution_exact_and_ambiguous(package_config_factory):
         ),
         entities=[
             EntityConfig(
-                id="foo.Account", table="foo_account", primary_key="account_id", aliases=["account"]
+                id="foo.Account",
+                table="foo_account",
+                key_columns=["account_id"],
+                aliases=["account"],
             ),
             EntityConfig(
-                id="bar.Account", table="bar_account", primary_key="account_id", aliases=["account"]
+                id="bar.Account",
+                table="bar_account",
+                key_columns=["account_id"],
+                aliases=["account"],
             ),
         ],
         dimensions=[

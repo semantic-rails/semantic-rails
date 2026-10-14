@@ -129,15 +129,16 @@ def _entity_stand_ins(config: Any, entity: Any, term: str = "") -> tuple[list[st
     one-column key), and the one that names a row beside them.
 
     That is its ``display`` dimension, else its one dimension (not a clock) whose own words name
-    ``term`` ("Store name" for "store"), else none. A composite key, or a key the caller can't
-    see, has no stand-ins. Drafting and every readiness check read the entity through this.
+    ``term`` ("Store name" for "store"), else none. A composite key, no key (row grain), or a
+    key the caller can't see has no stand-ins. Drafting and every readiness check read the
+    entity through this.
     """
 
-    if len(entity.key) != 1:
+    if len(entity.key_columns) != 1:
         return [], []
     owned = [row for row in visible_dimensions(config) if row.entity == entity.id]
-    keys = [row.id for row in owned if row.column == entity.key[0]]
-    others = [row for row in owned if row.column != entity.key[0]]
+    keys = [row.id for row in owned if row.column == entity.key_columns[0]]
+    others = [row for row in owned if row.column != entity.key_columns[0]]
     shown = [row.id for row in others if entity.display and row.id == entity.display]
     if not shown:
         clocks = {row.dimension for row in config.temporal_roles}
@@ -158,6 +159,21 @@ def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
         kinds = {row.id: row.semantic_kind for row in visible_dimensions(config)}
         keys = [key for key in keys if kinds.get(key) == "id"]
     return (named[0], [*keys, *shown]) if len(keys) == 1 else None
+
+
+def _unrankable_entity(config: Any, clause: str) -> Any | None:
+    """The one entity the last words of a ranking clause name whole ("top 5 account days") when
+    it has no single key column to rank its rows by: a composite key, or none (row grain)."""
+
+    words = clause.split()
+    named = {
+        row.id: row
+        for row in config.entities
+        for size in (1, 2)
+        if _names_whole_entity(" ".join(words[-size:]), row)
+    }
+    entity = next(iter(named.values())) if len(named) == 1 else None
+    return entity if entity is not None and len(entity.key_columns) != 1 else None
 
 
 def _key_only_assumptions(
