@@ -475,6 +475,10 @@ def _anchored_entity_set_plan(
     numerator_predicates = [dict(item) for item in list(numerator.predicates or [])]
     denominator_predicates = [dict(item) for item in list(denominator.predicates or [])]
     denominator_predicate_keys = _predicate_payload_set(denominator_predicates)
+    # Only a part of the whole shares its rows: the numerator must keep every denominator
+    # predicate, so its set is inside the whole's. Other ratios lower each operand on its own.
+    if not denominator_predicate_keys <= _predicate_payload_set(numerator_predicates):
+        return None
     extra_predicates = [
         item
         for item in numerator_predicates
