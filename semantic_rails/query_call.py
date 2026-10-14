@@ -382,6 +382,9 @@ class CallContext:
     now: datetime
     # The default clock of a selected measure or metric id ("" when it reads no time).
     default_clock: Callable[[str], str] | None = None
+    # The compiler's one dimension a text word compares on an entity's column (refused at the
+    # path when there is none, several, or one that isn't text); the caller passes it in.
+    text_dimension: Callable[[str, str, str, PackageConfig, str], Any] | None = None
     partial: bool = False
     notes: list[dict[str, Any]] = field(default_factory=list)
     # The call's group_by ids (dimensions lifted from select join it) and whether its time
@@ -396,6 +399,7 @@ def read_call(
     config: PackageConfig | None = None,
     now: Any = None,
     default_clock: Callable[[str], str] | None = None,
+    text_dimension: Callable[[str, str, str, PackageConfig, str], Any] | None = None,
     partial: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """``(engine query, notes)`` for a call. ``partial`` reads a plan's or builder's draft."""
@@ -415,6 +419,7 @@ def read_call(
         config=config,
         now=parse_now(now),
         default_clock=default_clock,
+        text_dimension=text_dimension,
         partial=partial,
         group_by=group_by,
         timed=timed,
@@ -894,15 +899,15 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
             fix='Write "left": {"kind": "column", "column": "<column>", "entity": "entity.<id>"}.',
         )
     table = str(left.get("table") or "").strip()
-    if context.config is not None and (left.get("entity") or table):
-        from .compiler_parts.paths import text_dimension
+    lookup = context.text_dimension
+    if context.config is not None and lookup is not None and (left.get("entity") or table):
         from .expressions import resolve_table_entity
 
         entity = str(left.get("entity") or "").strip() or resolve_table_entity(
             context.config, table
         )
         if entity:
-            text_dimension(entity, str(left.get("column")), word, context.config, f"{path}.left")
+            lookup(entity, str(left.get("column")), word, context.config, f"{path}.left")
     return word
 
 

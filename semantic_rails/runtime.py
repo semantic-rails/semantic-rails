@@ -77,6 +77,7 @@ from .compiler_parts.empty_groups import (
     observed_outside_filters,
     sql_nodes,
 )
+from .compiler_parts.paths import text_dimension
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -1634,6 +1635,7 @@ class Runtime:
                     config=self._config,
                     now=instant,
                     default_clock=self._default_clock,
+                    text_dimension=text_dimension,
                     partial=partial,
                 )
         payload: dict[str, Any] = {**internal, "policy_context": policy}
