@@ -1343,7 +1343,7 @@ def enrich_column_expression(exc: SemanticLayerError, config: PackageConfig) -> 
     )
     if not matches:
         return exc
-    details["closest_matches"] = matches
+    details["closest_matches"] = matches[:10]
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 

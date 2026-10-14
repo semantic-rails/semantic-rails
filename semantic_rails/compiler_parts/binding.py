@@ -458,24 +458,35 @@ def query_route_rows(
 
 
 def _via_candidates(config: PackageConfig, source: str, target: str) -> dict[str, Any]:
-    """The relationship ids a route's ``via`` can name, as ``closest_matches``: those walking
-    from its source to its target in one hop (the pair's one-hop routes), else those touching
-    either entity."""
-    joining = sorted({path[0] for path in pair_routes(config, source, target) if len(path) == 1})
-    touching = sorted(
-        rel.id
-        for rel in config.relationships
-        if {source, target} & {rel.source_entity, rel.target_entity}
-    )
-    found = "join `from` to `to` in one hop" if joining else "touch either entity"
+    """What a route's ``via`` can name: the relationships walking from its source to its target
+    in one hop (``closest_matches``); else the first three of the pair's routes, each ready to
+    send (``other_routes``, the rest counted in ``more_routes``); else, when no route joins the
+    pair, the relationships touching either entity (``closest_matches``)."""
+    routes = pair_routes(config, source, target)
+    joining = [path[0] for path in routes if len(path) == 1]
+    found: dict[str, Any] = {}
+    if joining:
+        found["closest_matches"] = joining[:10]
+        listed = "closest_matches lists the relationships that join `from` to `to` in one hop"
+    elif routes:
+        found["other_routes"] = [
+            {"from": source, "to": target, "via": list(path)} for path in routes[:3]
+        ]
+        if len(routes) > 3:
+            found["more_routes"] = len(routes) - 3
+        listed = "other_routes lists the pair's routes, each ready to send in `routes`"
+    else:
+        found["closest_matches"] = sorted(
+            rel.id
+            for rel in config.relationships
+            if {source, target} & {rel.source_entity, rel.target_entity}
+        )[:10]
+        listed = "no route joins the pair; closest_matches lists the relationships at either one"
     message = (
         '`via` lists relationship ids ("relationship.<id>"), one per hop from `from` to `to`, '
-        f"not column names or entity ids; closest_matches lists the relationships that {found}."
+        f"not column names or entity ids; {listed}."
     )
-    return {
-        "closest_matches": joining or touching,
-        "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": message}],
-    }
+    return {**found, "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": message}]}
 
 
 def _guard_route_row_filters(

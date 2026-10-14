@@ -608,8 +608,9 @@ April together), never the sum of its days. A period after the last snapshot rea
 defaults to `asc` and is lowercase. `period` is the time axis (`"time"` is refused with
 `period`). NULLs sort last in both directions. A field that names no column is refused with
 `INVALID_ORDER_BY`, whose details list the columns it can name.
-A selected measure or metric id orders by the one select item that reads it; an id selected more
-than once is refused with those items' columns in `closest_matches`.
+A selected measure or metric id orders by the one select item that reads it as itself (with no
+`aggregation`, `temporal_role` or `parameters`); read so twice, or only with an override, it is
+refused with those items' columns in `closest_matches`.
 
 A ranking is `group_by` + `order_by` + `limit`. "Top 3 customers by revenue last month":
 
@@ -685,8 +686,9 @@ option's route in `routes`.
   `graph.path_preferences` row (`record_route_decision`).
 - The route must be one the engine offers for the pair; anything else is refused
   (`details.reason`: `route_not_offered`, `invalid_route_decision`, `route_decision_unused`).
-  A `via` hop that names no relationship lists in `closest_matches` the relationships that join
-  `from` to `to` in one hop, else those touching either entity. Under a row filter that reads
+  A `via` hop that names no relationship gets the relationships that join `from` to `to` in one
+  hop (`closest_matches`), else up to three of the pair's routes, ready to send (`other_routes`,
+  `more_routes`), else those touching either entity. Under a row filter that reads
   an entity on any of the pair's routes, a call route is refused with `POLICY_DENIED`
   (`route_override_under_row_policy`).
 - The answer's `routes` names every route chosen among several, the call's and the package's
@@ -744,7 +746,8 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `comparison`, `boolean`, `between` (`not_between`), `in` (`not_in`), `case`, `literal`, `call`, `column`, `nullif`, `date_add` | scalar expression parts |
 
 A part that reads row values (`column`, `in`, `date_add`) is not a query value on its own: it is
-refused with `supported_kinds`, and a raw `column` with the dimensions on it in `closest_matches`.
+refused at its path with the kinds a select item can be (`supported_kinds`), and a raw `column`
+with the dimensions on it in `closest_matches`.
 
 Conditions inside a kind (`aggregate.filter.all`, `scoped_aggregate.where`, ...) use the
 [filter words](#filter-words); `over` uses the [entity filter](#entity-filters) words. Every

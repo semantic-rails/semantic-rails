@@ -1380,6 +1380,7 @@ def _order_by(raw: Any, select: list[dict[str, Any]]) -> list[dict[str, Any]]:
         raise refusal(
             "order_by", "is a list", fix='Write [{"field": "<alias>", "direction": "desc"}].'
         )
+    columns = [(row["as"], row["expression"]) for row in select]
     out = []
     for index, item in enumerate(raw):
         path = f"order_by[{index}]"
@@ -1409,31 +1410,55 @@ def _order_by(raw: Any, select: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if str(direction).lower() in DIRECTIONS
                 else "Use asc or desc.",
             )
-        field_id = _ordered_column(field_id.strip(), f"{path}.field", select)
+        field_id = ordered_column(field_id.strip(), f"{path}.field", columns)
         out.append({"field": field_id, "direction": direction.upper()})
     return out
 
 
-def _ordered_column(field_id: str, path: str, select: list[dict[str, Any]]) -> str:
-    """The column an order_by field names: a measure or metric id that is no select alias names
-    the one select item reading it (with any override); any other field passes as written."""
-    if not field_id.startswith(REFERENCE_PREFIXES) or any(row["as"] == field_id for row in select):
+def ordered_column(field_id: str, path: str, columns: list[tuple[str, Any]]) -> str:
+    """The column an order_by field names, given the select's ``(alias, expression)`` pairs in
+    either spelling. A measure or metric id that is no alias names the one column reading it as
+    itself; read as itself twice, or only with an override (another statistic, clock or
+    parameter, which is another number), it is refused with those columns. Any other field
+    passes as written."""
+    if not field_id.startswith(REFERENCE_PREFIXES) or any(
+        alias == field_id for alias, _ in columns
+    ):
         return field_id
-    columns = [
-        row["as"]
-        for row in select
-        if row["expression"].get("kind") in ("measure", "metric")
-        and row["expression"].get(row["expression"]["kind"]) == field_id
+    plain = [alias for alias, expression in columns if _plain_reference(expression) == field_id]
+    if len(plain) == 1:
+        return plain[0]
+    named = plain or [
+        alias
+        for alias, expression in columns
+        if isinstance(expression, Mapping)
+        and expression.get("kind") == "measure"
+        and expression.get("measure") == field_id
     ]
-    if len(columns) > 1:
+    if named:
         raise refusal(
             path,
-            f"'{field_id}' is selected {len(columns)} times",
-            fix=f"Order by one of its columns: {columns}.",
+            f"'{field_id}' is selected {len(plain)} times"
+            if plain
+            else f"'{field_id}' is selected only with an override, which is another number",
+            fix=f"Order by one of its columns: {named}.",
             code="INVALID_ORDER_BY",
-            closest_matches=columns,
+            closest_matches=named,
         )
-    return columns[0] if columns else field_id
+    return field_id
+
+
+def _plain_reference(expression: Any) -> str:
+    """The id an expression names as itself: an id string, or a measure or metric reference
+    with no override; "" for anything else."""
+    if isinstance(expression, str):
+        return expression.strip()
+    kind = expression.get("kind") if isinstance(expression, Mapping) else None
+    if kind not in ("measure", "metric") or any(
+        value for key, value in expression.items() if key not in ("kind", kind)
+    ):
+        return ""
+    return str(expression.get(kind) or "")
 
 
 def _limit(raw: Any) -> int:

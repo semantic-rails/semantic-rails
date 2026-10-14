@@ -327,11 +327,35 @@ class PartialQueryState:
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
 
 
+# What a query reads as a value, by class, with the call kinds that parse to each: the classes
+# ``_validate_query_expr`` accepts and the kinds its refusal offers. A metric is written as its id,
+# and a metric predicate keeps entities and is never selected, so neither is offered. Every other
+# kind (a raw column, an IN list, a date shift) reads row values.
+_QUERY_VALUE_KINDS: dict[type, tuple[str, ...]] = {
+    MeasureRefExpr: ("measure",),
+    MetricRecipeRefExpr: (),
+    AggregateExpr: ("aggregate", "semi_additive"),
+    ScopedAggregateExpr: ("scoped_aggregate",),
+    LiteralExpr: ("literal",),
+    RatioExpr: ("ratio",),
+    DistributionExpr: ("distribution",),
+    ArithmeticExpr: ("arithmetic", "binary"),
+    ComparisonExpr: ("comparison",),
+    BooleanExpr: ("boolean", "between", "not_between"),
+    CallExpr: ("call", "nullif"),
+    CaseExpr: ("case",),
+    OffsetWindowExpr: ("cumulative", "rolling", "prior_period", "period_to_date"),
+    ShareExpr: ("share",),
+    EntityValueExpr: ("entity_value",),
+    MetricPredicateExpr: (),
+    ConversionExpr: ("conversion",),
+    ConditionalAggregateExpr: ("aggregate_if",),
+}
+
+
 def _validate_query_expr(expr: SemanticExpr) -> None:
-    if isinstance(
-        expr, (MeasureRefExpr, AggregateExpr, MetricRecipeRefExpr, LiteralExpr, ScopedAggregateExpr)
-    ):
-        return
+    if not isinstance(expr, tuple(_QUERY_VALUE_KINDS)):
+        raise _unsupported_query_kind(expr)
     if isinstance(expr, RatioExpr):
         _validate_query_expr(expr.numerator)
         _validate_query_expr(expr.denominator)
@@ -380,23 +404,27 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         # The rewrite phase validates the inner subtrees via
         # ``_conditional_aggregate_entity``.
         return
-    raise _unsupported_query_kind(expr)
 
 
-# Kinds that read one row's values, which ``_validate_query_expr`` refuses as a query value.
-_ROW_KINDS = frozenset({"column", "date_add", "in", "not_in"})
+def _validate_select_expr(expr: SemanticExpr, index: int) -> None:
+    """``_validate_query_expr`` on ``select[index]``, its refusal naming the item's path."""
+    try:
+        _validate_query_expr(expr)
+    except SemanticLayerError as exc:
+        path = f"select[{index}].expression"
+        raise SemanticLayerError(
+            exc.code, str(exc), details={**exc.details, "path": path}
+        ) from None
 
 
 def _unsupported_query_kind(expr: SemanticExpr) -> SemanticLayerError:
-    """The refusal of a row-level kind as a query value, with the kinds a call takes (the hint
-    lists them); a raw column keeps what it names, so the caller's view can offer its
+    """The refusal of a row-level kind as a query value, with the kinds a select item can be
+    (the hint lists them); a raw column keeps what it names, so the caller's view can offer its
     dimensions."""
-    from .query_call import call_kinds
-
     kind = str(expr_to_dict(expr)["kind"])
     details: dict[str, Any] = {
         "expression_kind": kind,
-        "supported_kinds": sorted(set(call_kinds()) - _ROW_KINDS),
+        "supported_kinds": sorted(name for names in _QUERY_VALUE_KINDS.values() for name in names),
     }
     if isinstance(expr, ColumnRefExpr):
         details.update({key: value for key, value in asdict(expr).items() if value})
@@ -810,7 +838,7 @@ def normalize_query(
         expression = parse_semantic_expression(
             row.get("expression", {}) or {}, context="query", path=f"query.select[{idx}].expression"
         )
-        _validate_query_expr(expression)
+        _validate_select_expr(expression, idx)
         if isinstance(expression, MetricPredicateExpr):
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
@@ -985,7 +1013,7 @@ def normalize_partial_query(
             else None
         )
         if expression:
-            _validate_query_expr(expression)
+            _validate_select_expr(expression, idx)
             if isinstance(expression, MetricPredicateExpr):
                 raise SemanticLayerError(
                     "INVALID_METRIC_PREDICATE",

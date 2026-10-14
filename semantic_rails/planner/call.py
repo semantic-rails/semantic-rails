@@ -19,7 +19,7 @@ from typing import Any
 from .. import operators
 from ..clock import Window, resolve_window
 from ..naming import last_token
-from ..query_call import EXPRESSION_KEYS, REFERENCE_PREFIXES, TIME_AXIS, refusal
+from ..query_call import EXPRESSION_KEYS, REFERENCE_PREFIXES, TIME_AXIS, ordered_column, refusal
 
 # The window keys of a time block; ``last`` and ``this`` read relative to ``now``.
 WINDOW_KEYS = ("last", "this", "start", "end")
@@ -293,6 +293,8 @@ class Call:
                 )
             else:
                 where.append(_condition(item))
+        # An order_by field naming a selected id names its column, as the front door reads it.
+        columns = [(item.alias, item.expression) for item in select]
         return cls(
             select=tuple(select),
             group_by=tuple(str(item).strip() for item in raw.get("group_by") or []),
@@ -300,8 +302,11 @@ class Call:
             having=tuple(_condition(row) for row in raw.get("having") or []),
             time=time_of(raw.get("time")),
             order_by=tuple(
-                Order(str(row["field"]).strip(), str(row.get("direction") or "asc").lower())
-                for row in raw.get("order_by") or []
+                Order(
+                    ordered_column(str(row["field"]).strip(), f"order_by[{index}].field", columns),
+                    str(row.get("direction") or "asc").lower(),
+                )
+                for index, row in enumerate(raw.get("order_by") or [])
             ),
             limit=raw.get("limit"),
             routes=tuple(
