@@ -21,9 +21,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import dialect_for_warehouse as _dialect
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.renderer import render_select_for_profile
 from semantic_rails.runtime import Runtime
@@ -34,10 +36,12 @@ from semantic_rails.sql_ast import (
     SqlExists,
     SqlField,
     SqlIdentifier,
+    SqlJoin,
     SqlLiteral,
-    SqlOrder,
     SqlSelect,
+    SqlTableFunction,
     SqlTableRef,
+    SqlWindow,
 )
 
 SEED = """
@@ -254,8 +258,9 @@ def _hit(table: SqlTableRef, condition: SqlBinary) -> SqlExists:
     )
 
 
-# Each case: a query whose answer columns are named "amount" (or "store_id", "region") and the SQL
-# it renders. A name a warehouse table holds is never quoted; one a CTE defines is.
+# Each case: a query whose answer columns are named "amount" (or "store_id") and the SQL it
+# renders. A column read through a warehouse table is never quoted for it; one read through a
+# CTE in view, or an alias the statement (or an enclosing one) gives a CTE, is.
 SCOPE_CASES = {
     # `base` is the warehouse table in the leaf and the leaf's alias in the outer query.
     "a_cte_alias_elsewhere": (
@@ -317,7 +322,8 @@ SELECT
   projected."amount" AS "amount"
 FROM projected""",
     ),
-    # A subquery reads its own relations first, then the enclosing query's.
+    # `base` is a CTE alias in one CTE and the warehouse table in the outer query and its
+    # correlated subquery.
     "a_correlated_subquery": (
         SqlSelect(
             ctes=[
@@ -371,51 +377,176 @@ WHERE
   leaf."store_id" = base.store_id
 )""",
     ),
-    # A bare name is a warehouse column where only a warehouse table holds it, a CTE's column
-    # where a CTE does, and in ORDER BY the SELECT's own column first.
-    "bare_names": (
-        SqlSelect(
-            ctes=[
-                SqlCte(
-                    "leaf",
-                    SqlSelect(
-                        select=[
-                            SqlField(_ref("region"), "region"),
-                            SqlField(SqlCall("SUM", [_ref("amount")]), "amount"),
-                        ],
-                        from_table=SqlTableRef("orders"),
-                        group_by=[_ref("region")],
-                        order_by=[SqlOrder(_ref("amount"), "DESC")],
-                    ),
-                )
-            ],
-            select=[
-                SqlField(_ref("region"), "region"),
-                SqlField(_ref("amount"), "amount"),
-            ],
-            from_table=SqlTableRef("leaf"),
-            order_by=[SqlOrder(_ref("amount"), "DESC")],
-        ),
-        """WITH leaf AS (
-SELECT
-  region AS "region",
-  SUM(amount) AS "amount"
-FROM orders
-GROUP BY
-  region
-ORDER BY
-  "amount" DESC
-)
-SELECT
-  "region" AS "region",
-  "amount" AS "amount"
-FROM leaf
-ORDER BY
-  "amount" DESC""",
-    ),
 }
 
 
 @pytest.mark.parametrize(("query", "expected"), SCOPE_CASES.values(), ids=SCOPE_CASES.keys())
-def test_quoting_is_decided_in_each_scope(query: SqlSelect, expected: str) -> None:
+def test_quoting_is_decided_in_each_statement(query: SqlSelect, expected: str) -> None:
     assert render_select_for_profile(query) == expected
+
+
+def _orders(**clauses: Any) -> SqlSelect:
+    return SqlSelect(from_table=SqlTableRef("orders"), **clauses)
+
+
+# References whose quoting does not depend on a warehouse table's name: rendered as before. A
+# bare name that is an answer column is always quoted, whatever it reads.
+KEPT_CASES = {
+    # Unquoted, Postgres reads `user` as the session user and DuckDB refuses `end`.
+    "bare_keywords": (
+        SqlSelect(
+            select=[SqlField(_ref("user"), "user"), SqlField(_ref("end"), "end")],
+            from_table=SqlTableRef("people"),
+        ),
+        """SELECT
+  "user" AS "user",
+  "end" AS "end"
+FROM people""",
+    ),
+    # The subquery's bare name reads the enclosing CTE's "REGION", not its own table.
+    "bare_correlated_name": (
+        SqlSelect(
+            ctes=[
+                SqlCte(
+                    "c",
+                    SqlSelect(
+                        select=[
+                            SqlField(SqlLiteral(1), "REGION"),
+                            SqlField(SqlLiteral(2), "region"),
+                        ]
+                    ),
+                )
+            ],
+            select=[SqlField(_ref("c", "REGION"), "REGION")],
+            from_table=SqlTableRef("c"),
+            where=[_hit(SqlTableRef("orders"), SqlBinary(_ref("REGION"), "=", SqlLiteral(1)))],
+        ),
+        """WITH c AS (
+SELECT
+  1 AS "REGION",
+  2 AS region
+)
+SELECT
+  c."REGION" AS "REGION"
+FROM c
+WHERE
+  EXISTS (
+SELECT
+  1 AS hit
+FROM orders
+WHERE
+  "REGION" = 1
+)""",
+    ),
+    # QUALIFY, HAVING and GROUP BY read the SELECT's own columns by name.
+    "aliases_in_qualify": (
+        _orders(
+            select=[SqlField(SqlWindow(SqlCall("ROW_NUMBER", [])), "rank")],
+            qualify=[SqlBinary(_ref("rank"), "=", SqlLiteral(1))],
+        ),
+        """SELECT
+  ROW_NUMBER() OVER () AS "rank"
+FROM orders
+QUALIFY
+  "rank" = 1""",
+    ),
+    "aliases_in_group_by_and_having": (
+        _orders(
+            select=[
+                SqlField(_ref("orders", "region"), "area"),
+                SqlField(_sum("orders", "amount"), "total"),
+            ],
+            group_by=[_ref("area")],
+            having=[SqlBinary(_ref("total"), ">", SqlLiteral(10))],
+        ),
+        """SELECT
+  orders.region AS "area",
+  SUM(orders.amount) AS "total"
+FROM orders
+GROUP BY
+  "area"
+HAVING
+  "total" > 10""",
+    ),
+    # A bare name through a CTE written in another case.
+    "bare_name_through_a_cte_in_another_case": (
+        SqlSelect(
+            ctes=[SqlCte("leaf", SqlSelect(select=[SqlField(SqlLiteral(1), "REGION")]))],
+            select=[SqlField(_ref("REGION"), "REGION")],
+            from_table=SqlTableRef("LEAF"),
+        ),
+        """WITH leaf AS (
+SELECT
+  1 AS "REGION"
+)
+SELECT
+  "REGION" AS "REGION"
+FROM LEAF""",
+    ),
+    # A table-function argument reads the enclosing query's `base` (the CTE), which a later
+    # join of the subquery cannot hide.
+    "a_lateral_argument_before_a_join": (
+        SqlSelect(
+            ctes=[SqlCte("leaf", SqlSelect(select=[SqlField(SqlLiteral(3), "REGION")]))],
+            select=[SqlField(_ref("base", "REGION"), "REGION")],
+            from_table=SqlTableRef("leaf", alias="base"),
+            where=[
+                SqlExists(
+                    SqlSelect(
+                        select=[SqlField(SqlLiteral(1), "hit")],
+                        from_table=SqlTableFunction(
+                            "GENERATE_SERIES",
+                            [SqlLiteral(1), _ref("base", "REGION")],
+                            alias="g",
+                            columns=["n"],
+                            lateral=True,
+                        ),
+                        joins=[SqlJoin("CROSS", SqlTableRef("orders", alias="base"))],
+                    )
+                )
+            ],
+        ),
+        """WITH leaf AS (
+SELECT
+  3 AS "REGION"
+)
+SELECT
+  base."REGION" AS "REGION"
+FROM leaf AS base
+WHERE
+  EXISTS (
+SELECT
+  1 AS hit
+FROM LATERAL GENERATE_SERIES(1, base."REGION") AS g(n)
+CROSS JOIN orders AS base
+)""",
+    ),
+}
+
+
+@pytest.mark.parametrize(("query", "expected"), KEPT_CASES.values(), ids=KEPT_CASES.keys())
+def test_other_references_render_as_before(query: SqlSelect, expected: str) -> None:
+    assert render_select_for_profile(query) == expected
+
+
+def test_bare_keyword_columns_read_the_table() -> None:
+    sql = render_select_for_profile(KEPT_CASES["bare_keywords"][0], dialect=_dialect("duckdb"))
+    connection = duckdb.connect()
+    connection.execute("""CREATE TABLE people ("user" VARCHAR, "end" INTEGER)""")
+    connection.execute("INSERT INTO people VALUES ('ann', 7)")
+    assert connection.execute(sql).fetchall() == [("ann", 7)]
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "reference"),
+    [("duckdb", 'LEAF."REGION"'), ("postgres", 'LEAF."REGION"'), ("clickhouse", "LEAF.REGION")],
+)
+def test_a_cte_is_found_in_another_case_where_names_fold(warehouse: str, reference: str) -> None:
+    """Unquoted, LEAF names the CTE leaf, except where identifiers are case-sensitive."""
+    query = SqlSelect(
+        ctes=[SqlCte("leaf", SqlSelect(select=[SqlField(SqlLiteral(1), "REGION")]))],
+        select=[SqlField(_ref("LEAF", "REGION"), "REGION")],
+        from_table=SqlTableRef("LEAF"),
+    )
+    sql = render_select_for_profile(query, dialect=_dialect(warehouse))
+    assert f"  {reference} AS " in sql
