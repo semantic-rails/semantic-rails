@@ -136,6 +136,12 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             raise SemanticLayerError(
                 "INVALID_CONFIG", f"{path}: graph entity '{entity_key}' must declare key"
             )
+        if model.get("one_per_key") is True and model.get("variants"):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: model '{model_id}' is one_per_key, so it can't have variants: a stored "
+                "rollup isn't read one row per key, so it could answer otherwise than the model",
+            )
         if model.get("one_per_key") is True and not key:
             raise SemanticLayerError(
                 "INVALID_CONFIG",

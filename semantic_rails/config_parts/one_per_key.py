@@ -61,6 +61,10 @@ def one_per_key_relation(
     the entity (an id a rewritten package keeps)."""
     key = list(entity.key_columns)
     columns = _columns_read(entity, dimensions, measures)
+    # Some warehouses take no MIN or MAX of a true/false column (dialects.boolean_bounds).
+    booleans = {
+        row.column for row in dimensions if row.entity == entity.id and row.data_type == "boolean"
+    }
     name = slug(entity.id.removeprefix("entity."))
     return RelationConfig(
         id=f"relation.one_per_key.{name}",
@@ -76,7 +80,12 @@ def one_per_key_relation(
                 {
                     "dimensions": {col: col for col in key},
                     "aggregates": {
-                        col: {"function": "single_value", "expr": col} for col in columns
+                        col: {
+                            "function": "single_value",
+                            "expr": col,
+                            **({"boolean": True} if col in booleans else {}),
+                        }
+                        for col in columns
                     },
                 },
             ),

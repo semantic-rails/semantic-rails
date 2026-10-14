@@ -1396,10 +1396,15 @@ model:
   count is in [QUERY_CALL.md](QUERY_CALL.md#groups-across-a-link). "Headcount by department"
   counts each person once in every department they have a row in, and a person with no row
   there is the NULL group.
+- The link is walked in reverse, from the person to their rows. A package whose
+  `defaults.relationship.traversal` allows only `forward` refuses that walk with
+  `PATH_NOT_FOUND`, naming the link; allow it with `allowed_directions: [forward, reverse]` on a
+  `graph.relationships` row for the link (`entities: [memberships, person]`).
 - Put each column on one model: on the one-per-key model when it is fixed per key, on the
-  row-grain model when it can vary. A row filter on a one-per-key model's dimension is
-  `INVALID_CONFIG`; `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
-  under "One row per key".
+  row-grain model when it can vary. A row filter on a one-per-key model's dimension and
+  `variants:` on a one-per-key model are `INVALID_CONFIG` (a stored rollup isn't read one row per
+  key). `inspect` shows its `key_note`, and `semantic-rails project validate` lists it under "One
+  row per key".
 
 ### `bridge:` — link tables and junction tables
 

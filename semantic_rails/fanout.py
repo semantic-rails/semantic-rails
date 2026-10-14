@@ -663,16 +663,25 @@ def package_route(config: PackageConfig, *, start: str, target: str) -> RouteRes
 
 
 def _no_route(config: PackageConfig, start: str, target: str) -> SemanticLayerError:
-    return SemanticLayerError(
-        "PATH_NOT_FOUND",
-        f"No path from '{start}' to '{target}'",
-        details={
-            "start": start,
-            "target": target,
-            "hop_limit": package_hop_limit(config),
-            "reason": "no_relationship_chain",
-        },
-    )
+    details: dict[str, Any] = {
+        "start": start,
+        "target": target,
+        "hop_limit": package_hop_limit(config),
+        "reason": "no_relationship_chain",
+    }
+    message = f"No path from '{start}' to '{target}'"
+    # A link's rows are reached only by walking it in reverse: name the setting that allows it.
+    for rel in config.relationships:
+        if rel.link and rel.source_entity == target and "reverse" not in rel.allowed_directions:
+            message += (
+                f": link relationship '{rel.id}' ({rel.label}) allows only "
+                f"{', '.join(rel.allowed_directions) or 'no walk'}, and its rows are reached by "
+                "walking it in reverse. Set allowed_directions: [forward, reverse] on a "
+                "graph.relationships row for it."
+            )
+            details["relationship"] = rel.id
+            break
+    return SemanticLayerError("PATH_NOT_FOUND", message, details=details)
 
 
 def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolution:

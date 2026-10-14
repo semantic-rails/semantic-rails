@@ -154,6 +154,9 @@ class SqlDialect:
     reads_coverage = False
     # Whether an EXISTS subquery may sit in a select expression, not only in WHERE.
     exists_in_select = False
+    # The aggregates that read a true/false column's lowest and highest value in a group (a
+    # one-per-key model's single value): MIN and MAX where they take a boolean.
+    boolean_bounds: ClassVar[tuple[str, str]] = ("MIN", "MAX")
     # How a refusal that only this warehouse makes names it.
     label: ClassVar[str] = "This warehouse"
     # The scalar calls a package or query expression may name (``scalar_call``).
@@ -438,6 +441,7 @@ class _NestedTimezone:
 class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     name: str = "snowflake"
     reads_coverage = True
+    boolean_bounds = ("BOOLAND_AGG", "BOOLOR_AGG")
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
     # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
     case_fold = "LOWER(COLLATE({}, ''))"
@@ -573,6 +577,7 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
 
     name: str = "postgres"
     session_zone = True
+    boolean_bounds = ("BOOL_AND", "BOOL_OR")  # it has no MIN or MAX of a boolean
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"}
     # LOWER folds by its operand's collation, and a column's own collation can differ from a
     # literal's: both read as text (an enum or char column too) and fold under the ICU root
@@ -835,6 +840,7 @@ class BigQueryDialect(SqlDialect):
 
     like_escape_clause = False
     reads_coverage = True
+    boolean_bounds = ("LOGICAL_AND", "LOGICAL_OR")
     call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
     # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
     case_fold = "LOWER(COLLATE({}, ''))"
@@ -1167,6 +1173,7 @@ class AthenaDialect(SqlDialect):
 
     name: str = "athena"
     reads_coverage = True
+    boolean_bounds = ("BOOL_AND", "BOOL_OR")
     call_names = PORTABLE_CALL_NAMES | {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"}
     date_diff_units = ()  # its native date_diff counts complete elapsed units
 

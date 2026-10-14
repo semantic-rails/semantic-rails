@@ -230,8 +230,8 @@ def test_a_link_that_forbids_the_reverse_walk_names_the_setting(tmp_path):
     assert str(error) == (
         "No path from 'entity.shop_room' to 'entity.shop_room_rows': link relationship "
         "'relationship.room_rows_room' (Room rows to Room) allows only forward, and its rows "
-        "are reached by walking it in reverse. Set allowed_directions: [forward, reverse] on "
-        "its graph.relationships row (entities: [room_rows, room])."
+        "are reached by walking it in reverse. Set allowed_directions: [forward, reverse] on a "
+        "graph.relationships row for it."
     )
     reverse = {"entities": ["room_rows", "room"], "allowed_directions": ["forward", "reverse"]}
     allowed = ("graph.yml", lambda doc: doc["graph"]["relationships"].update(room_link=reverse))

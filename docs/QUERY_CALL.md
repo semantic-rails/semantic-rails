@@ -206,6 +206,8 @@ one, each entity counts once in every group it has a row in.
   total.
 - A one-per-key model's column with two values in one key reads NULL, so a sum of it leaves that
   key out.
+- A model with no key that reaches a link answers distinct counts only; its sums and row counts
+  are refused.
 
 ## `where`
 
