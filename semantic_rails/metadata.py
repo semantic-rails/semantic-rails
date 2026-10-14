@@ -78,10 +78,12 @@ from .metadata_parts.object_metadata import (
     _time_contract_metadata,
 )
 from .metadata_parts.path_coverage import (
+    PathReach,
     _declared_value_rows,
     _dimension_history_coverage,
     _metric_history_coverage_notes,
     _path_availability,
+    _path_reach,
     _valid_values_lookup_hint,
     _value_domain_for_dimension,
 )
@@ -451,26 +453,26 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
         valid_grouping_entities: list[dict[str, Any]] = []
         disabled_grouping_entities: list[dict[str, Any]] = []
         for entity in config.entities:
-            availability = _path_availability(config, root_entity, entity.id)
+            availability = _path_reach(config, root_entity, entity.id)
             row = {
                 "id": entity.id,
-                "available": availability["available"],
-                "reason": availability.get("reason", ""),
-                "path": availability.get("path", []),
+                "available": availability.available,
+                "reason": availability.reason,
+                "path": list(availability.path),
             }
             (
-                valid_grouping_entities if availability["available"] else disabled_grouping_entities
+                valid_grouping_entities if availability.available else disabled_grouping_entities
             ).append(row)
         provenance = {}
         for dim in config.dimensions:
             if dim.entity == root_entity:
                 continue
-            availability = _path_availability(config, root_entity, dim.entity)
+            availability = _path_reach(config, root_entity, dim.entity)
             provenance[dim.id] = {
                 "entity": dim.entity,
-                "path": availability.get("path", []),
-                "available": availability["available"],
-                "reason": availability.get("reason", ""),
+                "path": list(availability.path),
+                "available": availability.available,
+                "reason": availability.reason,
             }
         return {
             "root_entity": root_entity,
@@ -490,15 +492,15 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
         valid_grouping_entities = []
         disabled_grouping_entities = []
         for entity in config.entities:
-            availability = _path_availability(config, measure.entity, entity.id)
+            availability = _path_reach(config, measure.entity, entity.id)
             row = {
                 "id": entity.id,
-                "available": availability["available"],
-                "reason": availability.get("reason", ""),
-                "path": availability.get("path", []),
+                "available": availability.available,
+                "reason": availability.reason,
+                "path": list(availability.path),
             }
             (
-                valid_grouping_entities if availability["available"] else disabled_grouping_entities
+                valid_grouping_entities if availability.available else disabled_grouping_entities
             ).append(row)
         return {
             "root_entity": measure.entity,
@@ -567,23 +569,23 @@ def _result_shape_preview(query_patch: dict[str, Any]) -> dict[str, Any]:
 
 def _availability_for_object(
     config: PackageConfig, root_entity: str, object_id: str, kind: str
-) -> dict[str, Any]:
+) -> PathReach:
     maps = _config_maps(config)
     if kind == "measure":
-        return _path_availability(config, root_entity, maps["measures"][object_id].entity)
+        return _path_reach(config, root_entity, maps["measures"][object_id].entity)
     if kind == "metric":
-        return _path_availability(
+        return _path_reach(
             config,
             root_entity,
             _first_root_entity(config, maps["metric_recipes"][object_id].expression),
         )
     if kind == "dimension":
-        return _path_availability(config, root_entity, maps["dimensions"][object_id].entity)
+        return _path_reach(config, root_entity, maps["dimensions"][object_id].entity)
     if kind == "segment":
-        return _path_availability(config, root_entity, maps["segments"][object_id].entity)
+        return _path_reach(config, root_entity, maps["segments"][object_id].entity)
     if kind == "entity":
-        return _path_availability(config, root_entity, object_id)
-    return {"available": True, "reason": "", "path": [], "candidates": []}
+        return _path_reach(config, root_entity, object_id)
+    return PathReach(True, "", ())
 
 
 def _metric_executable(
@@ -894,7 +896,7 @@ def _object_card(
                 "related_measures": [
                     measure.id
                     for measure in config.measures
-                    if _path_availability(config, measure.entity, dim.entity)["available"]
+                    if _path_reach(config, measure.entity, dim.entity).available
                 ][:10],
                 "coverage_notes": coverage_notes,
                 "null_bucket_meaning": null_bucket_meaning,
@@ -976,8 +978,8 @@ def _summary_row(
     card = _object_card(runtime, str(obj["id"]), partial_query)
     row = _compact_summary_from_card(
         card,
-        available=availability["available"],
-        blocked_reason=availability.get("reason", ""),
+        available=availability.available,
+        blocked_reason=availability.reason,
         extra={
             "canonical_name": obj.get("canonical_name", ""),
             "display_name": obj.get("display_name", ""),
@@ -1838,8 +1840,8 @@ def discover_payload(
             "description": measure.description,
             "topics": list(measure.topics),
             "review_priority": str((measure.meta or {}).get("review_priority", "") or ""),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": measure.entity,
             "default_temporal_role": measure.compatible_temporal_roles[0]
             if measure.compatible_temporal_roles
@@ -1871,8 +1873,8 @@ def discover_payload(
             "description": recipe.description,
             "topics": list(recipe.topics),
             "review_priority": str((recipe.meta or {}).get("review_priority", "") or ""),
-            "available": availability["available"] and executable,
-            "blocked_reason": unsupported_reason or availability.get("reason", ""),
+            "available": availability.available and executable,
+            "blocked_reason": unsupported_reason or availability.reason,
             "root_entity": _first_root_entity(config, recipe.expression),
             "default_temporal_role": recipe.temporal_role
             or (
@@ -1923,8 +1925,8 @@ def discover_payload(
             "label": segment.label,
             "description": segment.description,
             "topics": list(segment.topics),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": segment.entity,
             "default_temporal_role": "",
             "recommended_next_actions": _recommended_actions("segment"),
@@ -1977,8 +1979,8 @@ def discover_payload(
             "label": dim.label,
             "description": dim.description,
             "topics": list(dim.topics),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": dim.entity,
             "default_temporal_role": "",
             "recommended_next_actions": _recommended_actions("dimension"),
@@ -2004,8 +2006,8 @@ def discover_payload(
             "label": entity.label,
             "description": entity.description,
             "topics": list(entity.topics),
-            "available": availability["available"],
-            "blocked_reason": availability.get("reason", ""),
+            "available": availability.available,
+            "blocked_reason": availability.reason,
             "root_entity": entity.id,
             "default_temporal_role": "",
             "recommended_next_actions": _recommended_actions("entity"),
@@ -2035,8 +2037,8 @@ def discover_payload(
                 "label": value.label,
                 "description": value.description or value.label,
                 "topics": list(dim.topics),
-                "available": availability["available"],
-                "blocked_reason": availability.get("reason", ""),
+                "available": availability.available,
+                "blocked_reason": availability.reason,
                 "root_entity": dim.entity,
                 "default_temporal_role": "",
                 "recommended_next_actions": _recommended_actions("dimension_value"),

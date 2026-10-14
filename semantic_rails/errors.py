@@ -10,6 +10,7 @@ data). ``ERROR_CODES`` are the refusals of the code table in
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from .issues import ERROR_CODES as ERROR_CODES
@@ -19,10 +20,38 @@ UNEXPECTED_ERROR_MESSAGE = "An unexpected engine error occurred; the detail is i
 
 
 class SemanticLayerError(Exception):
+    # A cache entry's details (``with_shared_details``); never handed out.
+    _shared_details: dict[str, Any] | None = None
+
     def __init__(self, code: str, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.details = dict(details or {})
+
+    @classmethod
+    def with_shared_details(
+        cls, code: str, message: str, details: dict[str, Any]
+    ) -> SemanticLayerError:
+        """The error again from a cache entry's ``details``, which stay the entry's: this
+        error's ``details`` are a deep copy of them, made when first read. No caller can reach
+        the entry to change it, and a caller that reads only the code copies nothing."""
+        error = cls(code, message)
+        del error.__dict__["_details"]
+        error._shared_details = details
+        return error
+
+    @property
+    def details(self) -> dict[str, Any]:
+        state = self.__dict__
+        if "_details" not in state:
+            # The first read of an error from ``with_shared_details``.
+            state.setdefault("_details", dict(deepcopy(self._shared_details or {})))
+        details: dict[str, Any] = state["_details"]
+        return details
+
+    @details.setter
+    def details(self, value: dict[str, Any]) -> None:
+        self.__dict__["_details"] = value
 
 
 def refusal_text(message: str, details: Mapping[str, Any]) -> tuple[str, str]:

@@ -82,19 +82,49 @@ def _min_hops_unbounded(
     return None
 
 
+def hops_to_target(
+    graph: dict[str, list[tuple[str, str]]], target: str, hop_limit: int
+) -> dict[str, int]:
+    """Each entity's fewest hops to ``target``, for the entities at most ``hop_limit`` away."""
+    reverse: dict[str, list[str]] = {}
+    for source, edges in graph.items():
+        for end, _rel_id in edges:
+            reverse.setdefault(end, []).append(source)
+    distances = {target: 0}
+    pending = deque([target])
+    while pending:
+        node = pending.popleft()
+        if distances[node] >= hop_limit:
+            continue
+        for previous in reverse.get(node, []):
+            if previous not in distances:
+                distances[previous] = distances[node] + 1
+                pending.append(previous)
+    return distances
+
+
 def enumerate_paths(
     graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
 ) -> list[list[str]]:
+    """Every simple route from ``start`` to ``target`` within ``hop_limit`` hops, in the
+    depth-first order of ``graph``.
+
+    A step is taken only when its entity can still reach the target in the hops left. Its
+    fewest hops to the target is a lower bound whatever the route visited before, so a skipped
+    step never leads to a route: the routes, and their order, are those of the full search.
+    """
+    if hop_limit < 0:
+        return []
+    distances = hops_to_target(graph, target, hop_limit)
     found: list[list[str]] = []
 
     def _dfs(node: str, path: list[str], visited: set[str]) -> None:
-        if len(path) > hop_limit:
-            return
         if node == target:
             found.append(list(path))
             return
+        left = hop_limit - len(path) - 1
         for neighbor, rel_id in graph.get(node, []):
-            if neighbor in visited:
+            if neighbor in visited or distances.get(neighbor, left + 1) > left:
                 continue
             visited.add(neighbor)
             path.append(rel_id)
@@ -419,6 +449,12 @@ def query_route_decisions(rows: Mapping[tuple[str, str], Sequence[str]]) -> Iter
         yield
     finally:
         _query_routes.reset(token)
+
+
+def query_routes_active() -> bool:
+    """Whether a query's own route decisions are in force (``query_route_decisions``), so an
+    answer may differ from the package's and must not be cached as the package's."""
+    return bool(_query_routes.get())
 
 
 RouteChoice = tuple[str, str, tuple[str, ...]]
