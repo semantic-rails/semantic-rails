@@ -135,6 +135,9 @@ class SqlDialect:
     # Whether LIKE needs an explicit ``ESCAPE '\\'`` (BigQuery and ClickHouse escape with a
     # backslash by default and have no ESCAPE clause).
     like_escape_clause = True
+    # The lowercase function a text word folds both its column and its text with, so the two
+    # always fold alike: Unicode-aware on every warehouse (Postgres by the database's collation).
+    case_fold = "LOWER"
     # The type a NULL boolean casts to.
     null_boolean_type = "BOOLEAN"
     # Whether the adapter runs each query in the zone of its time role (the runtime's
@@ -1317,6 +1320,7 @@ class ClickHouseDialect(SqlDialect):
     """
 
     like_escape_clause = False
+    case_fold = "lowerUTF8"  # LOWER folds ASCII only
     null_boolean_type = "Nullable(Bool)"
     correlated_exists = False  # 24.8 has none
     label = "ClickHouse"

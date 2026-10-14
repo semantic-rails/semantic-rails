@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,6 +55,8 @@ OPERATORS: dict[str, Operator] = {
 WORDS: tuple[str, ...] = tuple(OPERATORS)
 RANGE_WORDS = frozenset({"gt", "gte", "lt", "lte"})
 TEXT_WORDS: tuple[str, ...] = tuple(w for w, row in OPERATORS.items() if row.value_shape == "text")
+# The words that compare a number that may be unknown (a result, an entity's value).
+NUMBER_WORDS = tuple(w for w in WORDS if w not in TEXT_WORDS)
 # The words that keep the rows whose value is unknown, and say how many they kept.
 NEGATED_WORDS = frozenset(w for w, row in OPERATORS.items() if row.keeps_unknown) - {"missing"}
 # A comparison of two known values (an aggregate against a computed threshold), in SQL.
@@ -156,6 +159,71 @@ def like_hint(spelling: str, pattern: Any, *, operand: str = "value") -> str:
     return (
         "starts_with for 'X%', ends_with for '%X' or contains for '%X%', each ignoring case "
         f"(their not_ forms for NOT LIKE), or the exact values, {exact}, for any other pattern"
+    )
+
+
+# Each data type a text word cannot read (it would fold a number, a date or a flag), and the
+# words that compare it. A text or unclassified type is read.
+_NOT_TEXT = {
+    "id": "is or not with the exact values",
+    "integer": "is, not, gt, gte, lt or lte",
+    "number": "is, not, gt, gte, lt or lte",
+    "date": "time with start and end, or gt, gte, lt or lte",
+    "timestamp": "time with start and end, or gt, gte, lt or lte",
+    "boolean": "is true or is false",
+}
+
+
+def check_text_operand(word: str, data_type: Any, path: str, subject: str) -> None:
+    """Refuse a text word at ``path`` (an op's) when ``subject`` is not text."""
+    use = _NOT_TEXT.get(str(data_type or "").lower())
+    if word in TEXT_WORDS and use:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}: '{word}' matches text, and {subject} is {data_type}",
+            details={
+                "path": path,
+                "data_type": data_type,
+                "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Use {use}."}],
+            },
+        )
+
+
+def refuse_text_on_number(op: Any, path: str, subject: str, words: tuple[str, ...]) -> None:
+    """``subject``, a number, compares with ``words``: a LIKE, a text word or another word is
+    refused at ``path`` with them, never with a text word."""
+    word = word_of(op)
+    if word.replace("_", " ") in LIKE_SPELLINGS or (word in OPERATORS and word not in words):
+        listed = f"{', '.join(words[:-1])} or {words[-1]}"
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}: compares {subject}, a number: use {listed}",
+            details={
+                "path": path,
+                "received_value": op,
+                "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Use {listed}."}],
+            },
+        )
+
+
+def like_refusal(
+    op: Any, right: Any, path: str, *, code: str = "INVALID_QUERY"
+) -> SemanticLayerError | None:
+    """The refusal of a LIKE comparison (or arithmetic) ``op`` at ``path``, hinting the text word
+    for its literal ``right``'s pattern; None for any other op. Calls and packages share it."""
+    spelling = _compact(op).replace("_", " ")
+    if spelling not in LIKE_SPELLINGS:
+        return None
+    literal = isinstance(right, Mapping) and right.get("kind") == "literal"
+    hint = like_hint(spelling, right.get("value") if literal else None, operand="right")
+    return SemanticLayerError(
+        code,
+        f"{path}: LIKE is not read; a comparison takes the text words {list(TEXT_WORDS)}",
+        details={
+            "path": path,
+            "received_value": op,
+            "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Write {hint}."}],
+        },
     )
 
 
@@ -373,11 +441,11 @@ LIKE_ESCAPE = "\\"
 
 
 def like_pattern(word: str, text: str) -> str:
-    """The case-folded LIKE pattern for a text word (its ``not_`` form negates the match):
-    literal text, ``%``/``_``/``\\`` escaped, with ``%`` on the side or sides the word leaves open."""
+    """The LIKE pattern for a text word (its ``not_`` form negates the match): literal text,
+    ``%``/``_``/``\\`` escaped, with ``%`` on the side or sides the word leaves open. The SQL folds
+    its case, as the column's, so both fold alike."""
     escaped = (
-        text.lower()
-        .replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
+        text.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
         .replace("%", LIKE_ESCAPE + "%")
         .replace("_", LIKE_ESCAPE + "_")
     )

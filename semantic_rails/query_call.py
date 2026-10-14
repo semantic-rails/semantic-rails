@@ -764,7 +764,16 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
         raise refusal(path, "prior_period has one spelling", fix=f"Write {shape}.")
     if not (kind == "prior_period" and "measure" in raw):
         _check_keys(raw, tuple(dict.fromkeys(("kind", *kinds[kind]))), path)
-    text_word = _check_op(raw, kind, path) if kind in _OP_KINDS else None
+    text_word = _check_op(raw, kind, path, context) if kind in _OP_KINDS else None
+    if kind == "entity_value" and isinstance(raw.get("where"), list):
+        for index, item in enumerate(raw["where"]):
+            if isinstance(item, Mapping):
+                operators.refuse_text_on_number(
+                    item.get("op"),
+                    f"{path}.where[{index}].op",
+                    "each entity's value",
+                    operators.NUMBER_WORDS,
+                )
     if kind == "share":
         _check_share(raw, path, context)
     node: dict[str, Any] = {}
@@ -833,7 +842,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
 _OP_KINDS = frozenset({"comparison", "arithmetic", "binary"})
 
 
-def _check_op(raw: Mapping[str, Any], kind: str, path: str) -> str | None:
+def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext) -> str | None:
     """A comparison's or arithmetic's op, refused at its path when the engine reads no such op:
     a LIKE with the text word its pattern says, as in where; an arithmetic op with the closest
     of add, subtract, multiply and divide. Returns a comparison's text word, or None."""
@@ -847,18 +856,9 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str) -> str | None:
         if isinstance(right, Mapping) and right.get("kind") == "literal"
         else None
     )
-    if spelling in operators.LIKE_SPELLINGS:
-        hint = operators.like_hint(spelling, text, operand="right")
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"{path}.op: LIKE is not read; a comparison takes the text words "
-            f"{list(operators.TEXT_WORDS)}",
-            details={
-                "path": f"{path}.op",
-                "received_value": op,
-                "recovery_hints": [{"code": "USE_FILTER_WORD", "message": f"Write {hint}."}],
-            },
-        )
+    like = operators.like_refusal(op, right, f"{path}.op")
+    if like is not None:
+        raise like
     if kind != "comparison":
         if spelling in ARITHMETIC_OPS:
             return None
@@ -882,6 +882,23 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str) -> str | None:
             f"'{word}' compares with text",
             fix='Write "right": {"kind": "literal", "value": "<text>"}.',
         )
+    left = raw.get("left")
+    if not (isinstance(left, Mapping) and left.get("kind") == "column"):
+        raise refusal(
+            f"{path}.left",
+            f"'{word}' compares a dimension's column",
+            fix='Write "left": {"kind": "column", "column": "<column>", "entity": "entity.<id>"}.',
+        )
+    table = str(left.get("table") or "").strip()
+    if context.config is not None and (left.get("entity") or table):
+        from .compiler_parts.paths import text_dimension
+        from .expressions import resolve_table_entity
+
+        entity = str(left.get("entity") or "").strip() or resolve_table_entity(
+            context.config, table
+        )
+        if entity:
+            text_dimension(entity, str(left.get("column")), word, context.config, f"{path}.left")
     return word
 
 
@@ -986,6 +1003,15 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
     if not isinstance(item, Mapping) or "field" not in item and "dimension" not in item:
         return item
     word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
+    if context.config is not None and word in operators.TEXT_WORDS:
+        from .expressions import resolve_filter_dimension
+
+        try:
+            field = resolve_filter_dimension(str(item.get("field") or ""), context.config)
+        except SemanticLayerError:  # an unknown field is refused where it binds
+            field = ""
+        for dim in (row for row in context.config.dimensions if row.id == field):
+            operators.check_text_operand(word, dim.data_type, f"{path}.op", dim.id)
     return {**item, "op": word, "value": value}
 
 
@@ -1028,6 +1054,7 @@ def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:
             node["input"] = _reference(node.pop(key), f"{path}.{key}")
     op = node.get("op")
     if op is not None:
+        operators.refuse_text_on_number(op, f"{path}.op", "an aggregate", _AGGREGATE_WORDS)
         word = operators.operator_word(op, path=f"{path}.op")
         if word not in _AGGREGATE_WORDS:
             raise refusal(
@@ -1198,6 +1225,9 @@ def _entity_filter(
                 "compares the entity's aggregate, which is never tested for null",
                 fix='For an entity with none, write {"op": "is", "value": 0}.',
             )
+        operators.refuse_text_on_number(
+            condition.get("op"), f"{at}.op", "an aggregate", _AGGREGATE_WORDS
+        )
         word, value = operators.normalize_condition(
             condition.get("op"), condition.get("value"), path=at
         )
@@ -1246,13 +1276,10 @@ def _having(raw: Any, aliases: Mapping[str, Any]) -> list[dict[str, Any]]:
                 f"'{field_id}' is not a select alias, measure or metric",
                 fix=f"Use one of {sorted(aliases)}." if aliases else "Name a measure or metric.",
             )
+        operators.refuse_text_on_number(
+            item.get("op"), f"{path}.op", "a result", operators.NUMBER_WORDS
+        )
         word, value = operators.normalize_condition(item.get("op"), item.get("value"), path=path)
-        if word in operators.TEXT_WORDS:
-            raise refusal(
-                f"{path}.op",
-                f"'{word}' matches text; a result is a number",
-                fix="Use gt, gte, lt, lte, is or not.",
-            )
         out.append({"expression": expression, "op": word, "value": value})
     return out
 

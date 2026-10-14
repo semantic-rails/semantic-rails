@@ -1134,6 +1134,12 @@ def _entity_value_where(raw: Any) -> list[dict[str, Any]]:
                 "query's top-level 'where'.",
                 details={"path": path, "unsupported_keys": unsupported},
             )
+        operators.refuse_text_on_number(
+            item.get("op"),
+            f"entity_value.where[{index}].op",
+            "each entity's value",
+            operators.NUMBER_WORDS,
+        )
         filters.append(dict(item))
     return filters
 
@@ -1374,6 +1380,14 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         )
     if kind == "literal":
         return LiteralExpr(value=expr.get("value"))
+    like = operators.like_refusal(
+        expr.get("op") if kind in {"comparison", "arithmetic", "binary"} else None,
+        expr.get("right"),
+        f"{path or 'expression'}.op",
+        code="INVALID_EXPRESSION_AST",
+    )
+    if like is not None:
+        raise like
     if kind in {"arithmetic", "binary"}:
         return ArithmeticExpr(
             op=_normalize_arithmetic_op(expr.get("op", "")),
@@ -1787,6 +1801,9 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE", "metric_predicate expressions require 'op'"
             )
+        operators.refuse_text_on_number(
+            op, "metric_predicate.op", "an aggregate", tuple(operators.COMPARISON_SQL)
+        )
         if operators.operator_word(op, path="metric_predicate.op") not in operators.COMPARISON_SQL:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",

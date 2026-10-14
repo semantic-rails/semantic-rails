@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from .. import operators
 from ..ast import NormalizedQuery
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -135,10 +136,47 @@ def dimension_filter(
     expr: Any, field: str, op: Any, value: Any, config: PackageConfig, *, path: str = "where"
 ) -> Any:
     """:func:`build_filter_condition` for a filter on the dimension ``field``: on a date or
-    timestamp dimension, its text values are temporal literals."""
+    timestamp dimension, its text values are temporal literals. A text word reads only text; a
+    filter with no field compares each entity's value, a number."""
     dim = _dimension_index(config).get(field)
+    word = operators.word_of(op)
+    if dim is not None:
+        operators.check_text_operand(word, dim.data_type, f"{path}.op", dim.id)
+    elif not field:
+        operators.check_text_operand(word, "number", f"{path}.op", "each entity's value")
     temporal = dim is not None and dim.data_type in {"date", "timestamp"}
     return build_filter_condition(expr, op, value, path=path, temporal=temporal)
+
+
+def text_dimension(entity: str, column: str, word: str, config: PackageConfig, path: str) -> Any:
+    """The one dimension over ``entity``'s ``column`` that a text word compares, its type text.
+    The word reads it as a filter on that dimension does; a column that no dimension, or
+    several, declares is refused rather than guessed."""
+    dims = [
+        dim
+        for dim in _dimension_index(config).values()
+        if dim.entity == entity and str(dim.column or "").casefold() == column.casefold()
+    ]
+    if len(dims) != 1:
+        declared = "several dimensions" if dims else "no dimension"
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}: '{word}' compares a dimension's text; {entity}.{column} is the column of "
+            f"{declared}",
+            details={
+                "path": path,
+                "dimensions": [dim.id for dim in dims],
+                "recovery_hints": [
+                    {
+                        "code": "USE_FILTER_WORD",
+                        "message": "Filter on one dimension: an aggregate's filter "
+                        f'{{"all": [{{"field": "<dimension id>", "op": "{word}", "value": ...}}]}}.',
+                    }
+                ],
+            },
+        )
+    operators.check_text_operand(word, dims[0].data_type, path, dims[0].id)
+    return dims[0]
 
 
 def _pair_orientations(

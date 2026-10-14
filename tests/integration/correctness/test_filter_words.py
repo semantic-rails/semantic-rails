@@ -313,11 +313,11 @@ def _count_if(op, text, column=CHANNEL_COLUMN):
     return {"select": [{"expression": expression, "as": "n"}]}
 
 
-@pytest.fixture(scope="module")
-def unknown_channel(tmp_path_factory):
+@pytest.fixture
+def unknown_channel(tmp_path):
     """The shop with customer 105's channel recorded as "N/A", which the dimension declares as
     unknown: every reader of the channel must read it as NULL."""
-    package = tmp_path_factory.mktemp("unknown_channel") / "shop"
+    package = tmp_path / "shop"
     shutil.copytree(SHOP, package)
     seed = package / "data" / "seed.sql"
     text = seed.read_text(encoding="utf-8")
@@ -334,16 +334,22 @@ def unknown_channel(tmp_path_factory):
     runtime.close()
 
 
-@pytest.mark.parametrize(("op", "expected"), [("not_starts_with", 7), ("starts_with", 0)])
-def test_a_comparison_text_word_reads_the_dimensions_unknown_values(unknown_channel, op, expected):
+@pytest.mark.parametrize(
+    ("op", "signups", "counted"), [("not_starts_with", 7, 7), ("starts_with", 0, None)]
+)
+def test_a_comparison_text_word_reads_the_dimensions_unknown_values(
+    unknown_channel, op, signups, counted
+):
     # 105's "N/A" is unknown: not_starts_with "N" keeps it (with every other signup), and
-    # starts_with "N" never matches it, exactly as the filter on the dimension reads it.
+    # starts_with "N" never matches it, exactly as the filter on the dimension reads it. An
+    # aggregate_if that no row meets reads NULL, as one with "=" does.
     by_filter = unknown_channel.query(
         {"select": [SIGNUPS], "where": [{"field": CHANNEL, "op": op, "value": "N"}]}
     )
     by_comparison = unknown_channel.query(_count_if(op, "N"))
-    assert [row["signups"] for row in by_filter["rows"]] == [expected]
-    assert [row["n"] for row in by_comparison["rows"]] == [expected]
+    assert [row["signups"] for row in by_filter["rows"]] == [signups]
+    assert [row["n"] for row in by_comparison["rows"]] == [counted]
+    assert unknown_channel.query(_count_if("=", "zzz"))["rows"] == [{"n": None}]
 
 
 @pytest.mark.parametrize(

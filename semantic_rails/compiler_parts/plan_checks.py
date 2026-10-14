@@ -1375,7 +1375,9 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
                 ],
             },
         )
-    # ``missing`` takes a boolean, not a value of the dimension; the text words take text.
+    # ``missing`` takes a boolean, not a value of the dimension; the text words take text, of a
+    # dimension that is text.
+    operators.check_text_operand(item.op, getattr(dim, "data_type", ""), f"{path}.op", dim.id)
     if item.op == "missing" or item.op in operators.TEXT_WORDS:
         return
     if str(getattr(dim, "data_type", "") or "").lower() == "boolean" and item.op in (

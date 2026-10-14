@@ -217,6 +217,16 @@ condition on a date dimension is legal; for a time window, use `time`.
   pattern's shape: `'X%'` is `starts_with`, `'%X'` is `ends_with` and `'%X%'` is `contains`
   (`NOT LIKE` takes the `not_` form), each ignoring case. A pattern with `_` or an inner `%`
   has no word; the hint is `is` (or `not`) with the exact values, which `valid-values` lists.
+  A package's own `comparison` (a measure's `expr`) refuses `LIKE` the same way.
+- A text word ignores case by folding both the value and the text with the warehouse's own
+  lowercase function (`lowerUTF8` on ClickHouse, whose `LOWER` folds ASCII only), so a value
+  always meets a word with its own text, accented and other non-ASCII capitals included.
+  Folding never expands a letter (`ß` is not `ss`); Postgres folds by the database's collation.
+- A text word reads text: on an id, number, date, timestamp or boolean dimension it is refused
+  at its path with the words that compare one (`is` or `not` with the exact ids, the ranges for
+  a number, `time` or the ranges for a date). A result (`having`), an entity filter's `having`
+  and a per-entity value compare a number, so a text word or a `LIKE` there is refused with
+  the words that compare a number.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
 ### Unknown values
@@ -674,9 +684,13 @@ call keeps the same rows, and the answer says ties were cut:
 ```
 
 Execution fetches one row past the limit to see the tie, so `tied` is a lower bound. A
-transport cap at or below `limit` takes precedence, and then ties cannot be reported. A `limit`
-with no `order_by` keeps the first rows by the same `group_by` columns, then `period`,
-ascending with NULLs last.
+transport cap at or below `limit` takes precedence, and then ties cannot be reported.
+
+With no `order_by`, a `limit` keeps the first rows of the call's own order, so the same call
+keeps the same rows. Without `time.grain` that order is the `group_by` columns, ascending with
+NULLs last. With `time.grain` it is the series order the answer always has: `period` first,
+then the `group_by` columns, ascending, with a NULL group placed by the warehouse's default
+(a monthly series by store with `limit: 2` keeps the first month's two stores).
 
 ## `routes`
 
@@ -773,7 +787,9 @@ inline condition passes the caller's allowed filters, as a `where` condition doe
 expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NULL compares
 unknown. A `comparison` also takes a text word as its `op`, with a text literal `right`
 (`{"kind": "comparison", "op": "starts_with", "left": <column>, "right": {"kind": "literal",
-"value": "K"}}`); the word keeps its filter meaning, so a `not_` form keeps unknown rows.
+"value": "K"}}`). Its `left` is a column that exactly one dimension declares, and the word reads
+it as a filter on that dimension does: its `unknown_values` are unknown, and a `not_` form keeps
+unknown rows. A column that no dimension, or several, declares is refused.
 `LIKE` is refused there as in `where`. An `arithmetic` op other than `add`, `subtract`,
 `multiply` and `divide` (or `+`, `-`, `*`, `/`) is refused at its path with the closest op.
 
@@ -852,8 +868,9 @@ returned row's total spans the same number:
 
 In a `distribution`, `entity_value.where` filters each entity's computed value. Each item takes
 `op` and `value` (and optionally `kind: "value_filter"`); a `field` or any other key is refused
-with its index. Put dimension conditions in the call's `where`, so they apply before the
-per-entity aggregation.
+with its index. The value is a number, so `op` is `is`, `not`, a range word or `missing`; a text
+word or a `LIKE` is refused at its path. Put dimension conditions in the call's `where`, so they
+apply before the per-entity aggregation.
 
 ## The answer
 
