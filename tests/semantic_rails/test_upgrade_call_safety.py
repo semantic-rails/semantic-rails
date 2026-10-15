@@ -113,6 +113,45 @@ CUSTOMERS = {
             {**OLD_QUERY, "where": [{"field": DIM, "op": "LIKE", "value": "sign%"}]},
             "ignores case",
         ),
+        (
+            {
+                **OLD_QUERY,
+                "time": {
+                    "temporal_role": ROLE,
+                    "grain": "day",
+                    "start": "2024-07-01",
+                    "end": "2024-07-05",
+                    "fill": False,
+                },
+            },
+            "no empty periods",
+        ),
+        (
+            {
+                **OLD_QUERY,
+                "time": {
+                    "temporal_role": ROLE,
+                    "grain": "day",
+                    "start": "2024-07-01",
+                    "end": "2024-07-05",
+                },
+                "order_by": [{"field": "total_amount", "direction": "ASC"}],
+                "limit": 1,
+            },
+            "pick a period",
+        ),
+        (
+            {
+                **OLD_QUERY,
+                "time": {
+                    "temporal_role": ROLE,
+                    "grain": "day",
+                    "range": {"last": {"unit": "week", "value": 1}},
+                },
+                "limit": 3,
+            },
+            "pick a period",
+        ),
     ],
     ids=[
         "contextual-group",
@@ -124,6 +163,9 @@ CUSTOMERS = {
         "start-only",
         "start-null-end",
         "like",
+        "window-fill-false",
+        "window-limit",
+        "relative-window-limit",
     ],
 )
 def test_unsafe_query_rewrites_stop_and_write_nothing(tmp_path, query, reason):
