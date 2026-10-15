@@ -124,7 +124,7 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
             for key in _HELD
             if key in result.call and entry.get(key) not in (None, result.call[key])
         ]
-        if path[-1] in {"metric_query", "expected_query"}:
+        if entry.get("kind") == "metric_equals_query":
             stops += [
                 (
                     (*path, "policy_context"),
