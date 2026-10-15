@@ -101,6 +101,7 @@ from .metadata_parts.scope_gate import scope_block_payload as _scope_block_paylo
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
 from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
+from .request_context import policy_identity
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig, RelationshipConfig
@@ -552,9 +553,7 @@ def _policy_metadata(
     effects = policy_effects_for_object(
         config,
         object_id,
-        environment=str(policy_context.get("environment", "")),
-        audience=str(policy_context.get("audience", "")),
-        roles=policy_context.get("roles", []),
+        **policy_identity(policy_context),
     )
     return {
         "policy_effects": effects,
@@ -737,9 +736,7 @@ def _conversion_metadata(
         effects = policy_effects_for_object(
             config,
             object_id,
-            environment=str(policy_context.get("environment", "")),
-            audience=str(policy_context.get("audience", "")),
-            roles=policy_context.get("roles", []),
+            **policy_identity(policy_context),
         )
         if any(effect["action"] not in {"visible_only", "label"} for effect in effects):
             return {}
@@ -3222,9 +3219,7 @@ def _build_options_payload(
             policy_effects_for_object(
                 config,
                 str(row.get("id", "")),
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
+                **policy_identity(policy_context),
             )
             if str(row.get("id", "")).startswith(
                 ("measure.", "metric.", "dimension.", "entity.", "segment.")

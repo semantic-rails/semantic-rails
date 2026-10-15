@@ -125,6 +125,7 @@ from .renderer import render_with_slots
 from .request_context import (
     RequestContext,
     context_from_policy_context,
+    policy_identity,
     request_context_payload,
     without_trusted_attributes,
 )
@@ -1820,22 +1821,12 @@ class Runtime:
                 explain=asdict(compiled["explain"]),
             )
             out = asdict(report)
-            freshness_rows = _freshness_by_leaf(self._config, compiled)
             out["status"] = "ok"
             out["warnings"] = _compiled_warnings(self._config, compiled, payload)
             out["errors"] = []
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
-            out.update(self._answer_fields(compiled, payload))
-            out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
-            out["freshness_by_leaf"] = freshness_rows
-            out["freshness_as_of"] = _freshness_as_of(freshness_rows)
-            public_effects = visible_view.public_effects(policy_effects, self._config)
-            out["policy_effects"] = public_effects
-            out["request_context"] = request_context_payload(policy_context)
-            out["provenance_summary"] = provenance_summary(
-                self._config, compiled["logical_plan"], policy_effects=public_effects
-            )
+            out.update(self._answer_block(compiled, payload, policy_effects, policy_context))
             metadata = compile_response_metadata(self, payload, compiled)
             # validate has historically returned a curated subset of the
             # heavy metadata envelope. Honour the gating decisions encoded
@@ -1908,8 +1899,6 @@ class Runtime:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
-        freshness_rows = _freshness_by_leaf(self._config, compiled)
-        public_effects = visible_view.public_effects(policy_effects, self._config)
         out = {
             "ok": True,
             "status": "ok",
@@ -1918,15 +1907,7 @@ class Runtime:
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
-            **self._answer_fields(compiled, payload),
-            "methodology_hints": _methodology_hints(self._config, payload, compiled),
-            "freshness_by_leaf": freshness_rows,
-            "freshness_as_of": _freshness_as_of(freshness_rows),
-            "policy_effects": public_effects,
-            "request_context": request_context_payload(policy_context),
-            "provenance_summary": provenance_summary(
-                self._config, compiled["logical_plan"], policy_effects=public_effects
-            ),
+            **self._answer_block(compiled, payload, policy_effects, policy_context),
             "hop_profile": _hop_profile(self._config, compiled),
             "normalized_query": compiled["explain"].normalized_query,
             "logical_plan": asdict(compiled["logical_plan"]),
@@ -1962,13 +1943,14 @@ class Runtime:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
-        freshness_rows = _freshness_by_leaf(self._config, compiled)
-        public_effects = visible_view.public_effects(policy_effects, self._config)
+        zone = _time_zone(self._config, compiled)
+        now = _answer_now(payload)
+        withheld = _withheld_columns(policy_effects)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
         # from the request envelope through to the warehouse adapter. Hosted
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
-        limits = _normalize_query_limits(payload.get("limits"), _time_zone(self._config, compiled))
+        limits = _normalize_query_limits(payload.get("limits"), zone)
         limit = compiled["sql_ast"].limit
         probe = compiled.get("limit_probe")
         # A resource fence that hides the boundary row takes precedence over
@@ -2052,34 +2034,20 @@ class Runtime:
                 if len(paths) == 1:
                     details["path"] = paths[0]
             raise query_execution_error(details) from exc
-        mark_partial_periods(
-            rows,
-            compiled,
-            now=_answer_now(payload),
-            zone=_time_zone(self._config, compiled) or "UTC",
-        )
+        mark_partial_periods(rows, compiled, now=now, zone=zone or "UTC")
         coverage = _coverage_read(self, compiled, payload) if compiled["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
-            compiled,
-            rows,
-            payload,
-            coverage,
-            zone=_time_zone(self._config, compiled) or "UTC",
-            excluded_outputs=_withheld_columns(policy_effects),
+            compiled, rows, payload, coverage, zone=zone or "UTC", excluded_outputs=withheld
         )
         coverage_outputs = [
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
         ]
         closing_days, closing_warnings = closing_day_disclosures(
-            _closing_reads(self, compiled, payload), _withheld_columns(policy_effects)
+            _closing_reads(self, compiled, payload), withheld
         )
         out: dict[str, Any] = {
             "ok": True,
-            **result_rows(
-                rows,
-                output_columns=output_columns(self._config, compiled),
-                zone=_time_zone(self._config, compiled),
-            ),
+            **result_rows(rows, output_columns=output_columns(self._config, compiled), zone=zone),
             "row_count": len(rows),
             "truncated": bool(getattr(rows, "truncated", False)),
             "rendered_sql": compiled["sql"],
@@ -2091,24 +2059,14 @@ class Runtime:
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
                 *coverage_warnings,
-                *_partial_data_warnings(
-                    compiled,
-                    rows,
-                    coverage,
-                    now=_answer_now(payload),
-                    zone=_time_zone(self._config, compiled) or "UTC",
-                ),
+                *_partial_data_warnings(compiled, rows, coverage, now=now, zone=zone or "UTC"),
                 *_zero_after_last_row_notes(
-                    compiled,
-                    coverage,
-                    now=_answer_now(payload),
-                    zone=_time_zone(self._config, compiled) or "UTC",
-                    excluded_outputs=_withheld_columns(policy_effects),
+                    compiled, coverage, now=now, zone=zone or "UTC", excluded_outputs=withheld
                 ),
                 *_no_data_in_scope_warnings(
                     compiled,
                     rows,
-                    excluded_outputs=[*_withheld_columns(policy_effects), *coverage_outputs],
+                    excluded_outputs=[*withheld, *coverage_outputs],
                     dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
                     runtime=self,
                     payload=payload,
@@ -2121,14 +2079,14 @@ class Runtime:
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            **self._answer_fields(compiled, payload, coverage=coverage, rows=rows, hidden=hidden),
-            "methodology_hints": _methodology_hints(self._config, payload, compiled),
-            "freshness_by_leaf": freshness_rows,
-            "freshness_as_of": _freshness_as_of(freshness_rows),
-            "policy_effects": public_effects,
-            "request_context": request_context_payload(policy_context),
-            "provenance_summary": provenance_summary(
-                self._config, compiled["logical_plan"], policy_effects=public_effects
+            **self._answer_block(
+                compiled,
+                payload,
+                policy_effects,
+                policy_context,
+                coverage=coverage,
+                rows=rows,
+                hidden=hidden,
             ),
             "hop_profile": _hop_profile(self._config, compiled),
             "normalized_query": compiled["explain"].normalized_query,
@@ -2265,9 +2223,20 @@ class Runtime:
             kind="execute",
         )
 
-    def _answer_fields(
-        self, compiled, payload, *, coverage=None, rows=None, hidden=None
+    def _answer_block(
+        self,
+        compiled,
+        payload,
+        policy_effects,
+        policy_context,
+        *,
+        coverage=None,
+        rows=None,
+        hidden=None,
     ) -> dict[str, Any]:
+        """The answer's fields every validate, compile and execute response states, in order:
+        its window and assumptions, methodology, freshness, public policy effects, identity and
+        provenance."""
         out = answer_fields(
             self._config,
             compiled,
@@ -2277,7 +2246,19 @@ class Runtime:
             rows=rows,
         )
         out["assumptions"].extend(call_assumptions(self._config, compiled, payload or {}, hidden))
-        return out
+        freshness_rows = _freshness_by_leaf(self._config, compiled)
+        public_effects = visible_view.public_effects(policy_effects, self._config)
+        return {
+            **out,
+            "methodology_hints": _methodology_hints(self._config, payload, compiled),
+            "freshness_by_leaf": freshness_rows,
+            "freshness_as_of": _freshness_as_of(freshness_rows),
+            "policy_effects": public_effects,
+            "request_context": request_context_payload(policy_context),
+            "provenance_summary": provenance_summary(
+                self._config, compiled["logical_plan"], policy_effects=public_effects
+            ),
+        }
 
     def _enforced_compile(
         self, payload: dict[str, Any], policy_context: dict[str, Any]
@@ -2288,9 +2269,7 @@ class Runtime:
         policy_effects = enforce_query_policies(
             self.package_config,
             binding.object_ids,
-            environment=str(policy_context.get("environment", "")),
-            audience=str(policy_context.get("audience", "")),
-            roles=policy_context.get("roles", []),
+            **policy_identity(policy_context),
             query=payload,
             binding=binding,
         )
@@ -2307,9 +2286,7 @@ class Runtime:
             enforce_query_policies(
                 self.package_config,
                 binding.object_ids,
-                environment=str(policy_context.get("environment", "")),
-                audience=str(policy_context.get("audience", "")),
-                roles=policy_context.get("roles", []),
+                **policy_identity(policy_context),
                 query=option,
                 binding=binding,
             )
@@ -2329,9 +2306,7 @@ class Runtime:
             self.package_config,
             binding,
             rebind=bind,
-            environment=str(policy_context.get("environment", "")),
-            audience=str(policy_context.get("audience", "")),
-            roles=policy_context.get("roles", []),
+            **policy_identity(policy_context),
         )
 
     def _segment_policy_effects(
@@ -2341,9 +2316,7 @@ class Runtime:
         effects = enforce_query_policies(
             self.package_config,
             [segment_id],
-            environment=str(context.get("environment", "")),
-            audience=str(context.get("audience", "")),
-            roles=context.get("roles", []),
+            **policy_identity(context),
         )
         return visible_view.public_effects(effects, self._config)
 
@@ -2463,9 +2436,7 @@ class Runtime:
             for effect in enforce_query_policies(
                 self.package_config,
                 sorted(binding.object_ids),
-                environment=str(context.get("environment", "")),
-                audience=str(context.get("audience", "")),
-                roles=context.get("roles", []),
+                **policy_identity(context),
                 query=derived,
                 binding=binding,
             ):
