@@ -65,7 +65,7 @@ graph:
     order: {label: Order, key: [order_id], model: orders}
     store: {label: Store, key: [store_id], model: stores}
   relationships:
-    order_store: {id: relationship.order_store, entities: [order, store], via: [store_id]}
+    order_store: {as: relationship.order_store, entities: [order, store], via: [store_id]}
 """,
     "models/orders.yml": """
 model:

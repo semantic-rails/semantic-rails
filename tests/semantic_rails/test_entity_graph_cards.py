@@ -95,7 +95,7 @@ def test_an_entity_card_lists_its_relationships_from_its_own_side(adapter):
     card = _card(adapter, HISTORY, "compact")
     assert card["relationships"] == [
         {
-            "id": "relationship.order_to_customer_history",
+            "id": "relationship.jaffle_order_customer_history",
             "entity": ORDER,
             # Many orders to one history row, walked only from the order.
             "cardinality": "1:N",
@@ -230,7 +230,7 @@ def test_a_discover_entity_row_carries_its_relationships_at_full_verbosity(adapt
 # routes from an item, which recorded rows rule out: the caller's card must not say so.
 HIDDEN_NEIGHBOURS = [
     (SUPPLY, PRODUCT, "relationship.supplies_product"),
-    (HISTORY, "entity.jaffle_item", "relationship.order_to_customer_history"),
+    (HISTORY, "entity.jaffle_item", "relationship.jaffle_order_customer_history"),
 ]
 
 
