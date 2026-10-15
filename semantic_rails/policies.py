@@ -61,8 +61,6 @@ from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 
 WITHHOLD = "withhold_values"
-# A conditional aggregate's condition reads columns: each counts as the dimensions over it, and
-# a column no dimension declares as ``<entity>.<column>``, which no allowed_where lists.
 WITHHELD_SHAPE = (
     "Select the withheld metric directly, put it first in order_by, then every group key in "
     "the same direction (added for you when order_by names only the metric), with a limit of "
@@ -520,10 +518,10 @@ def withheld_shape(
 
     Accepted: a grouped query whose first ``order_by`` field is a select item naming one
     withheld metric or measure directly, ordered then by every group key in the same direction,
-    with a ``limit`` of at most ``max_rank``, no ``export``, and no other part of the query
-    reading a withheld object. Dependencies come from the compiler: the cuts the binding
-    records, then a binding of the query without that item, so a filter, threshold, segment,
-    derived metric or comparison reading it is caught. Anything else is ``POLICY_DENIED``.
+    with a ``limit`` of at most ``max_rank``, and no other part of the query reading a withheld
+    object. Dependencies come from the compiler: the cuts the binding records, then a binding of
+    the query without that item, so a filter, threshold, segment, derived metric or comparison
+    reading it is caught. Anything else is ``POLICY_DENIED``.
     """
     require_base(config)
 
@@ -1078,7 +1076,8 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
 
 
 def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> list[str]:
-    """The fields a conditional aggregate's condition reads: the dimensions over each column."""
+    """The fields a conditional aggregate's condition reads: the dimensions over each column,
+    or ``<entity>.<column>`` for a column no dimension declares (which no allowed_where lists)."""
     out: list[str] = []
     for ref in collect_column_refs(expr.condition):
         entity = _resolve_column_entity(ref, config)
