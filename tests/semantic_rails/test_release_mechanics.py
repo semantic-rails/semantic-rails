@@ -263,7 +263,7 @@ def test_publish_runs_complete_gate_and_checks_tag_version():
         "scripts/benchmark_plan.py --gate",
         "semantic-rails check --package jaffle_shop",
         "scripts/verify_package_distribution.py",
-        'scripts/verify_release_readiness.py --tag "${GITHUB_REF_NAME}"',
+        'scripts/verify_release_readiness.py --tag "${RELEASE_TAG}"',
     ):
         assert command in text
     assert "uv build --out-dir dist" in text
@@ -323,7 +323,7 @@ def test_release_marks_only_pre_release_tags_as_github_pre_releases(tmp_path, ta
     stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$GH_ARGS"\n', encoding="utf-8")
     stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
-    env |= {"GITHUB_REF_NAME": tag, "GH_ARGS": str(tmp_path / "args")}
+    env |= {"RELEASE_TAG": tag, "GH_ARGS": str(tmp_path / "args")}
     subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", script],
         cwd=tmp_path,
@@ -333,6 +333,97 @@ def test_release_marks_only_pre_release_tags_as_github_pre_releases(tmp_path, ta
     )
     args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
     assert args[:2] == ["release", "create"] and f"--prerelease={prerelease}" in args
+
+
+def test_publish_dispatch_publishes_an_existing_tag_with_this_workflow():
+    """A failed tag-push run can be redone from main; every job still builds the tag."""
+    text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    trigger = workflow.get("on", workflow.get(True))
+    assert trigger["push"] == {"tags": ["v*"]}
+    tag_input = trigger["workflow_dispatch"]["inputs"]["tag"]
+    assert tag_input["required"] is True and tag_input["type"] == "string"
+
+    assert workflow["env"]["RELEASE_TAG"] == "${{ inputs.tag || github.ref_name }}"
+    assert workflow["concurrency"]["group"].endswith("${{ inputs.tag || github.ref_name }}")
+    assert "GITHUB_REF_NAME" not in text and text.count("github.ref_name") == 2
+
+    checkouts = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert len(checkouts) == 3
+    assert all(step["with"]["ref"] == "refs/tags/${{ env.RELEASE_TAG }}" for step in checkouts)
+
+    first_job = next(iter(workflow["jobs"].values()))
+    guard = first_job["steps"][0]
+    assert guard["if"] == "github.event_name == 'workflow_dispatch'"
+    assert "git merge-base --is-ancestor" in guard["run"]
+
+
+def _publish_guard_script() -> str:
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
+    return str(workflow["jobs"]["suite"]["steps"][0]["run"])
+
+
+@pytest.fixture(scope="module")
+def tagged_origin(tmp_path_factory) -> Path:
+    """A bare origin whose main holds annotated v1.0.0 and v1.1.0rc1; lightweight v1.0.1 is off main."""
+    root = tmp_path_factory.mktemp("origin")
+    work = root / "work"
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com"}
+    env |= {"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=work, env=env, check=True, capture_output=True, timeout=60
+        )
+
+    work.mkdir()
+    git("init", "-q", "-b", "main")
+    git("commit", "-q", "--allow-empty", "-m", "release")
+    git("tag", "-a", "v1.0.0", "-m", "v1.0.0")
+    git("tag", "-a", "v1.1.0rc1", "-m", "v1.1.0rc1")
+    git("checkout", "-q", "-b", "side")
+    git("commit", "-q", "--allow-empty", "-m", "off main")
+    git("tag", "v1.0.1")
+    git("checkout", "-q", "main")
+    git("commit", "-q", "--allow-empty", "-m", "after release")
+    git("clone", "-q", "--bare", ".", str(root / "repo.git"))
+    return root
+
+
+@pytest.mark.parametrize(
+    ("ref", "tag", "refusal"),
+    [
+        ("refs/heads/main", "v1.0.0", None),
+        ("refs/heads/feature", "v1.0.0", "dispatch this workflow from main"),
+        ("refs/heads/main", "v1.1.0rc1", "must be a final release tag"),
+        ("refs/heads/main", "main", "must be a final release tag"),
+        ("refs/heads/main", "v1.0.0; true", "must be a final release tag"),
+        ("refs/heads/main", "v9.9.9", "does not exist on origin"),
+        ("refs/heads/main", "v1.0.1", "which is not on main"),
+    ],
+)
+def test_publish_dispatch_guard_refuses_anything_but_a_final_tag_on_main(
+    tmp_path, tagged_origin, ref, tag, refusal
+):
+    env = {**os.environ, "GITHUB_REF": ref, "RELEASE_TAG": tag, "RUNNER_TEMP": str(tmp_path)}
+    env |= {"GITHUB_SERVER_URL": tagged_origin.as_uri(), "GITHUB_REPOSITORY": "repo"}
+    result = subprocess.run(
+        ["bash", "-e", "-c", _publish_guard_script()],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if refusal is None:
+        assert result.returncode == 0, result.stdout + result.stderr
+    else:
+        assert result.returncode == 1 and refusal in result.stdout, result.stdout + result.stderr
 
 
 def test_gh_cli_steps_outside_a_checkout_pin_the_repository():
