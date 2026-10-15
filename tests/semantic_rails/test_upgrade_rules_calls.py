@@ -34,7 +34,7 @@ PREVIOUS = {
         "        as: amount_per_event\n"
         "      - {dimension: dimension.shop_event_event_type}\n"
         "      where:\n"
-        "      - {field: dimension.shop_event_event_type, op: LIKE, value: 'sign%'}\n"
+        "      - {field: dimension.shop_event_event_type, op: IN, value: [signup]}\n"
         f"      policy_context: {{now: '{NOW}'}}\n"
         "    # One row per type.\n"
         "    expected_shape: {min_rows: 1}\n"
@@ -64,13 +64,6 @@ PREVIOUS = {
         "    expected_rows:\n"
         "    - {temporal_role.shop_event_occurred_at__day: '2024-01-01', total_amount: 3}\n"
         "    - {temporal_role.shop_event_occurred_at__day: '2024-01-02', total_amount: 4}\n"
-        "  # A refusal test keeps the call it expects to be refused.\n"
-        "  overrides_are_refused:\n"
-        "    kind: validate_fails_with_code\n"
-        "    code: INVALID_QUERY\n"
-        "    query:\n"
-        "      select: [{measure: measure.shop.event_count}]\n"
-        "      temporal_role_overrides: {measure.shop.event_count: temporal_role.x}\n"
     ),
 }
 CURRENT = {
@@ -86,7 +79,7 @@ CURRENT = {
         "      group_by:\n"
         "      - dimension.shop_event_event_type\n"
         "      where:\n"
-        "      - {field: dimension.shop_event_event_type, op: starts_with, value: sign}\n"
+        "      - {field: dimension.shop_event_event_type, op: is, value: [signup]}\n"
         f"    now: '{NOW}'\n"
         "    # One row per type.\n"
         "    expected_shape: {min_rows: 1}\n"
@@ -142,7 +135,6 @@ def test_previous_call_examples_and_tests_are_rewritten(tmp_path, monkeypatch, c
         ("tests/core.yml", 4),
         ("tests/core.yml", 11),
     ]
-    assert "LIKE 'sign%' became starts_with, which ignores case" in hits[("examples/core.yml", 5)]
     assert _contents(project) == PREVIOUS
 
     if surface == "cli":
@@ -276,7 +268,7 @@ def test_retired_spellings_inside_a_previous_call_are_rewritten_with_it(tmp_path
     _compiles(project)
 
 
-def test_current_calls_and_refusal_tests_are_not_touched(tmp_path):
+def test_current_calls_are_not_touched(tmp_path):
     project = _package(tmp_path, {**PREVIOUS, "examples/core.yml": UPGRADED["examples/core.yml"]})
     files = PackageFiles(project)
 
@@ -286,3 +278,179 @@ def test_current_calls_and_refusal_tests_are_not_touched(tmp_path):
         ("query-call-v2", "tests/core.yml", ("tests", "count_by_day")),
         ("query-call-v2", "tests/core.yml", ("tests", "daily_amounts")),
     ]
+
+
+# Keep this table in sync with the package runner's test-kind registry.
+QUERY_FIELDS = {
+    "query_returns_columns": ("query",),
+    "query_row_count_bounds": ("query",),
+    "query_matches_snapshot": ("query",),
+    "validate_fails_with_code": ("query",),
+    "explain_contains": ("query",),
+    "metric_equals_query": ("metric_query", "expected_query"),
+}
+OLD_QUERY = {"select": [{"measure": "measure.shop.total_amount"}]}
+NEW_QUERY = {"select": ["measure.shop.total_amount"]}
+
+
+def test_query_field_coverage_matches_the_test_kind_registry():
+    from semantic_rails.architect_service import _TEST_FIELDS
+
+    assert QUERY_FIELDS == {
+        kind: tuple(key for key in fields if key.endswith("query"))
+        for kind, fields in _TEST_FIELDS.items()
+    }
+
+
+@pytest.mark.parametrize("kind,fields", QUERY_FIELDS.items())
+def test_every_test_kind_rewrites_or_names_each_query(tmp_path, kind, fields):
+    from semantic_rails.architect_scaffold import dump_project_yaml
+
+    spec = {"kind": kind, "code": "UNKNOWN_METRIC", **dict.fromkeys(fields, OLD_QUERY)}
+    files = {
+        **UPGRADED,
+        "examples/core.yml": "examples: {}\n",
+        "tests/core.yml": dump_project_yaml({"tests": {"amount": spec}}),
+    }
+    project = _package(tmp_path, files)
+    result = plan(PackageFiles(project), RULES, {})
+    hits = [f for f in result.findings if f.rule == "query-call-v2"]
+    assert {f.path[-1] for f in hits} == set(fields)
+    if kind == "validate_fails_with_code":
+        assert not result.files
+        assert all(
+            not f.edits
+            and "hand" in f.message
+            and "UNKNOWN_METRIC" in f.message
+            and "Hint:" in f.message
+            for f in hits
+        )
+    else:
+        rewritten = PackageFiles(
+            project, contents={**PackageFiles(project).contents, **result.files}
+        )
+        spec = rewritten.documents["tests/core.yml"]["tests"]["amount"]
+        assert all(spec[field] == NEW_QUERY for field in fields)
+
+
+def test_comparison_queries_share_the_certified_upgrade_check(tmp_path):
+    from semantic_rails.architect_scaffold import dump_project_yaml
+    from semantic_rails.package_tools import _run_test
+
+    spec = {"kind": "metric_equals_query", "metric_query": OLD_QUERY, "expected_query": OLD_QUERY}
+    project = _package(
+        tmp_path,
+        {
+            **UPGRADED,
+            "examples/core.yml": "examples: {}\n",
+            "tests/core.yml": dump_project_yaml({"tests": {"amount": spec}}),
+        },
+    )
+    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
+    assert preview["proof"]["tier"] == "certified", preview
+    assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
+    report = _architect(
+        tmp_path,
+        "upgrade_project",
+        project_path=str(project),
+        dry_run=False,
+        expected_revision=preview["revision"],
+        idempotency_key="comparison",
+    )
+    assert report["status"] == "upgraded", report
+    import duckdb
+
+    (project / "data").mkdir()
+    with duckdb.connect(str(project / "data/shop.duckdb")) as connection:
+        connection.execute(
+            "CREATE TABLE raw_events (event_id INTEGER, amount INTEGER, "
+            "occurred_at TIMESTAMP, event_type VARCHAR)"
+        )
+        connection.execute(
+            "INSERT INTO raw_events VALUES (1, 3, '2024-01-01', 'signup'), "
+            "(2, 4, '2024-01-02', 'purchase')"
+        )
+    runtime = Runtime.from_snapshot(load_package_snapshot(project))
+    try:
+        entry = PackageFiles(project).documents["tests/core.yml"]["tests"]["amount"]
+        assert _run_test(runtime, "amount", entry, NOW)["ok"]
+        assert runtime.query(entry["metric_query"], now=NOW)["rows"] == [{"total_amount": 7}]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["UNKNOWN_METRIC", "UNKNOWN_DIMENSION", "AMBIGUOUS_PATH", "FANOUT_UNSAFE", "INVALID_QUERY"],
+)
+def test_refusal_queries_are_explicit_hand_edits_and_write_nothing(tmp_path, code):
+    from semantic_rails.architect_scaffold import dump_project_yaml
+
+    project = _package(
+        tmp_path,
+        {
+            **UPGRADED,
+            "examples/core.yml": "examples: {}\n",
+            "tests/core.yml": dump_project_yaml(
+                {
+                    "tests": {
+                        "refusal": {
+                            "kind": "validate_fails_with_code",
+                            "code": code,
+                            "query": OLD_QUERY,
+                        }
+                    }
+                }
+            ),
+        },
+    )
+    before = _contents(project)
+    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
+    assert preview["status"] == "unverified", preview
+    reason = preview["rules"][0]["reason"]
+    assert "tests/core.yml:" in reason and code in reason and "Hint:" in reason
+    report = _architect(
+        tmp_path,
+        "upgrade_project",
+        project_path=str(project),
+        dry_run=False,
+        expected_revision=preview["revision"],
+        idempotency_key="refusal",
+    )
+    assert not report["ok"], report
+    assert _contents(project) == before
+
+
+@pytest.mark.parametrize(
+    "op,value",
+    [("LIKE", "sign%"), ("!=", "signup"), ("NOT IN", ["signup"]), ("NOT LIKE", "%sign%")],
+)
+def test_answer_changing_translations_require_a_hand_edit(tmp_path, op, value):
+    from semantic_rails.architect_scaffold import dump_project_yaml
+
+    query = {
+        **OLD_QUERY,
+        "where": [{"field": "dimension.shop_event_event_type", "op": op, "value": value}],
+    }
+    project = _package(
+        tmp_path,
+        {
+            **UPGRADED,
+            "tests/core.yml": "tests: {}\n",
+            "examples/core.yml": dump_project_yaml({"examples": {"amount": {"query": query}}}),
+        },
+    )
+    before = _contents(project)
+    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
+    assert preview["status"] == "unverified", preview
+    assert "hand" in preview["rules"][0]["reason"]
+    report = _architect(
+        tmp_path,
+        "upgrade_project",
+        project_path=str(project),
+        dry_run=False,
+        expected_revision=preview["revision"],
+        idempotency_key="changed-meaning",
+    )
+    assert not report["ok"]
+    assert _contents(project) == before
