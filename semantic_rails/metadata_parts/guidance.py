@@ -86,13 +86,8 @@ def _metric_measure_ids(
         return _metric_measure_ids(config, expr.input, seen_metric_ids=seen_metric_ids)
     if isinstance(expr, DistributionExpr):
         return _metric_measure_ids(config, expr.over, seen_metric_ids=seen_metric_ids)
-    if isinstance(expr, BooleanExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         out: list[str] = []
-        for arg in expr.args:
-            out.extend(_metric_measure_ids(config, arg, seen_metric_ids=seen_metric_ids))
-        return out
-    if isinstance(expr, CallExpr):
-        out = []
         for arg in expr.args:
             out.extend(_metric_measure_ids(config, arg, seen_metric_ids=seen_metric_ids))
         return out

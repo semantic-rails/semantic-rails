@@ -53,19 +53,6 @@ _VALID_TIME_CLASSES: frozenset[str] = frozenset(
 # enums above, an unknown value would silently fall through to default
 # behavior (additive semantics, empty expression) — fail loudly instead.
 _VALID_MEASURE_KINDS: frozenset[str] = frozenset({"aggregate", "entity_count", "lookup"})
-_VALID_METRIC_KINDS: frozenset[str] = frozenset(
-    {
-        "aggregate",
-        "semi_additive",
-        "ratio",
-        "cumulative",
-        "rolling",
-        "prior_period",
-        "period_to_date",
-        "derived",
-        "conversion",
-    }
-)
 _VALID_ACCUMULATION_KINDS: frozenset[str] = frozenset({"event", "flow", "stock", "population"})
 # What the loader reads from an `accumulation:` block (config.py `_normalize_accumulation`).
 _ACCUMULATION_KEYS: frozenset[str] = frozenset({"kind", "snapshot"})
@@ -503,6 +490,7 @@ _METRIC_KIND_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "derived": ("expression",),
     "conversion": ("expression",),
 }
+_VALID_METRIC_KINDS: frozenset[str] = frozenset(_METRIC_KIND_REQUIRED_FIELDS)
 
 
 def _unknown_key_errors(
