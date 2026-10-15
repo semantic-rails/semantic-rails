@@ -12,7 +12,7 @@ from .. import visible_view
 from ..answer import _time_zone, data_through
 from ..ast import TIME_AXIS, normalize_query, plain_filters, time_output_alias
 from ..caveats import caveat_warnings
-from ..clock import engine_window, local_date, local_now, period_end
+from ..clock import UNITS, engine_window, local_date, local_now, period_end
 from ..compiler import read_routes
 from ..compiler_parts.empty_groups import GUARDED_BASE, base_reads, sql_nodes
 from ..compiler_parts.indexes import get_package_analysis
@@ -882,7 +882,7 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
     through, _ = data_through(coverage, zone)
     time = compiled["logical_plan"].time or {}
     grain = str(time.get("grain") or "")
-    if through is None or not (time.get("window_total") or grain in _DAY_GRAINS):
+    if through is None or not (time.get("window_total") or grain in UNITS):
         return []
     edge = date.fromisoformat(through)
     today = local_now(now, zone).date()
@@ -924,9 +924,6 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
             )
         )
     return warnings
-
-
-_DAY_GRAINS = ("day", "week", "month", "quarter", "year")
 
 
 def _first_day(value: str | None, zone: str) -> date | None:

@@ -71,13 +71,13 @@ from .lowering_common import (
     _query_metric_predicates,
     _value_filter_condition,
 )
+from .namespacing import _namespace_sql_select
 from .paths import (
     _entity_key_dimension_ids,
     inner_lookups,
 )
 from .post_aggregation import (
     _expr_requires_dense_series,
-    _namespace_sql_select,
 )
 from .predicate_sets import _requested_order
 from .snapshot_reads import record_output_reads

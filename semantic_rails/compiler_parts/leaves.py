@@ -93,6 +93,7 @@ from .lowering_common import (
     _dialect,
     _edge_cap,
     _entity_in_terms_of_anchor_plan,
+    _filter_condition_for_item,
     _filtered_series_operand,
     _owned_predicate_reads,
     _paths_are_single_hop_safe,
@@ -106,6 +107,7 @@ from .lowering_common import (
     _time_bucket_expr,
     _value_filter_condition,
 )
+from .namespacing import _namespace_sql_select
 from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
@@ -116,10 +118,7 @@ from .paths import (
     dimension_filter,
     unknown_as_null,
 )
-from .plan_checks import child_group_route
-from .post_aggregation import (
-    _namespace_sql_select,
-)
+from .plan_checks import _validate_non_additive_sums, child_group_route
 from .predicate import _predicate_ctes_and_join
 from .predicate_sets import (
     _reads_chosen_snapshot,
@@ -438,15 +437,9 @@ def _entity_in_terms_of_leaf_select(
         group_fields.append(time_expr)
         where_clauses.extend(_source_time_window(raw_expr, time, config, role_id=role.id))
     for item in refuse_child_groups(plan.query.get("where"), "in a child-grain count"):
-        expr, _ = _direct_dimension_source_expr(
-            anchor_entity, str(item["field"]), config
-        ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item, config))
+        where_clauses.append(_filter_condition_for_item(anchor_entity, item, config))
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
-        expr, _ = _direct_dimension_source_expr(
-            anchor_entity, str(item["field"]), config
-        ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item, config))
+        where_clauses.append(_filter_condition_for_item(anchor_entity, item, config))
     where_clauses.extend(
         _edge_cap(
             _measure_index(config)[measure_plan.bound_measure.measure_id],
@@ -565,8 +558,6 @@ def _parent_lookup_leaf_select(
     the child rows only. A parent with no source rows reads 0 while the source is observed (the
     gate), a NULL key reads NULL, and the guard proves one total per output row, so MAX picks it.
     """
-    from .plan_checks import _validate_non_additive_sums
-
     bound = measure_plan.bound_measure
     # Every plan that reaches this leaf passes the one-total-per-row guard here as well.
     _validate_non_additive_sums([bound], config, normalize_query(plan.query))
@@ -1091,25 +1082,15 @@ def _measure_leaf_select(
     snapshot_filters: list[Any] = []
     stock_role = measure_plan.bound_measure.temporal_role
     for item in filters:
-        expr, _ = _direct_dimension_source_expr(
-            measure.entity,
-            str(item["field"]),
-            config,
-        ) or _resolve_dimension_expr(str(item["field"]), config)
         target = (
             child_where
             if semijoin and (dimensions[item["field"]].entity, "where") in crossing_filters
             else where_clauses
         )
-        target.append(condition := _value_filter_condition(expr, item, config))
+        target.append(condition := _filter_condition_for_item(measure.entity, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
-        expr, _ = _direct_dimension_source_expr(
-            measure.entity,
-            str(item["field"]),
-            config,
-        ) or _resolve_dimension_expr(str(item["field"]), config)
         target = (
             child_where
             if semijoin and (dimensions[item["field"]].entity, "metric_filter") in crossing_filters
@@ -1117,7 +1098,7 @@ def _measure_leaf_select(
             if preserve_buckets
             else where_clauses
         )
-        target.append(condition := _value_filter_condition(expr, item, config))
+        target.append(condition := _filter_condition_for_item(measure.entity, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     where_clauses.extend(_edge_cap(measure, leaf_time_role, config))
@@ -1528,16 +1509,10 @@ def _measure_group_leaf_select(
     authored_conditions: list[Any] = []
     preserve_buckets = all(_preserves_filtered_series(plan, row, config) for row in measure_plans)
     for item in refuse_child_groups(query.get("where"), "in a folded leaf"):
-        expr, _ = _direct_dimension_source_expr(
-            first_measure.entity, str(item["field"]), config
-        ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item, config))
+        where_clauses.append(_filter_condition_for_item(first_measure.entity, item, config))
     for item in _bound_filter_clauses(first_plan.bound_measure, config):
-        expr, _ = _direct_dimension_source_expr(
-            first_measure.entity, str(item["field"]), config
-        ) or _resolve_dimension_expr(str(item["field"]), config)
         (authored_conditions if preserve_buckets else where_clauses).append(
-            _value_filter_condition(expr, item, config)
+            _filter_condition_for_item(first_measure.entity, item, config)
         )
     where_clauses.extend(_edge_cap(first_measure, leaf_time_role, config))
     untimed = [*where_clauses, *authored_conditions]

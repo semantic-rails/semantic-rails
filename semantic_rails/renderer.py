@@ -16,6 +16,7 @@ from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from .errors import SemanticLayerError
 from .operators import LIKE_ESCAPE
 from .sql_ast import (
     SqlAggregateFilter,
@@ -578,8 +579,6 @@ class _Slots:
         pattern = f"{self.nonce}([0-9]+){self.nonce}"
         order = [int(index) for index in re.findall(pattern, sql)]
         if sorted(order) != list(range(len(self.emitted))):
-            from .errors import SemanticLayerError
-
             # Never run a statement whose binds can't be matched to its placeholders.
             raise SemanticLayerError(
                 "POLICY_DENIED",

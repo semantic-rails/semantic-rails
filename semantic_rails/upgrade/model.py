@@ -9,24 +9,17 @@ from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal
 
-from ..config import _authored_direct_fields
+from ..config import _BLOCK_FILES, _PACKAGE_ROOT_FILES
+from ..config_parts.metric_rows import _authored_direct_fields
 from ..errors import SemanticLayerError
 from ..expressions import _expression_children
-from ..package_snapshot import capture_package_source
+from ..package_snapshot import PACKAGE_SOURCE_DIRS, capture_package_source
 from ..yaml_loader import safe_load
 
 YamlPath = tuple[str | int, ...]
 Row = tuple[str, YamlPath, dict[str, Any]]
 QUERY_KEYS = ("query", "metric_query", "expected_query")
-_SECTION_FILES = {
-    "defaults": "defaults.yml",
-    "graph": "graph.yml",
-    "relations": "relations.yml",
-    "metrics": "metrics.yml",
-    "segments": "segments.yml",
-    "semantic_policies": "policies.yml",
-    "semantic_caveats": "caveats.yml",
-}
+_SECTION_FILES = {key: name for name, key in _BLOCK_FILES}
 
 
 @dataclass(frozen=True)
@@ -112,14 +105,11 @@ class PackageFiles:
         self.contents = (
             dict(capture_package_source(source).files) if contents is None else dict(contents)
         )
-        roots = {"package.yml", *_SECTION_FILES.values()}
-        folders = {"examples", "tests"} | (
-            {"models", "relations", "metrics", "segments"} if self.directory else set()
-        )
+        folders = PACKAGE_SOURCE_DIRS if self.directory else {"examples", "tests"}
         self.documents = {
             file: safe_load(data)
             for file, data in self.contents.items()
-            if (file in roots if self.directory else file == self.source.name)
+            if (file in _PACKAGE_ROOT_FILES if self.directory else file == self.source.name)
             or (Path(file).parts[0] in folders and file.endswith((".yml", ".yaml")))
         }
 

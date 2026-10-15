@@ -20,10 +20,12 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
+from difflib import get_close_matches
 from typing import Any
 
 from . import operations
 from .audit import emit_audit_event
+from .contracts.query_schema import embedded_query_call_schema
 from .diagnostics import (
     enrich_object_not_found,
     exception_issue,
@@ -154,17 +156,9 @@ MCP_SERVER_INSTRUCTIONS = (
 )
 
 
-def _call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
-    """The query call schema as execute's ``query`` property, and its ``$defs``.
-
-    The definitions move to the tool schema's root so its ``#/$defs/...`` references resolve.
-    """
-    from .contracts.query_schema import embedded_query_call_schema
-
-    return embedded_query_call_schema()
-
-
-QUERY_SCHEMA, QUERY_SCHEMA_DEFS = _call_schema()
+# The query call schema as execute's ``query`` property, and its ``$defs`` (moved to the tool
+# schema's root so its ``#/$defs/...`` references resolve).
+QUERY_SCHEMA, QUERY_SCHEMA_DEFS = embedded_query_call_schema()
 # A metadata tool or plan takes a partial call to start from.
 QUERY_SEED_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -690,12 +684,18 @@ MCP_RESOURCE_DEFINITIONS = tuple(definition.to_dict() for definition in RESOURCE
 MCP_PROMPT_DEFINITIONS = tuple(definition.to_dict() for definition in PROMPT_DEFINITIONS)
 
 
-def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
-    return [
-        definition.to_dict()
+def _offered_tool_names(config: PackageConfig | None) -> set[str]:
+    """The tools a package offers: no segment tool when it defines no segment."""
+    return {
+        definition.name
         for definition in TOOL_DEFINITIONS
         if definition.name != "segment" or config is None or config.segments
-    ]
+    }
+
+
+def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
+    offered = _offered_tool_names(config)
+    return [definition.to_dict() for definition in TOOL_DEFINITIONS if definition.name in offered]
 
 
 def list_resource_definitions() -> list[dict[str, Any]]:
@@ -783,8 +783,6 @@ def _unknown_argument_error(
     are handled separately via :func:`_unknown_argument_warnings` so
     ``policy_context`` and top-level IR passthrough still work.
     """
-    from difflib import get_close_matches
-
     if tool_name not in _STRICT_REJECT_TOOLS:
         return None
     unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments)
@@ -824,8 +822,6 @@ def _unknown_argument_warnings(
     ``DISCOVER_UNKNOWN_ARG`` pattern so
     downstream consumers can branch on ``code`` alone.
     """
-    from difflib import get_close_matches
-
     if tool_name not in _UNKNOWN_ARG_WARNING_CODE:
         return []
     unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments)
@@ -897,8 +893,6 @@ def _missing_required_argument_error(
     handler treat ``""`` as a real value and emit a misleading
     ``OBJECT_NOT_FOUND`` for the empty string.
     """
-    from difflib import get_close_matches
-
     required, known = _tool_required_properties(tool_name)
     if not required:
         return None
@@ -1049,13 +1043,6 @@ def _row_format_arg(arguments: Mapping[str, Any]) -> str:
             value=raw_value,
         )
     return row_format
-
-
-def _strip_execute_transport_args(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    cleaned = dict(arguments or {})
-    cleaned.pop("row_format", None)
-    cleaned.pop("max_rows", None)
-    return cleaned
 
 
 def _plan_detail(value: Any) -> str:
@@ -1480,7 +1467,7 @@ class SemanticLayerMCPAdapter:
     @property
     def instructions(self) -> str:
         instructions = MCP_SERVER_INSTRUCTIONS
-        if not any(tool["name"] == "segment" for tool in self.list_tools()):
+        if "segment" not in _offered_tool_names(self.runtime.config):
             instructions = instructions.replace(
                 "segment(segment_id, action) validates, explains or previews a package-authored "
                 "segment.\n\n",
@@ -1519,19 +1506,19 @@ class SemanticLayerMCPAdapter:
     def list_tools(self) -> list[dict[str, Any]]:
         return list_tool_definitions(config=self.runtime.config)
 
-    def _caller_tools(self) -> list[dict[str, Any]]:
+    def _caller_tool_names(self) -> set[str]:
         """The tools a caller's view offers: no segment tool when they see no segment."""
         try:
             view = self.runtime.view_for(_caller())
         except Exception:  # noqa: BLE001 — the call itself refuses an unresolved view
-            return self.list_tools()
-        return list_tool_definitions(config=view)
+            view = self.runtime.config
+        return _offered_tool_names(view)
 
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        has_segment = any(tool["name"] == "segment" for tool in self.list_tools())
+        has_segment = "segment" in _offered_tool_names(self.runtime.config)
         return [
             prompt
             for prompt in list_prompt_definitions()
@@ -1640,9 +1627,9 @@ class SemanticLayerMCPAdapter:
         except SemanticLayerError as exc:
             return finish(self._error_response(exc, args_dict))
         handler = self._tool_handlers.get(name)
-        available_tools = {tool["name"] for tool in self.list_tools()}
+        available_tools = _offered_tool_names(self.runtime.config)
         if handler is None or name not in available_tools or name == "segment":
-            available_tools = {tool["name"] for tool in self._caller_tools()}
+            available_tools = self._caller_tool_names()
         if handler is None or name not in available_tools:
             details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"
@@ -1869,9 +1856,7 @@ class SemanticLayerMCPAdapter:
         out.setdefault("timing_ms", round((time.perf_counter() - started_at) * 1000, 3))
         return out
 
-    def _with_request_context(
-        self, out: dict[str, Any], arguments: Mapping[str, Any]
-    ) -> dict[str, Any]:
+    def _with_request_context(self, out: dict[str, Any]) -> dict[str, Any]:
         # Echo who is asking only when there is an identity (a transport's or a host's).
         context = request_context_payload(_caller())
         if context:
@@ -1887,7 +1872,7 @@ class SemanticLayerMCPAdapter:
             started_at=started_at,
             arguments=arguments,
         )
-        return self._with_request_context(out, arguments)
+        return self._with_request_context(out)
 
     def _error_response(
         self,
@@ -1913,7 +1898,7 @@ class SemanticLayerMCPAdapter:
             started_at=started_at or time.perf_counter(),
             arguments=arguments,
         )
-        return self._with_request_context(out, arguments)
+        return self._with_request_context(out)
 
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
@@ -1955,7 +1940,7 @@ class SemanticLayerMCPAdapter:
                 request_id=_clean_request_id(arguments.get("request_id")),
                 started_at=started,
             )
-            return self._with_request_context(out, arguments)
+            return self._with_request_context(out)
 
     def _handle_discover(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _build(args: dict[str, Any]) -> dict[str, Any]:
@@ -2206,22 +2191,6 @@ class SemanticLayerMCPAdapter:
             "sql_profile": str(args.get("sql_profile") or "").strip() or None,
         }
 
-    def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        def _run(args: dict[str, Any]) -> dict[str, Any]:
-            return operations.run(
-                "validate", self.runtime, query=args["query"], **self._call_options(args)
-            )
-
-        return self._guarded(arguments, _run)
-
-    def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        def _run(args: dict[str, Any]) -> dict[str, Any]:
-            return operations.run(
-                "compile", self.runtime, query=args["query"], **self._call_options(args)
-            )
-
-        return self._guarded(arguments, _run)
-
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             row_format = _row_format_arg(args)
@@ -2284,8 +2253,18 @@ class SemanticLayerMCPAdapter:
         args = {key: value for key, value in arguments.items() if key != "mode"}
         if mode == "run":
             return self._handle_execute(args)
-        args = _strip_execute_transport_args(args)
-        return self._handle_validate(args) if mode == "validate" else self._handle_compile(args)
+        operation = "validate" if mode == "validate" else "compile"
+
+        def run(args: dict[str, Any]) -> dict[str, Any]:
+            return operations.run(
+                operation, self.runtime, query=args["query"], **self._call_options(args)
+            )
+
+        # row_format and max_rows shape a run's rows only.
+        return self._guarded(
+            {key: value for key, value in args.items() if key not in ("row_format", "max_rows")},
+            run,
+        )
 
     def _handle_segment_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """``segment``: validate, explain or preview a segment, at minimal

@@ -1,10 +1,4 @@
-"""SQL CTE namespacing helper for post-aggregation lowering.
-
-Extracted from :mod:`semantic_rails.compiler_parts.post_aggregation`
-so that module stays under the 500-LOC ceiling. The public API is
-unchanged — ``post_aggregation`` re-exports :func:`_namespace_sql_select`
-so callers keep importing from there.
-"""
+"""SQL CTE namespacing: prefix a nested select's CTE names so it can sit beside others."""
 
 from __future__ import annotations
 

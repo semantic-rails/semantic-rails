@@ -14,10 +14,8 @@ from ..expressions import (
     ConversionExpr,
     DistributionExpr,
     EntityValueExpr,
-    LiteralExpr,
     MetricPredicateExpr,
     RatioExpr,
-    ScopedAggregateExpr,
     SemanticExpr,
 )
 from ..query_call import EXPRESSION_SHAPES
@@ -29,11 +27,7 @@ def _expr_kinds(expr: SemanticExpr) -> set[str]:
     kinds = {type(expr).__name__}
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return kinds | _expr_kinds(expr.left) | _expr_kinds(expr.right)
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            kinds |= _expr_kinds(arg)
-        return kinds
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             kinds |= _expr_kinds(arg)
         return kinds
@@ -45,8 +39,6 @@ def _expr_kinds(expr: SemanticExpr) -> set[str]:
         return kinds
     if isinstance(expr, MetricPredicateExpr):
         return kinds | _expr_kinds(expr.input)
-    if isinstance(expr, ScopedAggregateExpr):
-        return kinds
     if isinstance(expr, RatioExpr):
         return kinds | _expr_kinds(expr.numerator) | _expr_kinds(expr.denominator)
     if isinstance(expr, EntityValueExpr):
@@ -55,8 +47,6 @@ def _expr_kinds(expr: SemanticExpr) -> set[str]:
         return kinds | _expr_kinds(expr.over)
     if isinstance(expr, ConversionExpr):
         return kinds | _expr_kinds(expr.base) | _expr_kinds(expr.converted)
-    if isinstance(expr, LiteralExpr):
-        return kinds
     return kinds
 
 

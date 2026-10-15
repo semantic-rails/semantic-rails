@@ -36,7 +36,7 @@ from .._base import (
     _tokens,
 )
 from ..call import Call, Order, QueryBuilder, Time, condition
-from ..coverage import CoverageGap, _coverage_why
+from ..coverage import CoverageGap, _clarify_why
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
 from ..groupings import (
     _display_entities,
@@ -240,9 +240,7 @@ def _whose_rows_why(word: str, query: Call, entities: list[Any]) -> dict[str, An
             'accounts …").',
         },
     )
-    why = _coverage_why([gap]) or {}
-    clarification = {"question": f"Whose rows: {labels}?", "options": options}
-    return {**why, "details": {**why.get("details", {}), "clarification": clarification}}
+    return _clarify_why([gap], {"question": f"Whose rows: {labels}?", "options": options})
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:

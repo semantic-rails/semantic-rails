@@ -252,7 +252,7 @@ def _end_moment(value: Any) -> datetime | None:
         moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return moment.replace(tzinfo=None) if moment.tzinfo is None else moment.replace(tzinfo=None)
+    return moment.replace(tzinfo=None)
 
 
 def describe_window(window: Window, *, now: datetime, timezone: str = "UTC") -> str:

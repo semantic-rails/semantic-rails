@@ -73,7 +73,7 @@ def _one_link(
         or (rel.source_entity, rel.target_entity) != (entity, via.id)
         or rel.cardinality not in {"N:1", "1:1"}
         or rel.temporal_validity
-        or set(rel.target_columns or [rel.target_column]) != set(via.key or [via.primary_key])
+        or set(rel.target_columns or [rel.target_column]) != set(via.key)
     ):
         return None
     return rel
@@ -123,7 +123,7 @@ def resolve_lookup_measures(
         via = next((entity for entity in entities if entity.id == via_id), None)
         if via is None or via.kind == "time":
             raise _invalid(label, "via", f"'{measure.lookup_via}' must name a non-time entity")
-        if len(via.key or [via.primary_key]) != 1:
+        if len(via.key) != 1:
             raise _invalid(
                 label,
                 "via",

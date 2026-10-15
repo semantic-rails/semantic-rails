@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from ._base import (
@@ -341,8 +341,11 @@ def _is_temporal_grouping_term(term: str) -> bool:
     )
 
 
-def _term_matches_value_domain(config: Any, term: str) -> bool:
-    term_tokens = set(_tokens(term))
+def _term_matches_value_domain(
+    config: Any, term: str, tokens: Callable[[str], Iterable[str]] = _tokens
+) -> bool:
+    """Whether every token of some visible value, label or alias is among the term's."""
+    term_tokens = set(tokens(term))
     if not term_tokens:
         return False
     for domain in visible_value_domains(config):
@@ -353,7 +356,7 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
                 *[str(alias) for alias in list(row.aliases or [])],
             ]
             for value in values:
-                value_tokens = set(_tokens(value))
+                value_tokens = set(tokens(value))
                 if value_tokens and value_tokens.issubset(term_tokens):
                     return True
     return False

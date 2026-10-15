@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from .. import operators
 from ..ast import (
+    NormalizedQuery,
     child_groups,
     normalize_query,
     refuse_child_groups,
@@ -147,6 +148,12 @@ def _stock_row_key(measure, config: PackageConfig) -> list[str]:
     ]
 
 
+# The fixes that name no clock, so a refusal can pass them on to any caller.
+_KEY_BY_SNAPSHOT_FIX = (
+    "Key the entity by the series columns plus its snapshot time, e.g. key: [store_id, date_day]."
+)
+
+
 def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) -> dict[str, Any]:
     """Why a stock measure's row key can't tell its snapshots apart on this clock, or ``{}``.
 
@@ -172,15 +179,8 @@ def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) 
         "clock_column": clock.column,
         "clock_class": role.temporal_class,
         "row_key": key,
-        "fix": "Key the entity by the series columns plus its snapshot time, "
-        "e.g. key: [store_id, date_day].",
+        "fix": _KEY_BY_SNAPSHOT_FIX,
     }
-
-
-# The fixes that name no clock, so a refusal can pass them on to any caller.
-_KEY_BY_SNAPSHOT_FIX = (
-    "Key the entity by the series columns plus its snapshot time, e.g. key: [store_id, date_day]."
-)
 
 
 _ONE_AS_OF_CLOCK_FIX = "Keep one as-of clock in the key and query the stock on it."
@@ -443,12 +443,7 @@ def _require_filtered_series_operand(
     measure = _measure_index(config)[row.bound_measure.measure_id]
     conditions = []
     for item in _bound_filter_clauses(row.bound_measure, config):
-        value, _ = _direct_dimension_source_expr(
-            measure.entity,
-            str(item["field"]),
-            config,
-        ) or _resolve_dimension_expr(str(item["field"]), config)
-        conditions.append(_value_filter_condition(value, item, config))
+        conditions.append(_filter_condition_for_item(measure.entity, item, config))
     aggregate = next(
         field.expression for field in leaf.select if field.alias == row.bound_measure.alias
     )
@@ -625,10 +620,7 @@ def _dataset_scope(
         return None
     where = []
     for item in _bound_filter_clauses(bound, config):
-        expr, _ = _direct_dimension_source_expr(
-            measure.entity, str(item["field"]), config
-        ) or _resolve_dimension_expr(str(item["field"]), config)
-        where.append(_value_filter_condition(expr, item, config))
+        where.append(_filter_condition_for_item(measure.entity, item, config))
     # Rows past a declared edge are never read, so they observe nothing either.
     where.extend(_edge_cap(measure, role_id, config))
     relation = _entity_index(config)[measure.entity].table
@@ -828,6 +820,16 @@ def _value_filter_condition(
     field = str(item.get("field", "") or "")
     op, value = item.get("op", "="), item.get("value")
     return dimension_filter(value_expr, field, op, value, config, path=path)
+
+
+def _filter_condition_for_item(
+    measure_entity: str, item: dict[str, Any], config: PackageConfig
+) -> Any:
+    """``item``'s condition on the measure's own column when it has one, else on its dimension."""
+    expr, _ = _direct_dimension_source_expr(
+        measure_entity, str(item["field"]), config
+    ) or _resolve_dimension_expr(str(item["field"]), config)
+    return _value_filter_condition(expr, item, config)
 
 
 def _validate_metric_predicate_filter_envelope(item: dict[str, Any]) -> None:
@@ -1136,7 +1138,7 @@ def _path_signature(path_selections: Iterable[PathSelection]) -> tuple[tuple[str
 
 
 def _foldable_leaf_signature(
-    plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
+    plan: LogicalPlan, measure_plan: MeasurePlan, query: NormalizedQuery, config: PackageConfig
 ) -> tuple[Any, ...] | None:
     measures = _measure_index(config)
     measure = measures[measure_plan.bound_measure.measure_id]
@@ -1160,7 +1162,7 @@ def _foldable_leaf_signature(
         _path_signature(measure_plan.path_selections),
         tuple(plan.group_by),
         _freeze_payload(plan.time),
-        _leaf_time_role(measure_plan.bound_measure, normalize_query(plan.query), config),
+        _leaf_time_role(measure_plan.bound_measure, query, config),
         _freeze_payload(plan.query.get("where", []) or []),
         _freeze_payload(measure_plan.bound_measure.filter_spec),
         _preserves_filtered_series(plan, measure_plan, config),
@@ -1170,8 +1172,9 @@ def _foldable_leaf_signature(
 def _measure_plan_groups(plan: LogicalPlan, config: PackageConfig) -> list[list[MeasurePlan]]:
     grouped: dict[tuple[Any, ...], list[MeasurePlan]] = {}
     ordered: list[tuple[Any, ...]] = []
+    query = normalize_query(plan.query)
     for measure_plan in plan.measure_plans:
-        signature = _foldable_leaf_signature(plan, measure_plan, config)
+        signature = _foldable_leaf_signature(plan, measure_plan, query, config)
         if signature is None:
             signature = ("single_leaf", measure_plan.cte_name)
         if signature not in grouped:

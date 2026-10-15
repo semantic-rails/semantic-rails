@@ -11,7 +11,7 @@ effects to execution unchanged; responses carry ``visible_view.public_effects``.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
@@ -55,14 +55,13 @@ from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .policy_rules import visible_only_listed as _visible_only_listed
+from .query_call import refusal
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 
 WITHHOLD = "withhold_values"
-# A conditional aggregate's condition reads columns: each counts as the dimensions over it, and
-# a column no dimension declares as ``<entity>.<column>``, which no allowed_where lists.
 WITHHELD_SHAPE = (
     "Select the withheld metric directly, put it first in order_by, then every group key in "
     "the same direction (added for you when order_by names only the metric), with a limit of "
@@ -450,20 +449,12 @@ def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> N
     ]
     refused = [field for field in dict.fromkeys(fields) if field in unfilterable]
     if refused:
-        path = paths.get(refused[0], "where")
-        raise SemanticLayerError(
-            "POLICY_DENIED",
-            f"{path}: {refused[0]} is not filterable; the package declares filterable: false",
-            details={
-                "path": path,
-                "policy_violations": [{"kind": "not_filterable", "disallowed": refused}],
-                "recovery_hints": [
-                    {
-                        "code": "FIX_QUERY_CALL",
-                        "message": "Remove the condition; group by the dimension instead.",
-                    }
-                ],
-            },
+        raise refusal(
+            paths.get(refused[0], "where"),
+            f"{refused[0]} is not filterable; the package declares filterable: false",
+            fix="Remove the condition; group by the dimension instead.",
+            code="POLICY_DENIED",
+            policy_violations=[{"kind": "not_filterable", "disallowed": refused}],
         )
 
 
@@ -520,10 +511,10 @@ def withheld_shape(
 
     Accepted: a grouped query whose first ``order_by`` field is a select item naming one
     withheld metric or measure directly, ordered then by every group key in the same direction,
-    with a ``limit`` of at most ``max_rank``, no ``export``, and no other part of the query
-    reading a withheld object. Dependencies come from the compiler: the cuts the binding
-    records, then a binding of the query without that item, so a filter, threshold, segment,
-    derived metric or comparison reading it is caught. Anything else is ``POLICY_DENIED``.
+    with a ``limit`` of at most ``max_rank``, and no other part of the query reading a withheld
+    object. Dependencies come from the compiler: the cuts the binding records, then a binding of
+    the query without that item, so a filter, threshold, segment, derived metric or comparison
+    reading it is caught. Anything else is ``POLICY_DENIED``.
     """
     require_base(config)
 
@@ -1078,13 +1069,23 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
 
 
 def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> list[str]:
-    """The fields a conditional aggregate's condition reads: the dimensions over each column."""
+    """The fields a conditional aggregate's condition reads: the dimensions over each column,
+    or ``<entity>.<column>`` for a column no dimension declares (which no allowed_where lists)."""
     out: list[str] = []
     for ref in collect_column_refs(expr.condition):
         entity = _resolve_column_entity(ref, config)
         over = [row.id for row in dimensions_over_column(entity, ref.column, config)]
         out.extend(over or [f"{entity}.{ref.column}"])
     return out
+
+
+def _child_exprs(expr: Any) -> Iterator[Any]:
+    """An expression node's dataclass children, in field order, list items included."""
+    for item in fields(expr) if is_dataclass(expr) else ():
+        value = getattr(expr, item.name)
+        for child in value if isinstance(value, list) else [value]:
+            if is_dataclass(child):
+                yield child
 
 
 def _inline_filters(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str | None, str]]:
@@ -1128,11 +1129,8 @@ def _inline_filters(query: NormalizedQuery, config: PackageConfig) -> list[tuple
             )
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"), whole_query=True)
-        for item in fields(expr) if is_dataclass(expr) else ():
-            value = getattr(expr, item.name)
-            for child in value if isinstance(value, list) else [value]:
-                if is_dataclass(child):
-                    visit(child, whole_query=whole_query)
+        for child in _child_exprs(expr):
+            visit(child, whole_query=whole_query)
 
     for row in query.select:
         visit(row.expression)
@@ -1147,11 +1145,6 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
     recipes = {row.id: row for row in config.metric_recipes}
     reads: set[str] = set()
 
-    def children(expr: Any) -> Iterable[Any]:
-        for item in fields(expr) if is_dataclass(expr) else ():
-            value = getattr(expr, item.name)
-            yield from (child for child in (value if isinstance(value, list) else [value]))
-
     def refs(expr: Any, seen: frozenset[str] = frozenset()) -> None:
         if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
             reads.add(expr.measure)
@@ -1160,9 +1153,8 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
             recipe = recipes.get(expr.metric_recipe)
             if recipe is not None:
                 refs(recipe.expression, seen | {expr.metric_recipe})
-        for child in children(expr):
-            if is_dataclass(child):
-                refs(child, seen)
+        for child in _child_exprs(expr):
+            refs(child, seen)
 
     def visit(expr: Any) -> None:
         nested: list[dict[str, Any]] = []
@@ -1176,9 +1168,8 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
             nested.extend(_scoped_predicate_expr_payload(dict(row)) for row in expr.predicates)
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"))
-        for child in children(expr):
-            if is_dataclass(child):
-                visit(child)
+        for child in _child_exprs(expr):
+            visit(child)
 
     for row in query.select:
         visit(row.expression)

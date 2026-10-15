@@ -146,7 +146,6 @@ def _expr_compatible_temporal_roles(
     expr: SemanticExpr, config: PackageConfig, query: NormalizedQuery
 ) -> set[str]:
     measures = _measure_index(config)
-    recipes = _recipe_index(config)
 
     if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         measure = measures.get(expr.measure)
@@ -158,11 +157,7 @@ def _expr_compatible_temporal_roles(
             return {query.temporal_role_overrides[expr.measure]}
         return set(measure.compatible_temporal_roles)
     if isinstance(expr, MetricRecipeRefExpr):
-        recipe = recipes.get(expr.metric_recipe)
-        if recipe is None:
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
-            )
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _recipe_compatible_temporal_roles(recipe, config, query)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _combine_temporal_roles(

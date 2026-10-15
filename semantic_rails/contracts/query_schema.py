@@ -311,13 +311,16 @@ def _shape(schema: dict[str, Any]) -> str:
     if schema.get("type") == "array":
         return f"[{_shape(schema['items'])}]"
     if "properties" in schema:
-        keys = ",".join(
-            key + (f":{_shape(value)}" if _shape(value) else "")
-            for key, value in schema["properties"].items()
-        )
+        keys = ",".join(_typed(key, value) for key, value in schema["properties"].items())
         rules = "".join(f"&{_shape(rule)}" for rule in schema.get("allOf", ()))
         return f"{{{keys}}}{rules}"
     return str(schema.get("type", ""))
+
+
+def _typed(key: str, schema: dict[str, Any]) -> str:
+    """``key:shape``, or ``key`` when the parser checks the value."""
+    shape = _shape(schema)
+    return f"{key}:{shape}" if shape else key
 
 
 def _kind_table(kinds: dict[str, dict[str, Any]]) -> str:
@@ -327,9 +330,7 @@ def _kind_table(kinds: dict[str, dict[str, Any]]) -> str:
         required = [key for key in schema["required"] if key != "kind"]
         optional = sorted(key for key in schema["properties"] if key not in {"kind", *required})
         keys = ",".join(
-            key
-            + ("*" if key in required else "")
-            + (f":{_shape(schema['properties'][key])}" if _shape(schema["properties"][key]) else "")
+            _typed(key + ("*" if key in required else ""), schema["properties"][key])
             for key in (*required, *optional)
         )
         rows.setdefault(keys, []).append(kind)

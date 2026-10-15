@@ -11,102 +11,34 @@ a typed :class:`semantic_rails.schema.PackageConfig` from one captured
 from __future__ import annotations
 
 import os
-import re as re
 import sysconfig
-from dataclasses import replace as replace
-from datetime import date as date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .config_parts.aggregate_rows import _ROLLUP_HOLDS as _ROLLUP_HOLDS
-from .config_parts.aggregate_rows import _merge_variant_spec as _merge_variant_spec
-from .config_parts.aggregate_rows import _resolve_variant_specs as _resolve_variant_specs
-from .config_parts.loader_chain import _EXTERNAL_PATHS_ENV as _EXTERNAL_PATHS_ENV
+# Loader internals that other engine modules import from here.
 from .config_parts.loader_chain import SEED_KIND_EXTERNAL as SEED_KIND_EXTERNAL
-from .config_parts.loader_chain import _ensure_unique_object_ids as _ensure_unique_object_ids
-from .config_parts.loader_chain import _parse_connection_spec as _parse_connection_spec
-from .config_parts.loader_chain import _parse_package_meta as _parse_package_meta
 from .config_parts.loader_chain import (
-    ensure_contained_package_path as ensure_contained_package_path,
+    ensure_contained_package_path,
+    external_package_paths_allowed,
 )
-from .config_parts.loader_chain import (
-    external_package_paths_allowed as external_package_paths_allowed,
-)
-from .config_parts.lookup_measures import lookup_measure_spec as lookup_measure_spec
-from .config_parts.lookup_measures import resolve_lookup_measures as resolve_lookup_measures
-from .config_parts.measure_governance import with_published_flags as with_published_flags
-from .config_parts.measure_rows import _authored_additive as _authored_additive
 from .config_parts.measure_rows import _default_topics as _default_topics
 from .config_parts.measure_rows import _derive_measure_semantics as _derive_measure_semantics
-from .config_parts.measure_rows import _normalize_accumulation as _normalize_accumulation
 from .config_parts.measure_rows import _suggested_aggregations as _suggested_aggregations
 from .config_parts.metric_rows import _DIRECT_EXPRESSION_FIELDS as _DIRECT_EXPRESSION_FIELDS
-from .config_parts.metric_rows import _MEASURE_REF_KINDS as _MEASURE_REF_KINDS
-from .config_parts.metric_rows import _PARTITIONED_KINDS as _PARTITIONED_KINDS
-from .config_parts.metric_rows import _WINDOWED_DIRECT_KINDS as _WINDOWED_DIRECT_KINDS
-from .config_parts.metric_rows import _authored_direct_fields as _authored_direct_fields
-from .config_parts.metric_rows import _input_measure as _input_measure
-from .config_parts.metric_rows import _parse_metric_expression as _parse_metric_expression
-from .config_parts.metric_rows import _resolve_partition_by as _resolve_partition_by
-from .config_parts.metric_rows import _resolve_refs_in_ast as _resolve_refs_in_ast
-from .config_parts.metric_rows import (
-    _translate_direct_fields_to_expression as _translate_direct_fields_to_expression,
-)
-from .config_parts.metric_rows import (
-    _translate_metric_direct_fields as _translate_metric_direct_fields,
-)
-from .config_parts.model_rows import _key_columns_and_role as _key_columns_and_role
-from .config_parts.model_rows import _map_dimension_kind as _map_dimension_kind
-from .config_parts.model_rows import _normalize_relation_step as _normalize_relation_step
-from .config_parts.model_rows import _parse_relations as _parse_relations
-from .config_parts.model_rows import _relation_id_for_key as _relation_id_for_key
-from .config_parts.model_rows import _relation_sql_name as _relation_sql_name
-from .config_parts.model_rows import _with_displays as _with_displays
 from .config_parts.package_loader import normalize_package
 from .config_parts.package_rows import _parse_package as _parse_package
-from .config_parts.policy_rows import _ALLOWED_CAVEAT_KINDS as _ALLOWED_CAVEAT_KINDS
-from .config_parts.policy_rows import _ALLOWED_CAVEAT_SEVERITIES as _ALLOWED_CAVEAT_SEVERITIES
-from .config_parts.policy_rows import _package_object_ids as _package_object_ids
-from .config_parts.policy_rows import _parse_caveat_time as _parse_caveat_time
-from .config_parts.policy_rows import _parse_caveats as _parse_caveats
-from .config_parts.policy_rows import _parse_path_policy as _parse_path_policy
-from .config_parts.policy_rows import _parse_path_preferences as _parse_path_preferences
-from .config_parts.policy_rows import _require_iso_date as _require_iso_date
-from .config_parts.policy_rows import _validate_caveat_refs as _validate_caveat_refs
-from .config_parts.policy_rows import _validate_policy_scopes as _validate_policy_scopes
-from .config_parts.route_rows import RouteRowError as RouteRowError
-from .config_parts.route_rows import check_route_row as check_route_row
-from .config_parts.route_rows import entity_references as entity_references
-from .config_parts.route_rows import require_rows_agree as require_rows_agree
-from .config_parts.row_values import _ensure_dict_list as _ensure_dict_list
-from .config_parts.row_values import _ensure_list as _ensure_list
-from .config_parts.row_values import _merge_meta as _merge_meta
-from .config_parts.row_values import _normalize_examples as _normalize_examples
-from .config_parts.row_values import _normalize_meta as _normalize_meta
-from .config_parts.row_values import _optional_int as _optional_int
-from .config_parts.row_values import _slug as _slug
-from .config_parts.row_values import _titleize as _titleize
-from .config_parts.temporal_rows import _TIME_GRAIN_ORDER as _TIME_GRAIN_ORDER
-from .config_parts.temporal_rows import _coarser_time_grains as _coarser_time_grains
-from .config_parts.temporal_rows import (
-    _parse_external_discontinuities as _parse_external_discontinuities,
-)
-from .config_parts.temporal_rows import _parse_validity_windows as _parse_validity_windows
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
     supported_warehouses,
     warehouse_connector,
 )
-from .dialects import dialect_for_warehouse as dialect_for_warehouse
-from .dialects import snowflake_adbc_connect_errors as snowflake_adbc_connect_errors
 from .errors import SemanticLayerError
 from .expressions import (
     parse_config_expression,
     parse_semantic_expression,
 )
-from .expressions import validate_expression_calls as validate_expression_calls
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -121,11 +53,6 @@ from .package_snapshot import (
     links_package_input,
     load_package_snapshot,
 )
-from .policy_rules import policy_action as policy_action
-from .row_filters import validate_row_filters as validate_row_filters
-from .schema import DEFAULT_PATH_HOP_LIMIT as DEFAULT_PATH_HOP_LIMIT
-from .schema import MAX_PATH_HOP_LIMIT as MAX_PATH_HOP_LIMIT
-from .schema import OBSERVATION_SCOPES as OBSERVATION_SCOPES
 from .schema import (
     AccumulationConfig,
     AggregateRelationConfig,
@@ -150,10 +77,6 @@ from .schema import (
     ValueDomainConfig,
     ValueDomainValue,
 )
-from .schema import PathPolicyConfig as PathPolicyConfig
-from .schema import PlannerConfig as PlannerConfig
-from .schema import require_boolean_mnpi as require_boolean_mnpi
-from .temporal_support import _date_key as _date_key
 from .yaml_loader import load_yaml_file, safe_load
 
 __all__ = [
@@ -293,7 +216,6 @@ _BLOCK_FILES = (
 # loader's files and object directories, and the examples and tests the package tools run.
 _PACKAGE_ROOT_FILES = frozenset({"package.yml", *(name for name, _ in _BLOCK_FILES)})
 _OBJECT_DIRS = ("models", "relations", "metrics", "segments")
-_PACKAGE_ROOT_DIRS = PACKAGE_SOURCE_DIRS
 
 
 def _unread_root_errors(
@@ -328,7 +250,7 @@ def _unread_root_errors(
     unread: set[tuple[str, bool]] = set()
     for source in sources:
         top, *rest = Path(source).parts
-        known = _PACKAGE_ROOT_DIRS if rest else _PACKAGE_ROOT_FILES
+        known = PACKAGE_SOURCE_DIRS if rest else _PACKAGE_ROOT_FILES
         if (
             source.endswith((".yml", ".yaml"))
             and not top.startswith(("_", "."))
@@ -341,7 +263,7 @@ def _unread_root_errors(
             fix = (
                 f"write these {name} in {name}.yml"
                 if name in ("policies", "caveats")
-                else f"move them under {', '.join(f'{d}/' for d in sorted(_PACKAGE_ROOT_DIRS))}"
+                else f"move them under {', '.join(f'{d}/' for d in sorted(PACKAGE_SOURCE_DIRS))}"
                 " or start the directory name with '_'"
             )
         else:

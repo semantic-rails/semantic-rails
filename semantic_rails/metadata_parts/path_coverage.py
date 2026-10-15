@@ -35,10 +35,6 @@ from ..fanout import analyze_fanout, query_routes_active, resolve_path, route_la
 from ..schema import PackageConfig
 
 
-def _relationships_by_id(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.relationships}
-
-
 class PathReach(NamedTuple):
     """The part of ``_path_availability`` a catalog row reads: whether the root entity reaches
     the target, why not, and on which route. Immutable, so one cached answer serves every
@@ -119,10 +115,9 @@ def _path_reach(config: PackageConfig, root_entity: str, target_entity: str) -> 
 
 
 def _path_has_temporal_validity(config: PackageConfig, path: Iterable[str]) -> bool:
-    relationships = _relationships_by_id(config)
-    return any(
-        bool(relationships.get(rel_id) and relationships[rel_id].temporal_validity)
-        for rel_id in list(path or [])
+    path = tuple(path or ())
+    return bool(path) and not get_package_analysis(config).temporal_relationship_ids.isdisjoint(
+        path
     )
 
 
@@ -143,10 +138,9 @@ def _dimension_history_coverage(
         if _path_has_temporal_validity(config, availability.path):
             note = _history_coverage_note(dimension=True)
             return [note], note
-    relationships = _relationships_by_id(config)
     if any(
         rel.temporal_validity and dim.entity in {rel.source_entity, rel.target_entity}
-        for rel in relationships.values()
+        for rel in config.relationships
     ):
         note = _history_coverage_note(dimension=True)
         return [note], note

@@ -55,21 +55,3 @@ def _optional_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
     return int(value)
-
-
-def _normalize_examples(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
-    text_examples: list[str] = []
-    entries: list[dict[str, Any]] = []
-    raw_items = value if isinstance(value, list) else ([] if value is None else [value])
-    for raw in raw_items:
-        if isinstance(raw, dict):
-            entry = dict(raw)
-            label = str(entry.get("question") or entry.get("name") or entry.get("id") or "").strip()
-            if label:
-                text_examples.append(label)
-            entries.append(entry)
-        else:
-            text = str(raw or "").strip()
-            if text:
-                text_examples.append(text)
-    return text_examples, entries

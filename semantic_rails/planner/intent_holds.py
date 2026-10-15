@@ -375,7 +375,7 @@ def _current_state_hint(config: Any, intent: str, phrases: list[str]) -> dict[st
     """For a "current" plan can't read as a window: the package's current-state flags (true or
     false dimensions named current or active) and snapshot measures (on an as-of clock) that
     share a word with the question."""
-    if config is None or not _CURRENT_WORDS & {w for p in phrases for w in p.lower().split()}:
+    if not _CURRENT_WORDS & {w for p in phrases for w in p.lower().split()}:
         return None
     asked = _words(intent) - _CURRENT_WORDS
     flags = [
@@ -409,7 +409,7 @@ def _unresolved_time_why(
     partial_query: Call | None,
     consumed: tuple[tuple[int, int], ...] = (),
     *,
-    config: Any = None,
+    config: Any,
 ) -> dict[str, Any] | None:
     """Return a ``why`` envelope when the intent's time scope wasn't resolved.
 

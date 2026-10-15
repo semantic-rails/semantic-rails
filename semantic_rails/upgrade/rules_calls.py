@@ -50,13 +50,11 @@ def _site(text: str) -> YamlPath:
     return tuple(int(part) if part.isdigit() else part for part in re.findall(r"[^.\[\]]+", text))
 
 
-def rewritten(files: PackageFiles, file: str, path: YamlPath, query: Any) -> Result | None:
-    """The translation of an example's or test's query written in the previous call shape;
-    None for every other query. Refusal tests are detected too, then named as hand edits."""
-    entry = _at(files.documents[file], path[:-1])
-    if not path or path[-1] not in QUERY_KEYS or not isinstance(entry, dict):
-        return None
-    return previous_call(query)
+def rewritten(path: YamlPath, query: Any) -> Result | None:
+    """The translation of an example's or test's query (a ``PackageFiles.queries`` row) written
+    in the previous call shape; None for every other query. Refusal tests are detected too,
+    then named as hand edits."""
+    return previous_call(query) if path[-1] in QUERY_KEYS else None
 
 
 def _edits(file: str, path: YamlPath, old: Any, new: Any) -> list[Edit]:
@@ -84,11 +82,12 @@ def _edits(file: str, path: YamlPath, old: Any, new: Any) -> list[Edit]:
 
 def _calls(files: PackageFiles) -> Iterator[Finding]:
     for file, path, query in files.queries():
-        result = rewritten(files, file, path, query)
+        result = rewritten(path, query)
         if result is None:
             continue
         entry_path = path[:-1]
         entry = _at(files.documents[file], entry_path)
+        suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
         # Each site the rewrite can't make, as (its path, why).
         stops = [((*path, *_site(flag["path"])), flag["detail"]) for flag in result.kept_flags]
         stops += [
@@ -100,7 +99,6 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
             if FLAG_CODES[flag["code"]][0] == REVIEW
         ]
         if entry.get("kind") == "validate_fails_with_code":
-            suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
             stops.append(
                 (
                     path,
@@ -158,7 +156,6 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
                     f"[{part}]" if isinstance(part, int) else f".{part}"
                     for part in site[len(entry_path) :]
                 ).lstrip(".")
-                suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
                 message = (
                     f"{where}: {'; '.join(reasons)}. Hint: start from {suggestion}; "
                     "resolve the flagged scope or meaning by hand before using this call"

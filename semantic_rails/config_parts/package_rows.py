@@ -7,7 +7,11 @@ from typing import Any
 
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
-from ..expressions import parse_config_expression, validate_expression_calls
+from ..expressions import (
+    _closest_key_matches,
+    parse_config_expression,
+    validate_expression_calls,
+)
 from ..meta_contract import load_meta_contract
 from ..operational import (
     load_operational_contract,
@@ -63,9 +67,9 @@ from .policy_rows import (
     _validate_policy_scopes,
 )
 from .row_values import (
+    _ensure_dict_list,
     _ensure_list,
     _merge_meta,
-    _normalize_examples,
     _normalize_meta,
     _optional_int,
     _slug,
@@ -456,7 +460,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 temporal_lookup[(model_id, ref)] if (model_id, ref) in temporal_lookup else str(ref)
                 for ref in temporal_refs
             ]
-            _, structured_example_entries = _normalize_examples(measure_spec.get("examples"))
+            structured_example_entries = _ensure_dict_list(measure_spec.get("examples"))
             measure_topics = _default_topics(measure_name, fallback=model_id)
             default_temporal_role = str(
                 measure_spec.get("default_temporal_role")
@@ -685,6 +689,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         relationships=relationships,
         path=path,
     )
+    measure_model = {measure_id: model for (model, _key), measure_id in measure_lookup.items()}
     measures = _with_zero_through(
         measures,
         model_rows,
@@ -695,7 +700,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             relation_aliases,
             _load_fields(dimension_lookup, temporal_lookup, dimensions, temporal_roles),
         ),
-        model_of={measure: model for (model, _), measure in measure_lookup.items()},
+        model_of=measure_model,
         path=path,
     )
     measures = resolve_lookup_measures(
@@ -753,8 +758,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         if text in measure_key_index:
             return measure_key_index[text]
         return text  # leave as-is for downstream validation
-
-    measure_model = {measure_id: model for (model, _key), measure_id in measure_lookup.items()}
 
     def _resolve_measure_dimension_ref(measure_id: str, field: str) -> str:
         """A short dimension key on the measure's own model; anything else is left as written."""
@@ -850,14 +853,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             return ""
 
         def _suggest_refs(text: str) -> list[str]:
-            from difflib import get_close_matches
-
-            candidates = sorted(
-                key
-                for key in (*measure_key_index, *metric_key_index)
-                if "." not in key  # offer the short authoring keys, not full ids
+            return _closest_key_matches(
+                text,
+                # Offer the short authoring keys, not full ids.
+                sorted(key for key in (*measure_key_index, *metric_key_index) if "." not in key),
             )
-            return get_close_matches(str(text), candidates, n=3, cutoff=0.5)
 
         spec = _translate_metric_direct_fields(
             spec,
@@ -900,7 +900,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             )
         temporal_role = str(spec.get("temporal_role", "")).strip()
         metric_id = str(spec.get("id", f"metric.{metric_key}"))
-        _, metric_example_entries = _normalize_examples(spec.get("examples"))
+        metric_example_entries = _ensure_dict_list(spec.get("examples"))
         metric_compatible_temporal_roles = list(
             spec.get("compatible_temporal_roles", [temporal_role] if temporal_role else []) or []
         )

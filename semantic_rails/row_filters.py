@@ -12,8 +12,9 @@ it is read as it is, unless a filter restricts that relation: then the statement
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
+from functools import cached_property
 from typing import Any, cast
 
 from .errors import SemanticLayerError
@@ -34,6 +35,7 @@ from .sql_ast import (
     SqlSelect,
     SqlTableFunction,
     SqlTableRef,
+    sql_nodes,
 )
 from .sql_preparation import ParameterSlot, checked_slot_value, parameters_denied
 
@@ -123,7 +125,7 @@ class Visibility:
     # Whether the warehouse accepts a subquery in a join's ON (``SqlDialect``); unproven, no.
     subquery_in_join_on: bool = False
 
-    @property
+    @cached_property
     def restricted(self) -> frozenset[str]:
         return frozenset(relation_key(row.table) for row in self.filters) | frozenset(self.parents)
 
@@ -244,7 +246,7 @@ def enforce_row_filters(sql: SqlSelect, visibility: Visibility) -> SqlSelect:
     it adds are never rewritten again. ``verify_row_filters`` is the check, not this."""
     if not visibility.filters:
         return sql
-    ctes = {node.name.casefold() for node in _walk(sql) if isinstance(node, SqlCte)}
+    ctes = {relation_key(node.name) for node in sql_nodes(sql) if isinstance(node, SqlCte)}
 
     def rewrite(node: Any) -> Any:
         if isinstance(node, list | tuple):
@@ -273,8 +275,8 @@ def _occurrences(
         (position, table)
         for position, table in tables
         if isinstance(table, SqlTableRef)
-        and table.name.casefold() not in ctes
-        and table.name.casefold() in visibility.restricted
+        and relation_key(table.name) not in ctes
+        and relation_key(table.name) in visibility.restricted
         and not _is_mark(select, position, table, visibility)
     ]
 
@@ -282,7 +284,9 @@ def _occurrences(
 def _is_mark(
     select: SqlSelect, position: int | None, table: SqlTableRef, visibility: Visibility
 ) -> bool:
-    return position is None and table.name.casefold() in visibility.load_logs and _observes(select)
+    return (
+        position is None and relation_key(table.name) in visibility.load_logs and _observes(select)
+    )
 
 
 def _qualifier(table: SqlTableRef) -> list[str]:
@@ -305,16 +309,12 @@ def _add_predicates(select: SqlSelect, visibility: Visibility, ctes: Collection[
             continue
         join = joins[position]
         if not visibility.subquery_in_join_on and any(
-            isinstance(node, SqlInQuery) for node in _walk(predicate)
+            isinstance(node, SqlInQuery) for node in sql_nodes(predicate)
         ):
-            raise SemanticLayerError(
-                "POLICY_DENIED",
-                "A row filter applies to this request, and its warehouse can't yet read the "
-                "visibility of a relation joined optionally here.",
-                details={
-                    "reason": "row_filter_shape_unsupported_by_warehouse",
-                    "policy_ids": sorted({row.policy_id for row in visibility.filters}),
-                },
+            raise filter_refusal(
+                visibility.filters,
+                "row_filter_shape_unsupported_by_warehouse",
+                "its warehouse can't yet read the visibility of a relation joined optionally here.",
             )
         if not _leads(join.on, predicate):
             on = predicate if join.on is None else SqlBinary(predicate, "AND", join.on)
@@ -337,7 +337,7 @@ def verify_row_filters(sql: SqlSelect, visibility: Visibility) -> None:
     restricted relation, no duplicate CTE name and no CTE named like a restricted relation."""
     if not visibility.filters:
         return
-    names = [node.name.casefold() for node in _walk(sql) if isinstance(node, SqlCte)]
+    names = [relation_key(node.name) for node in sql_nodes(sql) if isinstance(node, SqlCte)]
     ctes = set(names)
     if len(ctes) != len(names) or ctes & visibility.restricted:
         raise unsupported(visibility.filters)
@@ -352,7 +352,7 @@ def _verify(node: Any, visibility: Visibility, ctes: set[str], *, in_pipeline: b
     if isinstance(node, SqlTableRef | SqlTableFunction):
         raise unsupported(visibility.filters)  # a relation read outside FROM or JOIN
     if isinstance(node, SqlCte):
-        inside = in_pipeline or node.name.casefold() in visibility.pipelines
+        inside = in_pipeline or relation_key(node.name) in visibility.pipelines
         _verify(node.query, visibility, ctes, in_pipeline=inside)
         return
     if not is_dataclass(node) or isinstance(node, type):
@@ -371,7 +371,7 @@ def _verify(node: Any, visibility: Visibility, ctes: set[str], *, in_pipeline: b
             if not _reads_nothing(table):
                 raise unsupported(visibility.filters)
             continue
-        name = table.name.casefold()
+        name = relation_key(table.name)
         if name in ctes:
             continue
         if name in visibility.refused:
@@ -437,7 +437,7 @@ def _reads_nothing(function: SqlTableFunction) -> bool:
     arguments, which reach no relation, so it holds no row a filter could have removed."""
     return function.name == "GENERATE_SERIES" and not any(
         isinstance(node, SqlTableRef | SqlTableFunction | SqlSelect)
-        for node in _walk([function.args, function.named_args])
+        for node in sql_nodes([function.args, function.named_args])
     )
 
 
@@ -460,27 +460,36 @@ def _observes(scan: SqlSelect) -> bool:
     )
 
 
-def untraced(filters: Sequence[RowFilter]) -> SemanticLayerError:
+def filter_refusal(
+    filters: Sequence[RowFilter], reason: str, problem: str, **details: Any
+) -> SemanticLayerError:
+    """The refusal of a request ``filters`` apply to, with its reason and their policies."""
     return SemanticLayerError(
         "POLICY_DENIED",
-        "A row filter applies to this request, and it reads a relation whose rows the filter "
-        "can't be traced to by one package route, so it can't be answered under it.",
+        f"A row filter applies to this request, and {problem}",
         details={
-            "reason": "row_filter_coverage_unsupported",
+            "reason": reason,
             "policy_ids": sorted({row.policy_id for row in filters}),
+            **details,
         },
     )
 
 
+def untraced(filters: Sequence[RowFilter]) -> SemanticLayerError:
+    return filter_refusal(
+        filters,
+        "row_filter_coverage_unsupported",
+        "it reads a relation whose rows the filter can't be traced to by one package route, "
+        "so it can't be answered under it.",
+    )
+
+
 def unsupported(filters: Sequence[RowFilter]) -> SemanticLayerError:
-    return SemanticLayerError(
-        "POLICY_DENIED",
-        "A row filter applies to this request, and this query reads a relation in a way the "
-        "filter can't be proven to hold for, so it can't be answered under it.",
-        details={
-            "reason": "row_filter_unsupported_query",
-            "policy_ids": sorted({row.policy_id for row in filters}),
-        },
+    return filter_refusal(
+        filters,
+        "row_filter_unsupported_query",
+        "this query reads a relation in a way the filter can't be proven to hold for, so it "
+        "can't be answered under it.",
     )
 
 
@@ -490,14 +499,3 @@ def conjunction(items: Sequence[SqlExpr]) -> SqlExpr:
         return items[0]
     middle = len(items) // 2
     return SqlBinary(conjunction(items[:middle]), "AND", conjunction(items[middle:]))
-
-
-def _walk(node: Any) -> Iterator[Any]:
-    """Every AST node, found generically so no node type can hide a read."""
-    if isinstance(node, list | tuple):
-        for item in node:
-            yield from _walk(item)
-    elif is_dataclass(node) and not isinstance(node, type):
-        yield node
-        for item in fields(node):
-            yield from _walk(getattr(node, item.name))

@@ -355,3 +355,12 @@ def request_context_payload(context: RequestContext | Mapping[str, Any] | None) 
     if isinstance(context, RequestContext):
         return context.to_public_dict()
     return context_from_policy_context(context).to_public_dict()
+
+
+def policy_identity(policy_context: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``environment``, ``audience`` and ``roles`` a policy check reads, as its keywords."""
+    return {
+        "environment": str(policy_context.get("environment", "")),
+        "audience": str(policy_context.get("audience", "")),
+        "roles": policy_context.get("roles", []),
+    }

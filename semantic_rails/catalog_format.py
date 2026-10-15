@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .request_payload import singular_kinds
+
 # Compact-view per-bucket row cap. Sized so a 7-kind catalog stays under
 # ~5K tokens even with all buckets full. Callers asking for the full
 # inventory request ``verbosity=full``.
@@ -53,19 +55,6 @@ def format_catalog_payload(
         # on a 300-object package. Capabilities ship here too so a single
         # ``catalog?verbosity=summary`` call gives an agent everything it
         # needs to choose its next move without paying for row metadata.
-        # ``kind_map`` (kind→bucket) reversed gives bucket→singular kind
-        # so id-list keys read naturally as ``measure_ids``, ``entity_ids``
-        # etc. rather than tripping over irregular plurals.
-        bucket_to_kind = {
-            "entities": "entity",
-            "dimensions": "dimension",
-            "measures": "measure",
-            "segments": "segment",
-            "temporal_roles": "temporal_role",
-            "relationships": "relationship",
-            "value_domains": "value_domain",
-            "metrics": "metric",
-        }
         summary_payload: dict[str, Any] = {
             "meta": grouped["meta"],
             "counts": {
@@ -80,7 +69,8 @@ def format_catalog_payload(
             bucket = grouped[bucket_key]
             if not isinstance(bucket, list):
                 continue
-            singular = bucket_to_kind.get(bucket_key, bucket_key)
+            # Id lists read as ``measure_ids``, ``entity_ids``: each bucket's singular kind.
+            (singular,) = singular_kinds([bucket_key])
             summary_payload[f"{singular}_ids"] = [
                 str(row.get("id", "")) for row in bucket if isinstance(row, dict)
             ]

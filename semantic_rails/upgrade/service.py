@@ -23,6 +23,7 @@ from ..errors import SemanticLayerError, refusal_text
 from ..package_snapshot import LoadedPackageSnapshot, json_fingerprint, load_package_snapshot
 from ..route_census import route_census
 from ..runtime import Runtime
+from .edits import _get
 from .model import Finding, PackageFiles, Rule, YamlPath, plan
 from .registry import RULES
 
@@ -67,9 +68,7 @@ def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mappin
                 if Path(file).parts[0] not in {"examples", "tests"}:
                     continue
                 try:
-                    entry = staged.documents[file]
-                    for part in path[:-1]:
-                        entry = entry[part]
+                    entry = _get(staged.documents[file], path[:-1])
                     sql = str(
                         runtime.compile(
                             dict(query),

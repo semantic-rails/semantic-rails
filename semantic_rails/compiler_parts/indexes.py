@@ -6,7 +6,6 @@ from typing import Any, NamedTuple
 
 from ..config_parts.route_rows import RowPaths, require_rows_agree, row_paths
 from ..errors import SemanticLayerError
-from ..expressions import resolve_table_entity
 from ..schema import (
     AggregateRelationConfig,
     DimensionConfig,
@@ -179,10 +178,6 @@ def _temporal_role_index(config: PackageConfig) -> dict[str, TemporalRoleConfig]
 
 def _relationship_index(config: PackageConfig) -> dict[str, RelationshipConfig]:
     return binding_index(get_package_analysis(config).relationships, config)
-
-
-def _resolve_table_entity(config: PackageConfig, table: str, *, owner: str = "") -> str | None:
-    return resolve_table_entity(config, table, owner=owner)
 
 
 def _default_temporal_role(measure: MeasureConfig) -> str:

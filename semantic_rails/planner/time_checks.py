@@ -414,10 +414,7 @@ _MIDNIGHT_RE = re.compile(r"(?:[t ]00:00(?::00(?:\.0+)?)?(?:z|[+-]00:?00)?)?")
 
 
 def _question_time(
-    lowered: str,
-    policy_context: dict[str, Any] | None = None,
-    *,
-    timezone: str | None = None,
+    lowered: str, *, timezone: str | None = None
 ) -> tuple[list[tuple[tuple[int, int], dict[str, Any]]], list[tuple[int, int]]]:
     """The windows plan reads from the question, and the other spans it reads as time.
 
@@ -443,7 +440,7 @@ def _question_time(
             (span, {"start": f"{year:04d}-01-01", "end": f"{year + 1:04d}-01-01"})
             for span, year in years
         ], []
-    read = _time_window(lowered, policy_context=policy_context, timezone=timezone)
+    read = _time_window(lowered, timezone=timezone)
     windows = list(read.windows)
     others: list[tuple[int, int]] = []
     for low, high in read.spans:
@@ -554,20 +551,17 @@ def _window_agrees(
     return carried == (min(starts), max(ends))
 
 
-def _caller_window_gaps(
-    runtime: Any, text: str, query: Call, *, timezone: str | None = None
-) -> list[CoverageGap]:
+def _caller_window_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap]:
     """The window a caller passed is not the one the question's date phrases state. A
     relative phrase ("today") is read in the zone of the clock the call reads, as the engine
-    reads it, unless ``timezone`` names another."""
+    reads it."""
 
     lowered = text.lower()
-    context = None
     role = _time_block(query).temporal_role
-    timezone = timezone or (time_timezone(role, runtime=runtime) if role else None)
+    timezone = time_timezone(role, runtime=runtime) if role else None
     time = _time_block(query).window
-    windows, _others = _question_time(lowered, context, timezone=timezone)
-    if _window_agrees(windows, time, context, timezone=timezone) or _is_prior_period_offset(
+    windows, _others = _question_time(lowered, timezone=timezone)
+    if _window_agrees(windows, time, timezone=timezone) or _is_prior_period_offset(
         runtime, query, [bounds for _span, bounds in windows]
     ):
         return []

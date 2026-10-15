@@ -29,7 +29,7 @@ def _expression_nodes(files: PackageFiles) -> Iterator[Row]:
     trees += [
         row
         for row in files.queries()
-        if row[1][-1:] != ("membership",) and rewritten(files, *row) is None
+        if row[1][-1:] != ("membership",) and rewritten(*row[1:]) is None
     ]
     for file, path, tree in trees:
         for child_path, child in _walk(tree, path, expression=True):
