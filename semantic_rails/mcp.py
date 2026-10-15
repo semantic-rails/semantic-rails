@@ -20,10 +20,12 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
+from difflib import get_close_matches
 from typing import Any
 
 from . import operations
 from .audit import emit_audit_event
+from .contracts.query_schema import embedded_query_call_schema
 from .diagnostics import (
     enrich_object_not_found,
     exception_issue,
@@ -154,17 +156,9 @@ MCP_SERVER_INSTRUCTIONS = (
 )
 
 
-def _call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
-    """The query call schema as execute's ``query`` property, and its ``$defs``.
-
-    The definitions move to the tool schema's root so its ``#/$defs/...`` references resolve.
-    """
-    from .contracts.query_schema import embedded_query_call_schema
-
-    return embedded_query_call_schema()
-
-
-QUERY_SCHEMA, QUERY_SCHEMA_DEFS = _call_schema()
+# The query call schema as execute's ``query`` property, and its ``$defs`` (moved to the tool
+# schema's root so its ``#/$defs/...`` references resolve).
+QUERY_SCHEMA, QUERY_SCHEMA_DEFS = embedded_query_call_schema()
 # A metadata tool or plan takes a partial call to start from.
 QUERY_SEED_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -789,8 +783,6 @@ def _unknown_argument_error(
     are handled separately via :func:`_unknown_argument_warnings` so
     ``policy_context`` and top-level IR passthrough still work.
     """
-    from difflib import get_close_matches
-
     if tool_name not in _STRICT_REJECT_TOOLS:
         return None
     unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments)
@@ -830,8 +822,6 @@ def _unknown_argument_warnings(
     ``DISCOVER_UNKNOWN_ARG`` pattern so
     downstream consumers can branch on ``code`` alone.
     """
-    from difflib import get_close_matches
-
     if tool_name not in _UNKNOWN_ARG_WARNING_CODE:
         return []
     unknown = _unknown_arg_keys(tool_name=tool_name, arguments=arguments)
@@ -903,8 +893,6 @@ def _missing_required_argument_error(
     handler treat ``""`` as a real value and emit a misleading
     ``OBJECT_NOT_FOUND`` for the empty string.
     """
-    from difflib import get_close_matches
-
     required, known = _tool_required_properties(tool_name)
     if not required:
         return None
@@ -1055,13 +1043,6 @@ def _row_format_arg(arguments: Mapping[str, Any]) -> str:
             value=raw_value,
         )
     return row_format
-
-
-def _strip_execute_transport_args(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    cleaned = dict(arguments or {})
-    cleaned.pop("row_format", None)
-    cleaned.pop("max_rows", None)
-    return cleaned
 
 
 def _plan_detail(value: Any) -> str:
@@ -1875,9 +1856,7 @@ class SemanticLayerMCPAdapter:
         out.setdefault("timing_ms", round((time.perf_counter() - started_at) * 1000, 3))
         return out
 
-    def _with_request_context(
-        self, out: dict[str, Any], arguments: Mapping[str, Any]
-    ) -> dict[str, Any]:
+    def _with_request_context(self, out: dict[str, Any]) -> dict[str, Any]:
         # Echo who is asking only when there is an identity (a transport's or a host's).
         context = request_context_payload(_caller())
         if context:
@@ -1893,7 +1872,7 @@ class SemanticLayerMCPAdapter:
             started_at=started_at,
             arguments=arguments,
         )
-        return self._with_request_context(out, arguments)
+        return self._with_request_context(out)
 
     def _error_response(
         self,
@@ -1919,7 +1898,7 @@ class SemanticLayerMCPAdapter:
             started_at=started_at or time.perf_counter(),
             arguments=arguments,
         )
-        return self._with_request_context(out, arguments)
+        return self._with_request_context(out)
 
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
@@ -1961,7 +1940,7 @@ class SemanticLayerMCPAdapter:
                 request_id=_clean_request_id(arguments.get("request_id")),
                 started_at=started,
             )
-            return self._with_request_context(out, arguments)
+            return self._with_request_context(out)
 
     def _handle_discover(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _build(args: dict[str, Any]) -> dict[str, Any]:
@@ -2281,7 +2260,11 @@ class SemanticLayerMCPAdapter:
                 operation, self.runtime, query=args["query"], **self._call_options(args)
             )
 
-        return self._guarded(_strip_execute_transport_args(args), run)
+        # row_format and max_rows shape a run's rows only.
+        return self._guarded(
+            {key: value for key, value in args.items() if key not in ("row_format", "max_rows")},
+            run,
+        )
 
     def _handle_segment_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """``segment``: validate, explain or preview a segment, at minimal

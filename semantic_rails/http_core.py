@@ -688,35 +688,18 @@ class SemanticHTTPService:
                 route.lstrip("/"), self.runtime, query=call, context=policy_context, **options
             )
             return {"ok": True, **answer}, 200
-        if route == "/segment-validate":
+        if route in {"/segment-validate", "/segment-explain", "/segment-preview"}:
+            preview = (
+                {"limit": int(payload.get("limit", 50))} if route == "/segment-preview" else {}
+            )
             return {
                 "ok": True,
                 **operations.run(
-                    "segment-validate",
+                    route.lstrip("/"),
                     self.runtime,
                     segment_id=str(payload.get("segment_id", "")),
                     policy_context=policy_context,
-                ),
-            }, 200
-        if route == "/segment-explain":
-            return {
-                "ok": True,
-                **operations.run(
-                    "segment-explain",
-                    self.runtime,
-                    segment_id=str(payload.get("segment_id", "")),
-                    policy_context=policy_context,
-                ),
-            }, 200
-        if route == "/segment-preview":
-            return {
-                "ok": True,
-                **operations.run(
-                    "segment-preview",
-                    self.runtime,
-                    segment_id=str(payload.get("segment_id", "")),
-                    limit=int(payload.get("limit", 50)),
-                    policy_context=policy_context,
+                    **preview,
                 ),
             }, 200
         if route == "/valid-values":
