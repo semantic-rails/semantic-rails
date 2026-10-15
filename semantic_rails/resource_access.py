@@ -459,51 +459,39 @@ def _restricted_plan(
     }
 
 
+# The keys a granted warning keeps: its fixed fields, the objects it names and its details.
+_NAMED = frozenset({"code", "severity", "stage", "message", "object_ids", "details"})
 _GRANTED_WARNING_KEYS = {
     # Coverage is read under the caller's row filters; measure IDs occur in both text
     # and details, so the whole warning is dropped unless every named measure is granted.
-    "NO_DATA_YET": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
+    "NO_DATA_YET": _NAMED,
     # answer_warnings._zero_after_last_row_notes: fixed text, measure IDs and their last rows'
     # dates, read under the caller's row filters; dropped unless every named measure is granted.
-    "ZERO_AFTER_LAST_ROW": frozenset(
-        {"code", "severity", "stage", "message", "object_ids", "details"}
-    ),
+    "ZERO_AFTER_LAST_ROW": _NAMED,
     # answer_warnings._partial_data_warnings: fixed text, the answer's own data_through date
     # and day counts; it names no object.
-    "PARTIAL_DATA": frozenset({"code", "severity", "stage", "message", "details"}),
+    "PARTIAL_DATA": _NAMED - {"object_ids"},
     # runtime.py _no_data_in_scope_warnings: fixed text, caller output aliases,
     # and the warning's own object_ids; details contains only those output aliases.
-    "NO_DATA_IN_SCOPE": frozenset(
-        {"code", "severity", "stage", "message", "object_ids", "details"}
-    ),
+    "NO_DATA_IN_SCOPE": _NAMED,
     # runtime.py _withhold_values: fixed text, the warning's own object_ids,
     # and the caller's order alias; details repeats those objects and that alias.
-    "VALUES_WITHHELD": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
+    "VALUES_WITHHELD": _NAMED,
     # runtime.py _filter_value_warnings: fixed text, caller or package-authored metric
     # filter literals, and dimension IDs. _granted_warnings drops a warning whose
     # dimension isn't granted; suggestions come only from reads under the caller's policy context.
-    "FILTER_VALUE_NOT_FOUND": frozenset(
-        {"code", "severity", "stage", "message", "object_ids", "details"}
-    ),
+    "FILTER_VALUE_NOT_FOUND": _NAMED,
     # runtime.py _filter_value_warnings: fixed text, caller or package-authored metric
     # filter literals, and dimension IDs. _granted_warnings drops a warning whose
     # dimension isn't granted; no suggestion on a failed read.
-    "FILTER_VALUE_UNVERIFIED": frozenset(
-        {"code", "severity", "stage", "message", "object_ids", "details"}
-    ),
+    "FILTER_VALUE_UNVERIFIED": _NAMED,
     # The source probe re-enters resource authorization. Denied reads expose no bucket keys.
-    "FILTERED_SERIES_BUCKETS_DROPPED": frozenset(
-        {"code", "severity", "stage", "message", "object_ids", "details"}
-    ),
-    "FILTERED_SERIES_BUCKETS_UNVERIFIED": frozenset(
-        {"code", "severity", "stage", "message", "object_ids", "details"}
-    ),
+    "FILTERED_SERIES_BUCKETS_DROPPED": _NAMED,
+    "FILTERED_SERIES_BUCKETS_UNVERIFIED": _NAMED,
     # answer_warnings.closing_day_disclosures: fixed text, the measure ID, its closing day and
     # series counts, read under the caller's row filters; granted_closing_day names a measure
     # that isn't granted by the granted outputs reading it, or drops the warning.
-    "BALANCE_SERIES_MISSING_ON_CLOSING_DAY": frozenset(
-        {"code", "severity", "stage", "message", "object_ids", "details"}
-    ),
+    "BALANCE_SERIES_MISSING_ON_CLOSING_DAY": _NAMED,
 }
 
 
@@ -518,6 +506,15 @@ def _granted_warnings(warnings: list[dict[str, Any]], permitted: set[str]) -> li
         for warning in warnings
         if warning.get("code") in _GRANTED_WARNING_KEYS
         and set(warning.get("object_ids", [])) <= permitted
+    ]
+
+
+def _closing_days(
+    rows: list[dict[str, Any]], columns: list[dict[str, Any]], permitted: set[str]
+) -> list[dict[str, Any]]:
+    """``rows`` with each closing-day disclosure as the grant sees it (``granted_closing_day``)."""
+    return [
+        shown for row in rows if (shown := granted_closing_day(row, columns, permitted)) is not None
     ]
 
 
@@ -616,22 +613,13 @@ def _run_in_view(
             # a measure not granted is named by them, never by its own id.
             columns = result.get("output_columns", [])
             if "assumptions" in response:
-                response["assumptions"] = [
-                    shown
-                    for row in response["assumptions"]
-                    if (shown := granted_closing_day(row, columns, permitted)) is not None
-                ]
+                response["assumptions"] = _closing_days(response["assumptions"], columns, permitted)
             if "withheld" in result:
                 response["withheld"] = [
                     object_id for object_id in result["withheld"] if object_id in permitted
                 ]
             warnings = _granted_warnings(
-                [
-                    shown
-                    for row in result.get("warnings", [])
-                    if (shown := granted_closing_day(row, columns, permitted)) is not None
-                ],
-                permitted,
+                _closing_days(result.get("warnings", []), columns, permitted), permitted
             )
             if warnings:
                 response["warnings"] = warnings
