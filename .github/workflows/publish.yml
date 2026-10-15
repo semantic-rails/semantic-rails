@@ -6,6 +6,12 @@ name: Publish to PyPI
 # GitHub Release with the complete public contract bundle and SHA256SUMS.
 # No job rebuilds release artifacts.
 #
+# Release tags are immutable, and a re-run reuses the workflow file of the
+# original run. If a tag-push run fails for a workflow reason, publish the same
+# tag with this workflow from main: `gh workflow run publish.yml -f tag=vX.Y.Z`.
+# Every job still checks out and builds the tag, never main. The `pypi`
+# environment must allow deployments from `main` as well as `v*` tags.
+#
 # One-time setup on pypi.org: add a "trusted publisher" for the
 # `semantic-rails` project pointing at this repo, workflow `publish.yml`,
 # environment `pypi`; then create the matching `pypi` environment in the
@@ -18,12 +24,24 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing final release tag on main to publish, such as v1.2.3"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+env:
+  # The release tag every job checks out and publishes: the pushed tag, or the
+  # dispatch input (checked by the first step of `suite`).
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keyed on the tag, so a dispatch and a tag push for one tag never overlap.
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref_name }}
 
 jobs:
   suite:
@@ -39,7 +57,28 @@ jobs:
       SR_SHARD_COUNT: "4"
       SR_SHARD_INDEX: ${{ matrix.shard }}
     steps:
+      - name: Refuse a dispatch unless the tag is a final release tag on main
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          fail() { echo "::error title=Refusing to publish::$1"; exit 1; }
+          [[ "${GITHUB_REF}" == refs/heads/main ]] ||
+            fail "dispatch this workflow from main, not ${GITHUB_REF}"
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            fail "the tag input must be a final release tag such as v1.2.3; a pre-release publishes only from its tag push"
+          git init -q "${RUNNER_TEMP}/release-tag"
+          cd "${RUNNER_TEMP}/release-tag"
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git ls-remote --exit-code origin "refs/tags/${RELEASE_TAG}" > /dev/null ||
+            fail "tag ${RELEASE_TAG} does not exist on origin"
+          git fetch -q --no-tags --filter=tree:0 origin \
+            "+refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}" "+refs/heads/main:refs/remotes/origin/main"
+          commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          git merge-base --is-ancestor "${commit}" refs/remotes/origin/main ||
+            fail "tag ${RELEASE_TAG} points at ${commit}, which is not on main"
+          echo "Publishing ${RELEASE_TAG} (${commit}) with this workflow from main."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -58,6 +97,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -72,7 +113,7 @@ jobs:
       - run: uv run semantic-rails check --package jaffle_shop --artifact dist/jaffle_shop.semantic-rails.tar.gz
       - run: SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD) uv build --out-dir dist
       - run: uv run python scripts/verify_package_distribution.py --dist-dir dist --no-build
-      - run: uv run python scripts/verify_release_readiness.py --tag "${GITHUB_REF_NAME}"
+      - run: uv run python scripts/verify_release_readiness.py --tag "${RELEASE_TAG}"
       - name: Assemble checksummed release bundle
         run: |
           mkdir -p release-assets/python release-assets/github
@@ -115,6 +156,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -127,7 +170,7 @@ jobs:
         run: sha256sum --check SHA256SUMS
       - name: Match PyPI digests and smoke the published wheel
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           python scripts/verify_published_release.py \
             --version "$version" \
             --dist-dir release-assets/python
@@ -161,15 +204,15 @@ jobs:
           # Only a final or post-release tag can become "Latest"; any other tag, such as
           # v0.3.2rc1, is a GitHub pre-release.
           prerelease=true
-          if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.post[0-9]+)?$ ]]; then
+          if [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.post[0-9]+)?$ ]]; then
             prerelease=false
           fi
-          gh release create "${GITHUB_REF_NAME}" \
+          gh release create "${RELEASE_TAG}" \
             release-assets/github/*.whl \
             release-assets/github/*.tar.gz \
             release-assets/github/*.json \
             release-assets/github/SHA256SUMS \
             --verify-tag \
             --prerelease="${prerelease}" \
-            --title "Semantic Rails ${GITHUB_REF_NAME}" \
+            --title "Semantic Rails ${RELEASE_TAG}" \
             --generate-notes

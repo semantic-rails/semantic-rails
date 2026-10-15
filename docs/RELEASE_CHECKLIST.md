@@ -35,6 +35,11 @@ remaining controls live in GitHub or PyPI and must be confirmed by a repository 
 - Run `make release-check` against the release candidate.
 - Tag the release PR's merge commit exactly `v<project.version>`; fragments merged after it belong
   to the next release. The publish workflow rejects a tag/version mismatch.
+- If a tag-push publish run fails for a workflow reason, publish the same tag with
+  `gh workflow run publish.yml -f tag=vX.Y.Z` from main; tags are immutable. That run uses the
+  workflow from main but checks out and builds the tag, and refuses anything but an existing
+  final `vX.Y.Z` tag on main. The `pypi` environment must allow deployments from `main` as well
+  as `v*` tags for this path.
 - Approve the PyPI environment only after the release gate succeeds. The publish workflow builds
   wheel and sdist once, publishes those verified bytes, matches both PyPI digests, and repeats one
   governed `plan → validate → compile → query` smoke from the public index. The post-publish
