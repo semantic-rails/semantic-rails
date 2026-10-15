@@ -63,9 +63,9 @@ from .policy_rows import (
     _validate_policy_scopes,
 )
 from .row_values import (
+    _ensure_dict_list,
     _ensure_list,
     _merge_meta,
-    _normalize_examples,
     _normalize_meta,
     _optional_int,
     _slug,
@@ -456,7 +456,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 temporal_lookup[(model_id, ref)] if (model_id, ref) in temporal_lookup else str(ref)
                 for ref in temporal_refs
             ]
-            _, structured_example_entries = _normalize_examples(measure_spec.get("examples"))
+            structured_example_entries = _ensure_dict_list(measure_spec.get("examples"))
             measure_topics = _default_topics(measure_name, fallback=model_id)
             default_temporal_role = str(
                 measure_spec.get("default_temporal_role")
@@ -900,7 +900,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             )
         temporal_role = str(spec.get("temporal_role", "")).strip()
         metric_id = str(spec.get("id", f"metric.{metric_key}"))
-        _, metric_example_entries = _normalize_examples(spec.get("examples"))
+        metric_example_entries = _ensure_dict_list(spec.get("examples"))
         metric_compatible_temporal_roles = list(
             spec.get("compatible_temporal_roles", [temporal_role] if temporal_role else []) or []
         )

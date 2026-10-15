@@ -6,7 +6,8 @@ import math
 from typing import Any
 
 from ..naming import slug
-from .package_loader import _RELATIONSHIP_PASSTHROUGH, _column_list
+from .package_loader import _RELATIONSHIP_PASSTHROUGH
+from .row_values import _ensure_list
 
 
 def add_error(errors: list[str], message: str) -> None:
@@ -582,10 +583,10 @@ def _key_columns(model_id: str, model: dict[str, Any], graph_entities: dict[str,
     for name in names - {"", "bridge"}:
         override = entities.get(name) if isinstance(entities, dict) else None
         if isinstance(override, dict) and override.get("expr") is not None:
-            columns.update(_column_list(override["expr"]))
+            columns.update(_ensure_list(override["expr"]))
         entity = graph_entities.get(name)
         if isinstance(entity, dict):
-            columns.update(_column_list(entity.get("key")))
+            columns.update(_ensure_list(entity.get("key")))
     return columns
 
 

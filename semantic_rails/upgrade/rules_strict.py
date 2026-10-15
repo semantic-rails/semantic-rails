@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from ..config_parts.package_loader import _RELATIONSHIP_PASSTHROUGH, _column_list
+from ..config_parts.package_loader import _RELATIONSHIP_PASSTHROUGH
 from ..config_parts.row_values import _ensure_list
 from ..naming import slug, title
 from ..schema import OBSERVATION_SCOPES
@@ -119,15 +119,15 @@ def _columns(model: dict[str, Any], graph: Graph, name: str) -> list[str]:
     block = _mapping(model.get("entities"))
     override = block.get(name)
     if isinstance(override, dict) and override.get("expr") is not None:
-        return _column_list(override["expr"])
-    return _column_list(graph[name][2].get("key")) if name in graph else []
+        return _ensure_list(override["expr"])
+    return _ensure_list(graph[name][2].get("key")) if name in graph else []
 
 
 def _primary(model_id: str, model: dict[str, Any], graph: Graph) -> tuple[str, str, list[str]]:
     """How ``normalize_package`` identifies the model's primary entity (``bound``, ``entity``,
     ``grain`` or ``name``), the entity, and its key columns on the model; empty if nothing does."""
     block = _mapping(model.get("entities"))
-    grain = _column_list(model.get("grain"))
+    grain = _ensure_list(model.get("grain"))
     matches = [n for n in block if n != "bridge" and _columns(model, graph, n) == grain]
     unbound = not _home(graph.get(model_id, ("", (), {}))[2])
     how, primary = next(
@@ -145,7 +145,7 @@ def _primary(model_id: str, model: dict[str, Any], graph: Graph) -> tuple[str, s
     )
     keys = _mapping(model.get("keys"))
     columns = _columns(model, graph, primary) if primary else []
-    return how, primary, columns or _column_list(keys.get("primary"))
+    return how, primary, columns or _ensure_list(keys.get("primary"))
 
 
 def _model_grain(files: PackageFiles) -> Iterator[Finding]:
@@ -154,12 +154,12 @@ def _model_grain(files: PackageFiles) -> Iterator[Finding]:
         # A model without entities: reads its row grain from grain:; model-primary-key moves it.
         if "grain" not in model or not (_fact(model) or isinstance(model.get("entities"), dict)):
             continue
-        key, grain = (*path, "grain"), _column_list(model["grain"])
+        key, grain = (*path, "grain"), _ensure_list(model["grain"])
         edits = [Edit(file, "delete", key)]
         primary = ""
         if _fact(model):
             keys = _mapping(model.get("keys"))
-            columns = _column_list(keys.get("primary") or model.get("time_column"))
+            columns = _ensure_list(keys.get("primary") or model.get("time_column"))
         else:
             how, primary, columns = _primary(model_id, model, graph)
             entity = graph.get(primary)
@@ -199,7 +199,7 @@ def _model_primary_key(files: PackageFiles) -> Iterator[Finding]:
         problem = (
             not primary or not isinstance(foreign, dict) or bool(set(keys) - {"primary", "foreign"})
         )
-        rows = _column_list(model.get("grain")) or _column_list(keys.get("primary"))
+        rows = _ensure_list(model.get("grain")) or _ensure_list(keys.get("primary"))
         listed = {primary: rows, **(foreign if isinstance(foreign, dict) else {})}
         # A key with a role ({columns, role}) has no entities: spelling.
         problem = problem or any(
@@ -210,19 +210,19 @@ def _model_primary_key(files: PackageFiles) -> Iterator[Finding]:
             listed[primary] = keys.get("primary")
             problem = problem or any(
                 columns is not None
-                and (name not in block or _column_list(columns) != _columns(model, graph, name))
+                and (name not in block or _ensure_list(columns) != _columns(model, graph, name))
                 for name, columns in listed.items()
             )
             edits: tuple[Edit, ...] = (Edit(file, "delete", (*path, "keys")),)
         else:
             # The model's rows are keyed by grain, else keys.primary: both must agree, and
             # some row key must exist, or the entities block would give it one.
-            primary_keys = _column_list(keys.get("primary"))
+            primary_keys = _ensure_list(keys.get("primary"))
             problem = problem or not rows or bool(primary_keys and primary_keys != rows)
             entities: dict[str, Any] = {}
             for name, columns in listed.items():
                 canonical = _columns(model, graph, name)
-                columns = _column_list(columns) or canonical
+                columns = _ensure_list(columns) or canonical
                 problem = problem or not columns
                 entities[name] = (
                     {}

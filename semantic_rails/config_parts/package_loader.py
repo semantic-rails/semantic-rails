@@ -5,6 +5,7 @@ from typing import Any
 from ..errors import SemanticLayerError
 from ..naming import slug as _slug
 from ..naming import title as _titleize
+from .row_values import _ensure_list
 
 # `graph.relationships` keys copied as they are onto the join a relationship projects.
 _RELATIONSHIP_PASSTHROUGH = (
@@ -31,14 +32,6 @@ def _apply_as(mapping: dict[str, Any]) -> None:
     """`as:` keeps a public id the key can't derive (another namespace's, a renamed key's)."""
     if public := str(mapping.get("as") or "").strip():
         mapping["id"] = public
-
-
-def _column_list(value: Any) -> list[str]:
-    if isinstance(value, dict):
-        value = value.get("columns", value.get("column"))
-    if value is None:
-        return []
-    return [str(col) for col in (value if isinstance(value, list) else [value])]
 
 
 def _model_mapping(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -125,7 +118,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         def _canonical_key_for(entity_name: str) -> list[str]:
             ent = graph_entities.get(entity_name) or {}
             ent_key = ent.get("key") if isinstance(ent, dict) else None
-            return _column_list(ent_key)
+            return _ensure_list(ent_key)
 
         # Resolve each entity's effective columns (expr override or canonical).
         effective_cols: dict[str, list[str]] = {}
@@ -250,7 +243,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         # Refuse keyless graph entities before translating authored relationships.
         # Only this entity's declared key or its own model's key can supply it.
         model_keys = dict(model.get("keys", {}) or {})
-        if not entity.get("_row_grain") and not _column_list(
+        if not entity.get("_row_grain") and not _ensure_list(
             entity.get("key") or model_keys.get("primary")
         ):
             raise SemanticLayerError(
@@ -488,13 +481,13 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             # rather than merged, so no declaration order decides which one a
             # query gets and no authored attribute is dropped.
             foreign = (model.get("keys") or {}).get("foreign") or {}
-            source_columns = _column_list(edge_spec.get("via")) or _column_list(foreign.get(b))
+            source_columns = _ensure_list(edge_spec.get("via")) or _ensure_list(foreign.get(b))
             same_route = [
                 key
                 for key, join in joins.items()
                 if source_columns
                 and (key == b or join.get("to") == b)
-                and (_column_list(join.get("via")) or _column_list(foreign.get(key)))
+                and (_ensure_list(join.get("via")) or _ensure_list(foreign.get(key)))
                 == source_columns
             ]
             if len(same_route) > 1 or any(joins[key].get("id") is not None for key in same_route):

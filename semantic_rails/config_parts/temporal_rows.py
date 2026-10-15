@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..schema import MeasureExternalDiscontinuity, MeasureValidityWindow
+from .row_values import _ensure_dict_list
 
 _TIME_GRAIN_ORDER = ["transaction", "minute", "hour", "day", "week", "month", "quarter", "year"]
 
@@ -22,27 +23,19 @@ def _coarser_time_grains(grain: str) -> list[str]:
 
 
 def _parse_validity_windows(value: Any) -> list[MeasureValidityWindow]:
-    rows = value if isinstance(value, list) else ([] if value is None else [value])
-    out: list[MeasureValidityWindow] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        out.append(
-            MeasureValidityWindow(
-                from_=str(row.get("from", "") or ""),
-                to=str(row.get("to", "") or ""),
-                semantics=str(row.get("semantics", "") or ""),
-            )
+    return [
+        MeasureValidityWindow(
+            from_=str(row.get("from", "") or ""),
+            to=str(row.get("to", "") or ""),
+            semantics=str(row.get("semantics", "") or ""),
         )
-    return out
+        for row in _ensure_dict_list(value)
+    ]
 
 
 def _parse_external_discontinuities(value: Any) -> list[MeasureExternalDiscontinuity]:
-    rows = value if isinstance(value, list) else ([] if value is None else [value])
     out: list[MeasureExternalDiscontinuity] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    for row in _ensure_dict_list(value):
         magnitude = row.get("magnitude_estimate_pct")
         out.append(
             MeasureExternalDiscontinuity(
