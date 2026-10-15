@@ -98,6 +98,7 @@ from .lowering_common import _snapshot_series_columns as _snapshot_series_column
 from .lowering_common import _stock_clock_key_gap as _stock_clock_key_gap
 from .lowering_common import _stock_snapshot_refusal as _stock_snapshot_refusal
 from .lowering_common import _value_filter_condition as _value_filter_condition
+from .namespacing import _namespace_sql_select
 from .paths import (
     _join_condition,
     _leaf_time_role,
@@ -106,7 +107,6 @@ from .paths import _joins_for_paths as _joins_for_paths
 from .paths import _resolve_dimension_expr as _resolve_dimension_expr
 from .post_aggregation import (
     _compile_post_expr,
-    _namespace_sql_select,
     share_partition,
 )
 from .predicate_sets import _anchored_entity_set_select, _requested_order

@@ -80,6 +80,7 @@ from .lowering_common import (
     _path_has_temporal_validity,
     _refuse_converted_role,
 )
+from .namespacing import _namespace_sql_select
 from .paths import (
     _column_ref,
     _direct_entity_key_source_expr,
@@ -90,9 +91,6 @@ from .paths import (
     unknown_as_null,
 )
 from .plan_checks import _LOOKUP_TIME_EXPRS, _predicate_metric_label, _predicate_sql_names
-from .post_aggregation import (
-    _namespace_sql_select,
-)
 from .temporal import (
     _add_grain,
     _expr_compatible_temporal_roles,
@@ -245,8 +243,8 @@ def _inline_threshold_cte_and_where(
     builds a one-row threshold CTE alongside the predicate-source CTE
     and a CROSS JOIN so the WHERE clause references the threshold
     column instead of a literal scalar. Both predicate-CTE builders
-    (``compiler._predicate_ctes_and_join`` and
-    ``sql_lowering._minimal_predicate_set_ctes``) call this so the
+    (:func:`_predicate_ctes_and_join` and
+    ``predicate_sets._minimal_predicate_set_ctes``) call this so the
     behaviour stays consistent across both paths.
 
     Returns ``(extra_ctes, extra_joins, where_condition)``. When

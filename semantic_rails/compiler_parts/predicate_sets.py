@@ -103,6 +103,7 @@ from .lowering_common import (
     _time_alias_for_plan,
     _time_bucket_expr,
 )
+from .namespacing import _namespace_sql_select
 from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
@@ -112,9 +113,6 @@ from .paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
-)
-from .post_aggregation import (
-    _namespace_sql_select,
 )
 from .predicate import (
     _inline_threshold_cte_and_where,

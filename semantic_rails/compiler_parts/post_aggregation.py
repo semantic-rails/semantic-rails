@@ -54,7 +54,6 @@ from .indexes import (
     _recipe_index,
     _recipe_or_raise,
 )
-from .namespacing import _namespace_sql_select
 from .paths import display_key
 from .temporal import _period_to_date_period, _window_unit_to_rows
 
@@ -64,7 +63,6 @@ __all__ = [
     "_compile_offset_window_expr",
     "_compile_post_expr",
     "_expr_requires_dense_series",
-    "_namespace_sql_select",
     "_summing_window_parts",
     "share_partition",
     "_window_partition_exprs",

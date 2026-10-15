@@ -107,6 +107,7 @@ from .lowering_common import (
     _time_bucket_expr,
     _value_filter_condition,
 )
+from .namespacing import _namespace_sql_select
 from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
@@ -118,9 +119,6 @@ from .paths import (
     unknown_as_null,
 )
 from .plan_checks import child_group_route
-from .post_aggregation import (
-    _namespace_sql_select,
-)
 from .predicate import _predicate_ctes_and_join
 from .predicate_sets import (
     _reads_chosen_snapshot,

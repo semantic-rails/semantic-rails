@@ -75,6 +75,7 @@ from .indexes import (
 from .leaf_paths import _unique_path_selections
 from .leaves import _count_key_expr
 from .lowering_common import _edge_cap, _query_metric_predicates, _refuse_converted_role
+from .namespacing import _namespace_sql_select
 from .paths import (
     _column_ref,
     _join_condition,
@@ -86,9 +87,6 @@ from .plan_checks import (
     _path_reverse_count_distinct_safe,
     _predicate_sql_names,
     _unsupported_conversion,
-)
-from .post_aggregation import (
-    _namespace_sql_select,
 )
 from .predicate import (
     _path_selection,
