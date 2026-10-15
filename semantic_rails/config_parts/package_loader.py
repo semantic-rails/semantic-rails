@@ -22,6 +22,14 @@ _RELATIONSHIP_PASSTHROUGH = (
     "target_key_role",
 )
 
+# Authors name one of four cardinalities; the parser's notation is internal.
+_CARDINALITIES = {
+    "many_to_one": "N:1",
+    "one_to_many": "1:N",
+    "one_to_one": "1:1",
+    "many_to_many": "M:N",
+}
+
 
 def _with_default(mapping: dict[str, Any], key: str, value: Any) -> None:
     if mapping.get(key) in {None, ""}:
@@ -426,21 +434,14 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                         f"graph relationship '{rel_name}' cannot attach entity '{endpoint}' "
                         "to a graph model",
                     )
-            # Authors name one of four cardinalities; the parser's notation is internal.
-            cardinalities = {
-                "many_to_one": "N:1",
-                "one_to_many": "1:N",
-                "one_to_one": "1:1",
-                "many_to_many": "M:N",
-            }
             authored = str(spec.get("cardinality", "") or "")
-            if authored and authored not in cardinalities:
+            if authored and authored not in _CARDINALITIES:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"graph relationship '{rel_name}' cardinality {authored!r} must be one of "
-                    f"{', '.join(cardinalities)}",
+                    f"{', '.join(_CARDINALITIES)}",
                 )
-            cardinality = cardinalities.get(authored, "")
+            cardinality = _CARDINALITIES.get(authored, "")
             rollup_safe = spec.get("rollup_safe", {})
             if not isinstance(rollup_safe, dict):
                 raise SemanticLayerError(

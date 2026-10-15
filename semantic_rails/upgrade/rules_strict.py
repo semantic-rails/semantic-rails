@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from ..config_parts.package_loader import _RELATIONSHIP_PASSTHROUGH
+from ..config_parts.package_loader import _CARDINALITIES, _RELATIONSHIP_PASSTHROUGH
 from ..config_parts.row_values import _ensure_list
 from ..naming import slug, title
 from ..schema import OBSERVATION_SCOPES
@@ -250,12 +250,7 @@ def _model_primary_key(files: PackageFiles) -> Iterator[Finding]:
 
 _JOIN_KEYS = {"to", "id", "cardinality", "traversal", "rollup_safe_aggregations_reverse"}
 # A join reads its cardinality as written; a graph relationship reads these names for it.
-_CARDINALITY = {
-    "1:1": "one_to_one",
-    "N:1": "many_to_one",
-    "1:N": "one_to_many",
-    "M:N": "many_to_many",
-}
+_CARDINALITY = {notation: name for name, notation in _CARDINALITIES.items()}
 
 
 def _model_joins(files: PackageFiles) -> Iterator[Finding]:
