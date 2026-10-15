@@ -11,7 +11,7 @@ effects to execution unchanged; responses carry ``visible_view.public_effects``.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
@@ -1087,6 +1087,15 @@ def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> 
     return out
 
 
+def _child_exprs(expr: Any) -> Iterator[Any]:
+    """An expression node's dataclass children, in field order, list items included."""
+    for item in fields(expr) if is_dataclass(expr) else ():
+        value = getattr(expr, item.name)
+        for child in value if isinstance(value, list) else [value]:
+            if is_dataclass(child):
+                yield child
+
+
 def _inline_filters(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str | None, str]]:
     """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
     expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
@@ -1128,11 +1137,8 @@ def _inline_filters(query: NormalizedQuery, config: PackageConfig) -> list[tuple
             )
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"), whole_query=True)
-        for item in fields(expr) if is_dataclass(expr) else ():
-            value = getattr(expr, item.name)
-            for child in value if isinstance(value, list) else [value]:
-                if is_dataclass(child):
-                    visit(child, whole_query=whole_query)
+        for child in _child_exprs(expr):
+            visit(child, whole_query=whole_query)
 
     for row in query.select:
         visit(row.expression)
@@ -1147,11 +1153,6 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
     recipes = {row.id: row for row in config.metric_recipes}
     reads: set[str] = set()
 
-    def children(expr: Any) -> Iterable[Any]:
-        for item in fields(expr) if is_dataclass(expr) else ():
-            value = getattr(expr, item.name)
-            yield from (child for child in (value if isinstance(value, list) else [value]))
-
     def refs(expr: Any, seen: frozenset[str] = frozenset()) -> None:
         if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
             reads.add(expr.measure)
@@ -1160,9 +1161,8 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
             recipe = recipes.get(expr.metric_recipe)
             if recipe is not None:
                 refs(recipe.expression, seen | {expr.metric_recipe})
-        for child in children(expr):
-            if is_dataclass(child):
-                refs(child, seen)
+        for child in _child_exprs(expr):
+            refs(child, seen)
 
     def visit(expr: Any) -> None:
         nested: list[dict[str, Any]] = []
@@ -1176,9 +1176,8 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
             nested.extend(_scoped_predicate_expr_payload(dict(row)) for row in expr.predicates)
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"))
-        for child in children(expr):
-            if is_dataclass(child):
-                visit(child)
+        for child in _child_exprs(expr):
+            visit(child)
 
     for row in query.select:
         visit(row.expression)
