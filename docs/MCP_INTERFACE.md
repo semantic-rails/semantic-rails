@@ -469,9 +469,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   grouped by Store name). Nor does any other dimension, whatever it declares: a time grain, a
   category, another dimension of the entity ("Customer order number") or another entity's
   dimension. "which" or "list" naming no entity is held. "who" naming no entity ("Who ordered
-  last week?") leaves whose rows to the caller: only a caller's `query.group_by` dimension
-  that is no grouping the question lists ("Who ordered by store?") and is the key of its own
-  entity lists them. "each" or "every" needs a row per item, a `group_by` or a grain that
+  last week?") lists the one entity with a `display` that the draft's subject reaches; with
+  none or several, it leaves whose rows to the caller: only a caller's `query.group_by`
+  dimension that is no grouping the question lists ("Who ordered by store?") and is the key of
+  its own entity lists them. "each" or "every" needs a row per item, a `group_by` or a grain that
   splits the rows (`each_unrealized`: "How many orders did each last week?"). "compare",
   "compared", "comparison", "versus", "vs", "against" or "up or down" needs a value to compare
   with: a prior-period select. A second select (which may spell the first again), a
@@ -636,7 +637,8 @@ The reverse also holds: every grouping the draft adds traces to the question, or
 naming each one (a dimension's label, or the grain's unit), `details.dimensions` and
 `details.grain`. A `group_by` dimension traces to a grouping the question asks for, read as
 above: one it lists ("by store"), the noun a ranking ranks ("which 5 stores had the most
-orders"), or the words after "per", "each" or "every" ("revenue per store"). It also traces to
+orders"), the words after "per", "each" or "every" ("revenue per store"), or what a clause
+opening with "which" or "who" lists (the entity it names, or the one "who" lists). It also traces to
 the caller's `partial_query` group_by, or to the draft's own `is` filter, which keeps only
 values the question names. The time block's grain traces to the question's words outside its
 windows: its unit or "-ly" form ("by month", "monthly", "at month level", "daily"), a series
@@ -679,8 +681,34 @@ or ask the user what the words mean. No hint offers to ask again without a word 
 another one, except the "s" ending a contraction or possessive that plan reads as an unknown
 word ("What's revenue last month?"): every check reads that retry again. No other ending is
 offered: without its "t", "can't" says the opposite. A single unknown
-value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan never guesses its dimension or queries
-the warehouse to resolve it. Other unmatched words stay warnings; check them before executing.
+value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan
+never guesses its dimension. The one exception is a name: quoted words, or a run of
+capitalized words side by side, holding a word held as unknown this way, that may name a row of
+an entity with a text `display` dimension
+([PACKAGE_AUTHORING](PACKAGE_AUTHORING.md#display--the-name-of-one-row)). Every word of the run
+is the name, a catalog word too: "Acme Accounts" is looked up whole, and matches no "Acme Data
+Co". A sentence's first word starts a run only when it is held itself ("Did Acme …" names
+"Acme"), and alone is a name only with a possessive ("Acme's MRR") or a capital past its first
+letter ("ACME"), since every sentence capitalizes it ("Roughly how many …" names nothing). Plan looks
+each such name up once, in the display of every entity the draft's measure reaches: one
+select-less call per name and entity, run through `execute`'s own path under the caller's
+identity (so row filters and policies apply), reading at most 6 rows whose display `contains`
+each of the name's words. It is the only warehouse read `plan` makes, and it never runs an
+answer. A row whose display holds the name as whole words side by side, in any case, is a match
+("Acme" finds "Acme Data Co", not "Acmeco"):
+- one match, on a read of fewer than 6 rows: the draft filters on the row's key (`is`) and
+  groups by its display, so the answer names it; the words are consumed, and an assumption line
+  says "'Acme' is read as Account 'Acme Data Co'.";
+- several, for the question's one name when its words are all that hold the draft:
+  `status="needs_clarification"`, `next.action="clarify"`, with a `name_ambiguous` gap whose
+  `expected.matches` lists each row's `entity`, `display` and `key` (`complete: false` when the
+  read was full), and `why.details.clarification.question` asking which one. No match is a
+  call to run: plan again with the full name. With another name or another hold beside it
+  ("Acme and Globex", "… at 9am"), the hold stands instead;
+- none, a full read with one match, a failed lookup, or names giving two rows of one entity
+  ("Acme and Globex"): the hold above. A caller's `partial_query` with a `where` or `group_by`
+  turns the lookup off.
+Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
 threshold. Every measure a
@@ -692,7 +720,40 @@ holds every word of the measure the question otherwise asks for: "large order re
 still revenue (and `low_confidence` until the draft filters on large orders). If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
-`why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
+`why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it: `best.query` is then
+the named pattern's draft, which fails validation, and `why.details.primary_errors` says why.
+
+A held plan offers no draft (`best: null`, no alternatives) in two cases, since neither draft
+is one to fix:
+- **The draft's measure can't reach a dimension it reads** (`PLAN_UNCONNECTED`,
+  `unrealizable`: the package can't answer as asked): validation refuses it with `PATH_NOT_FOUND` or `MIXED_GRAIN_INVALID`.
+  `why.details` names the `subjects`, the `dimensions` on the entity they can't reach, that
+  `entity`, and the engine's `error` ("Orders can't reach Membership status on Customer segment
+  membership"). Group by a dimension the measure reaches, or pick a measure that reaches the
+  dimension. A dimension the caller's `query` names keeps the validation errors instead, with
+  the caller's call as the draft.
+- **No word the question asks about names the draft's measure or metric**
+  (`PLAN_SUBJECT_UNMATCHED`): "How many employees work at each store?" would draft the open
+  store count, which shares only "store", a word the grouping says. The words the question asks
+  about are its words outside the groupings it asks for and its windows, other than stopwords,
+  aggregation words ("count", "total", "average"), units of time and numbers; a measure is
+  named when one of them is a word of its label, id or synonyms, never its description. Only
+  the catch-all drafts are read this way, and never when the caller's `query` selects. The why
+  names the words that name nothing in the catalog (`details.terms`) and the measures and
+  metrics whose names or descriptions mention them (`details.candidates`); with none, the
+  status is `unrealizable`, else `low_confidence`. A measure sharing any word the question asks
+  about counts as named, even an entity's name ("customer satisfaction score" names Customer
+  count): that draft stays held, with the words it misses.
+A plan that is `ok` never changes this way. A fallback draft that `detail="full"` still shows on
+a measure the question doesn't name says so: its `trace.fallback` has `placeholder: true` and a
+reason saying not to run it.
+
+`plan` drafts no listing without a measure ("List the stores", "Which stores are there?": a
+list whose only word naming a measure is the listed noun is held, as a ranking is), no lookup
+of a dimension's value ("What is Globex's segment?"), and no ranking by a dimension ("top 5
+products by price"). Write those calls directly: a call with no `select` and a `group_by`
+lists the rows of its dimensions, and `order_by` a `group_by` dimension with `limit` ranks
+them.
 `plan` resolves a time window only when the question names exactly one, in a form it reads
 unambiguously: a year after "in", "for" or "during", or after the word "year" where no word
 qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "model year 2017"
@@ -867,20 +928,31 @@ aggregate) keep the holds above, and a window in `query.time` is used as passed:
 balance window is read
 only when both bounds are whole days and it ends on or before the last complete day;
 otherwise `stock_as_of_unrealized`.
-**How plan answers by, each and top N.** A term that names an entity by its label or a synonym
-(plurals allowed, never its description), after "by", "each", "every" or "for each", or the noun
-a ranking ranks ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the most
-MRR"), groups by the entity's key dimension and the dimension that names a row: its
-[`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row), else its one dimension whose own
-words name it, else the key alone with an assumption line saying so (none when the question
-names the key itself, "by store id"). A ranking keeps the count the question states (digits or
-"one" to "ten") and its direction ("bottom", "least", "lowest" sort ascending); ties at the cut
-follow `execute`'s ordering. A ranking whose subject only the ranked noun names ("top 5
-customers", "the 3 stores that sold the most") has no value to rank by: it groups by nothing and
-stays held. Any other ranking is ready only when its value is named (see `ranking_unrealized`
-above). A term after "each" or "every" ends at the first word that names nothing more
-("each plan make" groups by plan). The readiness checks read the same stand-ins, so a draft
-grouped by another entity's column stays held.
+**How plan answers which, who, by, each and top N.** A term that names an entity by its label or
+a synonym (plurals allowed, never its description), after "by", "each", "every" or "for each",
+the noun a ranking ranks ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the
+most MRR"), or a "which" or "who" opening a clause, groups by the entity's key dimension and the
+dimension that names a row: its [`display:`](PACKAGE_AUTHORING.md#display--the-name-of-one-row),
+else its one dimension whose own words name it, else the key alone with an assumption line saying
+so (none when the question names the key itself, "by store id"). A ranking keeps the count the
+question states (digits or "one" to "ten") and its direction ("bottom", "least", "lowest" sort
+ascending); ties at the cut follow `execute`'s ordering. A ranking whose subject only the ranked
+noun names ("top 5 customers", "the 3 stores that sold the most") has no value to rank by: it
+groups by nothing and stays held. Any other ranking is ready only when its value is named (see
+`ranking_unrealized` above). A list ("Which accounts closed last week?", "Who upgraded last
+week?") also keeps only rows whose value is known and isn't 0 (`having: [{"field": <the select's
+alias>, "op": "missing", "value": false}, {"field": <the same>, "op": "not", "value": 0}]`) and
+orders them by name. A caller's own `having` beside a list is held (`list_unrealized`): plan
+doesn't decide which of the two says which rows to keep. "who" naming no entity lists the one
+entity with a `display` that the subject reaches; when several do, `plan` returns
+`needs_clarification` with `why.details.clarification`: its `question` and one option per
+entity (`entity`, `label`), and no call to run, since a call built for one entity would miss
+what plan adds to the draft (filters, the governed metric, a balance's day): plan again naming
+the entity ("which accounts …"). When none does it is held. A superlative no ranking reads ("who had the most MRR"), "per" (it may be a
+ratio) and a "which" naming a dimension rather than an entity draft no list. A term after "each"
+or "every" ends at the first word that names nothing more ("each plan make" groups by plan). The
+readiness checks read the same stand-ins, so a draft grouped by another entity's column stays
+held.
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.

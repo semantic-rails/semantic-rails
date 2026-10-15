@@ -132,7 +132,7 @@ def test_orders_by_customer_status_groups_or_flags_assumption(runtime) -> None:
     if not candidates:
         blocked = list(payload.get("blocked") or [])
         assert any(
-            row.get("code") == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+            row.get("code") in {"PLAN_FALLBACK_SEMANTIC_DRIFT", "PLAN_UNCONNECTED"}
             and _status_like_dimensions(
                 [str(item) for item in list(row.get("resolved_objects") or [])]
             )

@@ -100,6 +100,17 @@ def plan_candidate_envelope(
         out["blocked"].append(
             _blocked_from_plan_row(row, comparison_bundle=comparison_bundle, verbosity=verbosity)
         )
+    if not rows and isinstance(why, dict) and payload.get("status") != "ok":
+        # A held plan that offers no draft names its pieces in why.details.
+        details = dict(why.get("details") or {})
+        pieces = [*(details.get("subjects") or []), *(details.get("dimensions") or [])]
+        out["blocked"].append(
+            _blocked_from_plan_row(
+                {"why": why, "resolved": [{"id": item} for item in pieces]},
+                comparison_bundle=comparison_bundle,
+                verbosity=verbosity,
+            )
+        )
 
     if not out["candidates"] and out["blocked"]:
         codes = [

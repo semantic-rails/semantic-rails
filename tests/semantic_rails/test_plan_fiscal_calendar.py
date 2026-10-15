@@ -41,8 +41,14 @@ FISCAL_COLUMN = "dimension.jaffle_order_fiscal_quarter"
 # What a fiscal hold's hint says: the release reads no fiscal calendar.
 NOT_READ = "reads no fiscal calendar"
 # How plan holds a fiscal question: by its fiscal gap, or, when the draft groups by a calendar
-# column the orders can't reach, by validation or the fallback's drift. Never ok.
-HELD_BY = {"PLAN_INTENT_COVERAGE_GAP", "VALIDATION_FAILED", "PLAN_FALLBACK_SEMANTIC_DRIFT"}
+# column the orders can't reach, by naming the pair that doesn't connect (no draft), by
+# validation or by the fallback's drift. Never ok.
+HELD_BY = {
+    "PLAN_INTENT_COVERAGE_GAP",
+    "PLAN_UNCONNECTED",
+    "VALIDATION_FAILED",
+    "PLAN_FALLBACK_SEMANTIC_DRIFT",
+}
 
 
 COMPARISON_PACKAGE = (
@@ -116,10 +122,11 @@ def _hints(payload: dict[str, Any]) -> str:
 
 def _assert_fiscal_held(payload: dict[str, Any], says: str = "") -> None:
     """Held, never ready. Held by the coverage check, the fiscal gap is among its gaps and
-    its hint says ``says``."""
-    assert payload["status"] == "low_confidence", payload.get("why")
-    assert "execute" not in payload.get("next", {}).get("ready_for", [])
+    its hint says ``says``. Pieces that don't connect can't be answered as asked."""
     code = payload["why"]["code"]
+    status = "unrealizable" if code == "PLAN_UNCONNECTED" else "low_confidence"
+    assert payload["status"] == status, payload.get("why")
+    assert "execute" not in payload.get("next", {}).get("ready_for", [])
     assert code in HELD_BY, payload["why"]
     if code == "PLAN_INTENT_COVERAGE_GAP":
         assert "fiscal_calendar_unrealized" in _gap_kinds(payload), payload["why"]
@@ -270,9 +277,12 @@ def test_a_to_date_or_rolling_fiscal_question_is_not_answered(
 
 def test_exact_days_bound_a_fiscal_series(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by fiscal quarter from 2017-02-01 to 2018-01-31")
-    time = payload["best"]["query"]["time"]
+    # The fiscal calendar's column is no bucket the orders reach: plan names the pair and
+    # offers no draft, and the question's parse keeps the exact days.
+    assert payload["why"]["code"] == "PLAN_UNCONNECTED"
+    time = payload["intent_ir"]["time"]
 
-    # The exact days are read; the fiscal buckets still hold the draft.
+    # The exact days are read; the fiscal buckets still hold the plan.
     _assert_fiscal_held(payload, NOT_READ)
     assert (time["start"], time["end"]) == ("2017-02-01", "2018-02-01")
 

@@ -436,7 +436,8 @@ def test_a_prior_period_comparison_asks_which_reading(jaffle: Runtime) -> None:
 @pytest.mark.parametrize(
     ("question", "code"),
     [
-        ("Who are our customers by store?", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        # A customer belongs to no store: plan names the pair and offers no draft.
+        ("Who are our customers by store?", "PLAN_UNCONNECTED"),
         ("Revenue per store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
         ("Orders by store last week compared with the week before?", "PERIOD_COMPARISON"),
         ("What's the store's revenue last month?", UNMATCHED),
@@ -449,9 +450,16 @@ def test_store_shortcut_removal_holds_before_the_shape_check(
     monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
     unchecked = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
 
-    # A comparison with the week before asks how to read it; the others are held.
+    # A comparison with the week before asks how to read it; pieces that don't connect can't
+    # be answered as asked; the others are held.
     asked = code == "PERIOD_COMPARISON"
-    assert payload["status"] == ("needs_clarification" if asked else "low_confidence")
+    assert payload["status"] == (
+        "needs_clarification"
+        if asked
+        else "unrealizable"
+        if code == "PLAN_UNCONNECTED"
+        else "low_confidence"
+    )
     assert "ready_for" not in payload["next"]
     assert payload["why"]["code"] == code
     assert payload == unchecked
@@ -542,6 +550,13 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
                 "How many orders did each store get last week?",
             )
         ),
+        # "which customers" lists the customers who ordered, by their key: Customer declares no
+        # display name and has several naming dimensions.
+        (
+            "Which customers ordered last week?",
+            {},
+            f"SELECT customer_id, count(DISTINCT order_id) FROM jaffle_order {LAST_WEEK} GROUP BY 1",
+        ),
     ],
 )
 def test_a_ready_answer_equals_its_reference(
@@ -588,7 +603,6 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
 # Held because a word carries meaning: a catalog name, a grouping, a value plan can't find, or a
 # number. Asking again without it changes the question, so no hint offers that.
 MEANINGFUL = [
-    "Which customers ordered last week?",
     "List the customers who ordered last week.",
     "How many orders did each plan get last week?",
     "Orders between 9 and 17 on 15 March 2017",

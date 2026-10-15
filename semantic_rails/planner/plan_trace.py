@@ -7,7 +7,8 @@ from typing import Any
 from .call import Call
 from .coverage import _dict_nodes, _projected_subject_ids
 from .intent_ir import IntentIR
-from .plan_query import _unique_dicts
+from .no_draft import PLACEHOLDER
+from .plan_query import _slim_validation_error, _unique_dicts
 
 
 def _select_best_plan(
@@ -298,17 +299,19 @@ def _fallback_semantic_drift(
 
     if not reasons:
         return None
+    errors = list(primary.get("validation", {}).get("errors") or [])
     return {
         "code": "PLAN_FALLBACK_SEMANTIC_DRIFT",
         "message": (
-            "The named planner pattern matched the intent but failed validation; "
-            "a validating fallback was available, but it changed or dropped one "
-            "or more requested intent slots. Review best.query and validate "
-            "diagnostics before executing."
+            "best.query is the named pattern's draft, and it fails validation "
+            "(why.details.primary_errors), so it can't run as it stands. A fallback draft "
+            "validates, but it changes or drops part of the question (why.details.reasons), "
+            "so plan doesn't offer it."
         ),
         "details": {
             "primary_pattern": primary.get("pattern", ""),
             "fallback_pattern": candidate.get("pattern", ""),
+            "primary_errors": [_slim_validation_error(row) for row in errors[:3]],
             "primary_slots": primary_slots,
             "fallback_slots": candidate_slots,
             "reasons": reasons,
@@ -317,8 +320,8 @@ def _fallback_semantic_drift(
             {
                 "kind": "inspect_primary_failure",
                 "message": (
-                    "Validate best.query (over MCP, execute with mode 'validate') to see "
-                    "why the semantically closest draft failed."
+                    "Fix best.query by why.details.primary_errors, then validate it (over MCP, "
+                    "execute with mode 'validate'); or ask the user what the question means."
                 ),
             },
             {
@@ -356,12 +359,18 @@ def _fallback_trace(row: dict[str, Any], planned: list[dict[str, Any]]) -> dict[
     reason = ""
     if drift:
         reason = str(drift.get("message", ""))
-    elif used:
+    elif row.get("placeholder"):
+        reason = PLACEHOLDER
+    elif used and planned and not planned[0].get("validation", {}).get("ok"):
+        # Only a fallback for a primary that failed is checked against the primary's slots.
         reason = "Validating fallback preserved the primary intent slots."
+    elif used:
+        reason = "Another reading from catalog search; plan checked that it validates."
     return {
         "used": used,
         "semantic_drift": bool(drift),
         "reason": reason,
+        **({"placeholder": True} if row.get("placeholder") else {}),
     }
 
 

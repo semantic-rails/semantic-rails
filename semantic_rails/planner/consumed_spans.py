@@ -17,6 +17,7 @@ from .coverage import (
     _value_names,
     _value_phrases,
 )
+from .names import honored_names
 from .ranking_checks import _dimension_nouns, _ranking_at, _ranking_words
 from .snapshot import snapshot_read
 from .time_checks import _question_time, _window_agrees
@@ -173,10 +174,11 @@ def _consumed_spans(
     consumes the count of the ranking that states it ("top 5", "the 5 customers who spent the
     most"); a threshold, percentile or numeric filter value consumes its own number token, found
     where the question states it ("over 12.50", "90th percentile", "1,000 or more", "size 12").
-    A filter value, or the name of an object the draft selects, consumes the tokens that spell it.
+    A filter value, or the name of an object the draft selects, consumes the tokens that spell it,
+    and a name plan read as one row (``names.honored_names``) consumes the words it says.
     """
 
-    spans: list[tuple[int, int]] = []
+    spans: list[tuple[int, int]] = [row.span for row in honored_names(lowered, query)]
     spans.extend(_window_spans(lowered, _time_block(query).window))
     if (read := snapshot_read(runtime, lowered, query)) is not None:
         # A balance read on the day an as-of phrase or a window names consumes that phrase.

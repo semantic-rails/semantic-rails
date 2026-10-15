@@ -22,7 +22,7 @@ from ._base import (
 from .call import Call, Time
 from .time_phrases import _TIME_UNITS, _names_time_axis
 from .time_windows import _time_window
-from .visibility import visible_dimensions, visible_value_domains
+from .visibility import discovery_query, visible_dimensions, visible_value_domains
 
 
 def _explicit_grain(text: str, clock: str = "") -> str:
@@ -159,6 +159,31 @@ def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
         kinds = {row.id: row.semantic_kind for row in visible_dimensions(config)}
         keys = [key for key in keys if kinds.get(key) == "id"]
     return (named[0], [*keys, *shown]) if len(keys) == 1 else None
+
+
+def _display_entities(runtime: Any, query: Call) -> list[Any]:
+    """The entities with a visible ``display`` dimension that the draft's subject reaches: whom
+    "who" may list when its clause names no entity."""
+
+    from ..errors import SemanticLayerError  # noqa: WPS433
+    from ..metadata import _availability_for_object, _selection_context  # noqa: WPS433
+
+    config = runtime._config
+    out: list[Any] = []
+    try:
+        root = _selection_context(config, discovery_query(runtime, query))["root_entity"]
+        for entity in config.entities if root else []:
+            keys, shown = _entity_stand_ins(config, entity)
+            if (
+                entity.display
+                and len(keys) == 1
+                and shown == [entity.display]
+                and _availability_for_object(config, root, entity.id, "entity").available
+            ):
+                out.append(entity)
+    except SemanticLayerError:
+        return []
+    return out
 
 
 def _key_only_assumptions(

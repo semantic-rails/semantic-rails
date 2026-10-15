@@ -20,6 +20,7 @@ from .coverage import (
     _value_phrases,
 )
 from .exclusions import _contains_literal, exclusion_regions
+from .names import without_named_rows
 from .time_windows import _time_window
 from .visibility import visible_dimensions
 
@@ -84,6 +85,7 @@ def _filter_value_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap
     """
 
     config = runtime._config
+    text = without_named_rows(text, query)
     phrases = _value_phrases(config)
     plain = _plain(text)
     matches = _value_matches(plain, phrases)
@@ -102,8 +104,10 @@ def _filter_value_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap
     excluded = exclusion_regions(text, _time_window(text).spans)
     grouped = set(query.group_by)
     referenced = set(_referenced_ids(query))
+    # Singular forms on both sides: the value "upgrade" is carried by a chosen name that spells
+    # it in the plural (Upgrades), and "upgrades" by one that spells it in the singular.
     carried = {
-        token
+        _singular(token)
         for row in _catalog_rows(config)
         if str(getattr(row, "id", "")) in referenced
         for token in _tokens(_core_text(row))
@@ -126,7 +130,7 @@ def _filter_value_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap
             for domain, value in rows
             for dimension in domain.dimensions
         )
-        if not relevant_filter and set(_tokens(phrase)) <= carried:
+        if not relevant_filter and {_singular(token) for token in _tokens(phrase)} <= carried:
             continue
         said.append(phrase)
         for domain, value in rows:

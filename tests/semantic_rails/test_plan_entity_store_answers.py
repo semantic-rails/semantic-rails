@@ -340,6 +340,14 @@ CASES = [
             "revenue for each store name",
         ]
     ),
+    # A list: the customers with an order in the window, one row each.
+    _Case(
+        "Which customers ordered last week?",
+        (ORDERS,),
+        dims=(CUSTOMER,),
+        window=("2017-08-14", "2017-08-21"),
+        now=AUGUST,
+    ),
     # Other entities: an order, a product.
     _Case("revenue by order", dims=(ORDER,)),
     _Case("item revenue by orders", (ITEM_REVENUE,), dims=(ORDER,), source=ITEMS_FROM),
@@ -445,5 +453,14 @@ def test_an_unnamed_value_is_held(jaffle: Runtime, case: _Case) -> None:
     payload = plan_payload(
         jaffle, intent=case.question, partial_query=case.partial or None, now=case.now or None
     )
+    assert payload["status"] != "ok"
+    assert "execute" not in payload["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize("question", ["Which stores are there?", "Which customers are there?"])
+def test_a_list_that_names_only_its_rows_is_held(jaffle: Runtime, question: str) -> None:
+    # The only word naming a subject is the listed noun: listing the stores the open store
+    # count counts on the last day answers another question, so plan holds the list.
+    payload = plan_payload(jaffle, intent=question, now=AUGUST)
     assert payload["status"] != "ok"
     assert "execute" not in payload["next"].get("ready_for", [])

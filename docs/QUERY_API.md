@@ -889,9 +889,16 @@ refusals (`OUT_OF_SCOPE`) from relevance-floor refusals
 never counts toward relevance or appears in the sample.
 
 For `status="low_confidence"`, inspect `why` before execution. In particular,
-`PLAN_FALLBACK_SEMANTIC_DRIFT` means a fallback draft validated but changed or dropped requested
-intent slots such as target, grouping, qualification, filters, or time scope; the runtime keeps the
-closest primary draft instead of silently returning a semantically different answer.
+`PLAN_FALLBACK_SEMANTIC_DRIFT` means the named pattern's draft, which `best.query` holds, fails
+validation (`why.details.primary_errors`), and a fallback draft validated but changed or dropped
+requested intent slots such as target, grouping, qualification, filters, or time scope; the
+runtime keeps the closest primary draft instead of silently returning a semantically different
+answer. Two holds offer no draft (`best: null`): `PLAN_UNCONNECTED` (`unrealizable`) when the
+draft's measure can't reach a dimension it groups or filters by (`why.details` names the
+`subjects`, the `dimensions` and the engine's `error`), and `PLAN_SUBJECT_UNMATCHED` when no
+word the question asks about names the measure or metric the draft would read
+(`why.details.terms`, with the `candidates` whose names or descriptions mention them;
+`unrealizable` when there are none).
 Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort
 and time scope can be proven. Grouping by entity keys or selecting a key count alone does not
 prove that the qualification was applied. Store grouping terms use the same
@@ -903,6 +910,13 @@ name the intended dimension, such as "by store id" or "by store name".
 compile cost and warms the runtime compile cache. Agents can forward
 `best.query` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the call by hand.
+
+A confirmed row name contributes its key filter; words inside it never also become value
+filters. For example, "North Star" can name an account without filtering its region to
+"north"; an explicit "where region is north" outside the name still applies. Unquoted names
+leave a complete declared name of the selected measure or metric at either edge outside the
+lookup ("Acme MRR" looks up "Acme"). Other name words stay whole: "Acme Accounts" does not
+silently shorten to "Acme". Quote a name when it includes the requested metric's own name.
 
 Planning reads the time reference against the request's `now` (`options.now` over HTTP, the
 `now` argument over MCP; default the server clock): `today`,

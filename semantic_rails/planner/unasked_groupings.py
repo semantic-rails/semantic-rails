@@ -13,6 +13,7 @@ from ._base import _grouped_dimensions, _object_by_id, _singular
 from .call import Call, Time
 from .grouping_checks import _entity_grouping_dimensions, _query_clocks, _reads_grouping
 from .groupings import _listed_grouping_terms, _named_run
+from .names import honored_names
 from .ranking_checks import _dimension_nouns, _ranking_request
 from .time_phrases import _TIME_UNITS, _names_time_axis
 from .time_windows import _time_window
@@ -95,11 +96,12 @@ _PER_GROUPING_RE = re.compile(
 )
 
 
-def _asked_grouping_terms(config: Any, question: str) -> list[str]:
+def _asked_grouping_terms(config: Any, question: str, listed: Iterable[str] = ()) -> list[str]:
     """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
-    the noun a ranking ranks ("which 5 stores had the most orders"), and the words after "per",
+    the noun a ranking ranks ("which 5 stores had the most orders"), the words after "per",
     "each" or "every" ("revenue per store"; "each plan" in "did each plan make", where a name
-    ends). Windows are not part of any of them."""
+    ends), and ``listed``: what a clause opening with "which" or "who" lists
+    (``answer_shape._listed_entity_terms``). Windows are not part of any of them."""
 
     request = _ranking_request(question, _dimension_nouns(config))
     lowered = _without_windows(question)
@@ -112,6 +114,7 @@ def _asked_grouping_terms(config: Any, question: str) -> list[str]:
         *_listed_grouping_terms(question, config),
         *([str(request["noun"])] if request else []),
         *each,
+        *listed,
     ]
 
 
@@ -120,13 +123,16 @@ def _unasked_grouping_why(
     question: str,
     query: Call,
     partial_query: Call | None = None,
+    listed: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Every grouping the draft adds traces to the question, or the plan is not ready.
 
     A group_by dimension traces when a grouping the question asks for reads it
-    (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
+    (``_asked_grouping_terms``, with ``listed``, what its "which" and "who" clauses list; read
+    as ``_dropped_grouping_why`` reads a listed one), when the
     caller's ``partial_query`` group_by has it, when the draft's own ``is`` filter
-    keeps only values of it the question names, or when it is the clock's own date dimension
+    keeps only values of it the question names, when it is the display of the one row a name in
+    the question gives (``names.honored_names``), or when it is the clock's own date dimension
     beside a day grain on that clock: it adds no row (a metric constraint may require it on a
     balance, ``snapshot.shape_snapshot``). The time block's grain traces when the
     question's words outside its windows name it (``_names_grain``), when the caller's
@@ -147,11 +153,13 @@ def _unasked_grouping_why(
     grain_traced = not splits or (
         (caller.time or Time()).grain == grain or _names_grain(config, question, query, grain)
     )
-    terms = _asked_grouping_terms(config, question)
+    terms = _asked_grouping_terms(config, question, listed)
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
     # A dimension the draft filters to the values the question names splits the rows into
     # those values only; the filter-value check holds a filter that keeps any other.
     pinned = {row.field for row in query.conditions if operators.keeps_values(row.op)}
+    # The display of a row the question names, read beside its key's filter, names that row.
+    pinned |= {row.display_dimension for row in honored_names(question, query)}
     chosen = set(caller.group_by)
     clock = _object_by_id(config.temporal_roles, time.temporal_role)
     clock_day = str(getattr(clock, "dimension", "") or "") if grain == "day" else ""
