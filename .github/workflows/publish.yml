@@ -26,8 +26,34 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  suite:
+    name: Test suite (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      # The full suite outgrew one job's time limit; shard it the way ci.yml does.
+      SR_SHARD_COUNT: "4"
+      SR_SHARD_INDEX: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --locked
+      - run: uv run pytest -q tests/semantic_rails -n auto
+
   test:
     name: Build and test release
+    needs: suite
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -42,7 +68,6 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --locked
       - run: uv run python scripts/generate_contract_artifacts.py --check
-      - run: uv run pytest -q tests/semantic_rails -n auto
       - run: uv run python scripts/benchmark_plan.py --gate --output dist/agentic-governance-scorecard.json --markdown-output dist/agentic-governance-scorecard.md
       - run: uv run semantic-rails check --package jaffle_shop --artifact dist/jaffle_shop.semantic-rails.tar.gz
       - run: SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD) uv build --out-dir dist
