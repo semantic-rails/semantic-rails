@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import weakref
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -52,7 +51,9 @@ class RouteRefusal(NamedTuple):
     details: dict[str, Any]
 
     def error(self) -> SemanticLayerError:
-        return SemanticLayerError(self.code, self.message, details=deepcopy(self.details))
+        """The refusal raised again. Its details stay the cache's: the error copies them when a
+        caller first reads them, so a caller that only reads the code copies nothing."""
+        return SemanticLayerError.with_shared_details(self.code, self.message, self.details)
 
 
 @dataclass
@@ -74,6 +75,9 @@ class PackageAnalysis:
     path_cache: dict[tuple[str, str], RouteResolution | RouteRefusal] = field(default_factory=dict)
     # Pinned-pair notes need only whether two routes fit the hop ceiling.
     route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
+    # (root, target) -> the catalog's reach of the pair (``path_coverage._path_reach``).
+    # Keyed only by package inputs: never written while a query's own route decisions apply.
+    path_reach: dict[tuple[str, str], Any] = field(default_factory=dict)
     # Object id -> every object the compiler reads to answer it, or None when it cannot be
     # bound (``visible_view.hidden_object_ids``). Keyed only by package inputs.
     object_reads: dict[str, frozenset[str] | None] | None = None
@@ -81,6 +85,8 @@ class PackageAnalysis:
     declared_references: dict[str, frozenset[str]] | None = None
     # Set on a caller's visible view only.
     view: ViewOf | None = None
+    # Filter model id -> its row-filter coverage (``row_filter_visibility.coverage``).
+    row_filter_coverage: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:
@@ -139,15 +145,8 @@ def get_package_analysis(config: PackageConfig) -> PackageAnalysis:
     def _discard(_ref: Any, *, key: int = cache_key) -> None:
         _PACKAGE_ANALYSIS_CACHE.pop(key, None)
 
-    try:
-        config_ref: Any = weakref.ref(config, _discard)
-    except TypeError:
-
-        def config_ref() -> PackageConfig:
-            return config
-
     analysis = PackageAnalysis.from_config(config)
-    _PACKAGE_ANALYSIS_CACHE[cache_key] = (config_ref, analysis)
+    _PACKAGE_ANALYSIS_CACHE[cache_key] = (weakref.ref(config, _discard), analysis)
     return analysis
 
 
@@ -167,6 +166,13 @@ def _recipe_index(config: PackageConfig) -> dict[str, MetricConfig]:
     return binding_index(get_package_analysis(config).recipes, config)
 
 
+def _recipe_or_raise(config: PackageConfig, recipe_id: str) -> MetricConfig:
+    recipe = _recipe_index(config).get(recipe_id)
+    if recipe is None:
+        raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric recipe '{recipe_id}'")
+    return recipe
+
+
 def _temporal_role_index(config: PackageConfig) -> dict[str, TemporalRoleConfig]:
     return binding_index(get_package_analysis(config).temporal_roles, config)
 
@@ -184,11 +190,11 @@ def _default_temporal_role(measure: MeasureConfig) -> str:
 
 
 def _measure_has_source_row_key(measure: MeasureConfig, entity: EntityConfig) -> bool:
-    """Whether the measure's source rows are at its entity's key."""
-    key = entity.key or [entity.primary_key]
-    return measure.source_relation in {"", entity.table} and sorted(
-        measure.row_grain or key
-    ) == sorted(key)
+    """Whether the measure's source rows are at its entity's key (never: a row-grain model)."""
+    if entity.is_row_grain:
+        return False
+    key = entity.key
+    return sorted(measure.row_grain or key) == sorted(key)
 
 
 def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:

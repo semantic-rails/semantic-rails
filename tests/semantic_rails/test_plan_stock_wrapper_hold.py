@@ -46,6 +46,11 @@ WHERE a.segment = 'internal' OR d <> DATE '2026-09-15';
 """
 
 
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
+
+
 def _package(root: Path) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -131,9 +136,9 @@ def _plan(engine: Runtime, intent: str, **partial: Any) -> dict[str, Any]:
 
 
 def _rows(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, float]]:
-    alias = query["select"][0]["as"]
-    rows = engine.query({**query, "policy_context": NOW})["rows"]
-    return [(str(row[f"{CLOCK}__day"])[:10], row[alias]) for row in rows]
+    alias = _alias(query["select"][0])
+    rows = engine.query(query, now=NOW["now"])["rows"]
+    return [(str(row["period"])[:10], row[alias]) for row in rows]
 
 
 def _stock_gaps(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -177,9 +182,8 @@ def test_a_wrapped_balance_is_held_on_a_day_not_yet_complete(
 
     plan = _plan(engine, intent.format(label))
     _assert_held(plan)
-    query = plan["best"]["query_ir"]
-    assert query["select"][0]["expression"] == {"metric": METRICS[label][0]}
-    assert query["time"]["grain"] == "day"
+    query = plan["best"]["query"]
+    assert query["select"] == [METRICS[label][0]]
     [gap] = _stock_gaps(plan)
     assert gap["expected"] == {"grain": "day", "stocks": [MRR_ALL]}
     assert gap["clause"] == label
@@ -204,7 +208,7 @@ def test_a_caller_draft_reading_a_day_not_yet_complete_is_held(
     """The caller states the select and the window, so no planner drafting is involved."""
 
     metric = METRICS[label][0]
-    select = [{"as": "value", "expression": {"metric": metric}}]
+    select = [{"as": "value", "expression": metric}]
     plan = _plan(engine, label, select=select, time=time)
     _assert_held(plan)
     [gap] = _stock_gaps(plan)
@@ -236,10 +240,21 @@ def test_a_complete_day_is_still_answered(
     plan = _plan(engine, intent.format(label))
     assert plan["status"] == "ok", plan.get("why")
     assert "execute" in plan["next"]["ready_for"]
-    query = plan["best"]["query_ir"]
+    query = plan["best"]["query"]
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
-    assert query["time"] == {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end}
-    assert _rows(engine, query) == [(day, _gold(day) * METRICS[label][1])]
+    # One day's window, one total: yesterday is spelled relative, a date dated.
+    window = (
+        {"last": {"unit": "day", "value": 1}}
+        if "yesterday" in intent
+        else {
+            "start": day,
+            "end": end,
+        }
+    )
+    assert query["time"] == {"temporal_role": CLOCK, **window}
+    alias = _alias(query["select"][0])
+    rows = engine.query(query, now=NOW["now"])["rows"]
+    assert [row[alias] for row in rows] == [_gold(day) * METRICS[label][1]]
 
 
 @pytest.mark.parametrize("label", list(METRICS))
@@ -253,4 +268,4 @@ def test_a_closed_window_ending_on_the_last_complete_day_is_still_answered(
     assert "execute" in plan["next"]["ready_for"]
     days = [(date(2026, 9, 28) + timedelta(days=offset)).isoformat() for offset in range(7)]
     expected = [(day, _gold(day) * METRICS[label][1]) for day in days]
-    assert _rows(engine, plan["best"]["query_ir"]) == expected
+    assert _rows(engine, plan["best"]["query"]) == expected

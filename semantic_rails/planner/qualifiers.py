@@ -6,7 +6,9 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from ._base import _NUMBER_WORDS, _best, _dimension, _entity, _object_text, _tokens
+from ..query_call import TIME_AXIS
+from ._base import _NUMBER_WORDS, _account_entity, _best, _dimension, _entity, _tokens
+from .call import Condition, Order, QueryBuilder
 from .exclusions import exclusion_regions
 from .time_windows import _time_window
 from .visibility import visible_dimensions, visible_value_domains
@@ -30,21 +32,18 @@ def _dimension_for_value(config: Any, value: str, *, terms: Iterable[str] = ()) 
     return _dimension(config, [*terms, "product"])
 
 
-def _product_filter(config: Any, value: str) -> dict[str, Any] | None:
+def _product_filter(config: Any, value: str) -> Condition | None:
     dim = _dimension_for_value(config, value, terms=["product"])
     if dim is None:
         return None
-    return {"dimension": dim.id, "op": "=", "value": value}
+    return Condition(dim.id, "is", value)
 
 
-def _add_order(query: dict[str, Any]) -> None:
-    order_by: list[dict[str, str]] = []
-    if query.get("time"):
-        order_by.append({"field": "time", "direction": "ASC"})
-    for dim_id in list(query.get("group_by", []) or []):
-        order_by.append({"field": dim_id, "direction": "ASC"})
-    if order_by:
-        query["order_by"] = order_by
+def _add_order(builder: QueryBuilder) -> QueryBuilder:
+    """Order the rows by period, then by each grouping, ascending."""
+    call = builder.build()
+    orders = [Order(TIME_AXIS)] if call.time is not None and call.time.grain else []
+    return builder.orders([*orders, *(Order(dim_id) for dim_id in call.group_by)])
 
 
 def _threshold_value(raw: str) -> float | int:
@@ -67,40 +66,36 @@ _PERCENTILE_PHRASE_TO_P: dict[str, float] = {
 
 
 def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] | None:
+    """The threshold a qualification states, as ``(word, value)``; a population share is a
+    percentile value."""
     lowered = str(text or "").lower()
     for phrase, p in _PERCENTILE_PHRASE_TO_P.items():
         if phrase in lowered:
-            return ">=", {"kind": "percentile", "p": p}
+            return "gte", {"kind": "percentile", "p": p}
     top_percent_match = re.search(r"top\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", lowered)
     if top_percent_match:
-        try:
-            n = float(top_percent_match.group(1))
-        except ValueError:
-            n = 0.0
+        n = float(top_percent_match.group(1))  # digits, so it parses
         if 0.0 < n < 100.0:
-            return ">=", {"kind": "percentile", "p": round((100.0 - n) / 100.0, 4)}
+            return "gte", {"kind": "percentile", "p": round((100.0 - n) / 100.0, 4)}
     percentile_match = re.search(
         r"(?:above|in|in the top)\s+(?:the\s+)?(\d+(?:\.\d+)?)\s*(?:st|nd|rd|th)?\s*percentile",
         lowered,
     )
     if percentile_match:
-        try:
-            n = float(percentile_match.group(1))
-        except ValueError:
-            n = 0.0
+        n = float(percentile_match.group(1))
         if 0.0 < n < 100.0:
-            return ">", {"kind": "percentile", "p": round(n / 100.0, 4)}
+            return "gt", {"kind": "percentile", "p": round(n / 100.0, 4)}
     percent_patterns = [
         (
             r"(?:more than|greater than|over|above|exceeded|exceeds|exceeding)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)",
-            ">",
+            "gt",
         ),
         (
             r"(?:at least|greater than or equal to|minimum of)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)",
-            ">=",
+            "gte",
         ),
-        (r"(?:less than|under|below)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", "<"),
-        (r"(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", ">"),
+        (r"(?:less than|under|below)\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", "lt"),
+        (r"(\d+(?:\.\d+)?)\s*(?:%|percent|pct)", "gt"),
     ]
     for pattern, op in percent_patterns:
         match = re.search(pattern, lowered)
@@ -109,20 +104,20 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
     patterns = [
         (
             r"(?:at least|greater than or equal to|no fewer than|minimum of)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            ">=",
+            "gte",
         ),
-        (r"(\d+)\s*\+", ">="),
+        (r"(\d+)\s*\+", "gte"),
         (
             r"(?:more than|greater than|over|above|exceeded|exceeds|exceeding)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            ">",
+            "gt",
         ),
         (
             r"(?:less than|fewer than|under|below)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            "<",
+            "lt",
         ),
         (
             r"(?:at most|no more than)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)",
-            "<=",
+            "lte",
         ),
     ]
     for pattern, op in patterns:
@@ -130,7 +125,7 @@ def _threshold_from_text(text: str) -> tuple[str, float | int | dict[str, Any]] 
         if match:
             return op, _threshold_value(match.group(1))
     if "activity" in lowered or "active" in lowered:
-        return ">", 0
+        return "gt", 0
     return None
 
 
@@ -291,6 +286,10 @@ _QUALIFICATION_STOP_TOKENS = frozenset(
 )
 
 
+# Words that say how a qualification counts, not what it counts.
+_COUNT_MODIFIERS = frozenset({"distinct", "unique", "different", "separate"})
+
+
 def _qualification_phrase_token_groups(text: str, target_terms: list[str]) -> list[list[str]]:
     """Return one token group per AND/OR-joined sub-qualification."""
     phrase = _qualification_phrase(text)
@@ -315,8 +314,11 @@ def _qualification_phrase_token_groups(text: str, target_terms: list[str]) -> li
         if not all_tokens:
             continue
         non_target = [token for token in all_tokens if token not in target_set]
-        if non_target:
+        if non_target and not set(non_target) <= _COUNT_MODIFIERS:
             groups.append(non_target)
+        elif non_target:
+            # "at least 4 distinct orders": the target's own noun, counted distinct.
+            groups.append(all_tokens)
         elif target_set and set(all_tokens).issubset(target_set):
             groups.append(list(target_terms))
     return groups
@@ -344,38 +346,21 @@ def _explicit_qualifying_entity_keyword(text: str) -> str:
 
 
 def _qualifying_entity(config: Any, terms: set[str], *, text: str = "") -> Any | None:
-    explicit = _explicit_qualifying_entity_keyword(text)
-    if explicit == "customer":
-        return _entity(config, ["customer"])
-    if explicit == "store":
-        return _entity(config, ["store"])
-    if explicit == "account":
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    if "store" in terms and "customer" in terms:
-        return _entity(config, ["store"])
-    if "account" in terms and "customer" in terms:
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    if "customer" in terms:
-        return _entity(config, ["customer"])
-    if "store" in terms:
-        return _entity(config, ["store"])
-    if bool({"entity", "entities", "child"} & terms) and "order" in terms and "rate" in terms:
-        return _entity(config, ["store"])
-    if "account" in terms:
-        return _entity(
-            config,
-            ["account"],
-            exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-        )
-    return None
+    # The qualifying phrase names the entity; otherwise the first rule below whose words appear.
+    rules = (
+        ("store", "store" in terms and "customer" in terms),
+        ("account", "account" in terms and "customer" in terms),
+        ("customer", "customer" in terms),
+        ("store", "store" in terms),
+        ("store", bool({"entity", "entities", "child"} & terms) and {"order", "rate"} <= terms),
+        ("account", "account" in terms),
+    )
+    keyword = _explicit_qualifying_entity_keyword(text) or next(
+        (word for word, applies in rules if applies), ""
+    )
+    if not keyword:
+        return None
+    return _account_entity(config) if keyword == "account" else _entity(config, [keyword])
 
 
 _TOP_N_PATTERN = re.compile(r"\btop(?:\s+(\d+))?\b", re.IGNORECASE)
@@ -408,18 +393,10 @@ def _top_n_intent(text: str) -> tuple[bool, int]:
     match = _TOP_N_PATTERN.search(lowered)
     if match:
         raw = match.group(1)
-        if not raw:
-            return True, _DEFAULT_TOP_LIMIT
-        try:
-            return True, int(raw)
-        except ValueError:
-            return True, _DEFAULT_TOP_LIMIT
+        return True, int(raw) if raw else _DEFAULT_TOP_LIMIT
     for start, end in spans:
         lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     rank_match = _RANK_PATTERN.search(lowered)
     if rank_match:
-        try:
-            return True, int(rank_match.group(1))
-        except ValueError:
-            return True, _DEFAULT_TOP_LIMIT
+        return True, int(rank_match.group(1))
     return False, _DEFAULT_TOP_LIMIT

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from . import visible_view
+from .atomic_files import atomic_write_bytes
+from .manifest import DEFAULT_VARIANTS, _engine_version, fingerprint_path, manifest_path
 from .metadata import catalog_payload
 from .request_context import context_from_policy_context
 from .runtime import Runtime, runtime_request_scope
@@ -47,3 +51,43 @@ def resolve_catalog(
         entity=entity,
         policy_context=context,
     )
+
+
+def write_manifest(runtime, *, variants: tuple[tuple[str, str], ...] = DEFAULT_VARIANTS) -> Path:
+    """Compute catalog payloads for each variant and write to .compiled/.
+
+    Returns the path to the written manifest.json. Overwrites any
+    existing manifest atomically. Both compiled artifacts use mode 0644.
+    """
+    with runtime.request_scope():
+        return _write_loaded_manifest(runtime, variants=variants, catalog_payload=catalog_payload)
+
+
+def _write_loaded_manifest(runtime, *, variants, catalog_payload) -> Path:
+    snapshot = runtime.snapshot
+    fingerprint = snapshot.source_fingerprint
+    catalogs: dict[str, dict[str, Any]] = {}
+    for view, verbosity in variants:
+        key = f"{view}|{verbosity}"
+        catalogs[key] = catalog_payload(
+            runtime, view=view, verbosity=verbosity, policy_context=None
+        )
+
+    payload = {
+        "schema_version": 1,
+        "engine_version": _engine_version(),
+        "package_id": runtime.package_id,
+        "source_path": runtime.source_path,
+        "fingerprint": fingerprint,
+        "semantic_fingerprint": snapshot.semantic_fingerprint,
+        "provenance": dict(snapshot.provenance),
+        "source_kind": snapshot.source_kind,
+        "variants": [list(v) for v in variants],
+        "catalogs": catalogs,
+    }
+
+    atomic_write_bytes(
+        manifest_path(runtime.source_path), json.dumps(payload, default=str).encode(), mode=0o644
+    )
+    atomic_write_bytes(fingerprint_path(runtime.source_path), fingerprint.encode(), mode=0o644)
+    return manifest_path(runtime.source_path)

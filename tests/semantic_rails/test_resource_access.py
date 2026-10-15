@@ -80,13 +80,8 @@ def context(metric=CUSTOMERS, dimensions=(DIMENSION,)):
     )
 
 
-def query(metric=CUSTOMERS, ctx=None, **extra):
-    return {
-        "version": 1,
-        "select": [{"expression": {"metric": metric}, "as": "value"}],
-        "policy_context": (ctx or context()).to_policy_context(),
-        **extra,
-    }
+def query(metric=CUSTOMERS, **extra):
+    return {"select": [{"expression": metric, "as": "value"}], **extra}
 
 
 @pytest.mark.parametrize(
@@ -109,12 +104,11 @@ def test_invalid_grants_fail_closed(invalid):
 
 def test_none_is_legacy_and_empty_grant_denies(granted_runtime):
     runtime = granted_runtime
-    legacy = query(ctx=RequestContext())
-    assert runtime.compile(legacy)["ok"]
-    denied = query(ctx=context(metric=""))
-    assert not runtime.validate(denied)["ok"]
+    assert runtime.compile(query(), context=RequestContext())["ok"]
+    denied = context(metric="")
+    assert not runtime.validate(query(), context=denied)["ok"]
     with pytest.raises(SemanticLayerError) as exc:
-        runtime.query(denied)
+        runtime.query(query(), context=denied)
     assert exc.value.code == "RESOURCE_ACCESS_DENIED"
     assert not runtime.adapter.statements
     catalog = resolve_catalog(runtime, policy_context=context(metric="").to_policy_context())
@@ -143,13 +137,13 @@ def test_disjoint_catalog_discovery_inspect_plan_query(granted_runtime, metric, 
     plan = plan_payload(runtime, intent=metric, partial_query=partial, detail="debug")
     assert plan["best"]["validation_ok"]
     assert "validate" not in plan["next"]
-    portable = plan["best"]["query_ir"]
+    portable = plan["best"]["query"]
     assert "policy_context" not in portable
-    assert portable["select"][0]["expression"] == {"metric": metric}
-    compiled = runtime.compile({**portable, "policy_context": policy})
+    assert portable["select"] == [{"expression": metric, "as": "value"}]
+    compiled = runtime.compile(portable, context=ctx)
     assert compiled["ok"]
     assert compiled["rendered_sql"]
-    result = runtime.query({**portable, "policy_context": policy})
+    result = runtime.query(portable, context=ctx)
     assert result["rows"] == [{"value": 7}]
     assert result["column_types"] == {"value": {"type": "integer"}}
     assert len(runtime.adapter.statements) == 1
@@ -164,7 +158,7 @@ def test_disjoint_catalog_discovery_inspect_plan_query(granted_runtime, metric, 
 @pytest.mark.parametrize(
     "expression",
     [
-        {"measure": "measure.jaffle.revenue_usd"},
+        "measure.jaffle.revenue_usd",
         {"kind": "column", "column": "price", "entity": "entity.jaffle_orders"},
         {
             "kind": "aggregate_if",
@@ -172,20 +166,15 @@ def test_disjoint_catalog_discovery_inspect_plan_query(granted_runtime, metric, 
             "condition": {"kind": "literal", "value": True},
             "value": {"kind": "column", "column": "price", "entity": "entity.jaffle_orders"},
         },
-        {"kind": "ratio", "numerator": {"metric": CUSTOMERS}, "denominator": {"metric": AOV}},
-        {
-            "kind": "arithmetic",
-            "op": "add",
-            "left": {"metric": CUSTOMERS},
-            "right": {"metric": AOV},
-        },
+        {"kind": "ratio", "numerator": CUSTOMERS, "denominator": AOV},
+        {"kind": "arithmetic", "op": "add", "left": CUSTOMERS, "right": AOV},
         {
             "kind": "distribution",
             "function": "avg",
             "over": {
                 "kind": "entity_value",
                 "entity": "entity.jaffle_customers",
-                "input": {"metric": AOV},
+                "input": AOV,
             },
         },
     ],
@@ -198,9 +187,9 @@ def test_raw_and_nested_expression_bypasses_stop_before_compilation(
         runtime, "_compile", lambda *args, **kwargs: pytest.fail("denied query compiled")
     )
     payload = query(select=[{"expression": expression, "as": "value"}])
-    assert not runtime.validate(payload)["ok"]
+    assert not runtime.validate(payload, context=context())["ok"]
     with pytest.raises(SemanticLayerError) as exc:
-        runtime.query(payload)
+        runtime.query(payload, context=context())
     assert exc.value.details == {}
     assert not runtime.adapter.statements
 
@@ -209,34 +198,34 @@ def test_raw_and_nested_expression_bypasses_stop_before_compilation(
     "extra",
     [
         {"group_by": [SECRET_DIMENSION]},
-        {"where": [{"field": SECRET_DIMENSION, "op": "=", "value": "test"}]},
+        {"where": [{"field": SECRET_DIMENSION, "op": "is", "value": "test"}]},
         {"select": [], "group_by": [DIMENSION]},
         {"time": {"grain": "month"}},
         {"time": {"temporal_role": "temporal_role.hidden", "grain": "month"}},
-        {"temporal_role_overrides": {CUSTOMERS: "temporal_role.hidden"}},
-        {"metric_filters": [{"expression": {"metric": AOV}, "op": ">", "value": 1}]},
+        {"having": [{"field": AOV, "op": "gt", "value": 1}]},
         {"order_by": [{"field": SECRET_DIMENSION}]},
     ],
 )
 def test_dimension_and_filter_bypasses_deny_before_execution(granted_runtime, extra):
-    assert not granted_runtime.validate(query(**extra))["ok"]
+    assert not granted_runtime.validate(query(**extra), context=context())["ok"]
     with pytest.raises(SemanticLayerError):
-        granted_runtime.query(query(**extra))
+        granted_runtime.query(query(**extra), context=context())
     assert not granted_runtime.adapter.statements
 
 
 def test_allowed_grouping_and_default_empty_dimensions(granted_runtime):
-    assert granted_runtime.query(query(group_by=[DIMENSION]))["ok"]
+    assert granted_runtime.query(query(group_by=[DIMENSION]), context=context())["ok"]
     assert len(granted_runtime.adapter.statements) == 1
     no_dimensions = context(dimensions=None)
-    assert not granted_runtime.validate(query(ctx=no_dimensions, group_by=[DIMENSION]))["ok"]
+    assert not granted_runtime.validate(query(group_by=[DIMENSION]), context=no_dimensions)["ok"]
     assert len(granted_runtime.adapter.statements) == 1
 
 
 def test_explicit_time_grant_and_no_unscoped_coverage_probe(granted_runtime, monkeypatch):
     role = "temporal_role.jaffle_customer_first_order_at"
-    payload = query(ctx=context(dimensions=(role,)), time={"temporal_role": role, "grain": "month"})
-    assert granted_runtime.compile(payload)["ok"]
+    payload = query(time={"temporal_role": role, "grain": "month"})
+    granted = context(dimensions=(role,))
+    assert granted_runtime.compile(payload, context=granted)["ok"]
     adapter = granted_runtime.adapter
 
     def no_rows(sql, *, limits=None):
@@ -244,9 +233,9 @@ def test_explicit_time_grant_and_no_unscoped_coverage_probe(granted_runtime, mon
         return []
 
     monkeypatch.setattr(adapter, "query", no_rows)
-    assert granted_runtime.query(payload)["rows"] == []
+    assert granted_runtime.query(payload, context=granted)["rows"] == []
     assert len(adapter.statements) == 1
-    assert not granted_runtime.validate(query(time={"temporal_role": role, "grain": "month"}))["ok"]
+    assert not granted_runtime.validate(payload, context=context())["ok"]
 
 
 def test_restricted_plan_does_not_silently_drop_unsupported_intent(granted_runtime):
@@ -265,11 +254,11 @@ def test_restricted_plan_does_not_silently_drop_unsupported_intent(granted_runti
 
 def test_grants_and_revocation_are_checked_before_cached_compilation(granted_runtime, request):
     runtime = granted_runtime
-    allowed = query(verbosity="full")
-    assert not runtime.compile(allowed)["compile_stats"]["cache_hit"]
-    assert runtime.compile(allowed)["compile_stats"]["cache_hit"]
+    allowed = {"context": context(), "verbosity": "full"}
+    assert not runtime.compile(query(), **allowed)["compile_stats"]["cache_hit"]
+    assert runtime.compile(query(), **allowed)["compile_stats"]["cache_hit"]
     with pytest.raises(SemanticLayerError):
-        runtime.compile(query(ctx=context(AOV), verbosity="full"))
+        runtime.compile(query(), context=context(AOV), verbosity="full")
     config = runtime.config
     config.semantic_policies.append(
         SemanticPolicyConfig(
@@ -283,7 +272,7 @@ def test_grants_and_revocation_are_checked_before_cached_compilation(granted_run
     )
     runtime = _replace_test_config(runtime, config, request)
     with pytest.raises(SemanticLayerError) as exc:
-        runtime.compile(allowed)
+        runtime.compile(query(), **allowed)
     assert "private" not in str(exc.value)
     assert resolve_catalog(runtime, policy_context=context().to_policy_context())["metrics"] == []
 
@@ -329,7 +318,7 @@ def test_package_policy_follows_nested_internal_recipe_dependencies(
     monkeypatch.setattr(
         runtime, "_compile", lambda *args, **kwargs: pytest.fail("denied dependency compiled")
     )
-    assert not runtime.validate(query())["ok"]
+    assert not runtime.validate(query(), context=context())["ok"]
     catalog = resolve_catalog(runtime, policy_context=context().to_policy_context())
     assert not catalog["metrics"]
     assert AOV not in json.dumps(catalog)
@@ -395,9 +384,8 @@ def test_granted_temporal_metadata_remains_discoverable(granted_runtime, request
     ):
         assert metric in json.dumps(output)
     assert engine.compile(
-        query(
-            metric, ctx=context(metric, (role_id,)), time={"temporal_role": role_id, "grain": "day"}
-        )
+        query(metric, time={"temporal_role": role_id, "grain": "day"}),
+        context=context(metric, (role_id,)),
     )["rendered_sql"]
 
 
@@ -488,31 +476,29 @@ def test_authenticated_asgi_grants_roundtrip_and_revoke(
                 return result["result"]["structuredContent"] if transport == "mcp" else result
 
             spoof = context(AOV, (SECRET_DIMENSION,)).to_policy_context()
-            plan = await call(
-                "plan",
-                {"intent": CUSTOMERS, "policy_context": spoof, "query": {"policy_context": spoof}},
-            )
+            # A request that says who is asking is refused; the bearer token decides.
+            claimed = await call("plan", {"intent": CUSTOMERS, "policy_context": spoof})
+            assert claimed["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED"
+            plan = await call("plan", {"intent": CUSTOMERS})
             assert plan["best"]["validation_ok"]
-            portable = plan["best"]["query_ir"]
+            portable = plan["best"]["query"]
             assert "policy_context" not in portable
             assert plan["request_context"]["roles"] == ["analyst"]
             assert plan["request_context"]["audience"] == "finance"
             assert (await call("query", {"query": portable}))["rows"] == [{"value": 7}]
             assert len(adapter.statements) == 1
-            denied = await call(
-                "query",
-                {"query": {**portable, "policy_context": spoof}, "policy_context": spoof},
-                "aov",
-            )
-            assert not denied["ok"]
-            assert len(adapter.statements) == 1
-            catalogs = await asyncio.gather(
-                call("catalog", {"policy_context": spoof}), call("catalog", {}, "aov")
-            )
+            for arguments in (
+                {"query": portable},
+                {"query": {**portable, "policy_context": spoof}},
+            ):
+                denied = await call("query", arguments, "aov")
+                assert not denied["ok"]
+                assert len(adapter.statements) == 1
+            catalogs = await asyncio.gather(call("catalog", {}), call("catalog", {}, "aov"))
             assert AOV not in json.dumps(catalogs[0])
             assert CUSTOMERS not in json.dumps(catalogs[1])
             if transport == "rest":  # MCP has no capabilities tool.
-                capabilities = await call("capabilities", {"policy_context": spoof})
+                capabilities = await call("capabilities", {})
                 assert [row["name"] for row in capabilities["expression_shapes"]] == ["metric"]
                 assert "default_db" not in json.dumps(capabilities)
 
@@ -531,7 +517,10 @@ def test_manifest_and_unsupported_operations_cannot_bypass(granted_runtime, monk
     resolve_catalog(runtime, policy_context=context(metric="").to_policy_context())
     for call in [
         lambda: valid_values_payload(
-            runtime, dimension_id=DIMENSION, query=query(), allow_live_query=True
+            runtime,
+            dimension_id=DIMENSION,
+            query=runtime.engine_payload(query(), context=context()),
+            allow_live_query=True,
         ),
         lambda: runtime.segment_explain(
             "segment.hidden", policy_context=context().to_policy_context()
@@ -569,8 +558,7 @@ def test_transport_trusted_context_overrides_nested_grant_forgery(
     }
     arguments = {"policy_context": spoof}
     if operation in {"compile", "execute"}:
-        arguments["query"] = query(AOV, ctx=context(AOV))
-        arguments["query"]["policy_context"] = spoof
+        arguments["query"] = {**query(AOV), "policy_context": spoof}
     elif operation == "inspect":
         arguments["object_id"] = AOV
     elif operation == "plan":
@@ -634,14 +622,17 @@ def test_business_wording_consumer_flow_retains_columns_and_starters(runtime_fac
         assert catalog["counts_total"]["metrics"] == 1
         discovered = call("discover", {"terms": "customer", "limit": 1})
         starter = discovered["metrics"][0]["starter_query_patch"]
-        assert starter["select"][0]["expression"] == {"metric": CUSTOMERS}
+        assert starter["select"][0]["expression"] == CUSTOMERS
         plan = call("plan", {"intent": "Show me customer count by customer type"})
         assert plan["status"] == "ok"
-        portable = plan["best"]["query_ir"]
+        portable = plan["best"]["query"]
         assert portable["group_by"] == [DIMENSION]
         expected_fields = [DIMENSION, "value"]
+        # REST takes the call's options beside it; MCP takes them as tool arguments.
+        options = {"verbosity": "compact"}
+        arguments = {"options": options} if transport == "http" else options
         for operation in ["validate", "compile", "execute"]:
-            result = call(operation, {"query": {**portable, "limit": 1}, "verbosity": "compact"})
+            result = call(operation, {"query": {**portable, "limit": 1}, **arguments})
             assert result["ok"]
             assert [column["field"] for column in result["output_columns"]] == expected_fields
             assert [column["semantic_id"] for column in result["output_columns"]] == [
@@ -667,15 +658,13 @@ def test_grant_scoped_discover_keeps_starter_patch(granted_runtime, verbosity):
         request_context=context(),
     )
     assert result["ok"]
-    assert result["metrics"][0]["starter_query_patch"]["select"][0]["expression"] == {
-        "metric": CUSTOMERS
-    }
+    assert result["metrics"][0]["starter_query_patch"]["select"][0]["expression"] == CUSTOMERS
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
 def test_restricted_empty_columnar_result_retains_schema(granted_runtime, monkeypatch, verbosity):
     monkeypatch.setattr(granted_runtime.adapter, "query", lambda sql, **kwargs: [])
-    portable = {"select": [{"expression": {"metric": CUSTOMERS}, "as": "customers"}]}
+    portable = {"select": [{"expression": CUSTOMERS, "as": "customers"}]}
     result = SemanticLayerMCPAdapter(granted_runtime).call_tool(
         "execute",
         {"query": portable, "row_format": "columns", "verbosity": verbosity},
@@ -689,14 +678,13 @@ def test_restricted_empty_columnar_result_retains_schema(granted_runtime, monkey
 
 def _granted_response(runtime, operation, verbosity="full"):
     ctx = context(dimensions=())
-    payload = query(ctx=ctx, verbosity=verbosity, sql_profile="off")
     if operation == "mcp":
         return SemanticLayerMCPAdapter(runtime).call_tool(
             "execute",
-            {"query": payload, "verbosity": verbosity, "sql_profile": "off"},
+            {"query": query(), "verbosity": verbosity, "sql_profile": "off"},
             request_context=ctx,
         )
-    return getattr(runtime, operation)(payload)
+    return getattr(runtime, operation)(query(), context=ctx, verbosity=verbosity, sql_profile="off")
 
 
 @pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
@@ -712,7 +700,7 @@ def test_grant_responses_omit_caveat_metadata(granted_runtime, request, operatio
     )
     config = replace(granted_runtime.config, semantic_caveats=[caveat])
     runtime = _replace_test_config(granted_runtime, config, request)
-    legacy = runtime.validate(query(ctx=RequestContext(), verbosity="full"))
+    legacy = runtime.validate(query(), context=RequestContext(), verbosity="full")
     assert any(row["code"] == "SEMANTIC_CAVEAT_APPLIED" for row in legacy["warnings"])
     result = _granted_response(runtime, operation)
     assert result["ok"]
@@ -723,7 +711,7 @@ def test_grant_responses_omit_caveat_metadata(granted_runtime, request, operatio
 
 @pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
-def test_grant_responses_omit_caveat_counts(granted_runtime, request, operation, verbosity):
+def test_grant_responses_omit_every_caveat(granted_runtime, request, operation, verbosity):
     caveats = [
         SemanticCaveatConfig(
             id=f"caveat.private.customer_{i}",
@@ -735,24 +723,26 @@ def test_grant_responses_omit_caveat_counts(granted_runtime, request, operation,
     ]
     config = replace(granted_runtime.config, semantic_caveats=caveats)
     runtime = _replace_test_config(granted_runtime, config, request)
-    legacy = runtime.validate(query(ctx=RequestContext(), verbosity="compact"))
-    assert any(row["code"] == "SEMANTIC_CAVEATS_TRUNCATED" for row in legacy["warnings"])
+    legacy = runtime.validate(query(), context=RequestContext(), verbosity="compact")
+    assert sum(row["code"] == "SEMANTIC_CAVEAT_APPLIED" for row in legacy["warnings"]) == 6
     result = _granted_response(runtime, operation, verbosity)
     assert result["ok"]
     serialized = json.dumps(result)
-    for hidden in ("SEMANTIC_CAVEATS_TRUNCATED", "matched_count", "omitted_count"):
-        assert hidden not in serialized
+    for caveat in caveats:
+        assert caveat.id not in serialized and caveat.message not in serialized
 
 
 @pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
 @pytest.mark.parametrize("verbosity", ["minimal", "full"])
 def test_grant_responses_drop_unlisted_warnings(granted_runtime, monkeypatch, operation, verbosity):
-    import semantic_rails.runtime as runtime_module
+    import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 
     unknown = {"code": "UNLISTED_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
-    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args, **kwargs: [unknown])
+    monkeypatch.setattr(
+        answer_warnings_module, "_compiled_warnings", lambda *args, **kwargs: [unknown]
+    )
     result = _granted_response(granted_runtime, operation, verbosity)
-    assert result["warnings"] == []
+    assert "warnings" not in result
     assert [row["semantic_id"] for row in result["output_columns"]] == [CUSTOMERS]
 
 
@@ -761,7 +751,7 @@ def test_grant_responses_drop_unlisted_warnings(granted_runtime, monkeypatch, op
 def test_grant_responses_project_listed_warnings(
     granted_runtime, monkeypatch, operation, object_ids
 ):
-    import semantic_rails.runtime as runtime_module
+    import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 
     listed = {
         "code": "NO_DATA_IN_SCOPE",
@@ -772,14 +762,14 @@ def test_grant_responses_project_listed_warnings(
         "details": {"outputs": ["value"]},
     }
     monkeypatch.setattr(
-        runtime_module,
+        answer_warnings_module,
         "_compiled_warnings",
         lambda *args, **kwargs: [
             {**listed, "future_metadata": {"object_id": "ungranted_metadata"}}
         ],
     )
     result = _granted_response(granted_runtime, operation)
-    assert result["warnings"] == ([listed] if object_ids == [CUSTOMERS] else [])
+    assert result.get("warnings", []) == ([listed] if object_ids == [CUSTOMERS] else [])
 
 
 @pytest.mark.parametrize("code", ["FILTER_VALUE_NOT_FOUND", "FILTER_VALUE_UNVERIFIED"])
@@ -787,7 +777,7 @@ def test_grant_responses_project_listed_warnings(
 def test_grant_responses_project_filter_guard_warnings(
     granted_runtime, monkeypatch, code, object_ids
 ):
-    import semantic_rails.runtime as runtime_module
+    import semantic_rails.runtime_parts.answer_warnings as answer_warnings_module
 
     listed = {
         "code": code,
@@ -801,12 +791,12 @@ def test_grant_responses_project_filter_guard_warnings(
         listed["message"] = "Filter value 'busines' was not found; did you mean 'business'?"
         listed["details"]["filters"][0]["suggestion"] = "business"
     monkeypatch.setattr(
-        runtime_module,
+        answer_warnings_module,
         "_compiled_warnings",
         lambda *args, **kwargs: [{**listed, "future_metadata": {"object_id": SECRET_DIMENSION}}],
     )
-    result = granted_runtime.query(query(verbosity="full"))
-    assert result["warnings"] == ([listed] if object_ids == [DIMENSION] else [])
+    result = granted_runtime.query(query(), context=context(), verbosity="full")
+    assert result.get("warnings", []) == ([listed] if object_ids == [DIMENSION] else [])
 
 
 def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime, request):
@@ -857,7 +847,7 @@ def test_restricted_warehouse_failure_keeps_safe_operational_code(granted_runtim
 
     monkeypatch.setattr(granted_runtime.adapter, "query", failing_query)
     with pytest.raises(SemanticLayerError) as exc:
-        granted_runtime.query(query())
+        granted_runtime.query(query(), context=context())
     assert exc.value.code == "QUERY_EXECUTION_ERROR"
     assert "Warehouse query execution failed" in str(exc.value)
     assert "private" not in json.dumps(exc.value.details)

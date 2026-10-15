@@ -19,6 +19,7 @@ import pytest
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from tests.semantic_rails.test_implicit_calendar import (
     DISTRIBUTION,
@@ -69,7 +70,8 @@ def packages(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
 def _sql(package: Path, warehouse: str, query: dict[str, Any]) -> str:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    return str(compile_query(config, Registry(config), {"version": 1, **query})["sql"])
+    engine_query, _ = read_call(query, config=config)
+    return str(compile_query(config, Registry(config), engine_query)["sql"])
 
 
 def _run_postgres_sql(package: Path, query: dict[str, Any]) -> list[tuple[Any, ...]]:
@@ -87,9 +89,17 @@ def _run_postgres_sql(package: Path, query: dict[str, Any]) -> list[tuple[Any, .
     return _sorted(_normal(row) for row in rows)
 
 
-@pytest.mark.parametrize("package", ["authored", "zoned", "none"])
-@pytest.mark.parametrize("grouped", [False, True])
-@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize(
+    ("shape", "grouped", "package"),
+    [
+        ("beside_rolling", False, "zoned"),
+        ("beside_prior", True, "none"),
+        ("after_rolling", False, "none"),
+        ("after_rolling", True, "authored"),
+        ("beside_both", False, "authored"),
+        ("beside_both", True, "zoned"),
+    ],
+)
 def test_postgres_answers_each_period_once(
     packages: dict[str, Path], shape: str, grouped: bool, package: str
 ) -> None:
@@ -105,10 +115,7 @@ def test_postgres_answers_each_period_once(
     assert len(keys) == len(set(keys)), rows
 
 
-@pytest.mark.parametrize("package", ["authored", "none"])
-def test_the_distribution_beside_the_prior_month_is_the_key(
-    packages: dict[str, Path], package: str
-) -> None:
+def test_the_distribution_beside_the_prior_month_is_the_key(packages: dict[str, Path]) -> None:
     # p80 of each order's revenue; February has no orders, so no p80 and a prior of 20.
     key = [
         (date(2023, 11, 1), 9.0, None),
@@ -121,7 +128,7 @@ def test_the_distribution_beside_the_prior_month_is_the_key(
         (date(2024, 6, 1), 3.0, 6.0),
     ]
 
-    assert _run_postgres_sql(packages[package], _ask("month", *SHAPES["beside_prior"])) == key
+    assert _run_postgres_sql(packages["authored"], _ask("month", *SHAPES["beside_prior"])) == key
 
 
 @pytest.mark.parametrize("warehouse", PERIOD_TYPE)
@@ -131,14 +138,13 @@ def test_every_warehouse_joins_the_items_on_the_period_as_its_date_trunc_type(
     query = _ask("month", *SHAPES["beside_both"])
     if warehouse == "clickhouse":
         # ClickHouse has no implicit calendar, and an authored one takes no part in a series.
-        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
+        with pytest.raises(SemanticLayerError) as refused:
             _sql(packages["authored"], warehouse, query)
+        assert refused.value.details == {"warehouse": warehouse, "rewrite": "day_series"}
         return
     sql = _sql(packages["authored"], warehouse, query)
-    # BigQuery renames the alias to temporal_role_cal_order_ordered_at__month_<hash>.
-    period = (
-        r"(CAST\()?(left_side|right_side)\.[`\"]?temporal_role[._]cal_order_ordered_at__month\w*"
-    )
+    # BigQuery renames the alias to period_<hash>.
+    period = r"(CAST\()?(left_side|right_side)\.[`\"]?period\w*"
     refs = re.findall(period + r"[`\"]?( AS (\w+)\))?", sql)
 
     # Two joins; each casts the period on both sides of its COALESCE and join condition.

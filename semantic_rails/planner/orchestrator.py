@@ -37,18 +37,10 @@ def _active_patterns(runtime: Any) -> list[Any]:
     ignored.
     """
 
-    disabled: set[str] = set()
     package = getattr(getattr(runtime, "_config", None), "package", None)
-    if package is not None:
-        planner_cfg = getattr(package, "planner", None)
-        if planner_cfg is not None:
-            disabled = set(getattr(planner_cfg, "disabled_patterns", None) or [])
-    out = []
-    for pattern in PATTERNS:
-        if pattern.name in disabled:
-            continue
-        out.append(pattern)
-    return out
+    planner_cfg = getattr(package, "planner", None)
+    disabled = set(getattr(planner_cfg, "disabled_patterns", None) or [])
+    return [pattern for pattern in PATTERNS if pattern.name not in disabled]
 
 
 def _select_draft(
@@ -70,21 +62,16 @@ def _select_draft(
     ``None`` if no pattern fires.
     """
 
-    best: tuple[RuntimeCompositionDraft, str, int] | None = None
-    for index, pattern in enumerate(_active_patterns(runtime)):
-        draft = pattern.match(runtime, text, terms)
-        if draft is None:
-            continue
-        if best is None:
-            best = (draft, pattern.name, index)
-            continue
-        # Higher score wins; on score tie, earlier registry index wins.
-        best_draft, _best_name, best_index = best
-        if (draft.score, -index) > (best_draft.score, -best_index):
-            best = (draft, pattern.name, index)
-    if best is None:
+    fired = [
+        (draft, pattern.name, index)
+        for index, pattern in enumerate(_active_patterns(runtime))
+        if (draft := pattern.match(runtime, text, terms)) is not None
+    ]
+    if not fired:
         return None
-    return best[0], best[1]
+    # Higher score wins; on a score tie, the earlier registry index wins.
+    draft, name, _index = max(fired, key=lambda row: (row[0].score, -row[2]))
+    return draft, name
 
 
 @with_time_reference

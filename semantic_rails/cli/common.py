@@ -16,6 +16,7 @@ from ..config import list_package_paths, package_root_for_source
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from ..local_config import resolve_local_package_path
+from ..request_payload import refuse_identity_claims
 from ..runtime import Runtime
 from ..yaml_loader import safe_load as yaml_safe_load
 
@@ -343,26 +344,48 @@ def _policy_context_from_args(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _query_with_policy_context(
-    query: dict[str, Any] | None, args: argparse.Namespace
-) -> dict[str, Any] | None:
-    policy_context = _policy_context_from_args(args)
-    if not policy_context:
-        return dict(query or {}) if query is not None else None
-    payload = dict(query or {})
-    payload["policy_context"] = policy_context
-    return payload
+def _seed_call_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    """The ``--query-json`` seed call with the operator's identity beside it.
+
+    The seed never says who is asking: identity comes from --environment/--audience.
+    """
+    seed = _parse_json(args.query_json) if args.query_json else {}
+    refuse_identity_claims({"query": seed}, remote=False, transport="cli")
+    return {**seed, "policy_context": _policy_context_from_args(args)}
 
 
-def _query_payload_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    payload = _query_with_policy_context(_parse_json(args.query_json), args) or {}
-    verbosity = str(getattr(args, "verbosity", "") or "").strip()
-    if verbosity:
-        payload["verbosity"] = verbosity
-    sql_profile = str(getattr(args, "sql_profile", "") or "").strip()
-    if sql_profile:
-        payload["sql_profile"] = sql_profile
-    return payload
+def _seed_from_args(runtime: Runtime, args: argparse.Namespace) -> dict[str, Any] | None:
+    """A metadata command's seed in the engine's form, or None when it has none."""
+    if not args.query_json and not _policy_context_from_args(args):
+        return None
+    return runtime.engine_seed(_seed_call_from_args(args))
+
+
+def _query_call_from_args(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
+    """The call in ``--query-json`` and the arguments beside it (``--now``, identity, detail)."""
+    arguments: dict[str, Any] = {
+        "now": str(getattr(args, "now", "") or "").strip() or None,
+        "context": _policy_context_from_args(args) or None,
+    }
+    for name in ("verbosity", "sql_profile"):
+        value = str(getattr(args, name, "") or "").strip()
+        if value:
+            arguments[name] = value
+    call = _parse_json(args.query_json)
+    refuse_identity_claims({"query": call}, remote=False, transport="cli")
+    return call, arguments
+
+
+def _add_now_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--now",
+        default="",
+        help=(
+            "The instant relative windows (time.last, time.this) resolve against, as an ISO "
+            "date or date-time. Default: the current time; an example or test that sets its "
+            "own now keeps it."
+        ),
+    )
 
 
 def _add_policy_context_args(parser: argparse.ArgumentParser) -> None:

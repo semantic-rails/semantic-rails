@@ -316,14 +316,17 @@ the helper's relation limit; calling `fetchmany` would reopen a streamed result.
 `SqlDialect.prepare_query` to produce a driver-free `PreparedQuery`: the exact
 executable SQL and an immutable mapping from physical result columns to semantic
 aliases. Compile, explain, performance analysis, and execution use that statement.
-Warehouse syntax and precision rules live in `sql_preparation.py`; add a rule
-there when introducing a dialect that needs final preparation. For example,
-Redshift's `x / NULLIF(y, 0)` requires the shared `float_nullif_divisions` pass
-with `cast_type="DOUBLE PRECISION"` to preserve fractional ratios.
+A dialect that needs final preparation overrides `prepare_query`, built from the
+quote-aware passes in `sql_preparation.py`. For example, Redshift's
+`x / NULLIF(y, 0)` requires the shared `float_nullif_divisions` pass with
+`cast_type="DOUBLE PRECISION"` to preserve fractional ratios.
 
 Existing preparation covers PostgreSQL's 63-byte identifiers and floating-point
 ratios; BigQuery's backticks and legal field names; Databricks backticks and ratio
-precision; Athena temporal comparisons and ratios; and Snowflake ratio precision.
+precision; Athena ratios; and Snowflake ratio precision. A date or timestamp compared
+with text is typed when rendered (`SqlDialect.temporal_literal`): Athena spells
+`TIMESTAMP '2016-09-01'` there, for a time window or a filter on a date or timestamp
+dimension only, so a string filter stays a string compare.
 Every rewrite must preserve intended semantics, skip literal contents, and document
 the warehouse behavior it compensates for. Reuse the quote-aware helpers in
 `sql_preparation.py` instead of implementing another scanner.
@@ -339,7 +342,8 @@ statement captured at the driver boundary, including alias restoration and limit
 
 **Parameterized statements.** `PreparedQuery.parameters` lists a `ParameterSlot`
 for each positional `?` placeholder: the trusted request attribute that supplies
-the value and its exact type (`string`, `integer` or `boolean`). The runtime binds
+the value and its exact type (`string`, `integer` or `boolean`); a slot with an
+`index` binds that item of a list attribute. The runtime binds
 values per request from the host's `TrustedAttributes`; a missing attribute or a
 value of another type is denied with `POLICY_DENIED`, never bound as NULL or
 coerced. Only an adapter that sets `supports_parameters = True` receives such a
@@ -348,7 +352,11 @@ must send the values to its driver separately from the SQL. Every other adapter,
 including the base fallback, denies it before reaching its driver. Never render a
 value into SQL text as a fallback. `DuckDBAdapter`, Postgres ADBC and Snowflake
 ADBC support binding today; qualify a driver's parameter API with tests before
-enabling another.
+enabling another. A list attribute binds one placeholder per item, so no placeholder
+ever receives a list. Record the warehouse's documented limit, with its source, in
+`sql_preparation.MAX_PARAMETERS` (parameters in one statement; Postgres 65,535) or
+`MAX_LIST_ITEMS` (values in one list; Snowflake 200,000): compilation refuses a statement
+over it with `POLICY_DENIED` before anything executes.
 
 Rules every adapter follows:
 

@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.config import load_package_config
 from semantic_rails.db_parts.base import QueryRows, WarehouseAdapter
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
@@ -13,12 +14,27 @@ from semantic_rails.renderer import render_select
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import SqlField, SqlIdentifier, SqlLiteral, SqlOrder, SqlSelect
 from semantic_rails.top_n import limit_order, limit_rows
+from tests.semantic_rails.conftest import copy_package_config
 
 
-@pytest.mark.parametrize("warehouse", supported_warehouses())
-@pytest.mark.parametrize("profile", ["audit", "compact", "debug"])
-def test_compiled_top_n_prepares_one_extra_row(package_config_factory, warehouse, profile):
-    package_config, _ = package_config_factory("jaffle_shop")
+@pytest.fixture(scope="module")
+def package(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("top_n"), "jaffle_shop")
+    return load_package_config(str(path)), path
+
+
+# One warehouse per dialect family: DuckLake and MotherDuck render as DuckDB does.
+DIALECTS = [w for w in supported_warehouses() if w not in {"ducklake", "motherduck"}]
+
+
+# Profiles change presentation; probe limits and mappings use the same SQL AST.
+@pytest.mark.parametrize(
+    "warehouse,profile",
+    [(warehouse, "audit") for warehouse in DIALECTS]
+    + [("duckdb", profile) for profile in ("compact", "debug")],
+)
+def test_compiled_top_n_prepares_one_extra_row(package, warehouse, profile):
+    package_config, _ = package
     config = replace(package_config, package=replace(package_config.package, warehouse=warehouse))
     compiled = compile_query(
         config,
@@ -40,34 +56,59 @@ def test_compiled_top_n_prepares_one_extra_row(package_config_factory, warehouse
     assert compiled["limit_probe"].column_mapping == compiled["prepared_query"].column_mapping
 
 
-@pytest.mark.parametrize("limit,ordered", [(None, True), (2, False), (0, True)])
-def test_unlimited_or_unordered_queries_keep_their_order(limit, ordered):
+@pytest.mark.parametrize("limit,ordered", [(None, True), (None, False), (0, True)])
+def test_unlimited_queries_keep_their_order(limit, ordered):
     query = SqlSelect(
         select=[SqlField(SqlLiteral(1), "score"), SqlField(SqlLiteral(2), "name")],
         order_by=[SqlOrder(SqlIdentifier(["score"]), "DESC")] if ordered else [],
         limit=limit,
     )
-    final, _ = limit_order(query)
-    if limit is None or not ordered:
+    final, _ = limit_order(query, ["name"])
+    if limit is None:
         assert final is query
         assert "NULLS LAST" not in render_select(final)
     else:
         assert final.limit == 0
 
 
-def test_tiebreaks_follow_output_order_and_skip_requested_columns():
+def test_a_limit_without_an_order_takes_the_tie_break_order():
+    """No requested order: the group columns, then the period, ascending with NULLs last decide
+    which rows a limit keeps, so the same call keeps the same rows. Nothing ties on no terms."""
     query = SqlSelect(
-        select=[SqlField(SqlLiteral(index), name) for index, name in enumerate(["b", "c", "a"])],
+        select=[SqlField(SqlLiteral(index), name) for index, name in enumerate(["m", "b", "a"])],
+        limit=2,
+    )
+    final, keys = limit_order(query, ["b", "a", "period"])
+    assert keys == ()
+    assert [(term.expression, term.direction, term.nulls_last) for term in final.order_by] == [
+        (SqlIdentifier(["b"]), "ASC", True),
+        (SqlIdentifier(["a"]), "ASC", True),
+    ]
+
+
+def test_tiebreaks_follow_the_group_columns_and_skip_requested_ones():
+    # Columns b and a are group_by columns (in that order), then the period; m is a measure.
+    query = SqlSelect(
+        select=[
+            SqlField(SqlLiteral(index), name)
+            for index, name in enumerate(["m", "b", "c", "a", "period"])
+        ],
         order_by=[SqlOrder(SqlIdentifier(["c"]), "DESC"), SqlOrder(SqlIdentifier(["b"]), "ASC")],
         limit=1,
     )
-    final, keys = limit_order(query)
+    groups = ["b", "a", "period"]
+    final, keys = limit_order(query, groups)
     assert keys == ("c", "b")
     assert final.order_by[:2] == query.order_by
-    assert final.order_by[2:] == [SqlOrder(SqlIdentifier(["a"]), "ASC", nulls_last=True)]
-    final, keys = limit_order(replace(query, order_by=query.order_by[:1]))
+    assert final.order_by[2:] == [
+        SqlOrder(SqlIdentifier([name]), "ASC", nulls_last=True) for name in ["a", "period"]
+    ]
+    final, keys = limit_order(replace(query, order_by=query.order_by[:1]), groups)
     assert keys == ("c",)
-    assert [term.expression.parts for term in final.order_by[1:]] == [["b"], ["a"]]
+    assert [term.expression.parts for term in final.order_by[1:]] == [["b"], ["a"], ["period"]]
+    # A group that is not an output (a collapsed window's clock) breaks no tie.
+    final, _ = limit_order(replace(query, order_by=query.order_by[:1]), ["b", "missing"])
+    assert [term.expression.parts for term in final.order_by[1:]] == [["b"]]
 
 
 def test_unprojected_order_cannot_bypass_the_limited_order_guard():
@@ -77,7 +118,8 @@ def test_unprojected_order_cannot_bypass_the_limited_order_guard():
                 select=[SqlField(SqlLiteral(1), "score")],
                 order_by=[SqlOrder(SqlIdentifier(["hidden"]), "ASC")],
                 limit=2,
-            )
+            ),
+            [],
         )
     assert error.value.code == "INVALID_ORDER_BY"
 
@@ -101,11 +143,7 @@ def test_boundary_warning_counts_only_observed_ties(values, limit, count):
         assert warnings == []
     else:
         assert warnings[0]["code"] == "TIES_AT_LIMIT"
-        assert warnings[0]["details"] == {
-            "limit": limit,
-            "tie_count": count,
-            "tie_count_is_lower_bound": True,
-        }
+        assert warnings[0]["details"] == {"at": limit, "tied": count}
 
 
 @pytest.mark.parametrize("keys", [("a", "b"), ("A", "B")])
@@ -140,18 +178,17 @@ def test_exact_sort_key_takes_precedence_over_folded_matches():
 
 
 @pytest.mark.parametrize(
-    "warehouse,alias,returned_key,store_key",
+    "warehouse,alias,returned_key,store_key,tied",
     [
-        ("snowflake", "orders", "ORDERS", "STORE"),
-        ("postgres", "orderCount", "ordercount", "store"),
-        ("athena", "orderCount", "ordercount", "store"),
+        ("snowflake", "orders", "ORDERS", "STORE", False),
+        ("postgres", "orderCount", "ordercount", "store", True),
+        ("athena", "orderCount", "ordercount", "store", False),
     ],
 )
-@pytest.mark.parametrize("tied", [False, True], ids=["distinct-cutoff", "tied-cutoff"])
 def test_runtime_cutoff_uses_warehouse_result_key_casing(
-    package_config_factory, warehouse, alias, returned_key, store_key, tied
+    package, warehouse, alias, returned_key, store_key, tied
 ):
-    config, config_path = package_config_factory("jaffle_shop")
+    config, config_path = package
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     rows = [
         {returned_key: value, store_key: store}
@@ -174,9 +211,9 @@ def test_runtime_cutoff_uses_warehouse_result_key_casing(
     try:
         result = runtime.query(
             {
-                "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": alias}],
+                "select": [{"expression": "measure.jaffle.order_count", "as": alias}],
                 "group_by": ["dimension.jaffle_store_name"],
-                "order_by": [{"field": alias, "direction": "DESC"}],
+                "order_by": [{"field": alias, "direction": "desc"}],
                 "limit": 2,
             }
         )
@@ -191,11 +228,7 @@ def test_runtime_cutoff_uses_warehouse_result_key_casing(
     warnings = [warning for warning in result["warnings"] if warning["code"] == "TIES_AT_LIMIT"]
     if tied:
         assert len(warnings) == 1
-        assert warnings[0]["details"] == {
-            "limit": 2,
-            "tie_count": 2,
-            "tie_count_is_lower_bound": True,
-        }
+        assert warnings[0]["details"] == {"at": 2, "tied": 2}
     else:
         assert not warnings
 

@@ -265,7 +265,7 @@ REQUIRED_CODEOWNER_LINES = (
     "/scripts/generate_contract_artifacts.py @wtremml18",
     "/scripts/check_contract_compatibility.py @wtremml18",
     "/docs/CONTRACTS.md @wtremml18",
-    "/docs/QUERY_IR_SCHEMA.md @wtremml18",
+    "/docs/QUERY_CALL.md @wtremml18",
     "/semantic_rails/embedding.py @wtremml18",
     "/semantic_rails/mcp*.py @wtremml18",
     "/semantic_rails/architect_*.py @wtremml18",

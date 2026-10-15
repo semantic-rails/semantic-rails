@@ -75,7 +75,7 @@ def _write_package(package_dir: Path, *, package_overrides: dict) -> Path:
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",

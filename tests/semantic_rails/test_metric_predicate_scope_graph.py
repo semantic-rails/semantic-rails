@@ -12,6 +12,7 @@ from semantic_rails.compiler_parts.sql_lowering import _query_metric_predicates
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 
 
@@ -124,9 +125,9 @@ def test_distribution_entity_only_input_predicate_keeps_its_own_clock():
                             "predicates": [
                                 {
                                     "entity": "entity.shop_customer",
-                                    "scope_mode": "entity_only",
+                                    "over": "all_time",
                                     "measure": "measure.shop.signup_count",
-                                    "op": ">=",
+                                    "op": "gte",
                                     "value": 1,
                                 }
                             ],
@@ -139,7 +140,8 @@ def test_distribution_entity_only_input_predicate_keeps_its_own_clock():
         "time": {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"},
     }
     # A lifetime signup predicate remains valid in an order-clock distribution.
-    assert compile_query(config, Registry(config), query)["sql"]
+    engine, _notes = read_call(query, config=config)
+    assert compile_query(config, Registry(config), engine)["sql"]
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -269,17 +271,17 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
         },
         graph_relationships={
             f"relationship.demo_{child}_{parent}": {
-                "id": f"relationship.demo_{child}_{parent}",
+                "as": f"relationship.demo_{child}_{parent}",
                 "entities": [child_entity, parent],
                 "cardinality": "many_to_one",
             },
             f"relationship.demo_{fact}_{owner}": {
-                "id": f"relationship.demo_{fact}_{owner}",
+                "as": f"relationship.demo_{fact}_{owner}",
                 "entities": [fact, owner],
                 "cardinality": "many_to_one",
             },
             f"relationship.demo_{fact}_{child}": {
-                "id": f"relationship.demo_{fact}_{child}",
+                "as": f"relationship.demo_{fact}_{child}",
                 "entities": [fact, child_entity],
                 "cardinality": "many_to_one",
             },
@@ -383,7 +385,7 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                 },
                 "times": {
                     time_column: {
-                        "id": f"temporal_role.demo_{fact}_time",
+                        "as": f"temporal_role.demo_{fact}_time",
                         "name": f"demo.{fact.title()}.{time_column}",
                         "label": f"{fact.title()} time",
                         "column": time_column,
@@ -397,7 +399,7 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                         "name": f"{namespace}.{fact}s",
                         "label": f"{fact.title()}s",
                         "kind": "entity_count",
-                        "time": time_column,
+                        "times": [time_column],
                     }
                 },
             }
@@ -409,13 +411,13 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
             "metrics": {
                 f"{namespace}.{fact}s": {
                     "value_type": "number",
-                    "id": f"metric.{namespace}.{fact}s",
+                    "as": f"metric.{namespace}.{fact}s",
                     "kind": "aggregate",
                     "measure": f"measure.demo.{fact}_count",
                 },
                 f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period": {
                     "value_type": "number",
-                    "id": f"metric.{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
+                    "as": f"metric.{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
                     "name": f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
                     "label": f"{fact.title()}s from {owner}s with 2+ {fact}s in period",
                     "kind": "aggregate",
@@ -510,22 +512,22 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         },
         graph_relationships={
             "relationship.demo_customer_history_customer": {
-                "id": "relationship.demo_customer_history_customer",
+                "as": "relationship.demo_customer_history_customer",
                 "entities": ["customer_history", "customer"],
                 "cardinality": "many_to_one",
             },
             "relationship.demo_customer_history_plan": {
-                "id": "relationship.demo_customer_history_plan",
+                "as": "relationship.demo_customer_history_plan",
                 "entities": ["customer_history", "plan"],
                 "cardinality": "many_to_one",
             },
             "relationship.demo_order_customer": {
-                "id": "relationship.demo_order_customer",
+                "as": "relationship.demo_order_customer",
                 "entities": ["order", "customer"],
                 "cardinality": "many_to_one",
             },
             "relationship.demo_order_customer_history": {
-                "id": "relationship.demo_order_customer_history",
+                "as": "relationship.demo_order_customer_history",
                 "entities": ["order", "customer_history"],
                 "cardinality": "many_to_one",
                 "target": ["customer_id"],
@@ -607,7 +609,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                 },
                 "times": {
                     "valid_from": {
-                        "id": "temporal_role.demo_customer_history_valid_from",
+                        "as": "temporal_role.demo_customer_history_valid_from",
                         "name": "demo.CustomerHistory.valid_from",
                         "label": "History valid from",
                         "column": "valid_from",
@@ -615,7 +617,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "class": "state_time",
                     },
                     "valid_to": {
-                        "id": "temporal_role.demo_customer_history_valid_to",
+                        "as": "temporal_role.demo_customer_history_valid_to",
                         "name": "demo.CustomerHistory.valid_to",
                         "label": "History valid to",
                         "column": "valid_to",
@@ -651,7 +653,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                 },
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",
@@ -665,7 +667,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                     }
                 },
             }
@@ -677,13 +679,13 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
             "metrics": {
                 "sales.orders": {
                     "value_type": "number",
-                    "id": "metric.sales.orders",
+                    "as": "metric.sales.orders",
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                 },
                 "sales.orders_from_customers_with_2plus_orders_in_period": {
                     "value_type": "number",
-                    "id": "metric.sales.orders_from_customers_with_2plus_orders_in_period",
+                    "as": "metric.sales.orders_from_customers_with_2plus_orders_in_period",
                     "name": "sales.orders_from_customers_with_2plus_orders_in_period",
                     "label": "Orders from customers with 2+ orders in period",
                     "kind": "aggregate",

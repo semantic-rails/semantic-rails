@@ -33,6 +33,14 @@ class RouteRowError(ValueError):
     the row came from."""
 
 
+class UnknownRelationshipError(RouteRowError):
+    """A row's path names no relationship; ``pair`` is the row's (source, target) entity ids."""
+
+    def __init__(self, message: str, pair: tuple[str, str]) -> None:
+        super().__init__(message)
+        self.pair = pair
+
+
 def entity_references(
     entities: Iterable[EntityConfig], keys: Mapping[str, str] | None = None
 ) -> dict[str, str]:
@@ -87,8 +95,9 @@ def check_route_row(
     for rel_ref in rel_refs:
         rel = rel_lookup.get(rel_ref)
         if rel is None:
-            raise RouteRowError(
-                f"for {source_ref} -> {target_ref} references unknown relationship '{rel_ref}'"
+            raise UnknownRelationshipError(
+                f"for {source_ref} -> {target_ref} references unknown relationship '{rel_ref}'",
+                (source_entity, target_entity),
             )
         directions = {
             str(item).strip().lower()

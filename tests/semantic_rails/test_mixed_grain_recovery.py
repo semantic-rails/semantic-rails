@@ -52,7 +52,6 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         entity="entity.orders",
         row_grain=["order_id"],
         expr=ColumnRefExpr(column="amount"),
-        source_relation="orders",
         default_aggregation="sum",
         allowed_aggregations=["sum"],
         compatible_temporal_roles=[],
@@ -64,7 +63,6 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         id=f"measure.synthetic.{similar_id}",
         entity="entity.lines",
         row_grain=["line_id"],
-        source_relation="lines",
         name="",
         label="",
     )
@@ -89,10 +87,8 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
     config = replace(
         config,
         entities=[
-            EntityConfig(
-                id="entity.orders", table="orders", primary_key="order_id", key=["order_id"]
-            ),
-            EntityConfig(id="entity.lines", table="lines", primary_key="line_id", key=["line_id"]),
+            EntityConfig(id="entity.orders", table="orders", key_columns=["order_id"]),
+            EntityConfig(id="entity.lines", table="lines", key_columns=["line_id"]),
         ],
         relationships=[
             RelationshipConfig(
@@ -119,7 +115,7 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         assert details["closest_compatible_measure"] == meaningful.id
         assert details["compatible_measures"] == [meaningful.id, similar.id]
         assert details["compatible_dimensions"][:2] == [meaningful_dim.id, similar_dim.id]
-        assert not error["closest_valid_query"]
+        assert not error.get("closest_valid_query")
     finally:
         runtime.close()
 
@@ -133,7 +129,7 @@ def _first_error(report: dict) -> dict:
 
 def _validate(runtime, *, measure: str, group_by: list[str], time: dict | None = None) -> dict:
     payload: dict = {
-        "select": [{"expression": {"measure": measure}, "as": "value"}],
+        "select": [{"expression": measure, "as": "value"}],
         "group_by": group_by,
     }
     if time is not None:
@@ -180,7 +176,7 @@ def test_revenue_by_product_name_suggests_item_revenue(runtime_factory) -> None:
             replace_measure[0].get("compatible_measures") or []
         )
         # No hint hands back a query that swaps the measure or the dimension.
-        assert not err["closest_valid_query"]
+        assert not err.get("closest_valid_query")
         assert not any(hint.get("closest_valid_query") for hint in hints)
         assert "closest_compatible_measure_query" not in details
 

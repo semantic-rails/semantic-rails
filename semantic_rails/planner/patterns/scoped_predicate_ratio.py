@@ -9,19 +9,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._base import RuntimeCompositionDraft, _entity, _measure, _metric, _object_text, _resolved
+from .._base import RuntimeCompositionDraft, _account_entity, _measure, _metric, _resolved
+from ..call import QueryBuilder
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order, _product_filter
 from ._protocol import IntentPattern
 
 
 def _metric_predicate(metric: Any, entity: Any) -> dict[str, Any]:
-    return {
-        "metric": metric.id,
-        "entity": entity.id,
-        "op": ">",
-        "value": 0,
-    }
+    # An account uses the channel when it has any of its activity in the query's window.
+    return {"input": metric.id, "entity": entity.id, "op": "gt", "value": 0, "over": "window"}
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
@@ -30,11 +27,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if not wants_pct or not {"sms", "push"} <= terms:
         return None
 
-    account_entity = _entity(
-        config,
-        ["account"],
-        exclude=[row.id for row in config.entities if "parent" in _object_text(row)],
-    )
+    account_entity = _account_entity(config)
     sms_metric = _metric(config, ["sms"])
     push_metric = _metric(config, ["push"])
     if account_entity is None or sms_metric is None or push_metric is None:
@@ -55,34 +48,26 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         "kind": "scoped_aggregate",
         "measure": anchor_measure.id,
         "aggregation": aggregation,
-        **({"where": [product_filter]} if product_filter is not None else {}),
+        **({"where": [product_filter.to_call()]} if product_filter is not None else {}),
     }
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [
-            {
-                "as": "pct_paying_logos_sent_push_and_sms"
-                if is_paying_logo
-                else "pct_email_arr_from_sms_push_senders",
-                "expression": {
-                    "kind": "ratio",
-                    "numerator": {
-                        **scoped,
-                        "predicates": [
-                            _metric_predicate(sms_metric, account_entity),
-                            _metric_predicate(push_metric, account_entity),
-                        ],
-                    },
-                    "denominator": scoped,
-                },
-            }
-        ],
-        "time": _time_spec(anchor_measure.default_temporal_role, text),
-    }
-    group_by = _maybe_group_by(config, text)
-    if group_by:
-        query["group_by"] = group_by
-    _add_order(query)
+    builder = QueryBuilder(config).select(
+        {
+            "kind": "ratio",
+            "numerator": {
+                **scoped,
+                "predicates": [
+                    _metric_predicate(sms_metric, account_entity),
+                    _metric_predicate(push_metric, account_entity),
+                ],
+            },
+            "denominator": scoped,
+        },
+        "pct_paying_logos_sent_push_and_sms"
+        if is_paying_logo
+        else "pct_email_arr_from_sms_push_senders",
+    )
+    builder.time(_time_spec(anchor_measure.default_temporal_role, text))
+    query = _add_order(builder.groups(_maybe_group_by(config, text))).build()
     return RuntimeCompositionDraft(
         query=query,
         resolved=[

@@ -10,8 +10,9 @@ should compose Query IR directly rather than authoring pipelines.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any
 
@@ -30,6 +31,7 @@ from .expressions import (
     SemanticExpr,
     parse_config_expression,
     parse_semantic_expression,
+    reads_temporal_value,
     validate_boolean_argument_count,
 )
 from .naming import slug as _slug
@@ -50,7 +52,6 @@ from .sql_ast import (
     SqlJoin,
     SqlJsonExtract,
     SqlLiteral,
-    SqlNamedArg,
     SqlOrderTerm,
     SqlQuery,
     SqlSelect,
@@ -64,6 +65,12 @@ from .sql_ast import (
     is_null_literal,
 )
 
+# The date and timestamp columns a filter reads, by table alias, and the alias an unqualified
+# column reads: text compared with one is a temporal literal (``SqlLiteral.temporal``).
+_TEMPORAL_COLUMNS: ContextVar[tuple[Mapping[str, frozenset[str]], str]] = ContextVar(
+    "relation_temporal_columns", default=({}, "src")
+)
+
 
 @dataclass
 class _RelationState:
@@ -72,6 +79,10 @@ class _RelationState:
     ctes: list[SqlCte] = field(default_factory=list)
     preaggregated: bool = False
     grain_columns: set[str] = field(default_factory=set)
+    # Each column's lineage: the source column it carries unchanged through renames and
+    # pass-throughs, or the step that computed it. A filter reads a column as a date or
+    # timestamp when what the relation's readers or its source declare shares its lineage.
+    lineage: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -129,16 +140,16 @@ def _semantic_expr_to_sql(
         )
     if isinstance(expr, ComparisonExpr):
         return build_comparison_condition(
-            _semantic_expr_to_sql(expr.left, default_alias=default_alias, warehouse=warehouse),
+            _operand_sql(expr.left, _temporal(expr.right), default_alias, warehouse),
             expr.op,
-            _semantic_expr_to_sql(expr.right, default_alias=default_alias, warehouse=warehouse),
+            _operand_sql(expr.right, _temporal(expr.left), default_alias, warehouse),
         )
     if isinstance(expr, InExpr):
+        temporal = any(_temporal(item) for item in (expr.expr, *expr.values))
         return SqlIn(
-            expr=_semantic_expr_to_sql(expr.expr, default_alias=default_alias, warehouse=warehouse),
+            expr=_operand_sql(expr.expr, temporal, default_alias, warehouse),
             values=[
-                _semantic_expr_to_sql(value, default_alias=default_alias, warehouse=warehouse)
-                for value in expr.values
+                _operand_sql(value, temporal, default_alias, warehouse) for value in expr.values
             ],
             negated=expr.negated,
         )
@@ -201,6 +212,23 @@ def _semantic_expr_to_sql(
     )
 
 
+def _temporal(expr: SemanticExpr) -> bool:
+    """Whether ``expr`` reads a date or timestamp of a table the filter reads, by the column's
+    qualifier (an unqualified column reads the filter's own table)."""
+    tables, default_alias = _TEMPORAL_COLUMNS.get()
+    return bool(tables) and reads_temporal_value(
+        expr, lambda ref: ref.column in tables.get(ref.table or default_alias, frozenset())
+    )
+
+
+def _operand_sql(expr: SemanticExpr, temporal: bool, default_alias: str, warehouse: str) -> SqlExpr:
+    """One side of a comparison or an operand of ``in``: text compared with a date or timestamp
+    (``temporal``) is a temporal literal; text compared with anything else stays text."""
+    if temporal and isinstance(expr, LiteralExpr) and isinstance(expr.value, str):
+        return SqlLiteral(expr.value, temporal=True)
+    return _semantic_expr_to_sql(expr, default_alias=default_alias, warehouse=warehouse)
+
+
 def _expr(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb") -> SqlExpr:
     return _semantic_expr_to_sql(_parse_expr(raw), default_alias=default_alias, warehouse=warehouse)
 
@@ -209,19 +237,151 @@ def _column_fields(columns: Iterable[str], *, alias: str = "src") -> list[SqlFie
     return [SqlField(SqlIdentifier(parts=[alias, str(column)]), str(column)) for column in columns]
 
 
-def _predicate(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb") -> SqlExpr:
+def _predicate(
+    raw: Any,
+    *,
+    default_alias: str = "src",
+    warehouse: str = "duckdb",
+    temporal: Mapping[str, frozenset[str]] | None = None,
+) -> SqlExpr:
+    """A filter step's condition; ``temporal`` names the date and timestamp columns of each
+    table alias it reads."""
+    temporal = temporal or {}
     if isinstance(raw, dict) and "field" in raw:
-        left = SqlIdentifier(parts=[default_alias, str(raw["field"])])
-        op = str(raw.get("op", "=")).upper()
-        value = raw.get("value")
-        if op in {"IN", "NOT IN"}:
-            return SqlIn(
-                expr=left,
-                values=[SqlLiteral(item) for item in list(value or [])],
-                negated=op == "NOT IN",
-            )
-        return build_filter_condition(left, op, value, path="relation.filter")
-    return _expr(raw, default_alias=default_alias, warehouse=warehouse)
+        field_name = str(raw["field"])
+        left = SqlIdentifier(parts=[default_alias, field_name])
+        # The query's filter words: `not` (and its NOT IN / != spellings) keeps unknown rows.
+        return build_filter_condition(
+            left,
+            raw.get("op", "is"),
+            raw.get("value"),
+            path="relation.filter",
+            temporal=field_name in temporal.get(default_alias, frozenset()),
+        )
+    token = _TEMPORAL_COLUMNS.set((temporal, default_alias))
+    try:
+        return _expr(raw, default_alias=default_alias, warehouse=warehouse)
+    finally:
+        _TEMPORAL_COLUMNS.reset(token)
+
+
+def _temporal_tables(config: PackageConfig) -> dict[str, frozenset[str]]:
+    """Each table or relation an entity reads, with the columns its date and timestamp
+    dimensions declare."""
+    entities = {entity.id: entity for entity in config.entities}
+    tables: dict[str, set[str]] = {}
+    for dim in config.dimensions:
+        entity = entities.get(dim.entity)
+        if entity is None or dim.data_type not in {"date", "timestamp"}:
+            continue
+        for name in filter(None, (entity.table, entity.relation_id)):
+            tables.setdefault(name, set()).add(dim.column)
+    return {name: frozenset(columns) for name, columns in tables.items()}
+
+
+# Functions whose result has their argument's type: MIN(day) is a date when day is.
+_TYPE_PRESERVING = frozenset(
+    {"MIN", "MAX", "SINGLE_VALUE", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE"}
+)
+
+
+# A table alias's lookup from a column it reads to that column's lineage (None if unknown).
+_Lineages = Mapping[str, Callable[[str], str | None]]
+
+
+def _bare_column(raw: Any, tables: _Lineages, default: str) -> str | None:
+    """The lineage of the column ``raw`` reads unchanged, by its table (``default`` when
+    unqualified), or None for a computed value or an unknown column."""
+    expr = _parse_expr(raw)
+    lookup = tables.get(expr.table or default) if isinstance(expr, ColumnRefExpr) else None
+    return lookup(expr.column) if lookup and isinstance(expr, ColumnRefExpr) else None
+
+
+def _preserved(spec: Any, tables: _Lineages) -> str | None:
+    """The lineage of an aggregate or window that keeps its argument's type
+    (:data:`_TYPE_PRESERVING`) over a column read unchanged, or None."""
+    if not isinstance(spec, dict):
+        return None
+    function = str(spec.get("function", "") or "").upper()
+    expr_raw = spec.get("expr")
+    if function not in _TYPE_PRESERVING or expr_raw is None or spec.get("distinct"):
+        return None
+    return _bare_column(expr_raw, tables, "src")
+
+
+def _lineage(
+    step: RelationPipelineStep, before: _RelationState, after: _RelationState, step_id: str
+) -> dict[str, str]:
+    """Each output column's lineage (:attr:`_RelationState.lineage`), only where it is certain:
+    a filter keeps its input columns; a projection carries a column it reads unchanged (or
+    through a type-preserving aggregate or window) under its new name, resolved by its table;
+    a join's right-hand column is that table's. Anything else starts its own lineage, so a
+    filter on it is never typed by another column's declaration."""
+    config = dict(step.config or {})
+    src: _Lineages = {"src": before.lineage.get}
+    carried: dict[str, str | None] = {}
+    if step.kind == "source":
+        source = _source_from_config(config)
+        carried = {column: f"{source}.{column}" for column in after.columns}
+    elif step.kind in {"where", "semi_join", "anti_join", "exclude"}:
+        carried = dict(before.lineage)
+    elif step.kind == "select":
+        columns = config.get("columns", config.get("value", config))
+        carried = {str(alias): _bare_column(raw, src, "src") for alias, raw in columns.items()}
+    elif step.kind == "group_by":
+        dimensions = config.get("dimensions", {}) or {}
+        aggregates = config.get("aggregates", {}) or {}
+        carried = {str(alias): _bare_column(raw, src, "src") for alias, raw in dimensions.items()}
+        carried |= {str(alias): _preserved(spec, src) for alias, spec in aggregates.items()}
+    elif step.kind == "window":
+        windows = config.get("windows", config)
+        carried = dict(before.lineage)
+        carried |= {str(alias): _preserved(spec, src) for alias, spec in windows.items()}
+    elif step.kind == "join":
+        pre_aggregate = dict(config.get("pre_aggregate", {}) or {})
+        table = _source_from_config(config)
+        sides: _Lineages = {
+            **({} if pre_aggregate.get("left") else {"left": before.lineage.get}),
+            **({} if pre_aggregate.get("right") else {"right": lambda column: f"{table}.{column}"}),
+        }
+        projection = config.get("select") or {
+            column: {"kind": "column", "table": "left", "column": column}
+            for column in before.columns
+        }
+        carried = {
+            str(alias): _bare_column(raw, sides, "left") for alias, raw in projection.items()
+        }
+    # Known limit: a union, an explode, a JSON extract or a state_as_of starts its columns' own
+    # lineage, so a filter on them is typed only by the relation's readers' declarations.
+    # A name two of the stage's columns share is ambiguous: it gets no lineage, so no type.
+    ambiguous = {column for column in after.columns if after.columns.count(column) > 1}
+    return {
+        column: carried.get(column) or f"{step_id}.{column}"
+        for column in after.columns
+        if column not in ambiguous
+    }
+
+
+def _temporal_lineage(
+    relation: RelationConfig, final: _RelationState, tables: Mapping[str, frozenset[str]]
+) -> frozenset[str]:
+    """The lineages a relation's dates and timestamps carry: the columns its readers declare,
+    traced back from its output, and those the tables it reads (its source, a joined table)
+    declare. A relation another relation reads exports only its readers' declarations: types
+    inferred through it reach no dependent semi-join (left untyped, never mistyped)."""
+    declared = tables.get(relation.output_name, frozenset()) | tables.get(relation.id, frozenset())
+    lineages = {final.lineage[column] for column in declared if column in final.lineage}
+    for step in relation.steps:
+        config = dict(step.config or {})
+        if step.kind in {"source", "join"}:
+            table = _source_from_config(config)
+            lineages |= {f"{table}.{column}" for column in tables.get(table, frozenset())}
+    return frozenset(lineages)
+
+
+def _stage_temporal(state: _RelationState, lineages: frozenset[str]) -> frozenset[str]:
+    """The columns of ``state`` whose lineage is a date or timestamp."""
+    return frozenset(column for column in state.columns if state.lineage.get(column) in lineages)
 
 
 def _source_from_config(config: dict[str, Any]) -> str:
@@ -289,7 +449,12 @@ def _lower_select(
 
 
 def _lower_where(
-    config: dict[str, Any], state: _RelationState, *, output_name: str, warehouse: str
+    config: dict[str, Any],
+    state: _RelationState,
+    *,
+    output_name: str,
+    warehouse: str,
+    temporal: frozenset[str] = frozenset(),
 ) -> _RelationState:
     if not state.columns:
         raise SemanticLayerError(
@@ -297,7 +462,10 @@ def _lower_where(
             "where relation step requires known columns from a prior select/source columns declaration",
         )
     raw_predicates = config.get("predicates", config.get("value", []))
-    predicates = [_predicate(item, warehouse=warehouse) for item in _ensure_list(raw_predicates)]
+    predicates = [
+        _predicate(item, warehouse=warehouse, temporal={"src": temporal})
+        for item in _ensure_list(raw_predicates)
+    ]
     query = SqlSelect(
         select=_column_fields(state.columns),
         from_table=SqlTableRef(state.source_name, alias="src"),
@@ -327,22 +495,10 @@ def _lower_json_extract(
     if not path:
         raise SemanticLayerError("INVALID_CONFIG", "json_extract requires path")
     fields = _column_fields(state.columns)
-    source_expr = SqlIdentifier(parts=["src", source_column])
-    json_expr: SqlJsonExtract | SqlCall
-    if dialect_for_warehouse(warehouse).name == "snowflake":
-        json_expr = SqlJsonExtract(
-            source_expr, path=path, as_text=bool(config.get("as_text", True))
-        )
-    else:
-        json_path = "$." + ".".join(path)
-        function = "JSON_EXTRACT_STRING" if bool(config.get("as_text", True)) else "JSON_EXTRACT"
-        json_expr = SqlCall(function, [source_expr, SqlLiteral(json_path)])
-    fields.append(
-        SqlField(
-            json_expr,
-            alias,
-        )
+    json_expr = dialect_for_warehouse(warehouse).json_extract(
+        SqlIdentifier(parts=["src", source_column]), path, as_text=bool(config.get("as_text", True))
     )
+    fields.append(SqlField(json_expr, alias))
     query = SqlSelect(select=fields, from_table=SqlTableRef(state.source_name, alias="src"))
     return _RelationState(
         source_name=output_name,
@@ -361,22 +517,11 @@ def _lower_explode(
     delimiter = str(config.get("delimiter", "") or "")
     if not source_column:
         raise SemanticLayerError("INVALID_CONFIG", "explode requires column")
-    dialect = dialect_for_warehouse(warehouse).name
     fields = _column_fields([column for column in state.columns if column != source_column])
-    if dialect == "snowflake":
-        input_expr: SqlExpr = SqlIdentifier(parts=["src", source_column])
-        if delimiter:
-            input_expr = SqlCall("SPLIT", [input_expr, SqlLiteral(delimiter)])
-        table = SqlTableFunction(
-            "FLATTEN", named_args=[SqlNamedArg("INPUT", input_expr)], alias="exploded", lateral=True
-        )
-        fields.append(SqlField(SqlIdentifier(parts=["exploded", "VALUE"]), alias))
-    else:
-        input_expr = SqlIdentifier(parts=["src", source_column])
-        if delimiter:
-            input_expr = SqlCall("STRING_SPLIT", [input_expr, SqlLiteral(delimiter)])
-        table = SqlTableFunction("UNNEST", args=[input_expr], alias="exploded", columns=[alias])
-        fields.append(SqlField(SqlIdentifier(parts=["exploded", alias]), alias))
+    table, element = dialect_for_warehouse(warehouse).explode(
+        SqlIdentifier(parts=["src", source_column]), delimiter, alias="exploded", column=alias
+    )
+    fields.append(SqlField(element, alias))
     query = SqlSelect(
         select=fields,
         from_table=SqlTableRef(state.source_name, alias="src"),
@@ -399,6 +544,10 @@ def _aggregate_expr(spec: Any, *, warehouse: str) -> SqlExpr:
     if not function:
         raise SemanticLayerError("INVALID_CONFIG", "group_by aggregate requires function")
     expr_raw = config.get("expr", "*")
+    if function == "SINGLE_VALUE":  # the group's one value, NULL where it holds two
+        return dialect_for_warehouse(warehouse).single_value(
+            _expr(expr_raw, warehouse=warehouse), boolean=bool(config.get("boolean"))
+        )
     if expr_raw == "*":
         return SqlCall(function, [SqlLiteral(1)], distinct=bool(config.get("distinct", False)))
     return SqlCall(
@@ -609,6 +758,7 @@ def _lower_semi_join(
     output_name: str,
     warehouse: str,
     negated: bool,
+    temporal: Mapping[str, frozenset[str]] | None = None,
 ) -> _RelationState:
     relation = str(config.get("relation", "") or "").strip()
     if not relation:
@@ -626,7 +776,7 @@ def _lower_semi_join(
             _join_condition(item, warehouse=warehouse, left_alias="src", right_alias="right"),
         )
     right_predicates = [
-        _predicate(item, default_alias="right", warehouse=warehouse)
+        _predicate(item, default_alias="right", warehouse=warehouse, temporal=temporal)
         for item in _ensure_list(config.get("where", []))
     ]
     subquery_where = [condition, *right_predicates]
@@ -890,6 +1040,26 @@ def _lower_step(
     index: int,
     *,
     warehouse: str,
+    tables: Mapping[str, frozenset[str]],
+    lineages: frozenset[str],
+) -> _RelationState:
+    """One step lowered, its columns' lineage recorded; ``lineages`` are the dates and
+    timestamps a filter compares text with (:func:`_temporal_lineage`)."""
+    after = _lower_step_sql(
+        step, state, relation, index, warehouse=warehouse, tables=tables, lineages=lineages
+    )
+    return replace(after, lineage=_lineage(step, state, after, f"{relation.id}#{index}"))
+
+
+def _lower_step_sql(
+    step: RelationPipelineStep,
+    state: _RelationState,
+    relation: RelationConfig,
+    index: int,
+    *,
+    warehouse: str,
+    tables: Mapping[str, frozenset[str]],
+    lineages: frozenset[str],
 ) -> _RelationState:
     final = index == len(relation.steps) - 1
     output_name = _step_name(relation, index, step.kind, final=final)
@@ -922,7 +1092,13 @@ def _lower_step(
     if step.kind == "select":
         return _lower_select(config, state, output_name=output_name, warehouse=warehouse)
     if step.kind == "where":
-        return _lower_where(config, state, output_name=output_name, warehouse=warehouse)
+        return _lower_where(
+            config,
+            state,
+            output_name=output_name,
+            warehouse=warehouse,
+            temporal=_stage_temporal(state, lineages),
+        )
     if step.kind == "json_extract":
         return _lower_json_extract(config, state, output_name=output_name, warehouse=warehouse)
     if step.kind == "explode":
@@ -938,6 +1114,13 @@ def _lower_step(
             output_name=output_name,
             warehouse=warehouse,
             negated=step.kind in {"anti_join", "exclude"},
+            temporal={
+                "src": _stage_temporal(state, lineages),
+                "right": tables.get(
+                    str(config.get("relation", "") or "").strip(),
+                    frozenset(),
+                ),
+            },
         )
     if step.kind == "window":
         return _lower_window(config, state, output_name=output_name, warehouse=warehouse)
@@ -946,10 +1129,36 @@ def _lower_step(
     raise SemanticLayerError("INVALID_CONFIG", f"Unsupported relation step kind '{step.kind}'")
 
 
-def lower_relation(relation: RelationConfig, *, warehouse: str) -> tuple[list[SqlCte], list[str]]:
+def _lower_steps(
+    relation: RelationConfig,
+    *,
+    warehouse: str,
+    tables: Mapping[str, frozenset[str]],
+    lineages: frozenset[str],
+) -> _RelationState:
     state = _RelationState()
     for index, step in enumerate(relation.steps):
-        state = _lower_step(step, state, relation, index, warehouse=warehouse)
+        state = _lower_step(
+            step, state, relation, index, warehouse=warehouse, tables=tables, lineages=lineages
+        )
+    return state
+
+
+def lower_relation(
+    relation: RelationConfig,
+    *,
+    warehouse: str,
+    tables: Mapping[str, frozenset[str]] | None = None,
+) -> tuple[list[SqlCte], list[str]]:
+    """``tables`` names each table's date and timestamp columns (:func:`_temporal_tables`).
+
+    A first pass traces each column's lineage; when any is a date or timestamp, a second
+    lowers the filters with it."""
+    tables = tables or {}
+    state = _lower_steps(relation, warehouse=warehouse, tables=tables, lineages=frozenset())
+    lineages = _temporal_lineage(relation, state, tables)
+    if lineages:
+        state = _lower_steps(relation, warehouse=warehouse, tables=tables, lineages=lineages)
     if state.source_name != relation.output_name:
         if not state.columns:
             raise SemanticLayerError(
@@ -1039,8 +1248,9 @@ def _lower_relations_for_config(config: PackageConfig) -> dict[str, _LoweredRela
     output_to_relation: dict[str, str] = {}
     cte_to_relation: dict[str, str] = {}
 
+    tables = _temporal_tables(config)
     for relation in config.relations:
-        ctes, _ = lower_relation(relation, warehouse=config.package.warehouse)
+        ctes, _ = lower_relation(relation, warehouse=config.package.warehouse, tables=tables)
         cte_names = {cte.name for cte in ctes}
         lowered[relation.id] = _LoweredRelation(relation=relation, ctes=ctes, cte_names=cte_names)
         output_to_relation[relation.output_name] = relation.id
@@ -1136,6 +1346,17 @@ def _required_relation_ctes(config: PackageConfig, query: SqlSelect) -> list[Sql
             seen.add(cte.name)
             ctes.append(cte)
     return ctes
+
+
+def pipeline_cte_names(config: PackageConfig) -> frozenset[str]:
+    """Every CTE name ``attach_relation_ctes`` may add: each pipeline's output and steps."""
+    if not config.relations:
+        return frozenset()
+    lowered = _lower_relations_for_config(config).values()
+    return frozenset(
+        {row.relation.output_name for row in lowered}
+        | {name for row in lowered for name in row.cte_names}
+    )
 
 
 def attach_relation_ctes(config: PackageConfig, query: SqlSelect) -> SqlSelect:

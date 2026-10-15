@@ -19,8 +19,8 @@ FROM leaf_1 AS base
 )
 SELECT
   base.g1 AS "dimension.jaffle_customer_history_segment",
-  base.t AS "temporal_role.jaffle_order_time__month",
-  base.m1 AS revenue_usd
+  base.t AS "period",
+  base.m1 AS "revenue_usd"
 FROM guarded_base AS base
 ORDER BY
-  revenue_usd DESC
+  "revenue_usd" DESC NULLS LAST

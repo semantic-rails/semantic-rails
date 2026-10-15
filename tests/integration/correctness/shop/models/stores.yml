@@ -1,0 +1,11 @@
+# Stores own their orders: an order's store is its only route to a region, so a row filter on
+# region reaches orders, and through them refunds, scans and tag links. Customers, tags and the
+# other tables hold no store, so no region reaches them.
+model:
+  id: stores
+  label: Stores
+  relation: stores
+  entities: {store: {}}
+  dimensions:
+    name: {label: Store name, kind: categorical, domain: [Elm, Fir, Oak]}
+    region: {label: Region, kind: categorical, domain: [East, West]}

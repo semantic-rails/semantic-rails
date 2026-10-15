@@ -26,9 +26,8 @@ tests:
   unknown_temporal_role_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       time:
         temporal_role: temporal_role.does_not_exist
@@ -38,32 +37,30 @@ tests:
   unsupported_aggregation_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd, aggregation: bogus_agg}
+        - expression: {kind: measure, measure: measure.jaffle.revenue_usd, aggregation: bogus_agg}
           as: r
     code: UNSUPPORTED_AGGREGATION
 
   invalid_expression_ast_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
         - expression: {kind: unknown_kind}
           as: x
-    code: INVALID_EXPRESSION_AST
+    code: INVALID_QUERY
 
   prior_period_grain_mismatch_rejected:
     # `kind: prior_period` with a month-unit offset cannot be evaluated
     # at day grain — the planner reports REWRITE_NOT_SUPPORTED.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
         - as: pm
           expression:
             kind: prior_period
             input:
+              kind: measure
               measure: measure.jaffle.revenue_usd
               aggregation: sum
             offset:
@@ -77,9 +74,8 @@ tests:
   cumulative_with_bounded_start_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {metric: metric.sales.cumulative_revenue}
+        - expression: metric.sales.cumulative_revenue
           as: cum
       time:
         temporal_role: temporal_role.jaffle_order_time
@@ -90,12 +86,12 @@ tests:
   rolling_with_bounded_start_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
         - as: rolling
           expression:
             kind: rolling
             input:
+              kind: measure
               measure: measure.jaffle.revenue_usd
               aggregation: sum
             window:
@@ -108,43 +104,17 @@ tests:
         end: "2017-01-08"
     code: WINDOWED_TIME_FILTER_UNSUPPORTED
 
-  contextual_predicate_finer_than_query_grain_rejected:
-    kind: validate_fails_with_code
-    query:
-      version: 1
-      select:
-        - expression: {measure: measure.jaffle.order_count}
-          as: orders
-      time:
-        temporal_role: temporal_role.jaffle_order_time
-        grain: month
-      metric_filters:
-        - expression:
-            kind: metric_predicate
-            entity: entity.jaffle_customer
-            input:
-              measure: measure.jaffle.order_count
-            op: ">"
-            value: 10
-            scope_mode: contextual
-            time_grain: day
-          op: "="
-          value: true
-    code: PREDICATE_GRAIN_UNSAFE
-
   unknown_metric_id_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {metric: metric.sales.nonexistent_metric}
+        - expression: metric.sales.nonexistent_metric
           as: x
     code: OBJECT_NOT_FOUND
 
   time_block_without_select_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       time:
         grain: month
     code: INVALID_QUERY
@@ -155,9 +125,8 @@ tests:
     # the planner refuses without explicit safety hints.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       group_by: [dimension.jaffle_product_name]
     code: MIXED_GRAIN_INVALID
@@ -169,9 +138,9 @@ tests:
     # attribution rule or an item-grain revenue measure.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
         - expression:
+            kind: measure
             measure: measure.jaffle.revenue_usd
             aggregation: sum
           as: revenue
@@ -184,10 +153,8 @@ tests:
     # instead of treating customer_type as an inventory dimension.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression:
-            metric: metric.sales.inventory_on_hand_eop
+        - expression: metric.sales.inventory_on_hand_eop
           as: inventory
       group_by: [dimension.jaffle_customer_type]
       time:
@@ -201,7 +168,6 @@ tests:
     # all base events or dimension-qualified base events.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
         - as: conversion_rate
           expression:
@@ -227,12 +193,10 @@ tests:
     # surfaces POLICY_DENIED before the query runs.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
-      policy_context:
-        audience: external_partner
+    context: {audience: external_partner}
     code: POLICY_DENIED
 
   unknown_dimension_id_in_where_returns_object_not_found:
@@ -241,22 +205,20 @@ tests:
     # recovery hints, mirroring the measure / metric paths.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       where:
         - field: dimension.jaffle_store_closed_at
-          op: "<"
+          op: lt
           value: "2020-01-01"
     code: OBJECT_NOT_FOUND
 
   unknown_dimension_id_in_group_by_returns_object_not_found:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       group_by:
         - dimension.jaffle_does_not_exist
@@ -269,9 +231,8 @@ tests:
     # found" — now it fails at validate with INVALID_ORDER_BY.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       order_by:
         - field: not_a_real_alias
@@ -283,38 +244,34 @@ tests:
     # the mismatch at validate time with INVALID_QUERY.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       where:
         - field: dimension.jaffle_store_name
-          op: "="
+          op: is
           value: 42
     code: INVALID_QUERY
 
   negative_limit_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       limit: -5
     code: INVALID_QUERY
 
   fiscal_calendar_on_gregorian_role_without_fill_rejected:
-    # Authored non-default calendars are refused in this release, with or
-    # without `fill: true`; Gregorian SQL under fiscal labels would be a
-    # silently wrong answer.
+    # A call cannot pick a calendar: `time.calendar_id` is refused, so
+    # Gregorian SQL never carries fiscal labels.
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.jaffle.revenue_usd}
+        - expression: measure.jaffle.revenue_usd
           as: r
       time:
         temporal_role: temporal_role.jaffle_order_time
         grain: quarter
         calendar_id: fiscal
-    code: REWRITE_NOT_SUPPORTED
+    code: INVALID_QUERY

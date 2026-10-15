@@ -35,15 +35,29 @@ INNER JOIN leaf_1__qualified_customers_by_revenue_usd_1 ON comparison_orders.cus
 GROUP BY
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 ),
+observed_1_rows AS (
+SELECT
+  1 AS seen
+FROM comparison_orders
+WHERE
+  comparison_orders.order_id IS NOT NULL
+LIMIT 1
+),
+observed_1 AS (
+SELECT
+  COUNT(observed_1_rows.seen) AS seen
+FROM observed_1_rows
+),
 guarded_base AS (
 SELECT
   base.t AS t,
-  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1
 FROM leaf_1 AS base
+CROSS JOIN observed_1
 )
 SELECT
-  base.t AS "temporal_role.jaffle_order_time__month",
-  base.m1 AS filtered_orders
+  base.t AS "period",
+  base.m1 AS "filtered_orders"
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import Any
 
 import duckdb
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import grouping_checks, plan_payload
 from semantic_rails.planner import plan as plan_module
+from semantic_rails.planner.call import Call
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.schema import SemanticPolicyConfig, ValueDomainConfig, ValueDomainValue
@@ -22,6 +24,11 @@ from tests.semantic_rails.test_plan_value_lists import (
 from tests.semantic_rails.test_plan_value_lists import (
     _with_districts as _with_metadata_districts,
 )
+
+
+def _alias(item: Any) -> str:
+    """A select item's output column: an id's last segment, or its ``as``."""
+    return item.split(".")[-1] if isinstance(item, str) else item["as"]
 
 
 def _with_districts(runtime, monkeypatch) -> None:
@@ -83,18 +90,19 @@ def test_hidden_dimension_is_not_selected_or_disclosed(
     _hide_customer_district(runtime, monkeypatch, **({"audiences": ["external"]} if scoped else {}))
     intent = "item revenue by district"
     _force_fallback(runtime, monkeypatch, intent, path)
-    partial = {"policy_context": {"audience": "external"}} if scoped else None
+    context = {"audience": "external"} if scoped else None
+    partial = {"policy_context": context} if scoped else None
     try:
         payload = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         _assert_no_hidden_dimension(payload)
-        query = payload["best"]["query_ir"]
+        query = payload["best"]["query"]
         assert query["group_by"] == [STORE_DISTRICT]
         if detail in {"full", "debug"}:
             assert payload["intent_ir"]["grouping"] == [
                 {"id": STORE_DISTRICT, "object_type": "dimension", "label": "Store district"}
             ]
-        actual_rows = runtime.query({**query, **(partial or {})})["rows"]
-        alias = query["select"][0]["as"]
+        actual_rows = runtime.query(query, context=context)["rows"]
+        alias = _alias(query["select"][0])
         actual = {row[STORE_DISTRICT]: row[alias] for row in actual_rows}
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
@@ -119,7 +127,7 @@ def test_visible_dimension_keeps_existing_selection(runtime_factory, monkeypatch
     _force_fallback(runtime, monkeypatch, intent, path)
     try:
         payload = plan_payload(runtime, intent=intent, detail="full")
-        assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_DISTRICT]
+        assert payload["best"]["query"]["group_by"] == [CUSTOMER_DISTRICT]
         assert payload["intent_ir"]["grouping"][0]["id"] == CUSTOMER_DISTRICT
     finally:
         runtime.close()
@@ -143,8 +151,8 @@ def test_visibility_is_scoped_to_each_request(runtime_factory, monkeypatch, path
             for audience in ("internal", "external", "internal")
         ]
         assert payloads[0] == payloads[2]
-        assert payloads[0]["best"]["query_ir"]["group_by"] == [CUSTOMER_DISTRICT]
-        assert payloads[1]["best"]["query_ir"]["group_by"] == [STORE_DISTRICT]
+        assert payloads[0]["best"]["query"]["group_by"] == [CUSTOMER_DISTRICT]
+        assert payloads[1]["best"]["query"]["group_by"] == [STORE_DISTRICT]
         _assert_no_hidden_dimension(payloads[1])
     finally:
         runtime.close()
@@ -168,7 +176,7 @@ def test_value_domains_do_not_reintroduce_hidden_dimensions(
         _assert_no_hidden_dimension(payload)
         # A domain naming the hidden dimension is hidden with it, shared or not: the value
         # grounds nothing, and the draft that leaves it out is held.
-        assert payload["best"]["query_ir"].get("where", []) == []
+        assert payload["best"]["query"].get("where", []) == []
         assert payload["status"] != "ok"
         assert "execute" not in payload.get("next", {}).get("ready_for", [])
     finally:
@@ -243,7 +251,7 @@ def test_hidden_underscore_dimension_behaves_like_an_absent_dimension(
         "where": [
             {
                 "field": "dimension.jaffle_store_name",
-                "op": "IN",
+                "op": "is",
                 "value": ["Brooklyn", "Philadelphia"],
             }
         ]
@@ -305,7 +313,7 @@ def test_hidden_name_holding_a_filter_value_behaves_like_an_absent_dimension(
         "where": [
             {
                 "field": "dimension.jaffle_store_name",
-                "op": "IN",
+                "op": "is",
                 "value": ["Brooklyn", "Philadelphia"],
             }
         ],
@@ -342,7 +350,7 @@ def test_hidden_underscore_objects_are_excluded_from_name_spans(runtime_factory,
         semantic_policies=[*runtime._config.semantic_policies, policy],
     )
     question = "revenue_usd at store name level"
-    query = {"group_by": []}
+    query = Call.from_call({"group_by": []})
     try:
         # The check reads names through its caller-scoped view, never the raw config.
         assert grouping_checks._named_groupings_unmet(view_of(config, {}), question, query) == (
@@ -360,12 +368,8 @@ STORE_NAME = "dimension.jaffle_store_name"
 NEW_MONTH = "new month and store name revenue"
 NEW_MONTH_PARTIAL = {
     "group_by": [STORE_NAME],
-    "where": [{"field": STORE_NAME, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
-    "time": {
-        "temporal_role": "temporal_role.jaffle_order_time",
-        "grain": "month",
-        "calendar_id": "default",
-    },
+    "where": [{"field": STORE_NAME, "op": "is", "value": ["Brooklyn", "Philadelphia"]}],
+    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
 }
 
 
@@ -430,12 +434,13 @@ def test_hidden_entity_and_temporal_role_names_cannot_change_the_name_obligation
     config, _ = package_config_factory("jaffle_shop")
     spellings = ["New", "new month", "Month", "Store", "Store name", "Customer type", "Revenue"]
     for row in [*config.entities, *config.temporal_roles]:
+        partial = Call.from_call(NEW_MONTH_PARTIAL)
         base = grouping_checks._named_groupings_unmet(
-            view_of(_new_month_alias(config, row.id), {}), question, NEW_MONTH_PARTIAL
+            view_of(_new_month_alias(config, row.id), {}), question, partial
         )
         for changes in [*({"label": s} for s in spellings), *({"aliases": [s]} for s in spellings)]:
             changed = view_of(_new_month_alias(config, row.id, **changes), {})
-            unmet = grouping_checks._named_groupings_unmet(changed, question, NEW_MONTH_PARTIAL)
+            unmet = grouping_checks._named_groupings_unmet(changed, question, partial)
             assert unmet == base, (row.id, changes)
 
 

@@ -9,13 +9,11 @@ regardless of which surface (HTTP, MCP, CLI) the request came in on.
 
 from __future__ import annotations
 
-from calendar import monthrange
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
-from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
+from . import operators
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -23,10 +21,10 @@ from .expressions import (
     BooleanExpr,
     CallExpr,
     CaseExpr,
+    ColumnRefExpr,
     ComparisonExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     LiteralExpr,
@@ -34,12 +32,10 @@ from .expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    ShareExpr,
     _closest_key_matches,
     expr_to_dict,
     expression_field,
@@ -145,12 +141,49 @@ class MetricFilter:
 
 @dataclass(frozen=True)
 class TimeSpec:
+    """The query's time block, resolved: the clock, the grain and ``[start, end)``.
+
+    ``last_unit``/``last_value`` and ``this`` keep the caller's relative spelling, so the answer
+    can say what window it used; the request's ``now`` it was resolved against travels with
+    the request (``policy_context["now"]``), never in the query.
+    """
+
     temporal_role: str
     grain: str = ""
     start: Any = None
     end: Any = None
     fill: bool = False
-    calendar_id: str = "default"
+    last_unit: str = ""
+    last_value: int = 0
+    this: str = ""
+    # Only a start was given: ``end`` is the request's ``now`` and the window stays open.
+    to_now: bool = False
+
+    @property
+    def named(self) -> bool:
+        """A named window (``last``, ``this``, or ``start`` and ``end``) answers with its rows."""
+        return bool(
+            self.last_unit
+            or self.this
+            or (self.start is not None and self.end is not None and not self.to_now)
+        )
+
+
+# The output column of the time axis. A query without a grain has no time column (one total
+# per group), except the engine's own raw-time sub-queries, which key on the clock's id.
+TIME_AXIS = "period"
+PERIOD_PARTIAL = "period_partial"
+
+
+def time_output_alias(time: TimeSpec | dict[str, Any] | None) -> str:
+    """The time axis column of a query: ``period`` when it has a grain."""
+    if time is None:
+        return ""
+    role = time.get("temporal_role", "") if isinstance(time, dict) else time.temporal_role
+    grain = time.get("grain", "") if isinstance(time, dict) else time.grain
+    if not role:
+        return ""
+    return TIME_AXIS if grain else str(role)
 
 
 @dataclass(frozen=True)
@@ -186,7 +219,7 @@ def route_decisions_from_payload(payload: dict[str, Any]) -> list[RouteDecision]
         )
     rows: list[RouteDecision] = []
     for index, row in enumerate(raw):
-        where = f"route_decisions[{index}]"
+        where = f"routes[{index}]"
         path = row.get("relationship_path") if isinstance(row, dict) else None
         if (
             not isinstance(row, dict)
@@ -233,8 +266,6 @@ class NormalizedQuery:
     order_by: list[OrderBy] = field(default_factory=list)
     limit: int | None = None
     debug: bool = False
-    explain: bool = False
-    export: bool = False
     route_decisions: list[RouteDecision] = field(default_factory=list)
     observation_scope: str = ""  # "" defers to the package's defaults.observation_scope
 
@@ -277,8 +308,6 @@ class NormalizedQuery:
             "order_by": [asdict(item) for item in self.order_by],
             "limit": self.limit,
             "debug": self.debug,
-            "explain": self.explain,
-            "export": self.export,
         }
 
 
@@ -297,46 +326,39 @@ class PartialQueryState:
     time: TimeSpec | None = None
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "select": [
-                {
-                    "expression": expr_to_dict(item.expression)
-                    if item.expression is not None
-                    else {},
-                    "as": item.as_,
-                }
-                for item in self.select
-            ],
-            "group_by": list(self.group_by),
-            "where": [asdict(item) for item in self.where],
-            "metric_filters": [
-                {
-                    "expression": expr_to_dict(item.expression)
-                    if item.expression is not None
-                    else {},
-                    "op": item.op,
-                    "value": item.value,
-                }
-                for item in self.metric_filters
-            ],
-            "time": asdict(self.time) if self.time else None,
-            "temporal_role_overrides": dict(self.temporal_role_overrides),
-        }
+
+# What a query reads as a value, by class, with the call kinds that parse to each: the classes
+# ``_validate_query_expr`` accepts and the kinds its refusal offers. A metric is written as its id,
+# and a metric predicate keeps entities and is never selected, so neither is offered. Every other
+# kind (a raw column, an IN list, a date shift) reads row values.
+_QUERY_VALUE_KINDS: dict[type, tuple[str, ...]] = {
+    MeasureRefExpr: ("measure",),
+    MetricRecipeRefExpr: (),
+    AggregateExpr: ("aggregate", "semi_additive"),
+    ScopedAggregateExpr: ("scoped_aggregate",),
+    LiteralExpr: ("literal",),
+    RatioExpr: ("ratio",),
+    DistributionExpr: ("distribution",),
+    ArithmeticExpr: ("arithmetic",),
+    ComparisonExpr: ("comparison",),
+    BooleanExpr: ("boolean", "between", "not_between"),
+    CallExpr: ("call", "nullif"),
+    CaseExpr: ("case",),
+    OffsetWindowExpr: ("cumulative", "rolling", "prior_period", "period_to_date"),
+    ShareExpr: ("share",),
+    EntityValueExpr: ("entity_value",),
+    MetricPredicateExpr: (),
+    ConversionExpr: ("conversion",),
+    ConditionalAggregateExpr: ("aggregate_if",),
+}
 
 
 def _validate_query_expr(expr: SemanticExpr) -> None:
-    if isinstance(
-        expr, (MeasureRefExpr, AggregateExpr, MetricRecipeRefExpr, LiteralExpr, ScopedAggregateExpr)
-    ):
-        return
+    if not isinstance(expr, tuple(_QUERY_VALUE_KINDS)):
+        raise _unsupported_query_kind(expr)
     if isinstance(expr, RatioExpr):
         _validate_query_expr(expr.numerator)
         _validate_query_expr(expr.denominator)
-        return
-    if isinstance(expr, EntityValueExpr):
-        _validate_query_expr(expr.input)
         return
     if isinstance(expr, DistributionExpr):
         _validate_query_expr(expr.over)
@@ -345,11 +367,7 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         _validate_query_expr(expr.left)
         _validate_query_expr(expr.right)
         return
-    if isinstance(expr, BooleanExpr):
-        for arg in expr.args:
-            _validate_query_expr(arg)
-        return
-    if isinstance(expr, CallExpr):
+    if isinstance(expr, (BooleanExpr, CallExpr)):
         for arg in expr.args:
             _validate_query_expr(arg)
         return
@@ -361,11 +379,14 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
             _validate_query_expr(expr.else_expr)
         return
     if isinstance(
-        expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
+        expr,
+        (
+            OffsetWindowExpr,
+            ShareExpr,
+            EntityValueExpr,
+            MetricPredicateExpr,
+        ),
     ):
-        _validate_query_expr(expr.input)
-        return
-    if isinstance(expr, MetricPredicateExpr):
         _validate_query_expr(expr.input)
         return
     if isinstance(expr, ConversionExpr):
@@ -383,225 +404,49 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         # The rewrite phase validates the inner subtrees via
         # ``_conditional_aggregate_entity``.
         return
-    raise SemanticLayerError(
-        "INVALID_QUERY", f"Unsupported query expression kind '{expr_to_dict(expr)['kind']}'"
-    )
 
 
-_SUPPORTED_TIME_KEYS = {"temporal_role", "grain", "start", "end", "fill", "calendar_id", "range"}
-_SUPPORTED_RELATIVE_UNITS = {"day", "week", "month", "quarter", "year"}
-
-
-def _parse_now(policy_context: dict[str, Any] | None) -> date | datetime:
-    raw_now = (policy_context or {}).get("now")
-    if raw_now in (None, ""):
-        return datetime.now(UTC)
-    if isinstance(raw_now, datetime):
-        return raw_now
-    if isinstance(raw_now, date):
-        return raw_now
-    text = str(raw_now).strip()
-    if not text:
-        return datetime.now(UTC)
+def _validate_select_expr(expr: SemanticExpr, index: int) -> None:
+    """``_validate_query_expr`` on ``select[index]``, its refusal naming the item's path."""
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        try:
-            return date.fromisoformat(text)
-        except ValueError as exc:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                "policy_context.now must be an ISO date or datetime",
-                details={"path": "policy_context.now", "value": text},
-            ) from exc
+        _validate_query_expr(expr)
+    except SemanticLayerError as exc:
+        path = f"select[{index}].expression"
+        raise SemanticLayerError(
+            exc.code, str(exc), details={**exc.details, "path": path}
+        ) from None
 
 
-def _add_months(value: date, months: int) -> date:
-    month_index = value.month - 1 + months
-    year = value.year + month_index // 12
-    month = month_index % 12 + 1
-    day = min(value.day, monthrange(year, month)[1])
-    return date(year, month, day)
-
-
-def _floor_period(value: date, unit: str) -> date:
-    if unit == "day":
-        return value
-    if unit == "week":
-        return value - timedelta(days=value.weekday())
-    if unit == "month":
-        return date(value.year, value.month, 1)
-    if unit == "quarter":
-        quarter_month = ((value.month - 1) // 3) * 3 + 1
-        return date(value.year, quarter_month, 1)
-    if unit == "year":
-        return date(value.year, 1, 1)
-    raise SemanticLayerError(
-        "INVALID_QUERY",
-        f"Unsupported relative time unit '{unit}'",
-        details={
-            "path": "time.range.last.unit",
-            "supported_units": sorted(_SUPPORTED_RELATIVE_UNITS),
-        },
+def _unsupported_query_kind(expr: SemanticExpr) -> SemanticLayerError:
+    """The refusal of a row-level kind as a query value, with the kinds a select item can be
+    (the hint lists them); a raw column keeps what it names, so the caller's view can offer its
+    dimensions."""
+    kind = str(expr_to_dict(expr)["kind"])
+    details: dict[str, Any] = {
+        "expression_kind": kind,
+        "supported_kinds": sorted(name for names in _QUERY_VALUE_KINDS.values() for name in names),
+    }
+    if isinstance(expr, ColumnRefExpr):
+        details.update({key: value for key, value in asdict(expr).items() if value})
+    return SemanticLayerError(
+        "INVALID_QUERY", f"Unsupported query expression kind '{kind}'", details=details
     )
 
 
-def _shift_period(value: date, unit: str, periods: int) -> date:
-    if unit == "day":
-        return value + timedelta(days=periods)
-    if unit == "week":
-        return value + timedelta(weeks=periods)
-    if unit == "month":
-        return _add_months(value, periods)
-    if unit == "quarter":
-        return _add_months(value, periods * 3)
-    if unit == "year":
-        return _add_months(value, periods * 12)
-    raise SemanticLayerError(
-        "INVALID_QUERY",
-        f"Unsupported relative time unit '{unit}'",
-        details={
-            "path": "time.range.last.unit",
-            "supported_units": sorted(_SUPPORTED_RELATIVE_UNITS),
-        },
-    )
-
-
-def _relative_range_bounds(
-    range_payload: Any,
-    *,
-    policy_context: dict[str, Any] | None,
-    timezone: str = "UTC",
-    calendar_id: str = "default",
-) -> dict[str, str]:
-    if not isinstance(range_payload, dict):
-        raise SemanticLayerError(
-            "INVALID_QUERY", "query.time.range must be an object", details={"path": "time.range"}
-        )
-    unknown_keys = sorted(set(range_payload) - {"last"})
-    if unknown_keys:
-        # If the agent put `start` / `end` inside `range`, point at the
-        # top-level `time.start` / `time.end` directly — the most common
-        # confusion (blind-agent benchmark Q1).
-        misplaced_bounds = sorted({"start", "end"} & set(unknown_keys))
-        hints: list[dict[str, Any]] = []
-        if misplaced_bounds:
-            hints.append(
-                {
-                    "code": "MOVE_BOUNDS_TO_TIME_TOP_LEVEL",
-                    "message": (
-                        "Absolute date bounds live on `time.start` / "
-                        "`time.end` directly — NOT inside `time.range`. "
-                        "`time.range` is only for the relative form "
-                        "`{last: {unit, value}}`."
-                    ),
-                    "suggested_query_ir_change": {
-                        "move": {f"time.range.{key}": f"time.{key}" for key in misplaced_bounds}
-                    },
-                }
-            )
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "query.time.range contains unsupported keys",
-            details={
-                "path": "time.range",
-                "unsupported_keys": unknown_keys,
-                "supported_keys": ["last"],
-                "recovery_hints": hints,
-            },
-        )
-    last = range_payload.get("last")
-    if not isinstance(last, dict):
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "query.time.range.last must be an object with unit and value",
-            details={
-                "path": "time.range.last",
-                "received_type": type(last).__name__,
-                "received_value": last,
-                "recovery_hints": [
-                    {
-                        "code": "USE_OBJECT_SHAPE",
-                        "message": (
-                            "Replace the string shorthand with a {unit, value} object. "
-                            "E.g. '90 days' → {'unit': 'day', 'value': 90}, "
-                            "'3 months' → {'unit': 'month', 'value': 3}."
-                        ),
-                        "suggested_query_ir_change": {
-                            "path": "time.range.last",
-                            "shape": {
-                                "unit": "<day|week|month|quarter|year>",
-                                "value": "<positive integer>",
-                            },
-                        },
-                    },
-                ],
-            },
-        )
-    unknown_last_keys = sorted(set(last) - {"unit", "value"})
-    if unknown_last_keys:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "query.time.range.last contains unsupported keys",
-            details={
-                "path": "time.range.last",
-                "unsupported_keys": unknown_last_keys,
-                "supported_keys": ["unit", "value"],
-            },
-        )
-    unit = str(last.get("unit", "") or "").strip().lower()
-    if unit not in _SUPPORTED_RELATIVE_UNITS:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"Unsupported relative time unit '{unit}'",
-            details={
-                "path": "time.range.last.unit",
-                "supported_units": sorted(_SUPPORTED_RELATIVE_UNITS),
-            },
-        )
-    try:
-        value = int(last.get("value"))  # type: ignore[arg-type]  # None raises TypeError, caught below
-    except (TypeError, ValueError) as exc:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "query.time.range.last.value must be a positive integer",
-            details={"path": "time.range.last.value"},
-        ) from exc
-    if value <= 0:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "query.time.range.last.value must be a positive integer",
-            details={"path": "time.range.last.value", "value": value},
-        )
-    if calendar_id.strip().lower() not in {"", "default"} and unit != "day":
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            "Relative periods coarser than day require the default calendar; "
-            "use exact time.start and time.end dates for this calendar.",
-            details={"path": "time.range.last.unit", "calendar_id": calendar_id, "unit": unit},
-        )
-    now = _parse_now(policy_context)
-    if isinstance(now, datetime):
-        if now.tzinfo is not None:
-            now = now.astimezone(ZoneInfo(timezone or "UTC"))
-        now = now.date()
-    end = _floor_period(now, unit)
-    start = _shift_period(end, unit, -value)
-    return {"start": start.isoformat(), "end": end.isoformat()}
+_TIME_KEYS = frozenset(
+    {"temporal_role", "grain", "start", "end", "fill", "last_unit", "last_value", "this", "to_now"}
+)
 
 
 def _time_spec_from_payload(
-    payload: Any,
-    *,
-    allow_missing_temporal_role: bool = False,
-    policy_context: dict[str, Any] | None = None,
-    config: PackageConfig | None = None,
+    payload: Any, *, allow_missing_temporal_role: bool = False
 ) -> TimeSpec | None:
+    """The engine's own time block (the front door resolves the caller's spelling first)."""
     if not payload:
         return None
     if not isinstance(payload, dict):
         raise SemanticLayerError("INVALID_QUERY", "query.time must be an object")
-    unknown_keys = sorted(set(payload) - _SUPPORTED_TIME_KEYS)
+    unknown_keys = sorted(set(payload) - _TIME_KEYS)
     if unknown_keys:
         raise SemanticLayerError(
             "INVALID_QUERY",
@@ -609,46 +454,22 @@ def _time_spec_from_payload(
             details={
                 "path": "time",
                 "unsupported_keys": unknown_keys,
-                "supported_keys": sorted(_SUPPORTED_TIME_KEYS),
+                "supported_keys": sorted(_TIME_KEYS),
             },
         )
     temporal_role = str(payload.get("temporal_role", "")).strip()
     if not allow_missing_temporal_role and not temporal_role:
         raise SemanticLayerError("INVALID_QUERY", "query.time.temporal_role is required")
-    expanded = {}
-    if "range" in payload:
-        if "start" in payload or "end" in payload:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                "query.time.range cannot be combined with query.time.start or query.time.end",
-                details={"path": "time.range"},
-            )
-        timezone = "UTC"
-        calendar_id = str(payload.get("calendar_id", "default") or "default")
-        if config is not None and temporal_role:
-            role = next((r for r in config.temporal_roles if r.id == temporal_role), None)
-            if role is None:
-                raise SemanticLayerError(
-                    "INVALID_TEMPORAL_ROLE", f"Unknown temporal role '{temporal_role}'"
-                )
-            timezone = role.timezone or "UTC"
-            dimension = next(d for d in config.dimensions if d.id == role.dimension)
-            entity = next(e for e in config.entities if e.id == dimension.entity)
-            if calendar_id.strip().lower() in {"", "default"}:
-                calendar_id = entity.calendar_id or "default"
-        expanded = _relative_range_bounds(
-            payload.get("range"),
-            policy_context=policy_context,
-            timezone=timezone,
-            calendar_id=calendar_id,
-        )
     return TimeSpec(
         temporal_role=temporal_role,
-        grain=str(payload.get("grain", "")),
-        start=expanded.get("start", payload.get("start")),
-        end=expanded.get("end", payload.get("end")),
+        grain=str(payload.get("grain", "") or ""),
+        start=payload.get("start"),
+        end=payload.get("end"),
         fill=bool(payload.get("fill", False)),
-        calendar_id=str(payload.get("calendar_id", "default") or "default"),
+        last_unit=str(payload.get("last_unit", "") or ""),
+        last_value=int(payload.get("last_value", 0) or 0),
+        this=str(payload.get("this", "") or ""),
+        to_now=bool(payload.get("to_now", False)),
     )
 
 
@@ -714,69 +535,20 @@ def _filter_from_payload(item: Any, path: str) -> Filter:
             },
         )
     value = item.get("value")
-    op = " ".join(str(item.get("op", "=")).upper().split())
-    # Reject dict values in ``where[]`` — they would silently stringify
-    # to ``"{'kind': 'percentile', ...}"`` via SqlLiteral and produce a
-    # broken comparison. The metric_predicate.value path supports
-    # inline percentile thresholds (round-two Phase 2); ``where`` does
-    # not. Tell the agent the right slot to use.
+    # A dict value would stringify into a broken comparison; thresholds computed from
+    # data belong in their own query or in an entity filter's ``having``.
     if isinstance(value, dict):
         raise SemanticLayerError(
             "INVALID_QUERY",
-            f"{path}.value must be a scalar (or list for IN), not an object.",
+            f"{path}.value must be a scalar (or a list for is / not), not an object.",
             details={
                 "path": f"{path}.value",
                 "received_kind": str(value.get("kind", "")),
-                "why_invalid": (
-                    "where filters compare a dimension to a literal. "
-                    "Inline expression thresholds (e.g. {kind: 'percentile'}) "
-                    "belong in metric_predicate.value inside a "
-                    "scoped_aggregate predicate or a metric_filters entry."
-                ),
-                "suggested_query_ir_change": (
-                    "Compute the threshold value in a separate query and "
-                    "pass the scalar result here, OR move this filter to "
-                    "metric_filters[].expression as a metric_predicate."
-                ),
+                "why_invalid": "where filters compare a dimension to literal values.",
             },
         )
-    if op in {"IN", "NOT IN"}:
-        if value is None:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                f"{path}.value is required for op '{op}'",
-                details={
-                    "path": f"{path}.value",
-                    "op": op,
-                    "why_invalid": f"'{op}' compares a dimension against a list of scalars.",
-                    "recovery_hints": [
-                        {
-                            "code": "USE_LIST_VALUE_OR_NULL_TEST",
-                            "message": (
-                                f"Pass value: [..] for '{op}'. To test for NULL, "
-                                "use op 'IS NULL' / 'IS NOT NULL' instead."
-                            ),
-                        }
-                    ],
-                },
-            )
-        # A bare scalar for IN / NOT IN unambiguously means a one-element
-        # list — wrap it here. Without this, the lowering's
-        # ``list(value)`` character-split strings ('Philadelphia' became
-        # IN ('P', 'h', 'i', ...)) and silently matched the wrong rows.
-        if not isinstance(value, list):
-            value = [value]
-        for vi, v in enumerate(value):
-            if isinstance(v, dict):
-                raise SemanticLayerError(
-                    "INVALID_QUERY",
-                    f"{path}.value[{vi}] must be a scalar, not an object.",
-                    details={
-                        "path": f"{path}.value[{vi}]",
-                        "why_invalid": "IN-list elements must be literal scalars.",
-                    },
-                )
-    return Filter(field=field, op=str(item.get("op", "=")), value=value)
+    op, value = operators.normalize_condition(item.get("op", "is"), value, path=path, internal=True)
+    return Filter(field=field, op=op, value=value)
 
 
 def _where_item_from_payload(item: Any, index: int) -> WhereItem:
@@ -865,10 +637,17 @@ def _require_metric_filter_object(item: Any, index: int) -> dict[str, Any]:
     return item
 
 
-def _time_output_alias(time: TimeSpec | None) -> str:
-    if time is None or not time.temporal_role:
-        return ""
-    return time.temporal_role if not time.grain else f"{time.temporal_role}__{time.grain}"
+def _metric_filter_op(item: dict[str, Any], index: int) -> str:
+    """The word for a result filter's op (``value`` keeps its shape for the lowering)."""
+    raw = item.get("op", "is")
+    value = item.get("value")
+    if value is None or isinstance(value, bool):
+        spelling = " ".join(str(raw).strip().lower().split())
+        if spelling in {"=", "==", "is", "eq"}:
+            return "is"
+        if spelling in {"!=", "<>", "not", "neq"}:
+            return "not"
+    return operators.operator_word(raw, path=f"metric_filters[{index}].op")
 
 
 def _assert_unique_output_aliases(
@@ -877,9 +656,11 @@ def _assert_unique_output_aliases(
     alias_sources: dict[str, list[str]] = {}
     for index, dim_id in enumerate(group_by):
         alias_sources.setdefault(dim_id, []).append(f"group_by[{index}]")
-    time_alias = _time_output_alias(time)
+    time_alias = time_output_alias(time)
     if time_alias:
         alias_sources.setdefault(time_alias, []).append("time")
+        if time_alias == TIME_AXIS:
+            alias_sources.setdefault(PERIOD_PARTIAL, []).append("time")
     for index, item in enumerate(select):
         alias_sources.setdefault(item.as_, []).append(f"select[{index}].as")
 
@@ -908,8 +689,6 @@ QUERY_INPUT_KEYS: frozenset[str] = frozenset(
         "route_decisions",
         "observation_scope",
         "debug",
-        "explain",
-        "export",
         # Envelope keys consumed by the runtime / MCP layer (verbosity,
         # sql_profile, policy_context, limits, request_id). They reach
         # normalize_query in the payload but are not part of the IR
@@ -956,31 +735,6 @@ _TOP_LEVEL_KEY_TYPOS: dict[str, tuple[str, str]] = {
     "orderby": ("order_by", "Use `order_by[]` (snake_case)."),
     "groupby": ("group_by", "Use `group_by[]` (snake_case)."),
 }
-
-
-_SUPPORTED_QUERY_IR_VERSIONS: frozenset[int] = frozenset({1})
-
-
-def _check_supported_version(payload: dict[str, Any]) -> None:
-    raw_version = payload.get("version", 1)
-    try:
-        version = int(raw_version)
-    except (TypeError, ValueError) as exc:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"Query IR version must be an integer in {sorted(_SUPPORTED_QUERY_IR_VERSIONS)}, got {raw_version!r}",
-            details={"path": "version", "version": raw_version},
-        ) from exc
-    if version not in _SUPPORTED_QUERY_IR_VERSIONS:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"Unsupported Query IR version {version}; supported versions are {sorted(_SUPPORTED_QUERY_IR_VERSIONS)}",
-            details={
-                "path": "version",
-                "version": version,
-                "supported_versions": sorted(_SUPPORTED_QUERY_IR_VERSIONS),
-            },
-        )
 
 
 def _check_unknown_top_level_keys(payload: dict[str, Any]) -> None:
@@ -1059,167 +813,10 @@ def _normalize_group_by_list(raw_items: Any) -> list[str]:
     return out
 
 
-_BARE_SELECT_MEASURE_KEYS: frozenset[str] = frozenset({"measure", "aggregation", "as"})
-_SELECT_TARGET_KEYS: frozenset[str] = frozenset({"metric", "measure", "dimension"})
-
-
-def _bare_select_expression(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the canonical expression for a select item sent without ``expression``.
-
-    Only the two unambiguous shapes convert: ``{metric, as?}`` and
-    ``{measure, aggregation?, as?}``. Anything else (both ``metric`` and ``measure``,
-    ``aggregation`` on a metric, unknown keys) returns None and stays an error.
-    """
-    keys = set(row) - {"as"}
-    if keys == {"metric"}:
-        return {"kind": "metric", "metric": row["metric"]}
-    if "measure" in keys and keys <= _BARE_SELECT_MEASURE_KEYS:
-        return {"kind": "measure", **{key: row[key] for key in keys}}
-    return None
-
-
-def _reject_select_row(
-    row: dict[str, Any], idx: int, why: str, *, hint_code: str = "WRAP_SELECT_EXPRESSION"
-) -> SemanticLayerError:
-    return SemanticLayerError(
-        "INVALID_EXPRESSION_AST",
-        (
-            f"select[{idx}] {why}. Send one select item per metric or measure, "
-            '{"expression": {"kind": "measure", "measure": "<measure id>", "aggregation": '
-            '"sum"}, "as": "<alias>"} or '
-            '{"expression": {"kind": "metric", "metric": "<metric id>"}, "as": "<alias>"}, '
-            'and list each dimension in group_by: ["<dimension id>"].'
-        ),
-        details={
-            "path": f"select[{idx}]",
-            "received_keys": sorted(row),
-            "recovery_hints": [
-                {
-                    "code": hint_code,
-                    "message": (
-                        "Each select item is {expression, as} for one metric (kind 'metric') or "
-                        "measure (kind 'measure', with 'aggregation'). Dimensions go in "
-                        "group_by, not in select, and cannot carry an alias there."
-                    ),
-                }
-            ],
-        },
-    )
-
-
-def _rewrite_select_item(
-    row: dict[str, Any], idx: int, group_by: list[str], *, partial: bool
-) -> tuple[dict[str, Any] | None, str, dict[str, Any] | None]:
-    """Decide one select item: ``(item to keep or None, dimension moved to group_by, note)``.
-
-    The one place a shorthand is accepted or refused. An item that would lose a key
-    (a dimension beside a metric, measure, alias or unknown key) is refused, never
-    rewritten.
-    """
-    path = f"select[{idx}]"
-    if "expression" in row:
-        named = sorted(_SELECT_TARGET_KEYS & set(row))
-        if named:
-            raise _reject_select_row(row, idx, f"has 'expression' and also {named}")
-        _check_query_item_keys(row, _SELECT_ITEM_KEYS, path)
-        expression = row["expression"]
-        if (
-            not isinstance(expression, dict)
-            or set(expression) - {"kind"} != {"dimension"}
-            or expression.get("kind", "dimension") not in ("dimension", "group", "ref")
-        ):
-            return row, "", None
-        dim_id = str(expression["dimension"] or "").strip()
-        if not dim_id:
-            return row, "", None
-        # With other group_by entries, adding this one would be a guess.
-        if group_by and dim_id not in group_by:
-            raise _reject_select_row(
-                row,
-                idx,
-                "names a dimension absent from the existing group_by",
-                hint_code="MOVE_DIMENSION_TO_GROUP_BY",
-            )
-        extra = sorted(set(row) - {"expression"})
-        if extra:
-            raise _reject_select_row(
-                row,
-                idx,
-                f"moves a dimension to group_by, which has no place for {extra}",
-                hint_code="MOVE_DIMENSION_TO_GROUP_BY",
-            )
-        return None, dim_id, _note(path, row, {"group_by": [dim_id]})
-    if "dimension" in row:
-        extra = sorted(set(row) - {"dimension", "kind"})
-        if "kind" in row and row["kind"] not in ("dimension", "group", "ref"):
-            extra.append("kind")
-        if extra:
-            raise _reject_select_row(
-                row,
-                idx,
-                f"names a dimension together with {extra}, and group_by has no place for them",
-                hint_code="MOVE_DIMENSION_TO_GROUP_BY",
-            )
-        dim_id = str(row["dimension"] or "").strip()
-        if not dim_id:
-            raise SemanticLayerError(
-                "INVALID_QUERY", f"select[{idx}].dimension must be a non-empty dimension id"
-            )
-        return None, dim_id, _note(path, row, {"group_by": [dim_id]})
-    if partial and set(row) <= {"as"}:
-        return row, "", None
-    expression = _bare_select_expression(row)
-    if expression is None:
-        raise _reject_select_row(
-            row, idx, f"has no 'expression', and its keys {sorted(row)} do not match one shape"
-        )
-    canonical = {"expression": expression, **({"as": row["as"]} if "as" in row else {})}
-    return canonical, "", _note(path, row, canonical)
-
-
-def _note(path: str, received: dict[str, Any], canonical: dict[str, Any]) -> dict[str, Any]:
-    return {"path": path, "received": dict(received), "canonical": canonical}
-
-
-def rewrite_select_shorthand(
-    payload: dict[str, Any], partial: bool = False
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Return ``payload`` with select shorthands rewritten, and a note per rewrite.
-
-    Every query entry point (validate, compile, execute, plan) rewrites through this one
-    function. validate, compile and execute report its notes as response warnings; plan
-    discards them and returns the canonical form in ``best.query_ir``. The returned payload
-    is the canonical form: rewriting it again changes nothing.
-    """
-    raw_select = payload.get("select", [])
-    if not isinstance(raw_select, list):
-        return payload, []
-    group_by = _normalize_group_by_list(payload.get("group_by", []))
-    select: list[Any] = []
-    moved: list[str] = []
-    notes: list[dict[str, Any]] = []
-    for idx, row in enumerate(raw_select):
-        if not isinstance(row, dict):
-            raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
-        kept, dim_id, note = _rewrite_select_item(row, idx, group_by, partial=partial)
-        if note is None:
-            select.append(row)
-            continue
-        if kept is not None:
-            select.append(kept)
-        if dim_id and dim_id not in group_by and dim_id not in moved:
-            moved.append(dim_id)
-        notes.append(note)
-    if not notes:
-        return payload, []
-    return {**payload, "select": select, "group_by": [*group_by, *moved]}, notes
-
-
 def normalize_query(
     payload: dict[str, Any], *, config: PackageConfig | None = None
 ) -> NormalizedQuery:
     _check_unknown_top_level_keys(payload)
-    _check_supported_version(payload)
     # Validate `select` is a list before iterating. ``list(scalar)`` either
     # raises TypeError (int, float, bool) which leaks through the MCP
     # boundary as INTERNAL_ERROR, or silently yields character-wise
@@ -1232,14 +829,16 @@ def normalize_query(
             f"query.select must be a list of select items; got {type(raw_select).__name__}",
             details={"path": "select", "received_type": type(raw_select).__name__},
         )
-    payload, _ = rewrite_select_shorthand(payload)
     select: list[QuerySelect] = []
     group_by = _normalize_group_by_list(payload.get("group_by", []))
     for idx, row in enumerate(list(payload.get("select", []) or [])):
+        if not isinstance(row, dict):
+            raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
+        _check_query_item_keys(row, _SELECT_ITEM_KEYS, f"select[{idx}]")
         expression = parse_semantic_expression(
             row.get("expression", {}) or {}, context="query", path=f"query.select[{idx}].expression"
         )
-        _validate_query_expr(expression)
+        _validate_select_expr(expression, idx)
         if isinstance(expression, MetricPredicateExpr):
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
@@ -1289,7 +888,7 @@ def normalize_query(
                     context="query",
                     path=f"query.metric_filters[{mf_idx}].expression",
                 ),
-                op=str(item.get("op", "=")),
+                op=_metric_filter_op(item, mf_idx),
                 value=mf_value,
             )
         )
@@ -1298,60 +897,13 @@ def normalize_query(
             item.expression is not None
         )  # parse_semantic_expression returns non-None for non-empty payload
         _validate_query_expr(item.expression)
-    time = _time_spec_from_payload(
-        payload.get("time"),
-        policy_context=dict(payload.get("policy_context", {}) or {}),
-        config=config,
-    )
+    time = _time_spec_from_payload(payload.get("time"))
     if not select and not group_by and time is None:
         raise SemanticLayerError(
             "INVALID_QUERY", "Query requires select expressions, group_by, or time"
         )
-    order_by = [
-        OrderBy(
-            field=str(expression_field(item, "field", expression_position="order_by")),
-            # ``expression_field`` rejects non-dict entries first, so this
-            # ``.get`` call is safe.
-            direction=str(item.get("direction", "ASC")).upper(),
-        )
-        for item in list(payload.get("order_by", []) or [])
-    ]
     _assert_unique_output_aliases(select, group_by, time)
-    # order_by ghost-alias guard: every field must resolve to a select alias,
-    # a group_by dimension ID, or the special "time" axis. Without this, a
-    # typo in `order_by[].field` passes validate then errors at the warehouse
-    # with a raw "column not found" message.
-    select_aliases = {item.as_ for item in select}
-    group_by_ids = set(group_by)
-    time_role_alias = ""
-    if time is not None:
-        time_role_alias = (
-            f"{time.temporal_role}__{time.grain}" if time.grain else time.temporal_role
-        )
-    for entry in order_by:
-        if entry.field == "time":
-            if time is None:
-                raise SemanticLayerError(
-                    "INVALID_ORDER_BY",
-                    "order_by 'time' requires a query time axis",
-                )
-            continue
-        if (
-            entry.field in select_aliases
-            or entry.field in group_by_ids
-            or entry.field == time_role_alias
-        ):
-            continue
-        raise SemanticLayerError(
-            "INVALID_ORDER_BY",
-            f"order_by field {entry.field!r} does not resolve to a select alias, group_by dimension, or the time axis",
-            details={
-                "field": entry.field,
-                "available_select_aliases": sorted(select_aliases),
-                "available_group_by": sorted(group_by_ids),
-                "available_time_axis": time_role_alias,
-            },
-        )
+    order_by = _order_by_from_payload(payload, select, group_by, time)
     raw_limit = payload.get("limit")
     limit_value: int | None = None
     if raw_limit is not None:
@@ -1383,11 +935,49 @@ def normalize_query(
         order_by=order_by,
         limit=limit_value,
         debug=bool(payload.get("debug", False)),
-        explain=bool(payload.get("explain", False)),
-        export=bool(payload.get("export", False)),
         route_decisions=route_decisions_from_payload(payload),
         observation_scope=_observation_scope(payload),
     )
+
+
+def _order_by_from_payload(
+    payload: dict[str, Any], select: list[QuerySelect], group_by: list[str], time: TimeSpec | None
+) -> list[OrderBy]:
+    """Each order_by field resolves to a select alias, a group_by dimension or the time axis.
+
+    Without this, a typo in ``order_by[].field`` passes validate and then errors at the
+    warehouse with a raw "column not found" message. The time axis is named ``period``
+    (``time`` is the engine's own spelling) and resolves to the axis column.
+    """
+    time_alias = time_output_alias(time)
+    select_aliases = {item.as_ for item in select}
+    order_by: list[OrderBy] = []
+    for item in list(payload.get("order_by", []) or []):
+        field = str(expression_field(item, "field", expression_position="order_by"))
+        # ``expression_field`` rejects non-dict entries first, so this ``.get`` is safe.
+        direction = str(item.get("direction", "ASC")).upper()
+        if field in {TIME_AXIS, "time"}:
+            if not time_alias:
+                raise SemanticLayerError(
+                    "INVALID_ORDER_BY",
+                    f"order_by '{field}' requires a time grain",
+                    details={"path": "order_by", "field": field},
+                )
+            field = time_alias
+        elif not (field in select_aliases or field in group_by or field == time_alias):
+            raise SemanticLayerError(
+                "INVALID_ORDER_BY",
+                f"order_by field {field!r} does not resolve to a select alias, group_by "
+                "dimension, or the time axis",
+                details={
+                    "field": field,
+                    "available_select_aliases": sorted(select_aliases),
+                    "available_group_by": sorted(group_by),
+                    "available_time_axis": time_alias,
+                },
+            )
+        order_by.append(OrderBy(field=field, direction=direction))
+    return order_by
 
 
 def _observation_scope(payload: dict[str, Any]) -> str:
@@ -1408,13 +998,12 @@ def normalize_partial_query(
     # plan also accept partial query payloads and should reject
     # unknown top-level keys with the same USE_CANONICAL_KEY hint.
     _check_unknown_top_level_keys(payload)
-    _check_supported_version(payload)
     route_decisions_from_payload(payload)
-    payload, _ = rewrite_select_shorthand(payload, partial=True)
     select: list[QuerySelect] = []
     for idx, row in enumerate(list(payload.get("select", []) or [])):
         if not isinstance(row, dict):
             raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
+        _check_query_item_keys(row, _SELECT_ITEM_KEYS, f"select[{idx}]")
         raw_expr = row.get("expression", {}) or {}
         expression = (
             parse_semantic_expression(
@@ -1424,7 +1013,7 @@ def normalize_partial_query(
             else None
         )
         if expression:
-            _validate_query_expr(expression)
+            _validate_select_expr(expression, idx)
             if isinstance(expression, MetricPredicateExpr):
                 raise SemanticLayerError(
                     "INVALID_METRIC_PREDICATE",
@@ -1448,7 +1037,7 @@ def normalize_partial_query(
                 )
                 if item.get("expression")
                 else None,
-                op=str(item.get("op", "=")),
+                op=_metric_filter_op(item, mf_idx),
                 value=item.get("value"),
             )
         )
@@ -1456,12 +1045,7 @@ def normalize_partial_query(
         if item.expression is not None:
             _validate_query_expr(item.expression)
     group_by = _normalize_group_by_list(payload.get("group_by", []))
-    time = _time_spec_from_payload(
-        payload.get("time"),
-        allow_missing_temporal_role=True,
-        policy_context=dict(payload.get("policy_context", {}) or {}),
-        config=config,
-    )
+    time = _time_spec_from_payload(payload.get("time"), allow_missing_temporal_role=True)
     _assert_unique_output_aliases(select, group_by, time if time and time.temporal_role else None)
     return PartialQueryState(
         version=int(payload.get("version", 1)),

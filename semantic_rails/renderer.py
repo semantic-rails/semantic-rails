@@ -9,12 +9,16 @@ module owns layout, indentation, identifier quoting, and CTE ordering.
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from .operators import LIKE_ESCAPE
 from .sql_ast import (
+    SqlAggregateFilter,
     SqlBinary,
     SqlCall,
     SqlCallWithOrder,
@@ -24,12 +28,15 @@ from .sql_ast import (
     SqlDatePart,
     SqlExists,
     SqlExpr,
+    SqlFrom,
     SqlIdentifier,
     SqlIn,
     SqlIndexAccess,
+    SqlInQuery,
     SqlInterval,
     SqlIsNull,
     SqlJsonExtract,
+    SqlLike,
     SqlLiteral,
     SqlNamedArg,
     SqlParameter,
@@ -37,7 +44,6 @@ from .sql_ast import (
     SqlQuery,
     SqlSelect,
     SqlSetQuery,
-    SqlStar,
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
@@ -52,17 +58,19 @@ from .sql_ast import (
     normalize_sql_sort_direction,
     normalize_sql_window_frame,
 )
+from .sql_identifiers import quote_identifier
 
 if TYPE_CHECKING:
     from .dialects import SqlDialect
+    from .sql_preparation import ParameterSlot
 
 # Which dialect's literal-quoting rules apply to the tree currently being
 # rendered. String-literal quoting is not portable:
 # Snowflake, BigQuery, ClickHouse and Databricks honour backslash escapes
 # inside single-quoted literals and the rest do not, so the same value has to
 # be escaped differently per warehouse. Every other dialect choice is already
-# baked into the AST by the lowering pass, except typed boolean NULL casts:
-# ClickHouse requires a nullable destination type.
+# baked into the AST by the lowering pass, except typed boolean NULL casts
+# (``SqlDialect.null_boolean_type``).
 #
 # It is a ContextVar rather than a parameter because `render_expr` recurses
 # through ~35 internal call sites; threading an argument through all of them
@@ -136,7 +144,69 @@ def _quote_ident(value: str) -> str:
     raw = str(value)
     if _IDENT_RE.match(raw) and raw.upper() not in _RESERVED_WORDS:
         return raw
-    return '"' + raw.replace('"', '""') + '"'
+    return quote_identifier(raw)
+
+
+# The answer's own column names (the outermost SELECT's aliases), and the names that qualify a
+# derived relation (a CTE, or an alias of one) in the statement being rendered. An output alias
+# is always quoted where it is defined and wherever it is referenced (unqualified, or through a
+# derived relation), so a keyword such as end, user or order is a name on every warehouse; a
+# physical column keeps the selective quoting above, since Snowflake folds an unquoted name to
+# upper case. A statement's derived names are an enclosing statement's, then each name its FROM
+# and JOINs bind in turn: to a CTE in view (its WITH's earlier ones, as a WITH without RECURSIVE
+# reads them, and an enclosing statement's), or to a table or table function, which hides an
+# enclosing CTE alias of that name. So a warehouse table named or aliased like a CTE elsewhere,
+# or like a CTE defined after it, is read as a table.
+# One render's parameter marker and the slot of each parameter it emits (``render_with_slots``).
+_EMITTED_SLOTS: ContextVar[tuple[str, list[ParameterSlot]] | None] = ContextVar(
+    "emitted_slots", default=None
+)
+_OUTPUT_ALIASES: ContextVar[frozenset[str]] = ContextVar("output_aliases", default=frozenset())
+_DERIVED: ContextVar[frozenset[str]] = ContextVar("derived_relations", default=frozenset())
+_CTES: ContextVar[frozenset[str]] = ContextVar("ctes_in_view", default=frozenset())
+
+
+def _alias_name(value: str) -> str:
+    return quote_identifier(value) if value in _OUTPUT_ALIASES.get() else _quote_ident(value)
+
+
+def _relation_key(name: str) -> str:
+    """A relation name as the warehouse compares it: one rendered unquoted in any case, unless
+    the warehouse's identifiers are case-sensitive; a quoted one exactly."""
+    dialect = _ACTIVE_DIALECT.get()
+    if _quote_ident(name) != name or (dialect is not None and dialect.identifiers_case_sensitive):
+        return name
+    return name.lower()
+
+
+def _bind(derived: frozenset[str], table: SqlFrom | None, ctes: frozenset[str]) -> frozenset[str]:
+    """``derived`` once ``table`` binds its name."""
+    if table is None:
+        return derived
+    name = _relation_key(table.alias or table.name)
+    if isinstance(table, SqlTableRef) and _relation_key(table.name) in ctes:
+        return derived | {name}
+    return derived - {name}
+
+
+@contextmanager
+def _reading(derived: frozenset[str], ctes: frozenset[str]) -> Iterator[None]:
+    derived_token, ctes_token = _DERIVED.set(derived), _CTES.set(ctes)
+    try:
+        yield
+    finally:
+        _CTES.reset(ctes_token)
+        _DERIVED.reset(derived_token)
+
+
+@contextmanager
+def quoting_output_aliases(query: SqlSelect) -> Iterator[None]:
+    """Quote ``query``'s output aliases, and every reference to them, for one render."""
+    aliases = _OUTPUT_ALIASES.set(frozenset(field.alias for field in query.select))
+    try:
+        yield
+    finally:
+        _OUTPUT_ALIASES.reset(aliases)
 
 
 # Operator precedence used to elide redundant parens around SqlBinary
@@ -178,15 +248,27 @@ def _binary_precedence(op: str) -> int:
     return _OP_PRECEDENCE.get(op, 0)
 
 
+def _render_conjunct(expr: SqlExpr) -> str:
+    """One item of an AND-joined clause list: an OR inside it keeps its parentheses."""
+    return render_expr(expr, parent_precedence=_binary_precedence("AND"))
+
+
 def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlIdentifier):
-        return ".".join(_quote_ident(part) for part in expr.parts)
-    if isinstance(expr, SqlStar):
-        if expr.qualifier:
-            return f"{_quote_ident(expr.qualifier)}.*"
-        return "*"
+        names = [_quote_ident(part) for part in expr.parts]
+        *qualifier, column = expr.parts or [""]
+        if column in _OUTPUT_ALIASES.get() and (
+            not qualifier or (len(qualifier) == 1 and _relation_key(qualifier[0]) in _DERIVED.get())
+        ):
+            names[-1] = quote_identifier(column)
+        return ".".join(names)
     if isinstance(expr, SqlParameter):
-        return "?"
+        emitting = _EMITTED_SLOTS.get()
+        if emitting is None:
+            return "?"
+        nonce, emitted = emitting
+        emitted.append(expr.slot)
+        return f"{nonce}{len(emitted) - 1}{nonce}"
     if isinstance(expr, SqlLiteral):
         if expr.value is None:
             return "NULL"
@@ -194,6 +276,9 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             return "TRUE" if expr.value else "FALSE"
         if isinstance(expr.value, (int, float)):
             return str(expr.value)
+        dialect = _ACTIVE_DIALECT.get()
+        if expr.temporal and dialect is not None:
+            return dialect.temporal_literal(str(expr.value))
         return _render_string_literal(str(expr.value))
     if isinstance(expr, SqlCall):
         function_name = normalize_sql_function_name(expr.name)
@@ -226,6 +311,18 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         if my_prec == 0 or my_prec < parent_precedence:
             return f"({rendered})"
         return rendered
+    if isinstance(expr, SqlLike):
+        dialect = _ACTIVE_DIALECT.get()
+        escape = (
+            f" ESCAPE {_render_string_literal(LIKE_ESCAPE)}"
+            if dialect is None or dialect.like_escape_clause
+            else ""
+        )
+        fold = dialect.case_fold if dialect is not None else "LOWER({})"
+        negated = " NOT" if expr.negated else ""
+        value = fold.format(render_expr(expr.expr))
+        pattern = fold.format(_render_string_literal(expr.pattern))
+        return f"({value}{negated} LIKE {pattern}{escape})"
     if isinstance(expr, SqlIn):
         operator = "NOT IN" if expr.negated else "IN"
         return (
@@ -240,6 +337,10 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlExists):
         prefix = "NOT EXISTS" if expr.negated else "EXISTS"
         return f"{prefix} (\n{render_select(expr.query, flatten_ctes=False)}\n)"
+    if isinstance(expr, SqlInQuery):
+        return (
+            f"({render_expr(expr.expr)} IN (\n{render_select(expr.query, flatten_ctes=False)}\n))"
+        )
     if isinstance(expr, SqlIsNull):
         return f"({render_expr(expr.expr)} IS NULL)"
     if isinstance(expr, SqlCase):
@@ -253,13 +354,8 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
     if isinstance(expr, SqlCast):
         type_name = normalize_sql_cast_type_name(expr.type_name)
         dialect = _ACTIVE_DIALECT.get()
-        if (
-            type_name == "BOOLEAN"
-            and is_null_literal(expr.expr)
-            and dialect is not None
-            and dialect.name == "clickhouse"
-        ):
-            type_name = "Nullable(Bool)"
+        if type_name == "BOOLEAN" and is_null_literal(expr.expr) and dialect is not None:
+            type_name = dialect.null_boolean_type
         return f"CAST({render_expr(expr.expr)} AS {type_name})"
     if isinstance(expr, SqlWindow):
         over_parts: list[str] = []
@@ -292,7 +388,10 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
             for item in expr.order_by
         )
         limit_sql = f" LIMIT {int(expr.limit)}" if expr.limit is not None else ""
-        return f"{function_name}({args} ORDER BY {order_sql}{limit_sql})"
+        nulls = " IGNORE NULLS" if expr.ignore_nulls else ""
+        return f"{function_name}({args}{nulls} ORDER BY {order_sql}{limit_sql})"
+    if isinstance(expr, SqlAggregateFilter):
+        return f"{render_expr(expr.call)} FILTER (WHERE {render_expr(expr.where)})"
     if isinstance(expr, SqlIndexAccess):
         index_sql = render_expr(expr.index)
         if expr.wrapper:
@@ -334,22 +433,6 @@ def _render_table_ref(table: SqlTableRef | SqlTableFunction) -> str:
     return rendered
 
 
-def _select_without_ctes(query: SqlSelect) -> SqlSelect:
-    return SqlSelect(
-        select=query.select,
-        from_table=query.from_table,
-        joins=query.joins,
-        where=query.where,
-        group_by=query.group_by,
-        having=query.having,
-        qualify=query.qualify,
-        order_by=query.order_by,
-        limit=query.limit,
-        ctes=[],
-        distinct=getattr(query, "distinct", False),
-    )
-
-
 def _flatten_ctes(query: SqlSelect) -> SqlSelect:
     def _walk_query(node: SqlQuery) -> tuple[SqlQuery, list[SqlCte]]:
         if isinstance(node, SqlSetQuery):
@@ -370,58 +453,70 @@ def _flatten_ctes(query: SqlSelect) -> SqlSelect:
             cte_query, nested = _walk_query(cte.query)
             hoisted.extend(nested)
             hoisted.append(SqlCte(name=cte.name, query=cte_query))
-        return _select_without_ctes(node), hoisted
+        return replace(node, ctes=[]), hoisted
 
     root, ctes = _walk_select(query)
-    return SqlSelect(
-        select=root.select,
-        from_table=root.from_table,
-        joins=root.joins,
-        where=root.where,
-        group_by=root.group_by,
-        having=root.having,
-        qualify=root.qualify,
-        order_by=root.order_by,
-        limit=root.limit,
-        ctes=ctes,
-        distinct=getattr(root, "distinct", False),
-    )
+    return replace(root, ctes=ctes)
 
 
 def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
     if flatten_ctes:
         query = _flatten_ctes(query)
     chunks: list[str] = []
+    enclosing, ctes_in_view = _DERIVED.get(), _CTES.get()
     if query.ctes:
         ctes = []
         for cte in query.ctes:
-            ctes.append(
-                f"{_quote_ident(cte.name)} AS (\n{render_query(cte.query, flatten_ctes=False)}\n)"
-            )
+            # A CTE reads the CTEs before it, never this statement's own relations.
+            with _reading(enclosing, ctes_in_view):
+                ctes.append(
+                    f"{_quote_ident(cte.name)} AS (\n{render_query(cte.query, flatten_ctes=False)}\n)"
+                )
+            ctes_in_view |= {_relation_key(cte.name)}
         chunks.append("WITH " + ",\n".join(ctes))
+    # The derived names before each FROM and JOIN binds its own, then after the last one.
+    bound = [enclosing]
+    for table in [query.from_table, *(join.table for join in query.joins)]:
+        bound.append(_bind(bound[-1], table, ctes_in_view))
+    with _reading(bound[-1], ctes_in_view):
+        return "\n".join([*chunks, *_select_clauses(query, bound)])
+
+
+def _select_clauses(query: SqlSelect, bound: list[frozenset[str]]) -> list[str]:
+    """``query``'s statement after its WITH: SELECT through LIMIT. A table function's arguments
+    read the names bound before it, and an ON predicate those bound through its join."""
+    chunks: list[str] = []
+    ctes = _CTES.get()
     select_sql = ",\n  ".join(
-        f"{render_expr(field.expression)} AS {_quote_ident(field.alias)}" for field in query.select
+        f"{render_expr(field.expression)} AS {_alias_name(field.alias)}" for field in query.select
     )
     select_keyword = "SELECT DISTINCT" if getattr(query, "distinct", False) else "SELECT"
     chunks.append(f"{select_keyword}\n  {select_sql}")
     if query.from_table is not None:
-        chunks.append(f"FROM {_render_table_ref(query.from_table)}")
-    for join in query.joins:
+        with _reading(bound[0], ctes):
+            chunks.append(f"FROM {_render_table_ref(query.from_table)}")
+    for index, join in enumerate(query.joins, start=1):
         join_type = normalize_sql_join_type(join.join_type)
-        join_sql = f"{join_type} JOIN {_render_table_ref(join.table)}"
+        with _reading(bound[index], ctes):
+            join_sql = f"{join_type} JOIN {_render_table_ref(join.table)}"
         if join_type != "CROSS":
             if join.on is None:
                 raise TypeError(f"{join_type} JOIN requires an ON expression")
-            join_sql += f" ON {render_expr(join.on)}"
+            with _reading(bound[index + 1], ctes):
+                join_sql += f" ON {render_expr(join.on)}"
         chunks.append(join_sql)
     if query.where:
-        chunks.append("WHERE\n  " + "\n  AND ".join(render_expr(item) for item in query.where))
+        chunks.append("WHERE\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.where))
     if query.group_by:
         chunks.append("GROUP BY\n  " + ",\n  ".join(render_expr(item) for item in query.group_by))
     if query.having:
-        chunks.append("HAVING\n  " + "\n  AND ".join(render_expr(item) for item in query.having))
+        chunks.append(
+            "HAVING\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.having)
+        )
     if query.qualify:
-        chunks.append("QUALIFY\n  " + "\n  AND ".join(render_expr(item) for item in query.qualify))
+        chunks.append(
+            "QUALIFY\n  " + "\n  AND ".join(_render_conjunct(item) for item in query.qualify)
+        )
     if query.order_by:
         chunks.append(
             "ORDER BY\n  "
@@ -433,7 +528,7 @@ def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
         )
     if query.limit is not None:
         chunks.append(f"LIMIT {query.limit}")
-    return "\n".join(chunks)
+    return chunks
 
 
 def render_query(query: SqlQuery, *, flatten_ctes: bool = True) -> str:
@@ -441,9 +536,13 @@ def render_query(query: SqlQuery, *, flatten_ctes: bool = True) -> str:
         return render_select(query, flatten_ctes=flatten_ctes)
     if isinstance(query, SqlSetQuery):
         operator = normalize_sql_set_operator(query.operator)
-        return f"\n{operator}\n".join(
-            render_select(item, flatten_ctes=flatten_ctes) for item in query.queries
-        )
+        # A WITH rendered on the first SELECT is the whole set query's: every branch reads it.
+        first, *rest = query.queries
+        rendered = [render_select(first, flatten_ctes=flatten_ctes)]
+        ctes = _CTES.get() | {_relation_key(cte.name) for cte in first.ctes}
+        with _reading(_DERIVED.get(), ctes):
+            rendered.extend(render_select(item, flatten_ctes=flatten_ctes) for item in rest)
+        return f"\n{operator}\n".join(rendered)
     raise TypeError(f"Unsupported SQL query: {type(query)!r}")
 
 
@@ -456,7 +555,7 @@ def render_select_for_profile(
     render; callers compiling for a real warehouse must pass it. The compiler
     then calls ``dialect.prepare_query`` to finalize executable SQL and aliases.
     """
-    with use_dialect(dialect):
+    with use_dialect(dialect), quoting_output_aliases(query):
         normalized = str(profile or "audit").strip().lower()
         if normalized == "debug":
             return render_select(query, flatten_ctes=False)
@@ -464,3 +563,48 @@ def render_select_for_profile(
         if normalized == "compact":
             return re.sub(r"\s+", " ", rendered).strip()
         return rendered
+
+
+class _Slots:
+    """The parameters one render emits: each renders as a marker unique to the render."""
+
+    def __init__(self) -> None:
+        self.nonce = f"__slot_{secrets.token_hex(8)}__"
+        self.emitted: list[ParameterSlot] = []
+
+    def read(self, sql: str) -> tuple[str, tuple[ParameterSlot, ...]]:
+        """``sql`` with each marker back to ``?``, and their slots in the order the text holds
+        them: the order a driver binds them, whatever the render hoisted or nested."""
+        pattern = f"{self.nonce}([0-9]+){self.nonce}"
+        order = [int(index) for index in re.findall(pattern, sql)]
+        if sorted(order) != list(range(len(self.emitted))):
+            from .errors import SemanticLayerError
+
+            # Never run a statement whose binds can't be matched to its placeholders.
+            raise SemanticLayerError(
+                "POLICY_DENIED",
+                "A bound parameter's placeholder was lost or repeated while rendering, so the "
+                "statement can't be run.",
+                details={"reason": "row_filter_unsupported_query"},
+            )
+        return re.sub(pattern, "?", sql), tuple(self.emitted[index] for index in order)
+
+
+@contextmanager
+def collecting_slots() -> Iterator[_Slots]:
+    """Collect the slots of every parameter rendered inside, for ``_Slots.read``."""
+    slots = _Slots()
+    token = _EMITTED_SLOTS.set((slots.nonce, slots.emitted))
+    try:
+        yield slots
+    finally:
+        _EMITTED_SLOTS.reset(token)
+
+
+def render_with_slots(
+    query: SqlSelect, profile: str | None = None, *, dialect: SqlDialect | None = None
+) -> tuple[str, tuple[ParameterSlot, ...]]:
+    """``render_select_for_profile``, with the slot of each ``?`` in text order."""
+    with collecting_slots() as slots:
+        sql = render_select_for_profile(query, profile, dialect=dialect)
+    return slots.read(sql)

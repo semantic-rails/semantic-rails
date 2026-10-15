@@ -15,59 +15,20 @@ import pytest
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 
-
-def test_rolling_window_int_returns_structured_error():
-    """Passing ``window`` as an int (the shape the broken capabilities
-    example used to teach) must raise INVALID_EXPRESSION_AST with a
-    USE_OBJECT_SHAPE recovery hint — NOT TypeError."""
-    with pytest.raises(SemanticLayerError) as excinfo:
-        parse_semantic_expression(
-            {
-                "kind": "rolling",
-                "input": {"measure": "measure.jaffle.revenue_usd"},
-                "window": 28,
-            },
-            context="query",
-        )
-    err = excinfo.value
-    assert err.code == "INVALID_EXPRESSION_AST", (
-        f"expected INVALID_EXPRESSION_AST, got {err.code!r}"
-    )
-    hints = err.details.get("recovery_hints") or []
-    codes = {h.get("code") for h in hints}
-    assert "USE_OBJECT_SHAPE" in codes, (
-        f"expected USE_OBJECT_SHAPE recovery hint; got hints={hints!r}"
-    )
-    assert err.details.get("received_type") == "int"
-    assert err.details.get("received_value") == 28
+REVENUE = {"measure": "measure.jaffle.revenue_usd"}
 
 
-def test_prior_period_offset_int_returns_structured_error():
-    """The IR-shape prior_period path also called dict() on the offset
-    payload — passing offset as a bare int (without ``measure`` to
-    trigger the shorthand path) crashed. Now it raises structurally."""
-    with pytest.raises(SemanticLayerError) as excinfo:
-        parse_semantic_expression(
-            {
-                "kind": "prior_period",
-                "input": {"measure": "measure.jaffle.revenue_usd"},
-                "offset": 1,
-            },
-            context="query",
-        )
-    err = excinfo.value
-    assert err.code == "INVALID_EXPRESSION_AST"
-    hints = err.details.get("recovery_hints") or []
-    codes = {h.get("code") for h in hints}
-    assert "USE_OBJECT_SHAPE" in codes, (
-        f"expected USE_OBJECT_SHAPE recovery hint; got hints={hints!r}"
-    )
-
-
-def test_conversion_window_int_returns_structured_error():
-    """Conversion expressions had the same dict(int) crash on window."""
-    with pytest.raises(SemanticLayerError) as excinfo:
-        parse_semantic_expression(
+@pytest.mark.parametrize(
+    "raw,key,code",
+    [
+        ({"kind": "rolling", "input": REVENUE, "window": 28}, "window", "INVALID_EXPRESSION_AST"),
+        # The IR shape (no ``measure``, so not the shorthand) reads offset as an object.
+        (
+            {"kind": "prior_period", "input": REVENUE, "offset": 1},
+            "offset",
+            "INVALID_EXPRESSION_AST",
+        ),
+        (
             {
                 "kind": "conversion",
                 "base": {"measure": "measure.jaffle.session_count"},
@@ -76,10 +37,20 @@ def test_conversion_window_int_returns_structured_error():
                 "window": 7,
                 "matching_mode": "first_converted_after_base",
             },
-            context="query",
-        )
-    err = excinfo.value
-    assert err.code == "CONVERSION_WINDOW_REQUIRED"
-    hints = err.details.get("recovery_hints") or []
-    codes = {h.get("code") for h in hints}
-    assert "USE_OBJECT_SHAPE" in codes
+            "window",
+            "CONVERSION_WINDOW_REQUIRED",
+        ),
+    ],
+)
+def test_a_scalar_where_an_object_belongs_is_a_structured_error(raw, key, code):
+    with pytest.raises(SemanticLayerError) as excinfo:
+        parse_semantic_expression(raw, context="query")
+    details = excinfo.value.details
+    assert excinfo.value.code == code
+    assert details["path"] == f"expression.{key}"
+    assert (details["received_type"], details["received_value"]) == ("int", raw[key])
+    (hint,) = details["recovery_hints"]
+    assert hint["code"] == "USE_OBJECT_SHAPE"
+    assert set(hint["suggested_shape"]) == {"unit", "value"}
+    # The suggested shape, filled in, parses.
+    parse_semantic_expression({**raw, key: {"unit": "day", "value": raw[key]}}, context="query")

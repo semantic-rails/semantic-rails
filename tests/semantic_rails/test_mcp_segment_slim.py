@@ -15,8 +15,11 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.request_context import RequestContext
+from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 SEGMENT = "segment.jaffle.high_value_customers"
 ARGUMENTS = {
@@ -53,19 +56,12 @@ EXPECTED = {
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    mcp = SemanticLayerMCPAdapter(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
     try:
         yield mcp
     finally:
         mcp.close()
-
-
-def test_segment_tool_advertises_minimal_default_and_full_opt_in() -> None:
-    definition = next(item for item in list_tool_definitions() if item["name"] == "segment")
-    verbosity = definition["inputSchema"]["properties"]["verbosity"]
-    assert verbosity["default"] == "minimal"
-    assert verbosity["enum"] == ["minimal", "full"]
 
 
 @pytest.mark.parametrize("action", ACTIONS)
@@ -78,6 +74,7 @@ def test_minimal_response_answers_without_compiler_plans(
     assert not PLANS & set(response)
     extra = set(response) - ENVELOPE - EXPECTED[action]
     assert extra <= {
+        "assumptions",
         "segment_policy_effects",
         "policy_effects",
         "member_key_dimensions",
@@ -122,9 +119,12 @@ def test_preview_keeps_its_rows_and_counts(adapter: SemanticLayerMCPAdapter) -> 
 def test_minimal_retains_production_policy_effects_from_real_segment(
     adapter: SemanticLayerMCPAdapter, action: str
 ) -> None:
-    arguments = {**ARGUMENTS[action], "policy_context": {"environment": "production"}}
-    full = adapter.call_tool("segment", {**arguments, "verbosity": "full"})
-    minimal = adapter.call_tool("segment", {**arguments, "verbosity": "minimal"})
+    context = RequestContext(environment="production")
+    arguments = ARGUMENTS[action]
+    full = adapter.call_tool("segment", {**arguments, "verbosity": "full"}, request_context=context)
+    minimal = adapter.call_tool(
+        "segment", {**arguments, "verbosity": "minimal"}, request_context=context
+    )
     assert full["ok"] is minimal["ok"] is True
     assert minimal["policy_effects"] == full["policy_effects"]
     assert any(
@@ -172,12 +172,12 @@ def test_minimal_retains_a_hidden_segment_refusal(runtime_factory: Any, action: 
     original.close()
     mcp = SemanticLayerMCPAdapter(runtime)
     try:
-        arguments = {
-            **ARGUMENTS[action],
-            "policy_context": {"audience": "external", "tenant": "tenant-a"},
-        }
-        full = mcp.call_tool("segment", {**arguments, "verbosity": "full"})
-        minimal = mcp.call_tool("segment", {**arguments, "verbosity": "minimal"})
+        context = RequestContext(audience="external", tenant="tenant-a")
+        arguments = ARGUMENTS[action]
+        full = mcp.call_tool("segment", {**arguments, "verbosity": "full"}, request_context=context)
+        minimal = mcp.call_tool(
+            "segment", {**arguments, "verbosity": "minimal"}, request_context=context
+        )
         assert full["ok"] is minimal["ok"] is False
         assert minimal["errors"] == full["errors"]
         # The package's only segment is hidden: the caller has no segment tool, as if absent.

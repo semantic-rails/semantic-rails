@@ -15,14 +15,13 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ._base import QUOTED
 from .groupings import _requested_grouping_spans
 from .time_phrases import _TIME_UNITS
 from .time_windows import _time_window
 from .unasked_groupings import _asked_grouping_terms, _asks_grain
 from .unmatched_words import _FRAMING_WORDS
 
-# Quoted text, which is never split and keeps its spelling.
-QUOTED = r"\"[^\"]*\"|“[^”]*”|(?<!\w)['‘].*?['’](?!\w)"
 _OPENER = r"(?:what|which|who|whom|whose|when|where|why|how\s+(?:many|much))\b"
 _BOUNDARY_RE = re.compile(
     rf"\s*,\s*and\s+(?={_OPENER})|\s*,\s*(?={_OPENER})|\s+and\s+(?={_OPENER})", re.IGNORECASE

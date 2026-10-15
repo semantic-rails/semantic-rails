@@ -1,5 +1,6 @@
 """Deterministic limited ordering and disclosure from one boundary row."""
 
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -8,9 +9,11 @@ from .errors import SemanticLayerError
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder, SqlSelect
 
 
-def limit_order(query: SqlSelect) -> tuple[SqlSelect, tuple[str, ...]]:
-    """Keep the requested order, then order every remaining output NULLS LAST."""
-    if not query.order_by or query.limit is None:
+def limit_order(query: SqlSelect, groups: Sequence[str]) -> tuple[SqlSelect, tuple[str, ...]]:
+    """Keep the requested order, then break ties by the remaining ``groups`` (the group_by
+    columns, then the period) ascending, NULLS LAST, so a cut-off keeps the same rows. With no
+    requested order, the tie-break alone orders the rows, and no row ties on no terms."""
+    if query.limit is None:
         return query, ()
     keys = []
     for order in query.order_by:
@@ -43,10 +46,11 @@ def limit_order(query: SqlSelect) -> tuple[SqlSelect, tuple[str, ...]]:
                 "INVALID_ORDER_BY", "Limited ordering must resolve to an output column."
             )
         keys.append(matches[0])
+    outputs = {field.alias for field in query.select}
     remaining = [
-        SqlOrder(SqlIdentifier(parts=[field.alias]), "ASC", nulls_last=True)
-        for field in query.select
-        if field.alias not in keys
+        SqlOrder(SqlIdentifier(parts=[alias]), "ASC", nulls_last=True)
+        for alias in dict.fromkeys(groups)
+        if alias in outputs and alias not in keys
     ]
     return replace(query, order_by=[*query.order_by, *remaining]), tuple(keys)
 
@@ -79,14 +83,11 @@ def limit_rows(
                     "code": "TIES_AT_LIMIT",
                     "severity": "warning",
                     "message": (
-                        f"At least {count} rows share the requested sort key at the limit; "
-                        "remaining output columns determine which rows are returned."
+                        f"At least {count} rows tie on the requested order at the limit of "
+                        f"{limit}; the group_by columns, then the period, ascending, chose "
+                        "which of them are returned."
                     ),
-                    "details": {
-                        "limit": limit,
-                        "tie_count": count,
-                        "tie_count_is_lower_bound": True,
-                    },
+                    "details": {"at": limit, "tied": count},
                 }
             )
     return QueryRows(rows[:limit], truncated=bool(getattr(rows, "truncated", False))), warnings

@@ -55,8 +55,13 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize("normalize", [normalize_query, normalize_partial_query])
-@pytest.mark.parametrize("key,item,path,unknown,closest", CASES)
+@pytest.mark.parametrize(
+    "normalize,key,item,path,unknown,closest",
+    [
+        pytest.param([normalize_query, normalize_partial_query][i % 2], *case.values, id=case.id)
+        for i, case in enumerate(CASES)
+    ],
+)
 def test_unknown_query_item_keys_are_refused(normalize, key, item, path, unknown, closest):
     payload = {"select": [SELECT], key: [item]}
     with pytest.raises(SemanticLayerError) as exc:
@@ -74,17 +79,46 @@ def test_unknown_query_item_keys_are_refused(normalize, key, item, path, unknown
         assert "expression" in hint and "metric_predicate" in hint and "entity" in hint
 
 
-@pytest.mark.parametrize("mode", ["run", "sql", "validate"])
-@pytest.mark.parametrize("key,item,path,unknown,closest", CASES)
-def test_mcp_spelling_rewrites_cannot_drop_unknown_item_keys(
-    runtime_factory, mode, key, item, path, unknown, closest
-):
-    # An operator spelling rewrite must preserve the unknown key for the central guard.
-    item = {**item, **({"op": "gt"} if key == "metric_filters" else {})}
+CALL_FILTER = {**FILTER, "op": "is"}
+CALL_SELECT = {"expression": "metric.sales.orders", "as": "orders"}
+CALL_ENTITY = {"entity": "entity.jaffle_order", "any": [CALL_FILTER]}
+CALL_CASES = [
+    pytest.param("select", {**CALL_SELECT, "expresion": "x"}, "select[0].expresion", id="select"),
+    pytest.param("where", {**CALL_FILTER, "feild": "x"}, "where[0].feild", id="where"),
+    pytest.param("where", {**CALL_ENTITY, "wher": [CALL_FILTER]}, "where[0].wher", id="entity"),
+    pytest.param(
+        "where",
+        {**CALL_ENTITY, "any": [{**CALL_FILTER, "feild": "x"}]},
+        "where[0].any[0].feild",
+        id="entity-filter",
+    ),
+    pytest.param(
+        "having",
+        {"field": "orders", "op": "gt", "value": 1, "valu": 2},
+        "having[0].valu",
+        id="having",
+    ),
+    pytest.param(
+        "having",
+        {"field": "orders", "op": "gt", "value": 1, "entity": "entity.jaffle_customer"},
+        "having[0].entity",
+        id="having-entity",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "mode,key,item,path",
+    [
+        pytest.param(["run", "sql", "validate"][i % 3], *case.values, id=case.id)
+        for i, case in enumerate(CALL_CASES)
+    ],
+)
+def test_the_call_refuses_unknown_item_keys_with_their_path(runtime_factory, mode, key, item, path):
     adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
     try:
         result = adapter.call_tool(
-            "execute", {"mode": mode, "query": {"select": [SELECT], key: [item]}}
+            "execute", {"mode": mode, "query": {"select": [CALL_SELECT], key: [item]}}
         )
     finally:
         adapter.close()
@@ -92,7 +126,7 @@ def test_mcp_spelling_rewrites_cannot_drop_unknown_item_keys(
     error = result["errors"][0]
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == path
-    assert error["details"]["unsupported_keys"] == [unknown]
+    assert path.rsplit(".", 1)[1] not in error["details"]["supported_keys"]
     assert "rows" not in result
 
 

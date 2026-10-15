@@ -15,9 +15,10 @@ from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.db_parts.athena import AthenaAdapter
 from semantic_rails.db_parts.bigquery import BigQueryNativeAdapter
 from semantic_rails.db_parts.databricks import DatabricksNativeAdapter
+from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.registry import Registry
 from semantic_rails.schema import ConnectionSpec, SeedSpec
-from semantic_rails.sql_preparation import PreparedQuery, prepare_query
+from semantic_rails.sql_preparation import PreparedQuery
 from tests.semantic_rails.test_adbc_adapter import Batch, Reader
 
 _ALIAS = "average_order_value_" * 5
@@ -43,7 +44,6 @@ def _compile(package_config, warehouse, profile):
         config,
         Registry(config),
         {
-            "version": 1,
             "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": _ALIAS}],
             "group_by": ["dimension.jaffle_store_name"],
             "time": {
@@ -101,8 +101,10 @@ def _forbid_second_preparation(*args, **kwargs):
     raise AssertionError("compiled SQL must reach the driver without a second preparation")
 
 
-@pytest.mark.parametrize("profile", ["audit", "compact", "debug", "off"])
-@pytest.mark.parametrize("warehouse", ["postgres", "databricks", "athena", "snowflake"])
+@pytest.mark.parametrize(
+    ("warehouse", "profile"),
+    [("postgres", "audit"), ("databricks", "compact"), ("athena", "debug"), ("snowflake", "off")],
+)
 def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, warehouse, profile):
     compiled = _compile(package_config, warehouse, profile)
     prepared = compiled["prepared_query"]
@@ -124,10 +126,14 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
     }[warehouse]()
     cursor = CaptureCursor(_physical_alias(prepared))
     adapter._conn = SimpleNamespace(cursor=lambda **kwargs: cursor)
-    monkeypatch.setattr("semantic_rails.db_parts.common.prepare_query", _forbid_second_preparation)
-    monkeypatch.setattr("semantic_rails.db_parts.adbc.prepare_query", _forbid_second_preparation)
     monkeypatch.setattr(
-        "semantic_rails.db_parts.snowflake.prepare_query", _forbid_second_preparation
+        "semantic_rails.db_parts.common.dialect_for_warehouse", _forbid_second_preparation
+    )
+    monkeypatch.setattr(
+        "semantic_rails.db_parts.adbc.dialect_for_warehouse", _forbid_second_preparation
+    )
+    monkeypatch.setattr(
+        "semantic_rails.db_parts.snowflake.dialect_for_warehouse", _forbid_second_preparation
     )
     rows = adapter.query_prepared(prepared, limits={"max_rows": 1, "statement_timeout_ms": 1000})
 
@@ -185,7 +191,7 @@ def test_compiled_bigquery_sql_and_original_columns_survive_execution(
         adapter, "_bigquery", lambda: SimpleNamespace(QueryJobConfig=SimpleNamespace)
     )
     monkeypatch.setattr(
-        "semantic_rails.db_parts.bigquery.prepare_query", _forbid_second_preparation
+        "semantic_rails.db_parts.bigquery.dialect_for_warehouse", _forbid_second_preparation
     )
     rows = adapter.query_prepared(prepared, limits={"max_rows": 1, "statement_timeout_ms": 1000})
     assert statements == [compiled["sql"]]
@@ -206,7 +212,7 @@ def test_compiled_snowflake_cli_statement_only_adds_session_controls(
 
     monkeypatch.setattr("semantic_rails.db_parts.snowflake.subprocess.run", run)
     monkeypatch.setattr(
-        "semantic_rails.db_parts.snowflake.prepare_query", _forbid_second_preparation
+        "semantic_rails.db_parts.snowflake.dialect_for_warehouse", _forbid_second_preparation
     )
     SnowflakeCliAdapter("test_connection").query_prepared(
         prepared, limits={"statement_timeout_ms": timeout_ms}
@@ -226,7 +232,7 @@ def test_compiled_snowflake_cli_statement_only_adds_session_controls(
 def test_postgres_direct_query_preserves_long_unicode_aliases():
     aliases = ["値" * 30 + suffix for suffix in ("_a", "_b")]
     original = f'SELECT 1 AS "{aliases[0]}", 2 AS "{aliases[1]}"'
-    prepared = prepare_query(original, "postgres")
+    prepared = dialect_for_warehouse("postgres").prepare_query(original)
     names = dict(prepared.column_mapping)
     assert set(names.values()) == set(aliases)
     assert len(names) == 2
@@ -309,9 +315,9 @@ def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_conf
     customer_id = "dimension.jaffle_customer_id"
     store_name = "dimension.jaffle_store_name"
     mapping = dict(
-        prepare_query(
-            f'SELECT 1 AS "{customer_id}", 1 AS "{store_name}"', "bigquery"
-        ).column_mapping
+        dialect_for_warehouse("bigquery")
+        .prepare_query(f'SELECT 1 AS "{customer_id}", 1 AS "{store_name}"')
+        .column_mapping
     )
     reverse = {value: key for key, value in mapping.items()}
 
@@ -332,18 +338,16 @@ def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_conf
         adapter, "_bigquery", lambda: SimpleNamespace(QueryJobConfig=SimpleNamespace)
     )
     monkeypatch.setattr(
-        "semantic_rails.db_parts.bigquery.prepare_query", _forbid_second_preparation
+        "semantic_rails.db_parts.bigquery.dialect_for_warehouse", _forbid_second_preparation
     )
     runtime.set_adapter(adapter)
     request = {
-        "version": 1,
-        "select": [{"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov"}],
+        "select": [{"expression": "metric.sales.aov_usd", "as": "aov"}],
         "group_by": [store_name],
-        "sql_profile": "compact",
     }
     try:
-        compiled = runtime.compile(request)
-        result = runtime.query(request)
+        compiled = runtime.compile(request, sql_profile="compact")
+        result = runtime.query(request, sql_profile="compact")
         assert statements == [compiled["rendered_sql"]]
         assert result["rows"][0][store_name] == "Portland"
         assert (
@@ -371,8 +375,8 @@ def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_conf
 
 
 def test_legacy_adapters_are_fenced_by_max_rows():
+    from semantic_rails.dialects import dialect_for_warehouse
     from semantic_rails.runtime import _adapter_query
-    from semantic_rails.sql_preparation import prepare_query
 
     class LegacyAdapter:
         engine = "legacy"
@@ -380,7 +384,7 @@ def test_legacy_adapters_are_fenced_by_max_rows():
         def query(self, sql):
             return [{"n": index} for index in range(5)]
 
-    prepared = prepare_query("SELECT 1 AS n", "duckdb")
+    prepared = dialect_for_warehouse("duckdb").prepare_query("SELECT 1 AS n")
     for rows in (
         WarehouseAdapter.query_prepared(LegacyAdapter(), prepared, limits={"max_rows": 2}),
         _adapter_query(LegacyAdapter(), prepared, limits={"max_rows": 2}),

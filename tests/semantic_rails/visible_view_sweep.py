@@ -14,6 +14,9 @@ absent package might find another one. The test computes those pairs from the pa
 route resolution. A query whose unrestricted binding reads a hidden entity or relationship must
 refuse; an inspect of an object on such a pair, and a plan while any exists, may differ from the
 absent package (still naming nothing hidden).
+
+A measure that a hidden metric governs is never answered as a raw number: a query reading it
+raw must refuse, and a plan while any such measure exists may differ (still naming nothing).
 """
 
 from __future__ import annotations
@@ -25,10 +28,16 @@ from dataclasses import replace
 from typing import Any
 
 from semantic_rails.compiler import bind_metadata_objects, bind_query
+from semantic_rails.compiler_parts.bind import select_measure_reads
 from semantic_rails.config import load_package_config
+from semantic_rails.config_parts.measure_governance import governing_metrics
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr
 from semantic_rails.fanout import package_route
+from semantic_rails.http_core import SemanticHTTPService
+from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.query_call import read_call
+from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig, PackageConfig
 from tests.semantic_rails.hidden_absent import (
@@ -37,15 +46,15 @@ from tests.semantic_rails.hidden_absent import (
     absent,
     envelope,
     hidden_tokens,
-    http_call,
     leaks,
-    mcp_call,
     object_rows,
     visibility_policy,
     with_policies,
 )
 
 TERMS = ("", "orders", "revenue", "customers", "store", "time", "spend")
+# Every call is asked at one instant, so the hidden and absent answers compare whole.
+NOW = "2026-10-05T06:00:00Z"
 INTENTS = (
     "revenue by store",
     "how many orders last month",
@@ -81,6 +90,23 @@ def _public(value: Any, *, in_effects: bool = False) -> Any:
 Request = tuple[str, Callable[[Runtime], Any], Any]
 
 
+def mcp_as(runtime: Runtime, tool: str, arguments: dict[str, Any], context: Any) -> dict[str, Any]:
+    """An MCP tool call asked by ``context``: identity is the transport's, never an argument."""
+    caller = context_from_policy_context(context)
+    return SemanticLayerMCPAdapter(runtime).call_tool(tool, arguments, request_context=caller)
+
+
+def http_as(runtime: Runtime, route: str, body: dict[str, Any], context: Any) -> dict[str, Any]:
+    """A REST call asked by ``context``, with its status, raised refusals as payloads."""
+    service = SemanticHTTPService(runtime)
+    caller = context_from_policy_context(context)
+    try:
+        response, status = service.handle("POST", route, body, context=caller)
+    except SemanticLayerError as exc:
+        response, status = service.exception_payload(exc, stage="http", context=caller)
+    return {**response, "http_status": status}
+
+
 def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[Request]:
     """(label, call, what the request itself names) for every request the sweep makes. Objects
     more than one hop from the hidden ones are inspected at minimal verbosity only and get no
@@ -89,10 +115,10 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
     out: list[Request] = []
 
     def mcp(tool: str, arguments: dict[str, Any]) -> Callable[[Runtime], Any]:
-        return lambda runtime: mcp_call(runtime, tool, {**arguments, "policy_context": CALLER})
+        return lambda runtime: mcp_as(runtime, tool, arguments, CALLER)
 
     def http(route: str, body: dict[str, Any]) -> Callable[[Runtime], Any]:
-        return lambda runtime: http_call(runtime, route, {**body, "policy_context": CALLER})
+        return lambda runtime: http_as(runtime, route, body, CALLER)
 
     for terms in TERMS:
         for verbosity in ("compact", "full"):
@@ -118,13 +144,13 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
                 )
             body = {"segment_id": segment.id}
             out.append((f"http /segment-{action}", http(f"/segment-{action}", body), segment.id))
-    for kind, rows in (("metric", config.metric_recipes), ("measure", config.measures)):
+    for rows in (config.metric_recipes, config.measures):
         for row in rows:
             if row.id not in visible:
                 continue
-            query = {"select": [{"expression": {kind: row.id}, "as": "value"}]}
+            query = {"select": [{"expression": row.id, "as": "value"}]}
             for mode in ("validate", "sql"):
-                arguments = {"query": query, "mode": mode}
+                arguments = {"query": query, "mode": mode, "now": NOW}
                 out.append((f"mcp execute {mode} {row.id}", mcp("execute", arguments), query))
             if row.id in near:
                 body = {"focus_object_id": row.id}
@@ -132,7 +158,7 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
     for row in config.metric_recipes:
         if row.id not in visible:
             continue
-        base = {"select": [{"expression": {"metric": row.id}, "as": "value"}]}
+        base = {"select": [{"expression": row.id, "as": "value"}]}
         broken = {
             "unknown time role": {
                 **base,
@@ -140,11 +166,11 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
             },
             "unknown group_by": {**base, "group_by": ["dimension.nope"]},
             "far group_by": {**base, "group_by": ["dimension.jaffle_supply_name"]},
-            "unknown where": {**base, "where": [{"field": "nope", "op": "=", "value": "x"}]},
+            "unknown where": {**base, "where": [{"field": "nope", "op": "is", "value": "x"}]},
             "bad grain": {**base, "time": {"temporal_role": "", "grain": "fortnight"}},
         }
         for name, query in broken.items():
-            arguments = {"query": query, "mode": "validate"}
+            arguments = {"query": query, "mode": "validate", "now": NOW}
             out.append((f"mcp execute validate {name} {row.id}", mcp("execute", arguments), query))
     for row in config.dimensions:
         if row.id in visible:
@@ -220,12 +246,26 @@ def _reads_hidden_graph(base: PackageConfig, request: Any, hidden: set[str]) -> 
         return False
     graph = {row.id for name in GRAPH for row in getattr(base, name)} & hidden
     try:
-        return bool(bind_query(base, None, request).object_ids & graph)
+        return bool(bind_query(base, None, read_call(request, config=base)[0]).object_ids & graph)
     except SemanticLayerError as exc:
         details = json.dumps(exc.details, default=str)
         return any(json.dumps(object_id) in details for object_id in graph)
     except Exception:  # noqa: BLE001 — an internal error, which the absent package shares
         return False
+
+
+def _governed_by_hidden(base: PackageConfig, request: Any, hidden: set[str]) -> bool:
+    """Whether a query reads raw a measure that a hidden metric governs."""
+    if not isinstance(request, dict) or "select" not in request:
+        return False
+    try:
+        select = read_call(request, config=base)[0]["select"]
+    except SemanticLayerError:
+        return False
+    return any(
+        {row.id for row in governing_metrics(base, str(node["measure"]))} & hidden
+        for node in select_measure_reads(select)
+    )
 
 
 def _with_default_metric(config: PackageConfig) -> PackageConfig:
@@ -271,9 +311,20 @@ def assert_hidden_responses(package, target):
     exceptions = {
         label for label, _, named in requests if _reads_hidden_graph(config, named, hidden)
     }
+    exceptions |= {
+        label for label, _, named in requests if _governed_by_hidden(config, named, hidden)
+    }
     routed = _hidden_routed(config, hidden)
+    withheld = any(
+        {row.id for row in governing_metrics(config, measure.id)} & hidden
+        for measure in config.measures
+        if measure.id not in hidden
+    )
     rerouted = {
-        label for label, _, named in requests if _route_dependent(config, label, named, routed)
+        label
+        for label, _, named in requests
+        if _route_dependent(config, label, named, routed)
+        or (withheld and label.startswith("mcp plan"))
     }
     failures: list[str] = []
     for action in ACTIONS:

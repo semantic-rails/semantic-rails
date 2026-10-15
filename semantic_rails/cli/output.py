@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import math
+import textwrap
 import unicodedata
 from datetime import datetime
 from datetime import time as dt_time
 from decimal import Decimal
 from typing import Any
 
+import yaml
+
+from ..errors import refusal_text
 from .common import _BUNDLED_NOTE, _print, _quote
 
 _MAX_HUMAN_ROWS = 500
@@ -136,14 +140,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         count = result.get("row_count", len(rows))
         truncated = bool(result.get("truncated"))
         planned = result.get("planned_limit")
-        planned_row_limit = result.get("planned_row_limit")
-        plan_capped = bool(planned_row_limit) and planned_row_limit == result.get("row_limit")
-        if truncated and plan_capped:
-            limit_note = (
-                f" (stopped at the planned query's own {planned_row_limit}-row cap;"
-                " more rows match)"
-            )
-        elif truncated:
+        if truncated:
             limit_note = f" (stopped at the {result.get('row_limit')}-row limit; more rows match)"
         elif planned and count >= planned:
             limit_note = f" (the planned query itself returns at most {planned} rows)"
@@ -154,21 +151,19 @@ def _print_ask_report(report: dict[str, Any]) -> None:
         _print_rows(shown, list(result.get("output_columns", []) or []), result.get("column_types"))
         if len(rows) > len(shown):
             print(f"... {len(rows) - len(shown)} more rows not shown; use --json to see them all.")
-        if truncated and not plan_capped:
+        if truncated:
             hint = (
                 f"To lift the {result.get('row_limit')}-row cap, run: {_every_row_command(report)}"
             )
             if planned:
                 hint += f" (the planned query's own limit of {planned} rows still applies)"
-            if planned_row_limit:
-                hint += f" (the planned query's own {planned_row_limit}-row cap still applies)"
             print(hint)
     if isinstance(compiled, dict):
         print("SQL:")
         print(compiled.get("sql", ""))
     query = report.get("query")
     if query:
-        print("Query IR:")
+        print("Query call:")
         print(json.dumps(query, indent=2, sort_keys=True, default=str))
     errors = list(report.get("errors", []) or [])
     if errors:
@@ -265,19 +260,22 @@ def _print_project_validation(report: dict[str, Any]) -> None:
             print(f"  {warning}")
         if len(warnings) > 10:
             print(f"  ... {len(warnings) - 10} more warning(s)")
+    _print_route_rows(report)
     errors = list(report.get("errors", []) or [])
     if errors:
         print("Errors:")
         # Each probe reports a shared failure (a missing seed, say) again: print it once.
         counts: dict[tuple[str, str], int] = {}
         for error in errors:
-            message = error.get("message") or error if isinstance(error, dict) else error
-            check = error.get("check") if isinstance(error, dict) else None
-            line = f"  {check}: {message}" if check else f"  {message}"
-            hints = list(error.get("recovery_hints", []) or []) if isinstance(error, dict) else []
-            hint = (
-                str(hints[0].get("message") or "") if hints and isinstance(hints[0], dict) else ""
-            )
+            if not isinstance(error, dict):
+                counts[(f"  {error}", "")] = counts.get((f"  {error}", ""), 0) + 1
+                continue
+            # An example's or test's refusal sits in its details, beside the entry's id.
+            details = {**dict(error.get("details") or {}), **error}
+            message, hint = refusal_text(str(error.get("message") or error), details)
+            entry = details.get("example_id") or details.get("test_id")
+            prefix = ": ".join(str(part) for part in (error.get("check"), entry) if part)
+            line = f"  {prefix}: {message}" if prefix else f"  {message}"
             counts[(line, hint)] = counts.get((line, hint), 0) + 1
         for (line, hint), count in list(counts.items())[:10]:
             print(line + (f" ({count} times)" if count > 1 else ""))
@@ -285,6 +283,33 @@ def _print_project_validation(report: dict[str, Any]) -> None:
                 print(f"    hint: {hint}")
         if len(counts) > 10:
             print(f"  ... {len(counts) - 10} more error(s)")
+
+
+def _print_route_rows(report: dict[str, Any]) -> None:
+    """For the first undecided entity pair, the graph.path_preferences rows to choose from."""
+    parse = report.get("parse")
+    warnings = [*(report.get("warnings") or []), *((parse or {}).get("warnings") or [])]
+    rows: list[dict[str, Any]] = next(
+        (
+            row["details"]["first_pair_rows"]
+            for row in warnings
+            if isinstance(row, dict)
+            and row.get("code") == "ROUTES_UNDECIDED"
+            and row.get("details", {}).get("first_pair_rows")
+        ),
+        [],
+    )
+    if not rows:
+        return
+    pair = f"{rows[0]['source_entity']} -> {rows[0]['target_entity']}"
+    print(
+        f"Route decisions: {pair} has {len(rows)} routes. Add the row of the one it means "
+        "under graph.path_preferences in graph.yml:"
+    )
+    print(textwrap.indent(yaml.safe_dump(rows, sort_keys=False, width=1000), "    "), end="")
+    source = str((report.get("package") or {}).get("source_path") or "")
+    command = f"semantic-rails parse-config --path {_quote(source)}" if source else "parse-config"
+    print(f"  `{command}` lists every undecided pair's rows under route_census.undecided.")
 
 
 def _print_project_upgrade(report: dict[str, Any], *, command: str) -> None:
@@ -307,13 +332,19 @@ def _print_project_upgrade(report: dict[str, Any], *, command: str) -> None:
     if "proven" in tiers:
         queries = int(proof.get("examples", 0)) + int(proof.get("tests", 0))
         print(f"proven: fingerprint and {queries} example and test queries unchanged")
-    certified = [rule for rule in rules if rule["tier"] == "certified"]
-    if certified:
-        notes = ", ".join(sorted({rule["since"] for rule in certified}))
-        print(
-            f"certified: {len(certified)} rules for forms this engine refuses "
-            f"(see the {notes} upgrade notes)"
-        )
+    translated = [rule for rule in rules if rule["tier"] == "translated"]
+    if translated:
+        if any(rule["id"] == "query-call-v2" for rule in translated):
+            print("translated: spelling-only query rewrites; review the diff")
+            print(
+                "  Current calls compiled with entry now/context; queries were not run and "
+                "legacy answers were not compared"
+            )
+        else:
+            print(
+                f"translated: {len(translated)} rules for forms this engine refuses; "
+                "review the diff (no before/after equivalence comparison)"
+            )
     for choice in report.get("choices", []) or []:
         if choice.get("changes_answers"):
             print(f"  {choice['key']} = {choice['option']}: changes answers by your choice")
@@ -421,16 +452,17 @@ def _table_lines(
         info = dict(meta.get(column, {}) or {})
         values = [row.get(column) for row in rows]
         wire_type = (column_types or {}).get(column, {}).get("type")
+        dated = info.get("type") == "time" and info.get("grain") in _DATE_GRAINS
         if wire_type == "decimal":
             values = [Decimal(value) if isinstance(value, str) else value for value in values]
-        elif wire_type == "timestamp" and column.rsplit("__", 1)[-1] in _DATE_GRAINS:
+        elif wire_type == "timestamp" and dated:
             values = [
                 datetime.fromisoformat(value)
                 if isinstance(value, str) and value[11:19] == "00:00:00" and value[19:20] != "."
                 else value
                 for value in values
             ]
-        if info.get("type") == "time" and column.rsplit("__", 1)[-1] in _DATE_GRAINS:
+        if dated:
             # A month bucket is a date, whether the clock is a date or a timestamp column.
             values = [
                 value.date() if isinstance(value, datetime) and value.time() == dt_time() else value
@@ -467,8 +499,8 @@ def _column_headers(columns: list[str], meta: dict[str, dict[str, Any]]) -> dict
     for column in columns:
         info = dict(meta.get(column, {}) or {})
         label = str(info.get("display_label") or column)
-        if info.get("type") == "time" and "__" in column:
-            label += f" ({column.rsplit('__', 1)[1]})"
+        if info.get("type") == "time" and info.get("grain"):
+            label += f" ({info['grain']})"
         labels[column] = _shorten(_printable(label))
     shown = list(labels.values())
     headers: dict[str, str] = {}

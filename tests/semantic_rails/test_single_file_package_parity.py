@@ -41,8 +41,7 @@ def _write_examples_and_tests(package_yml: Path) -> None:
     config = load_package_config(str(package_yml))
     order_count = next(row.id for row in config.measures if row.id.endswith("order_count"))
     query = {
-        "version": 1,
-        "select": [{"expression": {"measure": order_count}, "as": "orders"}],
+        "select": [{"expression": order_count, "as": "orders"}],
     }
     examples_path = package_yml.parent / "examples" / "core.yml"
     examples_path.parent.mkdir(parents=True, exist_ok=True)

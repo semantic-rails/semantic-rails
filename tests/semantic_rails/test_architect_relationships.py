@@ -277,8 +277,7 @@ def test_mcp_session_relates_dbt_marts_and_queries_across_them(tmp_path):
     try:
         rows = engine.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+                "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                 "group_by": ["dimension.shop_customer_customer_country"],
                 "order_by": [{"field": "dimension.shop_customer_customer_country"}],
                 "limit": 10,
@@ -288,3 +287,200 @@ def test_mcp_session_relates_dbt_marts_and_queries_across_them(tmp_path):
         engine.close()
     country = "dimension.shop_customer_customer_country"
     assert [(row[country], row["orders"]) for row in rows] == [("GB", 3), ("NL", 1), ("US", 4)]
+
+
+# -- row-grain models and second roles ------------------------------------------------------
+
+
+def _relationships(project: ArchitectProject, source: str, target: str) -> dict[str, list[str]]:
+    """Each relationship from ``source`` to ``target`` (entity ids), by id: its source columns."""
+    report, config = parse_config_report(PackageReference(source_path=str(project.project_path)))
+    assert report["ok"] is True, report
+    return {
+        rel.id: list(rel.source_columns)
+        for rel in config.relationships
+        if (rel.source_entity, rel.target_entity) == (source, target)
+    }
+
+
+def _row_grain_scans(project: ArchitectProject, **arguments) -> dict:
+    """A scan log with no key: a row-grain model, whose graph entity is named after it."""
+    return project.upsert_model(
+        model_id="scans", entity_key="scans", relation="raw_scans", primary_key=[], **arguments
+    ).report
+
+
+@pytest.mark.parametrize(
+    ("source", "target"), [("scans", "customer"), ("entity.shop_scans", "entity.shop_customer")]
+)
+def test_a_row_grain_model_relates_from_its_side_by_model_or_entity_id(project, source, target):
+    _row_grain_scans(project)
+
+    report = project.upsert_relationship(
+        from_entity=source, to_entity=target, columns=["buyer_id"]
+    ).report
+
+    assert report["status"] == "upserted"
+    assert report["changed_files"] == ["models/core/scans.yml"]
+    model = _file(project, "models/core/scans.yml")["model"]
+    assert model["entities"] == {"customer": {"expr": "buyer_id"}}  # its parents only
+    assert _relationships(project, "entity.shop_scans", "entity.shop_customer") == {
+        "relationship.scans_customer": ["buyer_id"]
+    }
+
+
+def test_a_relationship_into_a_row_grain_model_says_to_write_it_from_its_side(project):
+    _row_grain_scans(project)
+    revision = project.revision()
+
+    with pytest.raises(SemanticLayerError) as raised:
+        project.upsert_relationship(from_entity="customer", to_entity="scans", columns=["scan"])
+
+    assert raised.value.code == "INVALID_CONFIG"
+    message = str(raised.value)
+    assert "row grain" in message and "from_entity='scans'" in message
+    assert project.revision() == revision
+
+
+def test_upsert_model_writes_a_models_parent_entities(project):
+    report = _row_grain_scans(project, entities={"customer": {"expr": "buyer_id"}, "event": {}})
+
+    assert report["ok"] is True, report
+    model = _file(project, "models/core/scans.yml")["model"]
+    assert model["entities"] == {"customer": {"expr": "buyer_id"}, "event": {}}
+    assert _relationships(project, "entity.shop_scans", "entity.shop_customer") == {
+        "relationship.scans_customer": ["buyer_id"]
+    }
+
+    project.upsert_model(
+        model_id="orders",
+        entity_key="order",
+        relation="raw_orders",
+        primary_key=["order_id"],
+        entities={"customer": {}},
+    )
+    assert _file(project, "models/core/orders.yml")["model"]["entities"] == {
+        "order": {},
+        "customer": {},
+    }
+
+
+def test_the_mcp_tools_take_parent_entities_and_a_role_name(tmp_path):
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    assert "entities" in tools["upsert_model"].inputSchema["properties"]
+    assert "name" in tools["upsert_relationship"].inputSchema["properties"]
+
+
+@pytest.mark.parametrize("source", ["event", "scans"])
+def test_a_second_role_is_a_named_relationship_on_its_own_columns(project, source):
+    if source == "scans":
+        _row_grain_scans(project)
+    project.upsert_relationship(from_entity=source, to_entity="customer", columns=["buyer_id"])
+    model_path = f"models/core/{'events' if source == 'event' else 'scans'}.yml"
+    model = _file(project, model_path)
+
+    report = project.upsert_relationship(
+        from_entity=source,
+        to_entity="customer",
+        columns=["seller_id"],
+        name=f"{source}_seller",
+        keep_existing_routes=True,
+    ).report
+
+    assert report["ok"] is True, report
+    assert _file(project, model_path) == model  # the first role is untouched
+    entry = _file(project, "graph.yml")["graph"]["relationships"][f"{source}_seller"]
+    assert entry == {
+        "entities": [source, "customer"],
+        "cardinality": "many_to_one",
+        "via": ["seller_id"],
+        "target": ["customer_id"],
+    }
+    roles = _relationships(project, f"entity.shop_{source}", "entity.shop_customer")
+    assert sorted(roles.values()) == [["buyer_id"], ["seller_id"]]
+
+    # The same name updates that role; a pair with two roles needs the name.
+    project.upsert_relationship(
+        from_entity=source, to_entity="customer", columns=["agent_id"], name=f"{source}_seller"
+    )
+    entry = _file(project, "graph.yml")["graph"]["relationships"][f"{source}_seller"]
+    assert entry["via"] == ["agent_id"]
+    with pytest.raises(SemanticLayerError) as raised:
+        project.upsert_relationship(from_entity=source, to_entity="customer", columns=["x_id"])
+    assert "name" in str(raised.value)
+
+
+def test_a_role_name_that_relates_another_pair_is_refused(project):
+    project.upsert_model(
+        model_id="stores", entity_key="store", relation="raw_stores", primary_key=["store_id"]
+    )
+    project.upsert_relationship(
+        from_entity="event", to_entity="store", columns=["store_id"], name="event_party"
+    )
+    revision = project.revision()
+
+    with pytest.raises(SemanticLayerError) as raised:
+        project.upsert_relationship(
+            from_entity="event", to_entity="customer", columns=["buyer_id"], name="event_party"
+        )
+
+    assert raised.value.code == "INVALID_CONFIG"
+    assert project.revision() == revision
+
+
+def test_a_model_keyed_by_keys_primary_is_not_called_row_grain(project):
+    """The loader keys a model by its keys.primary even with no graph entity; Architect
+    must not call it row grain."""
+    model = {
+        "model": {
+            "id": "stores",
+            "relation": "raw_stores",
+            "description": "One row per store.",
+            "keys": {"primary": ["store_id"]},
+        }
+    }
+    project.write_files(
+        [{"path": "models/core/stores.yml", "content": yaml.safe_dump(model, sort_keys=False)}]
+    )
+    revision = project.revision()
+
+    for source, target in (("event", "stores"), ("stores", "customer")):
+        with pytest.raises(SemanticLayerError) as raised:
+            project.upsert_relationship(from_entity=source, to_entity=target, columns=["x_id"])
+        assert "row grain" not in str(raised.value)
+    assert project.revision() == revision
+
+
+@pytest.mark.parametrize(
+    ("columns", "name", "taken"),
+    [
+        (["buyer_id"], "event_buyer2", "events_customer"),  # the model's foreign key's columns
+        (["seller_id"], "event_agent", "event_seller"),  # another role's columns
+        (["agent_id"], "events_customer", "events_customer"),  # the foreign key's own name
+    ],
+)
+def test_a_role_on_columns_or_a_name_another_role_holds_is_refused(project, columns, name, taken):
+    project.upsert_relationship(from_entity="event", to_entity="customer", columns=["buyer_id"])
+    project.upsert_relationship(
+        from_entity="event",
+        to_entity="customer",
+        columns=["seller_id"],
+        name="event_seller",
+        keep_existing_routes=True,
+    )
+    revision = project.revision()
+
+    with pytest.raises(SemanticLayerError) as raised:
+        project.upsert_relationship(
+            from_entity="event",
+            to_entity="customer",
+            columns=columns,
+            name=name,
+            keep_existing_routes=True,
+        )
+
+    assert raised.value.code == "INVALID_CONFIG"
+    assert f"relationship.{taken}" in str(raised.value)
+    assert raised.value.details["relationship"] == taken
+    assert project.revision() == revision

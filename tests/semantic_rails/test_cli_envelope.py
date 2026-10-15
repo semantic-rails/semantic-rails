@@ -48,9 +48,8 @@ def test_cli_query_accepts_path_flag_for_unregistered_packages() -> None:
     package_path = REPO_ROOT / "configs" / "semantic_rails" / "jaffle_shop"
     assert package_path.is_dir(), f"missing jaffle_shop package: {package_path}"
     query = {
-        "version": 1,
         "select": [
-            {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
+            "metric.sales.aov_usd",
         ],
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
@@ -88,12 +87,11 @@ def test_cli_query_accepts_path_flag_for_unregistered_packages() -> None:
 
 def test_cli_query_response_detail_flags_keep_first_run_output_small() -> None:
     query = {
-        "version": 1,
         "select": [
-            {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue_usd"},
+            "measure.jaffle.revenue_usd",
         ],
         "group_by": ["dimension.jaffle_store_name"],
-        "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
+        "order_by": [{"field": "revenue_usd", "direction": "desc"}],
         "limit": 5,
     }
     payload = _run_cli(
@@ -158,3 +156,91 @@ def test_http_app_state_accepts_path_loaded_packages() -> None:
         assert state.runtime.package_id == "jaffle_shop"
     finally:
         state.runtime.close()
+
+
+def test_cli_query_now_pins_a_relative_window() -> None:
+    last_month = {
+        "select": ["measure.jaffle.order_count"],
+        "time": {"last": {"unit": "month", "value": 1}},
+    }
+    february = {
+        "select": ["measure.jaffle.order_count"],
+        "time": {"start": "2017-02-01", "end": "2017-03-01"},
+    }
+    pinned = _run_cli(
+        "query",
+        "--package",
+        "jaffle_shop",
+        "--query-json",
+        json.dumps(last_month),
+        "--now",
+        "2017-03-15",
+    )
+    expected = _run_cli("query", "--package", "jaffle_shop", "--query-json", json.dumps(february))
+    assert pinned["ok"] and pinned["rows"] == expected["rows"], pinned
+
+
+def test_cli_plan_passes_now(monkeypatch) -> None:
+    import semantic_rails.cli.app as cli_app
+    import semantic_rails.cli.commands.query as query_commands
+
+    seen: list[object] = []
+
+    def plan(*_args, now=None, **_kwargs):
+        seen.append(now)
+        return {"ok": True, "status": "ok"}
+
+    monkeypatch.setattr(query_commands, "plan_payload", plan)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["semantic-rails", "plan", "--package", "jaffle_shop", "--intent", "x"]
+        + ["--now", "2017-03-15"],
+    )
+    cli_app.main()
+    assert seen == ["2017-03-15"]
+
+
+def test_examples_and_tests_take_now_from_the_entry_their_file_or_the_run(
+    tmp_path, monkeypatch
+) -> None:
+    from semantic_rails.config_validation import PackageReference
+    from semantic_rails.package_tools import run_examples_report, run_package_tests_report
+    from semantic_rails.runtime import Runtime
+    from tests.semantic_rails.conftest import copy_package_config
+
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    query = {"select": ["measure.jaffle.order_count"]}
+    for folder, plural, extra in (
+        ("examples", "examples", {}),
+        ("tests", "tests", {"kind": "query_row_count_bounds", "min_rows": 1}),
+    ):
+        for path in (package / folder).glob("*.yml"):
+            path.unlink()
+        (package / folder / "pinned.yml").write_text(
+            json.dumps(
+                {
+                    "now": "2017-03-15",
+                    plural: {
+                        "file_now": {"query": query, **extra},
+                        "own_now": {"query": query, "now": "2017-01-02", **extra},
+                    },
+                }
+            )
+        )
+        (package / folder / "unpinned.yml").write_text(
+            json.dumps({plural: {"run_now": {"query": query, **extra}}})
+        )
+    seen: list[object] = []
+    original = Runtime.query
+
+    def query_with_now(self, call, **options):
+        seen.append(options.get("now"))
+        return original(self, call, **options)
+
+    monkeypatch.setattr(Runtime, "query", query_with_now)
+    ref = PackageReference(source_path=str(package))
+    for report in (run_examples_report, run_package_tests_report):
+        seen.clear()
+        assert report(ref, now="2017-06-01")["ok"]
+        assert seen == ["2017-03-15", "2017-01-02", "2017-06-01"]

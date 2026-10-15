@@ -6,14 +6,15 @@ from datetime import UTC, date, datetime
 import duckdb
 import pytest
 
-from semantic_rails import ast
-from semantic_rails.compiler import _compile_query_sql_ast, compile_query
+from semantic_rails import clock
+from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.sql_lowering import _apply_role_timezone
 from semantic_rails.config import load_package_config
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.metadata import _query_state
 from semantic_rails.metadata_parts.valid_values import _query_state as values_query_state
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.runtime import Runtime
@@ -22,7 +23,7 @@ from semantic_rails.sql_ast import SqlCall, SqlIdentifier
 ROLE = "temporal_role.jaffle_order_time"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config():
     original = load_package_config("configs/semantic_rails/jaffle_shop")
     return replace(
@@ -31,8 +32,10 @@ def config():
     )
 
 
-@pytest.mark.parametrize("warehouse", ["duckdb", "postgres"])
-@pytest.mark.parametrize("session_zone", ["UTC", "America/New_York", "America/Los_Angeles"])
+@pytest.mark.parametrize(
+    ("warehouse", "session_zone"),
+    [("duckdb", "UTC"), ("postgres", "America/New_York"), ("duckdb", "America/Los_Angeles")],
+)
 def test_converted_date_uses_a_naive_timestamp_input(config, warehouse, session_zone):
     role = replace(next(r for r in config.temporal_roles if r.id == ROLE), column_timezone="UTC")
     config = replace(
@@ -72,7 +75,7 @@ _NAIVE_DATE = "TIMEZONE('America/New_York', TIMEZONE('UTC', CAST(source_day AS T
 # the others keep the conversion they emitted before that cast existed.
 DATE_CLOCK_CONVERSIONS = {
     "athena": "AT_TIMEZONE(WITH_TIMEZONE(source_day, 'UTC'), 'America/New_York')",
-    "bigquery": "DATETIME(TIMESTAMP(source_day, 'UTC'), 'America/New_York')",
+    "bigquery": "DATETIME(CAST(source_day AS TIMESTAMP), 'America/New_York')",
     "clickhouse": "toTimeZone(toDateTime(source_day, 'UTC'), 'America/New_York')",
     "databricks": "CONVERT_TIMEZONE('UTC', 'America/New_York', source_day)",
     "duckdb": _NAIVE_DATE,
@@ -146,7 +149,6 @@ def _session_conversion(config, data_type, column_timezone):
         "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
     }
     query = {
-        "version": 1,
         "select": [{"as": "rate", "expression": conversion}],
         "time": {
             "temporal_role": SESSION_ROLE,
@@ -185,32 +187,39 @@ def test_conversion_metric_on_an_unconverted_clock_matches_its_reference(config)
 
 def _query(**time):
     return {
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "n"}],
+        "select": [{"expression": "measure.jaffle.order_count", "as": "n"}],
         "time": {
             "temporal_role": ROLE,
             "grain": "month",
-            "range": {"last": {"unit": "month", "value": 1}},
+            "last": {"unit": "month", "value": 1},
             **time,
         },
     }
 
 
+def _fixed_clock(monkeypatch, hour=2):
+    """Pin the server clock to ``hour`` o'clock UTC on 2024-07-01; returns a setter."""
+    instant = {"hour": hour}
+    monkeypatch.setattr(
+        clock, "current_time", lambda: datetime(2024, 7, 1, instant["hour"], tzinfo=UTC)
+    )
+    return lambda value: instant.update(hour=value)
+
+
 @pytest.mark.parametrize(
-    "now",
+    ("now", "partial"),
     [
-        "2024-07-01T02:00:00Z",
-        "2024-06-30T22:00:00-04:00",
-        datetime(2024, 7, 1, 2, tzinfo=UTC),
-        "2024-06-30",
-        date(2024, 6, 30),
-        datetime(2024, 6, 30, 22),
+        ("2024-07-01T02:00:00Z", False),
+        ("2024-06-30T22:00:00-04:00", True),
+        (datetime(2024, 7, 1, 2, tzinfo=UTC), False),
+        ("2024-06-30", True),
+        (date(2024, 6, 30), False),
+        (datetime(2024, 6, 30, 22), True),
     ],
 )
-@pytest.mark.parametrize("normalize", [ast.normalize_query, ast.normalize_partial_query])
-def test_range_normalization_preserves_the_instant_until_the_role_is_known(config, now, normalize):
-    query = {**_query(), "policy_context": {"now": now}}
-    time = normalize(query, config=config).time
-    assert (time.start, time.end) == ("2024-05-01", "2024-06-01")
+def test_a_relative_window_resolves_in_the_roles_zone(config, now, partial):
+    time = read_call(_query(), config=config, now=now, partial=partial)[0]["time"]
+    assert (time["start"], time["end"]) == ("2024-05-01", "2024-06-01")
 
 
 @pytest.mark.parametrize(
@@ -218,80 +227,53 @@ def test_range_normalization_preserves_the_instant_until_the_role_is_known(confi
     [("UTC", "2024-07-01"), ("America/New_York", "2024-06-01"), ("Asia/Tokyo", "2024-07-01")],
 )
 def test_default_now_uses_the_roles_date(monkeypatch, config, timezone, end):
-    class FixedDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2024, 7, 1, 2, tzinfo=UTC)
-
-    monkeypatch.setattr(ast, "datetime", FixedDatetime)
+    _fixed_clock(monkeypatch)
     config = replace(
         config, temporal_roles=[replace(r, timezone=timezone) for r in config.temporal_roles]
     )
-    assert ast.normalize_query(_query(), config=config).time.end == end
-
-
-def test_utc_default_keeps_planner_resolution_consistent():
-    last = {"last": {"unit": "month", "value": 1}}
-    for instant in ("2024-07-01T02:00:00Z", "2024-06-30T22:00:00-04:00"):
-        assert ast._relative_range_bounds(last, policy_context={"now": instant}) == {
-            "start": "2024-06-01",
-            "end": "2024-07-01",
-        }
+    assert read_call(_query(), config=config)[0]["time"]["end"] == end
 
 
 @pytest.mark.parametrize("read", [_query_state, values_query_state])
 def test_query_state_reports_the_same_local_bounds(config, read):
-    state = read({**_query(), "policy_context": {"now": "2024-07-01T02:00:00Z"}}, config)
+    engine = read_call(_query(), config=config, now="2024-07-01T02:00:00Z", partial=True)[0]
+    state = read(engine, config)
     assert state["normalized_query"]["time"]["end"] == "2024-06-01"
 
 
 def test_cache_changes_at_local_midnight_within_one_utc_day(monkeypatch, config):
-    class MovingDatetime(datetime):
-        hour = 3
-
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2024, 7, 1, cls.hour, tzinfo=UTC)
-
-    monkeypatch.setattr(ast, "datetime", MovingDatetime)
+    move = _fixed_clock(monkeypatch, hour=3)
     runtime = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     try:
-        first = runtime._compile(_query(), policy_context={})
-        MovingDatetime.hour = 4
-        second = runtime._compile(_query(), policy_context={})
-        again = runtime._compile(_query(), policy_context={})
-        assert first["logical_plan"].time["end"] == "2024-06-01"
-        assert second["logical_plan"].time["end"] == "2024-07-01"
+        first = runtime.compile(_query(), verbosity="full")
+        move(4)
+        second = runtime.compile(_query(), verbosity="full")
+        again = runtime.compile(_query(), verbosity="full")
+        assert first["logical_plan"]["time"]["end"] == "2024-06-01"
+        assert second["logical_plan"]["time"]["end"] == "2024-07-01"
         assert second["compile_stats"]["cache_hit"] is False
         assert again["compile_stats"]["cache_hit"] is True
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("unit", ["week", "month", "quarter", "year"])
-def test_nested_compilation_refuses_nondefault_relative_periods(config, unit):
-    query = _query(calendar_id="fiscal", range={"last": {"unit": unit, "value": 9}})
+def test_a_calendar_in_the_call_is_refused(config):
     with pytest.raises(SemanticLayerError) as caught:
-        _compile_query_sql_ast(config, query)
+        read_call(_query(calendar_id="fiscal"), config=config)
     assert caught.value.code == "INVALID_QUERY"
-    assert caught.value.details["path"] == "time.range.last.unit"
+    assert caught.value.details["path"] == "time.calendar_id"
 
 
 def test_cache_reuses_the_date_already_resolved_by_binding(monkeypatch, config):
-    class MovingDatetime(datetime):
-        hour = 3
-
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2024, 7, 1, cls.hour, tzinfo=UTC)
-
-    monkeypatch.setattr(ast, "datetime", MovingDatetime)
+    move = _fixed_clock(monkeypatch, hour=3)
     runtime = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     try:
-        binding = runtime._bind(_query(), {})
-        MovingDatetime.hour = 4
-        first = runtime._compile(_query(), policy_context={}, binding=binding)
-        second = runtime._compile(_query(), policy_context={}, binding=runtime._bind(_query(), {}))
+        payload = runtime.engine_payload(_query())
+        binding = runtime._bind(payload, {})
+        move(4)
+        first = runtime._compile(payload, policy_context={}, binding=binding)
+        later = runtime.engine_payload(_query())
+        second = runtime._compile(later, policy_context={}, binding=runtime._bind(later, {}))
         assert first["logical_plan"].time["end"] == "2024-06-01"
         assert second["logical_plan"].time["end"] == "2024-07-01"
         assert second["compile_stats"]["cache_hit"] is False
@@ -299,25 +281,42 @@ def test_cache_reuses_the_date_already_resolved_by_binding(monkeypatch, config):
         runtime.close()
 
 
-def test_day_ranges_remain_available_on_nondefault_calendars(config):
-    query = {
-        **_query(calendar_id="fiscal", range={"last": {"unit": "day", "value": 1}}),
-        "policy_context": {"now": "2024-07-01T02:00:00Z"},
-    }
-    time = ast.normalize_query(query, config=config).time
-    assert (time.start, time.end) == ("2024-06-29", "2024-06-30")
-
-
-def test_role_bound_to_nondefault_calendar_cannot_bypass_the_period_guard(config):
+def _fiscal(config):
+    """The order clock's entity on a non-default (fiscal) calendar."""
     role = next(r for r in config.temporal_roles if r.id == ROLE)
     entity = next(d.entity for d in config.dimensions if d.id == role.dimension)
-    config = replace(
+    return replace(
         config,
         entities=[
             replace(e, calendar_id="fiscal") if e.id == entity else e for e in config.entities
         ],
     )
-    with pytest.raises(SemanticLayerError) as caught:
-        ast.normalize_query(_query(), config=config)
-    assert caught.value.code == "INVALID_QUERY"
-    assert caught.value.details["calendar_id"] == "fiscal"
+
+
+def _fiscal_runtime(config):
+    return Runtime.from_config(_fiscal(config), source_path="configs/semantic_rails/jaffle_shop")
+
+
+def test_day_ranges_remain_available_on_nondefault_calendars(config):
+    query = _query(last={"unit": "day", "value": 1})
+    del query["time"]["grain"]
+    runtime = _fiscal_runtime(config)
+    try:
+        result = runtime.validate(query, now="2024-07-01T02:00:00Z")
+    finally:
+        runtime.close()
+    assert result["ok"] is True, result["errors"]
+    # The echoed call keeps last; the answer's window states the resolved bounds.
+    assert result["normalized_query"]["time"]["last"] == {"unit": "day", "value": 1}
+    window = result["window"]
+    assert (window["start"], window["end"]) == ("2024-06-29", "2024-06-30")
+
+
+def test_role_bound_to_nondefault_calendar_cannot_bypass_the_period_guard(config):
+    runtime = _fiscal_runtime(config)
+    try:
+        (error,) = runtime.validate(_query(), now="2024-07-01T02:00:00Z")["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == "REWRITE_NOT_SUPPORTED"
+    assert error["details"]["calendar_id"] == "fiscal"

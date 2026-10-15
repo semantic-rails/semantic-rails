@@ -57,8 +57,11 @@ Start here when changing catalog, discovery, inspect cards, build-options, valid
 Start here when changing query planning, path selection, fanout rules, rewrites, SQL lowering, or explain output.
 
 - Query normalization: `semantic_rails/ast.py`
-- Planning and compile orchestration: `semantic_rails/compiler.py`
-- Compiler subsystems: `semantic_rails/compiler_parts/`
+- Compile orchestration: `semantic_rails/compiler.py`; planning in
+  `semantic_rails/compiler_parts/planning.py`, binding in `compiler_parts/binding.py` and SQL
+  lowering in `compiler_parts/sql_lowering.py`
+- Compiler subsystems: `semantic_rails/compiler_parts/`, one module per phase; each module's
+  docstring says what it owns
 - Fanout and path analysis: `semantic_rails/fanout.py`
 - SQL rendering: `semantic_rails/renderer.py`
 - Runtime execution and warehouse adapters: `semantic_rails/runtime.py` and `semantic_rails/db.py`
@@ -250,7 +253,7 @@ uv run python scripts/verify_package_distribution.py
 # (see scripts/dev/README.md):
 make complexity
 uv run python scripts/dev/capture_sql_baseline.py /tmp/sql_baseline_golden.json
-uv run python scripts/dev/capture_dialect_sql.py /tmp/dialect_sql_golden.json
+uv run python scripts/dev/compile_corpus.py record /tmp/corpus_golden.json
 ```
 
 For the Snowflake showcase package, see

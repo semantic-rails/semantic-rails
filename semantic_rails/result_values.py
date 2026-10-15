@@ -128,6 +128,9 @@ def _json_container(value: Any) -> Any:
     raise _refuse()
 
 
+PERIOD_GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
+
+
 def result_rows(
     rows: list[dict[str, Any]],
     *,
@@ -146,6 +149,12 @@ def result_rows(
         column["field"]
         for column in output_columns or []
         if str(column.get("semantic_id", "")).startswith("temporal_role.")
+    }
+    # A day or coarser period is a calendar date, in the clock's zone.
+    periods = {
+        column["field"]
+        for column in output_columns or []
+        if column["field"] in buckets and column.get("grain") in PERIOD_GRAINS
     }
     # Choose once from observed driver types; authored types never encode values.
     numeric_types: dict[str, str] = {}
@@ -192,6 +201,8 @@ def result_rows(
             if bucket and isinstance(value, date) and not isinstance(value, datetime):
                 value = datetime.combine(value, time())
             item, metadata = _value(value, zone=zone, numeric_type=numeric_types.get(column, ""))
+            if column in periods and metadata["type"] == "timestamp":
+                item, metadata = item[:10], {"type": "date"}
             if fraction is not None and len(fraction[1]) > 6:
                 clock = re.search(r"(\d{2}:\d{2}:\d{2})(?:\.(\d+))?", item)
                 assert clock is not None

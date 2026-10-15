@@ -19,14 +19,16 @@ import subprocess
 import tarfile
 import tempfile
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import fields
 from decimal import Context, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .ast import PERIOD_PARTIAL
 from .cache import package_fingerprint
 from .config import load_package_config, package_root_for_source, resolve_repo_path
+from .config_parts.one_per_key import one_per_key_source
 from .config_validation import (
     PackageReference,
     parse_config_report,
@@ -170,15 +172,10 @@ def _artifact_file_rows(source_path: str, *, config: Any | None = None) -> list[
 def package_manifest(
     ref: PackageReference,
     *,
-    config: Any | None = None,
     checks: dict[str, Any] | None = None,
     snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
     snapshot = snapshot or load_package_snapshot(ref.source_path)
-    if config is not None and config != snapshot.config:
-        raise SemanticLayerError(
-            "INVALID_CONFIG", "Manifest config does not match the loaded source snapshot."
-        )
     config = snapshot.config
     return {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
@@ -309,58 +306,12 @@ def run_examples_report(
     parse_report: dict[str, Any] | None = None,
     config: Any | None = None,
     runtime: Runtime | None = None,
+    now: Any = None,
 ) -> dict[str, Any]:
-    report = parse_report
-    if report is None or config is None:
-        report, config = parse_config_report(ref)
-    if not report["ok"] or config is None:
-        return {
-            "ok": False,
-            "package": dict(report["package"]),
-            "summary": {"examples_total": 0, "passed": 0, "failed": 0},
-            "examples": [],
-            "errors": list(report["errors"]),
-        }
-
-    should_close_runtime = runtime is None
-    if runtime is None:
-        runtime = Runtime(ref.package_id) if ref.package_id else Runtime.from_path(ref.source_path)
-    try:
-        examples = load_named_entries(
-            Path(package_root_for_source(ref.source_path)) / "examples",
-            plural_key="examples",
-            singular_key="example",
-        )
-        results: list[dict[str, Any]] = []
-        failures: list[dict[str, Any]] = []
-        for example_id, spec in examples:
-            result = _run_example(runtime, example_id, spec)
-            results.append(result)
-            if not result["ok"]:
-                failures.append(
-                    {
-                        "code": result["error"]["code"],
-                        "message": result["error"]["message"],
-                        "details": {
-                            "example_id": example_id,
-                            **dict(result["error"].get("details", {}) or {}),
-                        },
-                    }
-                )
-        return {
-            "ok": not failures,
-            "package": {"id": config.package.package_id, "source_path": ref.source_path},
-            "summary": {
-                "examples_total": len(results),
-                "passed": sum(1 for row in results if row["ok"]),
-                "failed": len(failures),
-            },
-            "examples": results,
-            "errors": failures,
-        }
-    finally:
-        if should_close_runtime:
-            runtime.close()
+    """Run the package's examples. An entry's ``now`` (or its file's) wins over ``now``."""
+    return _run_entries_report(
+        ref, "example", _run_example, parse_report, config=config, runtime=runtime, now=now
+    )
 
 
 def run_package_tests_report(
@@ -369,16 +320,34 @@ def run_package_tests_report(
     parse_report: dict[str, Any] | None = None,
     config: Any | None = None,
     runtime: Runtime | None = None,
+    now: Any = None,
 ) -> dict[str, Any]:
-    report = parse_report
+    """Run the package's tests. An entry's ``now`` (or its file's) wins over ``now``."""
+    return _run_entries_report(
+        ref, "test", _run_test, parse_report, config=config, runtime=runtime, now=now
+    )
+
+
+def _run_entries_report(
+    ref: PackageReference,
+    kind: str,
+    run: Callable[[Runtime, str, Any, Any], dict[str, Any]],
+    report: dict[str, Any] | None,
+    *,
+    config: Any | None,
+    runtime: Runtime | None,
+    now: Any,
+) -> dict[str, Any]:
+    """Run each ``kind`` entry (example or test) of the package and summarize the results."""
+    plural = f"{kind}s"
     if report is None or config is None:
         report, config = parse_config_report(ref)
     if not report["ok"] or config is None:
         return {
             "ok": False,
             "package": dict(report["package"]),
-            "summary": {"tests_total": 0, "passed": 0, "failed": 0},
-            "tests": [],
+            "summary": {f"{plural}_total": 0, "passed": 0, "failed": 0},
+            plural: [],
             "errors": list(report["errors"]),
         }
 
@@ -386,15 +355,25 @@ def run_package_tests_report(
     if runtime is None:
         runtime = Runtime(ref.package_id) if ref.package_id else Runtime.from_path(ref.source_path)
     try:
-        tests = load_named_entries(
-            Path(package_root_for_source(ref.source_path)) / "tests",
-            plural_key="tests",
-            singular_key="test",
+        entries = load_named_entries(
+            Path(package_root_for_source(ref.source_path)) / plural,
+            plural_key=plural,
+            singular_key=kind,
+            defaults=("now",),
         )
         results: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
-        for test_id, spec in tests:
-            result = _run_test(runtime, test_id, spec)
+        for entry_id, spec in entries:
+            try:
+                result = run(runtime, entry_id, spec, now)
+            except SemanticLayerError as exc:
+                # A refused query fails its own entry; every other entry still runs.
+                result = {
+                    "id": entry_id,
+                    "ok": False,
+                    "error": {"code": exc.code, "message": str(exc), "details": exc.details},
+                    "query": spec.get("query"),
+                }
             results.append(result)
             if not result["ok"]:
                 failures.append(
@@ -402,7 +381,7 @@ def run_package_tests_report(
                         "code": result["error"]["code"],
                         "message": result["error"]["message"],
                         "details": {
-                            "test_id": test_id,
+                            f"{kind}_id": entry_id,
                             **dict(result["error"].get("details", {}) or {}),
                         },
                     }
@@ -411,11 +390,11 @@ def run_package_tests_report(
             "ok": not failures,
             "package": {"id": config.package.package_id, "source_path": ref.source_path},
             "summary": {
-                "tests_total": len(results),
+                f"{plural}_total": len(results),
                 "passed": sum(1 for row in results if row["ok"]),
                 "failed": len(failures),
             },
-            "tests": results,
+            plural: results,
             "errors": failures,
         }
     finally:
@@ -592,8 +571,14 @@ def check_warehouse_column_reachability_report(
         # relations (date spines, computed pipelines): those won't probe
         # cleanly via DESCRIBE.
         relation_ids = {rel.id for rel in config.relations}
+        outputs = {rel.output_name for rel in config.relations}
         entity_table: dict[str, str] = {}
         for entity in config.entities:
+            # A one-per-key model reads its columns from the relation it names.
+            source = one_per_key_source(config, entity)
+            if source and source not in outputs:
+                entity_table[entity.id] = source
+                continue
             if not entity.table or entity.relation_id in relation_ids:
                 # Skip relations — pipelines may not exist as plain tables.
                 continue
@@ -622,7 +607,7 @@ def check_warehouse_column_reachability_report(
             table = entity_table.get(entity.id, "")
             if not table or table not in table_columns:
                 continue
-            for column in entity.key or []:
+            for column in entity.key_columns:
                 if str(column).lower() not in table_columns[table]:
                     errors.append(
                         {
@@ -665,33 +650,9 @@ def check_warehouse_column_reachability_report(
                     }
                 )
 
-        # Probe any extra tables referenced by measures via `source_relation`
-        # (fact-table models decouple a measure's source table from the
-        # entity it attaches to).
-        extra_tables: set[str] = set()
-        for measure in config.measures:
-            src = str(getattr(measure, "source_relation", "") or "")
-            if src and src not in table_columns:
-                extra_tables.add(src)
-        for table in sorted(extra_tables):
-            cols, err = _describe_table_columns(adapter, warehouse=warehouse, table=table)
-            if err:
-                errors.append(
-                    {
-                        "code": "WAREHOUSE_TABLE_NOT_FOUND",
-                        "message": err,
-                        "details": {"table": table},
-                    }
-                )
-                continue
-            table_columns[table] = cols
-
         # Check measure expr column refs against the measure's table.
-        # Prefer `source_relation` when set (fact-table models); fall back
-        # to the entity's table.
         for measure in config.measures:
-            src = str(getattr(measure, "source_relation", "") or "")
-            table = src or entity_table.get(measure.entity, "")
+            table = entity_table.get(measure.entity, "")
             if not table or table not in table_columns:
                 continue
             referenced: list[str] = []
@@ -736,6 +697,7 @@ def check_package_report(
     compare_path: str = "",
     base_ref: str = "",
     artifact_path: str = "",
+    now: Any = None,
 ) -> dict[str, Any]:
     parse_report, snapshot = parse_snapshot_report(ref)
     config = snapshot.config if snapshot else None
@@ -766,10 +728,10 @@ def check_package_report(
             ref, parse_report=parse_report, config=config, runtime=runtime
         )
         example_report = run_examples_report(
-            ref, parse_report=parse_report, config=config, runtime=runtime
+            ref, parse_report=parse_report, config=config, runtime=runtime, now=now
         )
         test_report = run_package_tests_report(
-            ref, parse_report=parse_report, config=config, runtime=runtime
+            ref, parse_report=parse_report, config=config, runtime=runtime, now=now
         )
     finally:
         runtime.close()
@@ -807,26 +769,17 @@ def check_package_report(
             "tables_probed": reachability_report["summary"]["tables_probed"],
             "missing_columns": reachability_report["summary"]["missing_columns"],
         },
-        "examples": {
-            "ok": example_report["ok"],
-            "examples_total": example_report["summary"]["examples_total"],
-            "passed": example_report["summary"]["passed"],
-            "failed": example_report["summary"]["failed"],
-        },
-        "tests": {
-            "ok": test_report["ok"],
-            "tests_total": test_report["summary"]["tests_total"],
-            "passed": test_report["summary"]["passed"],
-            "failed": test_report["summary"]["failed"],
-        },
+        "examples": {"ok": example_report["ok"], **example_report["summary"]},
+        "tests": {"ok": test_report["ok"], **test_report["summary"]},
     }
-    ok = bool(
-        parse_report["ok"]
-        and validate_report["ok"]
-        and reachability_report["ok"]
-        and example_report["ok"]
-        and test_report["ok"]
-    )
+    reports = {
+        "parse": parse_report,
+        "validate": validate_report,
+        "column_reachability": reachability_report,
+        "examples": example_report,
+        "tests": test_report,
+    }
+    ok = all(report["ok"] for report in reports.values())
     if package_fingerprint(ref.source_path) != snapshot.source_fingerprint:
         raise SemanticLayerError(
             "INVALID_CONFIG",
@@ -838,29 +791,12 @@ def check_package_report(
         artifact = _write_package_artifact(
             ref, output_path=artifact_path, manifest=manifest, config=config
         )
-    blockers = _check_errors(
-        {
-            "checks": {
-                "parse": parse_report,
-                "validate": validate_report,
-                "column_reachability": reachability_report,
-                "examples": example_report,
-                "tests": test_report,
-            }
-        }
-    )
+    blockers = _check_errors({"checks": reports})
     return {
         "ok": ok,
         "package": {"id": config.package.package_id, "source_path": ref.source_path},
         "package_hash": manifest["package_hash"],
-        "checks": {
-            "parse": parse_report,
-            "validate": validate_report,
-            "column_reachability": reachability_report,
-            "examples": example_report,
-            "tests": test_report,
-            "impact": impact,
-        },
+        "checks": {**reports, "impact": impact},
         "summary": checks,
         "manifest": manifest,
         "artifact": artifact,
@@ -994,7 +930,12 @@ def impact_report(
 
 
 def promote_package_report(
-    ref: PackageReference, *, environment: str, compare_path: str = "", base_ref: str = ""
+    ref: PackageReference,
+    *,
+    environment: str,
+    compare_path: str = "",
+    base_ref: str = "",
+    now: Any = None,
 ) -> dict[str, Any]:
     config = load_package_config(ref.source_path)
     allowed_environments = list(config.package.environments or [])
@@ -1006,8 +947,8 @@ def promote_package_report(
         )
     parse_report, _ = parse_config_report(ref)
     validate_report = validate_config_report(ref)
-    example_report = run_examples_report(ref)
-    test_report = run_package_tests_report(ref)
+    example_report = run_examples_report(ref, now=now)
+    test_report = run_package_tests_report(ref, now=now)
     impact = (
         impact_report(ref, compare_path=compare_path, base_ref=base_ref)
         if (compare_path or base_ref)
@@ -1064,7 +1005,14 @@ def promote_package_report(
     }
 
 
-def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _call_arguments(spec: dict[str, Any], now: Any = None) -> dict[str, Any]:
+    """An entry's ``now`` (or the run's) and its ``context``, the arguments beside its query."""
+    return {"now": spec.get("now", now), "context": spec.get("context")}
+
+
+def _run_example(
+    runtime: Runtime, example_id: str, spec: dict[str, Any], now: Any = None
+) -> dict[str, Any]:
     query = dict(spec.get("query", {}) or {})
     if not query:
         return {
@@ -1076,18 +1024,10 @@ def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dic
                 "details": {},
             },
         }
-    try:
-        result = runtime.query({**query, "verbosity": "compact"})
-    except SemanticLayerError as exc:
-        return {
-            "id": example_id,
-            "ok": False,
-            "error": {"code": exc.code, "message": str(exc), "details": exc.details},
-            "query": query,
-        }
+    result = runtime.query(query, verbosity="compact", **_call_arguments(spec, now))
     shape = dict(spec.get("expected_shape", {}) or {})
     columns = list(shape.get("columns", []) or [])
-    actual_columns = [column["field"] for column in result["output_columns"]]
+    actual_columns = _shown_columns([c["field"] for c in result["output_columns"]], columns)
     if columns and actual_columns[: len(columns)] != columns:
         return {
             "id": example_id,
@@ -1133,13 +1073,21 @@ def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dic
     }
 
 
-def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _shown_columns(actual: list[str], expected: list[str]) -> list[str]:
+    """A series' period_partial flag is compared only when the expectation names it."""
+    return actual if PERIOD_PARTIAL in expected else [c for c in actual if c != PERIOD_PARTIAL]
+
+
+def _run_test(
+    runtime: Runtime, test_id: str, spec: dict[str, Any], now: Any = None
+) -> dict[str, Any]:
     kind = str(spec.get("kind", "") or "").strip()
     query = dict(spec.get("query", {}) or {})
+    call = _call_arguments(spec, now)
     if kind == "query_returns_columns":
-        result = runtime.query(query)
+        result = runtime.query(query, **call)
         expected = list(spec.get("columns", []) or [])
-        actual = list(result["rows"][0].keys()) if result["rows"] else []
+        actual = _shown_columns(list(result["rows"][0]) if result["rows"] else [], expected)
         ok = actual[: len(expected)] == expected
         return _test_result(
             test_id,
@@ -1149,7 +1097,7 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"expected": expected, "actual": actual},
         )
     if kind == "query_row_count_bounds":
-        result = runtime.query(query)
+        result = runtime.query(query, **call)
         row_count = int(result["row_count"])
         min_rows = spec.get("min_rows")
         max_rows = spec.get("max_rows")
@@ -1164,7 +1112,7 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"row_count": row_count, "min_rows": min_rows, "max_rows": max_rows},
         )
     if kind == "validate_fails_with_code":
-        result = runtime.validate(query)
+        result = runtime.validate(query, **call)
         code = str(spec.get("code", "") or "")
         actual_code = str((result.get("errors") or [{}])[0].get("code", "") or "")
         ok = (not result["ok"]) and actual_code == code
@@ -1176,7 +1124,7 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"expected": code, "actual": actual_code},
         )
     if kind == "explain_contains":
-        result = runtime.compile(query)
+        result = runtime.compile(query, **call)
         needle = str(spec.get("text", "") or "")
         blob = json.dumps(result, sort_keys=True, default=str)
         ok = needle in blob
@@ -1188,13 +1136,19 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
             {"needle": needle},
         )
     if kind == "query_matches_snapshot":
-        result = runtime.query(query)
+        result = runtime.query(query, **call)
         expected_rows = list(spec.get("expected_rows", []) or [])
-        compiled = runtime._compile(query, policy_context={})
+        compiled = runtime._compile(runtime.engine_payload(query, **call), policy_context={})
         columns = output_columns(runtime._config, compiled)
         encoded_expected = result_rows(
             expected_rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
         )
+        # A snapshot that leaves out a series' period_partial flag is compared without it.
+        if not any(PERIOD_PARTIAL in row for row in expected_rows):
+            shown = [
+                {k: v for k, v in row.items() if k != PERIOD_PARTIAL} for row in result["rows"]
+            ]
+            result = {**result, "rows": shown}
         actual_rows = _typed_rows(result)
         ok = actual_rows == _typed_rows(encoded_expected)
         return _test_result(
@@ -1207,8 +1161,8 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
     if kind == "metric_equals_query":
         metric_query = dict(spec.get("metric_query", query) or {})
         expected_query = dict(spec.get("expected_query", {}) or {})
-        metric_rows = _typed_rows(runtime.query(metric_query))
-        expected_rows = _typed_rows(runtime.query(expected_query))
+        metric_rows = _typed_rows(runtime.query(metric_query, **call))
+        expected_rows = _typed_rows(runtime.query(expected_query, **call))
         ok = metric_rows == expected_rows
         return _test_result(
             test_id,

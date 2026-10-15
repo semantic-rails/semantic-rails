@@ -48,10 +48,12 @@ from .schema import (
     TemporalRoleConfig,
     ValueDomainConfig,
     ValueDomainValue,
+    ZeroThrough,
 )
 from .schema import base_of as base_of
 from .schema import require_base as require_base
 from .segments import build_segment_query, normalize_segment
+from .sql_preparation import parameters_denied
 
 OBJECT_FIELDS = (
     "entities",
@@ -112,14 +114,14 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         identity="name",
     ),
     EntityConfig: _classes(
-        "id table primary_key kind relation_id key identifiers foreign_keys calendar_id "
-        "allowed_as_root freshness_sla_seconds bridge",
+        "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
+        "allowed_as_root freshness_sla_seconds bridge model one_per_key",
         text="label description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names",
         identity="name aliases",
     ),
     DimensionConfig: _classes(
-        "id entity column data_type filterable groupable value_domain",
+        "id entity column data_type filterable groupable value_domain unknown_values",
         text="label description semantic_kind sample_values_strategy",
         texts="topics",
         identity="name aliases",
@@ -133,7 +135,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     RelationshipConfig: _classes(
         "id source_entity target_entity source_column target_column cardinality safety "
         "source_columns target_columns source_key_role target_key_role allowed_directions "
-        "target_key_type rollup_safe_aggregations_reverse",
+        "target_key_type rollup_safe_aggregations_reverse link",
         text="label description join_semantics",
         identity="name aliases",
         typed="temporal_validity",
@@ -146,16 +148,19 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     MeasureValidityWindow: _classes("from_ to", text="semantics"),
     MeasureExternalDiscontinuity: _classes("from_ to magnitude_estimate_pct", text="what"),
     MeasureConfig: _classes(
-        "id entity row_grain expr default_aggregation allowed_aggregations source_relation "
-        "invalid_aggregations measure_class accumulation compatible_temporal_roles value_type "
+        "id entity row_grain expr default_aggregation allowed_aggregations invalid_aggregations "
+        "measure_class accumulation compatible_temporal_roles value_type "
         "suggested_aggregations preferred_companion_metrics "
         "default_temporal_role cross_window_policy additive lookup_from lookup_via publish",
         text="currency label description comparison_family comparison_mode",
         texts="topics example_entries authoring_warnings",
         identity="name aliases",
         typed="operational meta",
-        rows="validity_windows external_discontinuities",
+        rows="validity_windows external_discontinuities zero_through",
     ),
+    # The load log's physical names stay: the engine reads them. Its declared name may name a
+    # hidden model; an answer names it only where the caller sees that model.
+    ZeroThrough: _classes("kind relation column data_type timezone", text="name"),
     MetricConfig: _classes(
         "id kind expression temporal_role compatible_temporal_roles filter_spec window_spec "
         "preferred_companion_metrics value_type",
@@ -515,9 +520,13 @@ def _display_caveat(
     return replace(caveat, object_ids=listed)
 
 
-def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
-    """The package as a caller with ``hidden`` objects sees it."""
-    if not hidden:
+def build_view(
+    base: PackageConfig, hidden: frozenset[str], withheld: frozenset[str] = frozenset()
+) -> PackageConfig:
+    """The package as a caller with ``hidden`` objects sees it. A ``withheld`` dimension (one a
+    row filter restricts for this caller) keeps no declared value domain: its values are read
+    live, under the caller's filters, wherever a surface lists them."""
+    if not hidden and not withheld:
         return base
     tokens = token_pattern(base, hidden)
 
@@ -544,12 +553,24 @@ def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
             elif _mentions(value, tokens):
                 value = type(value)()
         changes[name] = value
+    if withheld:
+        changes["dimensions"] = [
+            replace(row, value_domain="") if row.id in withheld else row
+            for row in changes["dimensions"]
+        ]
+        domains = [
+            replace(row, dimensions=[dim for dim in row.dimensions if dim not in withheld])
+            for row in changes["value_domains"]
+        ]
+        changes["value_domains"] = [row for row in domains if row.dimensions]
     return VisiblePackageConfig(**changes, view=ViewOf(base, hidden, tokens))
 
 
 def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list[dict[str, Any]]:
     """The policy effects a response may carry: each private effect as its display policy
-    states it, with hidden ids left out. Execution consumes the private effects unchanged."""
+    states it, with hidden ids left out. A violation is shown whole or not at all: one whose
+    text names a hidden object anywhere (an id or label, alone or inside a value) is left out.
+    Execution consumes the private effects unchanged."""
     meta = get_package_analysis(config).view
     if meta is None:
         return private
@@ -569,15 +590,31 @@ def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list
         for key in ("violations", "withheld_objects", "withheld_column"):
             if key in effect:
                 public[key] = _visible(effect[key], meta.hidden)
+        if "violations" in public:
+            public["violations"] = [
+                row for row in public["violations"] if not _mentions(row, meta.tokens)
+            ]
         out.append(public)
     return out
 
 
 def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
-    """A policy refusal as this caller may see it (:func:`public_effects`)."""
+    """A policy refusal as this caller may see it (:func:`public_effects`). A request attribute
+    no row filter shown to the caller reads is never named: the refusal says only that a row
+    filter denied the request."""
     meta = get_package_analysis(config).view
-    if meta is None or exc.code != "POLICY_DENIED" or "policy_effects" not in exc.details:
+    if meta is None or exc.code != "POLICY_DENIED":
         return exc
+    if "attribute" in exc.details and exc.details["attribute"] not in {
+        row.config.get("attribute")
+        for row in config.semantic_policies
+        if row.id and row.kind == "row_filter"
+    }:
+        return parameters_denied("row_filter_denied")
+    if not exc.details.get("policy_effects"):
+        return exc
+    from .policies import denied
+
     effects = public_effects(exc.details["policy_effects"], config)
     details = {
         **exc.details,
@@ -585,9 +622,9 @@ def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLaye
         "policy_effects": effects,
         "policy_violations": [row for effect in effects for row in effect.get("violations", [])],
     }
-    return (
-        exc if details == exc.details else SemanticLayerError(exc.code, str(exc), details=details)
-    )
+    # A cut left out is still unmet: the refusal says so without saying what it is.
+    unstated = len(details["policy_violations"]) < len(exc.details.get("policy_violations") or [])
+    return exc if details == exc.details else denied(details, unstated=unstated)
 
 
 @dataclass
@@ -641,28 +678,33 @@ def hidden_on_its_own(config: PackageConfig, object_id: str) -> bool:
 
 def _hidden_from(
     base: PackageConfig, context: RequestContext | Mapping[str, Any] | None
-) -> frozenset[str]:
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The objects hidden from this caller, and the dimensions whose declared values are
+    withheld from them (a row filter in their scope restricts the model)."""
+    from .row_filter_visibility import withheld_value_dimensions
+
     if not isinstance(context, RequestContext):
         context = context_from_policy_context(context)
-    return hidden_object_ids(
-        base, environment=context.environment, audience=context.audience, roles=context.roles
-    )
+    scope = {"environment": context.environment, "audience": context.audience}
+    hidden = hidden_object_ids(base, **scope, roles=context.roles)
+    return hidden, withheld_value_dimensions(base, **scope, roles=context.roles) - hidden
 
 
 def view_of(base: PackageConfig, context: RequestContext | Mapping[str, Any] | None) -> Any:
     """A caller's view of ``base``, uncached, for code that holds no runtime (the CLI)."""
-    return build_view(base, _hidden_from(base, context))
+    return build_view(base, *_hidden_from(base, context))
 
 
 def view_for(runtime: Any, context: RequestContext | Mapping[str, Any] | None) -> ViewEntry:
-    """The runtime's cached view for this caller's hidden set, built on first use."""
-    hidden = _hidden_from(runtime.package_config, context)
+    """The runtime's cached view for this caller's hidden set and withheld value domains,
+    built on first use."""
+    key = _hidden_from(runtime.package_config, context)
     with runtime._cache_lock:
-        entry = runtime._views.get(hidden)
+        entry = runtime._views.get(key)
     if entry is None:
-        config = build_view(runtime.package_config, hidden)
+        config = build_view(runtime.package_config, *key)
         with runtime._cache_lock:
-            entry = runtime._views.setdefault(hidden, ViewEntry(config, Registry(config), hidden))
+            entry = runtime._views.setdefault(key, ViewEntry(config, Registry(config), key[0]))
     return entry
 
 

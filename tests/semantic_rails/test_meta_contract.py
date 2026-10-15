@@ -67,7 +67,7 @@ def _write_minimal_package(
             "name": "sales.orders",
             "label": "Orders",
             "kind": "entity_count",
-            "time": "ordered_at",
+            "times": ["ordered_at"],
             **dict(measure_extra or {}),
         }
     }
@@ -77,12 +77,11 @@ def _write_minimal_package(
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
                 "entities": {"order": {}},
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",
@@ -176,7 +175,7 @@ def test_model_meta_cascades_to_measures_with_override(tmp_path: Path):
                 "name": "sales.order_total",
                 "label": "Order total",
                 "kind": "aggregate",
-                "time": "ordered_at",
+                "times": ["ordered_at"],
                 "expr": {"kind": "column", "column": "order_total"},
                 "meta": {"owner_team": "growth"},
             },

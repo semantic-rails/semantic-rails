@@ -12,18 +12,15 @@ from ..expressions import (
     CaseExpr,
     ComparisonExpr,
     ConversionExpr,
-    CumulativeExpr,
     DistributionExpr,
     EntityValueExpr,
     LiteralExpr,
     MetricPredicateExpr,
-    PeriodToDateExpr,
-    PriorPeriodExpr,
     RatioExpr,
-    RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
 )
+from ..query_call import EXPRESSION_SHAPES
 from ..runtime import Runtime, runtime_request_scope
 from ..schema import PackageConfig
 
@@ -46,8 +43,6 @@ def _expr_kinds(expr: SemanticExpr) -> set[str]:
         if expr.else_expr is not None:
             kinds |= _expr_kinds(expr.else_expr)
         return kinds
-    if isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr)):
-        return kinds | _expr_kinds(expr.input)
     if isinstance(expr, MetricPredicateExpr):
         return kinds | _expr_kinds(expr.input)
     if isinstance(expr, ScopedAggregateExpr):
@@ -75,12 +70,11 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         "historical_joins": any(row.temporal_validity for row in config.relationships),
         "point_in_time_metrics": any(row.kind == "semi_additive" for row in config.metric_recipes)
         or any(row.measure_class in {"semi_additive", "snapshot"} for row in config.measures),
-        "rolling_windows": "RollingExpr" in expr_kinds
-        or any("rolling_" in row for row in recipe_ids),
-        "prior_period_offsets": "PriorPeriodExpr" in expr_kinds
-        or any("prior_period" in row or "month_over_month" in row for row in recipe_ids),
-        "period_to_date_metrics": "PeriodToDateExpr" in expr_kinds
-        or any(
+        "rolling_windows": any("rolling_" in row for row in recipe_ids),
+        "prior_period_offsets": any(
+            "prior_period" in row or "month_over_month" in row for row in recipe_ids
+        ),
+        "period_to_date_metrics": any(
             row.endswith("_mtd") or row.endswith("_qtd") or row.endswith("_ytd")
             for row in recipe_ids
         ),
@@ -115,7 +109,7 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         if not supported["percentile_metrics"]
         else "",
     }
-    supported_rows = [{"kind": "agent_query_ir_v1", "available": True, "reason": ""}] + [
+    supported_rows = [{"kind": "query_call_v2", "available": True, "reason": ""}] + [
         {"kind": kind, "available": True, "reason": ""} for kind, ok in supported.items() if ok
     ]
     unsupported_rows = [
@@ -124,140 +118,6 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         if not ok
     ]
     return supported_rows, unsupported_rows
-
-
-_EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
-    {
-        "name": "aggregate",
-        "description": "raw measure aggregate",
-        "example": {"aggregation": "sum", "measure": "measure.<id>"},
-    },
-    {
-        "name": "metric",
-        "description": "governed metric recipe",
-        "example": {"metric": "metric.<id>"},
-    },
-    {
-        "name": "prior_period",
-        "description": "windowed prior period",
-        "example": {
-            "kind": "prior_period",
-            "measure": "measure.<id>",
-            "offset": -1,
-            "grain": "month",
-        },
-    },
-    {
-        "name": "rolling",
-        "description": "rolling window. window is an object {unit, value} — not an int.",
-        "example": {
-            "kind": "rolling",
-            "input": {"measure": "measure.<id>"},
-            "window": {"unit": "day", "value": 7},
-        },
-    },
-    {
-        "name": "cumulative",
-        "description": (
-            "running total. grain comes from the outer query.time.grain — "
-            "cumulative itself takes only input + optional partition_by/window_scope."
-        ),
-        "example": {"kind": "cumulative", "input": {"measure": "measure.<id>"}},
-    },
-    {
-        "name": "ratio",
-        "description": "derived ratio",
-        "example": {
-            "kind": "ratio",
-            "numerator": {"measure": "measure.<num>"},
-            "denominator": {"measure": "measure.<den>"},
-        },
-    },
-    {
-        "name": "conversion",
-        "description": (
-            "event-pair conversion. Anchored to a single entity; window is an "
-            "object {unit, value}; matching_mode is required. base/converted "
-            "operands accept an aggregate with a 'filter' of dimension "
-            "predicates ({all: [{field, op, value}]}) to restrict each side — "
-            "e.g. base = orders containing Product A, converted = orders "
-            "containing Product B; the filters are applied in the event CTEs "
-            "with EXISTS semantics. Operand-level 'window' specs and "
-            "expression-valued filter clauses are rejected (use query-level "
-            "metric_filters for those)."
-        ),
-        "example": {
-            "kind": "conversion",
-            "base": {
-                "kind": "aggregate",
-                "measure": "measure.<start>",
-                "filter": {"all": [{"field": "dimension.<id>", "op": "=", "value": "<value>"}]},
-            },
-            "converted": {"measure": "measure.<end>"},
-            "entity": "entity.<id>",
-            "window": {"unit": "day", "value": 7},
-            "matching_mode": "first_converted_after_base",
-        },
-    },
-    {
-        "name": "distribution",
-        "description": (
-            "distribution view over entity-grain values. `over` must be an "
-            "entity_value expression; `function` selects the aggregator "
-            "(e.g. percentile)."
-        ),
-        "example": {
-            "kind": "distribution",
-            "function": "percentile",
-            "over": {
-                "kind": "entity_value",
-                "entity": "entity.<id>",
-                "input": {"measure": "measure.<id>"},
-            },
-            "p": 0.5,
-        },
-    },
-    {
-        "name": "aggregate_if",
-        "description": (
-            "shorthand for <AGG>(CASE WHEN cond THEN value END). Column refs "
-            "inside `condition` / `value` must specify `entity` or `table` "
-            "(no surrounding measure to inherit from). It aggregates the rows "
-            "of the value's entity; `condition` may also read entities that "
-            "entity reaches over many-to-one relationships. A value row with no "
-            "match there never satisfies it; a condition such a row could "
-            "satisfy (IS NULL, OR with the value's own column) is refused. Compiles to "
-            "COUNT_IF / SUM_IF natively on Snowflake; portable CASE WHEN "
-            "elsewhere. `value` may be omitted when aggregation=count."
-        ),
-        "example": {
-            "kind": "aggregate_if",
-            "aggregation": "sum",
-            "condition": {
-                "kind": "comparison",
-                "op": "=",
-                "left": {"kind": "column", "column": "<col>", "entity": "entity.<id>"},
-                "right": {"kind": "literal", "value": True},
-            },
-            "value": {"kind": "column", "column": "<col>", "entity": "entity.<id>"},
-        },
-    },
-    {
-        "name": "between",
-        "description": (
-            "range predicate sugar; desugars at parse time to "
-            "`expr >= low AND expr <= high`. Use `kind: not_between` or "
-            "`negated: true` for the inverted form (lowers to "
-            "`expr < low OR expr > high`)."
-        ),
-        "example": {
-            "kind": "between",
-            "expr": {"kind": "column", "column": "<col>"},
-            "low": {"kind": "literal", "value": 0},
-            "high": {"kind": "literal", "value": 100},
-        },
-    },
-)
 
 
 @runtime_request_scope
@@ -272,8 +132,8 @@ def capabilities_payload(
         "schema_version": runtime._config.version,
         "capabilities": supported,
         "unsupported_capabilities": unsupported,
-        "expression_shapes": [dict(shape) for shape in _EXPRESSION_SHAPES],
+        "expression_shapes": [dict(shape) for shape in EXPRESSION_SHAPES],
     }
 
 
-__all__ = ["_EXPRESSION_SHAPES", "_capability_payload", "capabilities_payload"]
+__all__ = ["_capability_payload", "capabilities_payload"]

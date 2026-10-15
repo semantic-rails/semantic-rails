@@ -20,11 +20,15 @@ Reasonable intents must still return candidates and not trip either gate.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from semantic_rails.metadata import discover_payload
 from semantic_rails.planner import plan_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import held_candidate
 
 NONSENSE_INTENTS = [
@@ -46,67 +50,50 @@ REASONABLE_INTENTS = [
     "revenue trend over time",
     "orders per store",
 ]
+BUCKETS = ("measures", "metrics", "segments", "dimensions", "dimension_values", "entities")
+
+
+runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 @pytest.mark.parametrize("intent", NONSENSE_INTENTS)
-def test_plan_blocks_nonsense_intents_with_low_relevance(runtime_factory, intent):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent=intent)
-    finally:
-        runtime.close()
-    assert payload["candidates"] == [], (
-        f"nonsense intent {intent!r} should yield zero candidates, got {len(payload['candidates'])}"
-    )
-    assert "low_relevance" in payload, (
-        f"nonsense intent {intent!r} should surface a low_relevance block"
-    )
+def test_plan_and_discover_block_nonsense_intents_with_low_relevance(runtime, intent):
+    payload = plan_candidate_envelope(runtime, intent=intent)
+    assert payload["candidates"] == []
     block = payload["low_relevance"]
     assert block["code"] == "LOW_RELEVANCE"
     assert block["intent"] == intent
     assert block["overlap_tokens"] == []
     assert block["recovery_hint"]
     assert block["catalog_token_sample"], "low_relevance should sample catalog tokens"
+    found = discover_payload(runtime, terms=intent, enforce_scope=True)
+    assert {bucket: found[bucket] for bucket in BUCKETS} == dict.fromkeys(BUCKETS, [])
+    assert "low_relevance" in found
 
 
 @pytest.mark.parametrize("intent,expected_category", CLASSIFIER_ROUTED_INTENTS)
-def test_plan_routes_non_data_query_intents_out_of_scope(
-    runtime_factory, intent, expected_category
+def test_plan_and_discover_route_non_data_query_intents_out_of_scope(
+    runtime, intent, expected_category
 ):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent=intent)
-    finally:
-        runtime.close()
-    assert payload["candidates"] == [], (
-        f"classifier-routed intent {intent!r} should yield zero candidates"
-    )
-    assert "out_of_scope" in payload, (
-        f"classifier-routed intent {intent!r} should surface an out_of_scope block"
-    )
+    payload = plan_candidate_envelope(runtime, intent=intent)
+    assert payload["candidates"] == []
     block = payload["out_of_scope"]
     assert block["code"] == "OUT_OF_SCOPE"
     assert block["category"] == expected_category
     assert block["recommended_handoff"]
     assert block["recovery_hint"]
+    found = discover_payload(runtime, terms=intent, enforce_scope=True)
+    assert found["out_of_scope"]["category"] == expected_category
 
 
 @pytest.mark.parametrize("intent", REASONABLE_INTENTS)
-def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent=intent)
-    finally:
-        runtime.close()
+def test_plan_lets_reasonable_intents_through(runtime, intent):
+    payload = plan_candidate_envelope(runtime, intent=intent)
     if intent == "orders per store":
         # "store" names the rows: it doesn't pick the same-store conversion rate for "orders".
         held_candidate(payload, "PLAN_INTENT_COVERAGE_GAP")
-    elif intent == "revenue by store last month":
-        held_candidate(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     else:
-        assert payload["candidates"], (
-            f"reasonable intent {intent!r} should still produce candidates"
-        )
+        assert payload["candidates"], intent
     assert "out_of_scope" not in payload
     assert "low_relevance" not in payload
 
@@ -120,115 +107,67 @@ def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
     ],
 )
 def test_customer_grouping_uses_the_customer_key_and_matches_reference_sql(
-    runtime_factory, intent, window, limit
+    runtime, intent, window, limit
 ):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(runtime, intent=intent)
-        assert "out_of_scope" not in payload
-        assert "low_relevance" not in payload
-        assert payload["status"] == "ok", payload.get("why")
-        assert payload["next"]["ready_for"] == ["execute"]
-        query = payload["best"]["query_ir"]
-        assert query["group_by"] == ["dimension.jaffle_customer_id"]
-        if window:
-            assert query["time"] == {
-                "temporal_role": "temporal_role.jaffle_order_time",
-                "grain": "quarter",
-                "start": "2017-01-01",
-                "end": "2017-04-01",
-            }
-        else:
-            assert "time" not in query
-        assert query.get("limit") == limit
-        rows = runtime.query(query)["rows"]
-        where = " WHERE ordered_at >= '2017-01-01' AND ordered_at < '2017-04-01'" if window else ""
-        rank = f" ORDER BY revenue DESC LIMIT {limit}" if limit else ""
-        reference = runtime.adapter.query(
-            "SELECT customer_id, SUM(order_total_cents / 100.0) AS revenue"
-            f" FROM jaffle_order{where} GROUP BY customer_id{rank}"
-        )
-        assert {row["dimension.jaffle_customer_id"]: float(row["revenue_usd"]) for row in rows} == (
-            pytest.approx({row["customer_id"]: float(row["revenue"]) for row in reference})
-        )
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("intent", NONSENSE_INTENTS)
-def test_discover_blocks_nonsense_terms_when_enforce_scope_true(runtime_factory, intent):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = discover_payload(runtime, terms=intent, enforce_scope=True)
-    finally:
-        runtime.close()
-    for bucket in ("measures", "metrics", "segments", "dimensions", "dimension_values", "entities"):
-        assert payload[bucket] == [], (
-            f"nonsense terms {intent!r} should empty bucket {bucket}, got {payload[bucket]}"
-        )
-    assert "low_relevance" in payload
-
-
-@pytest.mark.parametrize("intent,expected_category", CLASSIFIER_ROUTED_INTENTS)
-def test_discover_routes_non_data_query_terms_out_of_scope(
-    runtime_factory, intent, expected_category
-):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = discover_payload(runtime, terms=intent, enforce_scope=True)
-    finally:
-        runtime.close()
-    assert "out_of_scope" in payload
-    assert payload["out_of_scope"]["category"] == expected_category
-
-
-def test_discover_internal_callers_unaffected(runtime_factory):
-    """build-options/plan's own internal discover calls do not set
-    ``enforce_scope=True`` — they must keep working on partial / fuzzy
-    terms that would otherwise classify-trip."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        # No enforce_scope -> backwards-compatible behavior.
-        payload = discover_payload(runtime, terms="why average", limit=3)
-    finally:
-        runtime.close()
+    payload = plan_payload(runtime, intent=intent)
     assert "out_of_scope" not in payload
-    # The discover noise floor (cf6edbc) still applies — but we expect at
-    # least one real-match candidate from "average".
+    assert "low_relevance" not in payload
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+    query = payload["best"]["query"]
+    assert query["group_by"] == ["dimension.jaffle_customer_id"]
+    if window:
+        # No grain asked: one total per customer over the quarter.
+        assert query["time"] == {
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "start": "2017-01-01",
+            "end": "2017-04-01",
+        }
+    else:
+        assert "time" not in query
+    assert query.get("limit") == limit
+    rows = runtime.query(query)["rows"]
+    where = " WHERE ordered_at >= '2017-01-01' AND ordered_at < '2017-04-01'" if window else ""
+    rank = f" ORDER BY revenue DESC LIMIT {limit}" if limit else ""
+    reference = runtime.adapter.query(
+        "SELECT customer_id, SUM(order_total_cents / 100.0) AS revenue"
+        f" FROM jaffle_order{where} GROUP BY customer_id{rank}"
+    )
+    assert {row["dimension.jaffle_customer_id"]: float(row["revenue_usd"]) for row in rows} == (
+        pytest.approx({row["customer_id"]: float(row["revenue"]) for row in reference})
+    )
+
+
+def test_discover_without_the_scope_gate_still_finds_real_terms(runtime):
+    """plan's own internal discover calls do not set ``enforce_scope=True``: partial or fuzzy
+    terms that would trip the classifier keep working, and real terms find rows."""
+    payload = discover_payload(runtime, terms="why average", limit=3)
+    assert "out_of_scope" not in payload
     assert payload["metrics"] or payload["measures"]
+    payload = discover_payload(runtime, terms="average order value", limit=5)
+    assert payload.get("metrics"), "real terms should still return metric matches"
+    assert payload.get("no_matches") is None
 
 
-def test_plan_blind_benchmark_corpus_still_passes(runtime_factory):
-    """The 14-case benchmark intents in ``scripts/blind_agent_corpus.json``
-    must all classify as data_query AND survive the relevance floor."""
-    import json
-    from pathlib import Path
-
+def test_plan_blind_benchmark_corpus_still_passes(runtime):
+    """The benchmark intents in ``scripts/blind_agent_corpus.json`` all classify as data_query
+    and survive the relevance floor."""
     corpus_path = Path(__file__).resolve().parents[2] / "scripts" / "blind_agent_corpus.json"
     raw = json.loads(corpus_path.read_text())
     cases = raw.get("benchmark_cases", raw) if isinstance(raw, dict) else raw
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        for case in cases:
-            intent = case.get("intent") or case.get("question") or ""
-            if not intent:
-                continue
-            payload = plan_candidate_envelope(runtime, intent=intent)
-            assert "out_of_scope" not in payload, (
-                f"benchmark intent {intent!r} unexpectedly routed out of scope"
-            )
-            assert "low_relevance" not in payload, (
-                f"benchmark intent {intent!r} unexpectedly tripped relevance floor"
-            )
-    finally:
-        runtime.close()
+    for case in cases:
+        intent = case.get("intent") or case.get("question") or ""
+        if not intent:
+            continue
+        payload = plan_candidate_envelope(runtime, intent=intent)
+        assert "out_of_scope" not in payload, intent
+        assert "low_relevance" not in payload, intent
 
 
 # Intents that classify + clear the relevance floor but cannot resolve to a
 # single executable candidate because the requested entity path / analytic
-# pattern isn't modeled in the package. The v2 adversarial audit called out
-# YoY-active-customers as the canonical example: an agent receives
-# ``candidates=[]`` with no top-level gate signal and starts guessing.
+# pattern isn't modeled in the package: an agent receiving ``candidates=[]`` with no
+# top-level gate signal starts guessing.
 NO_VIABLE_INTENTS = [
     "inventory by membership status",
     "high value customer count by segment membership",
@@ -236,20 +175,10 @@ NO_VIABLE_INTENTS = [
 
 
 @pytest.mark.parametrize("intent", NO_VIABLE_INTENTS)
-def test_plan_emits_no_viable_signal_when_all_candidates_blocked(runtime_factory, intent):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent=intent)
-    finally:
-        runtime.close()
-    assert payload["candidates"] == [], (
-        f"intent {intent!r} should produce zero candidates (precondition for the gate signal)"
-    )
+def test_plan_emits_no_viable_signal_when_all_candidates_blocked(runtime, intent):
+    payload = plan_candidate_envelope(runtime, intent=intent)
+    assert payload["candidates"] == []
     assert payload["blocked"], f"intent {intent!r} should have at least one blocked entry"
-    assert "no_viable_candidates" in payload, (
-        f"intent {intent!r} should surface a no_viable_candidates block "
-        f"at the envelope level — got keys: {sorted(payload.keys())}"
-    )
     block = payload["no_viable_candidates"]
     assert block["code"] == "NO_VIABLE_CANDIDATES"
     assert block["intent"] == intent
@@ -260,42 +189,11 @@ def test_plan_emits_no_viable_signal_when_all_candidates_blocked(runtime_factory
     assert "out_of_scope" not in payload
 
 
-# ----------------------------------------------------------------------
-# Discover empty-set signal — nonsense terms must not surface
-# bookkeeping-only matches. Previously, a random string returned three
-# metrics scored ~29 on bookkeeping bonuses alone (``preferred kind``,
-# ``review priority high``). Agents had no clear signal that nothing
-# matched.
-# ----------------------------------------------------------------------
-
-
-def test_discover_nonsense_term_returns_empty_with_no_matches_block(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = discover_payload(runtime, terms="asdjkfhqwiuer", limit=5)
-
-        assert payload.get("metrics") == []
-        assert payload.get("measures") == []
-        assert payload.get("dimensions") == []
-        assert payload.get("dimension_values") == []
-        assert payload.get("entities") == []
-        assert payload.get("segments") == []
-
-        no_matches = payload.get("no_matches")
-        assert isinstance(no_matches, dict), "expected no_matches block on empty result"
-        assert no_matches.get("terms") == "asdjkfhqwiuer"
-        assert "matched" in no_matches.get("reason", "")
-        assert no_matches.get("recovery_hint")
-    finally:
-        runtime.close()
-
-
-def test_discover_real_term_still_returns_candidates(runtime_factory) -> None:
-    """Filter must not break the happy path — real terms still find rows."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = discover_payload(runtime, terms="average order value", limit=5)
-        assert payload.get("metrics"), "real terms should still return metric matches"
-        assert payload.get("no_matches") is None
-    finally:
-        runtime.close()
+def test_discover_nonsense_term_returns_empty_with_no_matches_block(runtime) -> None:
+    # Bookkeeping bonuses alone never surface a match: the agent gets a clear empty signal.
+    payload = discover_payload(runtime, terms="asdjkfhqwiuer", limit=5)
+    assert {bucket: payload.get(bucket) for bucket in BUCKETS} == dict.fromkeys(BUCKETS, [])
+    no_matches = payload.get("no_matches")
+    assert isinstance(no_matches, dict), "expected no_matches block on empty result"
+    assert no_matches.get("terms") == "asdjkfhqwiuer"
+    assert no_matches.get("recovery_hint")

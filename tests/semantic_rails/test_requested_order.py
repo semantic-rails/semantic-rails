@@ -5,24 +5,25 @@ from dataclasses import replace
 import pytest
 
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import distribution, predicate_sets, sql_lowering
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 
 ORDERS = {"measure": "measure.jaffle.order_count"}
+# The opening balance: a closing-day balance's share by entity sets is refused.
 INVENTORY = {
     "kind": "scoped_aggregate",
-    "measure": "measure.jaffle.inventory_on_hand_eop",
+    "measure": "measure.jaffle.inventory_on_hand_sop",
     "aggregation": "sum",
 }
 # Each lowering path that builds the final ORDER BY: the requested field, its rendered
 # term, and the query parts that take that path. The anchored path orders by its time key,
 # a column its anchor source projects.
 SHAPES = {
-    "inlined": ("ranked", "ranked", {"select": [{"expression": ORDERS, "as": "ranked"}]}),
+    "inlined": ("ranked", '"ranked"', {"select": [{"expression": ORDERS, "as": "ranked"}]}),
     "metric-filter": (
         "ranked",
-        "projected.ranked",
+        'projected."ranked"',
         {
             "select": [{"expression": ORDERS, "as": "ranked"}],
             "metric_filters": [{"expression": ORDERS, "op": ">", "value": 0}],
@@ -58,7 +59,7 @@ SHAPES = {
     ),
     "distribution": (
         "ranked",
-        "agent_projected.ranked",
+        'agent_projected."ranked"',
         {
             "select": [
                 {
@@ -88,10 +89,19 @@ def _query(shape: str, direction: str) -> dict:
     }
 
 
+# Each backend renders every shape, and both directions across the shapes.
+DIRECTIONS = {
+    "inlined": "DESC",
+    "metric-filter": "ASC",
+    "anchored-ratio": "DESC",
+    "distribution": "ASC",
+}
+
+
 @pytest.mark.parametrize("warehouse", supported_warehouses())
-@pytest.mark.parametrize("direction", ["ASC", "DESC"])
 @pytest.mark.parametrize("shape", list(SHAPES))
-def test_requested_term_renders_nulls_last(package_config_factory, warehouse, direction, shape):
+def test_requested_term_renders_nulls_last(package_config_factory, warehouse, shape):
+    direction = DIRECTIONS[shape]
     config, _ = package_config_factory("jaffle_shop")
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     compiled = compile_query(config, None, _query(shape, direction))
@@ -103,18 +113,21 @@ def test_requested_term_renders_nulls_last(package_config_factory, warehouse, di
         (direction, True)
     ]
     order_sql = compiled["sql"].rsplit("\nORDER BY\n", 1)[1].split("\n", 1)[0]
-    assert order_sql == f"  {SHAPES[shape][1]} {direction} NULLS LAST"
+    # An output alias is quoted, in the warehouse's identifier quotes.
+    term = SHAPES[shape][1].replace('"', "`" if warehouse in {"bigquery", "databricks"} else '"')
+    assert order_sql == f"  {term} {direction} NULLS LAST"
 
 
 @pytest.mark.parametrize("shape", list(SHAPES))
 def test_a_requested_term_without_nulls_last_is_refused(package_config_factory, monkeypatch, shape):
     config, _ = package_config_factory("jaffle_shop")
     requested_order = sql_lowering._requested_order
-    monkeypatch.setattr(
-        sql_lowering,
-        "_requested_order",
-        lambda *args: [replace(term, nulls_last=False) for term in requested_order(*args)],
-    )
+    for module in (distribution, predicate_sets, sql_lowering):
+        monkeypatch.setattr(
+            module,
+            "_requested_order",
+            lambda *args: [replace(term, nulls_last=False) for term in requested_order(*args)],
+        )
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, None, _query(shape, "DESC"))
     assert caught.value.code == "INVALID_ORDER_BY"

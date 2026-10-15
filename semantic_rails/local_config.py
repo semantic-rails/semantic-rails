@@ -14,8 +14,6 @@ from typing import Any
 import yaml
 
 from .atomic_files import atomic_write_bytes
-from .config import LOCAL_CONFIG_DIRNAME as LOCAL_CONFIG_DIRNAME
-from .config import SEMANTIC_RAILS_HOME_ENV as SEMANTIC_RAILS_HOME_ENV
 from .config import semantic_rails_home as semantic_rails_home
 from .errors import SemanticLayerError
 

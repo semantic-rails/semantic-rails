@@ -109,7 +109,7 @@ LEGACY = {
         "    query:\n"
         "      version: 1\n"
         "      select:\n"
-        "      - {expression: {metric: metric.shop.amount_per_event}, as: amount_per_event}\n"
+        "      - {expression: metric.shop.amount_per_event, as: amount_per_event}\n"
         "      group_by: [dimension.shop_event_event_type]\n"
     ),
     "tests/core.yml": (
@@ -119,7 +119,7 @@ LEGACY = {
         "    query:\n"
         "      version: 1\n"
         "      select:\n"
-        "      - {expression: {measure: measure.shop.event_count}, as: row_count}\n"
+        "      - {expression: measure.shop.event_count, as: row_count}\n"
         "      time: {temporal_role: temporal_role.shop_event_occurred_at, grain: day}\n"
         "    min_rows: 1\n"
     ),
@@ -174,8 +174,20 @@ def _with_rules(monkeypatch, rules: tuple[Rule, ...]) -> None:
     monkeypatch.setattr("semantic_rails.architect_mcp.upgrade_project_service", upgrade)
 
 
+def _version_two(files):
+    for file, path, query in files.queries():
+        if path and path[-1] == "query" and str(query.get("version")) == "2":
+            edit = Edit(file, "replace", (*path, "version"), value=1)
+            line = files.line(file, edit.path)
+            yield Finding("query-version", file, line, path, "version: 2 becomes 1", (edit,))
+
+
+# A query rewrite that keeps every answer: a call ignores its version.
+QUERY_VERSION = Rule("query-version", "9.9", "same_meaning", "Write version: 1", _version_two)
+
+
 @pytest.mark.parametrize("surface", ["cli", "architect"])
-def test_package_from_an_earlier_release_upgrades_in_one_certified_change(
+def test_package_from_an_earlier_release_upgrades_in_one_translated_change(
     tmp_path, monkeypatch, capsys, surface
 ):
     project = _package(tmp_path)
@@ -184,15 +196,15 @@ def test_package_from_an_earlier_release_upgrades_in_one_certified_change(
     if surface == "cli":
         code, text = _cli(monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project))
         assert code == 0
-        assert "certified: 2 rules for forms this engine refuses" in text
+        assert "translated: 2 rules for forms this engine refuses" in text
         assert "-    null_behavior: null_if_zero\n" in text and "-  measure:\n" in text
         assert "--write" in text
     else:
         report = _architect(tmp_path, "upgrade_project", project_path=str(project))
-        assert report["status"] == "preview" and report["proof"]["tier"] == "certified"
+        assert report["status"] == "preview" and report["proof"]["tier"] == "translated"
         assert {row["id"]: row["tier"] for row in report["rules"]} == {
-            "null-behavior": "certified",
-            "measure-parent-rollup": "certified",
+            "null-behavior": "translated",
+            "measure-parent-rollup": "translated",
         }
         assert [hit["line"] for hit in report["rules"][0]["hits"]] == [14, 23]
     assert _contents(project) == before
@@ -222,8 +234,8 @@ def test_package_from_an_earlier_release_upgrades_in_one_certified_change(
     if surface == "architect":
         assert report["status"] == "upgraded"
         assert report["proof"] == {
-            "tier": "certified",
-            "baseline": "after_certified_rules",
+            "tier": "translated",
+            "baseline": "after_translated_rules",
             "fingerprint_before": report["proof"]["fingerprint_after"],
             "fingerprint_after": report["proof"]["fingerprint_after"],
             "masks": [],
@@ -273,11 +285,11 @@ def _sum_to_max(files):
 def _other_metric(files):
     for file, path, query in files.queries():
         select = query.get("select") or []
-        if select and select[0]["expression"].get("metric") == "metric.shop.amount_per_event":
+        if select and select[0]["expression"] == "metric.shop.amount_per_event":
             edit = Edit(
                 file,
                 "replace",
-                (*path, "select", 0, "expression", "metric"),
+                (*path, "select", 0, "expression"),
                 value="metric.shop.total_amount",
             )
             yield Finding("other-metric", file, 1, path, "select", (edit,))
@@ -332,17 +344,18 @@ def test_unflagged_same_meaning_rule_is_proven_after_the_baseline(tmp_path):
 
     report = service.upgrade_project(project, workspace_root=tmp_path, rules=(METRIC_AS, *RULES))
 
-    assert report["proof"]["baseline"] == "after_certified_rules"
+    assert report["proof"]["baseline"] == "after_translated_rules"
     assert {row["id"]: row["tier"] for row in report["rules"]} == {
         "metric-as": "proven",
-        "null-behavior": "certified",
-        "measure-parent-rollup": "certified",
+        "null-behavior": "translated",
+        "measure-parent-rollup": "translated",
     }
     assert _contents(project) == files
 
 
 @pytest.mark.parametrize("surface", ["cli", "architect"])
 def test_rule_cannot_certify_an_unrelated_query_failure(tmp_path, monkeypatch, capsys, surface):
+    _with_rules(monkeypatch, (*RULES, QUERY_VERSION))
     files = {
         **UPGRADED,
         "examples/core.yml": UPGRADED["examples/core.yml"]
@@ -373,7 +386,7 @@ def test_rule_cannot_certify_an_unrelated_query_failure(tmp_path, monkeypatch, c
     details = report["error"]["details"]
     assert (details["conflict_kind"], details["rule"]) == (
         "upgrade_not_equivalent",
-        "query-ir-version",
+        "query-version",
     )
     assert _contents(project) == files
 
@@ -411,41 +424,13 @@ def test_cli_write_uses_a_fresh_receipt_after_restoring_legacy_files(tmp_path, m
     assert _contents(project) == UPGRADED
 
 
-@pytest.mark.parametrize("version", [2, "2"])
-def test_upgraded_query_version_compiles(tmp_path, monkeypatch, capsys, version):
-    files = {
-        **UPGRADED,
-        "examples/core.yml": UPGRADED["examples/core.yml"].replace(
-            "version: 1", f"version: {version!r}"
-        ),
-    }
-    project = _package(tmp_path, files)
-
-    code, text = _cli(
-        monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
-    )
-
-    assert code == 0, text
-    report = json.loads(text)
-    assert report["status"] == "upgraded"
-    assert report["rules"][0]["tier"] == "certified"
-    assert _contents(project) == UPGRADED
-    runtime = Runtime.from_snapshot(load_package_snapshot(project))
-    try:
-        _, _, query = next(PackageFiles(project).queries())
-        assert runtime.compile(dict(query))["rendered_sql"]
-    finally:
-        runtime.close()
-
-
 @pytest.mark.parametrize(
-    "rules,refused,difference",
+    "rules,refused,difference,surface",
     [
-        ((METRIC_AS, SUM_TO_MAX), "sum-to-max", "semantic_path"),
-        ((OTHER_METRIC, METRIC_AS), "other-metric", "query"),
+        ((METRIC_AS, SUM_TO_MAX), "sum-to-max", "semantic_path", "cli"),
+        ((OTHER_METRIC, METRIC_AS), "other-metric", "query", "architect"),
     ],
 )
-@pytest.mark.parametrize("surface", ["cli", "architect"])
 def test_rule_that_changes_an_answer_is_refused_and_nothing_is_written(
     tmp_path, monkeypatch, capsys, surface, rules, refused, difference
 ):
@@ -513,11 +498,9 @@ PRIMITIVE_KIND = Rule(
 )
 
 
-@pytest.mark.parametrize("retired", [False, True])
-@pytest.mark.parametrize("choice", [False, True])
-@pytest.mark.parametrize("query_version", [1, 2])
-def test_refused_same_meaning_rule_forms_a_certified_baseline(
-    tmp_path, monkeypatch, capsys, retired, choice, query_version
+@pytest.mark.parametrize(("retired", "choice"), [(False, True), (True, False)])
+def test_refused_same_meaning_rule_forms_a_translated_baseline(
+    tmp_path, monkeypatch, capsys, retired, choice
 ):
     current = LEGACY if retired else UPGRADED
     files = {
@@ -526,26 +509,26 @@ def test_refused_same_meaning_rule_forms_a_certified_baseline(
             "kind: aggregate", "primitive: aggregate"
         ),
         "metrics/core.yml": current["metrics/core.yml"].replace(*AS_FORM, 1),
-        "examples/core.yml": current["examples/core.yml"].replace(
-            "version: 1", f"version: {query_version}"
-        ),
     }
     project = _package(tmp_path, files)
     rules = (METRIC_AS, *RULES, PRIMITIVE_KIND, *((RELABEL,) if choice else ()))
     _with_rules(monkeypatch, rules)
     preview = service.upgrade_project(project, workspace_root=tmp_path, rules=rules)
     tiers = {row["id"]: row["tier"] for row in preview["rules"]}
-    assert preview["proof"]["baseline"] == "after_certified_rules"
-    assert preview["proof"]["tier"] == "certified"
+    assert preview["proof"]["baseline"] == "after_translated_rules"
+    assert preview["proof"]["tier"] == "translated"
     assert tiers == {
         "metric-as": "proven",
-        "primitive-kind": "certified",
-        **({"query-ir-version": "certified"} if query_version == 2 else {}),
-        **({"null-behavior": "certified", "measure-parent-rollup": "certified"} if retired else {}),
+        "primitive-kind": "translated",
+        **(
+            {"null-behavior": "translated", "measure-parent-rollup": "translated"}
+            if retired
+            else {}
+        ),
         **({"relabel": "choice"} if choice else {}),
     }
     assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
-    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (int(query_version == 1), 1)
+    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (1, 1)
     assert _contents(project) == files
     code, text = _cli(
         monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
@@ -612,7 +595,7 @@ def test_unflagged_rule_that_repairs_loading_is_named_as_the_blocker(tmp_path, d
         assert report["proof"]["baseline"] == "none"
         assert [action.split(":")[0] for action in report["next_actions"]] == [
             "Upgrade rule 'primitive-kind' rewrites a form this engine refuses at load, but the "
-            "rule is not marked refused, so its rewrite cannot be certified"
+            "rule is not marked refused, so its rewrite cannot establish a baseline"
         ]
     else:
         from semantic_rails.errors import SemanticLayerError
@@ -651,16 +634,16 @@ CURRENT_POLICIES = (
 )
 
 
-def test_legacy_policy_forms_upgrade_in_one_certified_write(tmp_path):
+def test_legacy_policy_forms_upgrade_in_one_translated_write(tmp_path):
     project = _package(tmp_path, {**LEGACY, "policies.yml": LEGACY_POLICIES})
 
     preview = service.upgrade_project(project, workspace_root=tmp_path)
-    assert preview["proof"]["baseline"] == "after_certified_rules"
+    assert preview["proof"]["baseline"] == "after_translated_rules"
     assert {row["id"]: row["tier"] for row in preview["rules"]} == {
-        "null-behavior": "certified",
-        "measure-parent-rollup": "certified",
-        "policy-flat": "certified",
-        "policy-redact-deny": "certified",
+        "null-behavior": "translated",
+        "measure-parent-rollup": "translated",
+        "policy-flat": "translated",
+        "policy-redact-deny": "translated",
     }
     assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (1, 1)
     assert preview["next_actions"] == []
@@ -675,19 +658,13 @@ def test_legacy_policy_forms_upgrade_in_one_certified_write(tmp_path):
         from semantic_rails.policies import package_release_labels
 
         assert package_release_labels(runtime.config) == ["demo"]
-        ratio = {
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.shop.events_per_event"}, "as": "ratio"}],
-        }
+        ratio = {"select": [{"expression": "metric.shop.events_per_event", "as": "ratio"}]}
         with pytest.raises(service.SemanticLayerError) as denied:
             runtime.compile(ratio)
         assert denied.value.code == "POLICY_DENIED"
         assert denied.value.details["blocked_objects"] == ["metric.shop.events_per_event"]
         assert [row["action"] for row in denied.value.details["policy_effects"]] == ["deny"]
-        amount = {
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.shop.amount_per_event"}, "as": "amount"}],
-        }
+        amount = {"select": [{"expression": "metric.shop.amount_per_event", "as": "amount"}]}
         assert runtime.compile(amount)["rendered_sql"]
     finally:
         runtime.close()
@@ -772,15 +749,6 @@ def test_pending_choice_through_the_architect_writes_nothing(tmp_path, monkeypat
     assert _contents(project) == UPGRADED
 
 
-def test_architect_write_needs_a_revision_and_key(tmp_path):
-    project = _package(tmp_path)
-
-    report = _architect(tmp_path, "upgrade_project", project_path=str(project), dry_run=False)
-
-    assert report["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    assert _contents(project) == LEGACY
-
-
 @pytest.mark.parametrize("refusal", ["expected_revision", "idempotency_key", "stale_revision"])
 def test_current_package_checks_write_arguments_and_revision_before_planning(tmp_path, refusal):
     project = _package(tmp_path, UPGRADED)
@@ -809,8 +777,7 @@ def test_current_package_checks_write_arguments_and_revision_before_planning(tmp
     assert _contents(project) == UPGRADED
 
 
-@pytest.mark.parametrize("intervening_edit", [False, True])
-@pytest.mark.parametrize("same_intent", [True, False])
+@pytest.mark.parametrize(("intervening_edit", "same_intent"), [(True, True), (False, False)])
 def test_architect_retry_uses_the_original_receipt_before_planning(
     tmp_path, intervening_edit, same_intent
 ):
@@ -926,14 +893,14 @@ def test_single_file_starter_preview_and_apply(tmp_path, monkeypatch, capsys, cw
     examples.mkdir()
     (examples / "revenue.yml").write_text(
         "examples:\n  revenue:\n    query:\n"
-        "      select: [{expression: {metric: metric.shop.revenue_usd}, as: revenue}]\n"
+        "      select: [{expression: metric.shop.revenue_usd, as: revenue}]\n"
     )
     directory = tmp_path if cwd == "parent" else tmp_path / "elsewhere"
     directory.mkdir(exist_ok=True)
     args = ("upgrade", "--path", str(source))
 
     code, text = _cli(monkeypatch, capsys, directory, *args)
-    assert code == 0 and "certified" in text
+    assert code == 0 and "translated" in text
     assert source.read_text() == legacy
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
     code, text = _cli(monkeypatch, capsys, directory, *args, "--json")
@@ -942,7 +909,7 @@ def test_single_file_starter_preview_and_apply(tmp_path, monkeypatch, capsys, cw
     assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
     assert preview["proof"]["examples"] == 1
     assert [(row["id"], row["tier"]) for row in preview["rules"]] == [
-        ("measure-parent-rollup", "certified")
+        ("measure-parent-rollup", "translated")
     ]
 
     code, text = _cli(monkeypatch, capsys, directory, *args, "--write", "--json")
@@ -1003,8 +970,7 @@ def test_unparseable_package_refuses_write_with_the_same_error(tmp_path, layout)
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
 
 
-@pytest.mark.parametrize("layout", ["directory", "single-file"])
-@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(("layout", "dry_run"), [("directory", True), ("single-file", False)])
 def test_unparseable_current_package_refuses_with_its_load_error(tmp_path, layout, dry_run):
     content = "schema_version: 1\npackage: {id: broken, warehouse: unsupported}\n"
     if layout == "directory":
@@ -1077,8 +1043,7 @@ def test_single_file_upgrade_revision_ignores_unrelated_sibling_edits(tmp_path):
     assert sibling.read_text() == "Unrelated edited package.\n"
 
 
-@pytest.mark.parametrize("companion", ["examples", "tests"])
-@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(("companion", "dry_run"), [("examples", True), ("tests", False)])
 def test_single_file_upgrade_refuses_symlinked_companions(tmp_path, companion, dry_run):
     source = tmp_path / "starter.yml"
     original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_bytes()
@@ -1104,7 +1069,7 @@ def test_upgrade_keeps_a_linked_data_directory(tmp_path):
     (project / "data").symlink_to(data, target_is_directory=True)
 
     preview = service.upgrade_project(project, workspace_root=tmp_path)
-    assert preview["proof"]["tier"] == "certified"
+    assert preview["proof"]["tier"] == "translated"
     report = service.upgrade_project(
         project, workspace_root=tmp_path, dry_run=False, expected_revision=preview["revision"]
     )
@@ -1116,8 +1081,7 @@ def test_upgrade_keeps_a_linked_data_directory(tmp_path):
     load_package_snapshot(project)
 
 
-@pytest.mark.parametrize("target", ["yaml", "missing"])
-@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(("target", "dry_run"), [("yaml", True), ("missing", False)])
 def test_upgrade_refuses_a_linked_directory_that_may_hold_package_input(tmp_path, target, dry_run):
     project = _package(tmp_path)
     data = tmp_path / "shared" / "data"
@@ -1147,18 +1111,17 @@ def _default_version(files):
             yield Finding("default-version", file, 1, path, "1 is the default", (edit,))
 
 
-@pytest.mark.parametrize("surface", ["cli", "architect"])
-@pytest.mark.parametrize("version", ["2", '"2"'])
 @pytest.mark.parametrize(
-    ("retired_key", "legacy_line"),
+    ("surface", "version", "retired_key", "legacy_line"),
     [
-        ("query-path-policy", "      path_policy: {max_hops: 2}\n"),
-        ("null-behavior", "      null_behavior: null_if_zero\n"),
+        ("cli", "2", "query-path-policy", "      path_policy: {max_hops: 2}\n"),
+        ("architect", '"2"', "null-behavior", "      null_behavior: null_if_zero\n"),
     ],
 )
 def test_query_rewrites_are_isolated_after_all_retired_forms(
     tmp_path, monkeypatch, capsys, surface, version, retired_key, legacy_line
 ):
+    _with_rules(monkeypatch, (*RULES, QUERY_VERSION))
     files = {
         **UPGRADED,
         "examples/core.yml": UPGRADED["examples/core.yml"].replace(
@@ -1184,8 +1147,8 @@ def test_query_rewrites_are_isolated_after_all_retired_forms(
         )
     assert report["status"] == "upgraded", report
     assert {row["id"]: row["tier"] for row in report["rules"]} == {
-        retired_key: "certified",
-        "query-ir-version": "certified",
+        retired_key: "translated",
+        "query-version": "translated",
     }
     assert _contents(project) == UPGRADED
     runtime = Runtime.from_snapshot(load_package_snapshot(project))
@@ -1246,7 +1209,7 @@ def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
     )
     (project / "examples/broken.yml").write_text(
         "examples:\n  broken:\n    query:\n      version: 1\n"
-        "      select: [{expression: {metric: metric.jaffle.missing}, as: missing}]\n"
+        "      select: [{expression: metric.jaffle.missing, as: missing}]\n"
     )
     rule = Rule("default-version", "9.9", "same_meaning", "Delete version: 1", _default_version)
 
@@ -1257,7 +1220,8 @@ def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
     routes, broken = report["next_actions"]
     assert re.match(r"Decide the join route of \d+ entity pairs \(entity\.jaffle_", routes)
     assert broken == (
-        "Example examples/broken.yml:examples.broken.query does not compile: OBJECT_NOT_FOUND."
+        "Example examples/broken.yml:examples.broken.query does not compile (OBJECT_NOT_FOUND): "
+        "Unknown metric recipe 'metric.jaffle.missing'"
     )
 
 

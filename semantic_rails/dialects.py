@@ -9,12 +9,20 @@ and compiler call. Also owns the connection-option schema used by
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from .errors import SemanticLayerError
-from .expressions import call_cast_type, call_date_diff_unit, validate_call_name
+from .expressions import (
+    CONVERSION_WINDOW_UNITS,
+    PORTABLE_CALL_NAMES,
+    call_cast_type,
+    call_date_diff_unit,
+    validate_call_name,
+)
 from .sql_ast import (
+    SqlAggregateFilter,
     SqlBinary,
     SqlCall,
     SqlCase,
@@ -24,7 +32,9 @@ from .sql_ast import (
     SqlField,
     SqlIdentifier,
     SqlInterval,
+    SqlIsNull,
     SqlJoin,
+    SqlJsonExtract,
     SqlLiteral,
     SqlNamedArg,
     SqlOrderTerm,
@@ -33,7 +43,13 @@ from .sql_ast import (
     SqlTableRef,
     SqlWithinGroup,
 )
-from .sql_preparation import PreparedQuery, prepare_query
+from .sql_preparation import (
+    PreparedQuery,
+    bigquery_compat_sql,
+    float_nullif_divisions,
+    postgres_compat_sql,
+    rewrite_double_quoted_identifiers,
+)
 
 
 def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) -> Any:
@@ -69,16 +85,39 @@ def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) ->
 def backslash_escaped_string_literal(value: str) -> str:
     """Quote ``value`` for dialects where ``\\`` escapes inside string literals.
 
-    Snowflake, BigQuery, ClickHouse and Databricks/Spark all treat a
-    backslash as introducing an escape sequence inside a single-quoted
-    literal. Doubling only the quote is therefore not enough: a value
-    ending in a backslash escapes the *closing* quote, so everything the
-    caller supplied after it is parsed as SQL rather than as data.
+    Snowflake and ClickHouse treat a backslash as introducing an escape
+    sequence inside a single-quoted literal. Doubling only the quote is
+    therefore not enough: a value ending in a backslash escapes the
+    *closing* quote, so everything the caller supplied after it is parsed
+    as SQL rather than as data.
 
     Backslashes are doubled before quotes so the doubling cannot be
     applied to a quote-escape this function introduced itself.
     """
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def backslash_quoted_string_literal(value: str) -> str:
+    """Quote ``value`` where only a backslash escapes a quote: BigQuery reads ``''`` inside
+    a literal as two literals (an error) and Spark as two concatenated ones (the quote is
+    lost), so the quote is ``\\'`` and a backslash ``\\\\``."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+# An ISO date or naive timestamp, the text a TIMESTAMP literal reads.
+_ISO_TEMPORAL = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)?")
+
+
+def _value_and_key_known(expr: Any, order_expr: Any) -> Any:
+    """The rows a first or last value reads: its value and its order key both known. DuckDB's
+    ``arg_min``/``arg_max``, the reference, skip a row where either is NULL."""
+    known = SqlBinary(expr, "IS NOT", SqlLiteral(None))
+    return SqlBinary(known, "AND", SqlBinary(order_expr, "IS NOT", SqlLiteral(None)))
+
+
+def _null_where_null(expr: Any, value: Any) -> Any:
+    """``value``, NULL where ``expr`` is NULL."""
+    return SqlCase([SqlCaseWhen(SqlIsNull(expr), SqlLiteral(None))], else_expr=value)
 
 
 def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> SqlSelect:
@@ -93,10 +132,43 @@ def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> 
 @dataclass(frozen=True)
 class SqlDialect:
     name: str
+    # Whether LIKE needs an explicit ``ESCAPE '\\'`` (BigQuery and ClickHouse escape with a
+    # backslash by default and have no ESCAPE clause).
+    like_escape_clause = True
+    # Whether names the SQL leaves unquoted are case-sensitive (ClickHouse); elsewhere a warehouse
+    # reads them in any ASCII case.
+    identifiers_case_sensitive = False
+    # How a text word folds both its column and its text ("{}" is the operand), so the two always
+    # fold alike: one Unicode-aware lowercase function on every warehouse.
+    case_fold = "LOWER({})"
+    # The type a NULL boolean casts to.
+    null_boolean_type = "BOOLEAN"
+    # Whether the adapter runs each query in the zone of its time role (the runtime's
+    # ``_time_zone``), so zone-aware values bucket and compare in that zone.
+    session_zone = False
+    # Whether a filter across a one-to-many hop may run as a correlated EXISTS. Without it, a
+    # de-duplicated parent leaf (one row per key before aggregating) answers the filter.
+    correlated_exists = True
+    # Whether loaded coverage runs here (:meth:`utc_timestamp`), so a named window under a grain
+    # answers every period it holds: 0 inside the data, NULL after its edge.
+    reads_coverage = False
+    # Whether an EXISTS subquery may sit in a select expression, not only in WHERE.
+    exists_in_select = False
+    # The aggregates that read a true/false column's lowest and highest value in a group (a
+    # one-per-key model's single value): MIN and MAX where they take a boolean.
+    boolean_bounds: ClassVar[tuple[str, str]] = ("MIN", "MAX")
+    # How a refusal that only this warehouse makes names it.
+    label: ClassVar[str] = "This warehouse"
+    # The scalar calls a package or query expression may name (``scalar_call``).
+    call_names: ClassVar[frozenset[str]] = frozenset()
+    # The DATE_DIFF units whose boundary count matches the portable meaning.
+    date_diff_units: ClassVar[tuple[str, ...]] = CONVERSION_WINDOW_UNITS
+    # Whether a CAST call can enforce DECIMAL(p,s).
+    decimal_cast = True
 
     def scalar_call(self, name: str, args: list[Any], *, distinct: bool = False) -> Any:
         """Central lowering guard for every query, package and relation call."""
-        name = validate_call_name(name, self.name)
+        name = validate_call_name(name, self.call_names)
         if distinct:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
@@ -106,43 +178,28 @@ class SqlDialect:
                 args[0].value if args and isinstance(args[0], SqlLiteral) else None,
                 arg_count=len(args),
                 warehouse=self.name,
+                units=self.date_diff_units,
             )
-            start, end = args[1], args[2]
-            if self.name == "bigquery":
-                # Force calendar boundaries in UTC, including TIMESTAMP endpoints;
-                # unwrapped TIMESTAMPs select BigQuery's elapsed-duration overload.
-                start, end = SqlCast(start, "DATETIME"), SqlCast(end, "DATETIME")
-            return self.date_diff(unit, start, end)
+            return self.call_date_diff(unit, args[1], args[2])
         if name != "CAST":
             return SqlCall(name, args)
         value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None
-        logical_type = call_cast_type(value, self.name)
+        logical_type = call_cast_type(value, decimal=self.decimal_cast, warehouse=self.name)
+        return SqlCast(args[0], self.cast_type_name(logical_type))
+
+    def call_date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
+        """An authored ``DATE_DIFF`` call: boundaries counted on the values' own calendar."""
+        return self.date_diff(unit, start_expr, end_expr)
+
+    def cast_type_name(self, logical_type: str) -> str:
+        """The warehouse's spelling of a CAST call's logical type (``CALL_CAST_FORMS``)."""
         base = logical_type.split("(")[0]
-        type_name = "BIGINT" if base in {"INTEGER", "BIGINT"} else logical_type
-        if self.name == "postgres" and base == "DOUBLE":
-            type_name = "FLOAT8"
-        elif self.name == "bigquery":
-            type_name = {
-                "DOUBLE": "FLOAT64",
-                "INTEGER": "INT64",
-                "BIGINT": "INT64",
-                "VARCHAR": "STRING",
-            }[base]
-        elif self.name == "databricks" and base == "VARCHAR":
-            type_name = "STRING"
-        elif self.name == "clickhouse":
-            type_name = {
-                "DOUBLE": "Float64",
-                "INTEGER": "Int64",
-                "BIGINT": "Int64",
-                "VARCHAR": "String",
-            }.get(base, logical_type)
-            type_name = f"Nullable({type_name})"
-        return SqlCast(args[0], type_name)
+        return "BIGINT" if base in {"INTEGER", "BIGINT"} else logical_type
 
     def prepare_query(self, sql: str) -> PreparedQuery:
-        """Finalize the executable statement and result-column mapping."""
-        return prepare_query(sql, self.name)
+        """Finalize the executable statement and result-column mapping, once, before
+        execution: the warehouse's last syntax and precision rules."""
+        return PreparedQuery(sql)
 
     def quote_string_literal(self, value: str) -> str:
         """Render ``value`` as a single-quoted SQL string literal.
@@ -153,10 +210,16 @@ class SqlDialect:
         Postgres (``standard_conforming_strings=on``, the default since
         9.1) and Trino/Athena. Dialects that also honour backslash
         escapes override this with
-        :func:`backslash_escaped_string_literal` — doubling backslashes
+        :func:`backslash_escaped_string_literal` or
+        :func:`backslash_quoted_string_literal` — doubling backslashes
         *here* would corrupt the value on these warehouses instead.
         """
         return "'" + value.replace("'", "''") + "'"
+
+    def temporal_literal(self, value: str) -> str:
+        """Date or timestamp text compared with a clock or date column (``SqlLiteral.temporal``);
+        the comparison coerces the text."""
+        return self.quote_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlCall("QUANTILE_CONT", [expr, SqlLiteral(percentile)])
@@ -165,6 +228,8 @@ class SqlDialect:
         return SqlCall("MEDIAN", [expr])
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
+        """``expr`` at the least ``order_expr``, over the rows where both are known: a row
+        with a NULL value or a NULL key is skipped, as DuckDB's ``arg_min`` skips it."""
         return SqlCall("arg_min", [expr, order_expr])
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
@@ -187,33 +252,27 @@ class SqlDialect:
 
     @property
     def has_time_coverage(self) -> bool:
-        """Whether an empty time bucket reads 0 only inside the base's loaded range.
+        """Whether every series' empty time bucket reads 0 only inside the base's loaded range.
 
-        That coverage compares stored instants with :meth:`now` through :meth:`utc_timestamp`,
-        spelled here for DuckDB (and MotherDuck and DuckLake, which run it) and Postgres, the
-        warehouses whose execution is tested. The others keep the in-window observation test.
+        That coverage compares stored instants with the request's ``now`` through
+        :meth:`utc_timestamp`. DuckDB (and MotherDuck and DuckLake, which run it) and Postgres,
+        the warehouses whose execution is tested, read it for every series; the others keep the
+        in-window observation test, and read coverage only for a named window
+        (:attr:`reads_coverage`).
         """
         return isinstance(self, DuckDbDialect | PostgresDialect)
 
-    def now(self, timezone: str = "UTC") -> Any:
-        """Current instant as wall time in ``timezone``, independent of the session zone."""
-        return SqlCall("TIMEZONE", [SqlLiteral(timezone), SqlCall("NOW", [])])
-
     def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
-        """UTC wall time for an instant, or for naive storage in its declared zone.
+        """UTC wall time for naive storage in its declared zone (``column_timezone``).
 
-        Package timestamp metadata does not distinguish these physical SQL types.
-        Both CASE arms return naive UTC, so session coercion cannot change the cutoff.
-        Only used where :attr:`has_time_coverage` holds.
+        On a warehouse without session-zone queries a package stores naive timestamps and
+        declares their zone, so the stored value converts from that zone. Only used where
+        :attr:`reads_coverage` holds.
         """
-        aware = SqlBinary(
-            SqlCast(SqlCall("PG_TYPEOF", [expr]), "VARCHAR"),
-            "=",
-            SqlLiteral("timestamp with time zone"),
-        )
-        instant = SqlCall("TIMEZONE", [SqlLiteral("UTC"), SqlCast(expr, "TIMESTAMPTZ")])
-        naive = self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))
-        return SqlCase([SqlCaseWhen(aware, instant)], naive)
+        stored = self.timestamp_cast(expr)
+        if storage_zone == "UTC":
+            return stored
+        return self.convert_timezone(storage_zone, "UTC", stored)
 
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         return SqlCall("DATE_TRUNC", [SqlLiteral(grain), self.timestamp_cast(ts_expr)])
@@ -256,6 +315,13 @@ class SqlDialect:
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlBinary(left, "IS NOT DISTINCT FROM", right)
 
+    def single_value(self, expr: Any, *, boolean: bool = False) -> Any:
+        """A group's one value of ``expr``, NULL where its known values differ: a one-per-key
+        model's column. ``boolean`` marks a column a dimension declares true/false."""
+        names = self.boolean_bounds if boolean else ("MIN", "MAX")
+        least, most = (SqlCall(name, [expr]) for name in names)
+        return SqlCase([SqlCaseWhen(SqlBinary(least, "=", most), most)])
+
     @property
     def outer_lookup_joins(self) -> bool:
         """Whether a many-to-one lookup may be a LEFT JOIN, keeping rows it finds no match for.
@@ -264,6 +330,12 @@ class SqlDialect:
         outer join fills them with a type default instead says False, and lookups stay inner.
         """
         return True
+
+    @property
+    def subquery_in_join_on(self) -> bool:
+        """Whether a join's ON may hold an uncorrelated ``IN (SELECT …)``, keeping a LEFT
+        join's unmatched rows. Each warehouse declares it once its tests prove it."""
+        return False
 
     @property
     def has_implicit_calendar(self) -> bool:
@@ -303,6 +375,21 @@ class SqlDialect:
         )
         return SqlCall(aggregation.upper(), [case_expr])
 
+    def json_extract(self, expr: Any, path: list[str], *, as_text: bool) -> Any:
+        """The JSON value at the object keys ``path`` inside ``expr``; text when ``as_text``."""
+        function = "JSON_EXTRACT_STRING" if as_text else "JSON_EXTRACT"
+        return SqlCall(function, [expr, SqlLiteral("$." + ".".join(path))])
+
+    def explode(
+        self, expr: Any, delimiter: str, *, alias: str, column: str
+    ) -> tuple[SqlTableFunction, Any]:
+        """A table function named ``alias`` with one row per element of the list ``expr`` (split
+        on ``delimiter`` when one is given), and the expression that reads the element."""
+        if delimiter:
+            expr = SqlCall("STRING_SPLIT", [expr, SqlLiteral(delimiter)])
+        table = SqlTableFunction("UNNEST", args=[expr], alias=alias, columns=[column])
+        return table, SqlIdentifier(parts=[alias, column])
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "date_trunc": True,
@@ -333,6 +420,24 @@ class _ConvertTimezone:
 
 
 class _NestedTimezone:
+    reads_coverage = True
+    exists_in_select = True
+
+    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
+        """UTC wall time for an instant, or for naive storage in its declared zone.
+
+        Package timestamp metadata does not distinguish these physical SQL types.
+        Both CASE arms return naive UTC, so session coercion cannot change the cutoff.
+        """
+        aware = SqlBinary(
+            SqlCast(SqlCall("PG_TYPEOF", [expr]), "VARCHAR"),
+            "=",
+            SqlLiteral("timestamp with time zone"),
+        )
+        instant = SqlCall("TIMEZONE", [SqlLiteral("UTC"), SqlCast(expr, "TIMESTAMPTZ")])
+        naive = self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))  # type: ignore[attr-defined]
+        return SqlCase([SqlCaseWhen(aware, instant)], naive)
+
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
         # `tz` and yields an instant; `timezone(tz, instant)` renders an
@@ -348,15 +453,27 @@ class _NestedTimezone:
 @dataclass(frozen=True)
 class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     name: str = "snowflake"
+    reads_coverage = True
+    boolean_bounds = ("BOOLAND_AGG", "BOOLOR_AGG")
+    call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
+    # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
+    case_fold = "LOWER(COLLATE({}, ''))"
+    date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        return PreparedQuery(float_nullif_divisions(sql))
 
     def quote_string_literal(self, value: str) -> str:
         return backslash_escaped_string_literal(value)
 
+    # MIN_BY/MAX_BY ignore a NULL key but return the value at the edge even when it is NULL
+    # (docs.snowflake.com/en/sql-reference/functions/min_by), and Snowflake has no aggregate
+    # FILTER: a NULL value's key is NULL too, so its row is skipped as well.
     def first_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MIN_BY", [expr, order_expr])
+        return SqlCall("MIN_BY", [expr, _null_where_null(expr, order_expr)])
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MAX_BY", [expr, order_expr])
+        return SqlCall("MAX_BY", [expr, _null_where_null(expr, order_expr)])
 
     def timestamp_type_name(self) -> str:
         return "TIMESTAMP_NTZ"
@@ -383,6 +500,19 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlCall("EQUAL_NULL", [left, right])
 
+    def json_extract(self, expr: Any, path: list[str], *, as_text: bool) -> Any:
+        return SqlJsonExtract(expr, path=path, as_text=as_text)
+
+    def explode(
+        self, expr: Any, delimiter: str, *, alias: str, column: str
+    ) -> tuple[SqlTableFunction, Any]:
+        if delimiter:
+            expr = SqlCall("SPLIT", [expr, SqlLiteral(delimiter)])
+        table = SqlTableFunction(
+            "FLATTEN", named_args=[SqlNamedArg("INPUT", expr)], alias=alias, lateral=True
+        )
+        return table, SqlIdentifier(parts=[alias, "VALUE"])
+
     def conditional_aggregate(self, aggregation: str, condition: Any, value: Any | None) -> Any:
         agg = aggregation.lower()
         if agg == "count" and value is None:
@@ -407,7 +537,20 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
 
 @dataclass(frozen=True)
 class DuckDbDialect(_NestedTimezone, SqlDialect):
+    subquery_in_join_on = True
     name: str = "duckdb"
+    session_zone = True
+    call_names = PORTABLE_CALL_NAMES | {
+        "DATE_PART",
+        "DATE_TRUNC",
+        "LEFT",
+        "RIGHT",
+        "JSON_EXTRACT",
+        "JSON_EXTRACT_STRING",
+        "SPLIT",
+        "STRING_SPLIT",
+        "STR_SPLIT",
+    }
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # GENERATE_SERIES includes its end; over DATEs it yields midnight TIMESTAMPs.
@@ -446,7 +589,16 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
       ``<AGG>(CASE WHEN …)`` conditional-aggregate default are native.
     """
 
+    subquery_in_join_on = True
+
     name: str = "postgres"
+    session_zone = True
+    call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"}
+    # LOWER folds by its operand's collation, and a column's own collation can differ from a
+    # literal's: both read as text (an enum or char column too) and fold under the ICU root
+    # collation, built in wherever Postgres has ICU; without it the query fails rather than
+    # folding the two apart.
+    case_fold = 'LOWER(CAST({} AS TEXT) COLLATE "und-x-icu")'
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # Integer day offsets (DATE - DATE is an integer, DATE + integer a DATE), since
@@ -478,19 +630,28 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
 
     _MONTHS_PER_UNIT = {"month": 1, "quarter": 3, "year": 12}
 
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        sql, alias_map = postgres_compat_sql(sql)
+        return PreparedQuery(sql, tuple(alias_map.items()))
+
+    def cast_type_name(self, logical_type: str) -> str:
+        return "FLOAT8" if logical_type == "DOUBLE" else super().cast_type_name(logical_type)
+
     def median(self, expr: Any) -> Any:
         # PG has no MEDIAN; PERCENTILE_CONT(0.5) is the exact equivalent.
         return self.percentile_cont(expr, 0.5)
 
     def _value_by(self, expr: Any, order_expr: Any, direction: str) -> Any:
+        # ARRAY_AGG keeps NULL values and sorts a NULL key last ascending but first
+        # descending: FILTER keeps the rows whose value and key are both known.
         from .sql_ast import SqlCallWithOrder, SqlIndexAccess
 
+        ordered = SqlCallWithOrder(
+            SqlCall("ARRAY_AGG", [expr]),
+            order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
+        )
         return SqlIndexAccess(
-            SqlCallWithOrder(
-                SqlCall("ARRAY_AGG", [expr]),
-                order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
-            ),
-            SqlLiteral(1),
+            SqlAggregateFilter(ordered, _value_and_key_known(expr, order_expr)), SqlLiteral(1)
         )
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
@@ -498,6 +659,17 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
         return self._value_by(expr, order_expr, "DESC")
+
+    def single_value(self, expr: Any, *, boolean: bool = False) -> Any:
+        # No MIN or MAX of a boolean, and a column only a measure reads has no declared type:
+        # count the known distinct values, and read the one there is from an array of them
+        # (never of every row).
+        from .sql_ast import SqlIndexAccess
+
+        distinct = SqlCall("ARRAY_AGG", [expr], distinct=True)
+        known = SqlAggregateFilter(distinct, SqlBinary(expr, "IS NOT", SqlLiteral(None)))
+        one = SqlBinary(SqlCall("COUNT", [expr], distinct=True), "=", SqlLiteral(1))
+        return SqlCase([SqlCaseWhen(one, SqlIndexAccess(known, SqlLiteral(1)))])
 
     def _date_of(self, expr: Any) -> Any:
         return SqlCast(expr, "DATE")
@@ -692,6 +864,15 @@ class BigQueryDialect(SqlDialect):
     arithmetic).
     """
 
+    like_escape_clause = False
+    reads_coverage = True
+    boolean_bounds = ("LOGICAL_AND", "LOGICAL_OR")
+    call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
+    # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
+    case_fold = "LOWER(COLLATE({}, ''))"
+    date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
+    decimal_cast = False
+
     name: str = "bigquery"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
@@ -702,17 +883,37 @@ class BigQueryDialect(SqlDialect):
         return _day_rows(SqlIdentifier(parts=["series_day"]), source, series)
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
-        # BigQuery has no CONVERT_TIMEZONE. TIMESTAMP(datetime, tz) reads a
-        # naive DATETIME as wall-clock in `tz`; DATETIME(timestamp, tz)
-        # renders it back to naive wall-clock in the target zone. This
-        # matches the DATETIME_* family the rest of this dialect uses.
-        return SqlCall(
-            "DATETIME",
-            [SqlCall("TIMESTAMP", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
-        )
+        # BigQuery has no CONVERT_TIMEZONE. DATETIME(timestamp, tz) renders an instant as
+        # naive wall time in the target zone, matching the DATETIME_* family the rest of this
+        # dialect uses. Stored in UTC, the value becomes its instant through CAST AS TIMESTAMP,
+        # which reads a DATETIME or a DATE in UTC and keeps a TIMESTAMP as it is, so the one
+        # form serves a DATETIME, DATE or TIMESTAMP column (an instant column declares UTC).
+        # Stored as wall time in another zone, the value is a DATETIME or a DATE, and
+        # TIMESTAMP(value, tz) reads it in that zone; TIMESTAMP(...) takes no TIMESTAMP.
+        if source_tz == "UTC":
+            instant: Any = SqlCast(ts_expr, "TIMESTAMP")
+        else:
+            instant = SqlCall("TIMESTAMP", [ts_expr, SqlLiteral(source_tz)])
+        return SqlCall("DATETIME", [instant, SqlLiteral(target_tz)])
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        sql, alias_map = bigquery_compat_sql(sql)
+        return PreparedQuery(sql, tuple(alias_map.items()))
+
+    def call_date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
+        # Force calendar boundaries in UTC, including TIMESTAMP endpoints; unwrapped
+        # TIMESTAMPs select BigQuery's elapsed-duration overload.
+        return self.date_diff(unit, SqlCast(start_expr, "DATETIME"), SqlCast(end_expr, "DATETIME"))
+
+    def cast_type_name(self, logical_type: str) -> str:
+        # DECIMAL never reaches here: decimal_cast is False.
+        base = logical_type.split("(")[0]
+        return {"DOUBLE": "FLOAT64", "INTEGER": "INT64", "BIGINT": "INT64", "VARCHAR": "STRING"}[
+            base
+        ]
 
     def quote_string_literal(self, value: str) -> str:
-        return backslash_escaped_string_literal(value)
+        return backslash_quoted_string_literal(value)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         """EXACT linear-interpolation percentile (DuckDB QUANTILE_CONT
@@ -727,11 +928,12 @@ class BigQueryDialect(SqlDialect):
 
             v[FLOOR(h)] + (h - FLOOR(h)) * (v[CEIL(h)] - v[FLOOR(h)])
 
-        via ``(ARRAY_AGG(expr ORDER BY expr ASC))[OFFSET(...)]`` array
-        references. When ``h`` is integral FLOOR = CEIL and the fraction
-        term is 0, so the result is the element itself. NOTE: BigQuery
-        ARRAY_AGG errors on NULL elements (IGNORE NULLS is not
-        representable in the SQL AST) — see capabilities().
+        via ``(ARRAY_AGG(expr IGNORE NULLS ORDER BY expr ASC))[SAFE_OFFSET(...)]``
+        array references. When ``h`` is integral FLOOR = CEIL and the fraction
+        term is 0, so the result is the element itself. NULLs are left out, as
+        DuckDB's QUANTILE_CONT leaves them out (an array holding NULL is an error
+        on BigQuery), and a group with no value reads NULL: its position is
+        negative, which SAFE_OFFSET reads as NULL.
         """
         from .sql_ast import SqlCallWithOrder, SqlIndexAccess
 
@@ -739,11 +941,12 @@ class BigQueryDialect(SqlDialect):
             return SqlCallWithOrder(
                 call=SqlCall("ARRAY_AGG", [expr]),
                 order_by=[SqlOrderTerm(expr=expr, direction="ASC")],
+                ignore_nulls=True,
             )
 
         def position() -> Any:
-            # h = p * (COUNT(expr) - 1); COUNT(expr) matches ARRAY_AGG's
-            # element count (both skip nothing — NULLs error out above).
+            # h = p * (COUNT(expr) - 1); COUNT(expr) is ARRAY_AGG's element
+            # count (both leave NULLs out).
             return SqlBinary(
                 SqlLiteral(float(percentile)),
                 "*",
@@ -754,7 +957,7 @@ class BigQueryDialect(SqlDialect):
             return SqlIndexAccess(
                 expr=sorted_values(),
                 index=SqlCast(SqlCall(index_call, [position()]), "BIGINT"),
-                wrapper="OFFSET",
+                wrapper="SAFE_OFFSET",
             )
 
         lower = element_at("FLOOR")
@@ -766,20 +969,22 @@ class BigQueryDialect(SqlDialect):
         return self.percentile_cont(expr, 0.5)
 
     def _array_agg_edge(self, expr: Any, order_expr: Any, direction: str) -> Any:
-        # No MIN_BY/MAX_BY — use ARRAY_AGG(expr ORDER BY o … LIMIT 1)
-        # [OFFSET(0)]. NOTE: BigQuery ARRAY_AGG errors on NULL elements
-        # and IGNORE NULLS is not representable in the SQL AST (see
-        # capabilities()).
+        # No MIN_BY/MAX_BY: ARRAY_AGG(expr IGNORE NULLS ORDER BY o … LIMIT 1)
+        # [SAFE_OFFSET(0)], the first non-NULL value (an array holding NULL is an
+        # error on BigQuery), or NULL for a group with none. A row with no key reads NULL
+        # too: BigQuery sorts NULL first ascending, and IGNORE NULLS applies before ORDER BY
+        # and LIMIT (aggregate function calls, GoogleSQL reference).
         from .sql_ast import SqlCallWithOrder, SqlIndexAccess
 
         return SqlIndexAccess(
             expr=SqlCallWithOrder(
-                call=SqlCall("ARRAY_AGG", [expr]),
+                call=SqlCall("ARRAY_AGG", [_null_where_null(order_expr, expr)]),
                 order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
                 limit=1,
+                ignore_nulls=True,
             ),
             index=SqlLiteral(0),
-            wrapper="OFFSET",
+            wrapper="SAFE_OFFSET",
         )
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
@@ -849,19 +1054,16 @@ class BigQueryDialect(SqlDialect):
                 "null_safe_equality_function": "IS NOT DISTINCT FROM",
                 "percentile_cont_exact": True,
                 "percentile_cont_method": (
-                    "exact linear interpolation over "
-                    "(ARRAY_AGG(expr ORDER BY expr))[OFFSET(FLOOR/CEIL(p * (COUNT(expr) - 1)))] "
-                    "— PERCENTILE_CONT is window-only in BigQuery, so the exact "
-                    "DuckDB QUANTILE_CONT definition is rebuilt from aggregates. "
-                    "CAVEAT: errors if aggregated values contain NULL elements "
-                    "(ARRAY_AGG rejects NULLs; IGNORE NULLS is not representable "
-                    "in the SQL AST)."
+                    "exact linear interpolation over (ARRAY_AGG(expr IGNORE NULLS ORDER BY "
+                    "expr))[SAFE_OFFSET(FLOOR/CEIL(p * (COUNT(expr) - 1)))] — PERCENTILE_CONT "
+                    "is window-only in BigQuery, so the exact DuckDB QUANTILE_CONT definition "
+                    "is rebuilt from aggregates; NULLs are left out."
                 ),
                 "median_exact": True,
                 "first_last_value_method": (
-                    "(ARRAY_AGG(expr ORDER BY order LIMIT 1))[OFFSET(0)] — "
-                    "errors if aggregated values contain NULL elements; "
-                    "IGNORE NULLS is not representable in the SQL AST."
+                    "(ARRAY_AGG(CASE WHEN order IS NULL THEN NULL ELSE expr END IGNORE NULLS "
+                    "ORDER BY order LIMIT 1))[SAFE_OFFSET(0)] — the first value whose value and "
+                    "order are both known, NULL when there is none."
                 ),
             }
         )
@@ -886,19 +1088,35 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     """
 
     name: str = "databricks"
+    reads_coverage = True
+    call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
+    # A column's own collation (UNICODE, UTF8_LCASE) is set aside: LIKE reads binary text.
+    case_fold = "LOWER(({}) COLLATE UTF8_BINARY)"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day by default.
         return _day_rows(SqlCall("EXPLODE", [SqlCall("SEQUENCE", [start, end])]), source)
 
-    def quote_string_literal(self, value: str) -> str:
-        return backslash_escaped_string_literal(value)
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        sql = rewrite_double_quoted_identifiers(sql, backslash=True)
+        return PreparedQuery(float_nullif_divisions(sql, backslash=True))
 
+    def cast_type_name(self, logical_type: str) -> str:
+        return "STRING" if logical_type == "VARCHAR" else super().cast_type_name(logical_type)
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_quoted_string_literal(value)
+
+    # MIN_BY/MAX_BY return the value at the edge even when it is NULL; FILTER keeps the rows
+    # whose value and key are both known (docs.databricks.com/en/sql/language-manual/
+    # functions/min_by.html: min_by(expr, ordExpr) [FILTER (WHERE cond)]).
     def first_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MIN_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MIN_BY", [expr, order_expr]), known)
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MAX_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MAX_BY", [expr, order_expr]), known)
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         """Boundary-crossing date difference matching DuckDB ``DATE_DIFF``.
@@ -980,6 +1198,10 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+    reads_coverage = True
+    boolean_bounds = ("BOOL_AND", "BOOL_OR")
+    call_names = PORTABLE_CALL_NAMES | {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"}
+    date_diff_units = ()  # its native date_diff counts complete elapsed units
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day. Trino caps one
@@ -992,6 +1214,17 @@ class AthenaDialect(SqlDialect):
         )
         return _day_rows(SqlIdentifier(parts=["day_series", "series_day"]), source, series)
 
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        return PreparedQuery(float_nullif_divisions(sql, cast_type="DOUBLE"))
+
+    def temporal_literal(self, value: str) -> str:
+        # Trino refuses a timestamp compared with text (TYPE_MISMATCH) where DuckDB coerces the
+        # text; a typed literal compares the same way, and a DATE operand coerces to it. Its
+        # TIMESTAMP literal separates the date and the time with a space, never ISO's ``T``.
+        if not _ISO_TEMPORAL.fullmatch(value):
+            return self.quote_string_literal(value)
+        return f"TIMESTAMP {self.quote_string_literal(value.replace('T', ' '))}"
+
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # Trino: with_timezone(naive_ts, tz) attaches a zone;
         # at_timezone(instant, tz) re-renders it in the target zone.
@@ -999,6 +1232,12 @@ class AthenaDialect(SqlDialect):
             "at_timezone",
             [SqlCall("with_timezone", [ts_expr, SqlLiteral(source_tz)]), SqlLiteral(target_tz)],
         )
+
+    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
+        # at_timezone returns a zoned value; casting drops the zone and keeps its UTC wall
+        # time, so it compares with the naive ``now`` without the session zone.
+        converted = super().utc_timestamp(expr, storage_zone)
+        return converted if storage_zone == "UTC" else self.timestamp_cast(converted)
 
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         # Trino has no exact percentile aggregate (APPROX_PERCENTILE is
@@ -1059,11 +1298,16 @@ class AthenaDialect(SqlDialect):
     def median(self, expr: Any) -> Any:
         return self.percentile_cont(expr, 0.5)
 
+    # Trino's min_by/max_by don't ignore NULLs as other aggregates do (trino.io/docs/current/
+    # functions/aggregate.html); FILTER, which every Trino aggregate takes, keeps the rows whose
+    # value and key are both known.
     def first_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MIN_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MIN_BY", [expr, order_expr]), known)
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MAX_BY", [expr, order_expr])
+        known = _value_and_key_known(expr, order_expr)
+        return SqlAggregateFilter(SqlCall("MAX_BY", [expr, order_expr]), known)
 
     def date_add(self, unit: str, value_expr: Any, date_expr: Any) -> Any:
         # Trino form: DATE_ADD('unit', value, ts) — unit as a string
@@ -1122,7 +1366,32 @@ class ClickHouseDialect(SqlDialect):
       ClickHouse ``COUNT``/``SUM`` skip NULLs correctly.
     """
 
+    like_escape_clause = False
+    # LOWER folds ASCII only, and lowerUTF8 refuses FixedString and Enum: toString reads any type
+    # as String (NULL stays NULL), and only a FixedString loses its zero padding; a String keeps
+    # every byte. The letters lowerUTF8 leaves as they are are refused on every warehouse.
+    case_fold = (
+        "lowerUTF8(if(position(toTypeName({0}), 'FixedString') > 0, "
+        "toStringCutToZero(toString({0})), toString({0})))"
+    )
+    identifiers_case_sensitive = True
+    null_boolean_type = "Nullable(Bool)"
+    correlated_exists = False  # 24.8 has none
+    label = "ClickHouse"
+    call_names = PORTABLE_CALL_NAMES - {"TRIM"}
+    date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
+
     name: str = "clickhouse"
+
+    def prepare_query(self, sql: str) -> PreparedQuery:
+        # An unmatched outer-join field reads its type's default (0 or '') unless the join
+        # yields NULLs, and a group a leaf has no row for must read NULL, not a made-up 0.
+        return PreparedQuery(f"{sql}\nSETTINGS join_use_nulls = 1")
+
+    def cast_type_name(self, logical_type: str) -> str:
+        base = logical_type.split("(")[0]
+        native = {"DOUBLE": "Float64", "INTEGER": "Int64", "BIGINT": "Int64", "VARCHAR": "String"}
+        return f"Nullable({native.get(base, logical_type)})"
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         # DateTime64 preserves pre-1970 dates; Nullable preserves NULL even with
@@ -1168,6 +1437,8 @@ class ClickHouseDialect(SqlDialect):
     def median(self, expr: Any) -> Any:
         return self.percentile_cont(expr, 0.5)
 
+    # argMin/argMax skip a NULL value and a NULL key alike, as arg_min does
+    # (clickhouse.com/docs/sql-reference/aggregate-functions/reference/argmin).
     def first_value(self, expr: Any, order_expr: Any) -> Any:
         return SqlCall("ARGMIN", [expr, order_expr])  # renders argMin
 

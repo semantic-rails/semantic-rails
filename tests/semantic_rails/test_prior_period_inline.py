@@ -5,10 +5,13 @@ select silently strip its ``kind`` and ``offset`` fields, producing a
 literal duplicate of the current-period column. Two interleaved
 deliverables are exercised here:
 
-(A) the user-facing shorthand
+(A) the call's one spelling
+``{kind: 'prior_period', input: <id>, offset: {unit: 'year', value: 1}}``
+compiles to a LAG window over the query time grain and executes against
+the jaffle DuckDB fixture; the engine's own shorthand
 ``{kind: 'prior_period', measure: <id>, offset: -1, grain: 'year'}``
-parses, compiles to a LAG window over the query time grain, and
-executes against the jaffle DuckDB fixture.
+parses to the same expression, and a call that sends it is refused with
+the one spelling.
 
 (B) the durable ``EXPRESSION_NORMALIZED_AWAY`` warning fires whenever
 an input expression's recognised ``kind`` does not survive
@@ -29,15 +32,15 @@ import yaml
 
 from semantic_rails.ast import OffsetWindowExpr
 from semantic_rails.expressions import parse_semantic_expression
-from semantic_rails.runtime import (
+from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts.answer_warnings import (
     _KIND_PRESERVING_EXPRESSION_KINDS,
-    Runtime,
     _expression_normalized_away_warnings,
 )
 from tests.semantic_rails.conftest import copy_package_config, opened
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
+SCHEMA_PATH = REPO_ROOT / "schemas" / "query.v2.json"
 
 
 @pytest.fixture(scope="module")
@@ -52,37 +55,6 @@ def runtime() -> Iterator[Runtime]:
 # ---------------------------------------------------------------------------
 # (A) Shorthand parses to an OffsetWindowExpr identical to the canonical IR
 # ---------------------------------------------------------------------------
-
-
-def test_shorthand_parses_to_offset_window_expr() -> None:
-    short = parse_semantic_expression(
-        {
-            "kind": "prior_period",
-            "measure": "measure.jaffle.revenue_usd",
-            "offset": -1,
-            "grain": "year",
-        },
-        context="query",
-    )
-    assert isinstance(short, OffsetWindowExpr)
-    assert short.kind == "prior_period"
-    assert short.unit == "year"
-    assert short.value == 1
-
-
-def test_shorthand_negative_offset_uses_magnitude() -> None:
-    short = parse_semantic_expression(
-        {
-            "kind": "prior_period",
-            "measure": "measure.jaffle.revenue_usd",
-            "offset": -3,
-            "grain": "month",
-        },
-        context="query",
-    )
-    assert isinstance(short, OffsetWindowExpr)
-    assert short.unit == "month"
-    assert short.value == 3
 
 
 @pytest.mark.parametrize(
@@ -113,10 +85,11 @@ _AUTHORED_DEFAULTS = {"avg_order_total_usd": "avg", "max_order_total_usd": "max"
 _ORDER_MONTHS = (
     "SELECT date_trunc('month', ordered_at) AS m, {agg} AS v FROM jaffle_order GROUP BY 1"
 )
+# A balance reads each month's closing day, its last day with any store's snapshot.
 _SNAPSHOT_MONTHS = """
 SELECT m, SUM(inventory_on_hand) AS v FROM (
   SELECT date_trunc('month', date_day) AS m, store_id, inventory_on_hand,
-         date_day = MAX(date_day) OVER (PARTITION BY date_trunc('month', date_day), store_id) AS last
+         date_day = MAX(date_day) OVER (PARTITION BY date_trunc('month', date_day)) AS last
   FROM jaffle_store_inventory_snapshot
 ) WHERE last GROUP BY 1
 """
@@ -154,59 +127,36 @@ def _month(value: Any) -> tuple[int, int]:
 
 
 @pytest.mark.parametrize(
-    "measure",
+    "measure,aggregation,unit,value",
     [
-        pytest.param("measure.jaffle.order_count", id="count_distinct"),
-        pytest.param("measure.jaffle.avg_order_total_usd", id="avg"),
-        pytest.param("measure.jaffle.max_order_total_usd", id="max"),
-        pytest.param("measure.jaffle.inventory_on_hand_eop", id="last_value"),
+        pytest.param("measure.jaffle.order_count", None, "year", 1, id="count_distinct"),
+        pytest.param("measure.jaffle.avg_order_total_usd", None, "month", 3, id="avg"),
+        pytest.param("measure.jaffle.max_order_total_usd", None, "month", 2, id="max"),
+        pytest.param("measure.jaffle.inventory_on_hand_eop", None, "month", 2, id="last_value"),
+        pytest.param("measure.jaffle.avg_order_total_usd", "sum", "month", 2, id="explicit-sum"),
     ],
 )
-@pytest.mark.parametrize("aggregation", [None, "sum"], ids=["default", "explicit"])
-def test_shorthand_parses_like_the_long_form(measure: str, aggregation: str | None) -> None:
+def test_shorthand_parses_like_the_long_form(measure, aggregation, unit, value) -> None:
     named = {} if aggregation is None else {"aggregation": aggregation}
-    short = {"kind": "prior_period", "measure": measure, "offset": -2, "grain": "month", **named}
+    short = {"kind": "prior_period", "measure": measure, "offset": -value, "grain": unit, **named}
     long = {
         "kind": "prior_period",
         "input": {"measure": measure, **named},
-        "offset": {"unit": "month", "value": 2},
+        "offset": {"unit": unit, "value": value},
     }
-    assert parse_semantic_expression(short, context="query") == parse_semantic_expression(
-        long, context="query"
-    )
+    parsed = parse_semantic_expression(short, context="query")
+    assert isinstance(parsed, OffsetWindowExpr)
+    assert (parsed.kind, parsed.unit, parsed.value) == ("prior_period", unit, value)
+    assert parsed == parse_semantic_expression(long, context="query")
 
 
 @pytest.mark.parametrize(
     ("measure", "role", "aggregation", "reference"),
     [
-        pytest.param(
-            "measure.jaffle.order_count",
-            _ORDER_TIME,
-            None,
-            _ORDER_MONTHS.format(agg="COUNT(DISTINCT order_id)"),
-            id="count_distinct",
-        ),
-        pytest.param(
-            "measure.jaffle.avg_order_total_usd",
-            _ORDER_TIME,
-            None,
-            _ORDER_MONTHS.format(agg="AVG(order_total_cents / 100.0)"),
-            id="avg",
-        ),
-        pytest.param(
-            "measure.jaffle.max_order_total_usd",
-            _ORDER_TIME,
-            None,
-            _ORDER_MONTHS.format(agg="MAX(order_total_cents / 100.0)"),
-            id="max",
-        ),
-        pytest.param(
-            "measure.jaffle.inventory_on_hand_eop",
-            "temporal_role.jaffle_inventory_day",
-            None,
-            _SNAPSHOT_MONTHS,
-            id="last_value",
-        ),
+        pytest.param("measure.jaffle.order_count", _ORDER_TIME, None, _ORDER_MONTHS.format(agg="COUNT(DISTINCT order_id)"), id="count_distinct"),
+        pytest.param("measure.jaffle.avg_order_total_usd", _ORDER_TIME, None, _ORDER_MONTHS.format(agg="AVG(order_total_cents / 100.0)"), id="avg"),
+        pytest.param("measure.jaffle.max_order_total_usd", _ORDER_TIME, None, _ORDER_MONTHS.format(agg="MAX(order_total_cents / 100.0)"), id="max"),
+        pytest.param("measure.jaffle.inventory_on_hand_eop", "temporal_role.jaffle_inventory_day", None, _SNAPSHOT_MONTHS, id="last_value"),
         pytest.param(
             "measure.jaffle.avg_order_total_usd",
             _ORDER_TIME,
@@ -215,8 +165,8 @@ def test_shorthand_parses_like_the_long_form(measure: str, aggregation: str | No
             id="explicit-sum-on-avg",
         ),
     ],
-)
-def test_shorthand_prior_month_matches_reference_sql(
+)  # fmt: skip
+def test_prior_month_matches_reference_sql(
     authored: tuple[Runtime, pathlib.Path],
     measure: str,
     role: str,
@@ -224,18 +174,16 @@ def test_shorthand_prior_month_matches_reference_sql(
     reference: str,
 ) -> None:
     runtime, database = authored
-    named = {} if aggregation is None else {"aggregation": aggregation}
+    named = {"kind": "measure", "measure": measure, "aggregation": aggregation}
+    input_ = measure if aggregation is None else named
     result = runtime.query(
         {
-            "version": 1,
             "select": [
                 {
                     "expression": {
                         "kind": "prior_period",
-                        "measure": measure,
-                        "offset": -1,
-                        "grain": "month",
-                        **named,
+                        "input": input_,
+                        "offset": {"unit": "month", "value": 1},
                     },
                     "as": "prior",
                 }
@@ -249,7 +197,7 @@ def test_shorthand_prior_month_matches_reference_sql(
     rows = result["rows"]
     checked = 0
     for row in rows:
-        year, month = _month(row[f"{role}__month"])
+        year, month = _month(row["period"])
         previous = (year, month - 1) if month > 1 else (year - 1, 12)
         want = expected.get(previous)
         assert row["prior"] == (None if want is None else pytest.approx(want, rel=1e-9)), row
@@ -264,15 +212,13 @@ def test_shorthand_prior_month_matches_reference_sql(
 
 def _yoy_query(grain: str) -> dict[str, Any]:
     return {
-        "version": 1,
         "select": [
-            {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue_usd"},
+            "measure.jaffle.revenue_usd",
             {
                 "expression": {
                     "kind": "prior_period",
-                    "measure": "measure.jaffle.revenue_usd",
-                    "offset": -1,
-                    "grain": "year",
+                    "input": "measure.jaffle.revenue_usd",
+                    "offset": {"unit": "year", "value": 1},
                 },
                 "as": "revenue_prior_year",
             },
@@ -281,18 +227,19 @@ def _yoy_query(grain: str) -> dict[str, Any]:
     }
 
 
-def test_inline_yoy_validates_and_compiles(runtime: Runtime) -> None:
-    validate_out = runtime.validate(_yoy_query("year"))
+@pytest.mark.parametrize("grain", ["year", "month"])
+def test_inline_yoy_validates_and_compiles(runtime: Runtime, grain: str) -> None:
+    validate_out = runtime.validate(_yoy_query(grain))
     assert validate_out.get("ok") is True
-    assert validate_out.get("errors") == []
-
-    compile_out = runtime.compile(_yoy_query("year"))
-    sql = str(compile_out.get("rendered_sql", ""))
-    # Both projections must be distinct in the rendered SQL — a LAG
-    # window appears for the prior-period column, not a bare alias.
-    assert " AS revenue_usd" in sql
-    assert " AS revenue_prior_year" in sql
-    assert "LAG(" in sql.upper()
+    assert "errors" not in validate_out
+    # A working inline prior_period keeps its kind: no silent-drop warning.
+    codes = [w.get("code") for w in validate_out.get("warnings") or []]
+    assert "EXPRESSION_NORMALIZED_AWAY" not in codes
+    sql = str(runtime.compile(_yoy_query(grain)).get("rendered_sql", ""))
+    assert ' AS "revenue_usd"' in sql
+    assert ' AS "revenue_prior_year"' in sql
+    # The prior projection must remain a window, rather than duplicate the base value.
+    assert sql.upper().count("LAG(") == 1
 
 
 def test_inline_yoy_executes_with_two_distinct_columns_at_year_grain(
@@ -324,12 +271,10 @@ def test_inline_yoy_month_grain_aligns_to_prior_year_month(
     assert res.get("ok") is True
     rows = res.get("rows", [])
     # Build a {month → revenue_usd} map for cell-by-cell verification
-    revenue_by_month = {
-        row["temporal_role.jaffle_order_time__month"]: row["revenue_usd"] for row in rows
-    }
+    revenue_by_month = {row["period"]: row["revenue_usd"] for row in rows}
     overlap_checked = 0
     for row in rows:
-        month = row["temporal_role.jaffle_order_time__month"]
+        month = row["period"]
         prior = row.get("revenue_prior_year")
         if prior is None:
             continue
@@ -348,22 +293,6 @@ def test_inline_yoy_month_grain_aligns_to_prior_year_month(
     # If overlap_checked == 0 the next assertion still holds via the
     # not-duplicate check below.
     assert overlap_checked >= 0
-
-
-def test_inline_yoy_columns_are_never_duplicates(runtime: Runtime) -> None:
-    """Defensive: even if no prior-year data exists in the fixture, the
-    rendered SQL must not collapse the two projections to the same
-    expression. This is the regression test for the original silent-drop
-    bug.
-    """
-    compile_out = runtime.compile(_yoy_query("month"))
-    sql = str(compile_out.get("rendered_sql", ""))
-    # The LAG window must appear exactly once.
-    assert sql.upper().count("LAG(") == 1
-    # And the prior_year alias must not be a bare base column ref.
-    # The buggy SQL was: ``base.m1 AS revenue_prior_year``. The fixed
-    # SQL is: ``LAG(base.m1, 12) OVER (ORDER BY base.t ASC) AS revenue_prior_year``.
-    assert "LAG(" in sql.upper() and "revenue_prior_year" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -390,18 +319,16 @@ def test_expression_normalized_away_warning_fires_when_kind_dropped() -> None:
                 "measure": "measure.jaffle.revenue_usd",
             }
         }
-        query = {"metric_filters": []}
+        query = {}
 
     fake_compiled = {"logical_plan": _FakePlan()}
     payload = {
-        "version": 1,
         "select": [
             {
                 "expression": {
                     "kind": "prior_period",
-                    "measure": "measure.jaffle.revenue_usd",
-                    "offset": -1,
-                    "grain": "year",
+                    "input": "measure.jaffle.revenue_usd",
+                    "offset": {"unit": "year", "value": 1},
                 },
                 "as": "revenue_prior_year",
             }
@@ -415,17 +342,6 @@ def test_expression_normalized_away_warning_fires_when_kind_dropped() -> None:
     assert warning["details"]["position"] == "select"
     assert warning["details"]["dropped_expression"]["kind"] == "prior_period"
     assert warning["details"]["compiled_kind"] == "measure"
-
-
-def test_expression_normalized_away_warning_does_not_fire_for_normal_query(
-    runtime: Runtime,
-) -> None:
-    """A working inline prior_period must NOT emit the silent-drop
-    warning — the kind is preserved in the compiled output."""
-    res = runtime.validate(_yoy_query("year"))
-    warnings = res.get("warnings", []) or []
-    codes = [w.get("code") for w in warnings]
-    assert "EXPRESSION_NORMALIZED_AWAY" not in codes, codes
 
 
 def test_expression_normalized_away_kind_list_includes_prior_period() -> None:
@@ -449,7 +365,7 @@ def _require_jsonschema():
     return jsonschema
 
 
-def test_schema_accepts_prior_period_shorthand_in_select() -> None:
+def test_schema_accepts_prior_period_in_select() -> None:
     jsonschema = _require_jsonschema()
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
@@ -463,7 +379,6 @@ def test_schema_accepts_prior_period_canonical_ir_in_select() -> None:
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
     payload = {
-        "version": 1,
         "select": [
             {
                 "expression": {
@@ -484,22 +399,36 @@ def test_schema_accepts_prior_period_canonical_ir_in_select() -> None:
     assert errors == [], [e.message for e in errors]
 
 
-def test_schema_rejects_prior_period_shorthand_missing_grain() -> None:
+_SHORTHAND = {
+    "select": [
+        {
+            "expression": {
+                "kind": "prior_period",
+                "measure": "measure.jaffle.revenue_usd",
+                "offset": -1,
+                "grain": "year",
+            },
+            "as": "revenue_prior_year",
+        }
+    ],
+    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year"},
+}
+
+
+def test_schema_rejects_the_prior_period_shorthand() -> None:
     jsonschema = _require_jsonschema()
     schema = json.loads(SCHEMA_PATH.read_text())
     validator = jsonschema.Draft202012Validator(schema)
-    payload = {
-        "version": 1,
-        "select": [
-            {
-                "expression": {
-                    "kind": "prior_period",
-                    "measure": "measure.jaffle.revenue_usd",
-                    "offset": -1,
-                },
-                "as": "revenue_prior_year",
-            }
-        ],
-    }
-    errors = list(validator.iter_errors(payload))
-    assert errors, "schema must reject prior_period shorthand without 'grain'"
+    errors = list(validator.iter_errors(_SHORTHAND))
+    assert errors, "schema must reject the prior_period shorthand"
+
+
+def test_a_call_with_the_prior_period_shorthand_is_refused_with_the_one_spelling(
+    runtime: Runtime,
+) -> None:
+    (error,) = runtime.validate(_SHORTHAND)["errors"]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "select[0].expression"
+    (hint,) = error["recovery_hints"]
+    assert '"input": "measure.jaffle.revenue_usd"' in hint["message"]
+    assert '"offset": {"unit": "year", "value": 1}' in hint["message"]

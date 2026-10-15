@@ -57,19 +57,30 @@ def test_mcp_session_imports_the_marts_as_a_joined_star(workspace: Path) -> None
     base = {"project_path": "shop", "target_dir": "dbt/target", "select": MARTS}
     revision = project_revision(workspace / "shop")
 
-    preview, imported, runtime = _calls(
+    (preview,) = _calls(
         server,
         [
             (
                 "import_dbt_project",
                 {**base, "expected_revision": revision, "idempotency_key": "p", "dry_run": True},
-            ),
+            )
+        ],
+    )
+    # A dry run lists the changes and writes nothing.
+    assert preview["ok"] is True and preview["dry_run"] is True
+    assert {change["path"] for change in preview["changes"]} >= {
+        "models/dbt/customers.yml",
+        "models/dbt/order_lines.yml",
+    }
+    assert project_revision(workspace / "shop") == revision
+    imported, runtime = _calls(
+        server,
+        [
             ("import_dbt_project", {**base, "expected_revision": revision, "idempotency_key": "i"}),
             ("validate_project", {"project_path": "shop", "mode": "runtime"}),
         ],
     )
 
-    assert preview["ok"] is True and preview["dry_run"] is True
     assert imported["ok"] is True, imported
     references = {(row["model"], row["entity"]) for row in imported["references"]}
     assert references == {
@@ -88,8 +99,7 @@ def test_mcp_session_imports_the_marts_as_a_joined_star(workspace: Path) -> None
     try:
         rows = engine.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.shop.order_count"}, "as": "orders"}],
+                "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
                 "group_by": ["dimension.shop_customer_customer_country"],
                 "order_by": [{"field": "dimension.shop_customer_customer_country"}],
                 "limit": 10,
@@ -155,10 +165,7 @@ def test_dbt_imported_special_measure_names_query_the_physical_column(
     try:
         rows = runtime.query(
             {
-                "version": 1,
-                "select": [
-                    {"expression": {"measure": f"measure.shop.{measure_id}"}, "as": "actual"}
-                ],
+                "select": [{"expression": f"measure.shop.{measure_id}", "as": "actual"}],
                 "limit": 5,
             }
         )["rows"]
@@ -214,8 +221,7 @@ def test_facts_sharing_a_column_each_get_their_own_measure(
         rates = [
             runtime.query(
                 {
-                    "version": 1,
-                    "select": [{"expression": {"measure": f"measure.shop.{key}"}, "as": "rate"}],
+                    "select": [{"expression": f"measure.shop.{key}", "as": "rate"}],
                     "limit": 5,
                 }
             )["rows"]
@@ -432,35 +438,6 @@ def test_scoped_dbt_tests_do_not_import_a_key_or_subset_facts(workspace: Path) -
     assert applied["revision"] != before
     assert orders_file.read_bytes() == original_orders
     assert (workspace / "shop" / "models" / "dbt" / "customers.yml").exists()
-
-
-def test_a_dry_run_import_writes_nothing(workspace: Path) -> None:
-    server = create_architect_mcp_server(workspace_root=workspace)
-    before = project_revision(workspace / "shop")
-
-    (preview,) = _calls(
-        server,
-        [
-            (
-                "import_dbt_project",
-                {
-                    "project_path": "shop",
-                    "target_dir": "dbt/target",
-                    "select": MARTS,
-                    "expected_revision": before,
-                    "idempotency_key": "p",
-                    "dry_run": True,
-                },
-            )
-        ],
-    )
-
-    assert preview["ok"] is True
-    assert {change["path"] for change in preview["changes"]} >= {
-        "models/dbt/customers.yml",
-        "models/dbt/order_lines.yml",
-    }
-    assert project_revision(workspace / "shop") == before
 
 
 @pytest.mark.parametrize("artifact", ["manifest.json", "catalog.json"])

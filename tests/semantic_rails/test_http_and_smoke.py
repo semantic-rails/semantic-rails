@@ -22,7 +22,7 @@ from semantic_rails.request_context import (
 )
 
 
-def _fake_query_result(payload):
+def _fake_query_result(payload, **_options):
     group_by = list(payload.get("group_by", []) or [])
     dimension = group_by[0] if group_by else "dimension.jaffle_store_name"
     return {
@@ -153,9 +153,8 @@ def test_api_v1_health_contract_envelope_and_request_id(runtime_factory):
         assert payload["package_id"] == "jaffle_shop"
         assert payload["package"]["id"] == "jaffle_shop"
         assert payload["service"] == "semantic-rails"
-        assert payload["warnings"] == []
-        assert payload["errors"] == []
-        assert payload["recovery_hints"] == []
+        # No empty fields: a clean answer carries no warnings, errors or hints.
+        assert not {"warnings", "errors", "recovery_hints"} & set(payload)
         assert isinstance(payload["timing_ms"], (int, float))
 
 
@@ -185,12 +184,12 @@ def test_api_v1_capabilities_exposes_locked_public_index(runtime_factory):
         assert payload["package"]["id"] == "jaffle_shop"
         assert payload["schema_version"] == 1
         assert payload["capabilities"]
-        ir_rows = [
-            row for row in payload["capabilities"] if row["kind"].startswith("agent_query_ir_")
+        call_rows = [
+            row for row in payload["capabilities"] if row["kind"].startswith("query_call_")
         ]
-        assert ir_rows == [{"kind": "agent_query_ir_v1", "available": True, "reason": ""}]
+        assert call_rows == [{"kind": "query_call_v2", "available": True, "reason": ""}]
         assert not any(
-            row["kind"].startswith("agent_query_ir_") for row in payload["unsupported_capabilities"]
+            row["kind"].startswith("query_call_") for row in payload["unsupported_capabilities"]
         )
         assert "qualify" in payload["warehouse_capabilities"]
 
@@ -218,10 +217,10 @@ def test_public_http_contract_rejects_root_and_api_aliases(runtime_factory):
             base + "/api/v1/query",
             {
                 "request_id": "body-req",
-                "version": 1,
                 "select": [
                     {
                         "expression": {
+                            "kind": "measure",
                             "measure": "measure.jaffle.order_count",
                             "aggregation": "count_distinct",
                         },
@@ -237,9 +236,8 @@ def test_public_http_contract_rejects_root_and_api_aliases(runtime_factory):
         assert queried["api_version"] == "v1"
         assert queried["status"] == "ok"
         assert queried["package_id"] == "jaffle_shop"
-        assert queried["warnings"] == []
-        assert queried["errors"] == []
-        assert queried["recovery_hints"] == []
+        # No empty fields: a clean answer carries no warnings, errors or hints.
+        assert not {"warnings", "errors", "recovery_hints"} & set(queried)
         assert queried["query"]["group_by"] == ["dimension.jaffle_store_name"]
         assert "request_id" not in queried["query"]
 
@@ -277,34 +275,28 @@ def test_api_key_shim_and_trusted_request_context_headers(runtime_factory, monke
         assert deep_ready["ok"] is True
         assert any(check["name"] == "warehouse" for check in deep_ready["checks"])
 
-        payload, _ = _post_response(
-            base + "/api/v1/validate",
-            {
-                "query": {
-                    "version": 1,
-                    "select": [
-                        {
-                            "expression": {
-                                "measure": "measure.jaffle.order_count",
-                                "aggregation": "count_distinct",
-                            },
-                            "as": "orders",
-                        }
-                    ],
-                    "policy_context": {"actor": "spoofed_body", "environment": "development"},
-                },
-                "policy_context": {"tenant": "spoofed_tenant", "audience": "body_audience"},
-            },
-            headers={
-                "Authorization": "Bearer test-key",
-                "X-Semantic-Actor": "user_123",
-                "X-Semantic-Tenant": "tenant_a",
-                "X-Semantic-Project": "project_alpha",
-                "X-Semantic-Roles": "analyst,finance",
-                "X-Semantic-Environment": "production",
-                "X-Semantic-Audience": "executive",
-            },
-        )
+        call = {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "measure",
+                        "measure": "measure.jaffle.order_count",
+                        "aggregation": "count_distinct",
+                    },
+                    "as": "orders",
+                }
+            ],
+        }
+        headers = {
+            "Authorization": "Bearer test-key",
+            "X-Semantic-Actor": "user_123",
+            "X-Semantic-Tenant": "tenant_a",
+            "X-Semantic-Project": "project_alpha",
+            "X-Semantic-Roles": "analyst,finance",
+            "X-Semantic-Environment": "production",
+            "X-Semantic-Audience": "executive",
+        }
+        payload, _ = _post_response(base + "/api/v1/validate", {"query": call}, headers=headers)
 
         assert payload["ok"] is True
         assert payload["request_context"]["actor"] == "user_123"
@@ -312,10 +304,17 @@ def test_api_key_shim_and_trusted_request_context_headers(runtime_factory, monke
         assert payload["request_context"]["project"] == "project_alpha"
         assert payload["request_context"]["roles"] == ["analyst", "finance"]
         assert payload["request_context"]["environment"] == "production"
-        assert payload["query"]["policy_context"]["audience"] == "executive"
-        assert payload["query"]["policy_context"]["actor"] == "user_123"
-        assert payload["query"]["policy_context"]["tenant"] == "tenant_a"
-        assert payload["query"]["policy_context"]["environment"] == "production"
+        # A body that says who is asking is refused, outside or inside the call.
+        for body in (
+            {"query": call, "policy_context": {"tenant": "spoofed_tenant"}},
+            {"query": {**call, "policy_context": {"actor": "spoofed_body"}}},
+        ):
+            with pytest.raises(urllib.error.HTTPError) as refused:
+                _post_response(base + "/api/v1/validate", body, headers=headers)
+            assert refused.value.code == 400
+            error = json.loads(refused.value.read().decode("utf-8"))["errors"][0]
+            assert error["code"] == "IDENTITY_CLAIM_REFUSED"
+            assert "spoofed" not in json.dumps(error)
 
 
 def test_api_options_and_auth_boundary_are_browser_safe(runtime_factory, monkeypatch):
@@ -341,9 +340,9 @@ def test_api_options_and_auth_boundary_are_browser_safe(runtime_factory, monkeyp
 def test_api_malformed_request_shapes_return_400_envelopes(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     with _serve_runtime(runtime) as base:
-        for raw_payload in (
-            {"query": "not-an-object"},
-            {"query": {"version": 1, "policy_context": "not-an-object"}},
+        for raw_payload, code in (
+            ({"query": "not-an-object"}, "INVALID_REQUEST"),
+            ({"query": {"policy_context": "not-an-object"}}, "IDENTITY_CLAIM_REFUSED"),
         ):
             try:
                 _post_response(
@@ -357,7 +356,7 @@ def test_api_malformed_request_shapes_return_400_envelopes(runtime_factory):
                 assert exc.code == 400
                 assert payload["status"] == "error"
                 assert payload["request_id"] == "bad-query-shape"
-                assert payload["errors"][0]["code"] == "INVALID_REQUEST"
+                assert payload["errors"][0]["code"] == code
 
         try:
             _post_response(base + "/api/v1/discover", {"terms": "orders", "limit": "many"})
@@ -394,10 +393,10 @@ def test_api_string_boolean_include_blocked_matches_json_boolean(runtime_factory
     runtime = runtime_factory("jaffle_shop")
     with _serve_runtime(runtime) as base:
         query = {
-            "version": 1,
             "select": [
                 {
                     "expression": {
+                        "kind": "measure",
                         "measure": "measure.jaffle.order_count",
                         "aggregation": "count_distinct",
                     },
@@ -482,6 +481,23 @@ def test_api_key_check_uses_constant_time_compare(monkeypatch):
     assert calls == []
 
 
+ORDERS_AND_AOV = {
+    "select": [
+        {
+            "expression": {
+                "kind": "measure",
+                "measure": "measure.jaffle.order_count",
+                "aggregation": "count_distinct",
+            },
+            "as": "orders",
+        },
+        {"expression": "metric.sales.aov_usd", "as": "aov_usd"},
+    ],
+    "group_by": ["dimension.jaffle_store_name"],
+    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+}
+
+
 def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_factory, monkeypatch):
     runtime = runtime_factory("jaffle_shop")
     _, alt_config_path = package_config_factory("jaffle_shop")
@@ -520,10 +536,10 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/build-options",
             {
                 "query": {
-                    "version": 1,
                     "select": [
                         {
                             "expression": {
+                                "kind": "measure",
                                 "measure": "measure.jaffle.order_count",
                                 "aggregation": "count_distinct",
                             },
@@ -541,10 +557,9 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/build-options",
             {
                 "query": {
-                    "version": 1,
                     "select": [
                         {
-                            "expression": {"measure": "measure.jaffle.delivered_revenue_usd"},
+                            "expression": "measure.jaffle.delivered_revenue_usd",
                             "as": "Delivered revenue",
                         }
                     ],
@@ -585,61 +600,9 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/segment-preview",
             {"segment_id": "segment.jaffle.high_value_customers", "limit": 3},
         )
-        validated = _post(
-            base + "/api/v1/validate",
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
-                    },
-                    {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            },
-        )
-        compiled = _post(
-            base + "/api/v1/compile",
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
-                    },
-                    {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-            },
-        )
-        queried = _post(
-            base + "/api/v1/query",
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
-                    },
-                    {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-                "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
-                "limit": 2,
-            },
-        )
+        validated = _post(base + "/api/v1/validate", ORDERS_AND_AOV)
+        compiled = _post(base + "/api/v1/compile", ORDERS_AND_AOV)
+        queried = _post(base + "/api/v1/query", {**ORDERS_AND_AOV, "limit": 2})
 
         assert catalog["ok"] is True
         assert "dimensionjafflestorename" in catalog["catalog"]["alias_index"]
@@ -675,7 +638,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
         )
         assert valid_values["values"][0]["value"] == "beverage"
         assert planned["status"] == "ok"
-        assert "query_ir" in planned["best"]
+        assert "query" in planned["best"]
         assert comparison["best"]
         assert ordered_vs_delivered["best"]
         assert conversion_plan["status"] == "ok"
@@ -699,8 +662,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             validated["normalized_query"]["time"]["temporal_role"]
             == "temporal_role.jaffle_order_time"
         )
-        assert "leaf_1 AS (" in compiled["rendered_sql"]
-        assert "projected AS (" not in compiled["rendered_sql"]
+        assert compiled["rendered_sql"]
         assert compiled["query"]["group_by"] == ["dimension.jaffle_store_name"]
         assert queried["row_count"] > 0
         assert "logical_plan" in queried
@@ -717,7 +679,8 @@ def test_valid_values_http_route_requires_explicit_live_lookup(runtime_factory):
     def _raise_live_query(*args, **kwargs):
         raise AssertionError("valid-values should not query by default")
 
-    runtime.query = _raise_live_query
+    # The live lookup is an engine sub-query.
+    runtime.query_internal = _raise_live_query
     runtime._get_adapter = _raise_live_query
 
     with _serve_runtime(runtime) as base:
@@ -729,7 +692,7 @@ def test_valid_values_http_route_requires_explicit_live_lookup(runtime_factory):
             },
         )
 
-        runtime.query = _fake_query_result
+        runtime.query_internal = _fake_query_result
         live_payload = _post(
             base + "/api/v1/valid-values",
             {
@@ -885,8 +848,8 @@ def test_asgi_resolves_policy_context_once_for_valid_post() -> None:
         def __init__(self):
             self.calls = []
 
-        def resolve(self, headers, *, payload=None, request_id=""):
-            self.calls.append((dict(headers or {}), dict(payload or {}), request_id))
+        def resolve(self, headers, *, request_id=""):
+            self.calls.append((dict(headers or {}), request_id))
             return RequestContext(request_id=request_id, audience="ops")
 
     resolver = CountingResolver()
@@ -894,12 +857,7 @@ def test_asgi_resolves_policy_context_once_for_valid_post() -> None:
     app = SemanticLayerASGIApp(package_id="jaffle_shop")
     try:
         status, payload = asyncio.run(
-            _asgi_call(
-                app,
-                method="POST",
-                path="/api/v1/catalog",
-                payload={"policy_context": {"audience": "spoofed"}},
-            )
+            _asgi_call(app, method="POST", path="/api/v1/catalog", payload={})
         )
         assert status == 200
         assert payload["request_context"]["audience"] == "ops"
@@ -909,80 +867,81 @@ def test_asgi_resolves_policy_context_once_for_valid_post() -> None:
         set_policy_context_resolver(HeaderPolicyContextResolver())
 
 
-@pytest.mark.parametrize("route", ["validate", "compile", "query"])
-def test_asgi_partial_resolver_drops_all_outer_and_nested_policy_spoofs(route: str) -> None:
+@pytest.mark.parametrize("route", ["validate", "compile", "query", "plan", "discover", "catalog"])
+@pytest.mark.parametrize("claim", ["outer", "nested", "annotation", "deep"])
+def test_asgi_refuses_every_identity_claim_in_the_body(route: str, claim: str) -> None:
     class TenantOnlyResolver:
-        def __init__(self):
-            self.calls = []
-
-        def resolve(self, headers, *, payload=None, request_id=""):
-            self.calls.append(dict(payload or {}))
+        def resolve(self, headers, *, request_id=""):
             return RequestContext(request_id=request_id, tenant="trusted-tenant")
 
-    resolver = TenantOnlyResolver()
-    set_policy_context_resolver(resolver)
+    set_policy_context_resolver(TenantOnlyResolver())
     app = SemanticLayerASGIApp(package_id="jaffle_shop")
-    request = {
-        "policy_context": {
-            "tenant": "spoofed-outer-tenant",
-            "environment": "spoofed-outer-environment",
-        },
-        "query": {
-            "version": 1,
-            "select": [
-                {
-                    "expression": {"measure": "measure.jaffle.order_count"},
-                    "as": "orders",
-                }
-            ],
-            "limit": 1,
-            "policy_context": {
-                "actor": "spoofed-nested-actor",
-                "tenant": "spoofed-nested-tenant",
-                "roles": ["debug"],
-                "environment": "spoofed-nested-environment",
-                "audience": "spoofed-nested-audience",
-            },
-        },
+    spoof = {"tenant": "spoofed-tenant", "roles": ["debug"], "audience": "spoofed-audience"}
+    call: dict = {"select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]}
+    request: dict = {"query": call}
+    paths = {
+        "outer": "policy_context",
+        "nested": "query.policy_context",
+        "annotation": "query._note.policy_context",
+        "deep": "query._note.history[1].policy_context",
     }
+    if claim == "outer":
+        request["policy_context"] = spoof
+    elif claim == "nested":
+        request["query"] = {**call, "policy_context": spoof}
+    elif claim == "annotation":
+        # An annotation is ignored, but a claim inside it is still a claim.
+        request["query"] = {**call, "_note": {"policy_context": spoof}}
+    else:
+        request["query"] = {**call, "_note": {"history": [{}, {"policy_context": spoof}]}}
+    if route in {"plan", "discover"}:
+        request.update(intent="orders", terms="orders")
     try:
         status, payload = asyncio.run(
             _asgi_call(app, method="POST", path=f"/api/v1/{route}", payload=request)
         )
-
-        assert status == 200, payload
-        assert payload["request_context"] == {"tenant": "trusted-tenant"}
-        assert payload["query"]["policy_context"] == {"tenant": "trusted-tenant"}
-        assert "roles" not in payload["request_context"]
-        serialized = json.dumps(payload)
-        assert "spoofed-" not in serialized
-        # The resolver still receives every trusted-local body location. Its
-        # output, not this raw input, is the complete runtime authority.
-        assert resolver.calls == [
-            {
-                "policy_context": {
-                    "actor": "spoofed-nested-actor",
-                    "tenant": "spoofed-outer-tenant",
-                    "roles": ["debug"],
-                    "environment": "spoofed-outer-environment",
-                    "audience": "spoofed-nested-audience",
-                }
-            }
-        ]
+        assert status == 400, payload
+        error = payload["errors"][0]
+        assert error["code"] == "IDENTITY_CLAIM_REFUSED"
+        assert error["details"]["path"] == paths[claim]
+        assert payload["request_context"] == {
+            "request_id": payload["request_id"],
+            "tenant": "trusted-tenant",
+        }
+        assert "spoofed" not in json.dumps(payload)
     finally:
         asyncio.run(app.aclose())
         set_policy_context_resolver(HeaderPolicyContextResolver())
 
 
-def test_asgi_get_catalog_query_context_is_resolver_input_not_runtime_authority(
-    monkeypatch,
-) -> None:
+@pytest.mark.parametrize("route", ["validate", "compile", "query"])
+def test_asgi_answers_as_the_resolved_identity(route: str) -> None:
+    class TenantOnlyResolver:
+        def resolve(self, headers, *, request_id=""):
+            return RequestContext(request_id=request_id, tenant="trusted-tenant")
+
+    set_policy_context_resolver(TenantOnlyResolver())
+    app = SemanticLayerASGIApp(package_id="jaffle_shop")
+    request = {"query": {"select": [{"expression": "measure.jaffle.order_count", "as": "orders"}]}}
+    try:
+        status, payload = asyncio.run(
+            _asgi_call(app, method="POST", path=f"/api/v1/{route}", payload=request)
+        )
+        assert status == 200, payload
+        assert payload["request_context"] == {"tenant": "trusted-tenant"}
+        assert "roles" not in payload["request_context"]
+    finally:
+        asyncio.run(app.aclose())
+        set_policy_context_resolver(HeaderPolicyContextResolver())
+
+
+def test_asgi_get_catalog_refuses_identity_query_parameters(monkeypatch) -> None:
     class TenantOnlyResolver:
         def __init__(self):
             self.calls = []
 
-        def resolve(self, headers, *, payload=None, request_id=""):
-            self.calls.append(dict(payload or {}))
+        def resolve(self, headers, *, request_id=""):
+            self.calls.append(request_id)
             return RequestContext(request_id=request_id, tenant="trusted-tenant")
 
     captured: list[dict] = []
@@ -991,9 +950,11 @@ def test_asgi_get_catalog_query_context_is_resolver_input_not_runtime_authority(
         captured.append(dict(kwargs.get("policy_context", {}) or {}))
         return {"source": "test"}
 
-    import semantic_rails.http_core as http_core
+    from dataclasses import replace
 
-    monkeypatch.setattr(http_core, "resolve_catalog", fake_catalog)
+    from semantic_rails.operations import OPERATIONS
+
+    monkeypatch.setitem(OPERATIONS, "catalog", replace(OPERATIONS["catalog"], service=fake_catalog))
     resolver = TenantOnlyResolver()
     set_policy_context_resolver(resolver)
     app = SemanticLayerASGIApp(package_id="jaffle_shop")
@@ -1005,17 +966,12 @@ def test_asgi_get_catalog_query_context_is_resolver_input_not_runtime_authority(
                 query_string="environment=spoofed-environment&audience=spoofed-audience",
             )
         )
-
+        assert status == 400, payload
+        assert payload["errors"][0]["code"] == "IDENTITY_CLAIM_REFUSED"
+        assert captured == []
+        status, payload = asyncio.run(_asgi_call(app, path="/api/v1/catalog"))
         assert status == 200, payload
         assert captured == [{"tenant": "trusted-tenant"}]
-        assert resolver.calls == [
-            {
-                "policy_context": {
-                    "environment": "spoofed-environment",
-                    "audience": "spoofed-audience",
-                }
-            }
-        ]
         assert payload["request_context"] == {
             "request_id": payload["request_id"],
             "tenant": "trusted-tenant",

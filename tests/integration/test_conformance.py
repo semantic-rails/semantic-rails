@@ -74,10 +74,9 @@ def test_semantic_surface_path(target_runtime, target: IntegrationTarget) -> Non
     assert status == 200 and plan.get("ok"), plan
 
     payload = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue_usd"}],
+        "select": ["measure.jaffle.revenue_usd"],
         "group_by": ["dimension.jaffle_store_name"],
-        "order_by": [{"field": "dimension.jaffle_store_name", "direction": "ASC"}],
+        "order_by": [{"field": "dimension.jaffle_store_name", "direction": "asc"}],
         "limit": 10,
     }
     validated, status = service.handle("POST", "/validate", {"query": payload})

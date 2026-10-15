@@ -293,8 +293,7 @@ def _values(
     text = _path(project, key).read_text(encoding="utf-8")
     grain = max((unit for unit in units if f"unit: {unit}" in text), key=units.index, default="day")
     query: dict[str, Any] = {
-        "version": 1,
-        "select": [{"as": "v", "expression": {"metric": f"metric.shop.{key}"}}],
+        "select": [{"as": "v", "expression": f"metric.shop.{key}"}],
     }
     if clock:
         query["time"] = {"temporal_role": clock, "grain": grain}
@@ -573,7 +572,7 @@ CREATE = [
         {}, {"Metric recipe": "Filtered", "Measure to publish": "revenue - ", "Values": ["completed", "placed"]},
         {"kind": "aggregate", "measure": ABSENT, "expression": {
             "kind": "aggregate", "measure": REVENUE, "aggregation": "sum",
-            "filter": _one_filter("dimension.shop_order_status", "IN", ["placed", "completed"])}},
+            "filter": _one_filter("dimension.shop_order_status", "is", ["placed", "completed"])}},
         {"Filter by": "status - [dimension] Status - orders", "Keep the rows where it": "is one of"},
         [10.0, 0.0, 30.0], id="filtered",
     ),
@@ -708,7 +707,7 @@ def _authored_metric(recipe: str, ref: str, *, count: str, status: str) -> dict[
         "aggregate": {"kind": "aggregate", **named},
         "filtered": {
             "kind": "aggregate",
-            "expression": {**avg, "filter": _one_filter(status, "NOT IN", ["completed"])},
+            "expression": {**avg, "filter": _one_filter(status, "not", ["completed"])},
         },
         "ratio": {
             "kind": "ratio",
@@ -931,14 +930,14 @@ def test_an_explicit_clock_replaces_a_saved_temporal_role(tmp_path: Path) -> Non
 
 FILTERS = [
     # dimension, values picked or typed, operator, stored values, total, what Enter offers again
-    ("status", ["completed", "placed"], "IN", ["placed", "completed"], 40.0, ["0", "1"]),
-    ("stage", ["Completed orders (completed)"], "IN", ["completed"], 10.0, ["1"]),
-    ("channel", "phone, store", "NOT IN", ["phone", "store"], 10.0, "phone, store"),
-    ("code", "001, true", "IN", ["001", "true"], 30.0, "001, true"),
-    ("is_priority", ["true"], "IN", [True], 40.0, ["0"]),
-    ("tier", "001", "IN", [1], 30.0, "1"),
+    ("status", ["completed", "placed"], "is", ["placed", "completed"], 40.0, ["0", "1"]),
+    ("stage", ["Completed orders (completed)"], "is", ["completed"], 10.0, ["1"]),
+    ("channel", "phone, store", "not", ["phone", "store"], 10.0, "phone, store"),
+    ("code", "001, true", "is", ["001", "true"], 30.0, "001, true"),
+    ("is_priority", ["true"], "is", [True], 40.0, ["0"]),
+    ("tier", "001", "is", [1], 30.0, "1"),
 ]
-OPERATORS = {"IN": "is one of", "NOT IN": "is not one of"}
+OPERATORS = {"is": "is one of", "not": "is not one of"}
 
 
 @pytest.mark.parametrize(("dimension", "given", "op", "stored", "total", "offered"), FILTERS)
@@ -986,7 +985,7 @@ def test_a_boolean_filter_offers_true_and_false_and_a_mistyped_value_is_asked_ag
         project, {"Metric key": "m", "Filter by": "is_priority - ", "Values": ["true"]}
     )
 
-    assert metric["expression"]["filter"] == _one_filter("dimension.shop_order_tier", "IN", [2])
+    assert metric["expression"]["filter"] == _one_filter("dimension.shop_order_tier", "is", [2])
     assert (
         "Integer filter value '1.5' is not numeric. Enter other values" in capsys.readouterr().out
     )
@@ -1020,7 +1019,7 @@ def test_another_filter_dimension_or_measure_asks_for_new_values(tmp_path: Path)
         },
     )
     assert metric["expression"]["filter"] == _one_filter(
-        "dimension.shop_order_status", "IN", ["completed"]
+        "dimension.shop_order_status", "is", ["completed"]
     )
     assert _values(project, "m") == [10.0, 0.0, 0.0]
     _repl(project, "undo", None, undo)
@@ -1439,8 +1438,8 @@ def test_growth_offers_the_units_its_calendar_can_fill(
         )
         assert plan["status"] == "ok", plan.get("why")
         assert "execute" in plan["next"]["ready_for"]
-        assert plan["best"]["query_ir"]["time"]["grain"] == "month"
-        assert typed_rows(runtime.query(plan["best"]["query_ir"]))
+        assert plan["best"]["query"]["time"]["grain"] == "month"
+        assert typed_rows(runtime.query(plan["best"]["query"]))
     finally:
         runtime.close()
     # Its saved unit stays on offer, so an edit that keeps it still goes through.
@@ -1682,7 +1681,7 @@ def test_segment_values_keep_their_type_from_the_wizard_to_preview(
         runtime.close()
     # Validation type-checks booleans and numbers; for text it says only the warehouse can.
     assert validated["ok"] is True
-    warned = [warning["code"] for warning in validated["warnings"]]
+    warned = [warning["code"] for warning in validated.get("warnings", [])]
     assert warned == (["SEGMENT_VALUES_UNCHECKED"] if dimension == "status" else [])
 
     # Enter at every prompt keeps the saved segment byte for byte, a hand-written 10 included.
@@ -1783,7 +1782,9 @@ def test_segment_validate_says_which_values_only_the_warehouse_can_check(
     index = next(i for i, row in enumerate(dimensions) if row.id == tier)
     dimensions[index] = dataclasses.replace(dimensions[index], data_type=data_type)
     try:
-        codes = [row["code"] for row in runtime.segment_validate("segment.shop.s")["warnings"]]
+        codes = [
+            row["code"] for row in runtime.segment_validate("segment.shop.s").get("warnings", [])
+        ]
     finally:
         runtime.close()
 
@@ -1795,7 +1796,7 @@ def test_editing_a_segment_starts_from_its_membership_field(tmp_path: Path) -> N
     _segment_metrics(project)
     tier, status = "dimension.shop_order_tier", "dimension.shop_order_status"
     segment = {
-        "id": "segment.shop.s",
+        "as": "segment.shop.s",
         "label": "S",
         "description": "Tier 2 orders.",
         "entity": "entity.shop_order",

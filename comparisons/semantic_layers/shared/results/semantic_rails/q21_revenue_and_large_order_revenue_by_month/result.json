@@ -1,19 +1,31 @@
 {
-  "assumptions": [],
+  "assumptions": [
+    {
+      "code": "GOVERNED_METRIC_EXISTS",
+      "count": 1,
+      "measure": "measure.jaffle.revenue_usd",
+      "message": "measure.jaffle.revenue_usd is also defined as a governed metric (metric.jaffle.revenue_from_customers_with_10plus_orders_in_period). Select it to use the package's definition.",
+      "metrics": [
+        "metric.jaffle.revenue_from_customers_with_10plus_orders_in_period"
+      ]
+    }
+  ],
+  "clock": "temporal_role.jaffle_order_time",
   "column_types": {
     "large_order_revenue_usd": {
       "type": "float"
     },
+    "period": {
+      "type": "date"
+    },
+    "period_partial": {
+      "type": "boolean"
+    },
     "revenue_usd": {
       "type": "float"
-    },
-    "temporal_role.jaffle_order_time__month": {
-      "timezone": "naive",
-      "type": "timestamp"
     }
   },
   "dialect": "duckdb",
-  "errors": [],
   "explain": {
     "alias_resolution": {
       "group_by": [],
@@ -36,8 +48,12 @@
             "predicates": [
               {
                 "entity": "entity.jaffle_order",
-                "measure": "measure.jaffle.revenue_usd",
-                "op": ">=",
+                "input": {
+                  "kind": "measure",
+                  "measure": "measure.jaffle.revenue_usd"
+                },
+                "op": "gte",
+                "scope_mode": "entity_period",
                 "value": 50
               }
             ],
@@ -50,9 +66,9 @@
     },
     "chosen_paths": {},
     "compile_stats": {
-      "cache_hit": true,
-      "cache_lookup_ms": 2.077,
-      "compile_ms": 0.739,
+      "cache_hit": false,
+      "cache_lookup_ms": 4.079,
+      "compile_ms": 1.414,
       "dialect": "duckdb",
       "physical_plan_nodes": 12
     },
@@ -67,7 +83,7 @@
       "group_by": [],
       "leaf_grains": {
         "measure.jaffle.revenue_usd": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -75,12 +91,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -97,18 +116,19 @@
         {
           "aggregation": "sum",
           "aggregation_params": {},
-          "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+          "alias": "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e",
           "filter_spec": {
             "all": [
               {
                 "expression": {
                   "entity": "entity.jaffle_order",
                   "input": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.revenue_usd"
                   },
                   "kind": "metric_predicate",
-                  "op": ">=",
-                  "scope_mode": "contextual",
+                  "op": "gte",
+                  "scope_mode": "entity_period",
                   "value": 50
                 }
               }
@@ -132,7 +152,7 @@
         "group_by": [],
         "leaf_grains": {
           "measure.jaffle.revenue_usd": [
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ]
         },
         "measure_entities": [
@@ -140,12 +160,15 @@
         ],
         "root_entity": "entity.jaffle_order",
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [],
@@ -164,7 +187,7 @@
           },
           "cte_name": "leaf_1",
           "grain_keys": [
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ],
           "path_selections": [],
           "required_entities": [
@@ -179,18 +202,19 @@
           "bound_measure": {
             "aggregation": "sum",
             "aggregation_params": {},
-            "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+            "alias": "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e",
             "filter_spec": {
               "all": [
                 {
                   "expression": {
                     "entity": "entity.jaffle_order",
                     "input": {
+                      "kind": "measure",
                       "measure": "measure.jaffle.revenue_usd"
                     },
                     "kind": "metric_predicate",
-                    "op": ">=",
-                    "scope_mode": "contextual",
+                    "op": "gte",
+                    "scope_mode": "entity_period",
                     "value": 50
                   }
                 }
@@ -202,7 +226,7 @@
           },
           "cte_name": "leaf_2",
           "grain_keys": [
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ],
           "path_selections": [],
           "required_entities": [
@@ -220,8 +244,12 @@
           "predicates": [
             {
               "entity": "entity.jaffle_order",
-              "measure": "measure.jaffle.revenue_usd",
-              "op": ">=",
+              "input": {
+                "kind": "measure",
+                "measure": "measure.jaffle.revenue_usd"
+              },
+              "op": "gte",
+              "scope_mode": "entity_period",
               "value": 50
             }
           ],
@@ -236,15 +264,13 @@
       },
       "query": {
         "debug": false,
-        "explain": false,
-        "export": false,
         "group_by": [],
         "limit": null,
         "metric_filters": [],
         "order_by": [
           {
             "direction": "ASC",
-            "field": "temporal_role.jaffle_order_time__month"
+            "field": "period"
           }
         ],
         "select": [
@@ -266,8 +292,12 @@
               "predicates": [
                 {
                   "entity": "entity.jaffle_order",
-                  "measure": "measure.jaffle.revenue_usd",
-                  "op": ">=",
+                  "input": {
+                    "kind": "measure",
+                    "measure": "measure.jaffle.revenue_usd"
+                  },
+                  "op": "gte",
+                  "scope_mode": "entity_period",
                   "value": 50
                 }
               ],
@@ -277,12 +307,15 @@
         ],
         "temporal_role_overrides": {},
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -308,8 +341,12 @@
               "predicates": [
                 {
                   "entity": "entity.jaffle_order",
-                  "measure": "measure.jaffle.revenue_usd",
-                  "op": ">=",
+                  "input": {
+                    "kind": "measure",
+                    "measure": "measure.jaffle.revenue_usd"
+                  },
+                  "op": "gte",
+                  "scope_mode": "entity_period",
                   "value": 50
                 }
               ],
@@ -354,8 +391,12 @@
           {
             "details": {
               "entity": "entity.jaffle_order",
-              "measure": "measure.jaffle.revenue_usd",
-              "op": ">=",
+              "input": {
+                "kind": "measure",
+                "measure": "measure.jaffle.revenue_usd"
+              },
+              "op": "gte",
+              "scope_mode": "entity_period",
               "value": 50
             },
             "id": "predicate_set_3",
@@ -379,7 +420,7 @@
           {
             "details": {
               "keys": [
-                "temporal_role.jaffle_order_time__month"
+                "period"
               ]
             },
             "id": "multi_fact_align",
@@ -414,26 +455,27 @@
       },
       "synthetic_measures": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
     "normalized_query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [],
       "limit": null,
       "metric_filters": [],
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_order_time__month"
+          "field": "period"
         }
       ],
       "select": [
@@ -455,8 +497,12 @@
             "predicates": [
               {
                 "entity": "entity.jaffle_order",
-                "measure": "measure.jaffle.revenue_usd",
-                "op": ">=",
+                "input": {
+                  "kind": "measure",
+                  "measure": "measure.jaffle.revenue_usd"
+                },
+                "op": "gte",
+                "scope_mode": "entity_period",
                 "value": 50
               }
             ],
@@ -466,12 +512,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -491,12 +540,15 @@
           "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "fill": false,
             "grain": "month",
+            "last_unit": "",
+            "last_value": 0,
             "start": null,
-            "temporal_role": "temporal_role.jaffle_order_time"
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "this": "",
+            "to_now": false
           }
         },
         {
@@ -507,12 +559,15 @@
           "relation": "comparison_orders",
           "scan_id": "leaf_2_scan",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "fill": false,
             "grain": "month",
+            "last_unit": "",
+            "last_value": 0,
             "start": null,
-            "temporal_role": "temporal_role.jaffle_order_time"
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "this": "",
+            "to_now": false
           }
         },
         {
@@ -523,7 +578,6 @@
           "relation": "comparison_orders",
           "scan_id": "leaf_2_predicate_1_scan_1",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "grain": "month",
             "output_temporal_role": "temporal_role.jaffle_order_time",
@@ -569,7 +623,7 @@
           "measures": [
             {
               "aggregation": "sum",
-              "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+              "alias": "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e",
               "measure_id": "measure.jaffle.revenue_usd"
             }
           ],
@@ -641,10 +695,10 @@
       "notes": [],
       "pre_aggregation_grain": {
         "leaf_1": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "leaf_2": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "raw_fact_count": 3,
@@ -684,12 +738,15 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "fill": false,
               "grain": "month",
+              "last_unit": "",
+              "last_value": 0,
               "start": null,
-              "temporal_role": "temporal_role.jaffle_order_time"
+              "temporal_role": "temporal_role.jaffle_order_time",
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -708,7 +765,7 @@
             "aggregate_relation_id": "",
             "folded_measure_count": 1,
             "grain": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "measures": [
               {
@@ -731,7 +788,7 @@
             "measures": [
               {
                 "aggregation": "sum",
-                "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+                "alias": "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e",
                 "measure_id": "measure.jaffle.revenue_usd"
               }
             ],
@@ -755,12 +812,15 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "fill": false,
               "grain": "month",
+              "last_unit": "",
+              "last_value": 0,
               "start": null,
-              "temporal_role": "temporal_role.jaffle_order_time"
+              "temporal_role": "temporal_role.jaffle_order_time",
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_2_filter",
@@ -789,8 +849,8 @@
                 "temporal_role": ""
               },
               "kind": "metric_predicate",
-              "op": ">=",
-              "scope_mode": "contextual",
+              "op": "gte",
+              "scope_mode": "entity_period",
               "value": 50
             },
             "predicate_input": {
@@ -815,7 +875,6 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "grain": "month",
               "output_temporal_role": "temporal_role.jaffle_order_time",
@@ -836,8 +895,8 @@
             "keys": [
               "dimension.jaffle_order_id"
             ],
-            "op": ">=",
-            "scope_mode": "contextual",
+            "op": "gte",
+            "scope_mode": "entity_period",
             "source_scan_count": 1,
             "value": 50
           },
@@ -865,8 +924,8 @@
                   "temporal_role": ""
                 },
                 "kind": "metric_predicate",
-                "op": ">=",
-                "scope_mode": "contextual",
+                "op": "gte",
+                "scope_mode": "entity_period",
                 "value": 50
               }
             ],
@@ -889,12 +948,12 @@
             "aggregate_relation_id": "",
             "folded_measure_count": 1,
             "grain": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "measures": [
               {
                 "aggregation": "sum",
-                "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+                "alias": "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e",
                 "measure_id": "measure.jaffle.revenue_usd"
               }
             ]
@@ -910,7 +969,7 @@
           "details": {
             "join_type": "FULL OUTER",
             "keys": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "reason": "multiple_independent_metric_leaves"
           },
@@ -925,7 +984,7 @@
         {
           "details": {
             "key_aliases": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "outputs": [
               "revenue_usd",
@@ -976,12 +1035,12 @@
       "outputs": {
         "large_order_revenue_usd": "final_project",
         "leaf__measure_jaffle_revenue_usd__sum": "leaf_1",
-        "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4": "leaf_2",
+        "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e": "leaf_2",
         "revenue_usd": "final_project"
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.836255' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.836255' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"revenue_usd\",\n  base.m2 AS \"large_order_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1017,8 +1076,12 @@
         {
           "details": {
             "entity": "entity.jaffle_order",
-            "measure": "measure.jaffle.revenue_usd",
-            "op": ">=",
+            "input": {
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd"
+            },
+            "op": "gte",
+            "scope_mode": "entity_period",
             "value": 50
           },
           "id": "predicate_set_3",
@@ -1042,7 +1105,7 @@
         {
           "details": {
             "keys": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ]
           },
           "id": "multi_fact_align",
@@ -1090,6 +1153,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -1118,6 +1182,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -1147,6 +1212,7 @@
                       },
                       "op": "/",
                       "right": {
+                        "temporal": false,
                         "value": 100.0
                       }
                     }
@@ -1160,6 +1226,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": 1
                     }
                   ],
@@ -1198,6 +1265,7 @@
                           {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": "month"
                               },
                               {
@@ -1235,6 +1303,7 @@
                             "expression": {
                               "args": [
                                 {
+                                  "temporal": false,
                                   "value": "month"
                                 },
                                 {
@@ -1264,6 +1333,7 @@
                                   },
                                   "op": "/",
                                   "right": {
+                                    "temporal": false,
                                     "value": 100.0
                                   }
                                 }
@@ -1277,6 +1347,7 @@
                             "expression": {
                               "args": [
                                 {
+                                  "temporal": false,
                                   "value": 1
                                 }
                               ],
@@ -1358,6 +1429,7 @@
                                           },
                                           "op": ">",
                                           "right": {
+                                            "temporal": false,
                                             "value": 0
                                           }
                                         },
@@ -1381,12 +1453,14 @@
                                             },
                                             "op": "=",
                                             "right": {
+                                              "temporal": false,
                                               "value": 0
                                             }
                                           }
                                         }
                                       },
                                       "result": {
+                                        "temporal": false,
                                         "value": 0
                                       }
                                     }
@@ -1492,6 +1566,7 @@
                       },
                       "op": ">=",
                       "right": {
+                        "temporal": false,
                         "value": 50
                       }
                     }
@@ -1508,6 +1583,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -1549,6 +1625,7 @@
                     "left": {
                       "args": [
                         {
+                          "temporal": false,
                           "value": "month"
                         },
                         {
@@ -1589,6 +1666,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -1618,6 +1696,7 @@
                       },
                       "op": "/",
                       "right": {
+                        "temporal": false,
                         "value": 100.0
                       }
                     }
@@ -1631,6 +1710,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": 1
                     }
                   ],
@@ -1767,6 +1847,7 @@
                     {
                       "args": [
                         {
+                          "temporal": false,
                           "value": "month"
                         },
                         {
@@ -1800,11 +1881,13 @@
                               "else_expr": {
                                 "args": [
                                   {
+                                    "temporal": false,
                                     "value": "UTC"
                                   },
                                   {
                                     "args": [
                                       {
+                                        "temporal": false,
                                         "value": "UTC"
                                       },
                                       {
@@ -1844,12 +1927,14 @@
                                     },
                                     "op": "=",
                                     "right": {
+                                      "temporal": false,
                                       "value": "timestamp with time zone"
                                     }
                                   },
                                   "result": {
                                     "args": [
                                       {
+                                        "temporal": false,
                                         "value": "UTC"
                                       },
                                       {
@@ -1870,23 +1955,17 @@
                             },
                             "op": "<=",
                             "right": {
-                              "args": [
-                                {
-                                  "value": "UTC"
-                                },
-                                {
-                                  "args": [],
-                                  "distinct": false,
-                                  "name": "NOW"
-                                }
-                              ],
-                              "distinct": false,
-                              "name": "TIMEZONE"
+                              "expr": {
+                                "temporal": false,
+                                "value": "2026-10-14 20:11:47.836255"
+                              },
+                              "type_name": "TIMESTAMP"
                             }
                           },
                           "result": {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": "month"
                               },
                               {
@@ -1901,6 +1980,184 @@
                             ],
                             "distinct": false,
                             "name": "DATE_TRUNC"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "MAX"
+                }
+              },
+              {
+                "alias": "data_through",
+                "expression": {
+                  "args": [
+                    {
+                      "else_expr": null,
+                      "whens": [
+                        {
+                          "condition": {
+                            "left": {
+                              "else_expr": {
+                                "args": [
+                                  {
+                                    "temporal": false,
+                                    "value": "UTC"
+                                  },
+                                  {
+                                    "args": [
+                                      {
+                                        "temporal": false,
+                                        "value": "UTC"
+                                      },
+                                      {
+                                        "expr": {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        },
+                                        "type_name": "TIMESTAMP"
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "TIMEZONE"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "TIMEZONE"
+                              },
+                              "whens": [
+                                {
+                                  "condition": {
+                                    "left": {
+                                      "expr": {
+                                        "args": [
+                                          {
+                                            "parts": [
+                                              "comparison_orders",
+                                              "ordered_at"
+                                            ]
+                                          }
+                                        ],
+                                        "distinct": false,
+                                        "name": "PG_TYPEOF"
+                                      },
+                                      "type_name": "VARCHAR"
+                                    },
+                                    "op": "=",
+                                    "right": {
+                                      "temporal": false,
+                                      "value": "timestamp with time zone"
+                                    }
+                                  },
+                                  "result": {
+                                    "args": [
+                                      {
+                                        "temporal": false,
+                                        "value": "UTC"
+                                      },
+                                      {
+                                        "expr": {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        },
+                                        "type_name": "TIMESTAMPTZ"
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "TIMEZONE"
+                                  }
+                                }
+                              ]
+                            },
+                            "op": "<=",
+                            "right": {
+                              "expr": {
+                                "temporal": false,
+                                "value": "2026-10-14 20:11:47.836255"
+                              },
+                              "type_name": "TIMESTAMP"
+                            }
+                          },
+                          "result": {
+                            "else_expr": {
+                              "args": [
+                                {
+                                  "temporal": false,
+                                  "value": "UTC"
+                                },
+                                {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMP"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "TIMEZONE"
+                            },
+                            "whens": [
+                              {
+                                "condition": {
+                                  "left": {
+                                    "expr": {
+                                      "args": [
+                                        {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        }
+                                      ],
+                                      "distinct": false,
+                                      "name": "PG_TYPEOF"
+                                    },
+                                    "type_name": "VARCHAR"
+                                  },
+                                  "op": "=",
+                                  "right": {
+                                    "temporal": false,
+                                    "value": "timestamp with time zone"
+                                  }
+                                },
+                                "result": {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMPTZ"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              }
+                            ]
                           }
                         }
                       ]
@@ -1985,6 +2242,7 @@
                                 },
                                 "op": ">",
                                 "right": {
+                                  "temporal": false,
                                   "value": 0
                                 }
                               },
@@ -2043,12 +2301,14 @@
                                 },
                                 "op": "=",
                                 "right": {
+                                  "temporal": false,
                                   "value": 0
                                 }
                               }
                             }
                           },
                           "result": {
+                            "temporal": false,
                             "value": 0
                           }
                         }
@@ -2076,25 +2336,62 @@
                           "condition": {
                             "left": {
                               "left": {
-                                "frame": "",
-                                "function": {
-                                  "args": [
-                                    {
-                                      "parts": [
-                                        "base",
-                                        "m2"
-                                      ]
-                                    }
-                                  ],
-                                  "distinct": false,
-                                  "name": "COUNT"
+                                "left": {
+                                  "frame": "",
+                                  "function": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "base",
+                                          "m2"
+                                        ]
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "COUNT"
+                                  },
+                                  "order_by": [],
+                                  "partition_by": []
                                 },
-                                "order_by": [],
-                                "partition_by": []
+                                "op": ">",
+                                "right": {
+                                  "temporal": false,
+                                  "value": 0
+                                }
                               },
-                              "op": ">",
+                              "op": "AND",
                               "right": {
-                                "value": 0
+                                "left": {
+                                  "left": {
+                                    "parts": [
+                                      "base",
+                                      "t"
+                                    ]
+                                  },
+                                  "op": ">=",
+                                  "right": {
+                                    "parts": [
+                                      "coverage_1",
+                                      "loaded_from"
+                                    ]
+                                  }
+                                },
+                                "op": "AND",
+                                "right": {
+                                  "left": {
+                                    "parts": [
+                                      "base",
+                                      "t"
+                                    ]
+                                  },
+                                  "op": "<=",
+                                  "right": {
+                                    "parts": [
+                                      "coverage_1",
+                                      "loaded_to"
+                                    ]
+                                  }
+                                }
                               }
                             },
                             "op": "AND",
@@ -2117,12 +2414,14 @@
                                 },
                                 "op": "=",
                                 "right": {
+                                  "temporal": false,
                                   "value": 0
                                 }
                               }
                             }
                           },
                           "result": {
+                            "temporal": false,
                             "value": 0
                           }
                         }
@@ -2156,13 +2455,13 @@
               "t"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         }
       ],
       "qualify": [],
       "select": [
         {
-          "alias": "temporal_role.jaffle_order_time__month",
+          "alias": "period",
           "expression": {
             "parts": [
               "base",
@@ -2192,8 +2491,6 @@
       "where": []
     }
   },
-  "freshness_as_of": "",
-  "freshness_by_leaf": [],
   "hop_profile": {
     "hop_limit": 4,
     "long_hop_targets": [],
@@ -2215,18 +2512,19 @@
       {
         "aggregation": "sum",
         "aggregation_params": {},
-        "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+        "alias": "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e",
         "filter_spec": {
           "all": [
             {
               "expression": {
                 "entity": "entity.jaffle_order",
                 "input": {
+                  "kind": "measure",
                   "measure": "measure.jaffle.revenue_usd"
                 },
                 "kind": "metric_predicate",
-                "op": ">=",
-                "scope_mode": "contextual",
+                "op": "gte",
+                "scope_mode": "entity_period",
                 "value": 50
               }
             }
@@ -2250,7 +2548,7 @@
       "group_by": [],
       "leaf_grains": {
         "measure.jaffle.revenue_usd": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -2258,12 +2556,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [],
@@ -2282,7 +2583,7 @@
         },
         "cte_name": "leaf_1",
         "grain_keys": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "path_selections": [],
         "required_entities": [
@@ -2297,18 +2598,19 @@
         "bound_measure": {
           "aggregation": "sum",
           "aggregation_params": {},
-          "alias": "leaf__scoped_measure_jaffle_revenue_usd__5e7273ade9d4",
+          "alias": "leaf__scoped_measure_jaffle_revenue_usd__f88574f0a78e",
           "filter_spec": {
             "all": [
               {
                 "expression": {
                   "entity": "entity.jaffle_order",
                   "input": {
+                    "kind": "measure",
                     "measure": "measure.jaffle.revenue_usd"
                   },
                   "kind": "metric_predicate",
-                  "op": ">=",
-                  "scope_mode": "contextual",
+                  "op": "gte",
+                  "scope_mode": "entity_period",
                   "value": 50
                 }
               }
@@ -2320,7 +2622,7 @@
         },
         "cte_name": "leaf_2",
         "grain_keys": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "path_selections": [],
         "required_entities": [
@@ -2338,8 +2640,12 @@
         "predicates": [
           {
             "entity": "entity.jaffle_order",
-            "measure": "measure.jaffle.revenue_usd",
-            "op": ">=",
+            "input": {
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd"
+            },
+            "op": "gte",
+            "scope_mode": "entity_period",
             "value": 50
           }
         ],
@@ -2354,15 +2660,13 @@
     },
     "query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [],
       "limit": null,
       "metric_filters": [],
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_order_time__month"
+          "field": "period"
         }
       ],
       "select": [
@@ -2384,8 +2688,12 @@
             "predicates": [
               {
                 "entity": "entity.jaffle_order",
-                "measure": "measure.jaffle.revenue_usd",
-                "op": ">=",
+                "input": {
+                  "kind": "measure",
+                  "measure": "measure.jaffle.revenue_usd"
+                },
+                "op": "gte",
+                "scope_mode": "entity_period",
                 "value": 50
               }
             ],
@@ -2395,12 +2703,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -2426,8 +2737,12 @@
             "predicates": [
               {
                 "entity": "entity.jaffle_order",
-                "measure": "measure.jaffle.revenue_usd",
-                "op": ">=",
+                "input": {
+                  "kind": "measure",
+                  "measure": "measure.jaffle.revenue_usd"
+                },
+                "op": "gte",
+                "scope_mode": "entity_period",
                 "value": 50
               }
             ],
@@ -2472,8 +2787,12 @@
         {
           "details": {
             "entity": "entity.jaffle_order",
-            "measure": "measure.jaffle.revenue_usd",
-            "op": ">=",
+            "input": {
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd"
+            },
+            "op": "gte",
+            "scope_mode": "entity_period",
             "value": 50
           },
           "id": "predicate_set_3",
@@ -2497,7 +2816,7 @@
         {
           "details": {
             "keys": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ]
           },
           "id": "multi_fact_align",
@@ -2532,39 +2851,27 @@
     },
     "synthetic_measures": {},
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
-  "methodology_hints": [],
   "normalized_query": {
-    "debug": false,
-    "explain": false,
-    "export": false,
-    "group_by": [],
-    "limit": null,
-    "metric_filters": [],
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_order_time__month"
+        "direction": "asc",
+        "field": "period"
       }
     ],
     "select": [
-      {
-        "as": "revenue_usd",
-        "expression": {
-          "aggregation": "",
-          "kind": "measure",
-          "measure": "measure.jaffle.revenue_usd",
-          "temporal_role": ""
-        }
-      },
+      "measure.jaffle.revenue_usd",
       {
         "as": "large_order_revenue_usd",
         "expression": {
@@ -2574,8 +2881,10 @@
           "predicates": [
             {
               "entity": "entity.jaffle_order",
-              "measure": "measure.jaffle.revenue_usd",
-              "op": ">=",
+              "input": "measure.jaffle.revenue_usd",
+              "kind": "metric_predicate",
+              "op": "gte",
+              "over": "period",
               "value": 50
             }
           ],
@@ -2583,26 +2892,28 @@
         }
       }
     ],
-    "temporal_role_overrides": {},
     "time": {
-      "calendar_id": "default",
-      "end": null,
-      "fill": false,
       "grain": "month",
-      "start": null,
       "temporal_role": "temporal_role.jaffle_order_time"
-    },
-    "version": 1,
-    "where": []
+    }
   },
+  "observation_scope": "dataset",
   "ok": true,
   "output_columns": [
     {
       "display_label": "Order time",
-      "field": "temporal_role.jaffle_order_time__month",
+      "field": "period",
+      "grain": "month",
       "semantic_id": "temporal_role.jaffle_order_time",
-      "sql_alias": "temporal_role.jaffle_order_time__month",
+      "sql_alias": "period",
       "type": "time"
+    },
+    {
+      "display_label": "Partial period",
+      "field": "period_partial",
+      "semantic_id": "temporal_role.jaffle_order_time",
+      "sql_alias": "period_partial",
+      "type": "boolean"
     },
     {
       "display_label": "Revenue (USD)",
@@ -2619,35 +2930,32 @@
       "type": ""
     }
   ],
-  "policy_effects": [],
   "provenance_summary": {
     "policy_effects": [],
     "rewrite_status": "direct",
     "root_entity": "entity.jaffle_order",
     "selected_paths": [],
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_order_time__month"
+        "direction": "asc",
+        "field": "period"
       }
     ],
     "select": [
-      {
-        "as": "revenue_usd",
-        "expression": {
-          "measure": "measure.jaffle.revenue_usd"
-        }
-      },
+      "measure.jaffle.revenue_usd",
       {
         "as": "large_order_revenue_usd",
         "expression": {
@@ -2657,88 +2965,100 @@
           "predicates": [
             {
               "entity": "entity.jaffle_order",
-              "measure": "measure.jaffle.revenue_usd",
-              "op": ">=",
+              "input": "measure.jaffle.revenue_usd",
+              "kind": "metric_predicate",
+              "op": "gte",
+              "over": "period",
               "value": 50
             }
-          ]
+          ],
+          "where": []
         }
       }
     ],
     "time": {
       "grain": "month",
       "temporal_role": "temporal_role.jaffle_order_time"
-    },
-    "version": 1
+    }
   },
-  "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  base.m2 AS large_order_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
-  "request_context": {},
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.836255' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.836255' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"revenue_usd\",\n  base.m2 AS \"large_order_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
   "row_count": 12,
   "rows": [
     {
-      "large_order_revenue_usd": 2376.5000000000005,
-      "revenue_usd": 18053.279999999995,
-      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
+      "large_order_revenue_usd": 2376.4999999999995,
+      "period": "2016-09-01",
+      "period_partial": false,
+      "revenue_usd": 18053.280000000017
     },
     {
-      "large_order_revenue_usd": 2642.5700000000006,
-      "revenue_usd": 21923.950000000026,
-      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
+      "large_order_revenue_usd": 2642.5699999999997,
+      "period": "2016-10-01",
+      "period_partial": false,
+      "revenue_usd": 21923.949999999986
     },
     {
-      "large_order_revenue_usd": 2192.0400000000004,
-      "revenue_usd": 27916.81999999998,
-      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
+      "large_order_revenue_usd": 2192.04,
+      "period": "2016-11-01",
+      "period_partial": false,
+      "revenue_usd": 27916.81999999999
     },
     {
-      "large_order_revenue_usd": 3549.9199999999987,
-      "revenue_usd": 35677.600000000006,
-      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
+      "large_order_revenue_usd": 3549.9199999999996,
+      "period": "2016-12-01",
+      "period_partial": false,
+      "revenue_usd": 35677.600000000006
     },
     {
       "large_order_revenue_usd": 5175.899999999999,
-      "revenue_usd": 45017.94999999985,
-      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
+      "period": "2017-01-01",
+      "period_partial": false,
+      "revenue_usd": 45017.9499999999
     },
     {
-      "large_order_revenue_usd": 4959.6900000000005,
-      "revenue_usd": 43358.11999999984,
-      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
+      "large_order_revenue_usd": 4959.69,
+      "period": "2017-02-01",
+      "period_partial": false,
+      "revenue_usd": 43358.11999999996
     },
     {
-      "large_order_revenue_usd": 6553.240000000002,
-      "revenue_usd": 73950.32000000047,
-      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
+      "large_order_revenue_usd": 6553.239999999995,
+      "period": "2017-03-01",
+      "period_partial": false,
+      "revenue_usd": 73950.3200000005
     },
     {
-      "large_order_revenue_usd": 9694.4,
-      "revenue_usd": 83316.99000000133,
-      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
+      "large_order_revenue_usd": 9694.400000000007,
+      "period": "2017-04-01",
+      "period_partial": false,
+      "revenue_usd": 83316.9900000016
     },
     {
       "large_order_revenue_usd": 7801.520000000003,
-      "revenue_usd": 96070.35000000334,
-      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
+      "period": "2017-05-01",
+      "period_partial": false,
+      "revenue_usd": 96070.35000000322
     },
     {
-      "large_order_revenue_usd": 10121.24,
-      "revenue_usd": 98378.87000000346,
-      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
+      "large_order_revenue_usd": 10121.240000000002,
+      "period": "2017-06-01",
+      "period_partial": false,
+      "revenue_usd": 98378.87000000362
     },
     {
-      "large_order_revenue_usd": 12161.109999999995,
-      "revenue_usd": 94857.1900000026,
-      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
+      "large_order_revenue_usd": 12161.109999999999,
+      "period": "2017-07-01",
+      "period_partial": false,
+      "revenue_usd": 94857.19000000239
     },
     {
-      "large_order_revenue_usd": 10629.819999999998,
-      "revenue_usd": 107371.59000000416,
-      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
+      "large_order_revenue_usd": 10629.820000000002,
+      "period": "2017-08-01",
+      "period_partial": false,
+      "revenue_usd": 107371.59000000497
     }
   ],
-  "semantic_fingerprint": "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478",
-  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
+  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
       {
@@ -2754,6 +3074,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -2782,6 +3103,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -2811,6 +3133,7 @@
                     },
                     "op": "/",
                     "right": {
+                      "temporal": false,
                       "value": 100.0
                     }
                   }
@@ -2824,6 +3147,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": 1
                   }
                 ],
@@ -2862,6 +3186,7 @@
                         {
                           "args": [
                             {
+                              "temporal": false,
                               "value": "month"
                             },
                             {
@@ -2899,6 +3224,7 @@
                           "expression": {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": "month"
                               },
                               {
@@ -2928,6 +3254,7 @@
                                 },
                                 "op": "/",
                                 "right": {
+                                  "temporal": false,
                                   "value": 100.0
                                 }
                               }
@@ -2941,6 +3268,7 @@
                           "expression": {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": 1
                               }
                             ],
@@ -3022,6 +3350,7 @@
                                         },
                                         "op": ">",
                                         "right": {
+                                          "temporal": false,
                                           "value": 0
                                         }
                                       },
@@ -3045,12 +3374,14 @@
                                           },
                                           "op": "=",
                                           "right": {
+                                            "temporal": false,
                                             "value": 0
                                           }
                                         }
                                       }
                                     },
                                     "result": {
+                                      "temporal": false,
                                       "value": 0
                                     }
                                   }
@@ -3156,6 +3487,7 @@
                     },
                     "op": ">=",
                     "right": {
+                      "temporal": false,
                       "value": 50
                     }
                   }
@@ -3172,6 +3504,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -3213,6 +3546,7 @@
                   "left": {
                     "args": [
                       {
+                        "temporal": false,
                         "value": "month"
                       },
                       {
@@ -3253,6 +3587,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -3282,6 +3617,7 @@
                     },
                     "op": "/",
                     "right": {
+                      "temporal": false,
                       "value": 100.0
                     }
                   }
@@ -3295,6 +3631,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": 1
                   }
                 ],
@@ -3431,6 +3768,7 @@
                   {
                     "args": [
                       {
+                        "temporal": false,
                         "value": "month"
                       },
                       {
@@ -3464,11 +3802,13 @@
                             "else_expr": {
                               "args": [
                                 {
+                                  "temporal": false,
                                   "value": "UTC"
                                 },
                                 {
                                   "args": [
                                     {
+                                      "temporal": false,
                                       "value": "UTC"
                                     },
                                     {
@@ -3508,12 +3848,14 @@
                                   },
                                   "op": "=",
                                   "right": {
+                                    "temporal": false,
                                     "value": "timestamp with time zone"
                                   }
                                 },
                                 "result": {
                                   "args": [
                                     {
+                                      "temporal": false,
                                       "value": "UTC"
                                     },
                                     {
@@ -3534,23 +3876,17 @@
                           },
                           "op": "<=",
                           "right": {
-                            "args": [
-                              {
-                                "value": "UTC"
-                              },
-                              {
-                                "args": [],
-                                "distinct": false,
-                                "name": "NOW"
-                              }
-                            ],
-                            "distinct": false,
-                            "name": "TIMEZONE"
+                            "expr": {
+                              "temporal": false,
+                              "value": "2026-10-14 20:11:47.836255"
+                            },
+                            "type_name": "TIMESTAMP"
                           }
                         },
                         "result": {
                           "args": [
                             {
+                              "temporal": false,
                               "value": "month"
                             },
                             {
@@ -3565,6 +3901,184 @@
                           ],
                           "distinct": false,
                           "name": "DATE_TRUNC"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "distinct": false,
+                "name": "MAX"
+              }
+            },
+            {
+              "alias": "data_through",
+              "expression": {
+                "args": [
+                  {
+                    "else_expr": null,
+                    "whens": [
+                      {
+                        "condition": {
+                          "left": {
+                            "else_expr": {
+                              "args": [
+                                {
+                                  "temporal": false,
+                                  "value": "UTC"
+                                },
+                                {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMP"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "TIMEZONE"
+                            },
+                            "whens": [
+                              {
+                                "condition": {
+                                  "left": {
+                                    "expr": {
+                                      "args": [
+                                        {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        }
+                                      ],
+                                      "distinct": false,
+                                      "name": "PG_TYPEOF"
+                                    },
+                                    "type_name": "VARCHAR"
+                                  },
+                                  "op": "=",
+                                  "right": {
+                                    "temporal": false,
+                                    "value": "timestamp with time zone"
+                                  }
+                                },
+                                "result": {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMPTZ"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              }
+                            ]
+                          },
+                          "op": "<=",
+                          "right": {
+                            "expr": {
+                              "temporal": false,
+                              "value": "2026-10-14 20:11:47.836255"
+                            },
+                            "type_name": "TIMESTAMP"
+                          }
+                        },
+                        "result": {
+                          "else_expr": {
+                            "args": [
+                              {
+                                "temporal": false,
+                                "value": "UTC"
+                              },
+                              {
+                                "args": [
+                                  {
+                                    "temporal": false,
+                                    "value": "UTC"
+                                  },
+                                  {
+                                    "expr": {
+                                      "parts": [
+                                        "comparison_orders",
+                                        "ordered_at"
+                                      ]
+                                    },
+                                    "type_name": "TIMESTAMP"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "TIMEZONE"
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "TIMEZONE"
+                          },
+                          "whens": [
+                            {
+                              "condition": {
+                                "left": {
+                                  "expr": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "PG_TYPEOF"
+                                  },
+                                  "type_name": "VARCHAR"
+                                },
+                                "op": "=",
+                                "right": {
+                                  "temporal": false,
+                                  "value": "timestamp with time zone"
+                                }
+                              },
+                              "result": {
+                                "args": [
+                                  {
+                                    "temporal": false,
+                                    "value": "UTC"
+                                  },
+                                  {
+                                    "expr": {
+                                      "parts": [
+                                        "comparison_orders",
+                                        "ordered_at"
+                                      ]
+                                    },
+                                    "type_name": "TIMESTAMPTZ"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "TIMEZONE"
+                              }
+                            }
+                          ]
                         }
                       }
                     ]
@@ -3649,6 +4163,7 @@
                               },
                               "op": ">",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             },
@@ -3707,12 +4222,14 @@
                               },
                               "op": "=",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             }
                           }
                         },
                         "result": {
+                          "temporal": false,
                           "value": 0
                         }
                       }
@@ -3740,25 +4257,62 @@
                         "condition": {
                           "left": {
                             "left": {
-                              "frame": "",
-                              "function": {
-                                "args": [
-                                  {
-                                    "parts": [
-                                      "base",
-                                      "m2"
-                                    ]
-                                  }
-                                ],
-                                "distinct": false,
-                                "name": "COUNT"
+                              "left": {
+                                "frame": "",
+                                "function": {
+                                  "args": [
+                                    {
+                                      "parts": [
+                                        "base",
+                                        "m2"
+                                      ]
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "COUNT"
+                                },
+                                "order_by": [],
+                                "partition_by": []
                               },
-                              "order_by": [],
-                              "partition_by": []
+                              "op": ">",
+                              "right": {
+                                "temporal": false,
+                                "value": 0
+                              }
                             },
-                            "op": ">",
+                            "op": "AND",
                             "right": {
-                              "value": 0
+                              "left": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "t"
+                                  ]
+                                },
+                                "op": ">=",
+                                "right": {
+                                  "parts": [
+                                    "coverage_1",
+                                    "loaded_from"
+                                  ]
+                                }
+                              },
+                              "op": "AND",
+                              "right": {
+                                "left": {
+                                  "parts": [
+                                    "base",
+                                    "t"
+                                  ]
+                                },
+                                "op": "<=",
+                                "right": {
+                                  "parts": [
+                                    "coverage_1",
+                                    "loaded_to"
+                                  ]
+                                }
+                              }
                             }
                           },
                           "op": "AND",
@@ -3781,12 +4335,14 @@
                               },
                               "op": "=",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             }
                           }
                         },
                         "result": {
+                          "temporal": false,
                           "value": 0
                         }
                       }
@@ -3820,13 +4376,13 @@
             "t"
           ]
         },
-        "nulls_last": false
+        "nulls_last": true
       }
     ],
     "qualify": [],
     "select": [
       {
-        "alias": "temporal_role.jaffle_order_time__month",
+        "alias": "period",
         "expression": {
           "parts": [
             "base",
@@ -3895,5 +4451,9 @@
     "snapshot_row_selection": "aggregate_join",
     "timestamp_type": "TIMESTAMP"
   },
-  "warnings": []
+  "window": {
+    "data_through": "2017-08-31",
+    "now": "2026-10-14T20:11:47.836255Z",
+    "partial": false
+  }
 }

@@ -70,9 +70,11 @@ _INVENTORY_KINDS = {
 _REMOVABLE = ("model", "dimension", "time", "measure", "metric", "segment", "relationship")
 _PIN_ENDS = ("source_entity", "target_entity")
 _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
+_ROLE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 
-# What upsert_model(replace=True) keeps from the model it rewrites.
-_KEPT_ON_REPLACE = ("id", "entities", "calendar_id")
+# What upsert_model(replace=True) keeps from the model it rewrites: its identity and how
+# its tables are bound (a calendar, and how far they are loaded).
+_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through", "one_per_key")
 # Model blocks of named objects: dropped_fields names each object a replace drops.
 _MODEL_BLOCKS = ("dimensions", "times", "measures")
 
@@ -761,7 +763,9 @@ class ArchitectProject:
         label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        entities: dict[str, Any] | None = None,
         replace: bool = False,
+        one_per_key: bool | None = None,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -770,14 +774,20 @@ class ArchitectProject:
         """Create or update a model and its primary graph entity.
 
         Fields merge into an existing model; ``replace=True`` rewrites it from
-        the arguments, keeping only its ``id``, ``entities`` block and
-        ``calendar_id``, and reports what it dropped as ``dropped_fields``.
+        the arguments, keeping only its ``id``, ``entities`` block, ``calendar_id``,
+        ``zero_through`` and ``one_per_key``, and reports what it dropped as ``dropped_fields``.
+        ``entities`` merges parent entities into the model's ``entities`` block, each
+        ``{}`` or ``{expr: column}`` (a column or a list of columns also reads as ``expr``).
 
         ``calendar=True`` makes the entity the package calendar for
         ``calendar_id`` (default ``"default"``): ``kind: time``, not a query
         root. ``calendar=False`` makes a calendar a regular entity again;
         ``None`` leaves it as it is. On a regular model, ``calendar_id`` binds
         its times to that calendar.
+
+        ``one_per_key=True`` reads ``relation`` as one row per ``primary_key``
+        (a relation whose stored rows repeat the key), each column the key's one
+        value; ``False`` removes it; ``None`` leaves it as it is.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         documents: dict[Path, dict[str, Any]] = {}
@@ -797,7 +807,9 @@ class ArchitectProject:
             label=label,
             calendar=calendar,
             calendar_id=calendar_id,
+            entities=entities,
             replace=replace,
+            one_per_key=one_per_key,
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
@@ -829,7 +841,9 @@ class ArchitectProject:
                 "label": label,
                 "calendar": calendar,
                 "calendar_id": calendar_id,
+                **({"entities": entities} if entities is not None else {}),
                 "replace": replace,
+                "one_per_key": one_per_key,
             },
             extra={"entity": staged["entity"], **_field_reports(staged)},
         )
@@ -1009,19 +1023,17 @@ class ArchitectProject:
         label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        entities: dict[str, Any] | None = None,
         replace: bool = False,
         keep_existing: bool = False,
+        one_per_key: bool | None = None,
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
         Several models can be staged into one ``documents`` and committed as a
         single transaction; the returned facts describe this model's change.
         """
-        keys = _as_list(primary_key)
-        if not keys:
-            raise SemanticLayerError(
-                "INVALID_CONFIG", "primary_key must contain at least one column"
-            )
+        keys = _as_list(primary_key)  # none: a row-grain model, which lists only its parents
         requested_model = str(model_id or "").strip()
         requested_entity = str(entity_key or "").strip()
         existing_model = self._find_raw(raw["models"], requested_model)
@@ -1058,11 +1070,18 @@ class ArchitectProject:
         model, model_wrapper = self._model_for_update(
             model_doc, existing_model, model_slug=model_slug
         )
-        if str(model.get("kind") or "").strip().lower() == "fact":
-            # upsert_model manages entity models; a replace would also drop kind: fact.
+        if not keys and existing_entity is not None:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{model_slug!r} is a fact model; upsert_model manages entity models",
+                f"primary_key [] makes {model_slug!r} row grain, but graph entity "
+                f"{entity_slug!r} exists; remove it first, or give its key",
+                details={"model": model_slug, "entity": entity_slug},
+            )
+        if one_per_key and not keys:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"one_per_key reads {model_slug!r} as one row per its key, so it needs a "
+                "primary_key",
                 details={"model": model_slug},
             )
         previous = model
@@ -1072,13 +1091,26 @@ class ArchitectProject:
             {
                 "id": model_slug,
                 "relation": relation,
-                "entities": {**dict(model.get("entities", {}) or {}), entity_slug: {}},
+                "entities": {
+                    **dict(model.get("entities", {}) or {}),
+                    **({entity_slug: {}} if keys else {}),
+                    **{
+                        str(name): {"expr": spec}
+                        if isinstance(spec, (str, list))
+                        else dict(spec or {})
+                        for name, spec in dict(entities or {}).items()
+                    },
+                },
                 "description": description
                 or model.get("description", f"One row per {_title(entity_slug)}."),
             }
         )
         if label:
             model["label"] = label
+        if one_per_key:
+            model["one_per_key"] = True
+        elif one_per_key is False:
+            model.pop("one_per_key", None)
         requested_calendar = str(calendar_id or "").strip()
         if requested_calendar and not _CALENDAR_ID.fullmatch(requested_calendar):
             raise SemanticLayerError(
@@ -1138,7 +1170,10 @@ class ArchitectProject:
         elif calendar is False and was_calendar:
             desired_entity.pop("kind", None)
             desired_entity["allowed_as_root"] = True
-        entities[entity_slug] = desired_entity
+        if keys:
+            entities[entity_slug] = desired_entity
+        else:  # a row-grain model's graph entity is named after it, and never authored
+            entity_slug, desired_entity = model_slug, existing_spec
         graph["entities"] = entities
         graph_doc["graph"] = graph
         return {
@@ -1351,6 +1386,7 @@ class ArchitectProject:
         to_entity: str,
         columns: list[str],
         cardinality: str = "many_to_one",
+        name: str = "",
         keep_existing_routes: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
@@ -1364,7 +1400,11 @@ class ArchitectProject:
         block (as ``expr`` when named differently from the key), which strict
         packages read as a many-to-one relationship. ``one_to_one``, or an
         existing ``graph.relationships`` entry for the pair, also records the
-        cardinality there. The project is checked under the transaction lock,
+        cardinality there. Either entity may be named by its key or its id, and
+        ``from_entity`` may be a row-grain model, whose block lists only its parents.
+        ``name`` instead writes ``graph.relationships.<name>`` with ``columns`` as its
+        ``via``, leaving the model as it is: a second role on the pair, or that role
+        again. The project is checked under the transaction lock,
         after receipt replay and the revision check. ``keep_existing_routes=True``
         records each moved pair's previous path in the same transaction and refuses
         if any previous route outcome (including a refusal) would still change.
@@ -1384,74 +1424,137 @@ class ArchitectProject:
                 "INVALID_CONFIG",
                 "from_entity and to_entity must differ, and columns must not be blank",
             )
+        role = str(name or "").strip()
+        if role and not _ROLE_NAME.fullmatch(role):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"name must be lowercase letters, digits and underscores (got {name!r})",
+            )
 
         def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
             raw = self._raw_inventory()
-            source_row = self._find_raw(raw["entities"], source)
-            target_row = self._find_raw(raw["entities"], target)
-            model_row = next(
+            row_grain = self._row_grain_models(raw)
+            names = self._entity_names(raw, row_grain)
+            src, dst = names.get(source, source), names.get(target, target)
+            if dst in row_grain:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{dst!r} is row grain (no key), so nothing can join into one of its rows; "
+                    f"relate it from its side: upsert_relationship(from_entity={dst!r}, "
+                    f"to_entity={src!r}, columns=[{dst}'s columns holding {src}'s key]), or give "
+                    f"{dst} a key (upsert_model primary_key) if its rows have one",
+                    details={"model": dst, "entity": src},
+                )
+            source_row = self._find_raw(raw["entities"], src)
+            target_row = self._find_raw(raw["entities"], dst)
+            model_row = row_grain.get(src) or next(
                 (
                     row
                     for row in raw["models"]
-                    if self._primary_entity_for_model(row, raw["entities"]) == source
+                    if self._primary_entity_for_model(row, raw["entities"]) == src
                 ),
                 None,
             )
-            if source_row is None or target_row is None or model_row is None:
-                missing = [
-                    name for name, row in ((source, source_row), (target, target_row)) if not row
-                ]
+            if (
+                (source_row is None and src not in row_grain)
+                or target_row is None
+                or model_row is None
+            ):
+                missing = [name for name, row in ((src, source_row), (dst, target_row)) if not row]
                 raise SemanticLayerError(
                     "OBJECT_NOT_FOUND",
                     f"No package entity {missing[0]!r}"
                     if missing
-                    else f"Entity {source!r} has no model to hold the foreign key",
-                    details={"entities": missing or [source]},
+                    else f"Entity {src!r} has no model to hold the foreign key",
+                    details={
+                        "entities": missing or [src],
+                        "known": sorted({row.key for row in raw["entities"]} | set(row_grain)),
+                    },
+                )
+            if src in row_grain and kind == "one_to_one":
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{src!r} is row grain (no key): no row of it can be looked up, so it "
+                    "relates many_to_one only",
                 )
             target_key = _as_list(target_row.spec.get("key"))
             if len(foreign_key) != len(target_key):
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"columns {foreign_key} do not match the width of {target}'s key {target_key}",
+                    f"columns {foreign_key} do not match the width of {dst}'s key {target_key}",
                     details={"columns": foreign_key, "key": target_key},
                 )
-            graph_path = source_row.source_path
+            graph_path = (source_row or target_row).source_path
             documents = self._load_documents(model_row.source_path, graph_path)
+            graph = dict(documents[graph_path].get("graph", {}) or {})
+            relationships = dict(graph.get("relationships", {}) or {})
             model_doc = documents[model_row.source_path]
             model, wrapper = self._model_for_update(model_doc, model_row, model_slug=model_row.key)
             entities = dict(model.get("entities", {}) or {})
+            if role:
+                # A named role: its own graph.relationships entry, on these columns.
+                fk_name = f"{slug(model_row.key)}_{slug(dst)}"
+                fk_columns = (
+                    _as_list(dict(entities[dst] or {}).get("expr")) or target_key
+                    if dst in entities
+                    else []
+                )
+                if taken := _taken_role(
+                    role, foreign_key, (src, dst), (fk_name, fk_columns), relationships
+                ):
+                    raise taken
+                current = relationships.get(role)
+                if isinstance(current, dict) and _as_list(current.get("entities")) != [src, dst]:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"graph.relationships.{role} relates {_as_list(current.get('entities'))}, "
+                        f"not {src} to {dst}; give this role another name",
+                        details={"relationship": role},
+                    )
+                relationships[role] = {
+                    **dict(current or {}),
+                    "entities": [src, dst],
+                    "cardinality": kind,
+                    "via": foreign_key,
+                    "target": target_key,
+                }
+                documents[graph_path]["graph"] = {**graph, "relationships": relationships}
+                if graph_path != model_row.source_path:
+                    documents.pop(model_row.source_path)
+                return keep_routes(self._file_updates(documents))
             # Keep the source first for readability; the loader resolves its primary identity.
+            # A row-grain model lists only its parents.
+            own = {} if src in row_grain else {src: entities.get(src) or {}}
             model["entities"] = {
-                source: entities.get(source) or {},
-                **{name: spec for name, spec in entities.items() if name not in {source, target}},
-                target: _foreign_key_entry(foreign_key, target_key),
+                **own,
+                **{name: spec for name, spec in entities.items() if name not in {src, dst}},
+                dst: _foreign_key_entry(foreign_key, target_key),
             }
             self._store_model(model_doc, wrapper, model_row.key, model)
-            graph = dict(documents[graph_path].get("graph", {}) or {})
-            relationships = dict(graph.get("relationships", {}) or {})
             pair_entries = {
                 str(name): _as_list(entry.get("entities"))
                 for name, entry in relationships.items()
                 if isinstance(entry, dict)
-                and _as_list(entry.get("entities")) in ([source, target], [target, source])
+                and _as_list(entry.get("entities")) in ([src, dst], [dst, src])
             }
-            same_side = [name for name, pair in pair_entries.items() if pair == [source, target]]
+            same_side = [name for name, pair in pair_entries.items() if pair == [src, dst]]
             # One foreign-key write can change only one role. Refuse a pair that has (or may
             # have) another: several entries, an entry declared from the other side, or an
             # entry with its own `via` beside the model's `entities` foreign key (two routes
             # on different columns, which stripping that `via` would merge into one).
             own_columns = any(
-                "via" in dict(relationships[name]) for name in same_side if target in entities
+                "via" in dict(relationships[name]) for name in same_side if dst in entities
             )
             if len(pair_entries) > 1 or len(same_side) != len(pair_entries) or own_columns:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
-                    f"{source} and {target} already have several relationships or roles "
-                    f"({', '.join(pair_entries)}); edit them in graph.yml instead",
+                    f"{src} and {dst} already have several relationships or roles "
+                    f"({', '.join(pair_entries)}); pass name to write one role: one of these, "
+                    "or a new name for another role",
                     details={"relationships": list(pair_entries)},
                 )
             existing = same_side[0] if same_side else ""
-            name = existing or f"{model_row.key}_{target}"
+            name = existing or f"{model_row.key}_{dst}"
             if kind == "one_to_one" or existing:
                 if not existing and name in relationships:
                     raise SemanticLayerError(
@@ -1465,11 +1568,14 @@ class ArchitectProject:
                     for field_name, value in dict(relationships.get(name) or {}).items()
                     if field_name not in {"via", "target"}
                 }
-                relationships[name] = {**entry, "entities": [source, target], "cardinality": kind}
+                relationships[name] = {**entry, "entities": [src, dst], "cardinality": kind}
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
             elif graph_path != model_row.source_path:
                 documents.pop(graph_path)
-            updates = self._file_updates(documents)
+            return keep_routes(self._file_updates(documents))
+
+        def keep_routes(updates: list[ProjectFileUpdate]) -> tuple[list[ProjectFileUpdate], None]:
+            """``updates``, plus a row for each pair whose route they move, when asked to keep."""
             if keep_existing_routes:
                 transaction = ProjectTransaction(
                     self.project_path, workspace_root=self.workspace_root
@@ -1537,6 +1643,7 @@ class ArchitectProject:
                 "to_entity": target,
                 "columns": foreign_key,
                 "cardinality": kind,
+                **({"name": role} if role else {}),
             }
         }
         outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
@@ -1550,6 +1657,7 @@ class ArchitectProject:
                 "to_entity": target,
                 "columns": foreign_key,
                 "cardinality": kind,
+                **({"name": role} if role else {}),
                 **({"keep_existing_routes": True} if keep_existing_routes else {}),
             },
             dry_run=dry_run,
@@ -1801,7 +1909,11 @@ class ArchitectProject:
                 for field_name in ("query", "metric_query", "expected_query"):
                     if field_name not in fields:
                         continue
-                    result = runtime.validate(deepcopy(fields[field_name]))
+                    result = runtime.validate(
+                        deepcopy(fields[field_name]),
+                        now=spec.get("now"),
+                        context=spec.get("context"),
+                    )
                     error = dict((result.get("errors") or [{}])[0])
                     code = str(error.get("code", "") or "")
                     if must_fail and (result.get("ok") or code != spec["code"]):
@@ -1975,7 +2087,7 @@ class ArchitectProject:
             raw["entities"], self._primary_entity_for_model(owner, raw["entities"])
         )
         if entity is None or str(entity.spec.get("model") or owner.key) != owner.key:
-            return  # a fact model, or a model without an entity of its own
+            return  # a model without an entity of its own (row grain)
         graph_doc = self._document(documents, entity.source_path)
         graph = dict(graph_doc.get("graph", {}) or {})
         entities = dict(graph.get("entities", {}) or {})
@@ -2187,7 +2299,8 @@ class ArchitectProject:
                     snapshot=snapshot,
                 )
             except Exception as exc:  # the parse gate reports a package that doesn't load
-                return {"references": references, "error": str(exc)}
+                error = str(exc).replace(str(proposed), str(self.project_path))
+                return {"references": references, "error": error}
         gone = [
             json.dumps(row["object_id"])
             for row in report["changes"]
@@ -2406,11 +2519,17 @@ class ArchitectProject:
             for path, doc in documents.items()
         ]
 
+    def _namespace(self, package_doc: dict[str, Any] | None = None) -> str:
+        """The namespace object ids derive from: package.yml's, else its id or directory."""
+        if package_doc is None:
+            package_doc = _yaml_load(self._target_path("package.yml"))
+        package = dict(package_doc.get("package", {}) or {})
+        return str(package.get("namespace") or package.get("id") or self.project_path.name)
+
     def _raw_inventory(self) -> dict[str, list[_RawObject]]:
         package_path = self._target_path("package.yml")
         package_doc = _yaml_load(package_path)
-        package = dict(package_doc.get("package", {}) or {})
-        namespace = str(package.get("namespace") or package.get("id") or self.project_path.name)
+        namespace = self._namespace(package_doc)
 
         graph_source = package_path
         graph = dict(package_doc.get("graph", {}) or {})
@@ -2617,14 +2736,35 @@ class ArchitectProject:
             if str(entity.spec.get("model", "") or "") == model.key:
                 return entity.key
         explicit = str(model.spec.get("entity", "") or "").strip()
-        if explicit:
-            return explicit
-        exposed = model.spec.get("entities", {}) or {}
-        if isinstance(exposed, dict):
-            keys = [str(key) for key in exposed if str(key) != "bridge"]
-            if keys:
-                return keys[0]
-        return model.key
+        # Else a same-named graph entity, or a row-grain model's own, named after it.
+        return explicit or model.key
+
+    @classmethod
+    def _row_grain_models(cls, raw: dict[str, list[_RawObject]]) -> dict[str, _RawObject]:
+        """The models no graph entity is homed on and no ``keys.primary`` keys, by id: each
+        one's entity is named after it."""
+        keys = {row.key for row in raw["entities"]}
+        return {
+            row.key: row
+            for row in raw["models"]
+            if cls._primary_entity_for_model(row, raw["entities"]) == row.key
+            and row.key not in keys
+            # The loader keys a model by its legacy keys.primary, entity or not.
+            and not _as_list(dict(row.spec.get("keys") or {}).get("primary"))
+        }
+
+    def _entity_names(
+        self, raw: dict[str, list[_RawObject]], row_grain: Mapping[str, _RawObject]
+    ) -> dict[str, str]:
+        """Each spelling an entity can be named by (its key or its id; a row-grain model's
+        id or its entity's id), mapped to its key."""
+        names = {row.key: row.key for row in raw["entities"]}
+        names.update({row.object_id: row.key for row in raw["entities"]})
+        namespace = self._namespace()
+        for model in row_grain:
+            names[model] = model
+            names[_canonical_id("entity", model, {}, namespace=namespace)] = model
+        return names
 
     @staticmethod
     def _find_raw(rows: list[_RawObject], key: str) -> _RawObject | None:
@@ -2726,6 +2866,39 @@ class ArchitectProject:
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.project_path).as_posix()
+
+
+def _taken_role(
+    role: str,
+    columns: list[str],
+    pair: tuple[str, str],
+    foreign_key: tuple[str, list[str]],
+    relationships: Mapping[str, Any],
+) -> SemanticLayerError | None:
+    """Why a named role can't be written: its name is the source model's foreign key to the
+    target, or another role of the pair already joins on its columns."""
+    (src, dst), (fk_name, fk_columns) = pair, foreign_key
+    if role == fk_name and fk_columns:
+        return SemanticLayerError(
+            "INVALID_CONFIG",
+            f"relationship.{fk_name} is {src}'s foreign key to {dst} (on {fk_columns}): change it "
+            "without name, or give this role another name",
+            details={"relationship": fk_name},
+        )
+    roles = {fk_name: fk_columns} if fk_columns else {}
+    for name, entry in relationships.items():
+        if isinstance(entry, dict) and _as_list(entry.get("entities")) == [src, dst]:
+            roles.setdefault(str(name), _as_list(entry.get("via")) or fk_columns)
+    taken = next((name for name, held in roles.items() if name != role and held == columns), "")
+    if not taken:
+        return None
+    change = "without name" if taken == fk_name else f"with name: {taken}"
+    return SemanticLayerError(
+        "INVALID_CONFIG",
+        f"columns {columns} already hold relationship.{taken} from {src} to {dst}: a second role "
+        f"needs its own columns (change that role {change})",
+        details={"relationship": taken},
+    )
 
 
 def _field_reports(staged: dict[str, Any]) -> dict[str, Any]:

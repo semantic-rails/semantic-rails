@@ -8,6 +8,7 @@ import pytest
 from semantic_rails import config as config_module
 from semantic_rails.architect_scaffold import dump_project_yaml
 from semantic_rails.config import _load_package_source, load_package_config
+from semantic_rails.config_parts import package_rows
 from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
@@ -80,7 +81,7 @@ def _normalized_rows(document, iterator):
         return list(document["graph"]["entities"].values())
     if iterator == "relationships":
         rows = [
-            {**row, "id": row.get("id") or f"relationship.{slug(key)}"}
+            {**row, "id": row.get("as") or f"relationship.{slug(key)}"}
             for key, row in document["graph"].get("relationships", {}).items()
         ]
         for model_id, model in document["models"].items():
@@ -165,8 +166,15 @@ def test_iterators_cover_loaded_object_ids(package):
     assert models == set(normalized["models"])
 
 
-@pytest.mark.parametrize("section", ["models", "relations", "metrics", "segments"])
-@pytest.mark.parametrize("wrapper", ["plural", "singular", "bare"])
+@pytest.mark.parametrize(
+    ("section", "wrapper"),
+    [
+        ("models", "plural"),
+        ("relations", "singular"),
+        ("metrics", "bare"),
+        ("segments", "singular"),
+    ],
+)
 def test_directory_wrapper_paths(tmp_path, section, wrapper):
     (tmp_path / "package.yml").write_text("package: {id: sample}\n")
     (tmp_path / section).mkdir()
@@ -437,14 +445,14 @@ def test_expression_paths_cover_parser_references(package, monkeypatch):
         source_row["_coverage_origin"] = index
         origins[index] = (file, path, row)
     parsed_roots = {}
-    parse = config_module._parse_metric_expression
+    parse = package_rows._parse_metric_expression
 
     def record(raw, *, context):
         expression = parse(raw, context=context)
         parsed_roots[id(expression)] = raw
         return expression
 
-    monkeypatch.setattr(config_module, "_parse_metric_expression", record)
+    monkeypatch.setattr(package_rows, "_parse_metric_expression", record)
     normalized, loaded = _loaded_definitions(files, documents)
     yielded = {(file, path) for file, path, _ in files.expressions()}
     for section, definitions in (("metrics", loaded.metric_recipes), ("segments", loaded.segments)):

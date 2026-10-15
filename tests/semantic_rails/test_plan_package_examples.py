@@ -9,6 +9,7 @@ import yaml
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
 QUESTION = "Which 2 accounts pay the most MRR today?"
@@ -16,13 +17,15 @@ ROLE = "temporal_role.subscriptions_account_day_day"
 NAME = "dimension.subscriptions_account_name"
 DAY = "dimension.subscriptions_account_day_day"
 QUERY = {
-    "version": 1,
-    "select": [{"expression": {"metric": "metric.subscriptions.mrr"}, "as": "mrr"}],
+    "select": ["metric.subscriptions.mrr"],
     "group_by": [DAY, NAME],
-    "time": {"temporal_role": ROLE, "grain": "day", "range": {"last": {"unit": "day", "value": 1}}},
-    "order_by": [{"field": "mrr", "direction": "DESC"}, {"field": NAME, "direction": "ASC"}],
+    "time": {"temporal_role": ROLE, "grain": "day", "last": {"unit": "day", "value": 1}},
+    "order_by": [{"field": "mrr", "direction": "desc"}, {"field": NAME, "direction": "asc"}],
     "limit": 2,
 }
+
+
+jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
 
 
 def _write_examples(root: Path, entries: dict) -> None:
@@ -145,16 +148,22 @@ def test_authored_snapshot_question_answers_reference(subscriptions):
     result = _plan(subscriptions)
     assert result["status"] == "ok", result.get("why")
     assert result["best"]["pattern"] == "package_example"
-    rows = subscriptions.query(result["best"]["query_ir"])["rows"]
+    rows = subscriptions.query(result["best"]["query"], now=NOW["now"])["rows"]
     gold = _reference(subscriptions, "2026-10-04", 2)
     assert gold == [("Acme Data Co", 500), ("Initech", 99)]
     assert [(row[NAME], row["mrr"]) for row in rows] == gold
 
 
 def test_snapshot_policy_holds_a_query_without_the_day(subscriptions):
-    query = {**QUERY, "group_by": [NAME], "order_by": [{"field": NAME, "direction": "ASC"}]}
-    with pytest.raises(SemanticLayerError, match="blocked by policy"):
-        subscriptions.query(query)
+    # Neither a day grouping nor a day grain: the balance isn't read per day.
+    query = {
+        **QUERY,
+        "group_by": [NAME],
+        "time": {"temporal_role": ROLE, "last": {"unit": "day", "value": 1}},
+        "order_by": [{"field": NAME, "direction": "asc"}],
+    }
+    with pytest.raises(SemanticLayerError, match="can only be read by day: group by "):
+        subscriptions.query(query, now=NOW["now"])
 
 
 @pytest.mark.parametrize(
@@ -164,11 +173,10 @@ def test_case_and_whitespace_variants_match_reference(subscriptions, question):
     result = _plan(subscriptions, question)
     assert result["status"] == "ok", result.get("why")
     assert result["best"]["pattern"] == "package_example"
-    query = result["best"]["query_ir"]
+    query = result["best"]["query"]
     assert query["limit"] == 2
-    assert query["time"]["start"] == "2026-10-04"
-    assert query["time"]["end"] == "2026-10-05"
-    rows = subscriptions.query(query)["rows"]
+    assert query["time"]["last"] == {"unit": "day", "value": 1}
+    rows = subscriptions.query(query, now=NOW["now"])["rows"]
     assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
     assert result["best"]["interpreted_intent"]["consumed_spans"] == [[0, len(result["intent"])]]
 
@@ -176,6 +184,54 @@ def test_case_and_whitespace_variants_match_reference(subscriptions, question):
 def _replace_entries(runtime, entries):
     _write_examples(Path(runtime.package_root), entries)
     runtime.reload()
+
+
+YESTERDAY = QUESTION.replace("today", "yesterday")
+WEEK = {**QUERY, "time": {**QUERY["time"], "range": {"last": {"unit": "day", "value": 7}}}}
+
+
+@pytest.mark.parametrize(
+    ("authored", "query", "asked"),
+    [
+        # Another ranking, window, measure, filter or count is another question.
+        *((QUESTION, QUERY, asked) for asked in [
+            QUESTION.replace("most", "least"),
+            QUESTION.replace("today", "today and yesterday"),
+            QUESTION.replace("MRR", "ARR"),
+            QUESTION.replace("today", "today for Acme"),
+            QUESTION.replace("2", "2.5"),
+            QUESTION.replace("2", "0"),
+            "‘Which 2 accounts pay the most MRR today?’ ",
+            "WHICH 2 ACCOUNT PAY THE MOST MRR TODAY",
+            QUESTION.replace("2", "3"),
+            QUESTION.replace("today", "on 2026-09-30"),
+            YESTERDAY,
+        ]),
+        # Another count, whatever the authored limit.
+        (QUESTION, {**QUERY, "limit": 1}, QUESTION.replace("2", "4")),
+        (QUESTION, {**QUERY, "limit": 3}, QUESTION.replace("2", "4")),
+        # Yesterday agrees with the query, but an example answers only its own day.
+        (YESTERDAY, QUERY, QUESTION.replace("today", "on 2026-09-30")),
+        (YESTERDAY, QUERY, QUESTION.replace("today", "on 2026-09-30").replace("2 acc", "3 acc")),
+        (YESTERDAY, QUERY, QUESTION.replace("today", "on 2026-10-02")),
+        *((YESTERDAY, QUERY, QUESTION.replace("today", phrase))
+          for phrase in ["last 7 days", "this week", "this year", "last month", "today"]),
+        (QUESTION.replace("today", "last 7 days"), WEEK, QUESTION.replace("today", "last 14 days")),
+        # A signed number never matches its unsigned form.
+        (YESTERDAY, QUERY, YESTERDAY.replace("2", "-2")),
+        (YESTERDAY, QUERY, QUESTION.replace("today", "-2026-09-30")),
+        # A threshold equal to the limit is not a count.
+        ("Revenue above 2 dollars", QUERY, "Revenue above 3 dollars"),
+        # An example with an invalid time never crashes matching.
+        (QUESTION, {**QUERY, "time": "invalid"}, QUESTION.replace("2", "3")),
+        (QUESTION, {**QUERY, "time": 2}, QUESTION.replace("2", "3")),
+    ],
+)  # fmt: skip
+def test_another_question_has_no_example_effect(subscriptions, authored, query, asked):
+    if (authored, query) != (QUESTION, QUERY):
+        _replace_entries(subscriptions, {"authored": {"question": authored, "query": query}})
+    result = _plan(subscriptions, asked)
+    assert (result.get("best") or {}).get("pattern") != "package_example"
 
 
 @pytest.mark.parametrize(
@@ -187,27 +243,22 @@ def test_contractions_use_the_same_normalizer(subscriptions, question):
     )
     result = _plan(subscriptions, question)
     assert result["status"] == "ok", result.get("why")
-    rows = subscriptions.query(result["best"]["query_ir"])["rows"]
+    rows = subscriptions.query(result["best"]["query"], now=NOW["now"])["rows"]
     assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
 
 
-@pytest.mark.parametrize(
-    "question",
-    [
-        QUESTION.replace("most", "least"),
-        QUESTION.replace("today", "today and yesterday"),
-        QUESTION.replace("MRR", "ARR"),
-        QUESTION.replace("today", "today for Acme"),
-        QUESTION.replace("2", "2.5"),
-        QUESTION.replace("2", "0"),
-        "‘Which 2 accounts pay the most MRR today?’ ",
-        "WHICH 2 ACCOUNT PAY THE MOST MRR TODAY",
-        QUESTION.replace("2", "3"),
-    ],
-)
-def test_other_differences_have_no_example_effect(subscriptions, question):
-    result = _plan(subscriptions, question)
-    assert (result.get("best") or {}).get("pattern") != "package_example"
+def test_an_example_ordered_by_a_selected_id_answers_by_its_column(subscriptions):
+    """An example's order_by may name its select item by id, as execute accepts it."""
+    by_id = [{"field": "metric.subscriptions.mrr", "direction": "desc"}, *QUERY["order_by"][1:]]
+    _replace_entries(
+        subscriptions, {"top_mrr": {"question": QUESTION, "query": {**QUERY, "order_by": by_id}}}
+    )
+    result = _plan(subscriptions)
+    assert result["status"] == "ok", result.get("why")
+    assert result["best"]["pattern"] == "package_example"
+    assert result["best"]["query"]["order_by"] == QUERY["order_by"]
+    rows = subscriptions.query(result["best"]["query"], now=NOW["now"])["rows"]
+    assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
 
 
 @pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
@@ -227,7 +278,11 @@ def test_two_matching_examples_clarify_instead_of_choosing(subscriptions, detail
 
 
 @pytest.mark.parametrize(
-    "bad", [{"version": 2}, {"select": [{"expression": {"metric": "metric.missing"}}]}]
+    "bad",
+    [
+        {"select": ["metric.missing"]},
+        {"select": [{"expression": {"metric": "metric.subscriptions.mrr"}}]},
+    ],
 )
 def test_invalid_examples_fall_through_to_normal_planning(subscriptions, bad):
     _replace_entries(
@@ -250,7 +305,7 @@ def test_hidden_example_fails_like_an_absent_one_even_alongside_visible_match(
 
     # The visible query only uses the day dimension and stock metric. Hiding a leaf
     # also hides the metric; in that case no example may mention it in diagnostics.
-    visible = {**QUERY, "group_by": [DAY], "order_by": [{"field": "mrr", "direction": "DESC"}]}
+    visible = {**QUERY, "group_by": [DAY], "order_by": [{"field": "mrr", "direction": "desc"}]}
     _replace_entries(
         subscriptions,
         {
@@ -313,11 +368,11 @@ def test_caller_fields_survive_and_resolved_ids_come_from_the_query(subscription
         partial_query={
             "policy_context": NOW,
             "limit": 3,
-            "where": [{"field": NAME, "op": "=", "value": "Acme Data Co"}],
+            "where": [{"field": NAME, "op": "is", "value": "Acme Data Co"}],
         },
     )
     assert result["status"] == "ok", result.get("why")
-    query = result["best"]["query_ir"]
+    query = result["best"]["query"]
     assert query["limit"] == 3
     assert query["where"][0]["value"] == "Acme Data Co"
     assert "policy_context" not in query
@@ -327,40 +382,13 @@ def test_caller_fields_survive_and_resolved_ids_come_from_the_query(subscription
         ROLE,
         "metric.subscriptions.mrr",
     }
-    rows = subscriptions.query(query)["rows"]
+    rows = subscriptions.query(query, now=NOW["now"])["rows"]
     assert [(row[NAME], row["mrr"]) for row in rows] == [("Acme Data Co", 500)]
-
-
-@pytest.mark.parametrize("limit", [1, 3])
-def test_another_count_has_no_example_effect_whatever_the_limit(subscriptions, limit):
-    _replace_entries(
-        subscriptions, {"top_mrr": {"question": QUESTION, "query": {**QUERY, "limit": limit}}}
-    )
-    result = _plan(subscriptions, QUESTION.replace("2", "4"))
-    assert (result.get("best") or {}).get("pattern") != "package_example"
-
-
-@pytest.mark.parametrize("day,limit", [("2026-09-30", 2), ("2026-09-30", 3), ("2026-10-02", 2)])
-def test_another_day_than_the_authored_one_has_no_example_effect(subscriptions, day, limit):
-    # Yesterday agrees with the query, but an example answers only its own day.
-    _replace_entries(
-        subscriptions,
-        {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
-    )
-    question = QUESTION.replace("today", f"on {day}").replace("2 accounts", f"{limit} accounts")
-    result = _plan(subscriptions, question)
-    assert (result.get("best") or {}).get("pattern") != "package_example"
 
 
 def _jaffle_day_revenue(day: str, end: str) -> dict:
     return {
-        "version": 1,
-        "select": [
-            {
-                "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
-                "as": "revenue_usd",
-            }
-        ],
+        "select": ["measure.jaffle.revenue_usd"],
         "time": {
             "temporal_role": "temporal_role.jaffle_order_time",
             "grain": "day",
@@ -368,8 +396,8 @@ def _jaffle_day_revenue(day: str, end: str) -> dict:
             "end": end,
         },
         "where": [
-            {"field": "dimension.jaffle_order_ordered_at", "op": ">=", "value": day},
-            {"field": "dimension.jaffle_order_ordered_at", "op": "<", "value": end},
+            {"field": "dimension.jaffle_order_ordered_at", "op": "gte", "value": day},
+            {"field": "dimension.jaffle_order_ordered_at", "op": "lt", "value": end},
         ],
     }
 
@@ -398,7 +426,7 @@ def test_an_example_answers_only_its_own_day(runtime_factory, day, end, other_da
         verbatim = plan_payload(runtime, intent=f"Revenue on {day}")
         assert verbatim["status"] == "ok", verbatim.get("why")
         assert verbatim["best"]["pattern"] == "package_example"
-        rows = runtime.query(verbatim["best"]["query_ir"])["rows"]
+        rows = runtime.query(verbatim["best"]["query"])["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as conn:
             (gold,) = conn.execute(
                 "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
@@ -417,11 +445,9 @@ def test_an_example_answers_only_its_own_day(runtime_factory, day, end, other_da
 
 
 def _jaffle_revenue_above(value: float) -> dict:
-    total = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
     return {
-        "version": 1,
-        "select": [{"expression": total, "as": "revenue_usd"}],
-        "metric_filters": [{"expression": total, "op": ">", "value": value}],
+        "select": ["measure.jaffle.revenue_usd"],
+        "having": [{"field": "revenue_usd", "op": "gt", "value": value}],
     }
 
 
@@ -438,7 +464,7 @@ def test_a_signed_currency_threshold_answers_only_its_own_sign(runtime_factory):
         unsigned = plan_payload(runtime, intent="Total revenue above $5")
         assert verbatim["status"] == "ok", verbatim.get("why")
         assert verbatim["best"]["pattern"] == "package_example"
-        rows = runtime.query(verbatim["best"]["query_ir"])["rows"]
+        rows = runtime.query(verbatim["best"]["query"])["rows"]
         with duckdb.connect(runtime.db_path, read_only=True) as conn:
             gold = conn.execute(
                 "SELECT SUM(order_total_cents / 100.0) FROM jaffle_order "
@@ -456,12 +482,6 @@ def test_a_signed_currency_threshold_answers_only_its_own_sign(runtime_factory):
     assert (signed.get("best") or {}).get("pattern") != "package_example"
 
 
-@pytest.mark.parametrize("time_phrase", ["on 2026-09-30", "yesterday"])
-def test_another_window_never_reuses_the_authored_one(subscriptions, time_phrase):
-    result = _plan(subscriptions, QUESTION.replace("today", time_phrase))
-    assert (result.get("best") or {}).get("pattern") != "package_example"
-
-
 def _bundled_examples():
     from semantic_rails.yaml_loader import load_named_entries
 
@@ -477,92 +497,45 @@ def _bundled_examples():
     _bundled_examples(),
     ids=lambda item: item if isinstance(item, str) else None,
 )
-def test_bundled_examples_verbatim_equal_authored_results(runtime_factory, example_id, entry):
-    runtime = runtime_factory("jaffle_shop")
-    result = plan_payload(runtime, intent=entry["question"])
+def test_bundled_examples_verbatim_equal_authored_results(jaffle, example_id, entry):
+    result = plan_payload(jaffle, intent=entry["question"])
     assert result["status"] == "ok", (example_id, result.get("why"))
     assert result["best"]["pattern"] == "package_example"
-    assert result["best"]["query_ir"] == entry["query"]
-    actual = runtime.query(result["best"]["query_ir"])
-    gold = runtime.query(entry["query"])
+    assert result["best"]["query"] == entry["query"]
+    actual = jaffle.query(result["best"]["query"])
+    gold = jaffle.query(entry["query"])
     assert actual["output_columns"] == gold["output_columns"]
     assert actual["rows"] == gold["rows"]
-    runtime.close()
 
 
-@pytest.mark.parametrize("question", ["Revenue above 2 dollars", "Revenue above 3 dollars"])
-def test_threshold_equal_to_limit_is_not_a_count(subscriptions, question):
+def test_a_threshold_equal_to_the_limit_answers_its_example(subscriptions):
     _replace_entries(
         subscriptions, {"threshold": {"question": "Revenue above 2 dollars", "query": QUERY}}
     )
-    result = _plan(subscriptions, question)
-    if "3" in question:
-        assert (result.get("best") or {}).get("pattern") != "package_example"
-    else:
-        assert result["status"] == "ok"
-
-
-@pytest.mark.parametrize("time", ["invalid", 2])
-def test_invalid_example_time_shape_does_not_crash_matching(subscriptions, time):
-    _replace_entries(
-        subscriptions, {"bad_time": {"question": QUESTION, "query": {**QUERY, "time": time}}}
-    )
-    result = _plan(subscriptions, QUESTION.replace("2", "3"))
-    assert (result.get("best") or {}).get("pattern") != "package_example"
-
-
-@pytest.mark.parametrize("phrase", ["last 7 days", "this week", "this year", "last month", "today"])
-def test_another_time_phrase_has_no_example_effect(subscriptions, phrase):
-    _replace_entries(
-        subscriptions,
-        {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
-    )
-    result = _plan(subscriptions, QUESTION.replace("today", phrase))
-    assert (result.get("best") or {}).get("pattern") != "package_example"
-
-
-def test_a_longer_window_has_no_example_effect(subscriptions):
-    week = {**QUERY, "time": {**QUERY["time"], "range": {"last": {"unit": "day", "value": 7}}}}
-    _replace_entries(
-        subscriptions,
-        {"top_mrr": {"question": QUESTION.replace("today", "last 7 days"), "query": week}},
-    )
-    result = _plan(subscriptions, QUESTION.replace("today", "last 14 days"))
-    assert (result.get("best") or {}).get("pattern") != "package_example"
-
-
-_AUGUST = {"temporal_role": ROLE, "grain": "month", "start": "2026-08-01", "end": "2026-09-01"}
-_LAST_MONTH = {
-    "temporal_role": ROLE,
-    "grain": "month",
-    "range": {"last": {"unit": "month", "value": 1}},
-}
+    assert _plan(subscriptions, "Revenue above 2 dollars")["status"] == "ok"
 
 
 @pytest.mark.parametrize(
-    "time,authored,asked",
+    "authored,asked",
     [
-        (_AUGUST, "August 2026", "July 2026"),
-        (_AUGUST, "August 2026", "last month"),
-        ({**_LAST_MONTH, "fill": True}, "last month", "July 2026"),
-        (_LAST_MONTH, "last month", "2026-07-15"),
-        (_LAST_MONTH, "last month", "Q3 2026"),
-        (_LAST_MONTH, "last month", "last 2 months"),
-        (_LAST_MONTH, "last month", "this month"),
-        ({**_AUGUST, "calendar_id": "fiscal"}, "August 2026", "July 2026"),
-        (
-            {**_LAST_MONTH, "range": {"last": {"unit": "month", "value": 2}}},
-            "last 2 months",
-            "last 3 months",
-        ),
+        ("August 2026", "July 2026"),
+        ("August 2026", "last month"),
+        ("last month", "July 2026"),
+        ("last month", "2026-07-15"),
+        ("last month", "Q3 2026"),
+        ("last month", "last 2 months"),
+        ("last month", "this month"),
+        ("last 2 months", "last 3 months"),
     ],
 )
-def test_the_authored_time_block_is_never_edited(time, authored, asked):
+def test_another_time_phrase_never_matches_the_authored_one(authored, asked):
+    """An example answers its own question with its own call, unedited: another window is
+    another question."""
     from semantic_rails.planner.examples import _match
 
-    query = {**QUERY, "time": time}
-    assert _match(f"MRR by account {asked}", f"MRR by account {authored}", query) is None
-    assert _match(f"MRR by account {authored}", f"MRR by account {authored}", query) == query
+    question = f"MRR by account {authored}"
+    assert _match(f"MRR by account {asked}", question) is None
+    assert _match(question, question) == question
 
 
 @pytest.mark.parametrize(
@@ -617,22 +590,6 @@ def test_symbols_keep_their_meaning(subscriptions, authored, asked):
     assert (result.get("best") or {}).get("pattern") != "package_example"
 
 
-@pytest.mark.parametrize(
-    "question",
-    [
-        QUESTION.replace("today", "yesterday").replace("2", "-2"),
-        QUESTION.replace("today", "-2026-09-30"),
-    ],
-)
-def test_a_signed_number_never_matches_its_unsigned_form(subscriptions, question):
-    _replace_entries(
-        subscriptions,
-        {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
-    )
-    result = _plan(subscriptions, question)
-    assert (result.get("best") or {}).get("pattern") != "package_example"
-
-
 def _values(node):
     if isinstance(node, dict):
         for key, child in node.items():
@@ -644,72 +601,14 @@ def _values(node):
             yield from _values(child)
 
 
-def test_bundled_decimal_threshold_is_not_its_whole_number_neighbour(runtime_factory):
+def test_bundled_decimal_threshold_is_not_its_whole_number_neighbour(jaffle):
     entry = dict(_bundled_examples())["signup_to_send_28d_for_high_order_rate_stores"]
     assert "above 90 percent" in entry["question"]
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = plan_payload(
-            runtime, intent=entry["question"].replace("above 90 percent", "above 9.0 percent")
-        )
-    finally:
-        runtime.close()
+    result = plan_payload(
+        jaffle, intent=entry["question"].replace("above 90 percent", "above 9.0 percent")
+    )
     assert (result.get("best") or {}).get("pattern") != "package_example"
     assert 0.9 not in list(_values(result))
-
-
-@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
-def test_hidden_id_in_a_mapping_key_fails_the_example_like_an_absent_one(runtime_factory, detail):
-    import json
-    from dataclasses import replace
-
-    from semantic_rails.schema import SemanticPolicyConfig
-
-    hidden = "measure.jaffle.drink_revenue_usd"
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        _replace_entries(
-            runtime,
-            {
-                "keyed_override": {
-                    "question": "Total revenue",
-                    "query": {
-                        "version": 1,
-                        "select": [
-                            {
-                                "expression": {
-                                    "measure": "measure.jaffle.revenue_usd",
-                                    "aggregation": "sum",
-                                },
-                                "as": "revenue_usd",
-                            }
-                        ],
-                        "temporal_role_overrides": {hidden: "temporal_role.jaffle_order_time"},
-                    },
-                }
-            },
-        )
-        visible = plan_payload(runtime, intent="Total revenue")
-        assert visible["best"]["pattern"] == "package_example"
-        runtime._config = replace(
-            runtime._config,
-            semantic_policies=[
-                *runtime._config.semantic_policies,
-                SemanticPolicyConfig(
-                    id="policy.hidden",
-                    kind="object_visibility",
-                    object_ids=[hidden],
-                    action="hidden",
-                ),
-            ],
-        )
-        payload = json.dumps(plan_payload(runtime, intent="Total revenue", detail=detail))
-    finally:
-        runtime.close()
-    assert hidden not in payload
-    result = json.loads(payload)
-    assert (result.get("best") or {}).get("pattern") != "package_example"
-    assert result["why"]["details"]["invalid_examples"] == ["keyed_override"]
 
 
 def test_a_hidden_measure_answers_its_example_question_like_an_absent_one(tmp_path):
@@ -746,7 +645,10 @@ def test_a_hidden_measure_answers_its_example_question_like_an_absent_one(tmp_pa
         return payload["status"], why.get("code"), why.get("details", {}).get("invalid_examples")
 
     assert outcome(answers["hidden"]) == outcome(answers["absent"])
-    assert outcome(answers["absent"])[1:] == ("PLAN_INVALID_EXAMPLE", ["monthly_revenue"])
+    # Without Revenue, "revenue" names no one measure: normal planning holds its draft and
+    # still names the example it couldn't use.
+    assert outcome(answers["absent"])[0] != "ok"
+    assert outcome(answers["absent"])[2] == ["monthly_revenue"]
     assert hidden not in json.dumps(answers["hidden"])
 
 

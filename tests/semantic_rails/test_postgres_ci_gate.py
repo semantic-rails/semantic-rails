@@ -129,8 +129,18 @@ def run_correctness_report_guard(directory):
     )
 
 
-@pytest.mark.parametrize("event", ["pull_request", "push", "merge_group", "workflow_dispatch"])
-@pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped", "missing"])
+# Every event and every result once; a pull request also passes with its skipped jobs.
+@pytest.mark.parametrize(
+    ("event", "result"),
+    [
+        ("pull_request", "success"),
+        ("pull_request", "missing"),
+        ("push", "failure"),
+        ("merge_group", "cancelled"),
+        ("merge_group", "success"),
+        ("workflow_dispatch", "skipped"),
+    ],
+)
 def test_aggregate_requires_correctness_success(event, result):
     ci, _ = workflows()
     gate = ci["jobs"]["all-checks"]

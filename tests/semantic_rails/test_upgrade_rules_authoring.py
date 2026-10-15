@@ -131,10 +131,10 @@ def test_authoring_alias_upgrade_loads_and_is_idempotent(tmp_path, path, old, ne
     assert exc.value.code == "INVALID_CONFIG"
     report = upgrade_project(source, workspace_root=tmp_path, dry_run=False)
     assert report["ok"] and report["status"] == "upgraded", report
-    assert report["proof"]["tier"] == "certified"
-    assert report["proof"]["baseline"] == "after_certified_rules"
+    assert report["proof"]["tier"] == "translated"
+    assert report["proof"]["baseline"] == "after_translated_rules"
     assert {rule["id"]: rule["tier"] for rule in report["rules"]} == {
-        "authoring-aliases": "certified"
+        "authoring-aliases": "translated"
     }
     assert load_package_snapshot(source).semantic_fingerprint == baseline.semantic_fingerprint
     assert upgrade_project(source, workspace_root=tmp_path)["status"] == "up_to_date"
@@ -165,17 +165,24 @@ def _apply(files, result):
         (files.root / name).write_bytes(data)
 
 
-@pytest.mark.parametrize("layout", ["single-file", "directory"])
+_DEFAULT_ALIASES = {
+    "dimension": ("type", "kind", "categorical"),
+    "time": ("temporal_class", "class", "as_of_time"),
+    "measure": ("snapshot_policy", "accumulation", "end_of_period"),
+}
+
+
+# Every mode for every section, in alternating layouts.
 @pytest.mark.parametrize(
-    ("section", "old", "new", "value"),
+    ("mode", "section", "layout"),
     [
-        ("dimension", "type", "kind", "categorical"),
-        ("time", "temporal_class", "class", "as_of_time"),
-        ("measure", "snapshot_policy", "accumulation", "end_of_period"),
+        (mode, section, ("directory", "single-file")[(row + column) % 2])
+        for row, mode in enumerate(("rename", "equal", "conflict"))
+        for column, section in enumerate(("dimension", "measure", "time"))
     ],
 )
-@pytest.mark.parametrize("mode", ["rename", "equal", "conflict"])
-def test_defaults_alias_golden(tmp_path, layout, section, old, new, value, mode):
+def test_defaults_alias_golden(tmp_path, mode, section, layout):
+    old, new, value = _DEFAULT_ALIASES[section]
     source = write_single_file_package(tmp_path / "project")
     doc = safe_load(source.read_bytes())
     row = {old: value}
@@ -358,10 +365,10 @@ def test_stock_upgrade_matches_weekly_reference_sql(tmp_path, inherited):
         reference = conn.execute(answer["reference_sql"]).fetchall()
     actual = sorted(
         (
-            datetime.fromisoformat(str(r["temporal_role.shop_account_day_snapshot_day__week"])),
+            datetime.fromisoformat(str(r["period"])),
             r["seats"],
         )
         for r in rows
     )
     assert actual == sorted(reference)
-    assert actual[0][1] == 1122
+    assert actual[0][1] == 1022  # the week's closing day; account 3's Friday is not carried

@@ -17,6 +17,7 @@ from ..yaml_loader import safe_load
 
 YamlPath = tuple[str | int, ...]
 Row = tuple[str, YamlPath, dict[str, Any]]
+QUERY_KEYS = ("query", "metric_query", "expected_query")
 _SECTION_FILES = {
     "defaults": "defaults.yml",
     "graph": "graph.yml",
@@ -68,7 +69,7 @@ class Rule:
     """A detection rule with unchanged meaning, advisory drops, or retired semantics.
 
     ``refused`` means this engine refuses the legacy form at load, and the rewrite
-    was proven when the rule landed. It permits a certified baseline without
+    was checked when the rule landed. It permits a translated baseline without
     changing the rule's semantic effect.
     """
 
@@ -160,7 +161,13 @@ class PackageFiles:
                 )
                 entries = [(key, path, value)]
             else:
-                items = value.items() if isinstance(value, dict) else enumerate(value or [])
+                items = (
+                    value.items()
+                    if isinstance(value, dict)
+                    else enumerate(value)
+                    if isinstance(value, list)
+                    else ()
+                )
                 entries = [(key, (*path, key), row) for key, row in items if isinstance(row, dict)]
             for key, child_path, row in entries:
                 if section in {"models", "relations", "metrics", "segments"}:
@@ -189,7 +196,8 @@ class PackageFiles:
 
     def _graph(self, section: str) -> Iterator[Row]:
         for file, path, graph in self._sections("graph"):
-            for key, row in ((graph or {}).get(section) or {}).items():
+            rows = graph.get(section) if isinstance(graph, dict) else None
+            for key, row in rows.items() if isinstance(rows, dict) else ():
                 yield file, (*path, section, key), row
 
     def models(self) -> Iterator[Row]:
@@ -238,8 +246,9 @@ class PackageFiles:
     def queries(self) -> Iterator[Row]:
         for section in ("examples", "tests"):
             for file, path, row in self._objects(section):
-                if isinstance(row.get("query"), dict):
-                    yield file, (*path, "query"), row["query"]
+                for key in QUERY_KEYS:
+                    if isinstance(row.get(key), dict):
+                        yield file, (*path, key), row[key]
         for file, path, row in self.segments():
             if isinstance(row.get("membership"), dict):
                 yield file, (*path, "membership"), row["membership"]

@@ -324,7 +324,7 @@
               "schema": {
                 "oneOf": [
                   {
-                    "$ref": "./query_ir.v1.json"
+                    "$ref": "./query.v2.json"
                   },
                   {
                     "additionalProperties": true,
@@ -333,7 +333,7 @@
                         "type": "object"
                       },
                       "query": {
-                        "$ref": "./query_ir.v1.json"
+                        "$ref": "./query.v2.json"
                       },
                       "request_id": {
                         "type": "string"
@@ -616,7 +616,7 @@
               "schema": {
                 "oneOf": [
                   {
-                    "$ref": "./query_ir.v1.json"
+                    "$ref": "./query.v2.json"
                   },
                   {
                     "additionalProperties": true,
@@ -625,7 +625,7 @@
                         "type": "object"
                       },
                       "query": {
-                        "$ref": "./query_ir.v1.json"
+                        "$ref": "./query.v2.json"
                       },
                       "request_id": {
                         "type": "string"
@@ -965,7 +965,7 @@
               "schema": {
                 "oneOf": [
                   {
-                    "$ref": "./query_ir.v1.json"
+                    "$ref": "./query.v2.json"
                   },
                   {
                     "additionalProperties": true,
@@ -974,7 +974,7 @@
                         "type": "object"
                       },
                       "query": {
-                        "$ref": "./query_ir.v1.json"
+                        "$ref": "./query.v2.json"
                       },
                       "request_id": {
                         "type": "string"

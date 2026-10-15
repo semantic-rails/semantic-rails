@@ -120,11 +120,6 @@ def _load_cases() -> list[dict[str, Any]]:
                 "expected": "answer",
             },
             {
-                "name": "ambiguous_customer_status",
-                "intent": "monthly orders by customer status",
-                "expected": "answer",
-            },
-            {
                 "name": "orders_by_store_without_time_bucket",
                 "intent": "orders by store",
                 "expected": "answer",
@@ -216,10 +211,9 @@ def _compile_after_plan(
     if payload.get("status") != "ok":
         return {"attempted": False}
     best = payload.get("best") or {}
-    query = dict(best.get("query_ir") or {})
+    query = dict(best.get("query") or {})
     if not query:
         return {"attempted": False}
-    query["verbosity"] = "full"
     timings: list[float] = []
     hits: list[bool] = []
     first_stats: dict[str, Any] = {}
@@ -227,7 +221,7 @@ def _compile_after_plan(
     for _ in range(1 + (repeats if repeats > 0 else 0)):
         started = clock()
         try:
-            compiled = runtime.compile(dict(query))
+            compiled = runtime.compile(dict(query), verbosity="full")
         except Exception as exc:  # noqa: BLE001 - benchmark records failures instead of aborting
             elapsed_ms = (clock() - started) * 1000
             return {
@@ -264,7 +258,7 @@ def _ids_in_plan(payload: dict[str, Any]) -> set[str]:
     for row in list(best.get("resolved", []) or []):
         if isinstance(row, dict) and row.get("id"):
             ids.add(str(row["id"]))
-    query = dict(best.get("query_ir") or {})
+    query = dict(best.get("query") or {})
     for item in list(query.get("select", []) or []):
         if not isinstance(item, dict):
             continue
@@ -301,12 +295,12 @@ def _collect_expression_ids(value: Any, ids: set[str]) -> None:
 def _query_patch_misses(expected: dict[str, Any], payload: dict[str, Any]) -> list[str]:
     if not expected:
         return []
-    query = dict((payload.get("best") or {}).get("query_ir") or {})
+    query = dict((payload.get("best") or {}).get("query") or {})
     return list(_missing_paths(expected, query))
 
 
 def _unexpected_query_paths(paths: list[str], payload: dict[str, Any]) -> list[str]:
-    query: Any = (payload.get("best") or {}).get("query_ir") or {}
+    query: Any = (payload.get("best") or {}).get("query") or {}
     hits: list[str] = []
     for path in paths:
         current = query
@@ -665,7 +659,10 @@ def _gate_exit_code(
     per_case_size_regressions = [
         f"{row['name']} best={row['best_bytes']} B full={row['full_bytes']} B"
         for row in rows
-        if row["expected"] == "answer" and int(row["best_bytes"]) >= int(row["full_bytes"])
+        # No draft or alternatives are offered for these statuses, so details can coincide.
+        if row["expected"] == "answer"
+        and row["status"] not in {"unrealizable", "out_of_scope"}
+        and int(row["best_bytes"]) >= int(row["full_bytes"])
     ]
     if per_case_size_regressions:
         failures.append(

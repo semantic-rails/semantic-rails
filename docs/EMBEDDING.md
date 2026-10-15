@@ -49,8 +49,23 @@ The facade includes:
   `ABSENT_PROJECT_REVISION`, and `impact_report`.
 
 A multi-tenant host must derive `RequestContext` from authenticated identity and
-pass it to every remote MCP/HTTP request boundary. It must not trust
-caller-supplied policy context. Custom warehouse credentials remain a host
+pass it to every remote MCP/HTTP request boundary. A request that says who is asking
+(`policy_context` anywhere in a body or in tool arguments) is refused with
+`IDENTITY_CLAIM_REFUSED`.
+
+A host asks a question with the query call and passes identity and the clock beside it:
+
+```python
+answer = runtime.query(
+    {"select": ["measure.sales.revenue"], "time": {"last": {"unit": "week", "value": 1}}},
+    now="2026-10-05T06:00:00Z",
+    context=trusted,
+)
+```
+
+`Runtime.validate`, `compile` and `query` take `(call, *, now=None, context=None,
+verbosity=, sql_profile=, limits=, request_id=, debug=)`. `now` is the instant relative
+windows resolve against (default: the current time). Custom warehouse credentials remain a host
 concern; the engine receives an adapter through `Runtime.set_adapter`.
 
 The host may also attach typed attributes from verified identity, such as a
@@ -61,22 +76,28 @@ from semantic_rails.embedding import TrustedAttributes
 
 trusted = RequestContext(
     actor="authenticated-user-id",
-    attributes=TrustedAttributes({"customer_id": "c-123", "regions": ["eu"]}),
+    roles=("auditor",),
+    attributes=TrustedAttributes({"customer_id": "c-123", "regions": ["eu"]}, roles=("auditor",)),
 )
 ```
 
 Names match `[a-z][a-z0-9_]{0,63}`. A value is a non-empty string, an int or a
-bool, or a non-empty list of one of those types; anything else raises. The
+bool, or a list of one of those types; anything else, a list mixing types
+included, raises. An empty list is kept as a grant of no values: a row filter that
+reads it denies the request with `POLICY_DENIED`. The
 engine carries the attributes through its internal calls. Request bodies,
 headers and plans can't create or replace them (a caller's
-`policy_context.attributes` is ignored), and they never appear in the public
+`policy_context` is refused), and they never appear in the public
 `request_context`, echoed queries, errors or audit events. The object is opaque
 and immutable: read it with `names` and `get(name)`. Attribute values partition
 the compile cache and bind to prepared-statement parameters at execution
-(DuckDB and Postgres; other adapters deny such statements). A package's `row_filter`
+(DuckDB, Postgres and Snowflake through ADBC; other adapters deny such statements). A package's `row_filter`
 policies produce those parameters: they limit a relation's rows to the
-attribute's value, and deny the request when it is missing (see
-[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)). A driver error on such a statement
+attribute's value, or to any item of a list, and deny the request when it is missing (see
+[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md)). `roles=` lists the data roles the host verified
+for the caller: only these exempt a request from a row filter's `unless_roles`. The context's
+own `roles` scope policies, and the default resolver reads them from request headers, so a
+header that claims a role never lifts a row filter. A driver error on such a statement
 is raised without the driver's message, which could quote a bound value.
 
 For in-memory Snowflake credentials, implement the generic
@@ -166,7 +187,8 @@ Runtime confinement is off.
 answers one stateless MCP Streamable HTTP request and returns an `MCPHTTPResponse`
 (`status`, `payload`, `headers`) for the host's web framework to send. Before dispatching
 it applies the transport rules: a request with an `Origin` must match
-`SEMANTIC_RAILS_CORS_ORIGINS`; only `POST` is served (`OPTIONS` gets 204); the body must
+`SEMANTIC_RAILS_CORS_ORIGINS`; when `SEMANTIC_RAILS_ALLOWED_HOSTS` is set, `Host` must
+name loopback or a listed host; only `POST` is served (`OPTIONS` gets 204); the body must
 be `application/json` of at most 64 KiB; `Accept` must list both `application/json` and
 `text/event-stream`; and an `MCP-Protocol-Version` header must name a supported version.
 The function does not authenticate the caller: the host does that first. A multi-tenant
@@ -187,15 +209,16 @@ client session. See [MCP_INTERFACE.md](MCP_INTERFACE.md) for the hint fields.
 To swap the body of one tool, for a test or a host's own implementation, call
 `replace_tool_handler(name, handler)` on a `SemanticLayerMCPAdapter`. It accepts only a
 tool the adapter lists and changes that adapter instance only. `call_tool` still validates
-the arguments, replaces caller-supplied policy context with the trusted one, and emits the
+the arguments, refuses an argument that claims an identity (`policy_context`), and emits the
 audit event. Like the built-in tools, `handler` runs inside the adapter's response
 envelope, so an exception it raises becomes a tool error response. The private
 `_tool_handlers` mapping keeps working through the 0.3 series.
 
 A replaced handler takes over the tool's policy enforcement. The metric and dimension
 allowlists and the resource-access checks run inside the built-in handlers, not in
-`call_tool`. A replacement receives the trusted `policy_context` in its arguments, and the
-host is responsible for applying it. To keep the engine's checks, read the built-in with
+`call_tool`. A replacement receives the tool's arguments only; who is asking is the
+`request_context` the host passed to `call_tool`, and the host is responsible for applying
+it. To keep the engine's checks, read the built-in with
 `adapter.tool_handlers[name]` before replacing it, and call that from your handler.
 Nested `call_tool` calls resolve their own trusted context and tool error envelope,
 then restore the outer call's context when they return.
@@ -269,6 +292,10 @@ When the test fails, stage the change across releases instead of making it in on
 3. Remove the old form in that release, once the embedder has moved, and regenerate the
    list.
 
+Until the first release with external embedders, the engine and its known embedder move
+together: a facade change lands in one step with the embedder's update, and the uses file
+is edited to the new form in the same change.
+
 Hosts should test for a capability, such as `hasattr(embedding, "Name")` or a parameter
 in `inspect.signature(...)`, rather than compare engine versions.
 
@@ -305,7 +332,7 @@ MOTHERDUCK_CONNECTION_OPTIONS
 POSTGRES_CONNECTION_OPTIONS
 PUBLIC_V1_ROUTES
 PackageReference(source_path, package_id=)
-PolicyContextResolver{resolve(self, headers, *, payload=, request_id=)}
+PolicyContextResolver{resolve(self, headers, *, request_id=)}
 PreparedQuery(sql, column_mapping=, parameters=)
 RequestContext(request_id=, actor=, tenant=, project=, roles=, environment=, audience=, metric_allowlist=, dimension_allowlist=, attributes=)
 Runtime(package_id, *, confine_to=)
@@ -318,11 +345,11 @@ SemanticLayerMCPAdapter(runtime, *, interface=)
 SnowflakeCliAdapter(connection_name, options=)
 SnowflakeNativeAdapter(connection_name=, options=, *, credential_provider=)
 StderrAuditSink()
-TrustedAttributes(values=)
+TrustedAttributes(values=, *, roles=)
 WarehouseAdapter()
 WarehouseConnectorSpec(name, dialect, connection_kinds=, connection_options=, requires_default_db=, requires_seed=, requires_connection_name=, adapter=)
 audit_logging_enabled()
-context_from_headers(headers, *, payload=, request_id=)
+context_from_headers(headers, *, request_id=)
 context_from_policy_context(policy_context, *, request_id=)
 create_duckdb_adapter(package, *, db_path=, confine_to=)
 create_warehouse_adapter(package, *, db_path=, confine_to=)
@@ -340,8 +367,8 @@ parse_config_report(ref, *, progress=)
 project_revision(project_path)
 request_context_payload(context)
 resolve_package_reference(*, package_id=, path=)
-run_examples_report(ref, *, parse_report=, config=, runtime=)
-run_package_tests_report(ref, *, parse_report=, config=, runtime=)
+run_examples_report(ref, *, parse_report=, config=, runtime=, now=)
+run_package_tests_report(ref, *, parse_report=, config=, runtime=, now=)
 set_audit_sink(sink)
 set_policy_context_resolver(resolver)
 supported_warehouses()

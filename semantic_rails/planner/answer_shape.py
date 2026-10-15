@@ -7,11 +7,14 @@ from typing import Any
 
 from ._base import (
     _TERM_SYNONYMS,
+    _grouped_dimensions,
     _last_token,
+    _matching,
     _object_by_id,
     _requested_grouping_spans,
     _singular,
 )
+from .call import Call, Select, Time
 from .consumed_spans import _TERM_RE, _name_spans
 from .coverage import (
     _COMPARISON_PHRASE_RE,
@@ -20,14 +23,8 @@ from .coverage import (
     _coverage_why,
     _query_contains_prior_period,
 )
-from .grouping_checks import (
-    _declared_name_spans,
-    _entity_grouping_dimensions,
-    _reads_grouping,
-    _time_of,
-)
-from .groupings import _listed_grouping_terms
-from .plan_query import _select_key
+from .grouping_checks import _declared_name_spans, _entity_grouping_dimensions, _reads_grouping
+from .groupings import _display_entities, _listed_grouping_terms
 from .time_windows import _time_window
 from .unasked_groupings import _grain_splits
 from .unmatched_words import _FRAMING_WORDS
@@ -47,8 +44,8 @@ _CLAUSE_BREAK_RE = re.compile(r"[,;:.?!\n]|\band\b")
 def _answer_shape_why(
     runtime: Any,
     question: str,
-    query: dict[str, Any],
-    partial_query: dict[str, Any] | None = None,
+    query: Call,
+    partial_query: Call | None = None,
 ) -> dict[str, Any] | None:
     """The draft's result holds the part each of the question's shape words asks for, or the
     plan is not ready.
@@ -77,18 +74,11 @@ def _answer_shape_why(
     framing = _INTENT_STOPWORDS | _FRAMING_WORDS
     tokens = list(re.finditer(r"[^\W_]+", lowered))
     breaks = [match.start() for match in _CLAUSE_BREAK_RE.finditer(lowered)]
+    clauses = {clause[0]: clause for _word, clause in _list_clauses(config, question)}
+    shown = _display_entities(runtime, query) if clauses else []
 
     def outside(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
         return not any(low <= span[0] and span[1] <= high for low, high in spans)
-
-    def opens_clause(index: int) -> bool:
-        clause = max((at for at in breaks if at < tokens[index].start()), default=-1)
-        return all(
-            (token.group() in framing and outside(token.span(), names))
-            or not outside(token.span(), windows)
-            for token in tokens[:index]
-            if token.start() > clause
-        )
 
     def clause_end(at: int) -> int:
         return min((end for end in breaks if end >= at), default=len(lowered))
@@ -96,11 +86,11 @@ def _answer_shape_why(
     asked: dict[str, list[str]] = {"person": [], "list": [], "each": [], "comparison": []}
     unlisted: list[str] = []
     keys: set[str] = set()
-    for index, token in enumerate(tokens):
+    for token in tokens:
         word = token.group()
         kind = (
             ("person" if word in _PERSON_WORDS else "list")
-            if word in _LIST_WORDS and opens_clause(index)
+            if token.end() in clauses
             else "each"
             if word in _EACH_WORDS
             else "comparison"
@@ -116,10 +106,11 @@ def _answer_shape_why(
                 config,
                 lowered,
                 windows,
-                (token.end(), clause_end(token.end())),
+                clauses[token.end()],
                 kind == "person",
                 query,
-                partial_query or {},
+                partial_query or Call(),
+                shown,
             )
             keys |= wanted
             if not listed and word not in unlisted:
@@ -150,8 +141,8 @@ def _answer_shape_why(
                 subject.append(token.span())
         subjects.append(subject)
 
-    values = [item for item in query.get("select") or [] if isinstance(item, dict)]
-    split = bool(query.get("group_by")) or _grain_splits(_time_of(query))
+    values = list(query.select)
+    split = bool(query.group_by) or _grain_splits(query.time or Time())
     compared = _query_contains_prior_period(runtime, query)
     # (kind, the words asking, whether the draft's shape leaves them unanswered, message,
     # expected, hint kind, hint).
@@ -166,7 +157,7 @@ def _answer_shape_why(
             {"answer": "rows", **({"key_dimensions": sorted(keys)} if keys else {})},
             "group_by_listed_rows",
             "Find what the question lists with discover, add its key dimension to "
-            "best.query_ir group_by (a name may go beside it), then validate; or ask the user "
+            "best.query group_by (a name may go beside it), then validate; or ask the user "
             "what to list.",
         ),
         (
@@ -177,7 +168,7 @@ def _answer_shape_why(
             "time grain that splits the rows, so it returns one total.",
             {"answer": "row per item"},
             "group_by_each_item",
-            "Add the dimension or time grain the question asks for each of to best.query_ir, "
+            "Add the dimension or time grain the question asks for each of to best.query, "
             "then validate; or ask the user what it means.",
         ),
         (
@@ -189,7 +180,7 @@ def _answer_shape_why(
             "grain doesn't say what the question compares.",
             {"answer": "values to compare"},
             "add_compared_value",
-            "Add what the question compares with to best.query_ir (a prior_period select for "
+            "Add what the question compares with to best.query (a prior_period select for "
             "an earlier period), then validate; or ask the user what to compare.",
         ),
         (
@@ -200,14 +191,14 @@ def _answer_shape_why(
             "draft has no select of its own for each that names what it asks about.",
             {"select_count": len(questions)},
             "plan_each_question",
-            "Plan each question on its own, or give best.query_ir one select per value asked "
+            "Plan each question on its own, or give best.query one select per value asked "
             "for, then validate.",
         ),
     ]
     actual = {
         "select_count": len(values),
-        "group_by": list(query.get("group_by") or []),
-        "time_grain": _time_of(query).get("grain"),
+        "group_by": list(query.group_by),
+        "time_grain": (query.time or Time()).grain or None,
     }
     gaps = []
     for kind, words, unmet, message, expected, hint, text in shapes:
@@ -226,14 +217,85 @@ def _answer_shape_why(
     return _coverage_why(gaps)
 
 
+def _list_clauses(config: Any, question: str) -> list[tuple[str, tuple[int, int]]]:
+    """Each list or person word that opens a clause ("which", "list", "who", "whom", "whose"),
+    with the span from after it to its clause's end, read as ``_answer_shape_why`` describes."""
+
+    from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
+
+    lowered = str(question or "").lower()
+    names = list(_declared_name_spans(config, lowered))
+    windows = list(_time_window(question).spans)
+    framing = _INTENT_STOPWORDS | _FRAMING_WORDS
+    tokens = list(re.finditer(r"[^\W_]+", lowered))
+    breaks = [match.start() for match in _CLAUSE_BREAK_RE.finditer(lowered)]
+
+    def inside(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+        return any(low <= span[0] and span[1] <= high for low, high in spans)
+
+    out: list[tuple[str, tuple[int, int]]] = []
+    for index, token in enumerate(tokens):
+        if token.group() not in _LIST_WORDS or inside(token.span(), names):
+            continue
+        start = max((at for at in breaks if at < token.start()), default=-1)
+        if all(
+            (word.group() in framing and not inside(word.span(), names))
+            or inside(word.span(), windows)
+            for word in tokens[:index]
+            if word.start() > start
+        ):
+            end = min((at for at in breaks if at >= token.end()), default=len(lowered))
+            out.append((token.group(), (token.end(), end)))
+    return out
+
+
+def _clause_entity(
+    config: Any, lowered: str, windows: list[tuple[int, int]], clause: tuple[int, int]
+) -> str | None:
+    """The first word of a clause, outside a window and a grouping the question lists ("by
+    store"), that names an entity: what a list or person word opening the clause lists."""
+
+    groupings = _requested_grouping_spans(lowered)
+    return next(
+        (
+            match.group()
+            for match in re.finditer(r"[^\W_]+", lowered[: clause[1]])
+            if match.start() >= clause[0]
+            and not any(low <= match.start() < high for low, high in [*windows, *groupings])
+            and _entity_grouping_dimensions(config, match.group()) is not None
+        ),
+        None,
+    )
+
+
+def _listed_entity_terms(runtime: Any, question: str, query: Call) -> list[str]:
+    """What each clause opening with a list or person word lists: the entity its clause names
+    (``_clause_entity``), or, for a person word naming none, the one entity with a display the
+    draft's subject reaches (``groupings._display_entities``), by its label."""
+
+    config = runtime._config
+    lowered = str(question or "").lower()
+    windows = list(_time_window(question).spans)
+    out: list[str] = []
+    for word, clause in _list_clauses(config, question):
+        term = _clause_entity(config, lowered, windows, clause)
+        entities = (
+            _display_entities(runtime, query) if term is None and word in _PERSON_WORDS else []
+        )
+        if term is not None or len(entities) == 1:
+            out.append(term if term is not None else str(entities[0].label))
+    return out
+
+
 def _lists_entity_rows(
     config: Any,
     lowered: str,
     windows: list[tuple[int, int]],
     clause: tuple[int, int],
     person: bool,
-    query: dict[str, Any],
-    caller: dict[str, Any],
+    query: Call,
+    caller: Call,
+    shown: list[Any],
 ) -> tuple[bool, set[str]]:
     """Whether the draft's group_by lists the rows a list or person word asks for, with the key
     dimensions that would list them.
@@ -244,20 +306,17 @@ def _lists_entity_rows(
     entity's declared one-column key lists them: the key among its stand-ins
     (``_entity_grouping_dimensions``). A display name may sit beside the key, but lists nothing
     on its own, because a name can repeat ("Customer name"); nor does any other dimension of the
-    entity, whatever it declares. When "who" names no entity ("Who ordered last week?"), plan
-    can't tell whose rows it asks for, so only the caller's group_by says: one of its dimensions
-    that reads no grouping the question lists ("Who ordered by store?" asks for more than
-    stores) and is the key of its own entity. A time grain, a category, a name or an entity the
-    clause doesn't name never lists them, and when "list" or "which" names no entity, nothing
-    does.
+    entity, whatever it declares. When "who" names no entity ("Who ordered last week?"), it lists
+    the one entity of ``shown`` (those with a display that the draft's subject reaches), when
+    exactly one is there; else plan can't tell whose rows it asks for, so only the caller's
+    group_by says: one of its dimensions that reads no grouping the question lists ("Who ordered
+    by store?" asks for more than stores) and is the key of its own entity. A time grain, a
+    category, a name or an entity the clause doesn't name never lists them, and when "list" or
+    "which" names no entity, nothing does.
     """
 
-    chosen = set(caller.get("group_by") or [])
-    grouped = [
-        row
-        for item in dict.fromkeys(query.get("group_by") or [])
-        if (row := _object_by_id(config.dimensions, item)) is not None
-    ]
+    chosen = set(caller.group_by)
+    grouped = _grouped_dimensions(config, query)
 
     def keys_of(term: str) -> set[str]:
         stand_ins = _entity_grouping_dimensions(config, term) or set()
@@ -294,6 +353,8 @@ def _lists_entity_rows(
         return any(row.id in keys for row in grouped), keys
     if not person:
         return False, set()
+    if len(shown) == 1 and any(row.id in keys_of(shown[0].label) for row in grouped):
+        return True, keys_of(shown[0].label)
     terms = _listed_grouping_terms(lowered, config)
     for row in grouped:
         entity = _object_by_id(config.entities, row.entity)
@@ -312,7 +373,7 @@ def _lists_entity_rows(
 
 
 def _questions_answered(
-    config: Any, lowered: str, subjects: list[list[tuple[int, int]]], values: list[dict[str, Any]]
+    config: Any, lowered: str, subjects: list[list[tuple[int, int]]], values: list[Select]
 ) -> bool:
     """Whether each question for a value has a select of its own that names what it asks about.
 
@@ -330,24 +391,12 @@ def _questions_answered(
     metrics = {row.id: row for row in config.metric_recipes}
     named: dict[str, list[tuple[int, int]]] = {}
     for item in values:
-        raw = item.get("expression")
-        expression = raw if isinstance(raw, dict) else {}
-        kind = expression.get("kind", "measure" if "measure" in expression else "metric")
-        if kind == "measure":
-            row = measures.get(str(expression.get("measure")))
-            declared = row is not None and expression.get("aggregation") in (
-                None,
-                "",
-                row.default_aggregation,
-            )
-        else:
-            row = metrics.get(str(expression.get("metric"))) if kind == "metric" else None
-            declared = row is not None
-        if row is None or not declared:
+        row = measures.get(item.ref) or metrics.get(item.ref)
+        if row is None or item.aggregation not in ("", getattr(row, "default_aggregation", "")):
             continue
         aliases = [str(alias) for alias in row.aliases or []]
         names = [str(row.label or ""), *aliases, _last_token(row.id), _last_token(row.name)]
-        spans = named.setdefault(_select_key(config, item), [])
+        spans = named.setdefault(item.ref, [])
         spans.extend(_name_spans(tokens, normal, names, whole=True))
     options = [
         [
@@ -360,16 +409,5 @@ def _questions_answered(
         ]
         for subject in subjects
     ]
-    owner: dict[str, int] = {}
-
-    def assign(index: int, seen: set[str]) -> bool:
-        # A question takes a free select, or one whose question can take another.
-        for key in options[index]:
-            if key not in seen:
-                seen.add(key)
-                if key not in owner or assign(owner[key], seen):
-                    owner[key] = index
-                    return True
-        return False
-
-    return all(assign(index, set()) for index in range(len(subjects)))
+    # A question takes a free select, or one whose question can take another.
+    return all(_matching(options)[0])

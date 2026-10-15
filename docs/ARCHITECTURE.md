@@ -170,7 +170,7 @@ Measure rules:
 
 - measures are modeled in the owning model file
 - `expr` is a typed AST mapping or simple arithmetic string parsed into AST
-- there is no `primitive:` shorthand and no separate `snapshot_policy:` field; authors declare an explicit `accumulation:` block. Authored model relations use `relation`, dimensions use `kind`, time entries use `class`, metrics use `temporal_role`, and segments use `basis_metric`; the loader refuses alternate spellings as unknown keys. For stock-like measures, the snapshot policy lives nested as `accumulation: { kind: stock, snapshot: end_of_period }`.
+- there is no `primitive:` shorthand and no separate `snapshot_policy:` field; authors declare an explicit `accumulation:` block. Authored model relations use `relation`, dimensions use `kind`, time entries use `class`, metrics use `temporal_role`, and segments use `basis_metric`; measures name their clocks with `times:` and their default aggregation with `default_agg:`, dimensions list their values with `domain:`, every object but a model keeps a public id with `as:` (never `id:`), and a model binds its primary entity through `graph.entities.<x>.model` and its `entities:` block; the loader refuses alternate spellings as unknown keys. For stock-like measures, the snapshot policy lives nested as `accumulation: { kind: stock, snapshot: end_of_period }`.
 - `accumulation: { kind: stock }` lowers to semi-additive behavior; `disallowed_aggregations:` removes any aggregation kind that does not make business sense for the measure.
 
 ### Relationship
@@ -236,7 +236,7 @@ Aggregate relation rules:
   must nest in the query's (a week rollup answers only week queries), and the
   query's bounds must fall on its bucket boundaries
 - a `count_distinct` routes only when it counts the single-column row key of a
-  model that isn't a fact model; relations that declare `filters`, leaves with
+  model; relations that declare `filters`, leaves with
   metric predicates, roles that convert time zones and non-default calendars
   don't route
 - all selected measures, grouped dimensions, and filtered dimensions must be
@@ -294,53 +294,71 @@ Current metric kinds demonstrated in the active package:
 
 ## Query Contract
 
-The public query payload is AST-native and versioned.
+The public query call has nine fields (`select`, `group_by`, `where`, `having`, `time`,
+`order_by`, `limit`, `routes`, `observation_scope`); [QUERY_CALL.md](QUERY_CALL.md) is its
+reference and `schemas/query.v2.json` its schema, generated from the parser's own tables
+(`semantic_rails/contracts/query_schema.py`). The engine reads it in one place:
 
-Top-level fields:
-
-- `version`
-- `select`
-- `group_by`
-- `where`
-- `metric_filters`
-- `time`
-- `temporal_role_overrides`
-- `order_by`
-- `limit`
-- `debug`
-- `explain`
+- **The front door.** `semantic_rails/query_call.py` is the only reader of the call. It checks
+  each key against its tables (fields, time keys, inline kinds, retired keys with where each
+  went), resolves the time window against `now`, and hands the compiler the engine's own form,
+  which `semantic_rails.ast.normalize_query` reads into a `NormalizedQuery`. `having` becomes
+  post-aggregation filters, an entity filter's `having` a `metric_predicate`, `any`/`none` a
+  child group, and `routes` route decisions. `call_from_query` is the inverse, used for echoes,
+  clarification options and plan drafts. A refusal names the path and carries one hint.
+  The runtime supplies compiler-owned column lookups for text comparisons; the call reader
+  does not import compiler modules.
+- **Filter words.** `semantic_rails/operators.py` is the one table of filter operators (`is`,
+  `not`, `gt`, `gte`, `lt`, `lte`, the text words `contains`, `starts_with`, `ends_with` and
+  their `not_` forms, `missing`): value shape, whether an unknown row matches, the exact
+  complement and the SQL aliases. The parser, SQL lowering, planner, clarification complements,
+  policy checks and value probes all read it; `not` lowers to `(x <> v OR x IS NULL)`, and a
+  `not_` text word to `(fold(x) NOT LIKE fold(p) OR x IS NULL)`, both sides folded by the
+  dialect's one lowercase function. Expression kinds (`comparison`, `in`, `between`) keep SQL's own
+  semantics.
+- **The clock.** `semantic_rails/clock.py` parses `now` and resolves `last`/`this`/`start`/
+  `end` to half-open bounds in the clock's zone, period bounds and partial flags. It is the
+  only place that reads the current time; `now` is a request argument (default the server
+  clock), never part of the call.
+- **Codes.** `semantic_rails/issues.py` lists every code a caller can read and its kind
+  (refusal, warning, note, hold, hint, check); `ERROR_CODES` and `WARNING_CODES` derive from it.
+- **Entry points.** `Runtime.validate/compile/query(call, *, now=, context=, verbosity=,
+  sql_profile=, limits=, request_id=, debug=)`; transports only map their arguments onto
+  these. Identity comes only from `context` (resolved from credentials); engine sub-queries
+  use `validate_internal`/`compile_internal`/`query_internal` with the engine form.
+- **Answer fields.** Every answer states what it used: `window` (`start`, `end`, `now`,
+  `partial`, `data_through`) whenever a window or series was resolved, `clock`,
+  `observation_scope`, `assumptions` and `warnings`; each series row carries `period` and
+  `period_partial`. Verbosity only trims afterwards, and never these fields.
 
 Core query rules:
 
-- `select` supports measure references, metric references, and derived AST expressions
-- `time.temporal_role` must point at a declared temporal role ID
-- `time.grain` must be one of the grains declared by the selected temporal role
-- `time.fill` triggers dense-series planning against the calendar entity for `time.calendar_id`, or,
-  for the default calendar when none is declared, an implicit Gregorian day spine generated in SQL
-- `time.calendar_id` selects a declared calendar when more than one exists
+- `select` supports measure references, metric references, and inline kinds
+- `time.temporal_role` must point at a declared temporal role ID; omitted, it is the
+  selected measures' shared default clock, and differing clocks refuse with
+  `MIXED_TIME_ROLES`
+- a named window (`last`, `this`, `start` with `end`) plans a dense series over the window
+  against the implicit Gregorian day spine generated in SQL; `time.fill` does the same for an
+  open window between the answer's first and last periods
 - a query with a time axis and no explicit `order_by` orders its final SQL projection by
   time ascending, then by `group_by` dimensions ascending in their stated order; this
   shared lowering rule also covers dense series and combined or accelerated plans.
   Internal branches, distribution inputs and contextual predicate sources receive
   no default ordering; explicit `order_by` still takes precedence
-- `metric_filters` are applied after projected expressions except for `metric_predicate`, which is planned semantically at entity plus contextual time/group scope
-  and requires an outer `op: "="` and `value: true`. Binding and SQL lowering both
-  reject other envelopes with `INVALID_METRIC_FILTER`; the threshold belongs inside
-  the predicate expression.
-- queries without `select` still apply aggregate `metric_filters` through their measure
-  leaves. A `metric_predicate` reaching distinct-value lowering without a measure or
-  conversion leaf is refused with `PREDICATE_NOT_SUPPORTED`; add a select that reads a
-  measure, or remove `metric_filters`. Ordinary `where`, `order_by` and `limit` still
-  apply to distinct-group queries
-- `temporal_role_overrides` must only reference declared temporal roles
+- `having` filters are applied after projected expressions; an entity filter's
+  `metric_predicate` is planned semantically at entity scope (`over`: `all_time`, `window`
+  or `period`) and is never grouped by the query's other dimensions
+- queries without `select` still apply aggregate `having` filters through their measure
+  leaves. A predicate reaching distinct-value lowering without a measure or conversion leaf
+  is refused with `PREDICATE_NOT_SUPPORTED`; add a select that reads a measure. Ordinary
+  `where`, `order_by` and `limit` still apply to distinct-group queries
 - an output leaf's bound clock takes precedence over advertised compatible clocks;
   a query that would replace it with another advertised clock refuses with
   `INVALID_TEMPORAL_BINDING`, in both planning and SQL lowering
 - when only some measures have the query's clock, each other measure is timed by its own
   clock; one with several clocks, none of them the query's, fails with
-  `INCOMPATIBLE_TEMPORAL_ROLE` unless its aggregate's `temporal_role` or
-  `temporal_role_overrides` names one (a declared `default_temporal_role` doesn't; conversion
-  operands keep their own clock rules)
+  `INCOMPATIBLE_TEMPORAL_ROLE` unless its aggregate's `temporal_role` names one (a declared
+  `default_temporal_role` doesn't; conversion operands keep their own clock rules)
 - a measure with no clock at all (no `times:` of its own and no model `default` time) can't be
   bucketed: any query with `time` that binds it fails with `INCOMPATIBLE_TEMPORAL_ROLE`
   (`details.compatible: []`, hint `declare_measure_time_role`); it still answers without `time`
@@ -377,15 +395,16 @@ in cache keys. Segment preview and membership/count query preparations use the
 same binding gate. Live values delegate to the governed query path.
 
 The expression visitor checks request shape against the expression parser's own
-kind vocabulary (every Query IR kind, config-only leaf and parser alias such as
+kind vocabulary (every inline kind, config-only leaf and parser alias such as
 `nullif` or `not_in`, plus inline-threshold and value-filter data tags) and rejects
-unknown explicit kinds before lossy normalization. Caller `policy_context` metadata
-is not an expression position. Literal/filter values and scalar parameters are
+unknown explicit kinds before lossy normalization. The request context is not an
+expression position. Literal/filter values and scalar parameters are
 data: neither nested keys nor reference-shaped strings become expressions or
 semantic references.
 Lineage and caveat helpers retain the common reference collector; it never
 supplies an authorization dependency set. The same compilation records the
-objects read by cuts: metric filters and filters embedded in aggregate, scoped
+objects read by cuts: the call's `having` and entity filters (the engine's
+`metric_filters`) and filters embedded in aggregate, scoped
 aggregate, conditional aggregate and recipe expressions. An entity-value cut
 includes the entity and key dimensions defining its per-entity grain. Filter allowlists use
 those bindings, including nested recipes and effective temporal dependencies.
@@ -394,11 +413,13 @@ not become filter dependencies merely because a cut is evaluated in their
 context. Constant cuts can resolve with no object reads; unresolved cut bindings
 are refused under filter allowlists. Each cut records the leaves it filters; a
 governed object is checked against `metric_filters` cuts plus its own leaves' cuts,
-and against every cut when ownership is ambiguous. `allow_metric_filters: false`
+and against every cut when ownership is ambiguous. A cut of leaves that only package
+metrics' own definitions compute (`BoundQuery.authored_leaves`) is the author's, never
+the caller's, so it counts for no allowlist. `allow_metric_filters: false`
 refuses the cuts that count for it. The fields of the filters the caller wrote inside
 expressions are read from the normalized query, owned by the root leaves over their
 measure under that same rule (`BoundQuery.cut_counts`), and checked against
-`allowed_where`. Fields nested under predicates, `metric_filters` or conversion
+`allowed_where`. Fields nested under predicates, entity filters or conversion
 operands conservatively count for every governed object in the query; direct
 leaf filters retain the leaf rule. Expression filters never satisfy
 `required_where`. Temporal-role constraints check the query
@@ -497,15 +518,15 @@ Important planner behaviors:
   and emitted joins, and refuses a missing, nullable or different parent check with
   `REWRITE_NOT_SUPPORTED` if the shortcut's eligibility check is bypassed
 - dense fill always uses the implicit Gregorian calendar; an authored default calendar takes
-  no part in bucketing or filling. A non-default calendar, or a grain on a clock bound to one,
-  refuses where validation resolves the query's calendar (`_validate_calendar_id`,
-  `calendar_not_supported_yet`), and `lower_to_sql` refuses a plan that bypassed it
+  no part in bucketing or filling. A grain on a clock bound to a non-default calendar refuses
+  where validation resolves the query's calendar (`calendar_not_supported_yet`), and
+  `lower_to_sql` refuses a plan that bypassed it
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
-- query-time predicates default to contextual scope
-- package-authored predicates must declare `scope_mode`
-- supported v1 predicate modes are `contextual` and `entity_only`
+- a call's predicate states `over` (`all_time` → `entity_only`; `window` → `entity_only`
+  aligned to the query window; `period` → per entity per output period)
+- package-authored predicates must declare `scope_mode` (`contextual` or `entity_only`)
 - contextual predicates inherit outer time and compatible grouped context entities, and inherit compatible filters without widening the join key; a dimension on the input's own row entity contributes its values, joined null-safely, instead of that entity's key
-- distribution branches refuse post-aggregation metric filters rather than evaluating them at the per-entity grain; contextual predicates on a different entity also refuse because branch grouping cannot preserve the outer context, including predicates bound inside the input through scoped aggregates or metric recipes
+- distribution branches refuse post-aggregation `having` filters rather than evaluating them at the per-entity grain; contextual predicates on a different entity also refuse because branch grouping cannot preserve the outer context, including predicates bound inside the input through scoped aggregates or metric recipes
 - contextual `time_grain` overrides are limited to coarser deterministic ancestor buckets on the same calendar
 - entity-only window predicates use the compatible query clock or a sole compatible input clock; an incompatible query clock with multiple input clocks refuses centrally in `_predicate_time_spec` with `INVALID_TEMPORAL_BINDING`, including during direct SQL lowering
 - supported conversion requests compile as event-pair matching subplans
@@ -563,12 +584,23 @@ adapter concerns. Legacy direct `query(sql)` calls use the same preparation once
 A statement may carry typed parameter slots that the runtime binds per request
 from trusted attributes; only adapters that bind values separately execute it
 (see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)). Row-filter policies produce
-them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the one
-ordinary scan and every engine-tagged observation or coverage scan of a filtered relation.
-It denies other repeated reads, joins, other relations and rollups (routing is off under
-a row filter). DuckDB binds `?` directly; Postgres preparation finalizes slots as
-`$1`, `$2`, … and ADBC validates them before connecting. Other adapters deny
-parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
+them. `semantic_rails.row_filter_visibility` computes, once per package, which models each
+filter restricts: its own relation, and every model whose package route reaches it through
+N:1 owners on single-column keys (anything ambiguous, composite, temporal or inconsistent
+is refused under the filter). `Visibility.predicate` in `semantic_rails.row_filters` is the
+one builder of a relation's visibility predicate: its own `<column> = ?` (or
+`<column> IN (?, …)`) AND, per owner, `fk IN (SELECT key FROM owner WHERE <owner's
+predicate>)`. After lowering, `enforce_row_filters` puts it on every occurrence of a
+restricted relation where the occurrence enters its scope (the WHERE for FROM, INNER and
+CROSS, the ON for LEFT; RIGHT and FULL are refused there), and `verify_row_filters` checks
+the tree by value and refuses anything else that could read a restricted row (unmodeled
+relations, table functions other than the day series, restricted reads inside relation
+pipelines, shadowing CTE names). Bind, compile preparation and every runtime probe run the
+check; a plan pre-check in `compiler_parts/binding.py` can only refuse (uncovered roots,
+lookups along a route that isn't the owner's), never authorize. Slots are read from the
+executed render in text order, and rollup routing is off under a row filter. DuckDB binds
+`?` directly; Postgres preparation finalizes slots as `$1`, `$2`, … and ADBC validates
+them before connecting. Other adapters deny parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
 observation determines whether zero is defined, each sum's leaf counts the rows it read so
 zero goes only to a group with none (never to rows whose amounts are all NULL; a leaf without
 the count is refused). A query with a distribution branch, and a metric predicate's source
@@ -659,5 +691,5 @@ Representative semantic errors:
 ## Active Remaining Limits
 
 - DuckDB is the zero-setup local backend; Snowflake execution depends on a configured `snowflake_cli`, `snowflake_native`, or opt-in `snowflake_adbc` connection (see [ADBC profiles](ADDING_A_DIALECT.md#adbc-profiles)).
-- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner. Each operand counts the rows of its entity's table by the entity key, so an operand measure must count exactly that key, spelled as the entity declares it: a measure that counts an expression (such as `CASE WHEN ... THEN key END`), another column or a fact model's rows is rejected with `CONVERSION_NOT_SUPPORTED`. Write a `CASE` condition as the operand's `filter` instead, and for another column use a measure on the entity whose rows are the events. Both operands counting the conversion entity itself on one clock is rejected too, by package validation and at query time: each entity is then a single event that converts to itself, so the window never applies.
+- The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner. Each operand counts the rows of its entity's table by the entity key, so an operand measure must count exactly that key, spelled as the entity declares it: a measure that counts an expression (such as `CASE WHEN ... THEN key END`) or another column is rejected with `CONVERSION_NOT_SUPPORTED`, and an operand on a row-grain model with `ROW_GRAIN_UNSUPPORTED`. Write a `CASE` condition as the operand's `filter` instead, and for another column use a measure on the entity whose rows are the events. Both operands counting the conversion entity itself on one clock is rejected too, by package validation and at query time: each entity is then a single event that converts to itself, so the window never applies.
 - `metric_predicate` is implemented for the supported contextual and entity-only cases used by the active package, but it is not yet a fully general arbitrary nested predicate planner.

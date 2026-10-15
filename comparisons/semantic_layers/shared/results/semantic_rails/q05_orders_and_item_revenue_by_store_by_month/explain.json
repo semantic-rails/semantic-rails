@@ -1,8 +1,6 @@
 {
-  "assumptions": [],
-  "authoring_hints": [],
+  "clock": "temporal_role.jaffle_order_time",
   "dialect": "duckdb",
-  "errors": [],
   "explain": {
     "alias_resolution": {
       "group_by": [
@@ -65,8 +63,8 @@
             "relationship.storefront_sessions_store"
           ],
           [
-            "relationship.order_to_customer_history",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.order_lifecycle_store"
           ],
           [
@@ -76,6 +74,18 @@
           ],
           [
             "relationship.orders_customer",
+            "relationship.storefront_sessions_customer",
+            "relationship.storefront_sessions_store"
+          ],
+          [
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer",
+            "relationship.order_lifecycle_customer",
+            "relationship.order_lifecycle_store"
+          ],
+          [
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer",
             "relationship.storefront_sessions_customer",
             "relationship.storefront_sessions_store"
           ],
@@ -86,21 +96,9 @@
             "relationship.storefront_sessions_store"
           ],
           [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer",
-            "relationship.order_lifecycle_customer",
-            "relationship.order_lifecycle_store"
-          ],
-          [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer",
-            "relationship.storefront_sessions_customer",
-            "relationship.storefront_sessions_store"
-          ],
-          [
             "relationship.orders_customer",
             "relationship.customer_history_customer",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.order_lifecycle_store"
           ],
           [
@@ -129,9 +127,9 @@
       }
     },
     "compile_stats": {
-      "cache_hit": true,
-      "cache_lookup_ms": 2.004,
-      "compile_ms": 0.582,
+      "cache_hit": false,
+      "cache_lookup_ms": 4.222,
+      "compile_ms": 1.221,
       "dialect": "duckdb",
       "physical_plan_nodes": 10
     },
@@ -332,8 +330,8 @@
                 "relationship.storefront_sessions_store"
               ],
               [
-                "relationship.order_to_customer_history",
-                "relationship.order_lifecycle_to_customer_history",
+                "relationship.jaffle_order_customer_history",
+                "relationship.jaffle_order_lifecycle_customer_history",
                 "relationship.order_lifecycle_store"
               ],
               [
@@ -343,6 +341,18 @@
               ],
               [
                 "relationship.orders_customer",
+                "relationship.storefront_sessions_customer",
+                "relationship.storefront_sessions_store"
+              ],
+              [
+                "relationship.jaffle_order_customer_history",
+                "relationship.customer_history_customer",
+                "relationship.order_lifecycle_customer",
+                "relationship.order_lifecycle_store"
+              ],
+              [
+                "relationship.jaffle_order_customer_history",
+                "relationship.customer_history_customer",
                 "relationship.storefront_sessions_customer",
                 "relationship.storefront_sessions_store"
               ],
@@ -353,21 +363,9 @@
                 "relationship.storefront_sessions_store"
               ],
               [
-                "relationship.order_to_customer_history",
-                "relationship.customer_history_customer",
-                "relationship.order_lifecycle_customer",
-                "relationship.order_lifecycle_store"
-              ],
-              [
-                "relationship.order_to_customer_history",
-                "relationship.customer_history_customer",
-                "relationship.storefront_sessions_customer",
-                "relationship.storefront_sessions_store"
-              ],
-              [
                 "relationship.orders_customer",
                 "relationship.customer_history_customer",
-                "relationship.order_lifecycle_to_customer_history",
+                "relationship.jaffle_order_lifecycle_customer_history",
                 "relationship.order_lifecycle_store"
               ],
               [
@@ -478,11 +476,11 @@
       "leaf_grains": {
         "measure.jaffle.item_revenue_usd": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "measure.jaffle.order_count": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -491,12 +489,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -539,8 +540,8 @@
             "relationship.storefront_sessions_store"
           ],
           [
-            "relationship.order_to_customer_history",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.order_lifecycle_store"
           ],
           [
@@ -550,6 +551,18 @@
           ],
           [
             "relationship.orders_customer",
+            "relationship.storefront_sessions_customer",
+            "relationship.storefront_sessions_store"
+          ],
+          [
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer",
+            "relationship.order_lifecycle_customer",
+            "relationship.order_lifecycle_store"
+          ],
+          [
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer",
             "relationship.storefront_sessions_customer",
             "relationship.storefront_sessions_store"
           ],
@@ -560,21 +573,9 @@
             "relationship.storefront_sessions_store"
           ],
           [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer",
-            "relationship.order_lifecycle_customer",
-            "relationship.order_lifecycle_store"
-          ],
-          [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer",
-            "relationship.storefront_sessions_customer",
-            "relationship.storefront_sessions_store"
-          ],
-          [
             "relationship.orders_customer",
             "relationship.customer_history_customer",
-            "relationship.order_lifecycle_to_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
             "relationship.order_lifecycle_store"
           ],
           [
@@ -783,8 +784,8 @@
                   "relationship.storefront_sessions_store"
                 ],
                 [
-                  "relationship.order_to_customer_history",
-                  "relationship.order_lifecycle_to_customer_history",
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.jaffle_order_lifecycle_customer_history",
                   "relationship.order_lifecycle_store"
                 ],
                 [
@@ -794,6 +795,18 @@
                 ],
                 [
                   "relationship.orders_customer",
+                  "relationship.storefront_sessions_customer",
+                  "relationship.storefront_sessions_store"
+                ],
+                [
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.customer_history_customer",
+                  "relationship.order_lifecycle_customer",
+                  "relationship.order_lifecycle_store"
+                ],
+                [
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.customer_history_customer",
                   "relationship.storefront_sessions_customer",
                   "relationship.storefront_sessions_store"
                 ],
@@ -804,21 +817,9 @@
                   "relationship.storefront_sessions_store"
                 ],
                 [
-                  "relationship.order_to_customer_history",
-                  "relationship.customer_history_customer",
-                  "relationship.order_lifecycle_customer",
-                  "relationship.order_lifecycle_store"
-                ],
-                [
-                  "relationship.order_to_customer_history",
-                  "relationship.customer_history_customer",
-                  "relationship.storefront_sessions_customer",
-                  "relationship.storefront_sessions_store"
-                ],
-                [
                   "relationship.orders_customer",
                   "relationship.customer_history_customer",
-                  "relationship.order_lifecycle_to_customer_history",
+                  "relationship.jaffle_order_lifecycle_customer_history",
                   "relationship.order_lifecycle_store"
                 ],
                 [
@@ -929,11 +930,11 @@
         "leaf_grains": {
           "measure.jaffle.item_revenue_usd": [
             "dimension.jaffle_store_name",
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ],
           "measure.jaffle.order_count": [
             "dimension.jaffle_store_name",
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ]
         },
         "measure_entities": [
@@ -942,12 +943,15 @@
         ],
         "root_entity": "entity.jaffle_order",
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [
@@ -969,7 +973,7 @@
           "cte_name": "leaf_1",
           "grain_keys": [
             "dimension.jaffle_store_name",
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ],
           "path_selections": [
             {
@@ -1026,8 +1030,8 @@
                   "relationship.storefront_sessions_store"
                 ],
                 [
-                  "relationship.order_to_customer_history",
-                  "relationship.order_lifecycle_to_customer_history",
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.jaffle_order_lifecycle_customer_history",
                   "relationship.order_lifecycle_store"
                 ],
                 [
@@ -1037,6 +1041,18 @@
                 ],
                 [
                   "relationship.orders_customer",
+                  "relationship.storefront_sessions_customer",
+                  "relationship.storefront_sessions_store"
+                ],
+                [
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.customer_history_customer",
+                  "relationship.order_lifecycle_customer",
+                  "relationship.order_lifecycle_store"
+                ],
+                [
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.customer_history_customer",
                   "relationship.storefront_sessions_customer",
                   "relationship.storefront_sessions_store"
                 ],
@@ -1047,21 +1063,9 @@
                   "relationship.storefront_sessions_store"
                 ],
                 [
-                  "relationship.order_to_customer_history",
-                  "relationship.customer_history_customer",
-                  "relationship.order_lifecycle_customer",
-                  "relationship.order_lifecycle_store"
-                ],
-                [
-                  "relationship.order_to_customer_history",
-                  "relationship.customer_history_customer",
-                  "relationship.storefront_sessions_customer",
-                  "relationship.storefront_sessions_store"
-                ],
-                [
                   "relationship.orders_customer",
                   "relationship.customer_history_customer",
-                  "relationship.order_lifecycle_to_customer_history",
+                  "relationship.jaffle_order_lifecycle_customer_history",
                   "relationship.order_lifecycle_store"
                 ],
                 [
@@ -1100,7 +1104,7 @@
           "cte_name": "leaf_2",
           "grain_keys": [
             "dimension.jaffle_store_name",
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ],
           "path_selections": [
             {
@@ -1263,8 +1267,6 @@
       },
       "query": {
         "debug": false,
-        "explain": false,
-        "export": false,
         "group_by": [
           "dimension.jaffle_store_name"
         ],
@@ -1294,12 +1296,15 @@
         ],
         "temporal_role_overrides": {},
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -1449,7 +1454,7 @@
             "details": {
               "keys": [
                 "dimension.jaffle_store_name",
-                "temporal_role.jaffle_order_time__month"
+                "period"
               ]
             },
             "id": "multi_fact_align",
@@ -1484,19 +1489,20 @@
       },
       "synthetic_measures": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
     "normalized_query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [
         "dimension.jaffle_store_name"
       ],
@@ -1526,12 +1532,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -1551,12 +1560,15 @@
           "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "fill": false,
             "grain": "month",
+            "last_unit": "",
+            "last_value": 0,
             "start": null,
-            "temporal_role": "temporal_role.jaffle_order_time"
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "this": "",
+            "to_now": false
           }
         },
         {
@@ -1567,12 +1579,15 @@
           "relation": "comparison_order_items",
           "scan_id": "leaf_2_scan",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "fill": false,
             "grain": "month",
+            "last_unit": "",
+            "last_value": 0,
             "start": null,
-            "temporal_role": "temporal_role.jaffle_order_time"
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "this": "",
+            "to_now": false
           }
         },
         {
@@ -1709,8 +1724,8 @@
                   "relationship.storefront_sessions_store"
                 ],
                 [
-                  "relationship.order_to_customer_history",
-                  "relationship.order_lifecycle_to_customer_history",
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.jaffle_order_lifecycle_customer_history",
                   "relationship.order_lifecycle_store"
                 ],
                 [
@@ -1720,6 +1735,18 @@
                 ],
                 [
                   "relationship.orders_customer",
+                  "relationship.storefront_sessions_customer",
+                  "relationship.storefront_sessions_store"
+                ],
+                [
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.customer_history_customer",
+                  "relationship.order_lifecycle_customer",
+                  "relationship.order_lifecycle_store"
+                ],
+                [
+                  "relationship.jaffle_order_customer_history",
+                  "relationship.customer_history_customer",
                   "relationship.storefront_sessions_customer",
                   "relationship.storefront_sessions_store"
                 ],
@@ -1730,21 +1757,9 @@
                   "relationship.storefront_sessions_store"
                 ],
                 [
-                  "relationship.order_to_customer_history",
-                  "relationship.customer_history_customer",
-                  "relationship.order_lifecycle_customer",
-                  "relationship.order_lifecycle_store"
-                ],
-                [
-                  "relationship.order_to_customer_history",
-                  "relationship.customer_history_customer",
-                  "relationship.storefront_sessions_customer",
-                  "relationship.storefront_sessions_store"
-                ],
-                [
                   "relationship.orders_customer",
                   "relationship.customer_history_customer",
-                  "relationship.order_lifecycle_to_customer_history",
+                  "relationship.jaffle_order_lifecycle_customer_history",
                   "relationship.order_lifecycle_store"
                 ],
                 [
@@ -1949,11 +1964,11 @@
       "pre_aggregation_grain": {
         "leaf_1": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "leaf_2": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "raw_fact_count": 2,
@@ -1993,12 +2008,15 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "fill": false,
               "grain": "month",
+              "last_unit": "",
+              "last_value": 0,
               "start": null,
-              "temporal_role": "temporal_role.jaffle_order_time"
+              "temporal_role": "temporal_role.jaffle_order_time",
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -2075,8 +2093,8 @@
                     "relationship.storefront_sessions_store"
                   ],
                   [
-                    "relationship.order_to_customer_history",
-                    "relationship.order_lifecycle_to_customer_history",
+                    "relationship.jaffle_order_customer_history",
+                    "relationship.jaffle_order_lifecycle_customer_history",
                     "relationship.order_lifecycle_store"
                   ],
                   [
@@ -2086,6 +2104,18 @@
                   ],
                   [
                     "relationship.orders_customer",
+                    "relationship.storefront_sessions_customer",
+                    "relationship.storefront_sessions_store"
+                  ],
+                  [
+                    "relationship.jaffle_order_customer_history",
+                    "relationship.customer_history_customer",
+                    "relationship.order_lifecycle_customer",
+                    "relationship.order_lifecycle_store"
+                  ],
+                  [
+                    "relationship.jaffle_order_customer_history",
+                    "relationship.customer_history_customer",
                     "relationship.storefront_sessions_customer",
                     "relationship.storefront_sessions_store"
                   ],
@@ -2096,21 +2126,9 @@
                     "relationship.storefront_sessions_store"
                   ],
                   [
-                    "relationship.order_to_customer_history",
-                    "relationship.customer_history_customer",
-                    "relationship.order_lifecycle_customer",
-                    "relationship.order_lifecycle_store"
-                  ],
-                  [
-                    "relationship.order_to_customer_history",
-                    "relationship.customer_history_customer",
-                    "relationship.storefront_sessions_customer",
-                    "relationship.storefront_sessions_store"
-                  ],
-                  [
                     "relationship.orders_customer",
                     "relationship.customer_history_customer",
-                    "relationship.order_lifecycle_to_customer_history",
+                    "relationship.jaffle_order_lifecycle_customer_history",
                     "relationship.order_lifecycle_store"
                   ],
                   [
@@ -2147,7 +2165,7 @@
             "folded_measure_count": 1,
             "grain": [
               "dimension.jaffle_store_name",
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "measures": [
               {
@@ -2194,12 +2212,15 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "fill": false,
               "grain": "month",
+              "last_unit": "",
+              "last_value": 0,
               "start": null,
-              "temporal_role": "temporal_role.jaffle_order_time"
+              "temporal_role": "temporal_role.jaffle_order_time",
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_2_filter",
@@ -2393,7 +2414,7 @@
             "folded_measure_count": 1,
             "grain": [
               "dimension.jaffle_store_name",
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "measures": [
               {
@@ -2415,7 +2436,7 @@
             "join_type": "FULL OUTER",
             "keys": [
               "dimension.jaffle_store_name",
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "reason": "multiple_independent_metric_leaves"
           },
@@ -2431,7 +2452,7 @@
           "details": {
             "key_aliases": [
               "dimension.jaffle_store_name",
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "outputs": [
               "orders",
@@ -2479,7 +2500,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(NULLIF(base.m1, 0), CASE WHEN MAX(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders,\n  base.m2 AS item_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  orders DESC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.223260' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.223260' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(NULLIF(base.m1, 0), CASE WHEN MAX(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"orders\",\n  base.m2 AS \"item_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  \"orders\" DESC NULLS LAST",
     "rewrite_strategy": {
       "status": "rewritten",
       "steps": [
@@ -2596,7 +2617,7 @@
           "details": {
             "keys": [
               "dimension.jaffle_store_name",
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ]
           },
           "id": "multi_fact_align",
@@ -2650,6 +2671,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -2710,6 +2732,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -2764,6 +2787,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -2846,6 +2870,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -2875,6 +2900,7 @@
                       },
                       "op": "/",
                       "right": {
+                        "temporal": false,
                         "value": 100.0
                       }
                     }
@@ -2888,6 +2914,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": 1
                     }
                   ],
@@ -3054,6 +3081,7 @@
                     {
                       "args": [
                         {
+                          "temporal": false,
                           "value": "month"
                         },
                         {
@@ -3087,11 +3115,13 @@
                               "else_expr": {
                                 "args": [
                                   {
+                                    "temporal": false,
                                     "value": "UTC"
                                   },
                                   {
                                     "args": [
                                       {
+                                        "temporal": false,
                                         "value": "UTC"
                                       },
                                       {
@@ -3131,12 +3161,14 @@
                                     },
                                     "op": "=",
                                     "right": {
+                                      "temporal": false,
                                       "value": "timestamp with time zone"
                                     }
                                   },
                                   "result": {
                                     "args": [
                                       {
+                                        "temporal": false,
                                         "value": "UTC"
                                       },
                                       {
@@ -3157,23 +3189,17 @@
                             },
                             "op": "<=",
                             "right": {
-                              "args": [
-                                {
-                                  "value": "UTC"
-                                },
-                                {
-                                  "args": [],
-                                  "distinct": false,
-                                  "name": "NOW"
-                                }
-                              ],
-                              "distinct": false,
-                              "name": "TIMEZONE"
+                              "expr": {
+                                "temporal": false,
+                                "value": "2026-10-14 20:11:47.223260"
+                              },
+                              "type_name": "TIMESTAMP"
                             }
                           },
                           "result": {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": "month"
                               },
                               {
@@ -3188,6 +3214,184 @@
                             ],
                             "distinct": false,
                             "name": "DATE_TRUNC"
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "MAX"
+                }
+              },
+              {
+                "alias": "data_through",
+                "expression": {
+                  "args": [
+                    {
+                      "else_expr": null,
+                      "whens": [
+                        {
+                          "condition": {
+                            "left": {
+                              "else_expr": {
+                                "args": [
+                                  {
+                                    "temporal": false,
+                                    "value": "UTC"
+                                  },
+                                  {
+                                    "args": [
+                                      {
+                                        "temporal": false,
+                                        "value": "UTC"
+                                      },
+                                      {
+                                        "expr": {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        },
+                                        "type_name": "TIMESTAMP"
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "TIMEZONE"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "TIMEZONE"
+                              },
+                              "whens": [
+                                {
+                                  "condition": {
+                                    "left": {
+                                      "expr": {
+                                        "args": [
+                                          {
+                                            "parts": [
+                                              "comparison_orders",
+                                              "ordered_at"
+                                            ]
+                                          }
+                                        ],
+                                        "distinct": false,
+                                        "name": "PG_TYPEOF"
+                                      },
+                                      "type_name": "VARCHAR"
+                                    },
+                                    "op": "=",
+                                    "right": {
+                                      "temporal": false,
+                                      "value": "timestamp with time zone"
+                                    }
+                                  },
+                                  "result": {
+                                    "args": [
+                                      {
+                                        "temporal": false,
+                                        "value": "UTC"
+                                      },
+                                      {
+                                        "expr": {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        },
+                                        "type_name": "TIMESTAMPTZ"
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "TIMEZONE"
+                                  }
+                                }
+                              ]
+                            },
+                            "op": "<=",
+                            "right": {
+                              "expr": {
+                                "temporal": false,
+                                "value": "2026-10-14 20:11:47.223260"
+                              },
+                              "type_name": "TIMESTAMP"
+                            }
+                          },
+                          "result": {
+                            "else_expr": {
+                              "args": [
+                                {
+                                  "temporal": false,
+                                  "value": "UTC"
+                                },
+                                {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMP"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "TIMEZONE"
+                            },
+                            "whens": [
+                              {
+                                "condition": {
+                                  "left": {
+                                    "expr": {
+                                      "args": [
+                                        {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        }
+                                      ],
+                                      "distinct": false,
+                                      "name": "PG_TYPEOF"
+                                    },
+                                    "type_name": "VARCHAR"
+                                  },
+                                  "op": "=",
+                                  "right": {
+                                    "temporal": false,
+                                    "value": "timestamp with time zone"
+                                  }
+                                },
+                                "result": {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMPTZ"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              }
+                            ]
                           }
                         }
                       ]
@@ -3258,6 +3462,7 @@
                           ]
                         },
                         {
+                          "temporal": false,
                           "value": 0
                         }
                       ],
@@ -3289,6 +3494,7 @@
                               },
                               "op": ">",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             },
@@ -3328,6 +3534,7 @@
                             }
                           },
                           "result": {
+                            "temporal": false,
                             "value": 0
                           }
                         }
@@ -3373,6 +3580,7 @@
                               },
                               "op": ">",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             },
@@ -3396,12 +3604,14 @@
                                 },
                                 "op": "=",
                                 "right": {
+                                  "temporal": false,
                                   "value": 0
                                 }
                               }
                             }
                           },
                           "result": {
+                            "temporal": false,
                             "value": 0
                           }
                         }
@@ -3435,7 +3645,7 @@
               "orders"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         }
       ],
       "qualify": [],
@@ -3450,7 +3660,7 @@
           }
         },
         {
-          "alias": "temporal_role.jaffle_order_time__month",
+          "alias": "period",
           "expression": {
             "parts": [
               "base",
@@ -3480,8 +3690,6 @@
       "where": []
     }
   },
-  "freshness_as_of": "",
-  "freshness_by_leaf": [],
   "hop_profile": {
     "hop_limit": 4,
     "long_hop_targets": [],
@@ -3568,8 +3776,8 @@
           "relationship.storefront_sessions_store"
         ],
         [
-          "relationship.order_to_customer_history",
-          "relationship.order_lifecycle_to_customer_history",
+          "relationship.jaffle_order_customer_history",
+          "relationship.jaffle_order_lifecycle_customer_history",
           "relationship.order_lifecycle_store"
         ],
         [
@@ -3579,6 +3787,18 @@
         ],
         [
           "relationship.orders_customer",
+          "relationship.storefront_sessions_customer",
+          "relationship.storefront_sessions_store"
+        ],
+        [
+          "relationship.jaffle_order_customer_history",
+          "relationship.customer_history_customer",
+          "relationship.order_lifecycle_customer",
+          "relationship.order_lifecycle_store"
+        ],
+        [
+          "relationship.jaffle_order_customer_history",
+          "relationship.customer_history_customer",
           "relationship.storefront_sessions_customer",
           "relationship.storefront_sessions_store"
         ],
@@ -3589,21 +3809,9 @@
           "relationship.storefront_sessions_store"
         ],
         [
-          "relationship.order_to_customer_history",
-          "relationship.customer_history_customer",
-          "relationship.order_lifecycle_customer",
-          "relationship.order_lifecycle_store"
-        ],
-        [
-          "relationship.order_to_customer_history",
-          "relationship.customer_history_customer",
-          "relationship.storefront_sessions_customer",
-          "relationship.storefront_sessions_store"
-        ],
-        [
           "relationship.orders_customer",
           "relationship.customer_history_customer",
-          "relationship.order_lifecycle_to_customer_history",
+          "relationship.jaffle_order_lifecycle_customer_history",
           "relationship.order_lifecycle_store"
         ],
         [
@@ -3812,8 +4020,8 @@
                 "relationship.storefront_sessions_store"
               ],
               [
-                "relationship.order_to_customer_history",
-                "relationship.order_lifecycle_to_customer_history",
+                "relationship.jaffle_order_customer_history",
+                "relationship.jaffle_order_lifecycle_customer_history",
                 "relationship.order_lifecycle_store"
               ],
               [
@@ -3823,6 +4031,18 @@
               ],
               [
                 "relationship.orders_customer",
+                "relationship.storefront_sessions_customer",
+                "relationship.storefront_sessions_store"
+              ],
+              [
+                "relationship.jaffle_order_customer_history",
+                "relationship.customer_history_customer",
+                "relationship.order_lifecycle_customer",
+                "relationship.order_lifecycle_store"
+              ],
+              [
+                "relationship.jaffle_order_customer_history",
+                "relationship.customer_history_customer",
                 "relationship.storefront_sessions_customer",
                 "relationship.storefront_sessions_store"
               ],
@@ -3833,21 +4053,9 @@
                 "relationship.storefront_sessions_store"
               ],
               [
-                "relationship.order_to_customer_history",
-                "relationship.customer_history_customer",
-                "relationship.order_lifecycle_customer",
-                "relationship.order_lifecycle_store"
-              ],
-              [
-                "relationship.order_to_customer_history",
-                "relationship.customer_history_customer",
-                "relationship.storefront_sessions_customer",
-                "relationship.storefront_sessions_store"
-              ],
-              [
                 "relationship.orders_customer",
                 "relationship.customer_history_customer",
-                "relationship.order_lifecycle_to_customer_history",
+                "relationship.jaffle_order_lifecycle_customer_history",
                 "relationship.order_lifecycle_store"
               ],
               [
@@ -3958,11 +4166,11 @@
       "leaf_grains": {
         "measure.jaffle.item_revenue_usd": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "measure.jaffle.order_count": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -3971,12 +4179,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [
@@ -3998,7 +4209,7 @@
         "cte_name": "leaf_1",
         "grain_keys": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "path_selections": [
           {
@@ -4055,8 +4266,8 @@
                 "relationship.storefront_sessions_store"
               ],
               [
-                "relationship.order_to_customer_history",
-                "relationship.order_lifecycle_to_customer_history",
+                "relationship.jaffle_order_customer_history",
+                "relationship.jaffle_order_lifecycle_customer_history",
                 "relationship.order_lifecycle_store"
               ],
               [
@@ -4066,6 +4277,18 @@
               ],
               [
                 "relationship.orders_customer",
+                "relationship.storefront_sessions_customer",
+                "relationship.storefront_sessions_store"
+              ],
+              [
+                "relationship.jaffle_order_customer_history",
+                "relationship.customer_history_customer",
+                "relationship.order_lifecycle_customer",
+                "relationship.order_lifecycle_store"
+              ],
+              [
+                "relationship.jaffle_order_customer_history",
+                "relationship.customer_history_customer",
                 "relationship.storefront_sessions_customer",
                 "relationship.storefront_sessions_store"
               ],
@@ -4076,21 +4299,9 @@
                 "relationship.storefront_sessions_store"
               ],
               [
-                "relationship.order_to_customer_history",
-                "relationship.customer_history_customer",
-                "relationship.order_lifecycle_customer",
-                "relationship.order_lifecycle_store"
-              ],
-              [
-                "relationship.order_to_customer_history",
-                "relationship.customer_history_customer",
-                "relationship.storefront_sessions_customer",
-                "relationship.storefront_sessions_store"
-              ],
-              [
                 "relationship.orders_customer",
                 "relationship.customer_history_customer",
-                "relationship.order_lifecycle_to_customer_history",
+                "relationship.jaffle_order_lifecycle_customer_history",
                 "relationship.order_lifecycle_store"
               ],
               [
@@ -4129,7 +4340,7 @@
         "cte_name": "leaf_2",
         "grain_keys": [
           "dimension.jaffle_store_name",
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "path_selections": [
           {
@@ -4292,8 +4503,6 @@
     },
     "query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [
         "dimension.jaffle_store_name"
       ],
@@ -4323,12 +4532,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -4478,7 +4690,7 @@
           "details": {
             "keys": [
               "dimension.jaffle_store_name",
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ]
           },
           "id": "multi_fact_align",
@@ -4513,59 +4725,38 @@
     },
     "synthetic_measures": {},
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
-  "methodology_hints": [],
   "normalized_query": {
-    "debug": false,
-    "explain": false,
-    "export": false,
     "group_by": [
       "dimension.jaffle_store_name"
     ],
-    "limit": null,
-    "metric_filters": [],
     "order_by": [
       {
-        "direction": "DESC",
+        "direction": "desc",
         "field": "orders"
       }
     ],
     "select": [
-      {
-        "as": "orders",
-        "expression": {
-          "kind": "metric",
-          "metric": "metric.jaffle.orders"
-        }
-      },
-      {
-        "as": "item_revenue_usd",
-        "expression": {
-          "kind": "metric",
-          "metric": "metric.jaffle.item_revenue_usd"
-        }
-      }
+      "metric.jaffle.orders",
+      "metric.jaffle.item_revenue_usd"
     ],
-    "temporal_role_overrides": {},
     "time": {
-      "calendar_id": "default",
-      "end": null,
-      "fill": false,
       "grain": "month",
-      "start": null,
       "temporal_role": "temporal_role.jaffle_order_time"
-    },
-    "version": 1,
-    "where": []
+    }
   },
+  "observation_scope": "dataset",
   "ok": true,
   "output_columns": [
     {
@@ -4577,10 +4768,18 @@
     },
     {
       "display_label": "Order time",
-      "field": "temporal_role.jaffle_order_time__month",
+      "field": "period",
+      "grain": "month",
       "semantic_id": "temporal_role.jaffle_order_time",
-      "sql_alias": "temporal_role.jaffle_order_time__month",
+      "sql_alias": "period",
       "type": "time"
+    },
+    {
+      "display_label": "Partial period",
+      "field": "period_partial",
+      "semantic_id": "temporal_role.jaffle_order_time",
+      "sql_alias": "period_partial",
+      "type": "boolean"
     },
     {
       "display_label": "Orders",
@@ -4597,7 +4796,6 @@
       "type": "currency"
     }
   ],
-  "policy_effects": [],
   "provenance_summary": {
     "policy_effects": [],
     "rewrite_status": "rewritten",
@@ -4643,12 +4841,15 @@
       }
     ],
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
@@ -4657,36 +4858,216 @@
     ],
     "order_by": [
       {
-        "direction": "DESC",
+        "direction": "desc",
         "field": "orders"
       }
     ],
     "select": [
-      {
-        "as": "orders",
-        "expression": {
-          "metric": "metric.jaffle.orders"
-        }
-      },
-      {
-        "as": "item_revenue_usd",
-        "expression": {
-          "metric": "metric.jaffle.item_revenue_usd"
-        }
-      }
+      "metric.jaffle.orders",
+      "metric.jaffle.item_revenue_usd"
     ],
     "time": {
       "grain": "month",
       "temporal_role": "temporal_role.jaffle_order_time"
-    },
-    "version": 1
+    }
   },
-  "query_ir_hints": [],
-  "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(NULLIF(base.m1, 0), CASE WHEN MAX(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders,\n  base.m2 AS item_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  orders DESC",
-  "request_context": {},
-  "semantic_fingerprint": "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478",
-  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.g1, right_side.g1) AS g1,\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.g1 IS NOT DISTINCT FROM right_side.g1 AND left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.223260' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-14 20:11:47.223260' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(NULLIF(base.m1, 0), CASE WHEN MAX(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"orders\",\n  base.m2 AS \"item_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  \"orders\" DESC NULLS LAST",
+  "routes": [
+    {
+      "basis": "own_key",
+      "conflicts_with": [
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.storefront_sessions_order",
+            "relationship.storefront_sessions_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.jaffle_order_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
+            "relationship.order_lifecycle_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.orders_customer",
+            "relationship.order_lifecycle_customer",
+            "relationship.order_lifecycle_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.orders_customer",
+            "relationship.storefront_sessions_customer",
+            "relationship.storefront_sessions_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer",
+            "relationship.order_lifecycle_customer",
+            "relationship.order_lifecycle_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer",
+            "relationship.storefront_sessions_customer",
+            "relationship.storefront_sessions_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_customer",
+            "relationship.storefront_sessions_customer",
+            "relationship.storefront_sessions_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.orders_customer",
+            "relationship.customer_history_customer",
+            "relationship.jaffle_order_lifecycle_customer_history",
+            "relationship.order_lifecycle_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.storefront_sessions_order",
+            "relationship.storefront_sessions_customer",
+            "relationship.order_lifecycle_customer",
+            "relationship.order_lifecycle_store"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_store"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_store"
+            }
+          ]
+        }
+      ],
+      "from": "entity.jaffle_order",
+      "to": "entity.jaffle_store",
+      "via": [
+        "relationship.orders_store"
+      ]
+    },
+    {
+      "basis": "recorded",
+      "from": "entity.jaffle_item",
+      "to": "entity.jaffle_store",
+      "via": [
+        "relationship.order_items_order",
+        "relationship.orders_store"
+      ]
+    }
+  ],
+  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
       {
@@ -4708,6 +5089,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -4768,6 +5150,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -4822,6 +5205,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -4904,6 +5288,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -4933,6 +5318,7 @@
                     },
                     "op": "/",
                     "right": {
+                      "temporal": false,
                       "value": 100.0
                     }
                   }
@@ -4946,6 +5332,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": 1
                   }
                 ],
@@ -5112,6 +5499,7 @@
                   {
                     "args": [
                       {
+                        "temporal": false,
                         "value": "month"
                       },
                       {
@@ -5145,11 +5533,13 @@
                             "else_expr": {
                               "args": [
                                 {
+                                  "temporal": false,
                                   "value": "UTC"
                                 },
                                 {
                                   "args": [
                                     {
+                                      "temporal": false,
                                       "value": "UTC"
                                     },
                                     {
@@ -5189,12 +5579,14 @@
                                   },
                                   "op": "=",
                                   "right": {
+                                    "temporal": false,
                                     "value": "timestamp with time zone"
                                   }
                                 },
                                 "result": {
                                   "args": [
                                     {
+                                      "temporal": false,
                                       "value": "UTC"
                                     },
                                     {
@@ -5215,23 +5607,17 @@
                           },
                           "op": "<=",
                           "right": {
-                            "args": [
-                              {
-                                "value": "UTC"
-                              },
-                              {
-                                "args": [],
-                                "distinct": false,
-                                "name": "NOW"
-                              }
-                            ],
-                            "distinct": false,
-                            "name": "TIMEZONE"
+                            "expr": {
+                              "temporal": false,
+                              "value": "2026-10-14 20:11:47.223260"
+                            },
+                            "type_name": "TIMESTAMP"
                           }
                         },
                         "result": {
                           "args": [
                             {
+                              "temporal": false,
                               "value": "month"
                             },
                             {
@@ -5246,6 +5632,184 @@
                           ],
                           "distinct": false,
                           "name": "DATE_TRUNC"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "distinct": false,
+                "name": "MAX"
+              }
+            },
+            {
+              "alias": "data_through",
+              "expression": {
+                "args": [
+                  {
+                    "else_expr": null,
+                    "whens": [
+                      {
+                        "condition": {
+                          "left": {
+                            "else_expr": {
+                              "args": [
+                                {
+                                  "temporal": false,
+                                  "value": "UTC"
+                                },
+                                {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMP"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "TIMEZONE"
+                            },
+                            "whens": [
+                              {
+                                "condition": {
+                                  "left": {
+                                    "expr": {
+                                      "args": [
+                                        {
+                                          "parts": [
+                                            "comparison_orders",
+                                            "ordered_at"
+                                          ]
+                                        }
+                                      ],
+                                      "distinct": false,
+                                      "name": "PG_TYPEOF"
+                                    },
+                                    "type_name": "VARCHAR"
+                                  },
+                                  "op": "=",
+                                  "right": {
+                                    "temporal": false,
+                                    "value": "timestamp with time zone"
+                                  }
+                                },
+                                "result": {
+                                  "args": [
+                                    {
+                                      "temporal": false,
+                                      "value": "UTC"
+                                    },
+                                    {
+                                      "expr": {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      },
+                                      "type_name": "TIMESTAMPTZ"
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "TIMEZONE"
+                                }
+                              }
+                            ]
+                          },
+                          "op": "<=",
+                          "right": {
+                            "expr": {
+                              "temporal": false,
+                              "value": "2026-10-14 20:11:47.223260"
+                            },
+                            "type_name": "TIMESTAMP"
+                          }
+                        },
+                        "result": {
+                          "else_expr": {
+                            "args": [
+                              {
+                                "temporal": false,
+                                "value": "UTC"
+                              },
+                              {
+                                "args": [
+                                  {
+                                    "temporal": false,
+                                    "value": "UTC"
+                                  },
+                                  {
+                                    "expr": {
+                                      "parts": [
+                                        "comparison_orders",
+                                        "ordered_at"
+                                      ]
+                                    },
+                                    "type_name": "TIMESTAMP"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "TIMEZONE"
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "TIMEZONE"
+                          },
+                          "whens": [
+                            {
+                              "condition": {
+                                "left": {
+                                  "expr": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "comparison_orders",
+                                          "ordered_at"
+                                        ]
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "PG_TYPEOF"
+                                  },
+                                  "type_name": "VARCHAR"
+                                },
+                                "op": "=",
+                                "right": {
+                                  "temporal": false,
+                                  "value": "timestamp with time zone"
+                                }
+                              },
+                              "result": {
+                                "args": [
+                                  {
+                                    "temporal": false,
+                                    "value": "UTC"
+                                  },
+                                  {
+                                    "expr": {
+                                      "parts": [
+                                        "comparison_orders",
+                                        "ordered_at"
+                                      ]
+                                    },
+                                    "type_name": "TIMESTAMPTZ"
+                                  }
+                                ],
+                                "distinct": false,
+                                "name": "TIMEZONE"
+                              }
+                            }
+                          ]
                         }
                       }
                     ]
@@ -5316,6 +5880,7 @@
                         ]
                       },
                       {
+                        "temporal": false,
                         "value": 0
                       }
                     ],
@@ -5347,6 +5912,7 @@
                             },
                             "op": ">",
                             "right": {
+                              "temporal": false,
                               "value": 0
                             }
                           },
@@ -5386,6 +5952,7 @@
                           }
                         },
                         "result": {
+                          "temporal": false,
                           "value": 0
                         }
                       }
@@ -5431,6 +5998,7 @@
                             },
                             "op": ">",
                             "right": {
+                              "temporal": false,
                               "value": 0
                             }
                           },
@@ -5454,12 +6022,14 @@
                               },
                               "op": "=",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             }
                           }
                         },
                         "result": {
+                          "temporal": false,
                           "value": 0
                         }
                       }
@@ -5493,7 +6063,7 @@
             "orders"
           ]
         },
-        "nulls_last": false
+        "nulls_last": true
       }
     ],
     "qualify": [],
@@ -5508,7 +6078,7 @@
         }
       },
       {
-        "alias": "temporal_role.jaffle_order_time__month",
+        "alias": "period",
         "expression": {
           "parts": [
             "base",
@@ -5648,221 +6218,11 @@
       "object_ids": [
         "measure.jaffle.item_revenue_usd"
       ],
-      "path": "",
-      "recovery_hints": [],
       "severity": "warning",
       "stage": "planning"
-    },
-    {
-      "code": "ROUTE_COLOCATED_KEY",
-      "details": {
-        "alternatives": [],
-        "conflicts_with": [
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.customer_history_customer",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_store"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_store"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_store"
-              }
-            ]
-          }
-        ],
-        "route": [
-          "relationship.orders_store"
-        ]
-      },
-      "message": "the Order's Store (own key)",
-      "object_ids": [
-        "entity.jaffle_order",
-        "entity.jaffle_store"
-      ],
-      "path": "",
-      "recovery_hints": [],
-      "severity": "info",
-      "stage": "planning"
-    },
-    {
-      "code": "ROUTE_RECORDED",
-      "details": {
-        "route": [
-          "relationship.order_items_order",
-          "relationship.orders_store"
-        ]
-      },
-      "message": "the Store of the Item's Order (recorded route)",
-      "object_ids": [
-        "entity.jaffle_item",
-        "entity.jaffle_store"
-      ],
-      "path": "",
-      "recovery_hints": [],
-      "severity": "info",
-      "stage": "planning"
     }
-  ]
+  ],
+  "window": {
+    "now": "2026-10-14T20:11:47.223260Z"
+  }
 }

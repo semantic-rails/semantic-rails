@@ -10,7 +10,6 @@ graph:
     signup_event: {label: Signup event, key: [event_id], model: signup_events}
   relationships:
     billing_version_team:
-      id: relationship.billing_version_team
       entities: [billing_version, team]
       cardinality: many_to_one
       via: [team_id]

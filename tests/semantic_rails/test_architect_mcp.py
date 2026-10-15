@@ -353,6 +353,7 @@ def test_preview_reports_exact_changes_without_writing(tmp_path: Path):
             "expected_revision": before_revision,
             "idempotency_key": "preview-metric",
             "dry_run": True,
+            "full_report": True,
         },
     )
 

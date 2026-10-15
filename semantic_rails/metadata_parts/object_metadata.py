@@ -50,7 +50,3 @@ def _example_test_metadata(obj: Any) -> dict[str, Any]:
         "example_entries": list(getattr(obj, "example_entries", []) or []),
         "tests": list(getattr(obj, "tests", []) or []),
     }
-
-
-def _public_object_type(kind: str) -> str:
-    return {"metric": "metric"}.get(kind, kind)

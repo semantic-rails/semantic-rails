@@ -2,25 +2,65 @@
 
 Defines :class:`SemanticLayerError` — the exception type the runtime
 raises (``compiler.NonAdditiveRefusal`` is a subclass carrying in-process-only
-data) — plus the canonical ``SEMANTIC_ERROR_CODES`` tuple that
-the contract test in ``tests/semantic_rails/test_error_codes_contract.py``
-pins down. Adding a new error code without registering it here will
-fail that test, which is intentional.
+data). ``ERROR_CODES`` are the refusals of the code table in
+:mod:`semantic_rails.issues`; the contract test in
+``tests/semantic_rails/test_error_codes_contract.py`` fails on a code missing from it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
+
+from .issues import ERROR_CODES as ERROR_CODES
 
 # What a caller reads about an unexpected exception; its text goes to the server log only.
 UNEXPECTED_ERROR_MESSAGE = "An unexpected engine error occurred; the detail is in the server log."
 
 
 class SemanticLayerError(Exception):
+    # A cache entry's details (``with_shared_details``); never handed out.
+    _shared_details: dict[str, Any] | None = None
+
     def __init__(self, code: str, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.details = dict(details or {})
+
+    @classmethod
+    def with_shared_details(
+        cls, code: str, message: str, details: dict[str, Any]
+    ) -> SemanticLayerError:
+        """The error again from a cache entry's ``details``, which stay the entry's: this
+        error's ``details`` are a deep copy of them, made when first read. No caller can reach
+        the entry to change it, and a caller that reads only the code copies nothing."""
+        error = cls(code, message)
+        del error.__dict__["_details"]
+        error._shared_details = details
+        return error
+
+    @property
+    def details(self) -> dict[str, Any]:
+        state = self.__dict__
+        if "_details" not in state:
+            # The first read of an error from ``with_shared_details``.
+            state.setdefault("_details", dict(deepcopy(self._shared_details or {})))
+        details: dict[str, Any] = state["_details"]
+        return details
+
+    @details.setter
+    def details(self, value: dict[str, Any]) -> None:
+        self.__dict__["_details"] = value
+
+
+def refusal_text(message: str, details: Mapping[str, Any]) -> tuple[str, str]:
+    """A refusal for a person to read: its message, led by its path when the message does not
+    name it, and its first hint ("" when it has none)."""
+    path = str(details.get("path") or "")
+    text = message if not path or message.startswith(path) else f"{path}: {message}"
+    hints = [hint for hint in details.get("recovery_hints") or [] if isinstance(hint, Mapping)]
+    return text, str(hints[0].get("message") or "") if hints else ""
 
 
 def query_execution_error(details: dict[str, Any]) -> SemanticLayerError:
@@ -35,67 +75,3 @@ def query_execution_error(details: dict[str, Any]) -> SemanticLayerError:
         "Warehouse query execution failed. Check warehouse query history and operator diagnostics.",
         details=details,
     )
-
-
-ERROR_CODES = {
-    "AMBIGUOUS_ALIAS",
-    "AMBIGUOUS_CHILD_SCOPE",
-    "AMBIGUOUS_PATH",
-    "DUPLICATE_OUTPUT_ALIAS",
-    "UNSUPPORTED_AGGREGATION",
-    "UNSUPPORTED_CONDITIONAL_AGGREGATE",
-    "UNSUPPORTED_PLATFORM",
-    "INVALID_TEMPORAL_ROLE",
-    "INCOMPATIBLE_TEMPORAL_ROLE",
-    "INVALID_TEMPORAL_BINDING",
-    "INVALID_ANCHOR_ROLE",
-    "FANOUT_UNSAFE",
-    "ROLLUP_UNSAFE",
-    "MEASURE_VALIDITY_BOUNDARY",
-    "OUT_OF_SCOPE",
-    "CUMULATIVE_TIME_FILTER_UNSUPPORTED",
-    "WINDOWED_TIME_FILTER_UNSUPPORTED",
-    "MIXED_GRAIN_INVALID",
-    "NO_VALID_VALUES_SOURCE",
-    "REWRITE_NOT_SUPPORTED",
-    "INVALID_EXPRESSION_AST",
-    "INVALID_EXPRESSION",
-    "INVALID_EXPRESSION_KEY",
-    "OBJECT_NOT_FOUND",
-    "INVALID_QUERY",
-    "INVALID_CONFIG",
-    "INVALID_CONTRACT",
-    "INTERNAL_ERROR",
-    "INVALID_METRIC_FILTER",
-    "INVALID_SEGMENT",
-    "MISSING_DEPENDENCY",
-    "QUERY_EXECUTION_ERROR",
-    "RESULT_TYPE_UNSUPPORTED",
-    "RESULT_VALUE_UNSUPPORTED",
-    "PATH_NOT_FOUND",
-    "PATH_JOIN_CONFLICT",
-    "POLICY_DENIED",
-    "RESOURCE_ACCESS_DENIED",
-    "INVALID_METRIC_PREDICATE",
-    "PREDICATE_SCOPE_UNSAFE",
-    "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
-    "PREDICATE_FILTER_INCOMPATIBLE",
-    "PREDICATE_GRAIN_UNSAFE",
-    "PREDICATE_ENTITY_REQUIRED",
-    "PREDICATE_INPUT_REQUIRED",
-    "PREDICATE_NOT_SUPPORTED",
-    "INVALID_ORDER_BY",
-    "CONVERSION_NOT_SUPPORTED",
-    "CONVERSION_ENTITY_REQUIRED",
-    "CONVERSION_WINDOW_REQUIRED",
-    "CONVERSION_MATCHING_MODE_REQUIRED",
-    "CONFIG_CONFLICT",
-    "ROUTE_DECISION_NOT_RECORDED",
-    "UNKNOWN_MCP_PROMPT",
-    "UNKNOWN_MCP_RESOURCE",
-    "UNKNOWN_MCP_TOOL",
-    "INVALID_MCP_ARGUMENTS",
-    "RESULT_TOO_LARGE",
-    "WINDOW_TOTAL_UNSUPPORTED",
-    "EMPTY_GROUPS_UNSETTLED",
-}

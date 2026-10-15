@@ -257,7 +257,7 @@ tests:
       # The route policy an earlier release read.
       path_policy:
         max_hops: 2
-      select: [{expression: {metric: metric.shop.revenue}, as: revenue}]
+      select: [{expression: metric.shop.revenue, as: revenue}]
     columns: [revenue]
 """,
         },
@@ -278,7 +278,7 @@ tests:
     query:
       version: 1
       # The route policy an earlier release read.
-      select: [{expression: {metric: metric.shop.revenue}, as: revenue}]
+      select: [{expression: metric.shop.revenue, as: revenue}]
     columns: [revenue]
 """,
         },
@@ -310,4 +310,11 @@ def test_legacy_text_becomes_current_text(tmp_path, case):
 
 @pytest.mark.parametrize("package", PACKAGES)
 def test_bundled_packages_hold_no_retired_form(package):
-    assert plan(PackageFiles(ROOT / package), RULES, {}).findings == ()
+    files = PackageFiles(ROOT / package)
+    for finding in plan(files, RULES, {}).findings:
+        # Deliberately refused previous calls receive hand-edit hints, never rewrites.
+        assert finding.rule == "query-call-v2" and not finding.edits
+        entry = files.documents[finding.file]
+        for key in finding.path[:2]:
+            entry = entry[key]
+        assert entry["kind"] == "validate_fails_with_code"

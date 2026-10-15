@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -75,6 +76,17 @@ MIN_ARCHITECT_TOKEN_LENGTH = 32
 MAX_LISTED_TABLES = 200
 MAX_UNSELECTED_DBT_SUGGESTIONS = 20
 MAX_PREVIEW_ROWS = 200
+# A default response is a summary an MCP client shows whole; full_report returns everything.
+SUMMARY_WARNINGS = 10
+SUMMARY_UNDECIDED_ROUTES = 3
+SUMMARY_DIFF_CHARS = 12_000
+_SUMMARY_NOTE = (
+    "summary: the first warnings without details, the route census's counts and first undecided "
+    "pairs, failing checks only, and diffs without file contents; pass full_report: true for all"
+)
+FullReport = Annotated[
+    bool, Field(description="true: the whole report (default: a summary; see its report field)")
+]
 # RFC 6750 b64token: what a client can send in an Authorization header.
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 _TOKEN_HINT = (
@@ -132,6 +144,7 @@ class ArchitectFileChange(BaseModel):
     content_encoding: Literal["utf-8", "base64", "none"] = "none"
     proposed_content: str | None = None
     diff: str = ""
+    diff_truncated: bool = False
 
 
 class ArchitectMutationResult(BaseModel):
@@ -223,9 +236,11 @@ def _resolve_project_path(
         path = workspace_root / path
     path = path.resolve()
     if not _within(path, workspace_root):
+        missing = "does not exist and " if not path.exists() else ""
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            "Architect MCP only writes inside its configured workspace root",
+            f"Project path '{path}' {missing}is outside the Architect MCP workspace root "
+            f"'{workspace_root}'; pass a package directory inside it, relative to it or absolute",
             details={"workspace_root": str(workspace_root), "requested_path": str(path)},
         )
     if require_exists and not path.exists():
@@ -273,10 +288,94 @@ def _report_error(exc: Exception) -> dict[str, Any]:
 _UPGRADE_ACTION = "call upgrade_project (dry_run)"
 
 
-def _mutation_result(payload: dict[str, Any]) -> ArchitectMutationResult:
+def _summary(report: Any) -> Any:
+    """``report`` as a default response: each ``warnings`` list as its counts by code and its
+    first warnings without details, a ``route_census`` as its counts and first undecided pairs
+    (whole, with the options that record them), ``files`` without those under dot-directories,
+    and only the failing ``probes``, ``examples`` and ``tests``. Errors, and everything else,
+    stay as they are."""
+    if not isinstance(report, dict):
+        return report
+    out: dict[str, Any] = {}
+    for key, value in report.items():
+        if key == "warnings" and isinstance(value, list):
+            out[key] = [
+                {name: item for name, item in row.items() if name != "details"}
+                if isinstance(row, dict)
+                else row
+                for row in _first_warnings(value)
+            ]
+            out["warning_counts"] = dict(
+                Counter(
+                    row.get("code", "WARNING") if isinstance(row, dict) else "WARNING"
+                    for row in value
+                )
+            )
+            if len(value) > SUMMARY_WARNINGS:
+                out["warnings_omitted"] = len(value) - SUMMARY_WARNINGS
+        elif key == "route_census" and isinstance(value, dict):
+            out[key] = {
+                "counts": {name: len(rows) for name, rows in value.items()},
+                "undecided": list(value.get("undecided") or [])[:SUMMARY_UNDECIDED_ROUTES],
+            }
+        elif key == "files" and isinstance(value, list):
+            # Transaction receipts and archives under dot-directories aren't package files.
+            out[key] = [
+                row
+                for row in value
+                if not (isinstance(row, dict) and re.match(r"\.[^/]*/", str(row.get("path"))))
+            ]
+        elif key in {"probes", "examples", "tests"} and isinstance(value, list):
+            out[key] = [
+                _summary(row)
+                for row in value
+                if not (isinstance(row, dict) and row.get("ok") is True)
+            ]
+        else:
+            out[key] = _summary(value)
+    return out
+
+
+def _first_warnings(warnings: list[Any]) -> list[Any]:
+    """The first warning of each code, then the next ones, up to ``SUMMARY_WARNINGS``, in report
+    order: a new kind of warning never hides behind many of another."""
+    firsts: dict[str, int] = {}
+    for index, row in enumerate(warnings):
+        firsts.setdefault(row.get("code", "") if isinstance(row, dict) else "", index)
+    shown = set(list(firsts.values())[:SUMMARY_WARNINGS])
+    for index in range(len(warnings)):
+        if len(shown) >= SUMMARY_WARNINGS:
+            break
+        shown.add(index)
+    return [warnings[index] for index in sorted(shown)]
+
+
+def _summary_changes(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """File changes without their proposed contents, their diffs cut to one shared budget."""
+    budget, rows = SUMMARY_DIFF_CHARS, []
+    for change in changes:
+        row = {**change, "proposed_content": None}
+        diff = str(row.get("diff") or "")
+        if len(diff) > budget:
+            row.update(diff=diff[: diff.rfind("\n", 0, budget) + 1], diff_truncated=True)
+        budget -= len(row["diff"])
+        rows.append(row)
+    return rows
+
+
+def _full_or_summary(report: dict[str, Any], full_report: bool) -> dict[str, Any]:
+    return report if full_report else {**_summary(report), "report": _SUMMARY_NOTE}
+
+
+def _mutation_result(
+    payload: dict[str, Any], *, full_report: bool = True
+) -> ArchitectMutationResult:
     if payload.get("status") in {"rolled_back_after_parse_error", "preview_invalid"}:
         hint = legacy_form_hint(payload["project_path"], _UPGRADE_ACTION)
         payload = {**payload, "next_actions": [*payload.get("next_actions", []), *hint]}
+    if not full_report:
+        payload = _full_or_summary(payload, False)
+        payload["changes"] = _summary_changes(list(payload.get("changes") or []))
     return ArchitectMutationResult.model_validate(payload)
 
 
@@ -781,7 +880,9 @@ def create_architect_mcp_server(
             "with the same key replays. Send a change that spans several files as one "
             "write_project_files call. A write the package can't parse is "
             "rolled back, and a stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
-            "write_project_files. This server doesn't manage cloud services."
+            "write_project_files. Writes, validate_project and project_status answer with a "
+            "summary; full_report: true returns every detail. This server doesn't manage cloud "
+            "services."
         ),
         host=host,
         port=port,
@@ -887,6 +988,7 @@ def create_architect_mcp_server(
         dimension_column: str = "",
         overwrite: bool = False,
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             spec = _project_spec(
@@ -923,7 +1025,8 @@ def create_architect_mcp_server(
                     idempotency_key=idempotency_key,
                     overwrite=overwrite,
                     dry_run=dry_run,
-                ).report
+                ).report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -944,7 +1047,9 @@ def create_architect_mcp_server(
             "the warehouse."
         ),
     )
-    def project_status(project_path: str, include_runtime_checks: bool = False) -> dict[str, Any]:
+    def project_status(
+        project_path: str, include_runtime_checks: bool = False, full_report: FullReport = False
+    ) -> dict[str, Any]:
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
             parse = _parse_report(project)
@@ -967,7 +1072,8 @@ def create_architect_mcp_server(
                     *(
                         [
                             f"Decide the {undecided} undecided join routes in "
-                            f"route_census.undecided. {DECIDE_ROUTES_ACTION}"
+                            "route_census.undecided (a summary lists the first; full_report: "
+                            f"true lists all). {DECIDE_ROUTES_ACTION}"
                         ]
                         if undecided
                         else []
@@ -985,7 +1091,7 @@ def create_architect_mcp_server(
                     and out["examples"].get("ok")
                     and out["tests"].get("ok")
                 )
-            return out
+            return _full_or_summary(out, full_report)
         except Exception as exc:
             return _report_error(exc)
 
@@ -1027,6 +1133,7 @@ def create_architect_mcp_server(
         idempotency_key: str,
         reason: str = "",
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         """Write or archive files in one transaction, validating the final package as a whole."""
         try:
@@ -1040,7 +1147,8 @@ def create_architect_mcp_server(
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
                 )
-                .report
+                .report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1092,8 +1200,14 @@ def create_architect_mcp_server(
             "an existing model. An existing dimension, time or measure given only label, "
             "description, synonyms or meta keeps its other fields; given anything else it is "
             "rewritten, and dropped_fields lists what that drops. replace: true rewrites the "
-            "model from the arguments, keeping only its id, entities and calendar_id, and lists "
-            "what it drops in dropped_fields. Relationships go through upsert_relationship."
+            "model from the arguments, keeping only its id, entities, calendar_id, "
+            "zero_through (how far its tables are loaded) and one_per_key, and lists "
+            "what it drops in dropped_fields. one_per_key: true reads a relation whose rows "
+            "repeat the key as one row per primary_key, each column the key's one value (NULL "
+            "where its rows disagree); keep the columns that vary on a row-grain model of the "
+            "same relation. primary_key [] makes a row-grain model (no key); entities "
+            "({parent: {} or {expr: column}}) merges the model's parent entities. "
+            "Relationships also go through upsert_relationship."
         ),
     )
     def upsert_model(
@@ -1112,8 +1226,11 @@ def create_architect_mcp_server(
         label: str = "",
         calendar: bool | None = None,
         calendar_id: str = "",
+        entities: dict[str, Any] | None = None,
         replace: bool = False,
+        one_per_key: bool | None = None,
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
@@ -1131,13 +1248,16 @@ def create_architect_mcp_server(
                     label=label,
                     calendar=calendar,
                     calendar_id=calendar_id,
+                    entities=entities,
                     replace=replace,
+                    one_per_key=one_per_key,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
                 )
-                .report
+                .report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1152,7 +1272,10 @@ def create_architect_mcp_server(
         annotations=_mutation_annotations("Upsert relationship"),
         description=(
             "Relate two entities: columns on from_entity's model hold "
-            "to_entity's key, in key order. cardinality: many_to_one or one_to_one."
+            "to_entity's key, in key order. cardinality: many_to_one or one_to_one. from_entity "
+            "may be a row-grain model's id. name writes graph.relationships.<name> with these "
+            "columns as its via: a second role on the pair (a buyer and a seller), or that role "
+            "again; a pair with two roles needs it."
             " Set keep_existing_routes=true to record every moved pair's previous route "
             "in this transaction; otherwise unrecorded route changes refuse the write."
         ),
@@ -1165,8 +1288,10 @@ def create_architect_mcp_server(
         expected_revision: str,
         idempotency_key: str,
         cardinality: str = "many_to_one",
+        name: str = "",
         keep_existing_routes: bool = False,
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
@@ -1176,13 +1301,15 @@ def create_architect_mcp_server(
                     to_entity=to_entity,
                     columns=columns,
                     cardinality=cardinality,
+                    name=name,
                     keep_existing_routes=keep_existing_routes,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
                 )
-                .report
+                .report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1216,6 +1343,7 @@ def create_architect_mcp_server(
         label: str = "",
         decisions: list[dict[str, Any]] | None = None,
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
@@ -1231,7 +1359,8 @@ def create_architect_mcp_server(
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
                 )
-                .report
+                .report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1274,6 +1403,7 @@ def create_architect_mcp_server(
         group: str = "core",
         replace: bool = False,
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
@@ -1289,7 +1419,8 @@ def create_architect_mcp_server(
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
                 )
-                .report
+                .report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1317,6 +1448,7 @@ def create_architect_mcp_server(
         file_name: str = "core.yml",
         replace: bool = False,
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
@@ -1331,7 +1463,8 @@ def create_architect_mcp_server(
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
                 )
-                .report
+                .report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1342,10 +1475,14 @@ def create_architect_mcp_server(
                 dry_run=dry_run,
             )
 
-    def _upsert_check(kind: str, project_path: str, **arguments: Any) -> ArchitectMutationResult:
+    def _upsert_check(
+        kind: str, project_path: str, full_report: bool, **arguments: Any
+    ) -> ArchitectMutationResult:
         try:
             project = ArchitectProject(project_path, workspace_root=root)
-            return _mutation_result(project.upsert_check(kind=kind, **arguments).report)
+            return _mutation_result(
+                project.upsert_check(kind=kind, **arguments).report, full_report=full_report
+            )
         except Exception as exc:
             return _mutation_error_result(
                 exc,
@@ -1371,10 +1508,12 @@ def create_architect_mcp_server(
         idempotency_key: str,
         file_name: str = "core.yml",
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         return _upsert_check(
             "example",
             project_path,
+            full_report,
             key=example_key,
             spec=spec,
             file_name=file_name,
@@ -1403,10 +1542,12 @@ def create_architect_mcp_server(
         idempotency_key: str,
         file_name: str = "core.yml",
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         return _upsert_check(
             "test",
             project_path,
+            full_report,
             key=test_key,
             spec=spec,
             file_name=file_name,
@@ -1419,8 +1560,8 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Preview query", open_world=True),
         description=(
             "Run a semantic query on the package's warehouse, as the query server's execute "
-            "does, and return at most max_rows rows (1-200), with truncated and total_row_count "
-            "when there are more. Values are real warehouse data."
+            "does, and return at most max_rows rows (1-200); truncated is true when there are more, "
+            "which are not counted (total_row_count null). Values are real warehouse data."
         ),
     )
     def preview_query(
@@ -1458,6 +1599,7 @@ def create_architect_mcp_server(
         model: str = "",
         reason: str = "",
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
@@ -1472,7 +1614,8 @@ def create_architect_mcp_server(
                     idempotency_key=idempotency_key,
                     dry_run=dry_run,
                 )
-                .report
+                .report,
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1659,6 +1802,7 @@ def create_architect_mcp_server(
         catalog_path: str = "",
         group: str = "dbt",
         dry_run: bool = False,
+        full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
             dbt = _dbt_project(target_dir, manifest_path, catalog_path)
@@ -1688,7 +1832,8 @@ def create_architect_mcp_server(
                     "skipped_references": [*report.get("skipped_references", []), *unresolved],
                     "skipped_models": skipped,
                     "dbt_warnings": dbt.warnings,
-                }
+                },
+                full_report=full_report,
             )
         except Exception as exc:
             return _mutation_error_result(
@@ -1714,39 +1859,42 @@ def create_architect_mcp_server(
         environment: str = "",
         compare_path: str = "",
         base_ref: str = "",
+        full_report: FullReport = False,
     ) -> dict[str, Any]:
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
             ref = _package_ref(project)
             check = str(mode or "parse").strip().lower()
             if check == "parse":
-                return _parse_report(project)
-            if check == "runtime":
-                return validate_config_report(ref)
-            if check == "examples":
-                return run_examples_report(ref)
-            if check == "tests":
-                return run_package_tests_report(ref)
-            if check == "impact":
-                return impact_report(
+                report = _parse_report(project)
+            elif check == "runtime":
+                report = validate_config_report(ref)
+            elif check == "examples":
+                report = run_examples_report(ref)
+            elif check == "tests":
+                report = run_package_tests_report(ref)
+            elif check == "impact":
+                report = impact_report(
                     ref,
                     compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                     base_ref=base_ref,
                 )
-            if check in {"release", "promotion", "promote"}:
+            elif check in {"release", "promotion", "promote"}:
                 if not environment:
                     raise SemanticLayerError(
                         "INVALID_CONFIG", "environment is required for release validation"
                     )
-                return promote_package_report(
+                report = promote_package_report(
                     ref,
                     environment=environment,
                     compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                     base_ref=base_ref,
                 )
-            raise SemanticLayerError(
-                "INVALID_CONFIG", "Unsupported validation mode", details={"mode": mode}
-            )
+            else:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "Unsupported validation mode", details={"mode": mode}
+                )
+            return _full_or_summary(report, full_report)
         except Exception as exc:
             return _report_error(exc)
 
@@ -1789,16 +1937,21 @@ def create_architect_mcp_server(
         ),
     )
     def promotion_check(
-        project_path: str, environment: str, compare_path: str = "", base_ref: str = ""
+        project_path: str,
+        environment: str,
+        compare_path: str = "",
+        base_ref: str = "",
+        full_report: FullReport = False,
     ) -> dict[str, Any]:
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
-            return promote_package_report(
+            report = promote_package_report(
                 _package_ref(project),
                 environment=environment,
                 compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                 base_ref=base_ref,
             )
+            return _full_or_summary(report, full_report)
         except Exception as exc:
             return _report_error(exc)
 

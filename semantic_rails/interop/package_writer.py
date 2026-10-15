@@ -26,6 +26,7 @@ from ..config import (
     _suggested_aggregations,
     load_package_snapshot,
 )
+from ..config_parts.one_per_key import one_per_key_source
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
 from ..naming import slug as _slug
@@ -52,7 +53,13 @@ _CARDINALITY = {
     "M:N": "many_to_many",
 }
 _ROLLUPS = {"rollup_safe_aggregations_reverse": "reverse"}
-_MODEL_FIELDS = {"calendar_id", "freshness_source", "freshness_sla_seconds", "freshness_as_of"}
+_MODEL_FIELDS = {
+    "calendar_id",
+    "freshness_source",
+    "freshness_sla_seconds",
+    "freshness_as_of",
+    "one_per_key",
+}
 _MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides")
 
 
@@ -93,21 +100,30 @@ class _Writer:
         self.keys = {row.id: _keyed(row.id, f"entity.{namespace}_") for row in config.entities}
         self.models: dict[str, dict[str, Any]] = {}
 
-    def model(self, entity_id: str, relation: str = "") -> tuple[str, dict[str, Any]]:
+    def model(self, entity_id: str) -> tuple[str, dict[str, Any]]:
         entity, key = self.entities[entity_id], self.keys[entity_id][0]
-        spec: dict[str, Any] = {"relation": entity.table, "entities": {key: None}}
-        if relation and relation != entity.table:  # a fact model bound to the entity's calendar
-            spec = {"kind": "fact", "relation": relation, "time_entity": key}
-            key = f"{key}_{_slug(relation)}"
+        # A row-grain model lists only its parents: no graph entity is homed on it.
+        own = {} if entity.is_row_grain else {key: None}
+        # A one-per-key model names the relation its pipeline reads, not the pipeline.
+        relation = one_per_key_source(self.config, entity) or entity.table
+        spec: dict[str, Any] = {"relation": relation, "entities": own}
         return key, self.models.setdefault(key, spec)
 
     def graph(self) -> dict[str, Any]:
         entities: dict[str, Any] = {}
         for entity in self.config.entities:
             key, alias = self.keys[entity.id]
+            model = self.model(entity.id)[1]
+            model.update(_authored(entity, skip={f.name for f in fields(entity)} - _MODEL_FIELDS))
+            if entity.foreign_keys:  # graph.relationships states every join, which replaces
+                model["entities"].update({n: {"expr": c} for n, c in entity.foreign_keys.items()})
+                model["entities"]["bridge"] = entity.bridge  # each one a link table infers
+            if entity.is_row_grain:  # the loader names a row-grain model's entity from the model
+                model["label"] = entity.label
+                continue
             role = next(iter(entity.key_roles.values()), "primary")
-            columns = list(entity.key or [entity.primary_key])
-            skip = {"table", "primary_key", "key", "relation_id", "identifiers", "key_roles"}
+            columns = list(entity.key_columns)
+            skip = {"table", "key_columns", "relation_id", "identifiers", "key_roles", "bridge"}
             entities[key] = {
                 **alias,
                 "key": columns if role == "primary" else {"columns": columns, "role": role},
@@ -119,18 +135,16 @@ class _Writer:
             }
             if entity.display:  # the display dimension's key on this entity's model
                 entities[key]["display"] = _keyed(entity.display, f"dimension.{self.ns}_{key}_")[0]
-            model = self.model(entity.id)[1]
-            model.update(_authored(entity, skip={f.name for f in fields(entity)} - _MODEL_FIELDS))
-            if entity.foreign_keys:  # graph.relationships states every join, so infer none
-                model["entities"].update({n: {"expr": c} for n, c in entity.foreign_keys.items()})
-                model["entities"]["bridge"] = False
         return {"entities": entities}
 
     def dimensions(self) -> None:
         roles = {role.dimension: role for role in self.config.temporal_roles}
         for dimension in self.config.dimensions:
             entity = self.entities[dimension.entity]
-            keys = {*entity.key, *(c for cols in entity.foreign_keys.values() for c in cols)}
+            keys = {
+                *entity.key_columns,
+                *(c for cols in entity.foreign_keys.values() for c in cols),
+            }
             if dimension.semantic_kind == "id" and dimension.column in keys:
                 continue  # the loader creates key and foreign-key dimensions itself
             prefix = f"dimension.{self.ns}_{self.keys[entity.id][0]}_"
@@ -144,19 +158,7 @@ class _Writer:
                 ]
                 spec["value_domain_id"] = domain.id
             role = roles.get(dimension.id)
-            source_relations = {
-                measure.source_relation
-                for measure in self.config.measures
-                if role is not None
-                and measure.entity == entity.id
-                and (
-                    measure.default_temporal_role == role.id
-                    or role.id in measure.compatible_temporal_roles
-                )
-                and measure.source_relation
-            }
-            relation = next(iter(source_relations)) if len(source_relations) == 1 else ""
-            model = self.model(entity.id, relation)[1]
+            model = self.model(entity.id)[1]
             if role is None:
                 model.setdefault("dimensions", {})[key] = spec
                 continue
@@ -164,9 +166,7 @@ class _Writer:
                 untimed = [
                     measure.id
                     for measure in self.config.measures
-                    if measure.entity == entity.id
-                    and (measure.source_relation or entity.table) == (relation or entity.table)
-                    and not measure.compatible_temporal_roles
+                    if measure.entity == entity.id and not measure.compatible_temporal_roles
                 ]
                 if untimed:
                     raise SemanticLayerError(
@@ -175,7 +175,7 @@ class _Writer:
                         f"{', '.join(untimed)}; the declaring model cannot be recovered",
                     )
             time = _described(role, "temporal_class", "supported_grains", skip={"dimension"})
-            time["id"] = role.id
+            time["as"] = role.id
             if (dimension.name, dimension.label) == (role.name, role.label) and not (
                 dimension.aliases or domain
             ):  # one times entry creates the role and its dimension
@@ -187,15 +187,13 @@ class _Writer:
 
     def measures(self) -> None:
         for measure in self.config.measures:
-            model_key, model = self.model(measure.entity, measure.source_relation)
-            # A fact model's rows are keyed by its time column; an entity's model by its key.
-            if model.get("kind") == "fact" and len(measure.row_grain) == 1:
-                model["time_column"] = measure.row_grain[0]
-            elif model.get("kind") == "fact" and measure.row_grain:
-                model["keys"] = {"primary": list(measure.row_grain)}
+            model_key, model = self.model(measure.entity)
             key, alias = _keyed(measure.id, f"measure.{self.ns}.")
-            skip = {"entity", "row_grain", "source_relation", "expr", "measure_class"}
+            skip = {"entity", "row_grain", "expr", "measure_class"}
             skip |= {"allowed_aggregations", "invalid_aggregations", "authoring_warnings"}
+            if (edge := measure.zero_through) is not None:  # each measure carries its model's
+                model["zero_through"] = "now" if edge.kind == "now" else {"loaded": edge.name}
+            skip.add("zero_through")
             counted = measure.measure_class in {"event_count", "distinct_population"}
             spec = {
                 **alias,
@@ -219,8 +217,10 @@ class _Writer:
 
     def relationship(self, row: Any) -> tuple[str, dict[str, Any]]:
         ends = {"source_entity", "target_entity", "source_column", "target_column", *_ROLLUPS}
+        ends.add("link")  # derived from the two models
+        key, alias = _keyed(row.id, "relationship.")
         spec = {
-            "id": row.id,
+            **alias,
             "entities": [self.keys[row.source_entity][0], self.keys[row.target_entity][0]],
             **_described(row, "safety", skip=ends),
             "cardinality": _CARDINALITY.get(row.cardinality, row.cardinality),
@@ -228,12 +228,12 @@ class _Writer:
         rollups = {side: getattr(row, name) for name, side in _ROLLUPS.items()}
         if any(rollups.values()):
             spec["rollup_safe"] = {side: aggs for side, aggs in rollups.items() if aggs}
-        return _slug(row.id.split(".", 1)[-1]), spec
+        return key, spec
 
     def metric(self, row: Any) -> tuple[str, dict[str, Any]]:
         # The loader reads filter_spec and window_spec off the expression; aliases aren't authored.
         skip = {"expression", "filter_spec", "window_spec", "aliases"}
-        spec = {"id": row.id, "expression": expr_to_dict(row.expression)}
+        spec = {"as": row.id, "expression": expr_to_dict(row.expression)}
         spec.update(
             _described(
                 row, "kind", "value_type", skip=skip, renames={"example_entries": "examples"}
@@ -244,7 +244,7 @@ class _Writer:
         return row.id.split(".", 1)[-1], spec
 
     def segment(self, row: Any) -> tuple[str, dict[str, Any]]:
-        spec = {"id": row.id, **_described(row, "entity", "basis_metric", skip=_MEMBERSHIP)}
+        spec = {"as": row.id, **_described(row, "entity", "basis_metric", skip=_MEMBERSHIP)}
         membership = {key: getattr(row, key) for key in _MEMBERSHIP if getattr(row, key)}
         if membership:
             spec["membership"] = membership

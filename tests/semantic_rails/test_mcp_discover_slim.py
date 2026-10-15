@@ -21,30 +21,20 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import _slim_discover_minimal, discover_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 SLIM_KEYS = {"id", "kind", "label", "measure", "description", "default_temporal_role", "available"}
 VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available"}
-SESSION_STARTS = {
-    "version": 1,
-    "select": [{"as": "s", "expression": {"measure": "measure.jaffle.session_starts"}}],
-}
+SESSION_STARTS = {"select": [{"as": "s", "expression": "measure.jaffle.session_starts"}]}
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
-    mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+def adapter(jaffle_snapshot) -> Iterator[SemanticLayerMCPAdapter]:
+    mcp = SemanticLayerMCPAdapter(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
     try:
         yield mcp
     finally:
         mcp.close()
-
-
-def test_discover_advertises_slim_default_and_full_card_opt_in() -> None:
-    discover = next(tool for tool in list_tool_definitions() if tool["name"] == "discover")
-    properties = discover["inputSchema"]["properties"]
-    assert properties["verbosity"]["default"] == "minimal"
-    assert properties["verbosity"]["enum"] == ["minimal", "compact", "full"]
-    assert "default" not in properties["limit"]  # empty terms page at 100 ids by default
 
 
 def test_explicit_minimal_discover_returns_five_slim_cards_per_kind(
@@ -220,7 +210,7 @@ def test_kinds_filter_accepts_a_list_in_any_encoding(
     adapter: SemanticLayerMCPAdapter, kinds: Any
 ) -> None:
     response = adapter.call_tool("discover", {"terms": "revenue by store", "kinds": kinds})
-    assert not [w for w in response["warnings"] if w["code"] == "DISCOVER_UNKNOWN_KIND"]
+    assert not [w for w in response.get("warnings", []) if w["code"] == "DISCOVER_UNKNOWN_KIND"]
     assert response["measures"] and response["metrics"]
     assert not response["dimensions"] and not response["entities"]
 
@@ -329,12 +319,8 @@ def test_denied_metric_does_not_hide_allowed_equivalent_or_measure(
         assert {metric.id, alias.id} <= {row["id"] for row in minimal["metrics"]}
         assert any(row["id"] == measure_id for row in full["measures"])
         assert any(row.get("measure") == measure_id for row in minimal["metrics"])
-        for expression, ok in (
-            ({"metric": metric.id}, False),
-            ({"metric": alias.id}, True),
-            ({"measure": measure_id}, True),
-        ):
-            query = {"version": 1, "select": [{"as": "value", "expression": expression}]}
+        for expression, ok in ((metric.id, False), (alias.id, True), (measure_id, True)):
+            query = {"select": [{"as": "value", "expression": expression}]}
             result = runtime.validate(query)
             assert result["ok"] is ok, result
             if not ok:

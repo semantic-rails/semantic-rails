@@ -23,18 +23,7 @@ from ..policies import (
 )
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
-from ..runtime_parts.limits import (
-    MAX_VALID_VALUES_LIMIT as MAX_VALID_VALUES_LIMIT,
-)
-from ..runtime_parts.limits import (
-    MAX_VALID_VALUES_OFFSET as MAX_VALID_VALUES_OFFSET,
-)
-from ..runtime_parts.limits import (
-    max_valid_values_limit as max_valid_values_limit,
-)
-from ..runtime_parts.limits import (
-    max_valid_values_offset as max_valid_values_offset,
-)
+from ..runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
 from ..schema import MeasureConfig, PackageConfig
 from ..temporal_support import validate_temporal_support
 from .path_coverage import (
@@ -166,7 +155,7 @@ def _anchor_measure_id(
             except SemanticLayerError as exc:
                 if exc.details.get("reason") == "route_decision_unused":
                     dropped.add((exc.details["source_entity"], exc.details["target_entity"]))
-                    index = exc.details["path"].removeprefix("route_decisions[").rstrip("]")
+                    index = exc.details["path"].removeprefix("routes[").rstrip("]")
                     del decisions[int(index)]
                     continue
                 if exc.code == "POLICY_DENIED":
@@ -182,7 +171,7 @@ def _anchor_measure_id(
                 {
                     "measure": measure.id,
                     "code": "INVALID_QUERY",
-                    "message": "reads a pair the query's route_decisions decide by another route",
+                    "message": "reads a pair the query's routes decide by another route",
                 }
             )
             break
@@ -190,7 +179,8 @@ def _anchor_measure_id(
         raise first_refusal
     if policy_denied:
         raise SemanticLayerError(
-            "POLICY_DENIED", "Query references a semantic object blocked by policy."
+            "POLICY_DENIED",
+            f"Policy denies you every measure that could list the values of '{dimension}'.",
         )
     raise SemanticLayerError(
         "NO_VALID_VALUES_SOURCE",
@@ -240,6 +230,14 @@ def valid_values_payload(
         }
     if not allow_live_query:
         hint_message = _valid_values_lookup_hint(False)
+        # Exactly how to get the values: this call again with one more argument, which a
+        # first call may pass too (with no query seed, a declared domain still answers it
+        # without a warehouse read).
+        retry_message = (
+            f"'{dimension_id}' has no declared value domain, so no values were read. Send this "
+            "call again with allow_live_query: true to read its values from the warehouse; "
+            "a first call that passes it gets them at once."
+        )
         return {
             "ok": False,
             "status": "needs_live_query",
@@ -262,13 +260,13 @@ def valid_values_payload(
                 {
                     "code": "VALID_VALUES_NO_DOMAIN",
                     "severity": "warning",
-                    "message": hint_message,
+                    "message": retry_message,
                 }
             ],
             "recovery_hints": [
                 {
                     "kind": "enable_live_query",
-                    "message": hint_message,
+                    "message": retry_message,
                     "patch": {"allow_live_query": True},
                 }
             ],
@@ -281,7 +279,7 @@ def valid_values_payload(
         query_payload["route_decisions"] = decisions
     query_payload["order_by"] = [{"field": dimension_id, "direction": "ASC"}]
     query_payload["limit"] = max(limit + offset, 100)
-    result = runtime.query(query_payload)
+    result = runtime.query_internal(query_payload)
     values = []
     for row in result["rows"]:
         if row.get(dimension_id) is None:

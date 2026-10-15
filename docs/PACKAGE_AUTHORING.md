@@ -83,7 +83,7 @@ amounts: as currency they would print cents as dollars. Publish them in dollars
 with a measure such as `amount_cents / 100.0`.
 
 Rolling windows, prior periods and growth fill empty periods from the engine's
-implicit Gregorian calendar (QUERY_IR_SCHEMA "Which calendar fills"), whether or
+implicit Gregorian calendar ([Fill and the calendar](QUERY_CALL.md#time-windows-in-depth)), whether or
 not the package authors a calendar; ClickHouse has none, so it refuses them.
 `author metric` offers these metrics only once the package has a calendar. A
 calendar is a model whose graph entity has `kind: time`: one row per day in a
@@ -95,10 +95,10 @@ dimensions: an authored default calendar's `date_day` and `week_start` to
 even if its `week_start` names Sundays.
 
 Fiscal and other non-default calendars (a `calendar_id` other than `default`) are
-not supported in this release. A query that names one, or that sets a `grain` on a
-time whose model is bound to one, refuses with `REWRITE_NOT_SUPPORTED`
-(`details.reason: calendar_not_supported_yet`); authored fiscal calendars return in
-a later release.
+not supported in this release. A call cannot name a calendar (`time.calendar_id` is
+refused), and a `grain` on a clock whose model is bound to one refuses with
+`REWRITE_NOT_SUPPORTED` (`details.reason: calendar_not_supported_yet`); authored fiscal
+calendars return in a later release.
 
 `validate` is intentionally the safe, parse-only check. `validate runtime`,
 `validate examples`, `validate tests`, and `validate full` may query or refresh
@@ -256,6 +256,9 @@ Notes:
 
 - Measures and metrics use a **dot** between namespace and key; entities,
   dimensions, and temporal roles use underscores throughout.
+- Dimension and temporal-role ids use the **entity** name, not the model id: the
+  `orders` model's entity is `order`, so its `channel` dimension is
+  `dimension.mypkg_order_channel`, not `dimension.mypkg_orders_channel`.
 - Auto-created key dimensions collapse a duplicated entity prefix: the
   `customer` entity's `customer_id` key column becomes
   `dimension.mypkg_customer_id`, not `dimension.mypkg_customer_customer_id`.
@@ -288,7 +291,7 @@ graph:
   entities:
     order:
       label: Order
-      key: [order_id]                 # scalar and list forms both load; composite keys need the list
+      key: [order_id]                 # always a list; validation refuses a scalar
       model: orders                   # which model declares this entity as primary
       disallowed_names: [ord_id, orderid]
     customer:
@@ -404,11 +407,17 @@ package:
   seed: { kind: sql_script, source: data/seed.sql }
 
 defaults:
-  dimension: { groupable: true, filterable: true }
+  dimension: { groupable: true, filterable: true }   # filterable: false refuses it in every
+                                                      # caller's filter (POLICY_DENIED)
   time:
     timezone: UTC
     supported_grains: [day, week, month, quarter, year]
 ```
+
+`default_db`, a seed's `source` and its `post_sql` are paths relative to the package directory,
+and stay inside it: an absolute path or a `..` segment fails to load with `INVALID_CONFIG`
+(an operator can allow them with `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`; see
+[Deployment](DEPLOYMENT.md)).
 
 Every package is checked with one set of authoring rules when it loads, in every layout;
 see [Refused legacy forms](#refused-legacy-forms) for the shapes earlier releases accepted.
@@ -420,7 +429,7 @@ no apples, "apples at store 5" reads `0`, as in a breakdown by store. `query` ju
 each query's filters, so the same question reads `NULL` with `NO_DATA_IN_SCOPE`; experiments
 that must not mistake a filtered-out population for zero want it. A query's own
 `observation_scope` overrides it, and any other value is `INVALID_CONFIG`. See
-[Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+[Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
 
 ### DuckDB seeds and externally built databases
 
@@ -489,7 +498,7 @@ package:
 `package.environments` declares the environment names the package recognizes.
 `promote-package --environment <name>` rejects undeclared environments with
 `INVALID_CONFIG` (`details.allowed_environments`). Every governed runtime request
-with a nonempty `policy_context.environment` must name a declared environment;
+with a nonempty environment must name a declared environment;
 otherwise it is refused with `INVALID_QUERY` before evaluating policies or caveats.
 The error names the declared environments in its message and
 `details.allowed_environments`, including an empty list when none are declared.
@@ -517,6 +526,17 @@ meta:
 `meta.owner_team`, `meta.review_priority`, or `meta.change_risk`. The warnings
 are advisory — they never block loading — but a warning-free package gives
 reviewers an owner and a blast-radius signal for every governed object.
+
+To give every measure the same three fields once, write them under `defaults.measure.meta`;
+a measure with no `meta:` of its own takes them, and one with its own `meta:` replaces the
+default whole (it doesn't merge key by key):
+
+```yaml
+# package.yml (or defaults.yml)
+defaults:
+  measure:
+    meta: {owner_team: analytics, review_priority: low, change_risk: low}
+```
 
 For Snowflake-backed packages, replace `seed` with `connection`:
 
@@ -596,7 +616,8 @@ These network limits apply per driver operation/attempt; driver retries and
 Databricks polling can extend total elapsed time. MotherDuck and Snowflake CLI
 are outside these client-wait defaults.
 
-Per-request `limits.statement_timeout_ms` sets each supported warehouse's
+Per-request `limits.statement_timeout_ms` (the Python `limits=` argument beside the
+call) sets each supported warehouse's
 statement deadline. ClickHouse, Databricks, Snowflake native, BigQuery and
 Athena client waits accommodate a longer request with a five-second margin.
 BigQuery sets a server job deadline to the read wait when no request limit is
@@ -682,12 +703,12 @@ and `action`, even when empty. Each kind also accepts only:
 | `object_visibility`, `protected_object` | none |
 | `object_access` | `max_rank` |
 | `metric_constraint` | `required_group_by`, `allowed_group_by`, `required_where`, `allowed_where`, `allow_metric_filters`, `allowed_metric_filter_entities`, `allowed_metric_filter_metrics`, `allowed_temporal_roles` |
-| `row_filter` | `dimension`, `attribute`, `type` |
+| `row_filter` | `dimension`, `attribute`, `type`, `unless_roles`, `shared` |
 
 Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
 are refused with `INVALID_CONFIG`, including policies built in Python. Use
 `semantic-rails project upgrade` to rewrite them: the `policy-flat` alias rewrite and
-the `policy-redact-deny` action rewrite are `certified` rules for forms this engine
+the `policy-redact-deny` action rewrite are `translated` rules for forms this engine
 refuses, so `--write` applies them with the package's other legacy forms. Nested scope or
 identity fields, disagreeing alias values, and action rewrites that would change release
 labels are stops with no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
@@ -720,30 +741,46 @@ kind names must match exactly.
   protected objects as release-gated.
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
-  `where`, temporal role, and metric-filter predicates.
+  `where`, temporal role, `having` and entity filters.
+  A package metric's own `filter:` is the package author's governed definition and is
+  trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
+  caller adds (its `where`, the conditions in its entity filters, and the filters inside
+  its inline kinds, all checked when the call is bound). The same holds for cuts:
+  `allow_metric_filters: false`, `allowed_metric_filter_entities` and
+  `allowed_metric_filter_metrics` count only the cuts the caller adds, never the
+  metric's own filter, so a plain select of a filtered package metric passes them
+  while the caller's `having` or entity filter on it is still refused. To keep a
+  caller away from a metric, deny the metric (`object_access`).
   `allowed_metric_filter_entities` and `allowed_metric_filter_metrics` apply
-  to compiler-resolved cuts in `metric_filters` and inside select or recipe
-  expressions, including aggregate filters and scoped predicates. Measures,
-  columns and dimensions count as their owning entities; referenced recipes
+  to compiler-resolved cuts the caller adds: in `having`, in entity filters, and inside
+  the call's own select expressions, including aggregate filters and scoped predicates.
+  Measures, columns and dimensions count as their owning entities; referenced recipes
   count even when nested. The outer query's grouping, where, time axis and
   attachment joins are excluded from these filter dependency sets. Constant
   cuts have no object reads; unresolved cut bindings are refused under these
-  allowlists. A cut in `metric_filters` counts for every governed object in
-  the query. A cut inside a select or recipe expression counts only for the
+  allowlists. A cut in `having` or an entity filter counts for every governed object in
+  the query. A cut inside a select expression counts only for the
   measures and recipes whose values it filters, so an unfiltered governed
   measure may sit beside a separately filtered one. When a cut has no single
   owner, or the governed object is read inside a cut, every cut in the query
   counts. `allow_metric_filters: false` refuses any cut that counts for the
   governed object.
   A filter the caller writes inside an expression (an aggregate's or
-  `semi_additive` expression's `filter`, a scoped aggregate's `where`, at any
-  depth in `select` or `metric_filters`, predicate inputs included) is checked
-  like a `where` filter when it counts for the governed object, by the same leaf
-  rule: its field must be in `allowed_where` (a violation carries
+  `semi_additive` expression's `filter`, a scoped aggregate's `where`, an
+  `aggregate_if` condition, at any depth in `select`, predicate inputs included)
+  is checked like a `where` filter when it
+  counts for the governed object, by the same leaf rule: its field, read by the
+  id a name or alias binds to, must be in `allowed_where` (a violation carries
   `"source": "inline_expression"`), and it always counts as a metric filter. It
-  never satisfies `required_where`, which requires an outer `where` filter.
+  never satisfies `required_where`, which requires an outer `where` filter with
+  the same word and, when the spec names them, the same values: a spec without an
+  `op` is met only by `is` (a `not`, range, text word or `missing` on the field
+  never meets it). An entity filter (`{entity, having, over}`) or a scoped
+  aggregate's predicate takes its aggregate over the entity's rows, outside the
+  outer `where`, so a governed object with `required_where` read there is refused
+  (`required_where_outside_entity_filter`).
   Fields nested under an aggregate-filter `expression`, a scoped aggregate's
-  `predicates[].input`, a metric predicate, `metric_filters`, or a conversion
+  `predicates[].input`, a metric predicate, `having`, an entity filter, or a conversion
   operand count for every governed object in the query. This conservative rule
   can refuse a nested filter even when it affects only a sibling expression.
   Direct leaf filters retain the leaf rule above. A caller-created aggregate
@@ -760,36 +797,118 @@ kind names must match exactly.
   `case` value) follows the count measure's constraints. A column whose values happen
   to be constant cannot be told apart from a count, so constrain a measure reading it
   to govern it too. An `aggregate_if` condition reads
-  columns, not fields, so `allowed_where` refuses it under either a package-wide
-  or an inherited measure constraint. Its condition also counts as a metric filter,
-  and only outer `where` filters satisfy `required_where`. Constraints on unrelated
+  columns: each counts as the dimensions over it, and a column no dimension declares
+  (named `<entity>.<column>`) is in no `allowed_where`, so a condition on it is refused
+  under either a package-wide or an inherited measure constraint. Its condition also
+  counts as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to
   aggregate by time.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.
-- **`row_filter`** — limits a relation's rows to one customer (or other
-  principal) by comparing a `dimension` with a trusted request `attribute`
-  that the embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The
-  compiler adds `<column> = ?` to the relation's scan and the runtime binds the
-  attribute's value as a parameter; values never enter SQL text. The dimension
-  must be a plain `string`, `integer` or `boolean` column; an id-kind dimension
-  needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
-  it applies to is denied if the attribute is missing or of another type, and
-  so is any query outside the qualified family: the compiled statement must
-  read one ordinary scan of the filtered relation, as its only relation. Engine-generated
-  observation and coverage scans may repeat that relation; each receives the same policy
-  filter. Joins, metric filters, calendar spines (prior-period comparisons, fill) and
-  other second scans are refused, and rollups are not routed to. The zero-row
-  data-coverage probe is skipped. Such a policy loads for any warehouse, but only
-  DuckDB and Postgres execute these statements today; every other adapter
-  refuses them. Postgres finalizes the placeholders as `$1`, `$2`, … before
-  execution and binds trusted values through ADBC.
+- **`row_filter`** — limits the rows a caller can see to one customer, region or other
+  principal, by comparing a `dimension` with a trusted request `attribute` that the
+  embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The compiler compares
+  `<column> = ?` and the runtime binds the attribute's value as a parameter; values never
+  enter SQL text. A list value (strings or integers, for example a manager's regions)
+  compares `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the
+  rows of any of them; a statement over the warehouse's documented limit (Postgres: 65,535
+  parameters in one statement; Snowflake: 200,000 values in one list) is refused before it
+  runs. The dimension must be a plain `string`, `integer` or `boolean`
+  column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value. The
+  policy takes no `object_ids`, `action` or operator. A request it applies to is denied
+  (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
+  of nothing).
+
+  **What a filtered caller sees.** Each caller reads a *visible database*: the package's
+  data with every row they can't see removed, and every answer (totals, groups, shares,
+  distinct counts, `EXISTS` filters, windows, prior periods, coverage dates and
+  `NO_DATA_YET`) is the answer an unfiltered caller would get on that data. A row is
+  visible when it passes its relation's own filter and every *owner* on its route to the
+  filtered model is visible. A model's owners are found through the package's own route to
+  the filtered model (the route `resolve_path` picks for the package, never a query's
+  route decision) when every hop of that route reaches at most one row (`many_to_one` or
+  `one_to_one`) on a single-column key. With a filter on stores' region, an order belongs
+  to its store and an order line to its order, so a West manager's revenue, order counts
+  and line quantities count only West stores' orders, by store or in total, and a store
+  with a hidden duplicate key still shows only the caller's copy. `validate` lists, per
+  row filter, the models it *filters*, the models it *covers* through their owners, the
+  ones it leaves *uncovered*, and the ones it can't trace (*unsupported*).
+
+  - An order with no store (or a store id no store row has) has no visible owner, so it
+    counts for no filtered caller; roles in `unless_roles` see it. Regions can therefore
+    sum to less than the company total. To give such rows an owner, model one: an
+    "Online" or "Unassigned" store row, and grant it to the callers who should see them.
+  - A model no filter reaches (customers, when orders belong to stores) is reference data:
+    filtered rows may look it up (revenue by customer segment answers), but a question
+    that counts or lists it ("how many customers do we have?") is refused with
+    `row_filter_uncovered_root`; ask about the rows the filter does reach instead
+    ("customers who bought in my stores"). List such a model in the filter's `shared:`
+    (entity ids) to let every caller the filter applies to read all of its rows. `shared`
+    only loosens, and names only models the filter doesn't reach: a model it filters, covers
+    or can't trace fails to load (`INVALID_CONFIG`).
+  - A lookup into a filtered or covered model along a route that isn't how the walking
+    model is owned (revenue by a customer's *home* store, when orders belong to the store
+    they were placed in) is refused with `row_filter_route_not_owned`: visible orders would
+    land under stores the caller can't see. Ask by the owner's route instead.
+  - A model whose route to the filtered model is undecided, composite, crosses a
+    `temporal_validity` relationship, or disagrees with its owner's route is refused under
+    the filter (`row_filter_coverage_unsupported`); decide its route with a
+    `graph.path_preferences` row or give it one owner. So is a relation read under two
+    names, or by models that disagree on its owner.
+  - Refused under a filter too (`row_filter_unsupported_query` unless noted): relation
+    pipelines over a filtered or covered relation, relations no model reads, table
+    functions other than the engine's day series, a `RIGHT` or `FULL` join beside a
+    filtered relation, a load log the filter restricts (`row_filter_on_load_log`), and any
+    row-level call other than `COALESCE`, `NULLIF`, `CONCAT`, `LOWER`, `UPPER`, `TRIM`,
+    `REPLACE`, `LENGTH`, `ROUND`, `FLOOR`, `CEIL`, `DATE_TRUNC`, `DATE_PART`, `LEFT`,
+    `RIGHT` and a `CAST` to text (`row_filter_fallible_expression`), whoever wrote it, since
+    an error on a hidden row would tell something about it. Rollups are not routed to; the
+    query reads its base relations. When a window returns no rows, the data coverage the
+    answer reports is that of the caller's own visible rows.
+  - A filtered or covered model's declared value `domain:` is withheld from every caller in
+    the filter's scope, including those its `unless_roles` exempts: a value list (valid
+    values, the inspect card, search) is read live, from the caller's own rows, so a West
+    manager's store picker lists only West stores, and an exempt caller's lists every store.
+
+  Every statement a filtered request runs is checked before it runs: each read of a
+  filtered or covered relation must carry its visibility condition, and anything the check
+  can't prove is refused, never run unfiltered. Such a policy loads for any warehouse, but
+  only DuckDB, Postgres and Snowflake (through ADBC) execute these statements today; every
+  other adapter refuses them. Known limitation in this release: on Snowflake, an optional
+  (`LEFT`) lookup into a model a filter covers (refunds by their order's region, order lines
+  by store) is refused, until its tests prove the subquery that condition needs there.
+  Postgres finalizes the placeholders as `$1`, `$2`, … before execution and binds trusted
+  values through ADBC.
+
+  A measure's row arithmetic is computed in the same `SELECT` that checks its rows'
+  visibility. DuckDB computes it only for visible rows, so a value that would overflow on a
+  hidden row never changes a filtered answer; on Postgres and Snowflake the warehouse's plan
+  decides the order inside that `SELECT`, so such an overflow, or a hidden text value the
+  warehouse can't convert where a measure reads text as a number (`COALESCE(amount_text, 0)`),
+  can refuse a filtered question with an execution error (it never returns a hidden value).
+
+  A filter value on a model no filter reaches (`where` on a customer's segment, say) isn't
+  checked against the data for a filtered caller, since listing that model is held: such a
+  query gets no `FILTER_VALUE_NOT_FOUND` warning, where an unfiltered caller could.
+
+  Known limitation: the SQL a row-filtered caller can see (`mode: sql`, `rendered_sql`)
+  shows the names of the filter's tables and columns, and of the tables it reaches, never
+  their values. A host that hides those from a caller should not grant that caller SQL
+  output.
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host
-  always sets them from verified identity for end-user requests. A policy of
+  always sets them from verified identity for end-user requests. `validate` warns
+  about a filter scoped by `roles:`, since every other role reads every row. To
+  let named roles read every row instead, list them in `unless_roles:` (for example
+  `[auditor]`): a request is not filtered when the embedding host verified one of them
+  for the caller (`TrustedAttributes(..., roles=...)`, see [EMBEDDING.md](EMBEDDING.md)),
+  and every other request is filtered, or denied without the attribute. A role that a
+  request header or the context's `roles` claims never exempts a request, so under the
+  default header resolver `unless_roles` exempts no one. `unless_roles` is a non-empty
+  list and shares no role with `roles:`. A policy of
   another kind that carries `attribute:`, or a kind that is a near miss of
   `row_filter` (`row-filter`, `row_filters`, ...), fails to load rather than
   being ignored.
@@ -797,12 +916,13 @@ kind names must match exactly.
 
 Scoping works the same way as caveats: `audiences:`, `environments:`, and
 `roles:` lists restrict when a policy applies, and an empty list means
-"applies to every context". Role matching uses intersection with
-`policy_context.roles`, so `roles: [sales, csm]` applies when either role is
-present. The query-side context arrives via `policy_context` in the Query IR
-payload (`{"policy_context": {"environment": "production", "audience":
-"finance", "roles": ["sales"]}}`) or the CLI flags `--environment` /
-`--audience`. A `rationale:` string is strongly encouraged — it is echoed in
+"applies to every context". Role matching uses intersection with the
+request's roles, so `roles: [sales, csm]` applies when either role is
+present. The request's context never travels in the call: over HTTP and remote MCP it
+comes from the caller's credentials, and a trusted local caller passes it as `context`
+(Python `context={"environment": "production", "audience": "finance", "roles":
+["sales"]}`, the CLI flags `--environment` / `--audience`, or `context:` in a package
+example or test); see [Identity](QUERY_CALL.md#identity). A `rationale:` string is strongly encouraged — it is echoed in
 policy-effect reports so the person whose query was denied learns why.
 
 ```yaml
@@ -828,7 +948,15 @@ semantic_policies:
     kind: row_filter
     dimension: dimension.shop_order_customer_id
     attribute: customer_id
-    rationale: Each customer sees only their own orders.
+    unless_roles: [auditor]
+    rationale: Each customer sees only their own orders; auditors see every order.
+
+  - id: policy.shop.own_region
+    kind: row_filter
+    dimension: dimension.shop_store_region
+    attribute: region
+    shared: [entity.shop_customer]
+    rationale: Managers see their region's stores and the orders placed in them.
 ```
 
 ### Objects visible only to named roles
@@ -896,6 +1024,11 @@ whole package, so hiding an object never removes or changes a `deny`,
   block](#building-block-measures) stays one when its metric is hidden, and `plan` still
   holds a draft over a measure that a metric narrows when that metric is hidden only because
   something it reads is hidden. The hold names nothing hidden.
+- **A measure governed out of view is not answered raw:** when a metric the caller can't see
+  filters a measure, every read of that measure (a select, `having`, an entity filter's
+  threshold, a nested predicate) is refused with `POLICY_DENIED`, naming neither the metric
+  nor what it filters, and `plan` holds a draft that reads it, with a hint to ask a package
+  admin which metric answers it. A caller who sees every metric gets the raw number as before.
 - **Authored text never names a hidden object.** A field of a visible object, or of the
   package, that names a hidden object (its id, or a name, label or alias no visible object
   shares) is shown without it, by what the field is: a text field (description, label,
@@ -958,7 +1091,7 @@ Every other use is refused with `POLICY_DENIED`, `details.withheld_objects`, a `
 and a recovery hint naming the accepted shape, on validate, compile, execute and MCP:
 selecting it in any expression, metric or measure that reads it (ratios, arithmetic,
 comparisons, prior period, rolling and other windows), ordering by such an expression, a
-`where`, `metric_filters` or threshold reading it, a segment defined on it, `export`, a
+`where`, `having` or entity filter reading it, a segment defined on it, a
 missing or larger `limit`, and other tie orders. Dependencies are the compiler's own, so a
 derived metric cannot stand in for the withheld one. Compiled SQL still contains the
 metric's expression; values come only from the warehouse and never appear in errors,
@@ -1040,36 +1173,37 @@ The graph is the canonical source for entity identity. It declares the entities
 the package exposes, their key column names, and any non-default relationships
 between them.
 
-Each graph entity must have a key, declared on the entity or through its own
-model's `keys.primary:`. An explicit graph model binding makes that
+Each graph entity you author must have a key: `key:` on the entity, or the `expr:` of its
+entry in its own model's `entities:` block. An explicit graph model binding makes that
 entity the model's primary entity, regardless of the order of its `entities:` block. A
 conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
 including for implicit bindings and bindings by model name. A
 keyless entity cannot borrow a foreign entity's key: loading fails with
 `INVALID_CONFIG` naming the entity and model before graph relationships are
-translated. Each model can be the primary home of only one graph entity.
+translated. Each model can be the primary home of only one graph entity; a model that is
+the home of none is a [row-grain model](#row-grain-models).
 
 ```yaml
 graph:
   entities:
     order:
       label: Order
-      key: order_id                             # scalar or list — both load
+      key: [order_id]                           # a list, even for one column
       model: orders                             # the model that declares order as primary
       disallowed_names: [ord_id, orderid]      # anti-pattern guard
     customer:
       label: Customer
-      key: customer_id
+      key: [customer_id]
       model: customers
       display: name                             # the dimension that names one customer
       disallowed_names: [cust_id, custid, customerid]
     product:
       label: Product
-      key: product_id
+      key: [product_id]
       model: products
     customer_history:
       label: Customer history
-      key: [customer_id, valid_from]            # composite keys need the list form
+      key: [customer_id, valid_from]            # a composite key
       model: customer_history
 
   # Explicit relationships — only for pairs that need non-default rules.
@@ -1114,14 +1248,14 @@ warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned e
   `null_rows`, `rows` and, for each visible sum or count of the query's own rows, `measures:
   [{output, null_value, total}]`. If any grouping dimension's route has a many hop, or no
   suitable output remains visible, it uses row counts and omits `measures`. A complete
-  answer (not truncated, no `limit`, no metric
-  filter) with no empty value carries no warning; any other answer keeps the compiled one.
-- **Filtered by it** (`use: filter`): for known NULL-excluding forms, every stage says
+  answer (not truncated, no `limit`, no `having` or entity filter on aggregates) with no
+  empty value carries no warning; any other answer keeps the compiled one.
+- **Filtered by it** (`use: filter`): for a `where` condition that drops unknown rows
+  (`is`, `gt`, `gte`, `lt`, `lte`, `contains`, `starts_with`, `ends_with`, `missing: false`),
+  every stage says
   "Plan filter: rows with no Billing version valid at their time are left out by this filter."
-  These are `IS NOT NULL`, `IN` / `NOT IN`, inequality to NULL, and ordinary comparisons or
-  `LIKE` / `NOT LIKE` with a non-NULL value. Operator case and spacing follow SQL lowering.
-  `IS NULL`, `=` / `IS` with NULL, null-safe comparisons and boolean `IS` / `IS NOT` carry no
-  such warning. Multiple excluding filters on the same dimension produce one filter warning.
+  `not`, the `not_` text words and `missing: true` keep those rows and carry no such warning.
+  Several such conditions on the same dimension produce one filter warning.
 
 A path that only leaves the versioned table (`customer_history → customer` here) reads one
 version per row and gets no warning. A version written moments after its event (a billing
@@ -1133,12 +1267,28 @@ row, a dbt snapshot) is the usual cause of an empty group.
 entity's own model's `dimensions:`, never its key. Anything else fails with `INVALID_CONFIG`.
 `label` names the entity type and `key` identifies a row; `display` is what a person reads.
 
-When a question groups by or ranks an entity ("by customer", "each customer", "top 5
-customers by revenue"), `plan` groups by the entity's key and its `display` dimension,
+When a question groups by, lists or ranks an entity ("by customer", "which customers",
+"top 5 customers by revenue"), `plan` groups by the entity's key and its `display` dimension,
 so names that repeat stay separate rows. Without `display:`, it uses the entity's one dimension
 whose own name names it ("Store name" for "store"), if exactly one does; otherwise the key
 alone, with an assumption line saying so. A caller who can't see the display dimension gets
 the same answer as a package without `display:`; the entity itself stays visible.
+
+A text `display:` dimension also makes the entity's rows findable by name. When a question
+names a row with capitalized or quoted words that match nothing in the catalog ("How many
+orders did Acme place last month?", "What's Globex's MRR?"), `plan` looks the words up in the
+display of each entity the question's measure reaches, under the caller's row filters. One
+row whose display holds the words, as whole words in any case ("Acme" finds "Acme Data Co",
+not "Acmeco"), is answered: the draft filters on that row's key and groups by its display, so
+the answer names it. Several rows ask which one; none leaves the question held. Declare a
+`domain:` instead for a short fixed list of values, which needs no lookup.
+
+A call that groups by the `display` dimension itself groups by the entity's one-column key
+too, just before the name, so two customers named Ann stay two rows; the answer carries the
+key column and the assumption `GROUPED_BY_KEY {dimension, key, message}`. When the caller can't
+see the key, the call groups by the name alone. A call grouped by an entity's key, when the
+entity declares no `display:` and the call groups by none of its other dimensions, carries
+`SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 
@@ -1182,6 +1332,62 @@ non-default rule:
 - SCD2 `temporal_validity:`
 - Custom `cardinality:` override
 - `allowed_directions:` restriction
+
+Without `cardinality:`, a relationship infers it from keys, so it must join on the key. A side
+is unique only when its columns hold its entity's whole key (in any order, extra columns
+allowed) and that key is declared `primary` (the default) or `unique`. A `target:` off the
+target entity's key fails loading with `INVALID_CONFIG` (declare `cardinality:`,
+`many_to_many` when the values repeat); a `via:` on part of a composite source key, or on a key
+declared `natural` or `foreign`, is a foreign key. Column names compare as written: a `via:` or
+`target:` column that differs from a key column only in case fails loading, so spell it as the
+key does. Join columns must have the same type on both sides: a warehouse that coerces text to
+a number can match distinct keys, such as `'01'` and `'1'`.
+
+The engine trusts the join columns as they are stored ([known
+limitations](QUERY_CALL.md#known-limitations)):
+
+- Joining columns of different types or collations (a text id to an integer key, or a
+  case-insensitive collation) can match several parent rows, so totals can double. Keep join
+  columns the same type.
+- A child row whose parent id is missing from the parent table still counts in entity filters:
+  the engine trusts the child's id.
+
+### Two roles on one pair
+
+An event has a buyer and a seller, both customers: two relationships between `event` and
+`customer`, each on its own columns. Write the first as the model's foreign key and the second
+as a named `graph.relationships` entry with its own `via`:
+
+```yaml
+# models/events.yml: the buyer, the model's foreign key (relationship.events_customer)
+model:
+  id: events
+  relation: raw_events
+  entities: {event: {}, customer: {expr: buyer_id}}
+```
+
+```yaml
+# graph.yml: the seller, a second role (relationship.event_seller)
+graph:
+  relationships:
+    event_seller:
+      entities: [event, customer]
+      cardinality: many_to_one
+      via: [seller_id]
+      target: [customer_id]
+  path_preferences:       # what "an event's customer" means when a question doesn't say
+    - source_entity: event
+      target_entity: customer
+      relationship_path: [relationship.events_customer]
+```
+
+Through Architect MCP, the same two writes are `upsert_relationship(from_entity: event,
+to_entity: customer, columns: [buyer_id])`, then `upsert_relationship(from_entity: event,
+to_entity: customer, columns: [seller_id], name: event_seller, keep_existing_routes: true)`,
+which also records the buyer as the pair's default route. Without a row for the pair, a
+question that reaches the customer is refused as `AMBIGUOUS_PATH` with both roles as options
+(see [the route rule](#the-route-rule)); a query that means the seller names it in
+[`routes`](QUERY_CALL.md#routes).
 
 ## Models
 
@@ -1233,6 +1439,9 @@ model:
       value_type: count
 ```
 
+Freshness metadata (`freshness_source`, `freshness_sla_seconds`, `freshness_as_of`) is
+declared on the model, or on one of its physical variants, never on its graph entity.
+
 ### `model.entities:` — explicit declaration of exposed entities
 
 Required on every model. Lists which entities the model exposes. Defaults bind to
@@ -1252,20 +1461,122 @@ The **primary entity** of a model is the entity whose `graph.entities.<x>.model:
 names the model (the jaffle and tpch packages author it this way), and the model's rows
 are keyed by that entity's canonical key, or its `expr:` override.
 
-Without an explicit graph model binding, the loader resolves the primary from an
-authored `entity:` beside the `entities:` block, then an entity listed in the
-model's `entities:` block whose name matches the model and which has no explicit
-graph binding. It back-fills implicit graph bindings from the resolved identity.
-Declaration order never selects the primary; loading fails with `INVALID_CONFIG`
-if it cannot be resolved or two graph entities bind to one model. Two models
-claiming the same unbound graph entity also fail with `INVALID_CONFIG` naming both
-models.
+Without an explicit graph model binding, the loader resolves the primary from a graph
+entity named like the model, with no explicit binding, when the block is empty or lists the
+model's name. It back-fills implicit graph bindings from the resolved identity. Declaration
+order never selects the primary: a model neither resolves is row grain, and two graph
+entities bound to one model fail with `INVALID_CONFIG`. Two models claiming the same unbound
+graph entity also fail with `INVALID_CONFIG` naming both models.
 
 Rows finer than an entity are an entity of their own: several payments of one
 order, or one snapshot of a repository per day. Key that entity by its rows
 (`[order_id, payment_id]`, `[repo, snapshot_date]`), bind it to the model, and list
 the parent entity in the model's `entities:` block so the relationship to it is
 inferred. A model `grain:` is refused (see [Refused legacy forms](#refused-legacy-forms)).
+
+### Row-grain models
+
+A model that no graph entity is homed on has no key. Its rows declare no identity, which is
+not a claim that the data has none: every stored row counts, duplicates included.
+
+```yaml
+model:                         # models/readings.yml: nothing in graph.entities names this model
+  id: readings
+  relation: device_readings
+  entities: {device: {}}       # its parents only
+  measures:
+    reading_rows: {kind: aggregate, expr: {kind: literal, value: 1}, default_agg: sum,
+      value_type: count}
+    devices_reporting: {kind: entity_count, entity_key: device_id}   # its parents, not its rows
+```
+
+- A model is row grain when its `entities:` block lists only entities homed on other models,
+  or is empty or names only the model while no graph entity has the model's name, or is absent
+  and nothing binds the model. A block entry `graph.entities` doesn't declare stays
+  `INVALID_CONFIG`, so a typo never reads as row grain.
+- Its graph entity is named after the model (`entity.<namespace>_<model>`), so a
+  `graph.relationships` row can name the model by its id, from its side: for a second role, or
+  a validity window. A graph entity already holding that name is `INVALID_CONFIG`.
+- Its joins to its parents are ordinary many-to-one joins. Its measures group by its own, its
+  parents' and their parents' columns, beside other facts; a parent can be filtered or ranked by
+  an aggregate of its rows (an entity filter on the parent, or a child group); its rows can be
+  filtered by a parent's other children; and it can be a link table (`bridge: true`), whose
+  duplicate rows count twice for its own measures and once for a parent's distinct count.
+- Nothing can look up one of its rows. A relationship into it (another model's `entities:`
+  entry or a `graph.relationships` row) is `INVALID_CONFIG`, and the message shows the row to
+  write from its side instead.
+- What has to tell its rows apart refuses with `ROW_GRAIN_UNSUPPORTED`, naming the model and the
+  fix: segments, entity filters, per-entity values and distributions, conversions and anchored
+  sets on it, lookups `via` it, and a sum, first or last of an `additive: false` measure on it.
+  An `entity_count` without `entity_key` and a stock (`accumulation: stock`, whose series is the
+  key minus the clock) are `INVALID_CONFIG`.
+- `inspect` shows `"key": []` and its `key_note`, what it looks up; `discover` doesn't offer it
+  as a grouping entity, and `semantic-rails project validate` lists it under "Row grain (no
+  key)". Answers carry nothing new.
+
+Declare a key, a graph entity homed on the model, when its rows have one. `kind: fact` is gone:
+give such a model an entity keyed by its time column (a daily series keyed by `[date_day]`), or
+leave it row grain.
+
+### One row per key
+
+A table whose rows repeat a key (a membership table, one row per person and department) has no
+key of its own, so nothing can look up a person in it. Model the same relation twice: once with
+`one_per_key: true`, read as one row per its entity's key, for what is fixed per person; and
+once row grain, for what varies, with a foreign key on that same key.
+
+```yaml
+# graph.yml
+entities:
+  person: {key: [person_id], model: people}
+# models/people.yml: one row per person, read from memberships
+model:
+  id: people
+  relation: memberships
+  one_per_key: true
+  entities: {person: {}}
+  dimensions:
+    person_name: {kind: categorical}            # fixed per person
+  measures:
+    headcount: {kind: aggregate, expr: {kind: literal, value: 1}, value_type: count}
+    salary: {kind: aggregate, expr: salary}
+# models/memberships.yml: every stored row, as row grain
+model:
+  id: memberships
+  relation: memberships
+  entities: {person: {}}                        # on the person's own key: a link
+  dimensions:
+    department: {kind: categorical}             # can differ across a person's rows
+```
+
+- The loader reads the relation as `source → where every key column is set → group by the key`.
+  Each other column is the key's one value: `{NULL, x}` reads `x`, and two values read NULL, so
+  a measure column with two values in a key adds nothing (no pick, no double count). The data is
+  the owner's to fix; nothing checks or warns at answer time. A row with no key is no entity,
+  though the row-grain model still counts it.
+- Lookups into the model are ordinary many-to-one joins (`entities: {person: {}}` on any other
+  model), unique by construction. A lookup that finds no row reads NULL.
+- The row-grain model over the same relation, with a foreign key on the one-per-key model's key,
+  is its **link**. Its columns are reached from the person one to many; how groups across a link
+  count is in [QUERY_CALL.md](QUERY_CALL.md#groups-across-a-link). "Headcount by department"
+  counts each person once in every department they have a row in, and a person with no row
+  there is the NULL group.
+- The link is walked in reverse, from the person to their rows. A package whose
+  `defaults.relationship.traversal` allows only `forward` refuses that walk with
+  `PATH_NOT_FOUND`, naming the link; allow it with `allowed_directions: [forward, reverse]` on a
+  `graph.relationships` row for the link (`entities: [memberships, person]`).
+- Put each column on one model: on the one-per-key model when it is fixed per key, on the
+  row-grain model when it can vary. A row filter on a one-per-key model's dimension and
+  `variants:` on a one-per-key model are `INVALID_CONFIG` (a stored rollup isn't read one row per
+  key). Its rows hold only the columns the package reads on it (its dimensions, measures and
+  joins), so a measure on any model, or an `aggregate_if`, reading another column of the relation
+  is refused with a hint to declare it. Its relation is read under a name starting
+  `sr_one_per_key__` (`sr_one_per_key__shop_person` for `entity.shop_person`): once a package has
+  a one-per-key model, a table, relation or pipeline string holding `sr_one_per_key` (in any
+  case, padded or with other punctuation) is `INVALID_CONFIG`. On Postgres, a key with very many
+  distinct values in a one-per-key column can fail the query (out of memory or array size)
+  instead of reading NULL. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
+  under "One row per key".
 
 ### `bridge:` — link tables and junction tables
 
@@ -1297,11 +1608,11 @@ arbitrary multi-hop traversal.
 
 Time is optional. A package without dates can omit every model's `times:` block.
 Counts, sums, ratios, grouping, filters and lookups work without a time axis.
-Explicit Query IR requests for time ranges, grains, windows, temporal overrides,
+Calls that ask for time windows, grains, clock overrides,
 prior-period or cumulative expressions are refused with
 `INVALID_TEMPORAL_ROLE`: the package declares no time. Declare a `times:` entry
 before requesting time analysis. On a package without time, every
-natural-language plan with a draft returns `low_confidence`, retains its Query IR
+natural-language plan with a draft returns `low_confidence`, retains its call
 and adds the same `INVALID_TEMPORAL_ROLE` warning: "This package has no time; check
 the question doesn't ask for a time breakdown or window." This includes plain
 catalogue questions and catalogue labels or dimension values containing time words.
@@ -1337,7 +1648,10 @@ A measure is timed by the roles in its own `times:` list, or, when it lists none
 model's `default: true` time. A measure with neither has no clock: it answers without `time`
 or grouped by a plain date dimension, but a query that puts it on a time grain (for example
 `time: {temporal_role: ..., grain: month}`) is refused with `INCOMPATIBLE_TEMPORAL_ROLE`. Mark
-the role `default: true` or list it under the measure's `times:`.
+the role `default: true` or list it under the measure's `times:`. When the refusal is for a
+role a measure's `times:` doesn't list, its message and `details.measures` name the measure
+(and the metric that reads it): list each role it can be read by there, as the model's time
+keys or role ids (`times: [ordered_at, shipped_at]`).
 
 `timezone:` (default `UTC`) is the zone the role answers in. Every grain's
 buckets, and a query's `start`/`end` bounds, are in that zone:
@@ -1350,7 +1664,9 @@ buckets, and a query's `start`/`end` bounds, are in that zone:
   MotherDuck, DuckLake and Postgres, each query runs with the session time zone
   set to its time role's zone (UTC for a query without one), and only for that
   query. So these columns bucket and filter in the role's zone whatever the
-  server's or machine's default. Leave `column_timezone:` off them. (MotherDuck
+  server's or machine's default. Never set `column_timezone:` on a zone-aware column:
+  the engine would read each instant as a wall-clock time in that zone and put it in
+  the wrong day, for every measure on the clock. (MotherDuck
   gets the setting on its client connection; this hasn't been checked against
   the service.)
 - Everything else zone-dependent in the query follows that zone too:
@@ -1374,7 +1690,11 @@ buckets, and a query's `start`/`end` bounds, are in that zone:
   - BigQuery buckets `DATETIME` values, so a `TIMESTAMP` column isn't bucketed in the role's zone.
 
   On those warehouses, store naive timestamps and declare their zone with
-  `column_timezone:`.
+  `column_timezone:`. Until a clock in a zone other than UTC declares it, a window
+  that ends at now (`this`, or `start` alone) is refused there: a plain and a
+  zone-aware timestamp would need different cutoffs. Dated windows still answer. A
+  BigQuery `TIMESTAMP` column holds instants: declare `column_timezone: UTC`, and the clock
+  reads it in its own zone (`DATETIME(CAST(column AS TIMESTAMP), zone)`).
 
 ### Dimensions
 
@@ -1412,6 +1732,24 @@ Supported `kind:` values: `categorical`, `boolean`, `integer`, `continuous`,
 `number`, `percent`, `currency`, `date`, `timestamp`. `kind: id` is no longer
 authored — entity keys are auto-created from `graph.entities.<x>.key`.
 
+NULL is always unknown. Normalise other unknown spellings to NULL in your
+transformation layer when you can, and label empties that mean something (an
+empty referrer may be "direct"). When the source writes an unknown as a value you
+cannot change, declare it on that dimension:
+
+```yaml
+dimensions:
+  country:
+    kind: categorical
+    unknown_values: ['', 'XX']   # read as unknown wherever the dimension is read
+```
+
+Grouping puts those rows in the unknown (`null`) group, `missing: true` matches
+them, `not` keeps them (and the answer's `UNKNOWN_ROWS_KEPT` counts them), and a
+call that writes one of them in `is` or `not` is refused with the `missing` form.
+`unknown_values` is a non-empty list of strings or numbers on one dimension; it is
+never a package default. A rollup is not read for a query on such a dimension.
+
 ### Measures
 
 Each measure declares the explicit triple (`kind`, `accumulation`, `value_type`)
@@ -1445,8 +1783,11 @@ measures:
     value_type: count
 ```
 
-An `aggregate` measure with `expr: "1"`, `default_agg: sum`,
-`accumulation: { kind: flow }`, and `value_type: count` counts source rows.
+An `aggregate` measure with `expr: 1` (or `"1"`), `default_agg: sum`,
+`accumulation: { kind: flow }`, and `value_type: count` counts source rows. `expr:` is a
+column or formula as text, a finite number, or an expression object (`{kind: literal, value:
+1}`); anything else (`true`, a list, `.inf`, `.nan`) is refused at load, naming the model and
+measure.
 Package checks treat literal values as constants with no column dependencies;
 columns inside compound expressions are still checked against the warehouse.
 
@@ -1462,13 +1803,47 @@ measure or under `defaults.measure`, and because a measure's own `accumulation:`
 `defaults.measure.accumulation` whole, under such a default it names its own `kind:`, and a
 stock its own `snapshot:` when the default sets one; anything else is refused at load.
 
-A `stock` measure answers with each series' last snapshot in each period (its first,
-with `snapshot: start_of_period`), then adds up the series. A series is the row key
-without the clock's column, so a snapshot table's entity key is the series columns plus
-the snapshot time: `key: [store_id, date_day]` for inventory per store per day, not a
-surrogate such as `inventory_row_id` that is unique per snapshot row, and the series
-columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
-check below but still sums). Give the snapshot time `class: as_of_time`.
+A `stock` measure reads one value per series in each period, then adds up the series. A
+series is the row key without the clock's column, so a snapshot table's entity key is the
+series columns plus the snapshot time: `key: [store_id, date_day]` for inventory per store
+per day, not a surrogate such as `inventory_row_id` that is unique per snapshot row, and the
+series columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes
+the check below but still sums). Give the snapshot time `class: as_of_time`.
+
+Which value a series gives depends on the clock the stock is read on:
+
+- On an `as_of_time` clock (a snapshot table), an end-of-period stock is read on each
+  period's **closing day**, the period's last day with a snapshot: the day bucket
+  `time.grain: day` puts the snapshot in. With no time window or grain, it is the last day
+  with a snapshot at all. A series with no snapshot that day is not counted: a series that
+  stops is never carried forward from an earlier day. A row whose clock is NULL is never a
+  snapshot, and rows of one series tied on its last clock value are all read, as the data
+  holds them. Its own column and a read inside an entity filter or a metric predicate all
+  choose this way. Two shapes are refused rather than risk another day:
+  - a share of such a balance filtered by entity sets (a ratio whose numerator adds
+    predicates to its denominator), with `REWRITE_NOT_SUPPORTED`, `details.reason:
+    entity_set_ratio_closing_day`: ask for the part and the whole as separate measures;
+  - on DuckDB, MotherDuck, DuckLake and Postgres, a read on a timestamp clock whose zone
+    isn't the one the call runs in (UTC without a `time` block), with `MIXED_TIME_ROLES`,
+    `details.reason: closing_day_zone`: give the call a window on the balance's own clock. A
+    DATE clock never depends on the session's zone and is never refused.
+
+  Every answer names the day each read used (`BALANCE_CLOSING_DAY`
+  under `assumptions`, with `measure`, `outputs` (the columns it counts for; empty for the
+  whole answer, `null` when the engine can't tell), `nested` (read inside an entity filter,
+  predicate or branch), `closing_day`,
+  the latest when there are several periods, and `periods`). When series seen earlier in a
+  period had no snapshot on its closing day, the answer also carries the warning
+  `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` with their count (`details`: the same fields, with
+  `closing_day` the latest such day, plus `checked`, `series`, `series_missing` and
+  `periods_missing`). The engine can't tell a series that stopped, which is right to leave out, from one that takes
+  its snapshots on other days (one store counted on the 5th, another on the 20th) or from a
+  table that records only changes; those two are undercounted. Snapshot every series on the
+  same days, or turn a table of changes into one row per series per day with a
+  `state_as_of` relation pipeline step.
+- On an `event_time` or `state_time` clock (a current-state table, one row per series), each
+  series' last row in the period is read, as keyed, whatever its day.
+- `snapshot: start_of_period` reads each series' first row in the period.
 
 `plan` reads such a balance on one day of that clock: the last complete day when a question
 names none ("What's our MRR?"), or the closing day of the period it names ("at the end of last
@@ -1478,8 +1853,13 @@ aggregate) is answered only for complete days: `plan` holds a draft of it that r
 an open window, with `stock_as_of_unrealized`. To have
 every query read a balance per day, declare a `metric_constraint` on the stock with
 `required_group_by: [<the clock's date dimension>]` (and `supported_grains: [day]` on the
-clock if weeks or months are never meaningful). `plan` then adds that grouping to its drafts,
-and asks which day for a question by week or month rather than drafting against the policy.
+clock if weeks or months are never meaningful). `plan` then reads the balance at day grain,
+which meets the grouping, and asks which day for a question by week or month rather than
+drafting against the policy. Under such a policy a measure that is no balance is read at day
+grain when the question names one day, and otherwise `plan` asks which day or daily values
+(`day_read_required`). A call that misses the day is refused naming the cut ("can only be read
+by day: group by ..., or set time.grain to day."), with the fragment that meets it in the
+hint's `patch.merge`.
 
 The snapshot is chosen per series per period first. A grouped attribute stored on the
 snapshot rows, such as an account's plan that changes mid-week, is read from that
@@ -1500,7 +1880,7 @@ answer. Only filters on the stock's clock (the same entity and column) or a cale
 week reads Wednesday's snapshots. Other date or timestamp attributes refuse, as in
 `group_by`, with `REWRITE_NOT_SUPPORTED`, reason `stock_filtered_by_date_attribute`, and
 the dimension id; choosing between a time bound and a closing-snapshot attribute would
-be ambiguous. This also applies to conditions inside child groups. The
+be ambiguous. This also applies to conditions inside entity filters. The
 stock's own clock and calendar dimensions instead split the period: grouped by the
 snapshot day, each day keeps its own snapshot. Ratios whose numerator alone has extra
 conditions keep one snapshot per series per time bucket, so grouping one by the clock, a
@@ -1512,7 +1892,8 @@ A stock that adds up its series (`last_value`, `first_value` or `sum`, and not
 but none passing the filters, and NULL in a period with no snapshot at all. Its other
 aggregations read NULL there, and grouped by an attribute, a group with no snapshot
 passing the filters is left out.
-An entity-set share using those snapshots also keeps an observed period and reads 0
+An entity-set share using those snapshots (of a start-of-period stock, or one on a clock
+that isn't as-of; an end-of-period balance's is refused, above) also keeps an observed period and reads 0
 when every chosen snapshot fails its attribute filters; a kept zero denominator still
 reads NULL. With `observation_scope: query`, unmatched periods have no data.
 
@@ -1546,14 +1927,18 @@ visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages 
   `ROLLUP_UNSAFE` (`details.unsupported_construct: non_additive_sum`). A stock sums its
   series' last snapshots, so there each series must be one output row.
 - An output row holds one row when every column of the row key (for a stock, the key
-  without its clock) is grouped by, pinned with a top-level `=` filter or a one-value
-  `in`, or reached through the key of a many-to-one relationship on that column (when
+  without its clock) is grouped by, pinned by a top-level `is` condition with one value,
+  or reached through the key of a many-to-one relationship on that column (when
   it's the only relationship between the two entities); a `date` clock also counts at
-  `grain: day`. Metric and segment filters don't count.
+  `grain: day`. Entity filters, a metric's own filter and segment filters don't count.
   The refusal points to the measure's key or a finer grain.
 - `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
   visitors is a real question), and so does `prior_period`. Cumulative, rolling and
   period-to-date metrics, scoped aggregates and metric predicates over it are refused.
+- On a [row-grain model](#row-grain-models) no row key can be fixed, so its `sum`, first and
+  last refuse with `ROW_GRAIN_UNSUPPORTED`, and a `default_agg` of one of them (`sum` is the
+  default) is refused at load: give it `default_agg: avg`, `min`, `max`, `median` or
+  `percentile`.
 - `project validate` probes such a measure grouped by those dimensions.
 - It only applies to `kind: aggregate`: an `entity_count` is a distinct count the
   engine computes itself.
@@ -1590,7 +1975,7 @@ a flow accumulation. Authoring `expr`, an aggregation, `additive`, `accumulation
 The invariant: a carried total appears at most once per output row's `via` key. It is
 never added across two parents, or repeated over the child's own child rows.
 
-- An output row must hold one parent: group by or pin (`=`) the `via` entity's key, or
+- An output row must hold one parent: group by or pin (a one-value `is`) the `via` entity's key, or
   every column of the measure's own key. Anything coarser is refused with `ROLLUP_UNSAFE`
   (`details.construct: parent_lookup`), and `project validate` probes the measure grouped by
   the `via` key.
@@ -1602,13 +1987,12 @@ never added across two parents, or repeated over the child's own child rows.
   none; an `avg`, `min` or `max` source reads NULL for it.
 - The source is compiled as its own query, so its access policies apply. The lookup's
   direct relationship is also a bound dependency: denying it refuses
-  validate, compile and query with `POLICY_DENIED` before rendering or execution. A row filter
-  allows one relation per query, so a lookup under any row filter is refused with
-  `POLICY_DENIED`.
+  validate, compile and query with `POLICY_DENIED` before rendering or execution. Under a row
+  filter the source reads the caller's visible rows, as every read does.
 - Time: the carried value is the parent's all-time total. A query's `where`, `time`
   window and buckets on the child's own clocks select child rows, and leave the value
   unchanged. Bucketing by the source's clock, prior-period, cumulative, rolling and
-  period-to-date wrappers, and `temporal_role_overrides` on a lookup are refused with
+  period-to-date wrappers, and a clock override on a lookup are refused with
   `REWRITE_NOT_SUPPORTED` (`details.unsupported_construct: lookup_time`).
 
 The load refuses a lookup with `INVALID_CONFIG`, naming the key at fault, when:
@@ -1733,7 +2117,14 @@ aggregates. There is intentionally no top-level `filter:` direct field on
 filter expression. Each `all:` item is either a dimension
 condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
-including `any:`, are unsupported.
+including `any:`, are unsupported. A condition uses the call's [filter words](QUERY_CALL.md#filter-words)
+(`is`, `not`, `gt`, `gte`, `lt`, `lte`, the text words, `missing`) and accepts their SQL
+spellings (`=`, `!=`, `IN`, `NOT IN`, `>`, ...) with the same meaning: `not` and
+`!=` keep rows whose value is unknown; add `missing: false` to leave them out.
+A package `metric_predicate` states its scope with `scope_mode` where a call writes
+`over`: `entity_only` is `all_time` (`window` with `time_alignment: query_window`),
+`entity_period` is `period`, and `contextual` (the outer query's time bucket and grouped
+entities) is for package metrics only.
 
 ### Building-block measures
 
@@ -1757,7 +2148,7 @@ A measure authored `publish: false` is not offered to agents: `discover` doesn't
 and `plan` doesn't answer with it unless `partial_query.select` names it by id. When a metric
 reads it through a filter, it is a building block. `plan` answers with the metric when it is
 the only one that filters the measure or the question names it, and otherwise holds the
-draft. `inspect` and Query IR still take the measure by id. A measure never publishes a
+draft. `inspect` and a query call still take the measure by id. A measure never publishes a
 metric of its own name, and `publish:` is `true` or `false` only. A metric that aggregates
 the measure whole publishes it. `plan` also holds a draft over a published measure while a metric
 filters its rows on a dimension of the measure's entity, such as a class; to count every row,
@@ -1831,7 +2222,7 @@ metrics:
 | `aggregate` | `measure: <key>` | publish a measure as a metric |
 | `ratio` | `numerator: <key>`, `denominator: <key>` | a zero denominator reads `NULL` |
 | `cumulative` | `measure: <key>`, optional `window:` | running total |
-| `prior_period` | `measure: <key>`, `period:` | comparison value at prior period |
+| `prior_period` | `measure: <key>`, `offset: {unit, value}` | the measure that many periods earlier (`offset: {unit: month, value: 1}`) |
 | `period_to_date` | `measure: <key>`, `period:` | MTD / QTD / YTD |
 | `rolling` | `measure: <key>`, `window:` | trailing window |
 | `semi_additive` | `measure: <key>`, kind-specific options | applies measure's snapshot policy |
@@ -1858,6 +2249,10 @@ metrics:
     value_type: currency
 ```
 
+`as:` works the same way on graph entities and relationships, dimensions, times,
+measures, metrics and segments; `id:` on any of them is refused. A model's `id:` stays its
+identity in a `model:` file.
+
 `as:` does not cross namespaces — single-package authoring only. The validator
 rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 `as:` produces an ID identical to the auto-derived one (use is unnecessary).
@@ -1882,12 +2277,17 @@ form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
 |---|---|---|
 | `package.schema_strict` (either value) | Delete it: one set of rules applies to every package | `package-schema-strict` |
 | A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures). A measure with no `publish:` key or with `publish: true` no longer publishes its metric either, and the upgrade can't detect it: [author those metrics by hand](#metrics-a-measure-published-implicitly) | `measure-auto-publish` |
-| `id:` on a graph entity, dimension or measure | The key derives the id; `as:` only to keep a public id | `object-as` |
+| `id:` on a graph entity or relationship, dimension, time, measure, metric or segment | The key derives the id; `as:` only to keep a public id | `object-as` |
+| A measure's `time:` | `times: [<role>]` | `measure-times` |
+| A measure's `aggregation:` (never read) | `default_agg:` | |
+| A dimension's `valid_values:` | `domain:` | |
+| `freshness_source`, `freshness_sla_seconds` or `freshness_as_of` on a graph entity | The same keys on the entity's model | |
+| `from_` or `label` in a measure's `validity_windows` or `external_discontinuities` row | `from`; `semantics` (validity window) or `what` (discontinuity) | |
 | A model `grain:` | The bound entity's key keys the model's rows; rows finer than an entity are an [entity of their own](#graphyml) | `model-grain` |
-| A singular `entity:` without `entities:`; `keys.foreign:`; `keys.primary:` beside `entities:` | List the model's entities under `entities:` | `model-primary-key` |
+| A model's singular `entity:` or `keys:` | Bind the model with `graph.entities.<x>.model` and list its entities under `entities:` | `model-primary-key` |
 | A model `joins:` block | One `graph.relationships` row per join | `model-joins` |
 | A model `id:` that differs from its key in a `models:` map | Delete it: the key is the model's id | |
-| `topics:` on a dimension, measure, metric or segment; `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
+| `topics:` on any object (model, graph entity, dimension, time, measure, metric or segment); `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
 | A measure without `kind:` | `kind: aggregate`, `entity_count` or `lookup` | |
 | A metric with an absent, null or blank `value_type:` | Declare it; `number` is valid when intentional | |
 | `relations:` in a directory package's `package.yml` | `relations.yml` or `relations/` | |
@@ -1946,7 +2346,7 @@ paths, because most pairs have one route (see [the route rule](#the-route-rule))
 - "items per customer" when the items table also carries `customer_id`: the direct
   relationship and `order_item → order → customer` are two routes that can name
   different customers. The item's own `customer_id` is its one direct key, so the
-  planner uses it and the response notes it (`ROUTE_COLOCATED_KEY`); a
+  planner uses it and the answer's `routes` names it (`basis: own_key`); a
   `graph.path_preferences` row records the other route when that is the meaning.
 - "customers per store" in a package where a customer reaches a store through the
   stores they ordered at and through a preferred store: neither is the customer's own
@@ -1959,10 +2359,11 @@ condition or a measure expression), and whatever shape the query takes (pre-aggr
 before its joins, de-duplicated across a one-to-many hop, filtered with `EXISTS`, an
 entity-set ratio, or dimensions alone), the hop is a left join. A row whose foreign key is
 NULL or matches no row stays, with NULL for everything the hop looks up: it groups under
-NULL, and grouped rows add up to the ungrouped total. A filter on such a dimension treats
-the row as it treats a NULL value in the row itself, wherever the filter is written: `IS
-NULL` selects it, so "passengers excluding crew" through a crew-roster lookup is a
-`crew_role IS NULL` filter, while `=`, `!=`, `IN` and `NOT IN` never match it.
+NULL, and grouped rows add up to the ungrouped total. A filter condition on such a
+dimension treats the row as it treats a NULL value in the row itself, wherever the
+condition is written: `missing: true` selects it, so "passengers excluding crew" through a
+crew-roster lookup is `crew_role` with `missing: true`; `is` never matches it and `not`
+keeps it.
 
 Only these reads join a lookup with an inner join, so a row with no match is left out:
 
@@ -2020,12 +2421,12 @@ Grouping retains a narrower exception: a path that only goes down one-to-many ho
 (`order → order_item → product`), each hop joined on the declared key of its
 one side, lets a distinct parent count be grouped by the far dimension; the entity's key is what
 the engine de-duplicates on.
-A query states which child rows its conditions mean with a child group in `where`
-(`{child, match: any|none, where}`, see
-[QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#child-groups)); two or more positive plain filters
-on one child, or one negated one, are refused with `AMBIGUOUS_CHILD_SCOPE` and a
-clarification. Its readings are child groups, so it is offered only when a group on that
-child takes the plain filters' own route; otherwise the refusal is `MIXED_GRAIN_INVALID`,
+A call states which child rows its conditions mean with an entity filter in `where`
+(`{entity, any | none}`, see [Entity filters](QUERY_CALL.md#entity-filters)); two or more
+positive plain conditions on one child, or one `not` or `missing` one, are refused with
+`AMBIGUOUS_CHILD_SCOPE` and a clarification. Its readings are entity filters, so it is
+offered only when a filter on that child takes the plain conditions' own route; otherwise
+the refusal is `MIXED_GRAIN_INVALID`,
 naming the `graph.path_preferences` row that records that route. A
 measure's own `filter` may cross a one-to-many hop with one positive condition;
 negated ones stay refused because "has a non-matching child" and "has no matching
@@ -2058,9 +2459,9 @@ business definition. The engine never guesses: the decision is recorded once
 in the package, then every query uses it, and adding a route never silently
 changes an existing answer. A route is chosen only by a recorded decision or
 the start entity's own key. For each start entity and target entity, over
-every route within the hop ceiling, in this order (a query's own
-[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions) row for exactly the
-pair comes first, for that query only):
+every route within the hop ceiling, in this order (a call's own
+[`routes`](QUERY_CALL.md#routes) entry for exactly the
+pair comes first, for that call only):
 
 1. **Decided.** A `graph.path_preferences` row for exactly the pair (below)
    wins.
@@ -2090,7 +2491,7 @@ pair comes first, for that query only):
 
 Hop count and weights never decide. Every path choice goes through this rule:
 grouping, filters, a measure's own filter, metric predicates, time roles,
-conversions, the direct read of a foreign key, a child filter's `EXISTS`, the
+conversions, the direct read of a foreign key, an entity filter's `EXISTS`, the
 distinct count read from a child's rows, and discovery, grain recovery,
 catalog and error hints. A calendar dimension reached only through other
 facts' rows is refused the same way, and its recovery hint points at
@@ -2114,9 +2515,9 @@ relationship), and `details.fixes`:
   reads one of that name;
 - `declare_link_table`: `entities: {bridge: true}` on the crossed model;
 - `record_route`: the `graph.path_preferences` row for the pair;
-- `child_group`: ask about the crossed rows themselves, a
-  [child group](QUERY_IR_SCHEMA.md#child-groups) carrying the query's
-  conditions on the target.
+- `entity_filter`, when the query has conditions on the target: ask about the
+  crossed rows themselves, an `any` [entity filter](QUERY_CALL.md#entity-filters) on
+  the crossed entity carrying those conditions.
 
 Three declarations allow the crossing, and then no warning is given: the
 crossed model's `bridge: true`; a validity window on the crossed entity (a
@@ -2157,13 +2558,14 @@ words built only from package labels:
 - `decision` is the `graph.path_preferences` row that makes the option the
   package default, with `label` set to the meaning. When that row would
   disagree with existing rows (see "Rows must agree" below), the option adds
-  `conflicts_with`: those rows, to change before recording it. Its `decision`
-  still answers per query.
+  `conflicts_with`: those rows, to change before recording it. Its `query`
+  still answers per call.
+- `query` is the refused call with the option's route added to
+  [`routes`](QUERY_CALL.md#routes) (`{from, to, via}`), ready to send.
 
 Every option can be applied two ways. For the person who asked, the agent
-resends the query with the option's `decision` in
-[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions): that query only, not a
-default. For everyone, a maintainer records the same row in the package (Architect
+sends the option's `query`: that call only, not a
+default. For everyone, a maintainer records the option's `decision` in the package (Architect
 `record_route_decision` writes it for review); then the question answers
 without asking.
 
@@ -2213,30 +2615,27 @@ for a pair with one route is allowed: it records a definition.
 
 Four guard rails back this up:
 
-- **Route notes** — where the engine chose one of two or more routes for a pair
-  the compiled query reads (root, leaf, predicate and conversion paths, and the
-  direct read of a key), compact and full responses carry one `info` note, with
-  the chosen route's relationship ids in `details.route` and its readable
-  meaning in the message:
-  - `ROUTE_COLOCATED_KEY` (rule 2, `Order → Store (own key)`):
-    `details.alternatives` holds, for each other route whose row would load
-    beside the package's rows, the `graph.path_preferences` row that would make
-    it the default, and `details.conflicts_with` lists any other route with the
-    rows its row would disagree with;
-  - `ROUTE_RECORDED` (rule 1, `(recorded route)`, or rule 3,
-    `(recorded for Account → District)`, with the rows it follows in
-    `details.rows`).
+- **Routes in the answer** — where the engine chose one of two or more routes
+  for a pair the compiled query reads (root, leaf, predicate and conversion
+  paths, and the direct read of a key), the answer's `routes` names it as
+  `{from, to, via}`, at every verbosity. Compact and full responses add how
+  (`basis`):
+  - `own_key` (rule 2): `alternatives` holds, for each other route whose row
+    would load beside the package's rows, the `graph.path_preferences` row that
+    would make it the default, and `conflicts_with` lists any other route with
+    the rows its row would disagree with;
+  - `recorded` (rule 1, or rule 3 with the pairs whose rows it follows in
+    `recorded_for`).
 
-  A pair with one route gets none, and the minimal response (the MCP default)
-  leaves the notes out. So adding a route never changes an answer silently: a
-  pair whose one route is its own key keeps its answer and now notes it, and
-  any other pair is refused until a row records it. A note names only a route
-  the SQL reads, and only when the pair's resolution chose that route, so the
-  same query gets the same notes whatever ran before it; a count read from a
-  child's rows along the counted entity's route is noted once, for that route.
-  For a recorded route, notes check whether multiple routes fit `max_hops`
-  using bounded reachability scans, without enumerating alternatives or caching
-  a route refusal just to produce a note.
+  A pair with one route is not listed. So adding a route never changes an
+  answer silently: a pair whose one route is its own key keeps its answer and
+  now names it, and any other pair is refused until a row records it. `routes`
+  names only a route the SQL reads, and only when the pair's resolution chose
+  that route, so the same query names the same routes whatever ran before it; a
+  count read from a child's rows along the counted entity's route names it once.
+  For a recorded route, the check whether multiple routes fit `max_hops` uses
+  bounded reachability scans, without enumerating alternatives or caching a
+  route refusal.
 - **`AMBIGUOUS_PATH` error** — rule 5 above. A `graph.relationships:` entry
   never replaces a foreign key on other columns: the model keeps both, so an
   origin and a destination key into one `airport` entity are two routes. Any
@@ -2287,10 +2686,14 @@ Architect's `project_status`) carries `route_census`:
   with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
   meaning and `details.clarification.options[*].decision`, the row that records
   it). One `ROUTES_UNDECIDED` warning gives
-  their `count` and `pairs`. Record the route each pair means as a
-  `graph.path_preferences` row with `record_route_decision` before a question
-  needs it. The warning is
-  advisory and never blocks a promotion.
+  their `count` and `pairs`, and `first_pair_rows`, the rows that would decide
+  the first pair. Record the route each pair means as a
+  `graph.path_preferences` row before a question needs it: write it in
+  `graph.yml` (`semantic-rails project validate` prints the first pair's rows
+  to choose from) or with Architect's `record_route_decision`. The warning is
+  advisory and never blocks a promotion. Leaving a pair undecided is a valid end state: the
+  engine asks which route a question means when one needs it. Don't record a meaning the
+  business doesn't hold.
 - `assumed`: `[{source_entity, target_entity, relationship_path, basis}]`, the
   pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
@@ -2388,8 +2791,7 @@ or dimensions differ from the transaction table.
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
 leaf to the rollup relation instead of the raw relation while preserving the
-same public measure and dimension IDs. Fact-model variants use the model's
-`time_entity` as their source entity. An optional variant `id:` preserves a
+same public measure and dimension IDs. An optional variant `id:` preserves a
 rollup's public relation ID. Hosts supplying managed rollups attach entries in
 this same `variants:` shape to the model.
 
@@ -2475,14 +2877,14 @@ Routing is conservative in the MVP:
   for an `entity_count` measure. `avg`, `median` and `percentile` queries, and
   stock (semi-additive) measures, run on the base tables.
 - A `count_distinct` routes across rollup rows only when it counts the
-  single-column row key of a model that isn't a fact model (for example distinct
+  single-column row key of a model (for example distinct
   `order_id` on an orders model keyed by `order_id`). Distinct counts of
   anything else, such as customers or one column of a composite key, can't be
   added up across rollup rows. A column declared `holds: count_distinct` still
   answers them at the rollup's own time grain when every rollup dimension is
-  grouped or pinned to one value by an `=` filter, so each result row is one
+  grouped or pinned to one value by an `is` condition, so each result row is one
   rollup row. The rollup must have one row per time bucket and dimension columns
-  (and per key of any `grain.entities`); an `IN` list or a range on a rollup
+  (and per key of any `grain.entities`); an `is` list of several values or a range on a rollup
   dimension that isn't grouped runs on the base tables.
 - A time role whose `column_timezone` differs from its `timezone` runs on the
   base tables: the rollup path buckets the stored column's clock, without the
@@ -2511,8 +2913,8 @@ Routing is conservative in the MVP:
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,
   the planner scans the raw relation.
-- Query-time `metric_predicate` shapes, including a `metric_predicate` inside an
-  aggregate's `filter`, do not route through variants yet.
+- Entity filters on aggregates (`{entity, having, over}`) and other `metric_predicate`
+  shapes, including one inside an aggregate's `filter`, do not route through variants yet.
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
@@ -2536,7 +2938,7 @@ between daily, weekly, and monthly rollups, then override only the differences.
 ## Default-time cascade
 
 A model's default `times:` entry (the one with `default: true`) cascades to its
-measures. Measures only need an explicit `time:` field when they override the
+measures. Measures only need an explicit `times:` list when they override the
 model default:
 
 ```yaml
@@ -2549,21 +2951,113 @@ model:
   measures:
     order_count:
       kind: entity_count
-      entity_key: order_id     # inherits time: ordered_at
+      entity_key: order_id     # inherits ordered_at
     refund_amount:
       kind: aggregate
       expr: refund_usd
       default_agg: sum
-      time: refund_recognized_time   # explicit override
+      times: [refund_recognized_time]   # explicit override
 ```
 
 Metrics do NOT inherit a model's default time — they remain explicit because
 metrics often span entities.
 
+## Empty periods
+
+A sum or count reads `0` for a period with no rows only when the period is loaded: no data
+is `NULL`, data of nothing is `0` (the full rule is in
+[Empty groups](QUERY_CALL.md#empty-groups-null-or-0)). How far a table is loaded is its
+**edge**, and `zero_through` says where it comes from. Set it on a model (a table), or once
+for the package in `defaults.yml`; a model's own value wins. There is no per-measure key.
+
+| `zero_through` | The edge | Use it when |
+|---|---|---|
+| `data` (the default) | the table's last row at or before `now` | nothing records how far the load ran |
+| `{loaded: <model>.<field>}` | `MAX(<field>)` over that model's table, capped at `now` | a load log (or a coverage mart) records each completed load |
+| `now` | the request's `now` | the table is always loaded, and you accept that a stalled load also reads `0` |
+
+```yaml
+# defaults.yml: every model's tables are loaded by the nightly that writes export_runs
+defaults:
+  zero_through: {loaded: export_runs.through_day}
+
+# models/export_runs.yml: one row per completed load
+model:
+  id: export_runs
+  relation: export_runs
+  entities: {export_run: {}}
+  times:
+    through_day: {column: through_day, kind: date}   # the last day each run loaded completely
+
+# models/lifecycle_events.yml: a quiet event table the same nightly loads
+model:
+  id: lifecycle_events
+  relation: fct_lifecycle_event
+  entities: {lifecycle_event: {}}
+  # (no zero_through: the project's load log applies; write data or now to override it)
+```
+
+- **`data`.** A quiet table whose last event is from 12 September reads `NULL` for every
+  later week, with `NO_DATA_YET`: "its last row is dated 2026-09-12. Nothing says this data is
+  loaded past it, so later weeks read NULL, not 0." The answer's `window.data_through` is that
+  last row's date.
+- **`{loaded: …}`.** The field is a `date` or `timestamp` time of any other model on the
+  same connection, read over a plain table or view (not a relation pipeline). A
+  date means the load completed through the end of that day in the query clock's zone (the
+  next local midnight, on the clock, across daylight-saving changes); a timestamp is that
+  instant. A period reads `0` when it ends by then. A load that reached the start of today (a
+  nightly that ran) also covers a period that starts before its edge and runs into today, such
+  as "this month so far", whose unfinished part the answer states (`PARTIAL_PERIOD`); today's
+  own day, which nothing of is loaded yet, reads `NULL`. A load that stalled a whole day or more
+  covers only the periods that end by its edge: the week it stopped in, and every later one,
+  reads `NULL` with `NO_DATA_YET`: "its data is loaded through 2026-10-11, so later weeks read
+  NULL, not 0". An empty load log (no date) certifies nothing, so no row is read and every
+  period reads `NULL`: "its loaded-through date is unavailable". `window.data_through` is the
+  loaded-through date and `window.data_through_source` names the load log as declared
+  (`export_runs.through_day`), or says `loaded` to a caller whose view hides that model; with
+  `sql_profile: "off"` no plan descriptor names it either. A caller who may read the SQL sees
+  the load log's table and column in it (the reads that cap each measure and bound coverage).
+- **`now`.** Every empty period up to `now` reads `0` once the table has data, and the answer
+  carries the note `ZERO_AFTER_LAST_ROW`: "reads 0 after its last row (2026-09-12) because the
+  package says this table is always loaded; a stalled load would also read 0".
+  `window.data_through_source` is `now`.
+
+**A declared edge caps what is read.** Every measure of the model reads only the rows at or
+before its edge, on the clock the query reads it by (for a load log, rows before the next local
+midnight after its date, or at or before its timestamp; for `now`, rows at or before the
+request's `now`): series, totals, an answer without a window, running totals, shares, prior
+periods, entity filters and each operand of a conversion all see the same rows. A stray row after the edge is not read, so
+its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
+base table, never a rollup, whose buckets can't stop at an instant. A clock on another model
+than the measure's own is not capped.
+
+The edge is only the upper bound: a period before the table's first row still reads `NULL`,
+and `observation_scope` decides what counts as observed, as before. Balances, averages,
+distinct populations and `additive: false` measures never read `0` for an empty period, edge or
+not. A caller row filter never
+filters the load log (it records how far the whole load ran); a `row_filter` policy on the
+load log's own model refuses the query for the callers it applies to (`POLICY_DENIED`,
+`row_filter_on_load_log`), so the log is never read unfiltered. ClickHouse reads no loaded
+coverage, so a ClickHouse package refuses any value but `data` (`INVALID_CONFIG`). Name one
+load log per load job; a model that another job loads declares its own.
+
+Known limits:
+
+- An entity filter whose threshold an entity with no rows passes (`lte 0`, `is 0`, `lt 1`),
+  taken per period or over the window, on a measure whose table declares an edge is refused
+  (`INVALID_METRIC_PREDICATE`): the edge stops what is read, but a window or period that runs
+  past it would still count each entity with no loaded rows there, such as a customer whose
+  order isn't loaded yet, as 0. A threshold 0 fails (`gte 1`) answers, and so does
+  `over: "all_time"`.
+- A window total (a window with no grain) answers its one row only on DuckDB, MotherDuck,
+  DuckLake and Postgres. On Snowflake, BigQuery, Databricks, Athena and ClickHouse it groups by
+  a constant with no one-row spine, so a quiet window total returns no row at all, whatever the
+  edge. A named window's series is covered by the edge on every warehouse but ClickHouse.
+
 ## Examples and tests
 
 Examples also teach `plan` the package's own questions. An example answers only
-its exact question, with the authored Query IR and pattern `package_example`.
+its exact question, with the authored call and pattern `package_example`.
 Case and whitespace aside (and the contractions `plan` expands in every
 question, so "What's" reads as "What is"), any other wording gets normal
 planning: different punctuation, plurals, numbers, signs or symbols, a different
@@ -2575,8 +3069,8 @@ periods is held with `PERIOD_COMPARISON_INCOMPLETE` until each period it returns
 has ended at the request's `now`. There is no fuzzy matching.
 Several valid, visible examples matching the same question require clarification with
 their IDs. Invalid examples fall through to normal planning with their IDs in
-`why.details.invalid_examples`. An example referring to a hidden object, in a value
-or in a mapping key such as `temporal_role_overrides`, is invalid for that caller,
+`why.details.invalid_examples`. An example referring to a hidden object anywhere in
+its call is invalid for that caller,
 exactly as it would be in a package without the object; the response never names
 the hidden object.
 
@@ -2598,66 +3092,90 @@ Both are loaded from **directories only** — the package root's `examples/` and
 `package.yml` are silently ignored by `run-examples` and `test-package`; keep
 them in sibling files.
 
-An `examples/` file maps example IDs to a question, a Query IR, and an expected
+Each entry's `query:` is a [query call](QUERY_CALL.md). The arguments beside the call are
+entry keys: `now:`, the instant `last` and `this` windows resolve against (see
+[`now`](QUERY_CALL.md#now)), and `context:`, the identity the entry runs as, such as
+`context: {audience: external_partner}` (see [Identity](QUERY_CALL.md#identity)). A `now:`
+at a file's top level applies to every entry in that file that doesn't set its own;
+`--now` on `run-examples`, `test-package` and `check` covers the rest. Pin `now` wherever a
+call reads a relative window, so the entry answers the same on every run.
+
+An `examples/` file maps example IDs to a question, a call, and an expected
 shape (`uv run semantic-rails run-examples` executes them). Columns are checked
 against the result's output descriptors even when a time window returns no rows;
-checks request compact responses even if the example declares `verbosity: minimal`,
-and reports retain the authored query. `min_rows` and `max_rows` still enforce the
-declared row counts:
+checks request compact responses, and reports retain the authored query. `min_rows` and
+`max_rows` still enforce the declared row counts:
 
 ```yaml
 # examples/core.yml
+now: "2026-03-02"            # every example in this file that sets no now of its own
 examples:
   top_stores_by_revenue:
     question: Top stores by revenue
     query:
-      version: 1
-      select:
-        - expression: {measure: measure.shop.revenue_usd}
-          as: revenue_usd
+      select: [measure.shop.revenue_usd]
       group_by: [dimension.shop_store_name]
       order_by:
         - field: revenue_usd
-          direction: DESC
+          direction: desc
       limit: 5
     expected_shape:
       columns: [dimension.shop_store_name, revenue_usd]
       min_rows: 2
       max_rows: 2
+
+  revenue_last_month:
+    question: Revenue last month
+    query:
+      select: [measure.shop.revenue_usd]
+      time: {last: {unit: month, value: 1}}
+    expected_shape:
+      columns: [revenue_usd]
 ```
 
 A `tests/` file maps test IDs to a `kind:` and its kind-specific assertion
-fields (`uv run semantic-rails test-package` runs them):
+fields (`uv run semantic-rails test-package` runs them). A grain series' columns start
+with `period`; `period_partial` is compared only when the expectation names it:
 
 ```yaml
 # tests/core.yml
+now: "2026-03-02"
 tests:
   monthly_revenue_columns:
     kind: query_returns_columns
     query:
-      version: 1
-      select:
-        - expression: {measure: measure.shop.revenue_usd}
-          as: revenue_usd
+      select: [measure.shop.revenue_usd]
       time:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
       order_by:
-        - field: time
-          direction: ASC
+        - field: period
+          direction: asc
       limit: 5
-    columns: [temporal_role.shop_order_ordered_at__month, revenue_usd]
+    columns: [period, revenue_usd]
+
+  last_week_daily_orders:
+    kind: query_row_count_bounds
+    now: "2026-02-02"        # this test's own instant
+    query:
+      select: [measure.shop.order_count]
+      time: {last: {unit: week, value: 1}, grain: day}
+    min_rows: 7              # a named window answers every day
+    max_rows: 7
+
+  partner_revenue_denied:
+    kind: validate_fails_with_code
+    context: {audience: external_partner}
+    query:
+      select: [measure.shop.revenue_usd]
+    code: POLICY_DENIED
 
   duplicate_alias_rejected:
     kind: validate_fails_with_code
     query:
-      version: 1
       select:
-        - expression: {measure: measure.shop.order_count}
-          as: value
-        - expression: {measure: measure.shop.revenue_usd}
-          as: value
-      limit: 5
+        - {expression: measure.shop.order_count, as: value}
+        - {expression: measure.shop.revenue_usd, as: value}
     code: DUPLICATE_OUTPUT_ALIAS
 ```
 
@@ -2727,20 +3245,20 @@ set: the document top level; `package:` and `package.seed`; `defaults:` and its 
 entries and their `rollup_safe`; `graph.path_policy`; `semantic_caveats` rows and their
 `time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
 `dimensions`, `times`, `measures` (and each measure's `accumulation:`, which takes `kind` and
-`snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
+`snapshot`, as does `defaults.measure.accumulation`, and its `validity_windows` and
+`external_discontinuities` rows) and `variants`, with each
 variant's `grain`, `time`, `excludes`, `selection`, `equivalence` and every `columns:`
 binding; metrics; segments and their `membership`. A `columns:` binding takes the keys of what
 its name resolves to: a measure (by key or by the one id the loader gives it: `as:` when set,
-else `id:`, else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
-dimension (by key, by `as:` when set, else `id:`, or a `dimension.` id, which the loader
+else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
+dimension (by key, by `as:` when set, or a `dimension.` id, which the loader
 refuses when the package has no such dimension), or a key or foreign-key column the
 loader turns into a key dimension (including the key of a graph entity named after the model,
 which binds it by default). A name that resolves to none of them is refused, with the names it
 could mean: the loader would ignore it, and a measure it meant to bind would read the column
-named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
-`as:` value. Each `relations` entry and each of its steps is closed too: a step is one key
-naming its kind, and its mapping takes the keys that kind reads (a `select` or `window` step
-may instead hold its columns directly), each in one spelling. So does each mapping nested in a
+named after the measure, summed. Each `relations` entry and each of its steps is closed too:
+a step is one key naming its kind, and its mapping takes the keys that kind reads (a `select`
+or `window` step may instead hold its columns directly), each in one spelling. So does each mapping nested in a
 step: a `group_by` aggregate, a join's `on` rows, `date_lag` and `pre_aggregate` sides, a
 window's specs and `order_by` rows, an `attribution_join` key and `lookback`, and a `union_all`
 branch. A key that starts with `_` is an annotation, beside a step's kind too.
@@ -2826,7 +3344,7 @@ clock. Measures with different constraint policies remain distinct.
 
 Validation that reads the data (`validate-config`, `check`, and the `runtime`
 and `full` modes) looks up the values of each string dimension a metric's
-`filter` compares with `=`, `!=`, `IN` or `NOT IN`, through the same live
+`filter` compares with `is` or `not` (or their spellings `=`, `!=`, `IN`, `NOT IN`), through the same live
 lookup as `valid-values`. A literal that matches no value, such as `'Completed'`
 over data holding `completed`, gets a `FILTER_VALUE_NOT_FOUND` warning that
 names the closest value. It is a warning because sample data can lack a value
@@ -2882,30 +3400,38 @@ uv run semantic-rails project upgrade --path ./my_pkg --write   # write the chan
 - The Architect tool [`upgrade_project`](ARCHITECT_MCP.md#upgrading-a-package) runs the same
   upgrade.
 
-Every rewrite is proven or certified, and the report gives each rule's tier:
+The report gives each rule a tier describing what was actually checked:
 
 - `proven`: the package loads on this engine before the rewrite, and the rewrite leaves its semantic
   fingerprint and the SQL of every example and test query the baseline compiles unchanged. A
   non-retired rule touching a baseline-refused query must make it compile on its own above all
-  retired rewrites and the certified baseline, or be `unverified`. Queries are compiled, never run.
-- `certified`: this engine refuses the legacy form, so there is nothing to compare it with. The rule
-  was checked when it was added, and the release notes say what changed: a rule with effect
-  `retired` follows a release that removed the meaning, and claims no equivalence.
-  When the package does not load as authored, the baseline is the shortest prefix, in registry
-  order, of applicable retired rules and rules explicitly marked `refused` at load that makes
-  it load. Those prefix rules are `certified`; rules after that baseline still pass the proof.
+  retired rewrites and the translated baseline, or be `unverified`. Queries are compiled, never run.
+- `translated`: a query-call spelling rewrite, or a rule rewriting a form the engine refuses
+  before it can compare equivalence. Query-call rewrites are spelling-only translations:
+  review the diff. The upgrade loads the staged package and compiles rewritten calls with the
+  entry's `now` and `context` (a fixed clock of `2026-01-01T00:00:00Z` when no clock is given).
+  It never executes data or compares legacy answers, and does not certify these translations.
+  Contextual predicates (whose grouping context and inherited filters would be lost), start-only
+  windows (which would gain an upper bound at `now`), windows with a grain that set `fill: false`
+  or carry a `limit` (a named window answers every period, and a period with no data answers 0,
+  which a limit can pick), and case-changing `LIKE` translations require hand edits with suggested calls and reasons; nothing is written until resolved.
+  Other rules for refused forms are also `translated`: a rule with effect `retired` follows a
+  release that removed the meaning and claims no equivalence. When the package does not load
+  as authored, the baseline is the shortest prefix, in registry order, of applicable retired
+  rules and rules explicitly marked `refused` at load that makes it load. Those prefix rules
+  are `translated`; rules after that baseline still pass the fingerprint and SQL checks.
   A `same_meaning` rule can be marked `refused` without changing its effect.
 - A rule that changes the fingerprint or an example's or test's SQL is refused with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"`, `details.rule` and the
   first difference. Nothing is written.
 - A preview reports `unverified` when no baseline loads, or a non-retired rule cannot make its
-  affected baseline-refused queries compile on its own above all retired rewrites and the certified
+  affected baseline-refused queries compile on its own above all retired rewrites and the translated
   baseline. A write refuses
   any `unverified` rule with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
   is written. When no baseline loads, the refusal and `next_actions` give the load error in
   `details.difference.load_error`, and `details.rule` names the first other rule whose rewrite
-  would make the package load (it rewrites a refused form it can't certify; report it), or is
+  would make the package load (it rewrites a refused form without a permitted baseline; report it), or is
   `null` when no rule covers the error.
 - The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as
   `graph.path_preferences` rows; examples that don't compile appear there with their codes.
@@ -2930,16 +3456,17 @@ named definition by hand before upgrading.
 | `query-path-policy` | 0.3.2rc3 | The query key `path_policy` in example, test and segment membership queries | Deleted; `graph.path_policy` is unchanged |
 | `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
-| `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 | `expression-arithmetic` | 0.3.2 | Expression `kind: binary` and `kind: measure_ref`, conversion `matching:` and `in`/`not_in` `left:`, in metrics, segments, measure `expr:`, relation steps and example, test and segment membership queries | `kind: arithmetic`, `kind: measure`, `matching_mode:` and `expr:`, which parse to the same nodes; when both keys appear, the retired one (which was ignored) is deleted |
+| `query-call-v2` | 0.3.2 | Example and test queries in the previous call shape: `query`, and both `metric_query` and `expected_query` of comparison tests; reference objects, select dimensions, `metric_filters`, child groups, predicate scopes, `route_decisions` and route options, `policy_context`, `time.range`, SQL ops, `div`/`sub`/`mul`, `operands`/`terms`, tool arguments inside the query, and the retired spellings above inside it | The current call: id strings, `group_by`, `having` and entity filters, `routes`, `time.last`, equivalent filter words, `now:` and `context:` on the entry, and `period` for the time column in `columns`, `expected_shape.columns` and `expected_rows` keys. Refusal tests (`validate_fails_with_code`) require a hand edit with a suggested call and the expected code to verify. Moving a comparison's clock or context to its shared entry requires a hand edit too. Contextual predicates and start-only windows also require hand edits. Answer-changing translations (`not` keeps unknown rows; text words replacing `LIKE` ignore case) and sites with no current form (a pattern with `_`, a route option id, `max_rows`, a fiscal `calendar_id`, ...) stop at their file, line and path; nothing is written |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
 | `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 | `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |
 | `measure-auto-publish` | 0.3.2 | A measure's `publish:` mapping | In a package without `schema_strict: true`, the metric it published, authored under `metrics:` with the mapping's overrides, and `publish: false` on the measure; in a strict package, where the mapping was never read, deleted. A mapping with `topics`, or a metric key or id already taken, stops. A measure with no `publish:` key or with `publish: true` is left unchanged, and the upgrade may report `up_to_date`: [author its metric by hand](#metrics-a-measure-published-implicitly) |
-| `model-grain` | 0.3.2 | A model `grain:` beside `entities:` (or on a fact model) | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
+| `model-grain` | 0.3.2 | A model `grain:` beside `entities:` | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
 | `model-primary-key` | 0.3.2 | `keys:` and a singular `entity:` (and a block-less model's `grain:`) | An `entities:` block that states the same keys (`bridge: false` when the legacy keys inferred no relationship). A key with a role, keys that disagree with the block, or a model with no row key stop |
 | `model-joins` | 0.3.2 | A model `joins:` block | `graph.relationships` rows with the same ids (`traversal` becomes `allowed_directions`). A join that never read its cardinality as one, names no columns under a different key, or isn't on its entity's home model stops |
-| `object-as` | 0.3.2 | `id:` on graph entities, dimensions and measures | Renamed to `as:`, or deleted when the key derives the same id |
+| `object-as` | 0.3.2 | `id:` on graph entities and relationships, dimensions, times, measures, metrics and segments | Renamed to `as:`, or deleted when the key derives the same id. A metric or segment alone in its file and without `name:` takes its key from that `id:`, so it stops: author it under the file's `metrics:` or `segments:` map |
+| `measure-times` | 0.3.2 | A measure's `time:` (also under `defaults.measure`) | `times: [<role>]` naming the clock the loader read; deleted beside a non-empty `times:` (the measure's, or `defaults.measure.times` when the measure has no `times:` key), which the loader read instead. When the rewrite would move any measure's clock (a measure's empty `time:` or `times:` under a `defaults.measure.time:`), that measure and `defaults.measure` stop: rewrite them by hand |
 
 ## Reference
 

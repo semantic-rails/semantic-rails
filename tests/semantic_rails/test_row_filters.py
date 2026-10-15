@@ -15,17 +15,26 @@ import yaml
 
 from semantic_rails import row_filters as row_filters_module
 from semantic_rails import runtime as runtime_module
+from semantic_rails import sql_preparation
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.audit import get_audit_sink, set_audit_sink
 from semantic_rails.compiler_parts.empty_groups import LeafScope, guard_empty_groups
 from semantic_rails.config import load_package_config
+from semantic_rails.config_validation import parse_config_report, resolve_package_reference
 from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION
 from semantic_rails.policies import row_filters_for_context
-from semantic_rails.renderer import render_select
-from semantic_rails.request_context import get_policy_context_resolver, set_policy_context_resolver
+from semantic_rails.renderer import render_select, render_with_slots
+from semantic_rails.request_context import (
+    HeaderPolicyContextResolver,
+    TrustedAttributes,
+    context_from_headers,
+    get_policy_context_resolver,
+    set_policy_context_resolver,
+)
+from semantic_rails.row_filter_visibility import Visibility
 from semantic_rails.row_filters import RowFilter, apply_row_filters
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -38,10 +47,12 @@ from semantic_rails.sql_ast import (
     SqlIdentifier,
     SqlJoin,
     SqlLiteral,
+    SqlParameter,
     SqlSelect,
     SqlSetQuery,
     SqlTableFunction,
     SqlTableRef,
+    sql_nodes,
 )
 from semantic_rails.sql_preparation import ParameterSlot
 
@@ -67,13 +78,18 @@ BIG_STORE = {
     "value": True,
 }  # fmt: skip
 BY_STORE = {
-    "version": 1,
     "select": [
         {"expression": REVENUE, "as": "revenue"},
-        {"expression": {"metric": "metric.rf.revenue_per_order"}, "as": "per_order"},
+        {"expression": "metric.rf.revenue_per_order", "as": "per_order"},
     ],
     "group_by": ["dimension.rf_order_store_id"],
-    "order_by": [{"field": "dimension.rf_order_store_id", "direction": "ASC"}],
+    "order_by": [{"field": "dimension.rf_order_store_id", "direction": "asc"}],
+}
+# Stores with at least 100 in revenue: a second scan of the filtered relation.
+BIG_STORES = {
+    "entity": "entity.rf_store",
+    "having": [{"field": "measure.rf.revenue", "op": "gte", "value": 100}],
+    "over": "all_time",
 }
 OWN_ORDERS = {
     "id": "policy.rf.own_orders",
@@ -88,6 +104,7 @@ MISTYPED["dimension"] = "dimension.rf_order_order_ref"
 # A second filter on the same relation for callers with this role; id dimensions declare a type.
 OWN_STORE = {**OWN_ORDERS, "id": "policy.rf.own_store", "attribute": "store_id", "type": "string"}
 OWN_STORE.update(dimension="dimension.rf_order_store_id", audiences=[], roles=["store_scoped"])
+OWN_STORE["unless_roles"] = ["store_auditor"]  # exempt only when the host verified the role
 DROP = object()  # a key a test case removes
 
 
@@ -120,7 +137,7 @@ def _package(root, policies):
             "time": {"kind": "time", "key": ["date_day"], "model": "calendar",
                      "allowed_as_root": False},
         },
-        "relationships": {"orders_store": {"id": "relationship.orders_store",
+        "relationships": {"orders_store": {"as": "relationship.orders_store",
                                            "entities": ["order", "store"],
                                            "cardinality": "many_to_one"}},
     }})  # fmt: skip
@@ -152,9 +169,11 @@ def _package(root, policies):
                        "label": "Revenue", "measure": "measure.rf.revenue", "aggregation": "sum",
                        "temporal_role": "temporal_role.rf_order_ordered_at", "value_type": "number"},
         "rf.revenue_per_order": {"as": "metric.rf.revenue_per_order", "kind": "ratio",
+                                 "description": "Revenue per order.",
                                  "numerator": "measure.rf.revenue", "denominator": "order_count",
                                  "value_type": "number"},
         "rf.revenue_change": {"as": "metric.rf.revenue_change", "kind": "derived",
+                              "description": "Revenue change from the prior month.",
                               "temporal_role": "temporal_role.rf_order_ordered_at",
                               "value_type": "number",
                               "expression": {"kind": "arithmetic", "op": "-", "left": REVENUE,
@@ -162,9 +181,9 @@ def _package(root, policies):
     }})  # fmt: skip
     in_s1 = [{"field": "dimension.rf_order_store_id", "op": "=", "value": "s1"}]
     put("segments/core.yml", {"segments": {
-        "order.in_s1": {"id": "segment.rf.in_s1", "entity": "order",
+        "order.in_s1": {"as": "segment.rf.in_s1", "entity": "order",
                         "basis_metric": "metric.rf.revenue", "membership": {"where": in_s1}},
-        "order.big_store": {"id": "segment.rf.big_store", "entity": "order",
+        "order.big_store": {"as": "segment.rf.big_store", "entity": "order",
                             "basis_metric": "metric.rf.revenue",
                             "membership": {"metric_filters": [BIG_STORE]}},
     }})  # fmt: skip
@@ -189,8 +208,9 @@ def _ctx(audience="customer", **attributes):
     return RequestContext(actor="end-user", audience=audience, attributes=attributes)
 
 
-def _q(query=BY_STORE, audience="customer", **attributes):
-    return {**query, "policy_context": _ctx(audience, **attributes).to_policy_context()}
+def _as(method, query=BY_STORE, audience="customer", now=None, **attributes):
+    """``method(query)`` asked by a caller of ``audience`` with ``attributes``."""
+    return method(query, context=_ctx(audience, **attributes), now=now)
 
 
 def _denied(call):
@@ -200,10 +220,14 @@ def _denied(call):
     return caught.value.details["reason"]
 
 
+def _forbidden(*args, **kwargs):
+    raise AssertionError("the request must not reach the warehouse")
+
+
 def test_two_customers_get_their_own_aggregates_from_one_statement(runtime):
-    a = runtime.query(_q(customer_id=A))
-    b = runtime.query(_q(customer_id=B))
-    everyone = runtime.query(_q(audience="internal"))
+    a = _as(runtime.query, customer_id=A)
+    b = _as(runtime.query, customer_id=B)
+    everyone = _as(runtime.query, audience="internal")
 
     def rows(result):
         return [
@@ -218,15 +242,20 @@ def test_two_customers_get_their_own_aggregates_from_one_statement(runtime):
     assert A not in json.dumps(b, default=str) and B not in json.dumps(a, default=str)
 
 
-@pytest.mark.parametrize("attributes", [{}, {"customer_id": 7}, {"customer_id": [A]}, {"tier": A}])
+@pytest.mark.parametrize(
+    "attributes",
+    [{}, {"customer_id": 7}, {"customer_id": [7, 8]}, {"customer_id": True}, {"tier": A}],
+)
 def test_a_missing_or_mistyped_attribute_denies_every_surface(runtime, attributes):
-    query = _q(**attributes)
-    context = query["policy_context"]
+    context = _ctx(**attributes)
+    preview = "segment.rf.in_s1"
     reasons = {
-        _denied(lambda: runtime.compile(query)),
-        _denied(lambda: runtime.query(query)),
-        _denied(lambda: runtime.segment_preview("segment.rf.in_s1", policy_context=context)),
-        runtime.validate(query)["errors"][0]["details"]["reason"],
+        _denied(lambda: runtime.compile(BY_STORE, context=context)),
+        _denied(lambda: runtime.query(BY_STORE, context=context)),
+        _denied(
+            lambda: runtime.segment_preview(preview, policy_context=context.to_policy_context())
+        ),
+        runtime.validate(BY_STORE, context=context)["errors"][0]["details"]["reason"],
     }
     assert reasons <= {"missing_attribute", "attribute_type_mismatch"} and len(reasons) == 1
 
@@ -234,13 +263,13 @@ def test_a_missing_or_mistyped_attribute_denies_every_surface(runtime, attribute
 @pytest.mark.parametrize(
     ("where", "stores"),
     [
-        ([{"field": "dimension.rf_order_customer_id", "op": "=", "value": B}], []),
-        ([{"field": "dimension.rf_order_customer_id", "op": "IN", "value": [A, B]}], ["s1", "s2"]),
-        ([{"field": "dimension.rf_order_store_id", "op": "!=", "value": "s2"}], ["s1"]),
+        ([{"field": "dimension.rf_order_customer_id", "op": "is", "value": B}], []),
+        ([{"field": "dimension.rf_order_customer_id", "op": "is", "value": [A, B]}], ["s1", "s2"]),
+        ([{"field": "dimension.rf_order_store_id", "op": "not", "value": "s2"}], ["s1"]),
     ],
 )
 def test_a_caller_predicate_only_narrows(runtime, where, stores):
-    result = runtime.query(_q({**BY_STORE, "where": where}, customer_id=A))
+    result = _as(runtime.query, {**BY_STORE, "where": where}, customer_id=A)
     assert [row["dimension.rf_order_store_id"] for row in result["rows"]] == stores
 
 
@@ -248,41 +277,64 @@ def test_the_filter_stays_outside_an_or_in_existing_conditions():
     either = SqlBinary(SqlLiteral(True), "OR", SqlLiteral(True))
     scan = SqlSelect([SqlField(SqlIdentifier(["t", "v"]), "v")], SqlTableRef("t"), where=[either])
     slot = ParameterSlot("customer_id", "string")
-    filtered, slots = apply_row_filters(scan, [RowFilter("p", "t", "c", slot)])
+    filtered, slots = _apply(scan, RowFilter("p", "t", "c", slot))
     assert slots == (slot,)
-    assert render_select(filtered).endswith("WHERE\n  t.c = ? AND (TRUE OR TRUE)")
+    assert render_select(filtered).endswith("WHERE\n  t.c = ?\n  AND (TRUE OR TRUE)")
+
+
+def test_a_lookup_and_a_metric_filter_read_only_the_callers_rows(runtime):
+    """Stores are reference data no filter reaches: orders may look them up, and a predicate
+    on stores reads only the caller's orders."""
+    by_name = {**BY_STORE, "group_by": ["dimension.rf_store_store_name"], "order_by": []}
+    rows = _as(runtime.query, by_name, customer_id=A)["rows"]
+    assert sorted((r["dimension.rf_store_store_name"], r["revenue"]) for r in rows) == [
+        ("East", 20),
+        ("North", 10),
+    ]
+    big = _as(runtime.query, {**BY_STORE, "where": [BIG_STORES]}, customer_id=B)
+    assert _revenue(big) == [("s1", 400), ("s3", 300)]
+    assert _revenue(_as(runtime.query, {**BY_STORE, "where": [BIG_STORES]}, customer_id=A)) == []
+
+
+def test_listing_a_model_no_filter_reaches_is_held(runtime):
+    listing = {"select": [], "group_by": ["dimension.rf_store_store_name"]}
+    assert _as(runtime.compile, listing, audience="internal")["ok"] is True
+    assert _denied(lambda: _as(runtime.compile, listing, customer_id=A)) == (
+        "row_filter_uncovered_root"
+    )
 
 
 @pytest.mark.parametrize(
     "query",
     [
-        {**BY_STORE, "group_by": ["dimension.rf_store_store_name"], "order_by": []},  # join
-        {**BY_STORE, "metric_filters": [BIG_STORE]},  # a second scan of the filtered relation
-        {  # nested dependency: the prior period comes from another scan over a calendar spine
-            "version": 1,
-            "select": [{"expression": {"metric": "metric.rf.revenue_change"}, "as": "change"}],
+        {  # a prior period over the series' calendar spine
+            "select": [{"expression": "metric.rf.revenue_change", "as": "change"}],
             "time": MONTH,
         },
-        {  # spine: calendar fill joins the calendar relation
-            "version": 1,
+        {  # a filled series over the calendar spine
             "select": [{"expression": REVENUE, "as": "revenue"}],
-            "time": {
-                **MONTH,
-                "grain": "day",
-                "start": "2026-01-01",
-                "end": "2026-01-05",
-                "fill": True,
-            },
+            "time": {**MONTH, "grain": "day", "start": "2026-01-01", "fill": True},
+        },
+        {  # a named window answers every period over the same spine
+            "select": [{"expression": REVENUE, "as": "revenue"}],
+            "time": {**MONTH, "start": "2026-01-01", "end": "2026-04-01"},
         },
     ],
-    ids=["join", "metric_filter", "dependency", "spine"],
+    ids=["dependency", "spine", "named_window"],
 )
-def test_unqualified_shapes_are_denied_not_answered_unfiltered(runtime, query):
-    internal = runtime.compile(_q(query, audience="internal"))
-    assert internal["ok"] is True
-    assert _denied(lambda: runtime.compile(_q(query, customer_id=A))) == (
-        "row_filter_unsupported_query"
-    )
+def test_a_calendar_spine_reads_no_relation_so_each_caller_gets_its_own_series(runtime, query):
+    """The engine's day series generates dates from its bounds and reads no relation: every
+    scan of the filtered relation still carries the caller's filter."""
+    for customer in (A, B):
+        own = {
+            **query,
+            "where": [{"field": "dimension.rf_order_customer_id", "op": "is", "value": customer}],
+        }
+        expected = _as(runtime.query, own, audience="internal", now="2026-06-01")["rows"]
+        result = _as(runtime.query, query, customer_id=customer, now="2026-06-01")
+        assert result["rows"] == expected
+        sql = result["rendered_sql"]
+        assert sql.count("FROM order_fact") == sql.count("order_fact.customer_id = ?") > 0
 
 
 def test_segment_preview_and_count_bind_the_filter(runtime):
@@ -296,16 +348,14 @@ def test_segment_preview_and_count_bind_the_filter(runtime):
         [{"dimension.rf_order_order_ref": 1}],
         [{"dimension.rf_order_order_ref": 4}],
     )
-    assert (
-        _denied(lambda: runtime.segment_preview("segment.rf.big_store", policy_context=context))
-        == "row_filter_unsupported_query"
-    )
+    big = runtime.segment_preview("segment.rf.big_store", policy_context=context)
+    assert (big["member_count"], big["rows"]) == (0, [])
 
 
 def test_rollups_are_not_routed_under_a_row_filter(runtime):
-    query = {"version": 1, "select": [{"expression": REVENUE, "as": "revenue"}], "time": MONTH}
-    internal = runtime.compile(_q(query, audience="internal"))
-    filtered = runtime.query(_q(query, customer_id=B))
+    query = {"select": [{"expression": REVENUE, "as": "revenue"}], "time": MONTH}
+    internal = _as(runtime.compile, query, audience="internal")
+    filtered = _as(runtime.query, query, customer_id=B)
     assert "FROM order_monthly" in internal["rendered_sql"]
     assert internal["explain"]["performance_plan"]["aggregate_routing"]["selected"] == [
         "aggregate_relation.orders_monthly"
@@ -317,18 +367,22 @@ def test_rollups_are_not_routed_under_a_row_filter(runtime):
     assert sorted(row["revenue"] for row in filtered["rows"]) == [300, 400]
 
 
-def test_zero_rows_skip_the_whole_relation_coverage_probe(runtime, monkeypatch):
-    probes = []
-    monkeypatch.setattr(
-        runtime_module, "_data_coverage_probe", lambda *a, **k: probes.append(1) or {}
-    )
-    window = {"version": 1, "select": [{"expression": REVENUE, "as": "revenue"}],
-              "time": {**MONTH, "start": "2025-01-01", "end": "2025-02-01"}}  # fmt: skip
-    filtered = runtime.query(_q(window, customer_id=A))
-    assert filtered["row_count"] == 0 and probes == []
-    assert filtered["data_diagnostics"]["actual_data_coverage"] == {}
-    runtime.query(_q(window, audience="internal"))
-    assert probes == [1]
+def test_zero_rows_report_only_the_callers_own_coverage(runtime):
+    # An open window after the data: no row (a named one would answer its periods, NULL).
+    window = {"select": [{"expression": REVENUE, "as": "revenue"}],
+              "time": {**MONTH, "start": "2027-01-01"}}  # fmt: skip
+    coverage = {
+        tenant: _as(runtime.query, window, customer_id=tenant)["data_diagnostics"][
+            "actual_data_coverage"
+        ]
+        for tenant in (A, B)
+    }
+    assert {tenant: (row["min"][:10], row["max"][:10]) for tenant, row in coverage.items()} == {
+        A: ("2026-01-10", "2026-02-10"),
+        B: ("2026-01-20", "2026-02-20"),
+    }
+    everyone = _as(runtime.query, window, audience="internal")["data_diagnostics"]
+    assert everyone["actual_data_coverage"]["min"][:10] == "2026-01-10"
 
 
 def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
@@ -336,7 +390,7 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
         caplog.at_level(logging.DEBUG, logger="semantic_rails"),
         pytest.raises(SemanticLayerError) as caught,
     ):
-        runtime.query(_q(audience="mistyped", customer_id=A))
+        _as(runtime.query, audience="mistyped", customer_id=A)
     error, chain = caught.value, []
     while error is not None:
         chain.append(error)
@@ -366,6 +420,14 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
             "looks like a row filter",
         ),
         ({"kind": "object_access"}, "looks like a row filter"),  # a stray attribute
+        ({"unless_roles": []}, "'unless_roles' must be a non-empty list of role names"),
+        ({"unless_roles": "auditor"}, "'unless_roles' must be a non-empty list of role names"),
+        ({"unless_roles": ["auditor", " "]}, "'unless_roles' must be a non-empty list"),
+        ({"unless_role": ["auditor"]}, "unknown key 'unless_role'"),
+        (
+            {"roles": ["Auditor", "store"], "unless_roles": ["auditor"]},
+            "role 'auditor' is in both 'roles' and 'unless_roles'",
+        ),
     ],
 )
 def test_the_package_rejects_a_row_filter_it_cannot_enforce(tmp_path, change, problem):
@@ -416,9 +478,255 @@ def test_a_pipeline_backed_relation_cannot_be_filtered(runtime):
 def test_two_filters_on_one_relation_bind_in_placeholder_order(runtime):
     context = RequestContext(audience="customer", roles=("store_scoped",),
                              attributes={"customer_id": B, "store_id": "s1"})  # fmt: skip
-    result = runtime.query({**BY_STORE, "policy_context": context.to_policy_context()})
+    result = runtime.query(BY_STORE, context=context)
     assert [row["revenue"] for row in result["rows"]] == [400]
     assert "order_fact.customer_id = ? AND order_fact.store_id = ?" in result["rendered_sql"]
+
+
+def _stores(runtime, **attributes):
+    """Revenue by store for an internal caller whose role scopes it to ``store_id``."""
+    context = RequestContext(audience="internal", roles=("store_scoped",), attributes=attributes)
+    return runtime.query(BY_STORE, context=context)
+
+
+def _revenue(result):
+    return [(row["dimension.rf_order_store_id"], row["revenue"]) for row in result["rows"]]
+
+
+def test_a_list_attribute_reads_any_of_its_values(runtime, monkeypatch):
+    adapter, bound = runtime._get_adapter(), []
+    real = adapter.query_prepared
+
+    def record(prepared, **kwargs):
+        bound.append(tuple(kwargs.get("parameters", ())))
+        return real(prepared, **kwargs)
+
+    monkeypatch.setattr(adapter, "query_prepared", record)
+    one, other = _stores(runtime, store_id="s1"), _stores(runtime, store_id="s3")
+    both = _stores(runtime, store_id=["s1", "s3"])
+    assert _revenue(both) == sorted(_revenue(one) + _revenue(other)) == [("s1", 410), ("s3", 300)]
+    assert "order_fact.store_id = ?" in one["rendered_sql"]  # a scalar is unchanged
+    assert "(order_fact.store_id IN (?, ?))" in both["rendered_sql"]
+    assert not re.search(r"'s[13]'", both["rendered_sql"])
+    assert bound[-1] == ("s1", "s3")
+
+
+def test_two_list_filters_bind_each_value_to_its_own_placeholder(runtime):
+    context = RequestContext(audience="customer", roles=("store_scoped",),
+                             attributes={"customer_id": [B, A], "store_id": ["s2", "s1"]})  # fmt: skip
+    result = runtime.query(BY_STORE, context=context)
+    assert _revenue(result) == [("s1", 410), ("s2", 20)]
+    assert (
+        "(order_fact.customer_id IN (?, ?)) AND (order_fact.store_id IN (?, ?))"
+        in result["rendered_sql"]
+    )
+    # Every engine probe of a named window carries both lists.
+    query = {
+        "select": [{"expression": REVENUE, "as": "v"}],
+        "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
+    }
+    context = replace(context, attributes={"customer_id": [A, B], "store_id": ["s1", "s3"]})
+    result = runtime.query(query, context=context)
+    assert result["rows"][0]["v"] == 310
+    assert result["rendered_sql"].count("customer_id IN (?, ?)") == 3
+    assert result["rendered_sql"].count("store_id IN (?, ?)") == 3
+
+
+def test_list_order_and_length_never_share_a_plan(runtime, monkeypatch):
+    adapter, bound = runtime._get_adapter(), []
+    real = adapter.query_prepared
+
+    def record(prepared, **kwargs):
+        bound.append(tuple(kwargs.get("parameters", ())))
+        return real(prepared, **kwargs)
+
+    monkeypatch.setattr(adapter, "query_prepared", record)
+
+    def ask(value, *verified):
+        attributes = TrustedAttributes({"store_id": value}, roles=verified)
+        context = RequestContext(
+            audience="internal", roles=("store_scoped",), attributes=attributes
+        )
+        result = runtime.query(BY_STORE, context=context, verbosity="full")
+        return _revenue(result), result["compile_stats"]["cache_hit"], bound[-1]
+
+    s1, s2, s3 = ("s1", 410), ("s2", 20), ("s3", 300)
+    asked = [
+        (["s1", "s3"], (), [s1, s3], ("s1", "s3")),
+        ("s1", (), [s1], ("s1",)),
+        (["s3", "s1"], (), [s1, s3], ("s3", "s1")),
+        (["s1"], (), [s1], ("s1",)),
+        (["s1", "s3"], ("store_auditor",), [s1, s2, s3], ()),  # exempt: no filter at all
+    ]
+    for warm in (False, True):  # the second round repeats each request after the others
+        for value, verified, rows, values in asked:
+            assert ask(value, *verified) == (rows, warm, values), (value, verified, warm)
+
+
+def test_an_empty_list_is_denied_at_the_request(runtime, monkeypatch):
+    monkeypatch.setattr(runtime_module, "_adapter_query", _forbidden)
+    context = _ctx(customer_id=[])  # a grant of no values is a context, not a TypeError
+    preview = context.to_policy_context()
+    with pytest.raises(SemanticLayerError) as caught:
+        runtime.compile(BY_STORE, context=context)
+    assert caught.value.details == {"reason": "empty_attribute_list", "attribute": "customer_id"}
+    reasons = {
+        _denied(lambda: runtime.query(BY_STORE, context=context)),
+        _denied(lambda: runtime.segment_preview("segment.rf.in_s1", policy_context=preview)),
+        runtime.validate(BY_STORE, context=context)["errors"][0]["details"]["reason"],
+    }
+    assert reasons == {"empty_attribute_list"}
+    # Only a filter that reads the attribute denies: an internal caller's list goes unused.
+    monkeypatch.undo()
+    internal = _as(runtime.query, audience="internal", customer_id=[])
+    assert _revenue(internal) == [("s1", 410), ("s2", 20), ("s3", 300)]
+
+
+def test_a_mixed_type_list_is_denied():
+    # A list mixes no types (1 and True included): the host's context is refused as built.
+    for mixed in ([A, 7], [1, True]):
+        with pytest.raises(TypeError):
+            _ctx(customer_id=mixed)
+    # A list of another type than the filter's is denied at the request, item by item.
+    listed = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string"))
+    assert _denied(lambda: listed.for_value((A, 7))) == "attribute_type_mismatch"
+    assert _denied(lambda: listed.for_value((7,))) == "attribute_type_mismatch"
+
+
+def test_a_scalar_slot_never_binds_a_list():
+    # A boolean filter takes one value, as before; a list never reaches its slot.
+    flag = RowFilter("p", "t", "c", ParameterSlot("active", "boolean"))
+    assert flag.for_value(True) == flag
+    assert _denied(lambda: flag.for_value((True,))) == "attribute_type_mismatch"
+    with pytest.raises(ValueError):
+        ParameterSlot("active", "boolean", index=0)
+    for index in (-1, True, "0"):
+        with pytest.raises(ValueError):
+            ParameterSlot("customer_id", "string", index=index)  # type: ignore[arg-type]
+    listed = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string")).for_value((A, B))
+    assert [slot.index for slot in listed.slots] == [0, 1]
+    filtered, slots = _apply(_scan(SqlTableRef("t")), listed)
+    assert slots == listed.slots
+    assert render_select(filtered).endswith("WHERE\n  (t.c IN (?, ?))")
+
+
+def test_unless_roles_exempts_only_the_named_roles(tmp_path):
+    root = _package(tmp_path / "rf", [{**OWN_ORDERS, "unless_roles": ["auditor"]}])
+    with duckdb.connect(str(root / "rf.duckdb")) as connection:
+        connection.execute(SEED)
+    runtime = Runtime.from_path(str(root))
+
+    def ask(*roles, verified=(), **attributes):
+        """``roles`` as the context claims them; ``verified`` as the host verified them."""
+        trusted = TrustedAttributes(attributes, roles=verified)
+        context = RequestContext(audience="customer", roles=roles, attributes=trusted)
+        return runtime.query(BY_STORE, context=context)
+
+    everyone = [("s1", 410), ("s2", 20), ("s3", 300)]
+    assert _revenue(ask(verified=["auditor"])) == everyone
+    assert _revenue(ask("analyst", verified=["analyst", "Auditor"], customer_id=A)) == everyone
+    assert "?" not in ask(verified=["auditor"])["rendered_sql"]
+    # A role the context only claims, as a request header would, exempts no one.
+    assert _revenue(ask("auditor", customer_id=A)) == [("s1", 10), ("s2", 20)]
+    assert _revenue(ask(verified=["analyst"], customer_id=A)) == [("s1", 10), ("s2", 20)]
+    assert _denied(lambda: ask("auditor")) == _denied(lambda: ask()) == "missing_attribute"
+
+
+class _HostResolver:
+    """An embedding host: audience and roles as request headers claim them, attributes (and
+    any verified roles) from the caller's verified identity."""
+
+    def __init__(self, attributes):
+        self.attributes = attributes
+
+    def resolve(self, headers, *, payload=None, request_id=""):
+        claimed = context_from_headers(headers, request_id=request_id)
+        return replace(claimed, attributes=self.attributes)
+
+
+@pytest.fixture
+def exempt_app(tmp_path, monkeypatch):
+    """A row filter that exempts auditors, served over REST and MCP behind an API key."""
+    root = _package(tmp_path / "rf", [{**OWN_ORDERS, "unless_roles": ["auditor"]}])
+    with duckdb.connect(str(root / "rf.duckdb")) as connection:
+        connection.execute(SEED)
+    monkeypatch.setenv("SEMANTIC_RAILS_API_KEYS", "test-row-filter-key")
+    previous = get_policy_context_resolver()
+    app = SemanticLayerASGIApp(path=str(root), max_workers=1)
+
+    def call(resolver, transport):
+        set_policy_context_resolver(resolver)
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Authorization": "Bearer test-row-filter-key",
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+            "X-Semantic-Audience": "customer",
+            "X-Semantic-Roles": "auditor",
+        }
+        path, body = "/api/v1/query", {"query": RUN["query"]}
+        if transport == "mcp":
+            params = {"name": "execute", "arguments": RUN}
+            path, body = (
+                "/mcp",
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params},
+            )
+
+        async def request():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                return (await client.post(path, json=body, headers=headers)).json()
+
+        response = asyncio.run(request())
+        return response["result"]["structuredContent"] if transport == "mcp" else response
+
+    yield call
+    asyncio.run(app.aclose())
+    set_policy_context_resolver(previous)
+
+
+@pytest.mark.parametrize("transport", ["rest", "mcp"])
+def test_a_role_a_request_header_claims_never_lifts_a_row_filter(exempt_app, transport):
+    claimed = exempt_app(HeaderPolicyContextResolver(), transport)
+    assert claimed["ok"] is False and "rows" not in claimed
+    assert claimed["errors"][0]["details"]["reason"] == "missing_attribute"
+    # A host that passes the header's roles through, without verifying them: still filtered.
+    own = exempt_app(_HostResolver(TrustedAttributes({"customer_id": A})), transport)
+    assert sorted(_revenue(own)) == [("s1", 10), ("s2", 20)]
+    # The host verified the role: the same request, now exempt (and never the cached plan).
+    verified = TrustedAttributes({"customer_id": A}, roles=["auditor"])
+    exempt = exempt_app(_HostResolver(verified), transport)
+    assert sorted(_revenue(exempt)) == [("s1", 410), ("s2", 20), ("s3", 300)]
+
+
+def test_parameters_beyond_the_warehouse_limit_refuse_before_execution(runtime, monkeypatch):
+    class Untouchable:
+        def __enter__(self):
+            raise AssertionError("the request reached the query lock")
+
+        def __exit__(self, *exc):
+            return False
+
+    connection_kind = runtime._config.package.connection.kind
+    monkeypatch.setitem(sql_preparation.MAX_PARAMETERS, connection_kind, 3)
+    monkeypatch.setattr(runtime, "_query_lock", Untouchable())
+    regions = [f"s{index}" for index in range(4)]
+    for method in (runtime.compile, runtime.query):
+        context = RequestContext(roles=("store_scoped",), attributes={"store_id": regions})
+        with pytest.raises(SemanticLayerError) as caught:
+            method(BY_STORE, context=context)
+        assert caught.value.code == "POLICY_DENIED"
+        assert caught.value.details == {"reason": "parameter_limit_exceeded", "limit": 3}
+        assert "s3" not in str(caught.value) and "4" not in str(caught.value)
+
+
+def test_validate_warns_that_a_role_scoped_filter_leaves_other_roles_unfiltered(package):
+    report, _ = parse_config_report(resolve_package_reference(path=str(package)))
+    warnings = [row for row in report["warnings"] if row["code"] == "ROW_FILTER_SCOPED_BY_ROLE"]
+    assert [row["details"] for row in warnings] == [
+        {"policy_id": "policy.rf.own_store", "roles": ["store_scoped"]}
+    ]
+    assert "unless_roles" in warnings[0]["message"]
 
 
 ROW = RowFilter("p", "t", "c", ParameterSlot("customer_id", "string"))
@@ -429,51 +737,72 @@ def _scan(source, joins=(), where=(), ctes=()):
                      ctes=list(ctes))  # fmt: skip
 
 
+def _apply(statement, *filters, modeled=("t", "other", "parents", "grandchildren")):
+    """``statement`` held to ``filters``, rendered: (statement, slots in render order)."""
+    filtered = apply_row_filters(statement, Visibility(filters, modeled=frozenset(modeled)))
+    return filtered, render_with_slots(filtered)[1]
+
+
 @pytest.mark.parametrize(
     "statement",
     [
         _scan(SqlTableFunction("UNNEST", alias="t")),
-        _scan(SqlTableRef("other")),  # reads only a relation no filter covers
-        _scan(SqlTableRef("other"), [SqlJoin("INNER", SqlTableRef("t"), SqlLiteral(True))]),
-        _scan(SqlTableRef("t"), where=[SqlExists(_scan(SqlTableRef("t")))]),
-        _scan(SqlTableRef("u"), ctes=[SqlCte("u", SqlSetQuery("UNION ALL", [_scan(SqlTableRef("t"))] * 2))]),
+        _scan(SqlTableRef("unmodeled")),  # a relation no model reads
+        _scan(SqlTableRef("t"), [SqlJoin("RIGHT", SqlTableRef("other"), SqlLiteral(True))]),
         _scan(SqlTableRef("t"), ctes=[SqlCte("t", _scan(SqlTableRef("raw")))]),
     ],
-    ids=["table_function", "unfiltered_relation", "filtered_relation_joined",
-         "second_read_in_exists", "second_read_in_set_query", "filtered_name_is_a_cte"],
+    ids=["table_function", "unmodeled_relation", "right_join", "filtered_name_is_a_cte"],
 )  # fmt: skip
-def test_only_one_filtered_from_is_filterable(statement):
-    with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(statement, [ROW])
+def test_reads_the_filter_cannot_be_proven_for_are_refused(statement):
+    assert _denied(lambda: _apply(statement, ROW)) == "row_filter_unsupported_query"
+
+
+@pytest.mark.parametrize(
+    ("statement", "reads"),
+    [
+        (_scan(SqlTableRef("other"), [SqlJoin("INNER", SqlTableRef("t"), SqlLiteral(True))]), 1),
+        (_scan(SqlTableRef("t"), where=[SqlExists(_scan(SqlTableRef("t")))]), 2),
+        (_scan(SqlTableRef("u"), ctes=[SqlCte("u", SqlSetQuery("UNION ALL", [_scan(SqlTableRef("t"))] * 2))]), 2),
+        (SqlSelect([SqlField(SqlExists(_scan(SqlTableRef("t"))), "value")], SqlTableRef("parents")), 1),
+        (_scan(SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableRef("t")), negated=True)]), 1),
+    ],
+    ids=["joined", "second_read_in_exists", "set_query_branches", "projected_exists", "not_exists"],
+)  # fmt: skip
+def test_every_read_of_a_filtered_relation_is_filtered_where_it_is(statement, reads):
+    filtered, slots = _apply(statement, ROW)
+    assert (
+        slots
+        == (ROW.slot,) * reads
+        == tuple(node.slot for node in sql_nodes(filtered) if isinstance(node, SqlParameter))
+    )
 
 
 def test_a_read_inside_a_cte_is_filtered_there():
     statement = _scan(SqlTableRef("c"), ctes=[SqlCte("c", _scan(SqlTableRef("t")))])
-    filtered, slots = apply_row_filters(statement, [ROW])
+    filtered, slots = _apply(statement, ROW)
     assert slots == (ROW.slot,)
     assert "FROM t\nWHERE\n  t.c = ?\n)" in render_select(filtered)
     shadowed = RowFilter("p2", "c", "c", ROW.slot)  # its relation's name is the CTE's
-    with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(statement, [ROW, shadowed])
+    assert _denied(lambda: _apply(statement, ROW, shadowed)) == "row_filter_unsupported_query"
 
 
 @pytest.mark.parametrize(
     "statement",
     [
-        # An unrelated physical scan cannot hide beside an EXISTS scan.
+        # An unmodeled physical scan cannot hide beside an EXISTS scan.
         _scan(
             SqlTableRef("parents"),
             where=[SqlExists(_scan(SqlTableRef("t")))],
             ctes=[SqlCte("extra", _scan(SqlTableRef("extra_rows")))],
         ),
-        # A join inside EXISTS still falls outside the qualified family.
+        # Nor inside one.
         _scan(
             SqlTableRef("parents"),
             where=[
                 SqlExists(
                     _scan(
                         SqlTableRef("t"),
-                        joins=[SqlJoin("INNER", SqlTableRef("other"), SqlLiteral(True))],
+                        joins=[SqlJoin("INNER", SqlTableRef("unmodeled"), SqlLiteral(True))],
                     )
                 )
             ],
@@ -481,50 +810,16 @@ def test_a_read_inside_a_cte_is_filtered_there():
         _scan(
             SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableFunction("UNNEST", alias="t")))]
         ),
-        # An EXISTS in the projection is not a child-row filter.
-        SqlSelect([SqlField(SqlExists(_scan(SqlTableRef("t"))), "value")], SqlTableRef("parents")),
-        # Nor is one projected by a child scan inside the parent's EXISTS.
-        _scan(
-            SqlTableRef("parents"),
-            where=[
-                SqlExists(
-                    SqlSelect(
-                        [SqlField(SqlExists(_scan(SqlTableRef("grandchildren"))), "match")],
-                        SqlTableRef("t"),
-                        where=[
-                            SqlBinary(
-                                SqlIdentifier(["t", "parent_id"]),
-                                "=",
-                                SqlIdentifier(["parents", "id"]),
-                            )
-                        ],
-                    )
-                )
-            ],
-        ),
-        # "Has no matching child" is not "has a matching child".
-        _scan(SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableRef("t")), negated=True)]),
     ],
-    ids=[
-        "extra_scan",
-        "joined_child",
-        "table_function",
-        "projected_exists",
-        "nested_projected_exists",
-        "not_exists",
-    ],
+    ids=["extra_scan", "joined_child", "table_function"],
 )
 def test_exists_does_not_bypass_row_filter_scan_guard(statement):
-    with pytest.raises(SemanticLayerError) as caught:
-        apply_row_filters(statement, [ROW])
-    assert caught.value.code == "POLICY_DENIED"
-    assert caught.value.details["reason"] == "row_filter_unsupported_query"
+    assert _denied(lambda: _apply(statement, ROW)) == "row_filter_unsupported_query"
 
 
 def test_a_rewrite_that_misses_the_scan_is_denied(monkeypatch):
-    monkeypatch.setattr(row_filters_module, "_rewrite", lambda node, target, new: node)
-    with pytest.raises(SemanticLayerError, match="only a query that reads"):
-        apply_row_filters(_scan(SqlTableRef("t")), [ROW])
+    monkeypatch.setattr(row_filters_module, "_add_predicates", lambda select, *_: select)
+    assert _denied(lambda: _apply(_scan(SqlTableRef("t")), ROW)) == "row_filter_unsupported_query"
 
 
 @pytest.fixture
@@ -598,6 +893,13 @@ def test_every_mcp_surface_shows_each_customer_only_their_rows(mcp):
     assert A not in json.dumps(events, default=str) and B not in json.dumps(events, default=str)
 
 
+def test_mcp_denies_an_empty_list_as_a_policy_refusal(mcp):
+    call, _ = mcp
+    response = call(_ctx(customer_id=[]), "execute", RUN)
+    assert response["ok"] is False and response["error"]["code"] == "POLICY_DENIED"
+    assert response["errors"][0]["details"]["reason"] == "empty_attribute_list"
+
+
 def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
     call, events = mcp
     missing = call(_ctx(), "execute", RUN)
@@ -611,19 +913,17 @@ def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
 @pytest.mark.parametrize("tenant", [A, B, "customer-with-no-rows"])
 @pytest.mark.parametrize("window_total", [False, True])
 def test_observation_and_coverage_never_see_another_customers_rows(runtime, tenant, window_total):
-    count = {"measure": "measure.rf.s2_count"}
+    count = "measure.rf.s2_count"
     query = {
-        "version": 1,
         "select": [{"expression": REVENUE, "as": "revenue"}, {"expression": count, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }
     if window_total:
         query["time"].pop("grain")
-    result = runtime.query(_q(query, customer_id=tenant))
-    # Both callers have source rows: in the total, whose bucket the loaded-bucket check
-    # gates, B's never-matched condition also counts zero. The month bucket of one leaf
-    # gets no such check, so B's is held at NULL. An empty caller has no group, preserving
-    # the empty-total behavior.
+    result = _as(runtime.query, query, customer_id=tenant)
+    # A named window answers its month, or its total, for every caller. Both A and B have
+    # source rows, and the loaded-bucket check gates the window's bucket, so B's
+    # never-matched condition counts zero; an empty caller reads NULL (nothing in its scope).
     gold = (
         runtime._get_adapter()
         ._db.conn.execute(
@@ -634,18 +934,17 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
         )
         .fetchall()
     )
-    held = tenant == B and not window_total
-    assert [r["v"] for r in result["rows"]] == ([None] if held else [row[0] for row in gold])
+    assert [r["v"] for r in result["rows"]] == ([0] if tenant in {A, B} else [None])
     assert gold == ([(0,)] if tenant in {A, B} else [])
-    # The total probes both measures outside its bounds, plus its leaf and coverage scan.
-    assert result["rendered_sql"].count("customer_id = ?") == (4 if window_total else 3)
+    # Both measures are probed outside the bounds, plus the leaf and its coverage scan.
+    assert result["rendered_sql"].count("customer_id = ?") == 4
     assert tenant not in result["rendered_sql"]
 
 
-def test_a_tagged_row_returning_scan_is_still_refused():
+def test_a_tagged_row_returning_scan_is_filtered_too():
     extra = replace(_scan(SqlTableRef("t")), observation_scan=True)
     statement = replace(_scan(SqlTableRef("t")), where=[SqlExists(extra)])
-    assert _denied(lambda: apply_row_filters(statement, [ROW])) == "row_filter_unsupported_query"
+    assert _apply(statement, ROW)[1] == (ROW.slot, ROW.slot)
 
 
 def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
@@ -654,14 +953,13 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
     runtime = Runtime.from_path(str(package))
     adapter = runtime._get_adapter()
     query = {
-        "version": 1,
         "select": [
             {"expression": REVENUE, "as": "v"},
-            {"expression": {"measure": "measure.rf.order_count"}, "as": "n"},
+            {"expression": "measure.rf.order_count", "as": "n"},
         ],
         "where": [
-            {"field": "dimension.rf_order_ordered_at", "op": ">=", "value": "2026-01-01"},
-            {"field": "dimension.rf_order_ordered_at", "op": "<", "value": "2026-02-01"},
+            {"field": "dimension.rf_order_ordered_at", "op": "gte", "value": "2026-01-01"},
+            {"field": "dimension.rf_order_ordered_at", "op": "lt", "value": "2026-02-01"},
         ],
     }
     gold = adapter._db.conn.execute(
@@ -670,22 +968,22 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
         "AND ordered_at < TIMESTAMP '2026-02-01'",
         [A],
     ).fetchall()
-    result = runtime.query(_q(query, customer_id=A))
+    result = _as(runtime.query, query, customer_id=A)
     assert [(row["v"], row["n"]) for row in result["rows"]] == gold == [(None, None)]
-    assert runtime.query(_q(query, customer_id=B))["rows"] == [{"v": 300, "n": 1}]
+    assert _as(runtime.query, query, customer_id=B)["rows"] == [{"v": 300, "n": 1}]
 
 
 def test_every_tagged_probe_gets_both_policy_filters(runtime):
     query = {
-        "version": 1,
         "select": [{"expression": REVENUE, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }
     context = replace(_ctx(customer_id=A, store_id="s1"), roles=("store_scoped",))
-    result = runtime.query({**query, "policy_context": context.to_policy_context()})
+    result = runtime.query(query, context=context)
     assert result["rows"][0]["v"] == 10
-    assert result["rendered_sql"].count("customer_id = ?") == 2
-    assert result["rendered_sql"].count("store_id = ?") == 2
+    # The leaf, its observation outside the window and the named window's loaded coverage.
+    assert result["rendered_sql"].count("customer_id = ?") == 3
+    assert result["rendered_sql"].count("store_id = ?") == 3
 
 
 def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
@@ -714,7 +1012,6 @@ def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
         value,
         bucket=bucket,
         raw_time=stamp,
-        now=dialect.now(),
         bounded=True,
     )
     statement = SqlSelect(
@@ -737,14 +1034,13 @@ def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
     with duckdb.connect(str(package / "rf.duckdb")) as connection:
         connection.execute("DELETE FROM order_fact WHERE customer_id = ?", [A])
         for tenant, expected in [(A, [(None,)]), (B, [(300,)])]:
-            filtered, slots = apply_row_filters(
+            filtered, slots = _apply(
                 statement,
-                [
-                    RowFilter("own_orders", "order_fact", "customer_id", ROW.slot),
-                    RowFilter(
-                        "own_store", "order_fact", "store_id", ParameterSlot("store_id", "string")
-                    ),
-                ],
+                RowFilter("own_orders", "order_fact", "customer_id", ROW.slot),
+                RowFilter(
+                    "own_store", "order_fact", "store_id", ParameterSlot("store_id", "string")
+                ),
+                modeled=("order_fact",),
             )
             sql = render_select(filtered)
             assert sql.count("customer_id = ?") == sql.count("store_id = ?") == 3

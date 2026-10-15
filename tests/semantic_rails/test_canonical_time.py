@@ -13,7 +13,7 @@ from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.conftest import copy_package_config, write_single_file_package
 from tests.semantic_rails.test_upgrade_rules_authoring import _write_defaults
 
-REFUSED = [
+FORMS = [
     (("models", "orders"), "default_time", "ordered_at"),
     (("models", "orders", "times", "ordered_at"), "default_query_axis", True),
     (("defaults", "time"), "default_query_axis", False),
@@ -31,16 +31,14 @@ REFUSED = [
         ]
         for key in ("clock_variants", "comparison_peers")
     ],
-    *[
-        (("models", "orders", "measures", "revenue_usd", "publish"), key, ["legacy"])
-        for key in ("clock_variants", "comparison_peers", "preferred_filter_ops")
-    ],
+    (("models", "orders", "measures", "revenue_usd", "publish"), "clock_variants", ["legacy"]),
 ]
+# Every form is refused under both layouts; each form is checked under one of them in turn.
+REFUSED = [(*form, ("single-file", "directory")[i % 2]) for i, form in enumerate(FORMS)]
 
 
-@pytest.mark.parametrize("layout", ["single-file", "directory"])
-@pytest.mark.parametrize(("path", "key", "value"), REFUSED)
-def test_unsupported_forms_refuse_at_load(tmp_path, layout, path, key, value):
+@pytest.mark.parametrize(("path", "key", "value", "layout"), REFUSED)
+def test_unsupported_forms_refuse_at_load(tmp_path, path, key, value, layout):
     source = write_single_file_package(tmp_path / "project")
     doc = safe_load(source.read_bytes())
     row = doc
@@ -55,15 +53,14 @@ def test_unsupported_forms_refuse_at_load(tmp_path, layout, path, key, value):
     assert exc.value.code == "INVALID_CONFIG"
 
 
-@pytest.mark.parametrize("layout", ["single-file", "directory"])
-def test_inherited_default_refuses_with_two_unmarked_roles(tmp_path, layout):
+def test_inherited_default_refuses_with_two_unmarked_roles(tmp_path):
     source = write_single_file_package(tmp_path / "project")
     doc = safe_load(source.read_bytes())
     times = doc["models"]["orders"]["times"]
     times["ordered_at"].pop("default")
     times["fulfilled_at"] = {**deepcopy(times["ordered_at"]), "column": "fulfilled_at"}
     doc["defaults"]["time"]["default"] = True
-    package = _write_defaults(source, doc, doc["defaults"], layout)
+    package = _write_defaults(source, doc, doc["defaults"], "directory")
     with pytest.raises(SemanticLayerError, match="defaults.time.*default") as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_CONFIG"

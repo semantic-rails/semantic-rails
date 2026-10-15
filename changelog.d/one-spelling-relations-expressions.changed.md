@@ -5,7 +5,7 @@
   compiles:
   - Expression `kind: binary` is `kind: arithmetic`, `kind: measure_ref` is `kind: measure`,
     conversion `matching:` is `matching_mode:`, and `in`/`not_in` `left:` is `expr:`, in
-    packages and in Query IR v1, whose schema drops the three aliases.
+    packages and in query calls, whose schema drops the retired spellings.
     `semantic-rails project upgrade` rewrites them (rule `expression-arithmetic`).
   - `relations:` is a map keyed by relation, and each relation's `steps:` is a list of one-key
     steps such as `{source: orders}`. A list of relations, relation-level `source:` and

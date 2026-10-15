@@ -10,10 +10,12 @@ from pathlib import Path
 import pytest
 
 from semantic_rails import compiler
+from semantic_rails.compiler_parts import binding, planning
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.query_call import read_call
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig, SemanticPolicyConfig
@@ -23,9 +25,16 @@ REVENUE = "measure.shop.revenue"
 CLOCK = "dimension.shop_order_ordered_at"
 ROLE = "temporal_role.shop_order_ordered_at"
 METRIC = "metric.shop.filtered_history"
-CUT = {"field": CLOCK, "op": ">=", "value": "2023-12-01"}
+CUT = {"field": CLOCK, "op": "gte", "value": "2023-12-01"}
 AGGREGATE = {"kind": "aggregate", "measure": REVENUE, "filter": {"all": [CUT]}}
-HISTORY = {"kind": "cumulative", "input": {"measure": REVENUE}}
+HISTORY = {"kind": "cumulative", "input": REVENUE}
+
+
+def _metric(expression):
+    """A package metric defined by a call's inline expression."""
+    engine = read_call({"select": [{"expression": expression, "as": "v"}]})[0]
+    parsed = parse_semantic_expression(engine["select"][0]["expression"], context="query")
+    return MetricConfig(METRIC, "derived", parsed, temporal_role=ROLE)
 
 
 @pytest.fixture
@@ -41,7 +50,6 @@ def _runtime(config, root):
 
 def _query(expression=HISTORY):
     return {
-        "version": 1,
         "select": [{"expression": deepcopy(expression), "as": "history"}],
         "time": {"temporal_role": ROLE, "grain": "month"},
     }
@@ -55,12 +63,7 @@ def test_authorization_precedes_source_refusals(
     shop_config, tmp_path, monkeypatch, verbosity, surface, source, hide_inputs
 ):
     expression = {**HISTORY, "input": AGGREGATE} if source == "measure" else HISTORY
-    metric = MetricConfig(
-        METRIC,
-        "derived",
-        parse_semantic_expression(expression, context="query"),
-        temporal_role=ROLE,
-    )
+    metric = _metric(expression)
     policies = [
         SemanticPolicyConfig(
             "policy.shop.deny_history",
@@ -102,7 +105,7 @@ def test_authorization_precedes_source_refusals(
         semantic_policies=policies,
     )
     runtime = _runtime(config, tmp_path)
-    query = {**_query({"metric": METRIC}), "verbosity": verbosity}
+    query = _query(METRIC)
     context = RequestContext(audience="reader", attributes={"day": "2023-12-01 02:00:00"})
 
     def no_output(*args, **kwargs):
@@ -112,12 +115,13 @@ def test_authorization_precedes_source_refusals(
     monkeypatch.setattr(runtime, "_get_adapter", no_output)
     try:
         adapter = SemanticLayerMCPAdapter(runtime)
-        arguments = {"query": query, "mode": surface}
+        arguments = {"query": query, "mode": surface, "verbosity": verbosity}
         actual = adapter.call_tool("execute", arguments, request_context=context)
         with monkeypatch.context() as disabled:
-            disabled.setattr(
-                compiler, "_validate_restrictive_time_semantics", lambda *args, **kwargs: None
-            )
+            for module in (binding, planning):
+                disabled.setattr(
+                    module, "_validate_restrictive_time_semantics", lambda *args, **kwargs: None
+                )
             reference = adapter.call_tool("execute", arguments, request_context=context)
         assert actual["errors"] == reference["errors"]
         # Hidden inputs hide the metric and the clock's time role too: the query names a time
@@ -132,17 +136,24 @@ def test_authorization_precedes_source_refusals(
             )
             error = allowed["errors"][0]
             assert error["code"] == "CUMULATIVE_TIME_FILTER_UNSUPPORTED"
-            assert error["details"] == {
-                "filter_source": "measure",
-                "expression": {"kind": "metric", "metric": METRIC},
-            }
+            assert error["details"] == {"filter_source": "measure", "expression": METRIC}
             assert "2023-12-01" not in json.dumps(allowed)
     finally:
         runtime.close()
 
 
-@pytest.mark.parametrize("placement", ["select", "metric-filter", "arithmetic", "authored"])
-@pytest.mark.parametrize("scope", ["full-history", "query-period"])
+# The full-history result filter is an answer-ledger case; the open full-history select, with
+# no result filter and no end, is not, so it stays here.
+@pytest.mark.parametrize(
+    ("placement", "scope"),
+    [
+        ("select", "full-history"),
+        ("select", "query-period"),
+        ("result-filter", "query-period"),
+        ("arithmetic", "query-period"),
+        ("authored", "full-history"),
+    ],
+)
 def test_sibling_filter_keeps_independent_window_answers(shop_config, tmp_path, placement, scope):
     history = deepcopy(HISTORY)
     if scope == "query-period":
@@ -150,24 +161,20 @@ def test_sibling_filter_keeps_independent_window_answers(shop_config, tmp_path, 
     query = _query(history)
     if placement == "select":
         query["select"].append({"expression": AGGREGATE, "as": "recent"})
-    elif placement == "metric-filter":
-        query["metric_filters"] = [{"expression": AGGREGATE, "op": ">", "value": 0}]
+    elif placement == "result-filter":
+        query["select"].append({"expression": AGGREGATE, "as": "recent"})
+        query["having"] = [{"field": "recent", "op": "gt", "value": 0}]
     else:
         expression = {"kind": "arithmetic", "op": "+", "left": history, "right": AGGREGATE}
         if placement == "authored":
-            metric = MetricConfig(
-                METRIC,
-                "derived",
-                parse_semantic_expression(expression, context="query"),
-                temporal_role=ROLE,
-            )
+            metric = _metric(expression)
             shop_config = replace(shop_config, metric_recipes=[*shop_config.metric_recipes, metric])
-            expression = {"metric": METRIC}
+            expression = METRIC
         query = _query(expression)
     runtime = _runtime(shop_config, tmp_path)
     try:
         rows = runtime.query(query)["rows"]
-        december = next(row for row in rows if str(row[f"{ROLE}__month"]).startswith("2023-12-01"))
+        december = next(row for row in rows if str(row["period"]).startswith("2023-12-01"))
         with runtime._get_adapter()._db.conn.cursor() as connection:
             reference = connection.execute(
                 "select sum(amount), sum(case when ordered_at >= '2023-12-01' then amount end) "
@@ -216,15 +223,13 @@ def test_unused_clock_policy_keeps_applied_store_population(
     )
     runtime = _runtime(config, tmp_path)
     query = _query()
-    query["policy_context"] = RequestContext(
-        audience="reader", attributes={"store": "a", "day": "2024-01-01"}
-    ).to_policy_context()
+    reader = RequestContext(audience="reader", attributes={"store": "a", "day": "2024-01-01"})
     try:
-        compiled = runtime.compile(query)
+        compiled = runtime.compile(query, context=reader)
         assert compiled["status"] == "ok"
         assert "account_days" not in compiled["rendered_sql"]
-        rows = runtime.query(query)["rows"]
-        december = next(row for row in rows if str(row[f"{ROLE}__month"]).startswith("2023-12-01"))
+        rows = runtime.query(query, context=reader)["rows"]
+        december = next(row for row in rows if str(row["period"]).startswith("2023-12-01"))
         with runtime._get_adapter()._db.conn.cursor() as connection:
             reference = connection.execute(
                 "select sum(amount) from orders where store_id = 'a' and ordered_at < '2024-01-01'"
@@ -240,11 +245,7 @@ def test_source_refusal_message_has_no_space_before_period(shop_config, tmp_path
     try:
         with pytest.raises(SemanticLayerError) as caught:
             runtime.compile(_query(expression))
-        assert str(caught.value) == (
-            "Rolling, prior_period, and period_to_date expressions do not support a measure filter "
-            "on a temporal column (measure_filters[0]): the leaf-level WHERE truncates the lookback "
-            "rows the window function depends on, producing silently wrong values. "
-            "Query an unwindowed measure or ask the package author for a supported metric."
-        )
+        assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+        assert "(measure_filters[0]):" in str(caught.value) and " ." not in str(caught.value)
     finally:
         runtime.close()

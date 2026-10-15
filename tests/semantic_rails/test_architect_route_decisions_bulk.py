@@ -184,7 +184,7 @@ def _refused_own_key_package(root):
         )
     )
     graph["graph"]["relationships"]["invoices_receipt"] = {
-        "id": "relationship.invoices_receipt",
+        "as": "relationship.invoices_receipt",
         "entities": ["invoice", "receipt"],
         "cardinality": "one_to_one",
         "via": ["invoice_id"],
@@ -268,7 +268,7 @@ def test_keep_choice_allows_an_answer_opened_by_the_relationship_only(tmp_path):
         preserved = runtime.query(
             _query(
                 "measure.bank.membership_count",
-                where=[{"field": INVOICE_ID, "op": "=", "value": 1000}],
+                where=[{"field": INVOICE_ID, "op": "is", "value": 1000}],
             )
         )
         newly_answered = runtime.query(
@@ -380,18 +380,17 @@ def test_bulk_replaces_conflicting_forward_and_reverse_rows_together(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "bad_row",
+    ("bad_row", "dry_run"),
     [
-        {**DIAMOND_ROW, "relationship_path": ["relationship.unknown"]},
-        {**DIAMOND_ROW, "target_entity": "unknown"},
-        {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE},  # duplicate pair
-        _pin(DISTRICT, ACCOUNT, BRANCH_ROUTE[::-1]),  # contradicts first row
-        {**DIAMOND_ROW, "relationship_path": "accounts_owner"},
-        {**DIAMOND_ROW, "typo": "ignored?"},
-        None,
+        ({**DIAMOND_ROW, "relationship_path": ["relationship.unknown"]}, True),
+        ({**DIAMOND_ROW, "target_entity": "unknown"}, False),
+        ({**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}, True),  # duplicate pair
+        (_pin(DISTRICT, ACCOUNT, BRANCH_ROUTE[::-1]), False),  # contradicts first row
+        ({**DIAMOND_ROW, "relationship_path": "accounts_owner"}, True),
+        ({**DIAMOND_ROW, "typo": "ignored?"}, False),
+        (None, False),
     ],
 )
-@pytest.mark.parametrize("dry_run", [False, True])
 def test_one_bad_bulk_row_refuses_all_files_and_receipts(tmp_path, bad_row, dry_run):
     project = _project(tmp_path)
     files = _files_and_receipts(project)

@@ -7,6 +7,7 @@ Start with these canonical docs:
 - [Deployment](DEPLOYMENT.md) for Docker, ASGI, health/readiness, request context, and API-key shim setup.
 - [Package authoring](PACKAGE_AUTHORING.md) for the schema.
 - [Architect MCP](ARCHITECT_MCP.md) for revision-safe concurrent package mutations.
+- [The query call](QUERY_CALL.md) for the call's nine fields, filter words, time windows, the answer and refusals.
 - [Query API](QUERY_API.md) for agent discovery, planning, validation, compile-only SQL, and execution surfaces.
 - [MCP interface](MCP_INTERFACE.md) for self-hosted Streamable HTTP, the in-process adapter, and local compatibility transports.
 - [Benchmark evidence](BENCHMARK_EVIDENCE.md) for measured plan/agent scorecard gates.
@@ -24,7 +25,7 @@ For first install, first query, and contributor entrypoints see the top-level [R
 
 - Runtime package: `semantic_rails/`
 - Active fixture package: `configs/semantic_rails/jaffle_shop`
-- Canonical API contract: [QUERY_API.md](QUERY_API.md)
+- Canonical API contract: [QUERY_API.md](QUERY_API.md); the call itself: [QUERY_CALL.md](QUERY_CALL.md)
 - Supported behavior and limits: [CAPABILITIES.md](CAPABILITIES.md)
 
 ## Package Verification
@@ -70,7 +71,7 @@ uv run python scripts/check_contract_compatibility.py \
 The active interface direction is:
 
 - Humans author durable primitives in the `schema_version: 1` ergonomic YAML shape; the loader normalizes them into the internal `PackageConfig`.
-- Agents use catalog/inspect/plan/validate/compile/query. `plan` returns a validated best Query IR draft, and `compile` returns SQL without execution. `plan` status and detail semantics live in [AGENT_QUICKSTART.md](AGENT_QUICKSTART.md#plan-status-and-detail) and [QUERY_API.md](QUERY_API.md#post-apiv1plan).
+- Agents use catalog/inspect/plan/validate/compile/query. `plan` returns a validated best query call draft, and `compile` returns SQL without execution. `plan` status and detail semantics live in [AGENT_QUICKSTART.md](AGENT_QUICKSTART.md#plan-status-and-detail) and [QUERY_API.md](QUERY_API.md#post-apiv1plan).
 - SQL is rendered through per-warehouse dialect capabilities. DuckDB is the zero-setup local default; Snowflake (via `snowflake_cli` or `snowflake_native`), Postgres, BigQuery, Databricks, Athena, ClickHouse, MotherDuck, and DuckLake connect through `package.connection` blocks (see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)). Response metadata includes `output_columns`, `sql_profile`, `warehouse`, `dialect`, physical plan, and performance risk.
 - Runtime deployment is self-hostable: Docker/ASGI, health/readiness, request
   context, audit logs, and an optional API-key shim are shipped. Service

@@ -14,6 +14,10 @@ services:
       SEMANTIC_RAILS_HOST: 0.0.0.0
       SEMANTIC_RAILS_PORT: "8080"
       SEMANTIC_RAILS_AUDIT_LOGS: "1"
+      # Refuse a Host other than localhost (DNS rebinding). Requests reach the
+      # container through the port mapping, not loopback, so list the names
+      # clients use; add your host name before exposing the service.
+      SEMANTIC_RAILS_ALLOWED_HOSTS: localhost
       # For non-local deployments, require API keys and restrict CORS:
       # SEMANTIC_RAILS_API_KEYS: "<comma-separated keys>"
       # SEMANTIC_RAILS_API_KEY_FILE: "/run/secrets/semantic_rails_api_keys"

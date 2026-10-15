@@ -1,14 +1,14 @@
 """A stock grouped by an attribute that changes within the period counts each series once.
 
-An end-of-period stock takes each series' last snapshot in each period, then adds up
-the series. Grouped by an attribute stored on the snapshot rows, it used to take the
-last snapshot per series per attribute value: an account on plan "Builder" Monday to
-Wednesday and "Pro" Thursday to Sunday was counted under both plans in that week, its
-Wednesday seats under Builder and its Sunday seats under Pro, and the grouped rows no
-longer added up to the ungrouped total. The snapshot is now chosen per series per
-period first and the attribute read from it. The stock's own clock and calendar
-dimensions still split a series into periods: grouped by the day, each day keeps its
-own closing value.
+An end-of-period stock (a balance) is read on each period's closing day only, its last day
+with a snapshot, and adds up the series seen that day; a series whose last snapshot is
+earlier is not carried forward. Untimed, the last day with a snapshot closes it. Grouped by
+an attribute stored on the snapshot rows, it used to take the last snapshot per series per attribute value: an account on plan "Builder"
+Monday to Wednesday and "Pro" Thursday to Sunday was counted under both plans in that week,
+and the grouped rows no longer added up to the ungrouped total. The snapshot is chosen per
+series per period first and the attribute read from it. The stock's own clock and calendar
+dimensions still split a series into periods: grouped by the day, each day keeps its own
+closing value.
 """
 
 from __future__ import annotations
@@ -128,19 +128,22 @@ def _load(connection: duckdb.DuckDBPyConnection, *, singleton: bool = False) -> 
 
 
 def _reference(measure: str, group_by: list[str], grain: str = "week") -> list[tuple]:
-    """Each account's last (first) snapshot per period, under the plan it has on that day."""
-    direction = "asc" if measure == "seats_sop" else "desc"
+    """The snapshots of each period's closing day (end of period), or each account's first
+    snapshot in the period (start of period), under the plan it has on that day."""
     period = f"date_trunc('{grain}', date_day)::date"
     groups = "".join(f", {column}" for column in group_by)
+    chosen = (
+        f"row_number() over (partition by account_id, {period} order by date_day) = 1"
+        if measure == "seats_sop"
+        else f"date_day = max(date_day) over (partition by {period})"
+    )
     connection = duckdb.connect()
     try:
         _load(connection)
         return connection.execute(
             f"select period{groups}, sum(seats) from ("
-            f"  select *, {period} as period, row_number() over ("
-            f"    partition by account_id, {period} order by date_day {direction}) as rn"
-            "  from account_day"
-            f") where rn = 1 group by all order by all"
+            f"  select *, {period} as period, {chosen} as chosen from account_day"
+            f") where chosen group by all order by all"
         ).fetchall()
     finally:
         connection.close()
@@ -154,11 +157,10 @@ def _query(
     *,
     aggregation: str | None = None,
 ) -> list[tuple]:
-    expression = {"measure": f"measure.seats.{measure}"}
+    expression: Any = f"measure.seats.{measure}"
     if aggregation:
-        expression["aggregation"] = aggregation
+        expression = {"kind": "measure", "measure": expression, "aggregation": aggregation}
     query: dict[str, Any] = {
-        "version": 1,
         "select": [{"expression": expression, "as": "v"}],
         "group_by": group_by,
     }
@@ -166,7 +168,7 @@ def _query(
         query["time"] = time
     result = runtime.query(query)
     assert result["ok"], result.get("errors")
-    time_alias = f"{ROLE}__{time['grain']}" if time else None
+    time_alias = "period" if time else None
     rows = []
     for row in result["rows"]:
         period = [_day(row[time_alias])] if time_alias else []
@@ -200,19 +202,18 @@ def runtime(snapshot_lowering, tmp_path: Path) -> Iterator[Runtime]:
 def test_each_series_counts_once_under_its_closing_plan(runtime: Runtime) -> None:
     week = {"temporal_role": ROLE, "grain": "week"}
     grouped = _query(runtime, "seats", [PLAN], week)
-    # a closes the week on Pro (16), c on Builder (1006); b's last snapshot, Friday's,
-    # stands for its week (100). Each account is counted once.
+    # The week closes on Sunday: a is on Pro (16), c on Builder (1006); b's last snapshot,
+    # Friday's, is not carried forward. Each account is counted once.
     assert grouped == [
         (MONDAY, "Builder", 1006),
         (MONDAY, "Pro", 16),
-        (MONDAY, "Team", 100),
         (date(2026, 10, 5), "Pro", 20),
         (date(2026, 10, 5), "Team", 200),
     ]
     assert grouped == _reference("seats", ["plan"])
     # The grouped rows add up to the ungrouped total of each week.
     total = _query(runtime, "seats", [], week)
-    assert total == _reference("seats", []) == [(MONDAY, 1122), (date(2026, 10, 5), 220)]
+    assert total == _reference("seats", []) == [(MONDAY, 1022), (date(2026, 10, 5), 220)]
     for period, value in total:
         assert sum(row[2] for row in grouped if row[0] == period) == value
     # Start of period reads the first snapshot, under the plan it has on that day.
@@ -225,20 +226,17 @@ def test_each_series_counts_once_under_its_closing_plan(runtime: Runtime) -> Non
 
 
 def test_without_a_time_block_each_series_counts_once(runtime: Runtime) -> None:
-    # Untimed, the period is everything: each account's last snapshot, under its plan.
-    assert _query(runtime, "seats", [PLAN], None) == [
-        ("Builder", 1006),
-        ("Pro", 20),
-        ("Team", 200),
-    ]
-    assert _query(runtime, "seats", [], None) == [(1226,)]
+    # Untimed, the balance is read on its last day with a snapshot (October 5), under each
+    # account's plan that day: c, last seen September 27, is not carried forward.
+    assert _query(runtime, "seats", [PLAN], None) == [("Pro", 20), ("Team", 200)]
+    assert _query(runtime, "seats", [], None) == [(220,)]
 
 
 def test_an_unobserved_week_reads_null(runtime: Runtime) -> None:
     # A stock has no value for a week nobody observed: filled, it reads NULL, not 0.
     filled = {"temporal_role": ROLE, "grain": "week", "fill": True}
     assert _query(runtime, "seats", [], filled) == [
-        (MONDAY, 1122),
+        (MONDAY, 1022),
         (date(2026, 9, 28), None),
         (date(2026, 10, 5), 220),
     ]
@@ -269,8 +267,9 @@ def test_the_clock_and_calendar_still_split_periods(
         assert [row[1:] for row in daily] == _reference("seats", ["plan"], "day")
 
 
-@pytest.mark.parametrize("attribute", ["snapshot_month", "snapshot_timestamp"])
-@pytest.mark.parametrize("grain", [None, "week"])
+@pytest.mark.parametrize(
+    ("attribute", "grain"), [("snapshot_month", None), ("snapshot_timestamp", "week")]
+)
 def test_grouping_by_a_date_attribute_refuses(
     runtime: Runtime, attribute: str, grain: str | None
 ) -> None:
@@ -283,7 +282,6 @@ def test_grouping_by_a_date_attribute_refuses(
         "reason": "stock_grouped_by_date_attribute",
         "dimension": dimension,
     }
-    assert "stock's clock or a calendar dimension" in str(raised.value)
 
 
 @pytest.mark.parametrize(

@@ -50,7 +50,7 @@ from .db_parts.base import (
 )
 from .db_parts.common import materialized_duckdb_result, session_time_zone, set_duckdb_time_zone
 from .db_parts.duckdb_confinement import confine_duckdb, confinement_directory, require_inside
-from .db_parts.duckdb_setup import configure_duckdb_connection
+from .db_parts.duckdb_setup import connect_duckdb
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
@@ -67,7 +67,7 @@ from .sql_preparation import (
     _PARAMETER_TOKEN,
     ParameterValue,
     PreparedQuery,
-    checked_parameter_values,
+    checked_bound_values,
 )
 
 __all__ = [
@@ -86,6 +86,24 @@ __all__ = [
     "seed_db",
     "seed_digest",
 ]
+
+
+def temporal_cast_error_value(exc: BaseException) -> str | None:
+    """Read a DuckDB temporal conversion's input for in-process path matching only.
+
+    Never forward driver text: it can also contain SQL and source row values.
+    Other driver errors retain their ordinary redacted execution error.
+    """
+    while isinstance(exc, SemanticLayerError) and exc.__cause__ is not None:
+        exc = exc.__cause__
+    if duckdb is None or not isinstance(exc, duckdb.ConversionException):
+        return None
+    match = re.match(
+        r"Conversion Error: (?:invalid (?:timestamp|date) field format|"
+        r'(?:timestamp|date) field value out of range): "([^"\n]*)"',
+        str(exc),
+    )
+    return match[1] if match else None
 
 
 def _row_to_dict(description: Any, row: Any) -> dict[str, Any]:
@@ -172,18 +190,12 @@ class Database:
                     "duckdb is not installed. Add it to your environment dependencies."
                 )
             return cls(
-                conn=configure_duckdb_connection(duckdb.connect(db_path, read_only=read_only)),
+                conn=connect_duckdb(db_path, read_only=read_only),
                 engine=engine,
             )
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return cls(conn=conn, engine="sqlite")
-
-    @classmethod
-    def connect_in_memory(cls) -> Database:
-        if duckdb is None:
-            raise RuntimeError("duckdb is not installed. Add it to your environment dependencies.")
-        return cls(conn=configure_duckdb_connection(duckdb.connect(":memory:")), engine="duckdb")
 
     def execute(self, sql: str, params: Iterable[Any] | None = None) -> None:
         cur = self.conn.cursor()
@@ -292,7 +304,7 @@ class DuckDBAdapter(WarehouseAdapter):
         parameters: Sequence[Any] = (),
     ) -> list[dict[str, Any]]:
         """Send slot values through DuckDB's parameter binding, never the SQL text."""
-        values = checked_parameter_values(prepared, parameters)
+        values = checked_bound_values(prepared, parameters)
         if not values:
             return super().query_prepared(prepared, limits=limits)
         rows = self.query(prepared.sql, limits=limits, parameters=values)

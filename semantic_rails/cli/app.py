@@ -52,13 +52,13 @@ from .commands.query import (
     cmd_validate,
 )
 from .common import (
+    _add_now_arg,
     _add_optional_reference_args,
     _add_package_or_path_args,
     _add_policy_context_args,
     _add_response_detail_args,
     _policy_context_from_args,
     _print_stderr,
-    _query_payload_from_args,
     _ref_from_args,
 )
 from .output import _print_error_envelope
@@ -161,7 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Kinds to include: comma-separated or a JSON array (entity, dimension, "
-            "measure, metric, segment, dimension_value). An unknown kind is refused."
+            "measure, metric, segment, dimension_value, relationship; plurals work). "
+            "Relationships are ranked only when named. An unknown kind is refused."
         ),
     )
     p_discover.add_argument(
@@ -219,10 +220,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_validate)
     _add_response_detail_args(p_validate)
+    _add_now_arg(p_validate)
     p_validate.set_defaults(func=cmd_validate)
 
     p_compile = sub.add_parser(
@@ -233,10 +235,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_compile.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_compile)
     _add_response_detail_args(p_compile)
+    _add_now_arg(p_compile)
     p_compile.set_defaults(func=cmd_compile)
 
     p_parse_config = sub.add_parser(
@@ -337,6 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full check report instead of the compact summary.",
     )
+    _add_now_arg(p_check)
     p_check.set_defaults(func=cmd_check)
 
     p_build_package = sub.add_parser(
@@ -366,6 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the package-local example queries (declared in examples blocks) against the package.",
     )
     _add_optional_reference_args(p_run_examples, package_choices, required=True)
+    _add_now_arg(p_run_examples)
     p_run_examples.set_defaults(func=cmd_run_examples)
 
     p_test_package = sub.add_parser(
@@ -373,6 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the package-local tests (declared in tests blocks) against the package.",
     )
     _add_optional_reference_args(p_test_package, package_choices, required=True)
+    _add_now_arg(p_test_package)
     p_test_package.set_defaults(func=cmd_test_package)
 
     p_diff_package = sub.add_parser(
@@ -429,6 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Git ref (e.g. 'main') to use as a baseline if --compare-path is not given.",
     )
+    _add_now_arg(p_promote_package)
     p_promote_package.set_defaults(func=cmd_promote_package)
 
     p_query = sub.add_parser(
@@ -439,10 +446,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_query.add_argument(
         "--query-json",
         required=True,
-        help="Query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help="The query call as JSON, or @path/to/file.json to load from disk.",
     )
     _add_policy_context_args(p_query)
     _add_response_detail_args(p_query)
+    _add_now_arg(p_query)
     p_query.set_defaults(func=cmd_query)
 
     p_segment_validate = sub.add_parser(
@@ -581,7 +589,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_plan = sub.add_parser(
         "plan",
-        description="Plan one best Query IR from a free-text intent and optional partial query.",
+        description="Plan one best query call from a free-text intent and an optional partial call.",
     )
     _add_package_or_path_args(p_plan, package_choices)
     p_plan.add_argument(
@@ -606,6 +614,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="best",
         help="Planner response detail (default: best). Use full for alternatives/blocked, debug for compose hints.",
     )
+    _add_now_arg(p_plan)
     _add_policy_context_args(p_plan)
     p_plan.set_defaults(func=cmd_plan)
 
@@ -864,12 +873,7 @@ def main() -> None:
         if config is not None:
             try:
                 # Suggestions come from the caller's view; without one, none are offered.
-                config = view_of(
-                    config,
-                    _query_payload_from_args(args).get("policy_context", {})
-                    if getattr(args, "query_json", None)
-                    else _policy_context_from_args(args),
-                )
+                config = view_of(config, _policy_context_from_args(args))
             except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
                 config = None
         if config is not None:

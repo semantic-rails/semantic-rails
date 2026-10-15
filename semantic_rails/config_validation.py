@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from . import operators
 from .ast import NormalizedQuery
 from .compiler import (
     NonAdditiveRefusal,
@@ -61,6 +62,7 @@ from .expressions import (
     resolve_filter_dimension,
 )
 from .meta_contract import validate_meta_payload
+from .metadata import _default_time_spec_for_metric
 from .metadata_parts.valid_values import max_valid_values_limit, valid_values_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .registry import Registry
@@ -472,19 +474,9 @@ def _validate_split_package(
             elif relation_ref.startswith("relation.") or relation_ref in relation_refs:
                 relation_refs.add(relation_ref)
             # A model lists its entities under `entities:`, and the loader derives its keys
-            # from them; a fact model declares time_entity and time_column instead.
-            model_kind = str(model.get("kind", "model") or "model").strip().lower()
-            if model_kind == "fact" or ("entities" in model and model.get("keys") is None):
-                pass
-            elif model.get("keys") is None:
+            # from them.
+            if "entities" not in model:
                 add_error(errors, f"{model_path} must list its entities under entities:")
-            else:
-                keys = expect_mapping(model.get("keys"), f"{model_path}.keys", errors)
-                if keys is None:
-                    continue
-                primary = expect_list(keys.get("primary"), f"{model_path}.keys.primary", errors)
-                if primary is not None and not primary:
-                    add_error(errors, f"{model_path}.keys.primary must not be empty")
 
     for entity_id, entity in entities.items():
         entity_path = f"{graph_yml}.graph.entities.{entity_id}"
@@ -506,6 +498,26 @@ def _validate_split_package(
     return errors
 
 
+def _no_metrics_message(config) -> str:
+    """The refusal of a package with no metrics, with the shortest entry that adds one."""
+    message = (
+        "the package declares no metrics, and needs at least one: add an entry under metrics: "
+        "(a file in metrics/)"
+    )
+    if not config.measures:
+        return message
+    measure = config.measures[0]
+    entry = {
+        "kind": "aggregate",
+        "measure": measure.id,
+        "value_type": measure.value_type or "number",
+        "description": measure.label or measure.id,
+    }
+    key = measure.id.rpartition(".")[2]
+    shortest = yaml.safe_dump({key: entry}, default_flow_style=True, sort_keys=False, width=1000)
+    return f"{message}, for example `metrics: {shortest.strip()}`"
+
+
 def _compiled_package_errors(config, source_path: Path) -> list[str]:
     errors: list[str] = []
     if not config.entities:
@@ -513,13 +525,7 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
     if not config.measures:
         add_error(errors, f"{source_path}: compiled package must declare measures")
     if not config.metric_recipes:
-        add_error(errors, f"{source_path}: compiled package must declare metric recipes")
-
-    for entity in config.entities:
-        if not entity.key:
-            add_error(
-                errors, f"{source_path}: entity {entity.id} must declare at least one key column"
-            )
+        add_error(errors, f"{source_path}: {_no_metrics_message(config)}")
 
     for measure in config.measures:
         prefix = f"{source_path}: public measure {measure.id}"
@@ -879,8 +885,6 @@ def _compiled_package_warnings(
     warnings: list[str | dict[str, Any]] = []
     if not list(config.package.environments or []):
         warnings.append(f"{source_path}: package does not declare package.environments")
-    # (Pseudo-entity smell warning removed — fact models with `kind: fact`
-    # are now the supported way to declare time-keyed rollup tables.)
     first_by_definition: dict[str, str] = {}
     for measure in config.measures:
         meta = dict(getattr(measure, "meta", {}) or {})
@@ -889,7 +893,6 @@ def _compiled_package_warnings(
         definition = json.dumps(
             [
                 measure.entity,
-                measure.source_relation,
                 measure.measure_class,
                 measure.default_aggregation,
                 measure.default_temporal_role or [*measure.compatible_temporal_roles, ""][0],
@@ -969,6 +972,42 @@ def _compiled_package_warnings(
                 )
             )
     warnings.extend(semantic_collision_warnings(config, source_path))
+    warnings.extend(
+        _error_payload(
+            "ROW_FILTER_SCOPED_BY_ROLE",
+            f"{source_path}: row filter {policy.id} applies only to requests with one of the "
+            f"roles {list(policy.roles)}, so every other request reads all of its relation's "
+            "rows. Drop roles: to filter every request, and list the roles that may read every "
+            "row in unless_roles.",
+            details={"policy_id": policy.id, "roles": list(policy.roles)},
+        )
+        for policy in config.semantic_policies
+        if policy.kind == "row_filter" and policy.roles
+    )
+    from .row_filter_visibility import coverage_report
+
+    warnings.extend(
+        _error_payload(
+            "ROW_FILTER_COVERAGE",
+            f"{source_path}: row filter {row['policy_id']} filters {row['filtered']} and "
+            f"reaches {row['covered']} through their owners. Under it, "
+            + (
+                f"{row['uncovered']} are held (no filter reaches them; list one in shared: "
+                "to let every filtered caller read all of its rows); "
+                if row["uncovered"]
+                else ""
+            )
+            + (
+                f"{sorted(row['unsupported'])} are refused (decide their route with a "
+                "graph.path_preferences row, or give them one owner)."
+                if row["unsupported"]
+                else "every other model is answered."
+            ),
+            details=row,
+        )
+        for row in coverage_report(config)
+        if row["uncovered"] or row["unsupported"]
+    )
     if undecided := _undecided_routes_warning(census, source_path):
         warnings.append(undecided)
     warnings.extend(
@@ -998,14 +1037,19 @@ def _undecided_routes_warning(
     named = [f"{pair['source_entity']} -> {pair['target_entity']}" for pair in pairs[:5]]
     if len(pairs) > len(named):
         named.append(f"{len(pairs) - len(named)} more")
+    first = census["undecided"][0]["details"].get("clarification", {}).get("options", [])
     return _error_payload(
         "ROUTES_UNDECIDED",
         f"{source_path}: {len(pairs)} entity pairs reach their target by two or more routes "
         f"and no route is recorded ({', '.join(named)}); a query that needs one is refused "
-        "as AMBIGUOUS_PATH. Choose each pair's route from "
-        "route_census.undecided[*].details.clarification.options and pass its decision "
-        "to record_route_decision to write the graph.path_preferences row.",
-        details={"count": len(pairs), "pairs": pairs},
+        "as AMBIGUOUS_PATH. Record the route each pair means as a graph.path_preferences row: "
+        "the decision of one of its options in route_census.undecided[*].details.clarification.",
+        details={
+            "count": len(pairs),
+            "pairs": pairs,
+            # The rows that would decide the first pair, one per route: an author writes one.
+            "first_pair_rows": [option["decision"] for option in first if "decision" in option],
+        },
     )
 
 
@@ -1074,7 +1118,11 @@ def parse_snapshot_report(
         source = capture_package_source(ref.source_path)
         messages = validate_runtime_package(Path(ref.source_path))
         if not messages:
-            snapshot = load_package_snapshot(ref.source_path)
+            from .row_filter_visibility import check_shared
+
+            loaded = load_package_snapshot(ref.source_path)
+            check_shared(loaded.config)
+            snapshot = loaded
             if snapshot.source_fingerprint != source.fingerprint:
                 messages.append(
                     "Package sources changed during validation; retry after writes complete."
@@ -1130,98 +1178,6 @@ def _probe_query_for_measure(measure) -> dict[str, Any]:
     }
 
 
-def _metric_min_window_unit(expression: Any) -> str:
-    """Return the coarsest required window unit ('month', 'quarter', 'year')
-    found in a metric expression tree, or '' if none. Used by the probe
-    to pick a probe grain that matches `prior_period`/`rolling`/etc.
-    window units; without this, a `prior_period(month)` metric probed at
-    day grain raises REWRITE_NOT_SUPPORTED."""
-    if expression is None:
-        return ""
-    if isinstance(expression, dict):
-        units: list[str] = []
-        for key in ("offset", "window"):
-            spec = expression.get(key)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
-        for child_key in (
-            "input",
-            "left",
-            "right",
-            "numerator",
-            "denominator",
-            "base",
-            "converted",
-        ):
-            units.append(_metric_min_window_unit(expression.get(child_key)))
-        for arg in expression.get("args", []) or []:
-            units.append(_metric_min_window_unit(arg))
-        order = ["year", "quarter", "month", "week", "day"]
-        coarsest = ""
-        for unit in units:
-            if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-                coarsest = unit
-        return coarsest
-    # carry `.unit` directly; ``RollingExpr`` also carries `.unit` and
-    # `.value` directly (no `.window` attribute exists on the
-    # dataclass — see ``semantic_rails/expressions.py:RollingExpr``).
-    # The ``window`` branch below only fires for IR payloads that
-    # still carry a raw dict (``offset`` and ``window`` map keys on
-    # parsed but un-typed expressions).
-    units = []
-    direct_unit = getattr(expression, "unit", "")
-    if isinstance(direct_unit, str) and direct_unit:
-        units.append(direct_unit.lower())
-    for attr in ("offset", "window"):
-        if hasattr(expression, attr):
-            spec = getattr(expression, attr)
-            if isinstance(spec, dict):
-                unit = str(spec.get("unit", "")).strip().lower()
-                if unit:
-                    units.append(unit)
-    for attr in ("input", "left", "right", "numerator", "denominator", "base", "converted"):
-        if hasattr(expression, attr):
-            units.append(_metric_min_window_unit(getattr(expression, attr)))
-    if hasattr(expression, "args"):
-        for arg in expression.args or []:
-            units.append(_metric_min_window_unit(arg))
-    order = ["year", "quarter", "month", "week", "day"]
-    coarsest = ""
-    for unit in units:
-        if unit in order and (not coarsest or order.index(unit) < order.index(coarsest)):
-            coarsest = unit
-    return coarsest
-
-
-def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
-    from .temporal_support import require_temporal_support
-
-    require_temporal_support(runtime._config)
-    role_id = str(recipe.temporal_role or "").strip()
-    if not role_id:
-        compatible_roles = list(recipe.compatible_temporal_roles or [])
-        default_roles = [
-            role.id
-            for role in runtime._config.temporal_roles
-            if role.default_query_time_axis and role.id in compatible_roles
-        ]
-        if default_roles:
-            role_id = default_roles[0]
-        elif compatible_roles:
-            role_id = compatible_roles[0]
-    if not role_id:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"Metric recipe '{recipe.id}' requires query.time but has no compatible temporal role",
-            details={"metric": recipe.id},
-        )
-    coarsest_unit = _metric_min_window_unit(recipe.expression)
-    grain = coarsest_unit if coarsest_unit in {"month", "quarter", "year"} else "day"
-    return {"temporal_role": role_id, "grain": grain}
-
-
 def _probe_query_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
     query = {
         "version": 1,
@@ -1242,7 +1198,7 @@ def _run_probe(
         # At most two repairs: required policy grouping and a non-additive stored grain.
         for attempt in range(3):
             try:
-                runtime.query(query)
+                runtime.query_internal(query)
                 break
             except SemanticLayerError as exc:
                 if not repair:
@@ -1297,7 +1253,7 @@ def _run_probe(
             # Package-owner diagnostics use the normal compile surface on the
             # same runtime generation. Never change process-wide debug-SQL
             # authorization or inject roles while other requests may be running.
-            result["rendered_sql"] = runtime.compile(query)["rendered_sql"]
+            result["rendered_sql"] = runtime.compile_internal(query)["rendered_sql"]
         return result
 
 
@@ -1338,25 +1294,28 @@ def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
     return _run_probe(runtime, kind="metric", object_id=recipe.id, query=retry_query, repair=True)
 
 
-# A filter with these operators matches rows only when its literal is a value in the data.
-_VALUE_FILTER_OPS = frozenset({"=", "!=", "<>", "IN", "NOT IN"})
-
-
 def _metric_filter_literals(config) -> Iterator[tuple[str, str, str]]:
     """(metric id, dimension id, literal) for each string a metric filter compares a column to."""
     string_dimensions = {row.id for row in config.dimensions if row.data_type == "string"}
     for recipe in config.metric_recipes:
         for node in _expression_nodes(recipe.expression):
             for clause in node.filter.get("all", []) if isinstance(node, AggregateExpr) else []:
-                op = " ".join(str(clause.get("op") or "=").split()).upper()
-                if "field" not in clause or op not in _VALUE_FILTER_OPS:
+                if "field" not in clause:
+                    continue
+                try:
+                    word, value = operators.normalize_condition(
+                        clause.get("op", "is"), clause.get("value"), path="filter", internal=True
+                    )
+                except SemanticLayerError:
+                    continue
+                # Only is / not compare a column to values the data must hold.
+                if word not in {"is", "not"}:
                     continue
                 try:
                     dimension_id = resolve_filter_dimension(str(clause["field"]), config)
                 except SemanticLayerError:
                     continue  # the metric's probe reports the unknown field
-                raw = clause.get("value")
-                for literal in raw if isinstance(raw, list) else [raw]:
+                for literal in operators.values_of(word, value):
                     if dimension_id in string_dimensions and isinstance(literal, str):
                         yield recipe.id, dimension_id, literal
 

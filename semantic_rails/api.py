@@ -31,6 +31,7 @@ from .http_core import (
     cors_origin_header,
     header_value,
     public_api_route,
+    rebinding_refusal,
     request_id_from_parts,
 )
 from .mcp import SemanticLayerMCPAdapter
@@ -70,6 +71,26 @@ class Handler(BaseHTTPRequestHandler):
     def _request_headers(self) -> dict[str, str]:
         return {str(key): str(value) for key, value in self.headers.items()}
 
+    def parse_request(self) -> bool:
+        """Parse the request, then refuse DNS rebinding before any method or route answers."""
+        if not super().parse_request():
+            return False
+        if self.headers.defects or self.headers.get_payload():
+            # A malformed line ends the stdlib header parse and hides the headers after it.
+            self.send_error(400, "Malformed header line")
+            return False
+        server_host = str(self.connection.getsockname()[0])  # the address this connection reached
+        refusal = rebinding_refusal(self.headers.items(), server_host, target=self.path)
+        if refusal is None:
+            return True
+        status, refused = refusal
+        self._request_id = request_id_from_parts(self._request_headers(), self._query_params())
+        if self._is_mcp_route():
+            self._send_mcp(_error(status, -32003, refused["error"]["message"]), self._request_id)
+        else:  # no identity is resolved for a refused request
+            _json(self, status, {**refused, "request_id": self._request_id}, wrap=False)
+        return False
+
     def _prepare_request(self, payload: dict[str, Any] | None = None) -> None:
         if not hasattr(self, "_request_started_at"):
             self._request_started_at = time.perf_counter()
@@ -90,10 +111,7 @@ class Handler(BaseHTTPRequestHandler):
             self._request_id = request_id_from_parts(headers, query_params)
             self._request_id_source = "generated"
         self._request_context = self._service().request_context(
-            headers,
-            payload=payload or {},
-            query_params=query_params,
-            request_id=self._request_id,
+            headers, request_id=self._request_id
         )
 
     def _auth_ok(self, route: str) -> bool:
@@ -262,14 +280,18 @@ class Handler(BaseHTTPRequestHandler):
     do_PUT = do_PATCH = do_HEAD = do_TRACE = do_CONNECT = do_DELETE
 
 
-def _json(handler: Handler, status: int, payload: dict[str, Any]) -> None:
-    service = handler._service()
-    envelope = service.envelope(
-        status,
-        payload,
-        request_id=str(getattr(handler, "_request_id", "")),
-        started=getattr(handler, "_request_started_at", None),
-        request_context=getattr(handler, "_request_context", None),
+def _json(handler: Handler, status: int, payload: dict[str, Any], *, wrap: bool = True) -> None:
+    """Send ``payload`` in the API envelope, or as it is when ``wrap`` is False."""
+    envelope = (
+        handler._service().envelope(
+            status,
+            payload,
+            request_id=str(getattr(handler, "_request_id", "")),
+            started=getattr(handler, "_request_started_at", None),
+            request_context=getattr(handler, "_request_context", None),
+        )
+        if wrap
+        else payload
     )
     # Pretty-printing is opt-in via `?pretty=true`. The default is
     # compact JSON to halve bandwidth on large catalog and discover

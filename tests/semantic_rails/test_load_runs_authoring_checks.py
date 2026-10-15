@@ -6,6 +6,7 @@ the value, so the package behaved differently from what it says.
 
 import asyncio
 import os
+import re
 from pathlib import Path
 
 import duckdb
@@ -56,7 +57,7 @@ def _rollup(**columns):
 _ORDER_CUSTOMER = "relationship.orders_customer"
 
 
-# name: (edit of the starter package, what the refusal names)
+# name: (edit of the starter package, a pattern of what the refusal names and suggests)
 REFUSED = {
     "measure-kind": (
         _set("models", "orders", "measures", "revenue_usd", kind="additive"),
@@ -146,9 +147,7 @@ REFUSED = {
     ),
     "misspelled-binding-name": (
         _rollup(revenue_ud={"column": "rev", "aggregation": "max"}),
-        "variant 'monthly' column 'revenue_ud' names no measure, dimension or key column of the "
-        "model — it is ignored by the loader, so this would silently change behavior; did you "
-        "mean 'revenue_usd'?",
+        "variant 'monthly' column 'revenue_ud' names no measure.*did you mean 'revenue_usd'",
     ),
     # The loader reads a binding by the `as:` value only.
     "measure-id-binding-overridden-by-as": (
@@ -167,9 +166,7 @@ REFUSED = {
     ),
     "misspelled-binding-id": (
         _rollup(**{"measure.shop.revenue_ud": {"column": "rev", "aggregation": "max"}}),
-        "column 'measure.shop.revenue_ud' names no measure, dimension or key column of the model "
-        "— it is ignored by the loader, so this would silently change behavior; did you mean "
-        "'measure.shop.revenue_usd'",
+        "column 'measure.shop.revenue_ud' names no measure.*did you mean 'measure.shop.revenue_usd'",
     ),
     "measure-accumulation-key": (
         _set(
@@ -179,8 +176,7 @@ REFUSED = {
             "revenue_usd",
             accumulation={"kind": "stock", "snapshto": "last"},
         ),
-        "measure 'revenue_usd' accumulation has unknown key 'snapshto' — unknown keys are ignored "
-        "by the loader, so this would silently change behavior; did you mean 'snapshot'?",
+        "measure 'revenue_usd' accumulation has unknown key 'snapshto'.*did you mean 'snapshot'",
     ),
     "defaults-measure-accumulation-key": (
         _set("defaults", "measure", accumulation={"kind": "stock", "snapshto": "last"}),
@@ -250,18 +246,15 @@ def test_serving_refuses_what_validate_config_refuses(tmp_path, edit, expected):
         Runtime.from_path(str(source))
     assert refused.value.code == "INVALID_CONFIG"
     (error,) = refused.value.details["errors"]
-    assert error.startswith(str(source)) and expected in error
+    assert error.startswith(str(source)) and re.search(expected, error)
     assert str(refused.value) == error
     assert validate_runtime_package(source) == [error]
 
 
-def test_underscore_keys_stay_annotations(tmp_path):
-    Runtime.from_path(str(_package(tmp_path, _add("_notes", {"owner": "analytics"})))).close()
-
-
-def test_key_column_binding_with_path_loads(tmp_path):
+def test_underscore_keys_and_a_key_column_binding_with_path_load(tmp_path):
     customer = {"column": "customer_id", "path": [_ORDER_CUSTOMER]}
-    source = _package(tmp_path, _rollup(revenue_usd="revenue_usd", customer_id=customer))
+    notes = _add("_notes", {"owner": "analytics"})  # underscore keys stay annotations
+    source = _package(tmp_path, notes, _rollup(revenue_usd="revenue_usd", customer_id=customer))
     runtime = Runtime.from_path(str(source))
     try:
         (rollup,) = runtime._config.aggregate_relations
@@ -275,7 +268,9 @@ def test_validate_config_lists_each_error_once(tmp_path):
     source = _package(tmp_path, *(REFUSED[name][0] for name in names))
     errors = validate_runtime_package(source)
     assert len(errors) == 2, errors
-    assert all(REFUSED[name][1] in error for name, error in zip(names, errors, strict=True))
+    assert all(
+        re.search(REFUSED[name][1], error) for name, error in zip(names, errors, strict=True)
+    )
 
 
 def test_every_entry_point_refuses_the_same_package(tmp_path):
@@ -300,18 +295,15 @@ def test_every_entry_point_refuses_the_same_package(tmp_path):
     messages.append([error["message"] for error in report["errors"]])
 
     # The same one error, whichever path the package directory was spelled with.
-    assert {tuple(row.split(": ", 1)[1] for row in errors) for errors in messages} == {
-        (
-            "graph relationship 'orders_customer' has unknown key 'cardinalty' — unknown keys "
-            "are ignored by the loader, so this would silently change behavior; did you mean "
-            "'cardinality'?",
-        )
-    }
+    ((error,),) = {tuple(row.split(": ", 1)[1] for row in errors) for errors in messages}
+    assert re.match(r"graph relationship 'orders_customer' has unknown key 'cardinalty'", error)
+    assert error.endswith("did you mean 'cardinality'?")
 
 
-def _directory(tmp_path: Path, files: dict) -> Path:
-    """The bundled directory package, each ``files`` entry rebuilt from its current document."""
-    package = copy_package_config(tmp_path, "jaffle_shop")
+def _directory(tmp_path: Path, files: dict, package: Path | None = None) -> Path:
+    """The bundled directory package (or ``package``), each ``files`` entry rebuilt from its
+    current document."""
+    package = package or copy_package_config(tmp_path, "jaffle_shop")
     for name, build in files.items():
         target = package / name
         doc = yaml.safe_load(target.read_text(encoding="utf-8")) if target.exists() else None
@@ -333,23 +325,19 @@ _MODEL_METRICS = {
         "metrics": {"orders_total": {"kind": "aggregate", "measure": "order_count"}},
     }
 }
-# name: (files rewritten in the directory package, what the refusal names)
+# name: (files rewritten in the directory package, a pattern of what the refusal names and says)
 DIRECTORY_REFUSED = {
     "block-file-without-wrapper": (
         _NO_WRAPPER,
-        "defaults.yml has unknown key 'time' — unknown keys are ignored by the loader, so this "
-        "would silently change behavior; write this file's contents under a top-level "
-        "'defaults' key",
+        "/defaults.yml has unknown key 'time' .*under a top-level 'defaults' key$",
     ),
     "block-file-sibling": (
         _GRAPH_ALIASES,
-        "graph.yml has unknown key 'aliases' — unknown keys are ignored by the loader, so this "
-        "would silently change behavior; the loader reads only 'graph' from this file",
+        "/graph.yml has unknown key 'aliases' .*reads only 'graph' from this file$",
     ),
     "model-file-sibling": (
         _MODEL_METRICS,
-        "orders.yml has unknown key 'metrics' — unknown keys are ignored by the loader, so this "
-        "would silently change behavior; the loader reads only 'model' from this file",
+        "/orders.yml has unknown key 'metrics' .*reads only 'model' from this file$",
     ),
 }
 
@@ -361,7 +349,7 @@ def test_directory_refuses_root_keys_the_loader_drops(tmp_path, files, expected)
         Runtime.from_path(str(package))
     assert refused.value.code == "INVALID_CONFIG"
     (error,) = refused.value.details["errors"]
-    assert error.startswith(str(package)) and error.endswith(expected)
+    assert error.startswith(str(package)) and re.search(expected, error)
     # validate-config's split-layout check also names a top-level aliases registry.
     assert [row for row in validate_runtime_package(package) if "aliases registry" not in row] == [
         error
@@ -378,12 +366,6 @@ def test_directory_lists_each_dropped_root_key(tmp_path):
     ]
 
 
-def test_directory_underscore_root_keys_stay_annotations(tmp_path):
-    notes = {"_notes": {"owner": "analytics"}}
-    files = {name: lambda doc: {**doc, **notes} for name in ("graph.yml", _ORDERS_FILE)}
-    Runtime.from_path(str(_directory(tmp_path, files))).close()
-
-
 def _package_yml(**blocks):
     return {"package.yml": lambda doc: {**doc, **blocks}}
 
@@ -396,57 +378,49 @@ _POLICY = {
     "required_group_by": ["dimension.jaffle_order_ordered_at"],
 }
 _DROPPED = "is ignored by the loader, so this would silently change behavior"
-# name: (files written in the directory package, the refusal with the package path removed)
+# name: (files written in the directory package, a pattern of the refusal without the package path)
 DIRECTORY_SILENT_DROPS = {
     "defaults-in-both-files": (
         {
             "package.yml": lambda doc: {**doc, "defaults": {**doc["defaults"], **_NEW_YORK}},
             "defaults.yml": lambda _: {"defaults": {"dimension": {"groupable": True}}},
         },
-        f"package.yml declares 'defaults', which defaults.yml replaces — the package.yml block "
-        f"{_DROPPED}; keep the block in one of the two files",
+        "package.yml declares 'defaults', which defaults.yml replaces .*keep the block in one",
     ),
     "graph-in-both-files": (
         _package_yml(graph={"path_policy": {"max_hops": 2}}),
-        f"package.yml declares 'graph', which graph.yml replaces — the package.yml block "
-        f"{_DROPPED}; keep the block in one of the two files",
+        "package.yml declares 'graph', which graph.yml replaces .*keep the block in one",
     ),
     "model-in-package-and-file": (
         _package_yml(models={"orders": {"relation": "jaffle_order"}}),
-        f"models/core/orders.yml defines model 'orders', which package.yml also defines — the "
-        f"definition in package.yml {_DROPPED}; keep one definition",
+        "models/core/orders.yml defines model 'orders', which package.yml also defines — the "
+        "definition in package.yml",
     ),
     "model-in-two-files": (
         {"models/extra/orders.yml": lambda _: {"model": {"id": "orders", "relation": "x"}}},
-        f"models/extra/orders.yml defines model 'orders', which models/core/orders.yml also "
-        f"defines — the definition in models/core/orders.yml {_DROPPED}; keep one definition",
+        "models/extra/orders.yml defines model 'orders', which models/core/orders.yml also "
+        "defines — the definition in models/core/orders.yml",
     ),
     "policies-directory": (
         {"policies/day.yml": lambda _: {"semantic_policies": [_POLICY]}},
-        "policies/ is not a package directory — its YAML is ignored by the loader, so this "
-        "would silently change behavior; write these policies in policies.yml",
+        "policies/ is not a package directory .*write these policies in policies.yml$",
     ),
     "unknown-root-file": (
         {"notes.yml": lambda _: {"owner": "analytics"}},
-        "notes.yml is not a package file — its YAML is ignored by the loader, so this would "
-        "silently change behavior; move its contents into caveats.yml, defaults.yml, graph.yml, "
-        "metrics.yml, package.yml, policies.yml, relations.yml, segments.yml or start its name "
-        "with '_'",
+        "notes.yml is not a package file .*move its contents into caveats.yml, .*segments.yml or "
+        "start its name with '_'$",
     ),
     "yaml-spelling-of-a-block-file": (
         {"defaults.yaml": lambda _: {"defaults": _NEW_YORK}},
-        "defaults.yaml is not a package file — its YAML is ignored by the loader, so this would "
-        "silently change behavior; rename it defaults.yml",
+        "defaults.yaml is not a package file .*rename it defaults.yml$",
     ),
     "root-tests-file": (
         {"tests.yml": lambda _: {"tests": {"orders": {"kind": "query_row_count_bounds"}}}},
-        "tests.yml is not a package file — its YAML is ignored by the loader, so this would "
-        "silently change behavior; write these entries under tests/",
+        "tests.yml is not a package file .*under tests/$",
     ),
     "root-examples-file": (
         {"examples.yml": lambda _: {"examples": {"orders": {"question": "Orders?"}}}},
-        "examples.yml is not a package file — its YAML is ignored by the loader, so this would "
-        "silently change behavior; write these entries under examples/",
+        "examples.yml is not a package file .*under examples/$",
     ),
 }
 
@@ -460,7 +434,8 @@ def test_directory_refuses_input_the_loader_never_reads(tmp_path, files, expecte
         Runtime.from_path(str(package))
     assert refused.value.code == "INVALID_CONFIG"
     (error,) = refused.value.details["errors"]
-    assert error.replace(f"{package}/", "") == expected
+    assert error.startswith(f"{package}/") and _DROPPED in error
+    assert re.match(expected, error.replace(f"{package}/", ""))
     assert error in validate_runtime_package(package)
 
 
@@ -476,17 +451,9 @@ def test_directory_lists_each_input_it_never_reads(tmp_path):
     }
     package = _directory(tmp_path, files)
     errors = [row for row in validate_runtime_package(package) if _DROPPED in row]
-    assert sorted(error.replace(f"{package}/", "") for error in errors) == sorted(
-        expected for _, expected in DIRECTORY_SILENT_DROPS.values()
-    )
-
-
-def test_directory_underscore_root_files_stay_ignored(tmp_path):
-    files = {
-        "_scratch.yml": lambda _: {"defaults": _NEW_YORK},
-        "_drafts/policies.yml": lambda _: {"semantic_policies": [_POLICY]},
-    }
-    Runtime.from_path(str(_directory(tmp_path, files))).close()
+    patterns = [expected for _, expected in DIRECTORY_SILENT_DROPS.values()]
+    found = [p for e in errors for p in patterns if re.match(p, e.replace(f"{package}/", ""))]
+    assert len(errors) == len(patterns) and sorted(found) == sorted(patterns)
 
 
 def _linked_directory(tmp_path: Path, link: str, files: dict) -> Path:
@@ -520,20 +487,17 @@ _LINKED_POLICY = {"day.yml": {"semantic_policies": [_POLICY]}}
 )
 def test_directory_symlink_is_refused_not_followed(tmp_path, link, files):
     package = _linked_directory(tmp_path, link, files)
-    expected = (
-        f"{package / link} is a directory symlink — the loader does not follow it, so this "
-        "would silently change behavior; copy or link the files instead"
-    )
     walked, captured = [], []
     for errors, source in ((walked, None), (captured, capture_package_source(package))):
         with pytest.raises(SemanticLayerError) as refused:
             _merge_package_dir(str(package), captured=source)
         assert refused.value.code == "INVALID_CONFIG"
         errors.extend(refused.value.details["errors"])
-    assert walked == captured == [expected]
     with pytest.raises(SemanticLayerError) as refused:
         Runtime.from_path(str(package))
-    assert refused.value.details["errors"] == [expected]
+    assert walked == captured == refused.value.details["errors"]
+    (error,) = walked
+    assert error.startswith(f"{package / link} is a directory symlink")
 
 
 @pytest.mark.parametrize(
@@ -561,10 +525,8 @@ def test_data_symlink_whose_contents_are_unknown_is_refused(tmp_path, nested):
     finally:
         if nested == "unreadable":
             (target / "locked").chmod(0o700)
-    assert refused.value.details["errors"] == [
-        f"{package / 'data'} is a directory symlink — the loader does not follow it, so this "
-        "would silently change behavior; copy or link the files instead"
-    ]
+    (error,) = refused.value.details["errors"]
+    assert error.startswith(f"{package / 'data'} is a directory symlink")
 
 
 @pytest.mark.parametrize(
@@ -590,8 +552,13 @@ def test_directory_symlink_to_data_files_loads(tmp_path, files):
     Runtime.from_path(str(package)).close()
 
 
-def test_directory_symlink_starting_with_underscore_stays_ignored(tmp_path):
+def test_directory_underscore_root_keys_files_and_links_stay_ignored(tmp_path):
     package = _linked_directory(tmp_path, "_shared", _LINKED_POLICY)
+    notes = {"_notes": {"owner": "analytics"}}
+    files = {name: lambda doc: {**doc, **notes} for name in ("graph.yml", _ORDERS_FILE)}
+    files["_scratch.yml"] = lambda _: {"defaults": _NEW_YORK}
+    files["_drafts/policies.yml"] = lambda _: {"semantic_policies": [_POLICY]}
+    _directory(tmp_path, files, package)
     _merge_package_dir(str(package))
     _merge_package_dir(str(package), captured=capture_package_source(package))
     Runtime.from_path(str(package)).close()
@@ -648,7 +615,6 @@ def _assert_monthly_max_from_rollup(source: Path, measure: str) -> None:
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {

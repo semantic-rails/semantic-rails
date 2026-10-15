@@ -18,7 +18,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ...naming import semantic_token as _semantic_token
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -27,6 +26,8 @@ from .._base import (
     _resolved,
     _runtime_composition_terms,
 )
+from ..call import QueryBuilder
+from ..generators import _target_focus_text
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order
 from ._protocol import IntentPattern
@@ -35,6 +36,7 @@ _VS_RE = re.compile(r"^(?P<left>.+?)\s+(?:vs|versus)\s+(?P<right>.+?)$", re.IGNO
 
 
 _SHARE_HINT_TOKENS = frozenset({"share", "pct", "percent", "percentage", "ratio", "%"})
+_STOP_WORDS = frozenset({"the", "a", "an", "of", "to", "with"})
 
 
 def _resolve_side(
@@ -56,6 +58,10 @@ def _resolve_side(
     Returns ``(row, is_measure)`` or ``None``.
     """
 
+    # A side that only names a period ("the week before") names no subject: that is a
+    # comparison of periods, not of two measures.
+    if not _runtime_composition_terms(_target_focus_text(side_text)) - _STOP_WORDS:
+        return None
     side_terms = _runtime_composition_terms(side_text)
     if not side_terms:
         return None
@@ -113,77 +119,6 @@ def _share_metric_with_tokens(config: Any, content_tokens: set[str]) -> Any | No
     return candidates[0][3] if candidates else None
 
 
-def _coordinated_clock_comparison(
-    config: Any, intent_tokens: set[str]
-) -> RuntimeCompositionDraft | None:
-    if not {"delivered", "order", "revenue"} <= intent_tokens or "month" not in intent_tokens:
-        return None
-    delivered = next(
-        (row for row in config.measures if row.id == "measure.jaffle.delivered_revenue_usd"),
-        None,
-    )
-    ordered = next((row for row in config.measures if row.id == "measure.jaffle.revenue_usd"), None)
-    if delivered is None or ordered is None:
-        return None
-    query = {
-        "version": 1,
-        "select": [
-            {
-                "as": "delivered_revenue_usd",
-                "expression": {
-                    "measure": delivered.id,
-                    "aggregation": _aggregation_from_text("", set(), delivered),
-                },
-            },
-            {
-                "as": "ordered_revenue_usd",
-                "expression": {
-                    "measure": ordered.id,
-                    "aggregation": _aggregation_from_text("", set(), ordered),
-                },
-            },
-        ],
-        "time": {
-            "temporal_role": "temporal_role.jaffle_order_time",
-            "grain": "month",
-        },
-    }
-    return RuntimeCompositionDraft(
-        query=query,
-        resolved=[_resolved(delivered), _resolved(ordered)],
-        rationale=[
-            "detected a delivered-vs-ordered clock comparison that needs coordinated queries",
-        ],
-        interpreted_intent={
-            "pattern": "inline_comparison",
-            "source": "plan",
-            "comparison_mode": "coordinated_queries",
-            "left": {"id": delivered.id, "kind": "measure", "alias": "delivered_revenue_usd"},
-            "right": {"id": ordered.id, "kind": "measure", "alias": "ordered_revenue_usd"},
-        },
-        blocked_reason={
-            "code": "COMPARISON_COORDINATED",
-            "message": (
-                "Delivered-month versus ordered-month revenue comparison requires coordinated "
-                "queries because each side uses a different temporal role."
-            ),
-            "details": {
-                "left_temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-                "right_temporal_role": "temporal_role.jaffle_order_time",
-            },
-            "recovery_hints": [
-                {
-                    "kind": "run_coordinated_queries",
-                    "message": (
-                        "Run one query on delivered revenue by delivered month and one on "
-                        "ordered revenue by order month, then compare the aligned outputs."
-                    ),
-                }
-            ],
-        },
-    )
-
-
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
     match = _VS_RE.match(text.strip())
     if not match:
@@ -196,9 +131,6 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # side ("food vs drink share" vs "food revenue share vs drink").
     intent_tokens = terms | _runtime_composition_terms(text)
     prefer_share = bool(intent_tokens & _SHARE_HINT_TOKENS)
-    coordinated = _coordinated_clock_comparison(config, intent_tokens)
-    if coordinated is not None:
-        return coordinated
 
     left = _resolve_side(config, left_text, prefer_share_metric=prefer_share)
     right = _resolve_side(config, right_text, prefer_share_metric=prefer_share)
@@ -221,34 +153,19 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         if candidate:
             role = candidate
             break
-    time_spec = _time_spec(role, text) if role else None
-
-    def _expression(row: Any, is_measure: bool) -> dict[str, Any]:
+    builder = QueryBuilder(config)
+    for row, is_measure in (left, right):
+        alias = row.id.split(".")[-1]
+        if alias in builder.build().aliases:
+            alias = f"{alias}_alt"
         if is_measure:
-            return {
-                "measure": row.id,
-                "aggregation": _aggregation_from_text(text, terms, row),
-            }
-        return {"metric": row.id}
-
-    left_alias = _semantic_token(left_row.id, fallback="left")
-    right_alias = _semantic_token(right_row.id, fallback="right")
-    if left_alias == right_alias:
-        right_alias = f"{right_alias}_alt"
-
-    query: dict[str, Any] = {
-        "version": 1,
-        "select": [
-            {"as": left_alias, "expression": _expression(left_row, left_is_measure)},
-            {"as": right_alias, "expression": _expression(right_row, right_is_measure)},
-        ],
-    }
-    if time_spec is not None:
-        query["time"] = time_spec
-    group_by = _maybe_group_by(config, text)
-    if group_by:
-        query["group_by"] = group_by
-    _add_order(query)
+            builder.measure(row.id, _aggregation_from_text(text, terms, row), alias)
+        else:
+            builder.select(row.id, alias)
+    builder.time(_time_spec(role, text) if role else None)
+    builder.groups(_maybe_group_by(config, text))
+    query = _add_order(builder).build()
+    left_alias, right_alias = query.aliases
 
     resolved = [_resolved(left_row), _resolved(right_row)]
     return RuntimeCompositionDraft(
@@ -256,7 +173,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         resolved=resolved,
         rationale=[
             "composed inline comparison: emitted both sides as columns "
-            "of a single Query IR for side-by-side review",
+            "of a single query call for side-by-side review",
         ],
         interpreted_intent={
             "pattern": "inline_comparison",

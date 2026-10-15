@@ -1,9 +1,9 @@
-"""Upgrade a package's legacy forms in one parse-gated transaction, proven or certified.
+"""Upgrade a package's legacy forms in one parse-gated transaction.
 
 Invariant: the upgrade writes a package only if it parses as a whole and every rewrite is
-proven equivalent on this engine or certified by its rule. A rule after the baseline that
-changes the masked semantic fingerprint, or the compiled SQL of an example or test query the
-baseline compiles, is refused before anything is written.
+checked by its rule. Query-call translations claim spelling changes, not answer equivalence.
+A rule after the baseline that changes the masked semantic fingerprint, or the compiled SQL
+of an example or test query the baseline compiles, is refused before anything is written.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from uuid import uuid4
 import yaml
 
 from ..architect_transactions import ProjectFileUpdate, ProjectTransaction
-from ..errors import SemanticLayerError
+from ..errors import SemanticLayerError, refusal_text
 from ..package_snapshot import LoadedPackageSnapshot, json_fingerprint, load_package_snapshot
 from ..route_census import route_census
 from ..runtime import Runtime
@@ -40,6 +40,10 @@ class _State:
 
 def _query_key(file: str, path: YamlPath) -> str:
     return f"{file}:{'.'.join(map(str, path))}"
+
+
+# Entries without a clock use one instant across stages, so window SQL stays comparable.
+_COMPARED_AT = "2026-01-01T00:00:00Z"
 
 
 def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mapping) -> _State:
@@ -63,14 +67,34 @@ def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mappin
                 if Path(file).parts[0] not in {"examples", "tests"}:
                     continue
                 try:
-                    sql = str(runtime.compile(dict(query))["rendered_sql"])
+                    entry = staged.documents[file]
+                    for part in path[:-1]:
+                        entry = entry[part]
+                    sql = str(
+                        runtime.compile(
+                            dict(query),
+                            now=entry.get("now") or _COMPARED_AT,
+                            context=entry.get("context"),
+                        )["rendered_sql"]
+                    )
                     queries[_query_key(file, path)] = ("sql", relative(sql))
                 except Exception as exc:  # noqa: BLE001 - every failure is compared evidence
                     code = getattr(exc, "code", type(exc).__name__)
-                    queries[_query_key(file, path)] = ("error", code, relative(str(exc)))
+                    text, hint = refusal_text(str(exc), getattr(exc, "details", {}))
+                    reason = f"{text} Hint: {hint}" if hint else text
+                    queries[_query_key(file, path)] = ("error", code, relative(reason))
         finally:
             runtime.close()
     return _State(snapshot, None, queries)
+
+
+def _refused_examples(state: _State) -> list[str]:
+    """Each example the staged package refuses, with the refusal's path, message and hint."""
+    return [
+        f"Example {key} does not compile ({outcome[1]}): {outcome[2]}"
+        for key, outcome in state.queries.items()
+        if key.startswith("examples/") and outcome[0] == "error"
+    ]
 
 
 def _children(node: Any, part: str) -> list[Any]:
@@ -155,12 +179,12 @@ def _refuse_rule(
 
 
 def _unloadable(blocker: Rule | None, error: str) -> str:
-    """Why no baseline loads: a rule that rewrites the refused form without certifying it,
+    """Why no baseline loads: a rule that rewrites the refused form without establishing a baseline,
     or a form no rule covers."""
     if blocker is not None:
         return (
             f"Upgrade rule '{blocker.id}' rewrites a form this engine refuses at load, but the "
-            f"rule is not marked refused, so its rewrite cannot be certified: {error} "
+            f"rule is not marked refused, so its rewrite cannot establish a baseline: {error} "
             "Rewrite this form by hand, and report the rule."
         )
     return (
@@ -239,7 +263,7 @@ def upgrade_project(
             "revision": revision,
             "rules": [],
             "changes": [],
-            "next_actions": [],
+            "next_actions": _refused_examples(unchanged),
         }
     hits = {rule.id: [f for f in result.findings if f.rule == rule.id] for rule in rules}
     mechanical = [rule for rule in rules if any(f.edits and not f.options for f in hits[rule.id])]
@@ -256,7 +280,7 @@ def upgrade_project(
             prefix = candidates[:count]
             break
     # Without a baseline, name the first other rule whose rewrite would make the package load:
-    # it rewrites a refused form but cannot certify it. None means no rule covers the error.
+    # it rewrites a refused form but cannot establish a baseline. None means no rule covers the error.
     blocker: Rule | None = None
     if prefix is None:
         others = [rule for rule in mechanical if rule not in candidates]
@@ -303,7 +327,7 @@ def upgrade_project(
         if prefix is None:
             return "unverified"
         if rule in prefix:
-            return "certified"
+            return "translated"
         edits = [f for f in hits[rule.id] if f.edits and not f.options]
         affected = {key for key in refused if any(_in_refused_query(f, {key}) for f in edits)}
         if affected and rule.effect != "retired":
@@ -313,18 +337,30 @@ def upgrade_project(
                 isolated.queries.get(key, ("error",))[0] != "sql" for key in affected
             ):
                 return "unverified"
-        if all(_in_refused_query(f, refused) for f in edits):
-            return "certified"
+        if rule.id == "query-call-v2" or all(_in_refused_query(f, refused) for f in edits):
+            return "translated"
         return "proven"
 
+    rule_tiers = {rule.id: tier(rule) for rule in rules if hits[rule.id]}
     rule_rows: list[dict[str, Any]] = [
         {
             "id": rule.id,
             "since": rule.since,
             "effect": rule.effect,
             "summary": rule.summary,
-            "tier": tier(rule),
-            **({"reason": stops[rule.id]} if rule.id in stops else {}),
+            "tier": rule_tiers[rule.id],
+            **(
+                {"reason": stops[rule.id]}
+                if rule.id in stops
+                else {
+                    "reason": "Spelling-only query rewrites; review the diff. The package loads "
+                    "and rewritten calls compile with entry now/context (a fixed fallback clock "
+                    "when absent). Queries were not run; no before/after answer comparison "
+                    "was performed for legacy calls refused by this engine."
+                }
+                if rule.id == "query-call-v2" and rule_tiers[rule.id] == "translated"
+                else {}
+            ),
             "hits": [
                 {"file": f.file, "line": f.line, "path": list(f.path), "message": f.message}
                 for f in hits[rule.id]
@@ -357,12 +393,12 @@ def upgrade_project(
     compared = [key for key in baseline.queries if key not in refused]
     loaded = prefix is not None
     proof = {
-        "tier": next((t for t in ("unverified", "certified", "proven") if t in tiers), "choice"),
+        "tier": next((t for t in ("unverified", "translated", "proven") if t in tiers), "choice"),
         "baseline": "none"
         if prefix is None
         else "as_is"
         if not prefix
-        else "after_certified_rules",
+        else "after_translated_rules",
         "fingerprint_before": json_fingerprint(_masked(baseline, masks)) if loaded else None,
         "fingerprint_after": json_fingerprint(_masked(final, masks)) if loaded else None,
         "masks": masks,
@@ -383,11 +419,7 @@ def upgrade_project(
                 "project_status lists them in route_census.undecided): record each as a "
                 "graph.path_preferences row, which record_route_decision writes."
             )
-        next_actions.extend(
-            f"Example {key} does not compile: {outcome[1]}."
-            for key, outcome in final.queries.items()
-            if key.startswith("examples/") and outcome[0] == "error"
-        )
+        next_actions.extend(_refused_examples(final))
 
     preview = dry_run or bool(result.pending)
     outcome = transaction.apply(

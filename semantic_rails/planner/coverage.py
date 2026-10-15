@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from .call import Call, Time
 from .visibility import visible_dimensions, visible_value_domains
 
 
@@ -94,7 +96,7 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     return {
         "code": "PLAN_INTENT_COVERAGE_GAP",
         "message": (
-            "The draft validates as Query IR, but one or more high-confidence clauses from the "
+            "The draft validates as a query call, but one or more high-confidence clauses from the "
             "question are not faithfully represented. It is not ready to execute as written."
         ),
         "details": {
@@ -105,9 +107,16 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     }
 
 
-def _time_block(query: dict[str, Any]) -> dict[str, Any]:
-    time = query.get("time")
-    return time if isinstance(time, dict) else {}
+def _engine_query(runtime: Any, query: Call) -> dict[str, Any]:
+    """The draft in the engine's own form, for the binder and catalog reads."""
+    from .time_reference import time_policy_context  # noqa: WPS433
+
+    return dict(runtime.engine_seed(query.to_call(), now=(time_policy_context() or {}).get("now")))
+
+
+def _time_block(query: Call) -> Time:
+    """The draft's time block; an empty one when it has none."""
+    return query.time or Time()
 
 
 def _plain(text: Any) -> str:
@@ -167,15 +176,33 @@ def _catalog_rows(config: Any) -> list[Any]:
     ]
 
 
-def _referenced_ids(query: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
-    for node in _dict_nodes(query):
-        for key in ("measure", "metric", "field", "temporal_role", "entity", "segment"):
+def _referenced_ids(query: Call) -> list[str]:
+    """Every id the draft names, its inline expressions' fields and entities too."""
+    ids = query.references()
+    for node in _expression_nodes(query):
+        for key in ("field", "entity", "temporal_role"):
             value = node.get(key)
             if isinstance(value, str) and value and value not in ids:
                 ids.append(value)
-    ids.extend(str(item) for item in list(query.get("group_by") or []) if str(item) not in ids)
     return ids
+
+
+def _expression_nodes(query: Call):
+    """Every mapping inside the draft's select expressions."""
+    for item in query.select:
+        yield from _dict_nodes(item.expression)
+
+
+def _strings(node: Any) -> Iterator[str]:
+    """Every string in a nested dict/list payload."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
 
 
 def _dict_nodes(value: Any):
@@ -189,31 +216,23 @@ def _dict_nodes(value: Any):
             yield from _dict_nodes(child)
 
 
-def _query_contains_prior_period(runtime: Any, query: dict[str, Any]) -> bool:
-    from ..expressions import PriorPeriodExpr  # local import keeps planner startup light
-
-    metric_ids: set[str] = set()
-    for node in _dict_nodes(query):
-        if str(node.get("kind", "") or "").casefold() == "prior_period":
-            return True
-        metric_id = node.get("metric") or node.get("metric_recipe")
-        if isinstance(metric_id, str) and metric_id:
-            metric_ids.add(metric_id)
-    for recipe in getattr(runtime._config, "metric_recipes", []) or []:
-        if str(getattr(recipe, "id", "") or "") not in metric_ids:
-            continue
-        if isinstance(getattr(recipe, "expression", None), PriorPeriodExpr):
-            return True
-    return False
+def _query_contains_prior_period(runtime: Any, query: Call) -> bool:
+    return any(
+        str(node.get("kind", "") or "").casefold() == "prior_period"
+        for node in _expression_nodes(query)
+    )
 
 
-def _projected_subject_ids(query: dict[str, Any]) -> list[str]:
+def _projected_subject_ids(query: Call) -> list[str]:
+    """The id each select reads at its top: a reference, or the measure of an aggregate kind."""
     out: list[str] = []
-    for item in list(query.get("select") or []):
-        expression = item.get("expression") if isinstance(item, dict) else None
-        if not isinstance(expression, dict):
-            continue
-        object_id = expression.get("metric") or expression.get("measure")
+    for item in query.select:
+        expression = item.expression
+        object_id = (
+            expression
+            if isinstance(expression, str)
+            else expression.get("metric") or expression.get("measure")
+        )
         if isinstance(object_id, str) and object_id and object_id not in out:
             out.append(object_id)
     return out

@@ -7,17 +7,22 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..ast import _relative_range_bounds
+from ..clock import parse_now
 from ..compiler import bind_query
 from ..compiler_parts.sql_lowering import _snapshot_series_columns
+from ..config_parts.measure_governance import _reachable_entities
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
+from ..query_call import REFERENCE_PREFIXES
 from ._base import _object_by_id, _tokens
+from .call import Call, Time
 from .coverage import (
     CoverageGap,
+    _engine_query,
     _projected_subject_ids,
     _query_contains_prior_period,
     _referenced_ids,
+    _strings,
     _time_block,
 )
 from .time_phrases import _BOUNDARY_BEFORE_RE, _FISCAL_RE, _QUANTITY_AFTER_RE
@@ -26,15 +31,13 @@ from .time_windows import (
     _FISCAL_BUCKET_RE,
     _MAX_TIME_TEXT,
     _TO_DATE_OR_ROLLING_RE,
-    _fiscal_calendar,
     _time_window,
+    period_days,
 )
 from .visibility import visible_dimensions, visible_object_ids
 
 
-def _is_prior_period_offset(
-    runtime: Any, query: dict[str, Any], windows: list[dict[str, Any]]
-) -> bool:
+def _is_prior_period_offset(runtime: Any, query: Call, windows: list[dict[str, Any]]) -> bool:
     """Whether the question's one window is the offset of a prior-period comparison.
 
     "alongside the previous month's revenue" names the comparison's offset, not a window, when
@@ -43,18 +46,18 @@ def _is_prior_period_offset(
 
     if len(windows) != 1:
         return False
-    last = (windows[0].get("range") or {}).get("last") or {}
+    last = windows[0].get("last") or {}
     return (
-        set(windows[0]) == {"range"}
+        set(windows[0]) == {"last"}
         and last.get("value") == 1
         and _query_contains_prior_period(runtime, query)
     )
 
 
-def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+def _time_window_gaps(runtime: Any, text: str, query: Call) -> list[CoverageGap]:
     """The draft doesn't carry the window the question names, or carries another one."""
 
-    reading = _time_window(text, policy_context=query.get("policy_context"))
+    reading = _time_window(text)
     expected = reading.bounds
     if not expected:
         if reading.windows and all(not bounds for _span, bounds in reading.windows):
@@ -63,7 +66,7 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
             # Resolve authored references, including nested recipes, rather than assuming
             # an unbounded draft can represent an all-time balance. No warehouse read.
             try:
-                ids = bind_query(runtime._config, None, query).object_ids
+                ids = bind_query(runtime._config, None, _engine_query(runtime, query)).object_ids
                 has_stock = any(
                     row.id in ids and row.measure_class == "semi_additive"
                     for row in runtime._config.measures
@@ -77,7 +80,7 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
                         clause="all time",
                         message="A balance has no all-time value; choose an as-of day.",
                         expected={"grain": "day"},
-                        actual={"time": _time_block(query) or None},
+                        actual={"time": query.time.to_call() if query.time else None},
                         recovery_hint={
                             "kind": "ask_for_one_day",
                             "message": "Ask for the balance on one day.",
@@ -88,7 +91,7 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
     if _is_prior_period_offset(runtime, query, [expected]):
         return []
     time = _time_block(query)
-    carried = {key: time[key] for key in ("start", "end", "range") if time.get(key)}
+    carried = time.window
     differs = [key for key in carried if carried[key] != expected.get(key)]
     missing = [key for key in expected if key not in carried]
     # A lookback metric can't take a start; plan says so itself
@@ -105,12 +108,13 @@ def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Co
                 else "The question names a time window, but the draft is not bounded by it."
             ),
             expected={"time": expected},
-            actual={"time": time or None},
+            actual={"time": query.time.to_call() if query.time else None},
             recovery_hint={
                 "kind": "provide_time_window",
                 "message": (
-                    "Add the window to Query IR time (start inclusive, end exclusive) with a grain "
-                    "that yields the buckets the question asks for, then validate."
+                    "Add the window to the call's time (last or this, or start inclusive and end "
+                    "exclusive) with a grain that yields the buckets the question asks for, then "
+                    "validate."
                 ),
             },
         )
@@ -137,24 +141,23 @@ def _same_span(a: int, b: int) -> bool:
     return a == b or (a >= 28 and b >= 28 and abs(a - b) <= max(3, max(a, b) // 50))
 
 
-def _draft_span_days(query: dict[str, Any]) -> int:
+def _draft_span_days(query: Call) -> int:
     """Days in the period the draft reports each value for: its bucket, else its window."""
     time = _time_block(query)
-    if str(time.get("grain") or "") in _GRAIN_DAYS:
-        return _GRAIN_DAYS[str(time["grain"])]
+    if time.grain in _GRAIN_DAYS:
+        return _GRAIN_DAYS[time.grain]
     try:
-        if time.get("start") and time.get("end"):
-            start, end = (date.fromisoformat(str(time[key])[:10]) for key in ("start", "end"))
+        if time.start and time.end:
+            start, end = (date.fromisoformat(value[:10]) for value in (time.start, time.end))
             return (end - start).days
     except ValueError:
         pass
-    last = dict(dict(time.get("range") or {}).get("last") or {})
-    if last.get("unit") in _GRAIN_DAYS:
-        return _GRAIN_DAYS[last["unit"]] * int(last.get("value") or 1)
-    return 0
+    if time.last is not None and time.last[0] in _GRAIN_DAYS:
+        return _GRAIN_DAYS[time.last[0]] * int(time.last[1])
+    return _GRAIN_DAYS.get(time.this, 0)
 
 
-def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
+def _subject_window_gaps(config: Any, query: Call) -> list[CoverageGap]:
     """The subject is a stock over its own trailing window, and each row reports another period.
 
     "Unique visitors (14 days)" filtered to this week is the 14-day count as of the week's
@@ -201,9 +204,22 @@ def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap
     return gaps
 
 
-def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
+def _one_day_read(time: Time) -> bool:
+    """Whether a time block reads one day: at day grain, or a window of exactly one day
+    without a grain (its one total is that day's)."""
+    if time.grain:
+        return time.grain == "day"
+    if not time.window:
+        return False
+    zone = time_timezone(time.temporal_role) if time.temporal_role else None
+    days = _window_days(time.window, timezone=zone)
+    return bool(days and days[0] and days[1] and (days[1] - days[0]).days == 1)
+
+
+def _stock_as_of_gaps(config: Any, query: Call) -> list[CoverageGap]:
     """Hold predicate stocks at any grain, and direct stocks without one as-of day."""
-    grain = _time_block(query).get("grain") or None
+    time = _time_block(query)
+    grain = "day" if _one_day_read(time) else time.grain or None
     try:
         stocks = _multi_series_stocks(config, query)
     except Exception:  # noqa: BLE001 — an unreadable stock cannot make a draft ready
@@ -213,7 +229,8 @@ def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
     if stocks == {}:
         return []
     shown = visible_object_ids(config, stocks or [])
-    period = f"each {grain}" if grain else "the whole history (no time block)"
+    window = _time_block(query).window
+    period = f"each {grain}" if grain else "its window" if window else "the whole history"
     selected = (
         visible_object_ids(config, _projected_subject_ids(query)) if stocks is not None else []
     )
@@ -242,34 +259,47 @@ def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
                     "Choose a metric without a stock predicate, or select the balance directly."
                     if predicate_stock
                     else f"Ask for '{label} yesterday' or '{label} on <YYYY-MM-DD>', "
-                    "or set time.grain: day with that day's start and end."
+                    "or set time.grain: day with that day's start and end (or last: 1 day)."
                 ),
             },
         )
     ]
 
 
-def _multi_series_stocks(config: Any, query: dict[str, Any]) -> dict[str, bool]:
+def _multi_series_stocks(config: Any, query: Call) -> dict[str, bool]:
     """Map each stock to whether any path to it crosses a predicate, including recipes."""
     measures = {row.id: row for row in config.measures}
     recipes = {row.id: row for row in config.metric_recipes}
-    pending: list[tuple[Any, bool]] = [
-        (query.get(key) or [], False) for key in ("select", "metric_filters", "where")
-    ]
+    pending: list[tuple[Any, bool]] = [(item.expression, False) for item in query.select]
+    pending.extend((row.field, False) for row in query.having)
+    pending.extend(
+        (row.field, True)
+        for entity_filter in query.entity_filters
+        if entity_filter.match == "having"
+        for row in entity_filter.conditions
+    )
     seen: set[tuple[str, bool]] = set()
     stocks: dict[str, bool] = {}
     while pending:
         node, predicate = pending.pop()
-        if isinstance(node, list):
+        if isinstance(node, (list, tuple)):
             pending.extend((child, predicate) for child in node)
             continue
+        if isinstance(node, str) and node.startswith(REFERENCE_PREFIXES):
+            # A reference in the call's spelling is the id string itself.
+            node = {node.split(".", 1)[0]: node}
         if not isinstance(node, dict):
             continue
         predicate = predicate or node.get("kind") == "metric_predicate"
         pending.extend(
             (child, predicate or (node.get("kind") == "scoped_aggregate" and key == "predicates"))
             for key, child in node.items()
-            if isinstance(child, (dict, list))
+            if isinstance(child, (dict, list, tuple))
+            or (
+                isinstance(child, str)
+                and child.startswith(REFERENCE_PREFIXES)
+                and key not in {"measure", "metric"}
+            )
         )
         for object_id in (node.get(key) for key in ("measure", "metric", "metric_recipe")):
             if not isinstance(object_id, str) or (object_id, predicate) in seen:
@@ -288,17 +318,28 @@ def _multi_series_stocks(config: Any, query: dict[str, Any]) -> dict[str, bool]:
     return stocks
 
 
-def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
-    """The question counts time in fiscal periods, but the draft counts Gregorian ones.
+def _reached_entities(config: Any, query: Call) -> set[str]:
+    """The entities the draft's measures (directly, or through its metrics) reach."""
+    measures = {row.id: row for row in config.measures}
+    metrics = {row.id: row for row in config.metric_recipes}
+    ids = set(_referenced_ids(query))
+    for metric_id in ids & set(metrics):
+        ids |= {ref for ref in _strings(expr_to_dict(metrics[metric_id].expression))}
+    reached: set[str] = set()
+    for measure_id in ids & set(measures):
+        reached |= _reachable_entities(config, measures[measure_id].entity)
+    return reached
 
-    A draft honors a fiscal bucket ("by fiscal quarter") by bucketing on a
-    non-default calendar (the planner picks only the fiscal one; a caller may name
-    another), or by grouping on a dimension whose name says fiscal (a fiscal-period
-    column on the fact). A question with no fiscal bucket is honored on days, too.
-    Any other fiscal mention ("the first fiscal quarter") also needs the period as
-    exact days in the draft's window. A draft with no time buckets honors it by
-    filtering on such a dimension. Nothing honors a to-date or rolling value:
-    period-to-date resets on Gregorian periods.
+
+def _fiscal_calendar_gaps(config: Any, text: str, query: Call) -> list[CoverageGap]:
+    """The question counts time in fiscal periods, which this release's calls don't bucket on.
+
+    A draft honors a fiscal bucket ("by fiscal quarter") only by grouping on a dimension whose
+    name says fiscal (a fiscal-period column on the fact). A question with no fiscal bucket is
+    honored on days, too. Any other fiscal mention ("the first fiscal quarter") also needs the
+    period as exact days in the draft's window. A draft with no time buckets honors it by
+    filtering on such a dimension. Nothing honors a to-date or rolling value: period-to-date
+    resets on Gregorian periods.
     """
 
     lowered = text.lower()
@@ -307,41 +348,37 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list
         return []
     time = _time_block(query)
     rolling = _TO_DATE_OR_ROLLING_RE.search(lowered) is not None
-    scoped = not _FISCAL_RE.search(_FISCAL_BUCKET_RE.sub(" ", lowered)) or any(
-        time.get(key) for key in ("start", "end", "range")
-    )
+    scoped = not _FISCAL_RE.search(_FISCAL_BUCKET_RE.sub(" ", lowered)) or bool(time.window)
+    # A fiscal-period column the draft's measures reach (not a calendar they can't join).
+    reached = _reached_entities(config, query)
     named = {
         row.id
         for row in visible_dimensions(config)
-        if "fiscal" in _tokens(f"{row.id} {row.name} {row.label}")
+        if "fiscal" in _tokens(f"{row.id} {row.name} {row.label}") and row.entity in reached
     }
     bucketed = (
-        str(time.get("calendar_id") or "default").lower() != "default"
         # A day is a day on any calendar, unless the question asks for fiscal buckets.
-        or (time.get("grain") == "day" and not _FISCAL_BUCKET_RE.search(lowered))
-        or bool(named & {str(item) for item in query.get("group_by") or []})
+        (_one_day_read(time) and not _FISCAL_BUCKET_RE.search(lowered))
+        or bool(named & set(query.group_by))
     )
-    filtered = not time.get("grain") and bool(named & set(_referenced_ids(query)))
+    filtered = not time.grain and bool(named & set(_referenced_ids(query)))
     if not rolling and ((scoped and bucketed) or filtered):
         return []
-    calendar = _fiscal_calendar(config)
-    calendars = sorted(
-        {row.calendar_id for row in config.entities if row.kind == "time" and row.calendar_id}
-    )
     steps = []
     if rolling:
         steps.append(
             "ask for the fiscal buckets alone: plan can't draft a fiscal to-date or rolling value"
         )
-    elif not bucketed and calendar is not None:
+    elif not bucketed:
         steps.append(
-            f"set query.time.calendar_id to {calendar.calendar_id!r} and time.fill to true"
-            + ("" if time.get("grain") else " with a temporal_role and grain")
+            "group by a fiscal-period dimension of the package"
+            if named
+            else "ask in calendar-year terms: this release reads no fiscal calendar"
         )
     if not scoped:
         steps.append(
-            "give any fiscal period as exact query.time.start and end dates (or ask only for "
-            "fiscal buckets, as in 'by fiscal quarter')"
+            "give any fiscal period as exact time.start and end dates (or ask only for fiscal "
+            "buckets, as in 'by fiscal quarter')"
         )
     hint = " and ".join(steps)
     return [
@@ -356,18 +393,11 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list
                 else "The question counts time in fiscal periods, but the draft buckets and "
                 "bounds time on the Gregorian calendar."
             ),
-            expected={"calendar_id": calendar.calendar_id if calendar else "fiscal"},
-            actual={"calendar_id": time.get("calendar_id") or "default"},
+            expected={"calendar": "fiscal"},
+            actual={"grain": time.grain or None},
             recovery_hint={
-                "kind": "use_fiscal_calendar",
-                "message": (
-                    f"{hint[:1].upper()}{hint[1:]}, then validate."
-                    if calendar
-                    else "plan found no single calendar named fiscal in this package"
-                    + (f" (its calendars: {', '.join(calendars)})" if calendars else "")
-                    + ": set query.time.calendar_id to the one you mean with time.fill true, "
-                    "author a fiscal calendar, or ask in calendar-year terms."
-                ),
+                "kind": "use_fiscal_periods",
+                "message": f"{hint[:1].upper()}{hint[1:]}, then validate.",
             },
         )
     ]
@@ -450,14 +480,12 @@ def _window_days(
     """
 
     role = str(bounds.get("temporal_role") or "")
-    if bounds.get("range"):
+    if bounds.get("last") or bounds.get("this"):
         try:
-            bounds = _relative_range_bounds(
-                bounds["range"],
-                policy_context=time_policy_context(policy_context),
-                timezone=timezone or time_timezone(),
-            )
-        except (SemanticLayerError, ValueError, OverflowError):
+            now = parse_now((time_policy_context(policy_context) or {}).get("now"))
+            today = now.astimezone(ZoneInfo(timezone or time_timezone())).date()
+            bounds = period_days(bounds, today)
+        except (SemanticLayerError, ValueError, OverflowError, KeyError):
             return None
     days: list[date | None] = []
     for key in ("start", "end"):
@@ -507,8 +535,13 @@ def _window_agrees(
     if any(not bounds for _span, bounds in windows):
         # All time cannot be silently narrowed by a caller or a generated draft.
         return all(not bounds for _span, bounds in windows) and not any(
-            time.get(key) for key in ("start", "end", "range")
+            time.get(key) for key in ("start", "end", "last", "this")
         )
+    if len(windows) == 1 and windows[0][1] == {
+        key: time[key] for key in ("start", "end", "last", "this") if time.get(key)
+    }:
+        # The draft carries the window the question states, in its own spelling.
+        return True
     carried = _window_days(time, policy_context, timezone=timezone)
     starts: list[date] = []
     ends: list[date] = []
@@ -522,13 +555,17 @@ def _window_agrees(
 
 
 def _caller_window_gaps(
-    runtime: Any, text: str, query: dict[str, Any], *, timezone: str | None = None
+    runtime: Any, text: str, query: Call, *, timezone: str | None = None
 ) -> list[CoverageGap]:
-    """The window a caller passed is not the one the question's date phrases state."""
+    """The window a caller passed is not the one the question's date phrases state. A
+    relative phrase ("today") is read in the zone of the clock the call reads, as the engine
+    reads it, unless ``timezone`` names another."""
 
     lowered = text.lower()
-    context = query.get("policy_context")
-    time = _time_block(query)
+    context = None
+    role = _time_block(query).temporal_role
+    timezone = timezone or (time_timezone(role, runtime=runtime) if role else None)
+    time = _time_block(query).window
     windows, _others = _question_time(lowered, context, timezone=timezone)
     if _window_agrees(windows, time, context, timezone=timezone) or _is_prior_period_offset(
         runtime, query, [bounds for _span, bounds in windows]
@@ -540,65 +577,67 @@ def _caller_window_gaps(
             clause=", ".join(lowered[low:high].strip() for (low, high), _bounds in windows),
             message="The question names a time window, but the draft's window is a different one.",
             expected={"time": [bounds for _span, bounds in windows]},
-            actual={"time": time or None},
+            actual={"time": query.time.to_call() if query.time else None},
             recovery_hint={
                 "kind": "provide_time_window",
                 "message": (
-                    "Pass the window the question states in Query IR time (start inclusive, end "
-                    "exclusive), or ask about the window you passed."
+                    "Pass the window the question states in the call's time (last or this, or "
+                    "start inclusive and end exclusive), or ask about the window you passed."
                 ),
             },
         )
     ]
 
 
-def _role_window_why(runtime: Any, text: str, query: dict[str, Any]) -> dict[str, Any] | None:
-    """Hold a draft whose window reads other days in the zone of a role the query reads it on.
+def _role_window_why(runtime: Any, text: str, query: Call) -> dict[str, Any] | None:
+    """Hold a draft whose dated window reads other days in the zone of a role the query reads it
+    on.
 
-    Plan drafts and checks every window in one planning zone (the package default, else UTC),
-    while execution filters it on the query's role and on each leg's own role where the leg
-    can't read the query's (``_leaf_time_role``, as binding records it), each in its zone. A
-    draft is ``ok`` only when the question's windows, and a relative range the draft carries
-    for them, read the same days in every such zone as in the planning zone. If binding can't
-    say which roles are read, every role is taken as read, so the draft is held.
+    A relative window (``last``, ``this``) is no date: the engine anchors it on ``now`` in the
+    clock's own zone. A dated window plan reads from a phrase that leaves its year or day to
+    ``now`` ("in June", "on Sept 30") is read in one planning zone (the package default, else
+    UTC); a draft is ``ok`` only when those windows read the same days in the zone of every role
+    the query reads as in the planning zone. If binding can't say which roles are read, every
+    role is taken as read, so the draft is held.
     """
 
     time = _time_block(query)
-    role = str(time.get("temporal_role") or "")
+    role = time.temporal_role
     planning = time_timezone(runtime=runtime)
     names = [role, *(row.id for row in runtime._config.temporal_roles)]
     zones = {name: time_timezone(name, runtime=runtime) for name in names if name}
     if set(zones.values()) <= {planning}:
         return None
-    context = query.get("policy_context")
-    asked = _time_window(text, context, timezone=planning).windows
+    asked = [
+        (span, bounds)
+        for span, bounds in _time_window(text, timezone=planning).windows
+        if not (bounds.get("last") or bounds.get("this"))
+    ]
     if not asked:
         return None
-    carried = {"range": time["range"]} if time.get("range") else {}
 
     def differing(zone: str) -> list[tuple[int, int]]:
-        if carried and _window_days(carried, context, timezone=planning) != _window_days(
-            carried, context, timezone=zone
-        ):
-            return [span for span, _bounds in asked]
         try:
-            read = _time_window(text, context, timezone=zone).windows
+            read = [
+                (span, bounds)
+                for span, bounds in _time_window(text, timezone=zone).windows
+                if not (bounds.get("last") or bounds.get("this"))
+            ]
         except (ValueError, OverflowError):
-            read = ()
+            read = []
         return [
             span
             for (span, bounds), local in zip(asked, read, strict=False)
             if span != local[0]
-            or _window_days(bounds, context, timezone=planning)
-            != _window_days(local[1], context, timezone=zone)
+            or _window_days(bounds, timezone=planning) != _window_days(local[1], timezone=zone)
         ] + [span for span, _bounds in asked[len(read) :]]
 
     moved = {zone: spans for zone in set(zones.values()) - {planning} if (spans := differing(zone))}
     if not moved:
         return None
     try:
-        bound = bind_query(runtime._config, None, query).temporal_roles.values()
-        read_roles = {role}.union(*bound)
+        bound = bind_query(runtime._config, None, _engine_query(runtime, query))
+        read_roles = {role}.union(*bound.temporal_roles.values())
     except Exception:  # any failure: every role may be read
         read_roles = set(zones)
     held = {

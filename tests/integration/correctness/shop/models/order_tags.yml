@@ -1,0 +1,9 @@
+# A link table with no key: an order's tags, one row per link, one link stored twice.
+model:
+  id: order_tags
+  label: Order tags
+  relation: order_tags
+  entities: {bridge: true, order: {}, tag: {}}
+  measures:
+    tag_links: {label: Tag links, kind: aggregate, expr: {kind: literal, value: 1},
+      accumulation: {kind: flow}, value_type: count}

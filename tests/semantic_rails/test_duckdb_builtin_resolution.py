@@ -256,8 +256,8 @@ def test_ducklake_refuses_macros_in_newly_attached_catalog(tmp_path: Path, monke
             raw.close()
 
     monkeypatch.setattr(
-        "semantic_rails.db_parts.ducklake.import_driver",
-        lambda *a, **kw: SimpleNamespace(connect=lambda: Connection()),
+        "semantic_rails.db_parts.duckdb_setup.duckdb",
+        SimpleNamespace(connect=lambda *a, **kw: Connection()),
     )
     adapter = DuckLakeAdapter({"catalog_path": str(path)})
     with pytest.raises(SemanticLayerError) as exc:

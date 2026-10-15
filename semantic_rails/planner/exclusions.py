@@ -16,9 +16,11 @@ is an ``unknown`` item, and a clause with no item gets one. A marker or "includi
 quoted string or a declared name ("Including Top"), or a marker inside a grouping phrase ("by
 store excluding Brooklyn"), leaves the whole question unread.
 
-``unrealized`` holds every clause, whatever the draft carries: the planner doesn't answer
-exclusions yet. An exclusion keeps rows with no recorded value, which ``!=`` and ``NOT IN``
-drop, so a hand-written Query IR excludes a value with ``IS DISTINCT FROM``.
+A clause is answered when each item is a declared value of one dimension, and the draft's
+top-level ``not`` filters on that dimension leave out exactly the values the question excludes
+there, with no ``is`` filter narrowing it: ``not`` keeps rows with no recorded value, as an
+exclusion does. ``unrealized`` holds every other clause: a time phrase (a window has no
+complement), an unread item, or values the draft leaves out differently.
 """
 
 from __future__ import annotations
@@ -27,8 +29,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..ast import is_child_group
 from ._base import _requested_grouping_spans
+from .call import Call, Condition
 from .coverage import CoverageGap, _is_number
 from .visibility import visible_value_domains
 
@@ -506,38 +508,62 @@ def _contains_literal(literals: list[Any] | tuple[Any, ...], canonical: Any) -> 
     return any(type(item) is type(canonical) and item == canonical for item in literals)
 
 
-_KEEPING = frozenset({"=", "==", "IN"})
-
-
 def _keeps(row: Any, field_id: str, canonical: Any) -> bool:
-    """A top-level ``=`` or ``IN`` filter on ``field_id`` that keeps ``canonical``."""
+    """A top-level ``is`` filter on ``field_id`` that keeps ``canonical``."""
 
-    if not isinstance(row, dict) or is_child_group(row) or row.get("field") != field_id:
-        return False
-    op = " ".join(str(row.get("op") or "=").upper().split())
-    raw = row.get("value")
-    literals = raw if op == "IN" and isinstance(raw, list) else [raw]
-    return op in _KEEPING and _contains_literal(literals, canonical)
+    return (
+        isinstance(row, Condition)
+        and row.field == field_id
+        and row.op == "is"
+        and _contains_literal(row.values, canonical)
+    )
 
 
-def exclusion_gaps(config: Any, text: str, query: dict[str, Any], window: Any) -> list[CoverageGap]:
-    """One gap for each exclusion clause of the question."""
+def exclusion_gaps(config: Any, text: str, query: Call, window: Any) -> list[CoverageGap]:
+    """One gap for each exclusion clause of the question the draft doesn't answer."""
 
     return unrealized(exclusion_clauses(config, text, window), query)
 
 
-def unrealized(clauses: list[ExclusionClause], query: dict[str, Any]) -> list[CoverageGap]:
-    """One gap for every clause, whatever the draft carries: exclusions aren't answered yet.
+def unrealized(clauses: list[ExclusionClause], query: Call) -> list[CoverageGap]:
+    """One gap for every clause the draft doesn't answer with ``not`` filters.
 
-    The gap is ``negation_reversed`` when a top-level ``=`` or ``IN`` filter keeps a value the
-    clause excludes, otherwise ``negation_unrealized``.
+    The gap is ``negation_reversed`` when a top-level ``is`` filter keeps a value the clause
+    excludes, otherwise ``negation_unrealized``.
     """
 
-    where = list(query.get("where") or [])
-    return [_clause_gap(clause, where) for clause in clauses]
+    # Per dimension, the values every clause excludes and the values the draft leaves out: the
+    # two must be the same, and no ``is`` filter may narrow the dimension beside them.
+    excluded: dict[str, list[Any]] = {}
+    for clause in clauses:
+        for item in clause.items:
+            if item.binding is not None:
+                excluded.setdefault(item.binding[0], []).append(item.binding[1])
+    left_out: dict[str, list[Any]] = {}
+    narrowed: set[str] = set()
+    for row in query.conditions:
+        if row.op == "not":
+            left_out.setdefault(row.field, []).extend(row.values)
+        elif row.op == "is":
+            narrowed.add(row.field)
+
+    def exact(field_id: str) -> bool:
+        wanted, dropped = excluded.get(field_id, []), left_out.get(field_id, [])
+        return (
+            field_id not in narrowed
+            and all(_contains_literal(dropped, value) for value in wanted)
+            and all(_contains_literal(wanted, value) for value in dropped)
+        )
+
+    return [
+        _clause_gap(clause, query)
+        for clause in clauses
+        if not all(item.binding is not None and exact(item.binding[0]) for item in clause.items)
+    ]
 
 
-def _clause_gap(clause: ExclusionClause, where: list[Any]) -> CoverageGap:
+def _clause_gap(clause: ExclusionClause, query: Call) -> CoverageGap:
+    where = list(query.where)
     positive = [
         row
         for item in clause.items
@@ -555,7 +581,12 @@ def _clause_gap(clause: ExclusionClause, where: list[Any]) -> CoverageGap:
         ],
         "rows_without_a_value": "kept",
     }
-    message = "The question excludes values, and this release doesn't answer exclusions yet."
+    timed = any(item.kind == "time" for item in clause.items)
+    message = (
+        "The question excludes a time window, which a call can't leave out."
+        if timed
+        else "The question excludes something the draft doesn't leave out with a 'not' filter."
+    )
     if positive:
         message += " The draft keeps the excluded value with a positive filter."
     return CoverageGap(
@@ -563,13 +594,19 @@ def _clause_gap(clause: ExclusionClause, where: list[Any]) -> CoverageGap:
         clause=clause.text,
         message=message,
         expected=expected,
-        actual={"where": where, "positive_matches": positive},
+        actual={
+            "where": [row.to_call() for row in where],
+            "positive_matches": [row.to_call() for row in positive],
+        },
         recovery_hint={
             "kind": "ask_for_breakdown",
             "message": (
-                "This release doesn't answer questions that exclude values yet. Ask for the "
-                'breakdown by the excluded dimension or period instead ("signups by channel"), '
-                "which shows each value and the rows with no recorded value."
+                'Ask for the breakdown by the excluded period instead ("signups by month"), '
+                "which shows each period."
+                if timed
+                else 'Leave each excluded value out with {"field": <dimension>, "op": '
+                '"not", "value": [...]}, which keeps rows with no recorded value, or ask '
+                'for the breakdown by the excluded dimension ("signups by channel").'
             ),
         },
     )

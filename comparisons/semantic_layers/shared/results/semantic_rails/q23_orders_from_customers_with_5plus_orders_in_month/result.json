@@ -1,16 +1,25 @@
 {
-  "assumptions": [],
+  "assumptions": [
+    {
+      "code": "ENTITY_FILTER_OVER",
+      "entity": "entity.jaffle_customer",
+      "message": "Each entity.jaffle_customer's aggregate was taken per output period.",
+      "over": "period"
+    }
+  ],
+  "clock": "temporal_role.jaffle_order_time",
   "column_types": {
+    "period": {
+      "type": "date"
+    },
+    "period_partial": {
+      "type": "boolean"
+    },
     "qualifying_orders": {
       "type": "integer"
-    },
-    "temporal_role.jaffle_order_time__month": {
-      "timezone": "naive",
-      "type": "timestamp"
     }
   },
   "dialect": "duckdb",
-  "errors": [],
   "explain": {
     "alias_resolution": {
       "group_by": [],
@@ -29,8 +38,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.981,
-      "compile_ms": 0.44,
+      "cache_lookup_ms": 1.158,
+      "compile_ms": 0.884,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -45,7 +54,7 @@
       "group_by": [],
       "leaf_grains": {
         "measure.jaffle.order_count": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -53,12 +62,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -86,7 +98,7 @@
         "group_by": [],
         "leaf_grains": {
           "measure.jaffle.order_count": [
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ]
         },
         "measure_entities": [
@@ -94,12 +106,15 @@
         ],
         "root_entity": "entity.jaffle_order",
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [],
@@ -118,7 +133,7 @@
           },
           "cte_name": "leaf_1",
           "grain_keys": [
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ],
           "path_selections": [],
           "required_entities": [
@@ -137,8 +152,6 @@
       },
       "query": {
         "debug": false,
-        "explain": false,
-        "export": false,
         "group_by": [],
         "limit": null,
         "metric_filters": [
@@ -152,19 +165,18 @@
                 "temporal_role": ""
               },
               "kind": "metric_predicate",
-              "op": ">",
-              "scope_mode": "contextual",
-              "time_grain": "month",
+              "op": "gt",
+              "scope_mode": "entity_period",
               "value": 5
             },
-            "op": "=",
+            "op": "is",
             "value": true
           }
         ],
         "order_by": [
           {
             "direction": "ASC",
-            "field": "temporal_role.jaffle_order_time__month"
+            "field": "period"
           }
         ],
         "select": [
@@ -178,12 +190,15 @@
         ],
         "temporal_role_overrides": {},
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -254,19 +269,20 @@
       },
       "synthetic_measures": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
     "normalized_query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [],
       "limit": null,
       "metric_filters": [
@@ -280,19 +296,18 @@
               "temporal_role": ""
             },
             "kind": "metric_predicate",
-            "op": ">",
-            "scope_mode": "contextual",
-            "time_grain": "month",
+            "op": "gt",
+            "scope_mode": "entity_period",
             "value": 5
           },
-          "op": "=",
+          "op": "is",
           "value": true
         }
       ],
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_order_time__month"
+          "field": "period"
         }
       ],
       "select": [
@@ -306,12 +321,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -331,12 +349,15 @@
           "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "fill": false,
             "grain": "month",
+            "last_unit": "",
+            "last_value": 0,
             "start": null,
-            "temporal_role": "temporal_role.jaffle_order_time"
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "this": "",
+            "to_now": false
           }
         },
         {
@@ -347,13 +368,21 @@
           "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "grain": "month",
             "output_temporal_role": "temporal_role.jaffle_order_time",
             "start": null,
             "temporal_role": "temporal_role.jaffle_order_time"
           }
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": false,
+          "pushed_to_scan": true,
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_3",
+          "time_filter": {}
         }
       ],
       "estimated_scan_relations": [
@@ -393,6 +422,19 @@
           "source_entity": "entity.jaffle_order",
           "time_filter_has_end": false,
           "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": true,
+          "has_time_filter": false,
+          "large_relation_hint": false,
+          "measures": [],
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_3",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
         }
       ],
       "execution_recommendation": "needs_acceleration_layer",
@@ -423,7 +465,7 @@
       "notes": [],
       "pre_aggregation_grain": {
         "leaf_1": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "raw_fact_count": 2,
@@ -463,12 +505,15 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "fill": false,
               "grain": "month",
+              "last_unit": "",
+              "last_value": 0,
               "start": null,
-              "temporal_role": "temporal_role.jaffle_order_time"
+              "temporal_role": "temporal_role.jaffle_order_time",
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -497,9 +542,8 @@
                 "temporal_role": ""
               },
               "kind": "metric_predicate",
-              "op": ">",
-              "scope_mode": "contextual",
-              "time_grain": "month",
+              "op": "gt",
+              "scope_mode": "entity_period",
               "value": 5
             },
             "predicate_input": {
@@ -524,7 +568,6 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "grain": "month",
               "output_temporal_role": "temporal_role.jaffle_order_time",
@@ -545,8 +588,8 @@
             "keys": [
               "dimension.jaffle_customer_id"
             ],
-            "op": ">",
-            "scope_mode": "contextual",
+            "op": "gt",
+            "scope_mode": "entity_period",
             "source_scan_count": 1,
             "value": 5
           },
@@ -574,9 +617,8 @@
                   "temporal_role": ""
                 },
                 "kind": "metric_predicate",
-                "op": ">",
-                "scope_mode": "contextual",
-                "time_grain": "month",
+                "op": "gt",
+                "scope_mode": "entity_period",
                 "value": 5
               }
             ],
@@ -599,7 +641,7 @@
             "aggregate_relation_id": "",
             "folded_measure_count": 1,
             "grain": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "measures": [
               {
@@ -619,7 +661,7 @@
         {
           "details": {
             "key_aliases": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "outputs": [
               "qualifying_orders"
@@ -661,7 +703,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.t AS t\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 5\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS qualifying_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.t AS t\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 5\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"qualifying_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -742,6 +784,7 @@
                           {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": "month"
                               },
                               {
@@ -779,6 +822,7 @@
                             "expression": {
                               "args": [
                                 {
+                                  "temporal": false,
                                   "value": "month"
                                 },
                                 {
@@ -875,6 +919,7 @@
                                     },
                                     "op": ">",
                                     "right": {
+                                      "temporal": false,
                                       "value": 0
                                     }
                                   },
@@ -887,6 +932,7 @@
                                         ]
                                       },
                                       {
+                                        "temporal": false,
                                         "value": 0
                                       }
                                     ],
@@ -992,6 +1038,7 @@
                       },
                       "op": ">",
                       "right": {
+                        "temporal": false,
                         "value": 5
                       }
                     }
@@ -1008,6 +1055,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -1049,6 +1097,7 @@
                     "left": {
                       "args": [
                         {
+                          "temporal": false,
                           "value": "month"
                         },
                         {
@@ -1089,6 +1138,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -1125,6 +1175,84 @@
           }
         },
         {
+          "name": "observed_1_rows",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "comparison_orders"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": 1,
+            "observation_scan": true,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "seen",
+                "expression": {
+                  "temporal": false,
+                  "value": 1
+                }
+              }
+            ],
+            "where": [
+              {
+                "left": {
+                  "parts": [
+                    "comparison_orders",
+                    "order_id"
+                  ]
+                },
+                "op": "IS NOT",
+                "right": {
+                  "temporal": false,
+                  "value": null
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "observed_1",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "observed_1_rows"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": false,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "seen",
+                "expression": {
+                  "args": [
+                    {
+                      "parts": [
+                        "observed_1_rows",
+                        "seen"
+                      ]
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "COUNT"
+                }
+              }
+            ],
+            "where": []
+          }
+        },
+        {
           "name": "guarded_base",
           "query": {
             "ctes": [],
@@ -1135,7 +1263,16 @@
             },
             "group_by": [],
             "having": [],
-            "joins": [],
+            "joins": [
+              {
+                "join_type": "CROSS",
+                "on": null,
+                "table": {
+                  "alias": "",
+                  "name": "observed_1"
+                }
+              }
+            ],
             "limit": null,
             "observation_scan": false,
             "order_by": [],
@@ -1158,25 +1295,42 @@
                     {
                       "condition": {
                         "left": {
-                          "frame": "",
-                          "function": {
-                            "args": [
-                              {
-                                "parts": [
-                                  "base",
-                                  "m1"
-                                ]
-                              }
-                            ],
-                            "distinct": false,
-                            "name": "MAX"
+                          "left": {
+                            "frame": "",
+                            "function": {
+                              "args": [
+                                {
+                                  "parts": [
+                                    "base",
+                                    "m1"
+                                  ]
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "MAX"
+                            },
+                            "order_by": [],
+                            "partition_by": []
                           },
-                          "order_by": [],
-                          "partition_by": []
+                          "op": ">",
+                          "right": {
+                            "temporal": false,
+                            "value": 0
+                          }
                         },
-                        "op": ">",
+                        "op": "OR",
                         "right": {
-                          "value": 0
+                          "left": {
+                            "parts": [
+                              "observed_1",
+                              "seen"
+                            ]
+                          },
+                          "op": ">",
+                          "right": {
+                            "temporal": false,
+                            "value": 0
+                          }
                         }
                       },
                       "result": {
@@ -1188,6 +1342,7 @@
                             ]
                           },
                           {
+                            "temporal": false,
                             "value": 0
                           }
                         ],
@@ -1221,13 +1376,13 @@
               "t"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         }
       ],
       "qualify": [],
       "select": [
         {
-          "alias": "temporal_role.jaffle_order_time__month",
+          "alias": "period",
           "expression": {
             "parts": [
               "base",
@@ -1248,8 +1403,6 @@
       "where": []
     }
   },
-  "freshness_as_of": "",
-  "freshness_by_leaf": [],
   "hop_profile": {
     "hop_limit": 4,
     "long_hop_targets": [],
@@ -1282,7 +1435,7 @@
       "group_by": [],
       "leaf_grains": {
         "measure.jaffle.order_count": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -1290,12 +1443,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [],
@@ -1314,7 +1470,7 @@
         },
         "cte_name": "leaf_1",
         "grain_keys": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "path_selections": [],
         "required_entities": [
@@ -1333,8 +1489,6 @@
     },
     "query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [],
       "limit": null,
       "metric_filters": [
@@ -1348,19 +1502,18 @@
               "temporal_role": ""
             },
             "kind": "metric_predicate",
-            "op": ">",
-            "scope_mode": "contextual",
-            "time_grain": "month",
+            "op": "gt",
+            "scope_mode": "entity_period",
             "value": 5
           },
-          "op": "=",
+          "op": "is",
           "value": true
         }
       ],
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_order_time__month"
+          "field": "period"
         }
       ],
       "select": [
@@ -1374,12 +1527,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -1450,77 +1606,66 @@
     },
     "synthetic_measures": {},
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
-  "methodology_hints": [],
   "normalized_query": {
-    "debug": false,
-    "explain": false,
-    "export": false,
-    "group_by": [],
-    "limit": null,
-    "metric_filters": [
-      {
-        "expression": {
-          "entity": "entity.jaffle_customer",
-          "input": {
-            "aggregation": "",
-            "kind": "measure",
-            "measure": "measure.jaffle.order_count",
-            "temporal_role": ""
-          },
-          "kind": "metric_predicate",
-          "op": ">",
-          "scope_mode": "contextual",
-          "time_grain": "month",
-          "value": 5
-        },
-        "op": "=",
-        "value": true
-      }
-    ],
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_order_time__month"
+        "direction": "asc",
+        "field": "period"
       }
     ],
     "select": [
       {
         "as": "qualifying_orders",
-        "expression": {
-          "kind": "metric",
-          "metric": "metric.jaffle.orders"
-        }
+        "expression": "metric.jaffle.orders"
       }
     ],
-    "temporal_role_overrides": {},
     "time": {
-      "calendar_id": "default",
-      "end": null,
-      "fill": false,
       "grain": "month",
-      "start": null,
       "temporal_role": "temporal_role.jaffle_order_time"
     },
-    "version": 1,
-    "where": []
+    "where": [
+      {
+        "entity": "entity.jaffle_customer",
+        "having": [
+          {
+            "field": "measure.jaffle.order_count",
+            "op": "gt",
+            "value": 5
+          }
+        ],
+        "over": "period"
+      }
+    ]
   },
+  "observation_scope": "dataset",
   "ok": true,
   "output_columns": [
     {
       "display_label": "Order time",
-      "field": "temporal_role.jaffle_order_time__month",
+      "field": "period",
+      "grain": "month",
       "semantic_id": "temporal_role.jaffle_order_time",
-      "sql_alias": "temporal_role.jaffle_order_time__month",
+      "sql_alias": "period",
       "type": "time"
+    },
+    {
+      "display_label": "Partial period",
+      "field": "period_partial",
+      "semantic_id": "temporal_role.jaffle_order_time",
+      "sql_alias": "period_partial",
+      "type": "boolean"
     },
     {
       "display_label": "Orders",
@@ -1530,115 +1675,302 @@
       "type": "count"
     }
   ],
-  "policy_effects": [],
   "provenance_summary": {
     "policy_effects": [],
     "rewrite_status": "direct",
     "root_entity": "entity.jaffle_order",
     "selected_paths": [],
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
-    "metric_filters": [
-      {
-        "expression": {
-          "entity": "entity.jaffle_customer",
-          "input": {
-            "measure": "measure.jaffle.order_count"
-          },
-          "kind": "metric_predicate",
-          "op": ">",
-          "scope_mode": "contextual",
-          "time_grain": "month",
-          "value": 5
-        },
-        "op": "=",
-        "value": true
-      }
-    ],
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_order_time__month"
+        "direction": "asc",
+        "field": "period"
       }
     ],
     "select": [
       {
         "as": "qualifying_orders",
-        "expression": {
-          "metric": "metric.jaffle.orders"
-        }
+        "expression": "metric.jaffle.orders"
       }
     ],
     "time": {
       "grain": "month",
       "temporal_role": "temporal_role.jaffle_order_time"
     },
-    "version": 1
+    "where": [
+      {
+        "entity": "entity.jaffle_customer",
+        "having": [
+          {
+            "field": "measure.jaffle.order_count",
+            "op": "gt",
+            "value": 5
+          }
+        ],
+        "over": "period"
+      }
+    ]
   },
-  "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.t AS t\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 5\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS qualifying_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
-  "request_context": {},
+  "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.t AS t\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 5\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"qualifying_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
+  "routes": [
+    {
+      "basis": "own_key",
+      "conflicts_with": [
+        {
+          "relationship_path": [
+            "relationship.jaffle_order_customer_history",
+            "relationship.customer_history_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.storefront_sessions_order",
+            "relationship.storefront_sessions_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.jaffle_order_customer_history",
+            "relationship.jaffle_order_lifecycle_customer_history",
+            "relationship.order_lifecycle_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.jaffle_order_lifecycle_customer_history",
+            "relationship.customer_history_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.orders_store",
+            "relationship.order_lifecycle_store",
+            "relationship.order_lifecycle_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.orders_store",
+            "relationship.storefront_sessions_store",
+            "relationship.storefront_sessions_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.order_lifecycle_order",
+            "relationship.order_lifecycle_store",
+            "relationship.storefront_sessions_store",
+            "relationship.storefront_sessions_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.orders_store",
+            "relationship.order_lifecycle_store",
+            "relationship.jaffle_order_lifecycle_customer_history",
+            "relationship.customer_history_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        },
+        {
+          "relationship_path": [
+            "relationship.storefront_sessions_order",
+            "relationship.storefront_sessions_store",
+            "relationship.order_lifecycle_store",
+            "relationship.order_lifecycle_customer"
+          ],
+          "rows": [
+            {
+              "relationship_path": [
+                "relationship.order_items_order",
+                "relationship.orders_customer"
+              ],
+              "source_entity": "entity.jaffle_item",
+              "target_entity": "entity.jaffle_customer"
+            }
+          ]
+        }
+      ],
+      "from": "entity.jaffle_order",
+      "to": "entity.jaffle_customer",
+      "via": [
+        "relationship.orders_customer"
+      ]
+    }
+  ],
   "row_count": 12,
   "rows": [
     {
-      "qualifying_orders": 1145,
-      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
+      "period": "2016-09-01",
+      "period_partial": false,
+      "qualifying_orders": 1145
     },
     {
-      "qualifying_orders": 1524,
-      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
+      "period": "2016-10-01",
+      "period_partial": false,
+      "qualifying_orders": 1524
     },
     {
-      "qualifying_orders": 2117,
-      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
+      "period": "2016-11-01",
+      "period_partial": false,
+      "qualifying_orders": 2117
     },
     {
-      "qualifying_orders": 2650,
-      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
+      "period": "2016-12-01",
+      "period_partial": false,
+      "qualifying_orders": 2650
     },
     {
-      "qualifying_orders": 3202,
-      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
+      "period": "2017-01-01",
+      "period_partial": false,
+      "qualifying_orders": 3202
     },
     {
-      "qualifying_orders": 3092,
-      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
+      "period": "2017-02-01",
+      "period_partial": false,
+      "qualifying_orders": 3092
     },
     {
-      "qualifying_orders": 5636,
-      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
+      "period": "2017-03-01",
+      "period_partial": false,
+      "qualifying_orders": 5636
     },
     {
-      "qualifying_orders": 6168,
-      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
+      "period": "2017-04-01",
+      "period_partial": false,
+      "qualifying_orders": 6168
     },
     {
-      "qualifying_orders": 7515,
-      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
+      "period": "2017-05-01",
+      "period_partial": false,
+      "qualifying_orders": 7515
     },
     {
-      "qualifying_orders": 7309,
-      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
+      "period": "2017-06-01",
+      "period_partial": false,
+      "qualifying_orders": 7309
     },
     {
-      "qualifying_orders": 6899,
-      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
+      "period": "2017-07-01",
+      "period_partial": false,
+      "qualifying_orders": 6899
     },
     {
-      "qualifying_orders": 8277,
-      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
+      "period": "2017-08-01",
+      "period_partial": false,
+      "qualifying_orders": 8277
     }
   ],
-  "semantic_fingerprint": "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478",
-  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
+  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
       {
@@ -1668,6 +2000,7 @@
                         {
                           "args": [
                             {
+                              "temporal": false,
                               "value": "month"
                             },
                             {
@@ -1705,6 +2038,7 @@
                           "expression": {
                             "args": [
                               {
+                                "temporal": false,
                                 "value": "month"
                               },
                               {
@@ -1801,6 +2135,7 @@
                                   },
                                   "op": ">",
                                   "right": {
+                                    "temporal": false,
                                     "value": 0
                                   }
                                 },
@@ -1813,6 +2148,7 @@
                                       ]
                                     },
                                     {
+                                      "temporal": false,
                                       "value": 0
                                     }
                                   ],
@@ -1918,6 +2254,7 @@
                     },
                     "op": ">",
                     "right": {
+                      "temporal": false,
                       "value": 5
                     }
                   }
@@ -1934,6 +2271,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -1975,6 +2313,7 @@
                   "left": {
                     "args": [
                       {
+                        "temporal": false,
                         "value": "month"
                       },
                       {
@@ -2015,6 +2354,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -2051,6 +2391,84 @@
         }
       },
       {
+        "name": "observed_1_rows",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "",
+            "name": "comparison_orders"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": 1,
+          "observation_scan": true,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "seen",
+              "expression": {
+                "temporal": false,
+                "value": 1
+              }
+            }
+          ],
+          "where": [
+            {
+              "left": {
+                "parts": [
+                  "comparison_orders",
+                  "order_id"
+                ]
+              },
+              "op": "IS NOT",
+              "right": {
+                "temporal": false,
+                "value": null
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "observed_1",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "",
+            "name": "observed_1_rows"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": null,
+          "observation_scan": false,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "seen",
+              "expression": {
+                "args": [
+                  {
+                    "parts": [
+                      "observed_1_rows",
+                      "seen"
+                    ]
+                  }
+                ],
+                "distinct": false,
+                "name": "COUNT"
+              }
+            }
+          ],
+          "where": []
+        }
+      },
+      {
         "name": "guarded_base",
         "query": {
           "ctes": [],
@@ -2061,7 +2479,16 @@
           },
           "group_by": [],
           "having": [],
-          "joins": [],
+          "joins": [
+            {
+              "join_type": "CROSS",
+              "on": null,
+              "table": {
+                "alias": "",
+                "name": "observed_1"
+              }
+            }
+          ],
           "limit": null,
           "observation_scan": false,
           "order_by": [],
@@ -2084,25 +2511,42 @@
                   {
                     "condition": {
                       "left": {
-                        "frame": "",
-                        "function": {
-                          "args": [
-                            {
-                              "parts": [
-                                "base",
-                                "m1"
-                              ]
-                            }
-                          ],
-                          "distinct": false,
-                          "name": "MAX"
+                        "left": {
+                          "frame": "",
+                          "function": {
+                            "args": [
+                              {
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "MAX"
+                          },
+                          "order_by": [],
+                          "partition_by": []
                         },
-                        "order_by": [],
-                        "partition_by": []
+                        "op": ">",
+                        "right": {
+                          "temporal": false,
+                          "value": 0
+                        }
                       },
-                      "op": ">",
+                      "op": "OR",
                       "right": {
-                        "value": 0
+                        "left": {
+                          "parts": [
+                            "observed_1",
+                            "seen"
+                          ]
+                        },
+                        "op": ">",
+                        "right": {
+                          "temporal": false,
+                          "value": 0
+                        }
                       }
                     },
                     "result": {
@@ -2114,6 +2558,7 @@
                           ]
                         },
                         {
+                          "temporal": false,
                           "value": 0
                         }
                       ],
@@ -2147,13 +2592,13 @@
             "t"
           ]
         },
-        "nulls_last": false
+        "nulls_last": true
       }
     ],
     "qualify": [],
     "select": [
       {
-        "alias": "temporal_role.jaffle_order_time__month",
+        "alias": "period",
         "expression": {
           "parts": [
             "base",
@@ -2193,7 +2638,7 @@
       "filters": [
         {
           "field": "metric_filter",
-          "op": "=",
+          "op": "is",
           "value": true
         }
       ],
@@ -2219,196 +2664,8 @@
     "snapshot_row_selection": "aggregate_join",
     "timestamp_type": "TIMESTAMP"
   },
-  "warnings": [
-    {
-      "code": "ROUTE_COLOCATED_KEY",
-      "details": {
-        "alternatives": [],
-        "conflicts_with": [
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.customer_history_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.customer_history_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_customer"
-            ],
-            "rows": [
-              {
-                "relationship_path": [
-                  "relationship.order_items_order",
-                  "relationship.orders_customer"
-                ],
-                "source_entity": "entity.jaffle_item",
-                "target_entity": "entity.jaffle_customer"
-              }
-            ]
-          }
-        ],
-        "route": [
-          "relationship.orders_customer"
-        ]
-      },
-      "message": "the Order's Customer (own key)",
-      "object_ids": [
-        "entity.jaffle_order",
-        "entity.jaffle_customer"
-      ],
-      "path": "",
-      "recovery_hints": [],
-      "severity": "info",
-      "stage": "planning"
-    }
-  ]
+  "window": {
+    "now": "2026-10-14T20:11:47.942843Z",
+    "partial": false
+  }
 }

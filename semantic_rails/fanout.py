@@ -28,6 +28,7 @@ from .config_parts.route_rows import (
     walk_entities,
 )
 from .errors import SemanticLayerError
+from .query_call import call_where
 from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, PathPreferenceConfig, RelationshipConfig
 
 
@@ -81,19 +82,49 @@ def _min_hops_unbounded(
     return None
 
 
+def hops_to_target(
+    graph: dict[str, list[tuple[str, str]]], target: str, hop_limit: int
+) -> dict[str, int]:
+    """Each entity's fewest hops to ``target``, for the entities at most ``hop_limit`` away."""
+    reverse: dict[str, list[str]] = {}
+    for source, edges in graph.items():
+        for end, _rel_id in edges:
+            reverse.setdefault(end, []).append(source)
+    distances = {target: 0}
+    pending = deque([target])
+    while pending:
+        node = pending.popleft()
+        if distances[node] >= hop_limit:
+            continue
+        for previous in reverse.get(node, []):
+            if previous not in distances:
+                distances[previous] = distances[node] + 1
+                pending.append(previous)
+    return distances
+
+
 def enumerate_paths(
     graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
 ) -> list[list[str]]:
+    """Every simple route from ``start`` to ``target`` within ``hop_limit`` hops, in the
+    depth-first order of ``graph``.
+
+    A step is taken only when its entity can still reach the target in the hops left. Its
+    fewest hops to the target is a lower bound whatever the route visited before, so a skipped
+    step never leads to a route: the routes, and their order, are those of the full search.
+    """
+    if hop_limit < 0:
+        return []
+    distances = hops_to_target(graph, target, hop_limit)
     found: list[list[str]] = []
 
     def _dfs(node: str, path: list[str], visited: set[str]) -> None:
-        if len(path) > hop_limit:
-            return
         if node == target:
             found.append(list(path))
             return
+        left = hop_limit - len(path) - 1
         for neighbor, rel_id in graph.get(node, []):
-            if neighbor in visited:
+            if neighbor in visited or distances.get(neighbor, left + 1) > left:
                 continue
             visited.add(neighbor)
             path.append(rel_id)
@@ -111,14 +142,22 @@ def route_pin(start: str, target: str, path: list[str]) -> dict[str, Any]:
 
 
 def _plural(noun: str) -> str:
-    head, space, last = noun.rpartition(" ")
+    """``noun``'s plural: its last word before any closing parenthetical, unless that word
+    already reads as a plural (``Rooms``; ``Status``, ``Address``, ``Iris`` and ``Alias``
+    don't)."""
+    stem, paren, aside = noun.partition(" (") if noun.endswith(")") else (noun, "", "")
+    head, space, last = stem.rpartition(" ")
+    if last.lower().endswith("s") and not last.lower().endswith(("ss", "us", "is", "ias")):
+        return noun
     if last[-1:] == "y" and last[-2:-1].lower() not in set("aeiou"):
         last = f"{last[:-1]}ies"
+    elif last.lower().endswith("sis"):
+        last = f"{last[:-2]}es"  # an analysis, two analyses
     elif last[-1:] in {"s", "x", "z"} or last[-2:] in {"ch", "sh"}:
         last = f"{last}es"
     else:
         last = f"{last}s"
-    return f"{head}{space}{last}"
+    return f"{head}{space}{last}{paren}{aside}"
 
 
 def entity_label(config: PackageConfig, entity_id: str) -> str:
@@ -223,33 +262,46 @@ def pass_through_disclosure(
     *,
     route_basis: str,
 ) -> tuple[str, dict[str, Any]] | None:
-    """A route's ``pass_through`` disclosure, a message and its details with the four fixes
-    (a child group restating ``where``, the query's conditions on the target), or None."""
+    """A route's ``pass_through`` disclosure, a message and its details with its fixes (an
+    entity filter on the crossed rows restating ``where``, the query's conditions on the
+    target, when it has any), or None."""
     crossings = pass_through(config, start, path)
     if not crossings:
         return None
     meaning, first = route_reading(config, start, path), crossings[0]["entity"]
     start_label, target_label = entity_label(config, start), entity_label(config, target)
     through = " and ".join(entity_label(config, row["entity"]) for row in crossings)
-    keys = list(get_package_analysis(config).entities[target].key)
+    # A row-grain target has no key to declare on the start.
+    keys = list(get_package_analysis(config).entities[target].key_columns)
     read = {row.column for row in config.dimensions if row.entity == start}
     found = "`, `".join(column for column in keys if column in read)
     has = f" (its table has `{found}`)" if found else ""
     links = [{"entity": row["entity"], "entities": {"bridge": True}} for row in crossings]
-    fixes = {
-        "declare_key": {"entity": start, "target_entity": target, "columns": keys},
+    fixes: dict[str, Any] = {
+        **(
+            {"declare_key": {"entity": start, "target_entity": target, "columns": keys}}
+            if keys
+            else {}
+        ),
         "declare_link_table": links,
         "record_route": route_pin(start, target, list(path)),
-        "child_group": {"child": first, "match": "any", "where": list(where)},
     }
+    advice = [
+        *([f"declare the {start_label}'s own {target_label} key{has}"] if keys else []),
+        f"declare {through} a link table (`bridge: true`)",
+        "record this route (graph.path_preferences)",
+    ]
+    if where:
+        fixes["entity_filter"] = {"entity": first, "any": call_where(where)}
+        advice.append(
+            f"ask about the {_plural(entity_label(config, first))} with an entity filter in where"
+        )
     message = (
         f"{meaning[:1].upper()}{meaning[1:]}, through {through} rows the package doesn't "
         f"declare as a link table: {'an' if start_label[:1].lower() in 'aeiou' else 'a'} "
         f"{start_label} with no {entity_label(config, first)} is left out, and one with "
-        f"several can count under several {_plural(target_label)}. Fix: declare the "
-        f"{start_label}'s own {target_label} key{has}, declare {through} a link table "
-        "(`bridge: true`), record this route (graph.path_preferences), or ask about the "
-        f"{_plural(entity_label(config, first))} with a child group."
+        f"several can count under several {_plural(target_label)}. Fix: "
+        f"{', '.join(advice[:-1])}, or {advice[-1]}."
     )
     return message, {
         "route": list(path),
@@ -351,7 +403,7 @@ def _route_decision_required(
             "clarification": clarification,
             "hint": (
                 "Which route is meant is a business definition. Ask which option the question "
-                "means, then resend the query with that option's decision in route_decisions "
+                "means, then send the call with that option's route in routes "
                 "(this query only), or record it as the package default with "
                 "record_route_decision (a graph.path_preferences row)."
             ),
@@ -412,6 +464,12 @@ def query_route_decisions(rows: Mapping[tuple[str, str], Sequence[str]]) -> Iter
         _query_routes.reset(token)
 
 
+def query_routes_active() -> bool:
+    """Whether a query's own route decisions are in force (``query_route_decisions``), so an
+    answer may differ from the package's and must not be cached as the package's."""
+    return bool(_query_routes.get())
+
+
 RouteChoice = tuple[str, str, tuple[str, ...]]
 _route_choices: ContextVar[list[RouteChoice] | None] = ContextVar("route_choices", default=None)
 
@@ -450,12 +508,12 @@ def route_note(
     config: PackageConfig, start: str, target: str, route: Sequence[str]
 ) -> RouteResolution | None:
     """The pair's resolution when the engine chose ``route``, the route the SQL read, among two
-    or more, so the response says how. None when the pair has one route (nothing was chosen),
-    is refused, or resolves to another route than the SQL read: a note names only the SQL's
-    route, and says the same whatever the process resolved before.
+    or more, so the answer's ``routes`` names it. None when the pair has one route (nothing was
+    chosen), is refused, or resolves to another route than the SQL read: ``routes`` names only
+    the SQL's route, and says the same whatever the process resolved before.
 
-    The pair's resolution is ``resolve_route``'s, which depends only on the package. Notes
-    never enumerate routes for a pair the query resolved (its resolution is cached), and a
+    The pair's resolution is ``resolve_route``'s, which depends only on the package. This
+    never enumerates routes for a pair the query resolved (its resolution is cached), and a
     decided pair only checks whether a second route fits the hop ceiling, with bounded
     reachability scans."""
     try:
@@ -613,16 +671,25 @@ def package_route(config: PackageConfig, *, start: str, target: str) -> RouteRes
 
 
 def _no_route(config: PackageConfig, start: str, target: str) -> SemanticLayerError:
-    return SemanticLayerError(
-        "PATH_NOT_FOUND",
-        f"No path from '{start}' to '{target}'",
-        details={
-            "start": start,
-            "target": target,
-            "hop_limit": package_hop_limit(config),
-            "reason": "no_relationship_chain",
-        },
-    )
+    details: dict[str, Any] = {
+        "start": start,
+        "target": target,
+        "hop_limit": package_hop_limit(config),
+        "reason": "no_relationship_chain",
+    }
+    message = f"No path from '{start}' to '{target}'"
+    # A link's rows are reached only by walking it in reverse: name the setting that allows it.
+    for rel in config.relationships:
+        if rel.link and rel.source_entity == target and "reverse" not in rel.allowed_directions:
+            message += (
+                f": link relationship '{rel.id}' ({rel.label}) allows only "
+                f"{', '.join(rel.allowed_directions) or 'no walk'}, and its rows are reached by "
+                "walking it in reverse. Set allowed_directions: [forward, reverse] on a "
+                "graph.relationships row for it."
+            )
+            details["relationship"] = rel.id
+            break
+    return SemanticLayerError("PATH_NOT_FOUND", message, details=details)
 
 
 def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolution:
@@ -1036,7 +1103,9 @@ def one_to_many_descent(analysis: dict[str, Any], entity_keys: dict[str, list[st
     start entity has its own set of target rows, so a query can keep one row per (start key,
     output grain) and count every start row once per group. A lookup followed by a fan-out
     (orders -> customer -> sessions), an M:N hop or a join off the key relates the two
-    entities many-to-many, and stays refused.
+    entities many-to-many, and stays refused. A link hop (``RelationshipConfig.link``: a
+    one-per-key model to the rows of its own relation) may follow a lookup: it splits one
+    looked-up row into the values its key holds, so each start row still has its own set.
     """
     descended = looked_up = False
     for row in analysis.get("relationships", []) or []:
@@ -1049,7 +1118,7 @@ def one_to_many_descent(analysis: dict[str, Any], entity_keys: dict[str, list[st
             columns = list(row.get(f"{side}_columns") or [row.get(f"{side}_column")])
             if (
                 cardinality != ("1:N" if forward else "N:1")
-                or looked_up
+                or (looked_up and not row.get("link"))
                 or row.get("temporal_validity")
                 or sorted(columns) != sorted(entity_keys.get(one, []))
             ):

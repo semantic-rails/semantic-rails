@@ -5,6 +5,8 @@ Gold values come from raw SQL against the seeded tables, not from the compiler.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
@@ -12,21 +14,22 @@ from typing import Any
 import pytest
 
 from semantic_rails.compiler import plan_query
-from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts import leaves, predicate_sets
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.mcp import (
     MCP_DEFAULT_MAX_RESULT_CHARS,
     SemanticLayerMCPAdapter,
 )
+from semantic_rails.query_call import read_call
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
-REVENUE = {"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}
-ORDERS = {"as": "orders", "expression": {"measure": "measure.jaffle.order_count"}}
+REVENUE = {"as": "revenue", "expression": "measure.jaffle.revenue_usd"}
+ORDERS = {"as": "orders", "expression": "measure.jaffle.order_count"}
 LIMIT_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
 
 
@@ -40,7 +43,11 @@ def runtime(runtime_factory: Any) -> Iterator[Runtime]:
 
 
 def _query(select: list[dict[str, Any]], time: dict[str, Any], **extra: Any) -> dict[str, Any]:
-    return {"version": 1, "select": select, "time": {"temporal_role": ORDER_TIME, **time}, **extra}
+    return {"select": select, "time": {"temporal_role": ORDER_TIME, **time}, **extra}
+
+
+def _plan(config: Any, query: dict[str, Any]) -> Any:
+    return plan_query(config, None, read_call(query, config=config)[0])
 
 
 def _gold(runtime: Runtime, sql: str) -> list[dict[str, Any]]:
@@ -48,43 +55,40 @@ def _gold(runtime: Runtime, sql: str) -> list[dict[str, Any]]:
     return list(runtime._get_adapter().query(sql))
 
 
+def _window_total_lines(response: dict[str, Any]) -> int:
+    """How many assumptions say the window was one total, beside the call's other assumptions."""
+    lines = [
+        entry["message"]
+        for entry in response.get("assumptions") or []
+        if entry.get("code") == "WINDOW_TOTAL"
+    ]
+    return len(lines) if all("one total" in line for line in lines) else -1
+
+
 def _codes(response: dict[str, Any]) -> list[str]:
     return [str(item.get("code")) for item in response.get("warnings") or []]
 
 
-def test_a_window_without_a_grain_is_one_total(runtime: Runtime) -> None:
-    response = runtime.query(
-        _query([REVENUE, ORDERS], {"start": "2017-04-01", "end": "2017-07-01"})
-    )
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [("2017-04-01", "2017-07-01"), ("2017-04-03 12:00:00", "2017-04-03 13:00:00")],
+    ids=["months", "inside-one-day"],
+)
+def test_a_window_without_a_grain_is_one_total(runtime: Runtime, start: str, end: str) -> None:
+    response = runtime.query(_query([REVENUE, ORDERS], {"start": start, "end": end}))
     gold = _gold(
         runtime,
         "SELECT COUNT(*) AS orders, SUM(order_total_cents) / 100.0 AS revenue FROM jaffle_order "
-        "WHERE ordered_at >= TIMESTAMP '2017-04-01' AND ordered_at < TIMESTAMP '2017-07-01'",
+        f"WHERE ordered_at >= TIMESTAMP '{start}' AND ordered_at < TIMESTAMP '{end}'",
     )
+    assert gold[0]["orders"] > 1  # a raw-timestamp answer would have been several rows
     assert response["row_count"] == 1
     row = response["rows"][0]
     assert set(row) == {"revenue", "orders"}  # no time column
     assert row["orders"] == gold[0]["orders"]
     assert row["revenue"] == pytest.approx(gold[0]["revenue"])
     assert [column["field"] for column in response["output_columns"]] == ["revenue", "orders"]
-    assert len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]
-    assert "UNGRAINED_TIME_PROJECTION" not in _codes(response)
-
-
-def test_a_window_inside_one_day_is_one_total(runtime: Runtime) -> None:
-    response = runtime.query(
-        _query([REVENUE, ORDERS], {"start": "2017-04-03T12:00:00", "end": "2017-04-03T13:00:00"})
-    )
-    gold = _gold(
-        runtime,
-        "SELECT COUNT(*) AS orders, SUM(order_total_cents) / 100.0 AS revenue FROM jaffle_order "
-        "WHERE ordered_at >= TIMESTAMP '2017-04-03 12:00:00' "
-        "AND ordered_at < TIMESTAMP '2017-04-03 13:00:00'",
-    )
-    assert gold[0]["orders"] > 1  # a raw-timestamp answer would have been several rows
-    assert response["row_count"] == 1
-    assert response["rows"][0]["orders"] == gold[0]["orders"]
-    assert response["rows"][0]["revenue"] == pytest.approx(gold[0]["revenue"])
+    assert _window_total_lines(response) == 1
 
 
 def test_a_grouped_window_is_one_total_per_group(runtime: Runtime) -> None:
@@ -93,7 +97,7 @@ def test_a_grouped_window_is_one_total_per_group(runtime: Runtime) -> None:
             [REVENUE],
             {"start": "2017-04-01", "end": "2017-07-01"},
             group_by=[STORE],
-            order_by=[{"field": "time"}, {"field": STORE}],
+            order_by=[{"field": STORE}],
         )
     )
     gold = _gold(
@@ -118,51 +122,77 @@ def test_a_grain_still_returns_one_row_per_period(runtime: Runtime) -> None:
         "FROM jaffle_order WHERE ordered_at >= TIMESTAMP '2017-04-01' "
         "AND ordered_at < TIMESTAMP '2017-07-01' GROUP BY 1",
     )
-    key = f"{ORDER_TIME}__month"
-    assert {row[key]: row["revenue"] for row in response["rows"]} == pytest.approx(
-        {row["month"].isoformat(): row["revenue"] for row in gold}
+    assert {row["period"]: row["revenue"] for row in response["rows"]} == pytest.approx(
+        {row["month"].date().isoformat(): row["revenue"] for row in gold}
     )
-    assert response["assumptions"] == []
+    assert "assumptions" not in response
 
 
 @pytest.mark.parametrize(
-    "time",
-    [{}, {"start": "2017-04-01"}, {"end": "2017-04-01"}],
-    ids=["no bounds", "start only", "end only"],
+    "time", [{"start": "2017-04-01"}, {"end": "2017-04-01"}], ids=["start only", "end only"]
 )
-def test_only_a_bounded_window_collapses(runtime: Runtime, time: dict[str, Any]) -> None:
+def test_a_bounded_window_collapses(runtime: Runtime, time: dict[str, Any]) -> None:
+    """A clock with no grain and no bound is refused by the call (say a grain or a window)."""
     response = runtime.query(_query([REVENUE], time))
-    collapses = bool(time)
-    assert (response["row_count"] == 1) is collapses
-    assert (ORDER_TIME not in response["rows"][0]) is collapses
-    assert ("UNGRAINED_TIME_PROJECTION" in _codes(response)) is not collapses
+    assert response["row_count"] == 1
+    assert ORDER_TIME not in response["rows"][0]
 
 
-def test_an_expression_that_needs_the_time_axis_is_not_collapsed(runtime: Runtime) -> None:
-    def collapses(select: dict[str, Any]) -> bool:
-        payload = _query([select], {"end": "2017-04-04"})
-        return bool(plan_query(runtime._config, None, payload).time.get("window_total"))
+@pytest.mark.parametrize(
+    ("select", "kind", "grain"),
+    [
+        ("metric.sales.cumulative_revenue", "cumulative", "month"),
+        ("metric.sales.rolling_7d_revenue_direct", "rolling", "day"),
+        ({"kind": "period_to_date", "input": "measure.jaffle.revenue_usd", "period": "month"}, "period_to_date", "day"),
+        ({"kind": "prior_period", "input": "measure.jaffle.revenue_usd", "offset": {"unit": "week", "value": 1}}, "prior_period", "week"),
+    ],
+)  # fmt: skip
+def test_an_expression_that_reads_periods_in_order_asks_for_a_grain(
+    runtime: Runtime, select: Any, kind: str, grain: str
+) -> None:
+    """A running total or a comparison has no one total over a window: the call is refused
+    with the grain to add, never answered with one row per raw timestamp."""
+    call = _query([{"expression": select, "as": "running"}], {"end": "2017-04-04"})
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(call)
+    assert raised.value.code == "WINDOW_TOTAL_UNSUPPORTED"
+    assert raised.value.details["path"] == "time.grain"
+    assert f"reads a {kind}" in str(raised.value)
+    (hint,) = raised.value.details["recovery_hints"]
+    fixed = json.loads(hint["message"].split(": ", 1)[1].removesuffix("."))
+    assert fixed == {"time": {"temporal_role": ORDER_TIME, "end": "2017-04-04", "grain": grain}}
+    assert runtime.query({**call, **fixed})["rows"]
 
-    rolling = {"expression": {"metric": "metric.sales.rolling_7d_revenue_direct"}, "as": "r"}
-    assert collapses(REVENUE)
-    assert not collapses(rolling)
 
-    # A cumulative runs: it keeps its time column and the warning, and says nothing about a total.
-    cumulative = {"expression": {"metric": "metric.sales.cumulative_revenue"}, "as": "running"}
-    response = runtime.query(_query([cumulative], {"end": "2017-04-04"}))
+def test_a_running_total_answers_with_the_hinted_grain(runtime: Runtime) -> None:
+    call = _query(
+        [{"expression": "metric.sales.cumulative_revenue", "as": "running"}],
+        {"end": "2017-04-04", "grain": "month"},
+    )
+    response = runtime.query(call)
     gold = _gold(
         runtime,
         "SELECT SUM(order_total_cents) / 100.0 AS revenue FROM jaffle_order "
         "WHERE ordered_at < TIMESTAMP '2017-04-04'",
     )
-    assert response["row_count"] > 1
-    assert all(set(row) == {ORDER_TIME, "running"} for row in response["rows"])
-    assert max(row["running"] for row in response["rows"]) == pytest.approx(gold[0]["revenue"])
-    assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
-    assert response["assumptions"] == []
+    assert response["rows"][-1]["running"] == pytest.approx(gold[0]["revenue"])
 
 
-# The predicate measures orders on the query's own clock (order time).
+def test_a_listing_over_a_window_is_one_row_per_group(runtime: Runtime) -> None:
+    """Stores with orders in the window, each once: Brooklyn opened later in March."""
+    call = {"group_by": [STORE], "time": {"temporal_role": ORDER_TIME, "start": "2017-03-01", "end": "2017-03-03"}}  # fmt: skip
+    response = runtime.query(call)
+    gold = _gold(
+        runtime,
+        f'SELECT DISTINCT s.store_name AS "{STORE}" FROM jaffle_order o {STORE_JOIN} '
+        "WHERE o.ordered_at >= TIMESTAMP '2017-03-01' AND o.ordered_at < TIMESTAMP '2017-03-03'",
+    )
+    assert sorted(response["rows"], key=str) == sorted(gold, key=str) == [{STORE: "Philadelphia"}]
+    assert _window_total_lines(response) == 1
+
+
+# The predicate measures orders on the query's own clock (order time), in the query's own
+# context: no call spells that, so these tests read the engine's own form.
 CUSTOMER_PREDICATE = {
     "kind": "metric_predicate",
     "entity": "entity.jaffle_customer",
@@ -189,8 +219,9 @@ def _filtered_revenue(predicate: dict[str, Any]) -> dict[str, Any]:
 FILTERED_REVENUE = _filtered_revenue(CUSTOMER_PREDICATE)
 
 
-def test_a_metric_predicate_in_an_aggregate_filter_is_not_collapsed(runtime: Runtime) -> None:
-    """The predicate is tested per raw timestamp, so a total over the window would be wrong."""
+def test_a_predicate_tested_per_period_asks_for_a_grain(runtime: Runtime) -> None:
+    """The predicate is tested per output period, so it has no total over the window; the
+    answer is never a row per raw timestamp."""
     time = {"start": "2017-04-01", "end": "2017-04-04"}
     payload = _query([{"as": "revenue", "expression": FILTERED_REVENUE}], time)
     assert not plan_query(runtime._config, None, payload).time.get("window_total")
@@ -202,15 +233,45 @@ def test_a_metric_predicate_in_an_aggregate_filter_is_not_collapsed(runtime: Run
         expression=parse_semantic_expression(FILTERED_REVENUE, context="query"),
     )
     config = replace(runtime._config, metric_recipes=[*runtime._config.metric_recipes, recipe])
-    via_recipe = _query([{"as": "revenue", "expression": {"metric": recipe.id}}], time)
-    assert not plan_query(config, None, via_recipe).time.get("window_total")
+    via_recipe = _query([{"as": "revenue", "expression": recipe.id}], time)
+    assert not _plan(config, via_recipe).time.get("window_total")
 
-    response = runtime.query(payload)
-    assert response["row_count"] > 1
-    assert all(ORDER_TIME in row for row in response["rows"])
-    assert "UNGRAINED_TIME_PROJECTION" in _codes(response)
-    assert response["assumptions"] == []
-    assert "time_shape" not in response
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query_internal(payload)
+    assert raised.value.code == "WINDOW_TOTAL_UNSUPPORTED"
+    assert raised.value.details["path"] == "time.grain"
+    grained = runtime.query_internal({**payload, "time": {**payload["time"], "grain": "day"}})
+    assert grained["rows"] and all("period" in row for row in grained["rows"])
+
+
+@pytest.mark.parametrize(("over", "counts"), [("window", [1, 2]), ("all_time", [10, 11, 12])])
+def test_an_entity_filter_over_the_entity_s_own_rows_has_one_total(
+    runtime: Runtime, over: str, counts: list[int]
+) -> None:
+    """Customers with so many orders (in the window, or ever): their orders in the window, one
+    total, never a row per order time."""
+    window = "ordered_at >= TIMESTAMP '2016-09-01' AND ordered_at < TIMESTAMP '2017-01-01'"
+    call = _query(
+        [{"as": "orders", "expression": "measure.jaffle.order_count"}],
+        {"start": "2016-09-01", "end": "2017-01-01"},
+        where=[
+            {
+                "entity": "entity.jaffle_customer",
+                "having": [{"field": "measure.jaffle.order_count", "op": "is", "value": counts}],
+                "over": over,
+            }
+        ],
+    )
+    result = runtime.query(call)
+    population = window if over == "window" else "TRUE"
+    gold = _gold(
+        runtime,
+        f"SELECT COUNT(DISTINCT order_id) AS orders FROM jaffle_order WHERE {window} "
+        "AND customer_id IN (SELECT customer_id FROM jaffle_order "
+        f"WHERE {population} GROUP BY 1 HAVING COUNT(DISTINCT order_id) IN {tuple(counts)})",
+    )
+    assert result["rows"] == gold
+    assert "WINDOW_TOTAL" in [row["code"] for row in result["assumptions"]]
 
 
 def test_a_cross_clock_predicate_in_an_aggregate_filter_is_refused(runtime: Runtime) -> None:
@@ -220,7 +281,7 @@ def test_a_cross_clock_predicate_in_an_aggregate_filter_is_refused(runtime: Runt
     payload = _query(select, time)
     assert not plan_query(runtime._config, None, payload).time.get("window_total")
     with pytest.raises(SemanticLayerError) as raised:
-        runtime.query(payload)
+        runtime.query_internal(payload)
     assert raised.value.code == "INVALID_TEMPORAL_BINDING"
 
 
@@ -229,33 +290,25 @@ def test_a_cross_clock_predicate_in_an_aggregate_filter_is_refused(runtime: Runt
 ORDER_WINDOW = "o.ordered_at >= TIMESTAMP '2017-04-01' AND o.ordered_at < TIMESTAMP '2017-07-01'"
 STORE_JOIN = "JOIN jaffle_store s ON o.store_id = s.store_id"
 INVENTORY_TIME = "temporal_role.jaffle_inventory_day"
-INVENTORY = {"expression": {"metric": "metric.sales.inventory_on_hand_eop"}, "as": "inventory"}
+INVENTORY = {"expression": "metric.sales.inventory_on_hand_eop", "as": "inventory"}
 INVENTORY_SPAN = {"temporal_role": INVENTORY_TIME, "start": "2016-09-01", "end": "2017-04-02"}
 INVENTORY_WINDOW = "i.date_day >= DATE '2016-09-01' AND i.date_day < DATE '2017-04-02'"
+# A balance reads the window's closing day only (its last day with a snapshot).
 LAST_SNAPSHOT = (
-    "SELECT store_id, inventory_on_hand FROM (SELECT i.store_id, i.inventory_on_hand, "
-    "ROW_NUMBER() OVER (PARTITION BY i.store_id ORDER BY i.date_day DESC) AS n "
-    f"FROM jaffle_store_inventory_snapshot i WHERE {INVENTORY_WINDOW}) WHERE n = 1"
+    "SELECT store_id, inventory_on_hand FROM jaffle_store_inventory_snapshot i "
+    f"WHERE {INVENTORY_WINDOW} AND i.date_day = (SELECT MAX(date_day) "
+    f"FROM jaffle_store_inventory_snapshot i WHERE {INVENTORY_WINDOW})"
 )
 
 
 def _measure(measure: str, alias: str, aggregation: str = "") -> dict[str, Any]:
-    expression = {"measure": f"measure.jaffle.{measure}"}
+    expression: Any = f"measure.jaffle.{measure}"
     if aggregation:
-        expression["aggregation"] = aggregation
+        expression = {"kind": "measure", "measure": expression, "aggregation": aggregation}
     return {"as": alias, "expression": expression}
 
 
-BIG_STORE_FILTER = {
-    "expression": {
-        "kind": "comparison",
-        "op": ">",
-        "left": {"measure": "measure.jaffle.revenue_usd"},
-        "right": {"kind": "literal", "value": 130000},
-    },
-    "op": "=",
-    "value": True,
-}
+BIG_STORE_FILTER = {"field": "revenue", "op": "gt", "value": 130000}
 
 # id -> (query, group_by dimension ids, output aliases, gold SQL)
 GOLD_CASES: dict[str, tuple[dict[str, Any], list[str], list[str], str]] = {
@@ -305,7 +358,7 @@ GOLD_CASES: dict[str, tuple[dict[str, Any], list[str], list[str], str]] = {
     ),
     "ratio recipe": (
         _query(
-            [{"as": "aov", "expression": {"metric": "metric.sales.aov_usd"}}],
+            [{"as": "aov", "expression": "metric.sales.aov_usd"}],
             {"start": "2017-04-01", "end": "2017-07-01"},
         ),
         [],
@@ -313,12 +366,12 @@ GOLD_CASES: dict[str, tuple[dict[str, Any], list[str], list[str], str]] = {
         "SELECT SUM(o.order_total_cents) / 100.0 / COUNT(*) AS aov FROM jaffle_order o "
         f"WHERE {ORDER_WINDOW}",
     ),
-    "metric_filters threshold on the window total": (
+    "result filter threshold on the window total": (
         _query(
             [REVENUE],
             {"start": "2017-04-01", "end": "2017-07-01"},
             group_by=[STORE],
-            metric_filters=[BIG_STORE_FILTER],
+            having=[BIG_STORE_FILTER],
         ),
         [STORE],
         ["revenue"],
@@ -379,10 +432,7 @@ def test_every_kind_of_measure_returns_the_window_total(runtime: Runtime, case: 
     for key, row_values in want.items():
         assert got[key] == pytest.approx(row_values), key
     assert response["row_count"] == len(gold)  # one row per group, never one per timestamp
-    assert len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]
-    assert not {"UNGRAINED_TIME_PROJECTION", "UNGRAINED_GROUPED_TIME_PROJECTION"} & set(
-        _codes(response)
-    )
+    assert _window_total_lines(response) == 1
 
 
 def test_a_balance_is_the_last_snapshot_in_the_window_not_a_sum(runtime: Runtime) -> None:
@@ -392,7 +442,9 @@ def test_a_balance_is_the_last_snapshot_in_the_window_not_a_sum(runtime: Runtime
         "SELECT SUM(inventory_on_hand) AS inventory FROM jaffle_store_inventory_snapshot i "
         f"WHERE {INVENTORY_WINDOW}",
     )[0]["inventory"]
-    assert balance == 1085 + 860  # each store's last snapshot in the window
+    # The window closes on April 1, 2017: the store last seen in October 2016 (1085) is not
+    # carried forward.
+    assert balance == 860
     assert balance != summed
 
 
@@ -401,7 +453,8 @@ def test_a_leaf_that_still_groups_by_the_raw_time_is_refused(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     """A leaf that misses the constant time key must not be passed off as one total."""
-    monkeypatch.setattr(sql_lowering, "_time_bucket_expr", lambda time, raw_expr, config: raw_expr)
+    for module in (leaves, predicate_sets):
+        monkeypatch.setattr(module, "_time_bucket_expr", lambda time, raw_expr, config: raw_expr)
     with pytest.raises(SemanticLayerError) as raised:
         runtime.query(GOLD_CASES[case][0])
     assert raised.value.code == "WINDOW_TOTAL_UNSUPPORTED"
@@ -423,13 +476,12 @@ def test_execute_reports_the_total_and_its_assumption(mcp: SemanticLayerMCPAdapt
     assert response["ok"], response["errors"]
     assert response["row_count"] == 2 and response["truncated"] is False
     # The default response is minimal, and an assumption changes what the numbers mean.
-    assert "one total" in response["assumptions"][0]
-    assert response["time_shape"] == "window_total"
-    assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
+    assert "one total" in response["assumptions"][0]["message"]
+    assert response["assumptions"][0]["code"] == "WINDOW_TOTAL"
     yearly = mcp.call_tool(
         "execute", {"query": {**query, "time": {"temporal_role": ORDER_TIME, "grain": "year"}}}
     )
-    assert "assumptions" not in yearly and "time_shape" not in yearly
+    assert "assumptions" not in yearly
 
 
 def test_a_grant_scoped_execute_reports_the_total_and_its_flag(
@@ -442,10 +494,9 @@ def test_a_grant_scoped_execute_reports_the_total_and_its_flag(
         metric_allowlist=("metric.sales.aov_usd",),
         dimension_allowlist=(STORE, ORDER_TIME),
     )
-    aov = {"as": "aov", "expression": {"metric": "metric.sales.aov_usd"}}
+    aov = {"as": "aov", "expression": "metric.sales.aov_usd"}
     query = _query([aov], {"start": "2017-04-01", "end": "2017-07-01"}, group_by=[STORE])
-    query["policy_context"] = grant.to_policy_context()
-    response = mcp.call_tool("execute", {"query": query})
+    response = mcp.call_tool("execute", {"query": query}, request_context=grant)
     assert response["ok"], response["errors"]
     assert response["row_count"] == 2
     assert all(set(row) == {STORE, "aov"} for row in response["rows"])  # no time column
@@ -453,12 +504,11 @@ def test_a_grant_scoped_execute_reports_the_total_and_its_flag(
         STORE,
         "metric.sales.aov_usd",
     ]
-    assert "one total" in response["assumptions"][0]
-    assert response["time_shape"] == "window_total"
-    assert "UNGRAINED_GROUPED_TIME_PROJECTION" not in _codes(response)
+    assert "one total" in response["assumptions"][0]["message"]
+    assert response["assumptions"][0]["code"] == "WINDOW_TOTAL"
     # The advice for a result that is too big must not blame the raw timestamp either.
     monkeypatch.setenv(LIMIT_ENV, "50")
-    refused = mcp.call_tool("execute", {"query": query})
+    refused = mcp.call_tool("execute", {"query": query}, request_context=grant)
     assert refused["errors"][0]["code"] == "RESULT_TOO_LARGE"
     assert "raw timestamp" not in refused["errors"][0]["message"]
 
@@ -487,11 +537,12 @@ def test_a_capped_result_that_is_still_too_large_names_the_full_count(
     mcp: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(LIMIT_ENV, "2000")
-    role_only = _query([REVENUE], {}, group_by=[STORE])
-    response = mcp.call_tool("execute", {"query": role_only})
+    daily = _query([REVENUE], {"grain": "day"}, group_by=[STORE])
+    response = mcp.call_tool("execute", {"query": daily})
     error = response["errors"][0]
     assert error["code"] == "RESULT_TOO_LARGE"
-    assert "more than 10,000 rows" in error["message"]
+    # The rows past the fetch cap are never counted: the message says "more than".
+    assert re.search(r"more than [\d,]+ rows", error["message"])
     assert "time.grain" in error["message"]
 
 

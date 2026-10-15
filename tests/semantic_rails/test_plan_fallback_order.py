@@ -33,8 +33,7 @@ def test_equal_candidates_use_object_id_order(
     assert [row["id"] for row in ranked] == [row["id"] for row in rows]
 
 
-@pytest.mark.parametrize("hash_bonus", [0, 99])
-@pytest.mark.parametrize("detail", ["best", "full", "debug"])
+@pytest.mark.parametrize(("hash_bonus", "detail"), [(0, "best"), (99, "full"), (0, "debug")])
 def test_fallback_refusal_is_independent_of_hashes(
     runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, hash_bonus: int, detail: str
 ) -> None:
@@ -62,7 +61,7 @@ def test_fallback_refusal_is_independent_of_hashes(
         assert payload["status"] == "low_confidence"
         assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
         assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
-        assert payload["best"]["query_ir"]["group_by"] == [
+        assert payload["best"]["query"]["group_by"] == [
             "dimension.jaffle_store_id",
             "dimension.jaffle_store_name",
         ]

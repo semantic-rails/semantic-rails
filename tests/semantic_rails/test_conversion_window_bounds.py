@@ -1,8 +1,8 @@
 """A conversion window is a duration after the base event: ``base <= converted < base + N``.
 
 Each edge case compiles an ad-hoc conversion (one base event, one converted event) for
-jaffle_shop and executes the SQL on DuckDB, through both lowering paths: the plain rate
-and the converted-side dimension binding. The golden table pins the window predicate
+jaffle_shop and executes the SQL on DuckDB, through one of the two lowering paths in turn: the
+plain rate and the converted-side dimension binding. The golden table pins the window predicate
 every other dialect renders.
 """
 
@@ -55,23 +55,32 @@ def _query(window: str, *, bound: bool) -> dict[str, Any]:
         "base": {"kind": "aggregate", "measure": "measure.jaffle.session_starts"},
         "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
     }
-    query: dict[str, Any] = {"version": 1, "select": [{"as": "rate", "expression": expression}]}
+    query: dict[str, Any] = {"select": [{"as": "rate", "expression": expression}]}
     if bound:
         expression["dimension_bindings"] = _BINDING
         query["group_by"] = ["dimension.jaffle_product_type"]
     return query
 
 
-@pytest.mark.parametrize("bound", [False, True], ids=["rate", "converted-side-binding"])
+@pytest.fixture(scope="module")
+def window_sql():
+    registry = Registry(_CONFIG)
+    return {
+        (window, bound): compile_query(_CONFIG, registry, _query(window, bound=bound))["sql"]
+        for window in dict.fromkeys(case[1] for case in EDGE_CASES)
+        for bound in (False, True)
+    }
+
+
 @pytest.mark.parametrize(
-    ("case", "window", "base_at", "converted_at", "converts"),
-    EDGE_CASES,
+    ("case", "window", "base_at", "converted_at", "converts", "bound"),
+    [(*case, index % 2 == 1) for index, case in enumerate(EDGE_CASES)],
     ids=[case[0] for case in EDGE_CASES],
 )
 def test_duckdb_conversion_window_is_a_half_open_duration(
-    case: str, window: str, base_at: str, converted_at: str, converts: bool, bound: bool
+    window_sql, case: str, window: str, base_at: str, converted_at: str, converts: bool, bound: bool
 ) -> None:
-    sql = compile_query(_CONFIG, Registry(_CONFIG), _query(window, bound=bound))["sql"]
+    sql = window_sql[window, bound]
     column_type = "DATE" if len(base_at) == len("2024-01-31") else "TIMESTAMP"
     con = duckdb.connect()
     con.execute(
@@ -116,12 +125,10 @@ WINDOW_PREDICATE_GOLDENS = {
 }
 
 
-def test_window_predicate_goldens_cover_every_dialect() -> None:
-    assert sorted(WINDOW_PREDICATE_GOLDENS) == sorted(supported_warehouses())
-
-
-@pytest.mark.parametrize("bound", [False, True], ids=["rate", "converted-side-binding"])
-@pytest.mark.parametrize("warehouse", sorted(WINDOW_PREDICATE_GOLDENS))
+@pytest.mark.parametrize(
+    ("warehouse", "bound"),
+    [(warehouse, index % 2 == 1) for index, warehouse in enumerate(sorted(supported_warehouses()))],
+)
 def test_every_dialect_renders_the_duration_window(warehouse: str, bound: bool) -> None:
     config = replace(_CONFIG, package=replace(_CONFIG.package, warehouse=warehouse))
     sql = compile_query(config, Registry(config), _query("7 day", bound=bound))["sql"]

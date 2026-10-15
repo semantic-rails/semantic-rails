@@ -16,6 +16,8 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.registry import Registry
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 _ORDER_TIME = "temporal_role.jaffle_order_time"
 _FIRST_ORDER = "temporal_role.jaffle_customer_first_order_at"
@@ -23,62 +25,61 @@ _SESSION_TIME = "temporal_role.jaffle_session_started_at"
 
 
 def _new_customer(value: bool) -> dict:
-    return {"field": "dimension.jaffle_order_is_new_customer_order", "op": "=", "value": value}
+    return {"field": "dimension.jaffle_order_is_new_customer_order", "op": "is", "value": value}
 
 
 _ORDERS = {"kind": "aggregate", "measure": "measure.jaffle.order_count"}
 _NEW_ORDERS = {**_ORDERS, "filter": {"all": [_new_customer(True)]}}
 
 
-def _by_year(rows: list[dict], role: str, select: list[dict]) -> dict[str, list]:
-    rows = sorted(rows, key=lambda row: str(row[f"{role}__year"]))
+@pytest.fixture(scope="module")
+def runtime(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop", preseed_db=True)
+    runtime = Runtime.from_path(str(path))
+    yield opened(runtime)
+    runtime.close()
+
+
+def _by_year(rows: list[dict], select: list[dict]) -> dict[str, list]:
+    rows = sorted(rows, key=lambda row: str(row["period"]))
     return {item["as"]: [row[item["as"]] for row in rows] for item in select}
 
 
 def _query(runtime, select: list[dict], role: str = _ORDER_TIME, config=None) -> dict[str, list]:
-    query = {"version": 1, "select": select, "time": {"temporal_role": role, "grain": "year"}}
+    query = {"select": select, "time": {"temporal_role": role, "grain": "year"}}
     if config is None:
         rows = runtime.query(query)["rows"]
     else:
-        rows = runtime._get_adapter().query(compile_query(config, Registry(config), query)["sql"])
-    return _by_year(rows, role, select)
+        compiled = compile_query(config, Registry(config), runtime.engine_payload(query))
+        rows = runtime._get_adapter().query(compiled["sql"])
+    return _by_year(rows, select)
 
 
 def _each_alone(runtime, select: list[dict], **kwargs) -> dict[str, list]:
     return {item["as"]: _query(runtime, [item], **kwargs)[item["as"]] for item in select}
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["filtered-first", "unfiltered-first"])
-def test_aggregates_of_one_measure_that_differ_by_filter_keep_their_own_columns(
-    runtime_factory, reverse
-):
+def test_aggregates_of_one_measure_that_differ_by_filter_keep_their_own_columns(runtime):
     select = [
         {"expression": _NEW_ORDERS, "as": "new_orders"},
         {"expression": _ORDERS, "as": "orders"},
     ]
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        together = _query(runtime, select[::-1] if reverse else select)
-        alone = _each_alone(runtime, select)
-    finally:
-        runtime.close()
+    together = [_query(runtime, ordered) for ordered in (select, select[::-1])]
+    alone = _each_alone(runtime, select)
 
-    assert together == alone
+    for result in together:
+        assert result == alone
     assert alone["new_orders"] != alone["orders"]
 
 
-def test_a_share_of_one_measure_under_a_filter_is_not_one(runtime_factory):
+def test_a_share_of_one_measure_under_a_filter_is_not_one(runtime):
     # This returned [1.0, 1.0].
     share = {"kind": "ratio", "numerator": _NEW_ORDERS, "denominator": _ORDERS}
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        ratio = _query(runtime, [{"expression": share, "as": "share"}])["share"]
-        counts = _each_alone(
-            runtime,
-            [{"expression": _NEW_ORDERS, "as": "new"}, {"expression": _ORDERS, "as": "all"}],
-        )
-    finally:
-        runtime.close()
+    ratio = _query(runtime, [{"expression": share, "as": "share"}])["share"]
+    counts = _each_alone(
+        runtime,
+        [{"expression": _NEW_ORDERS, "as": "new"}, {"expression": _ORDERS, "as": "all"}],
+    )
 
     assert ratio == pytest.approx(
         [n / d for n, d in zip(counts["new"], counts["all"], strict=True)]
@@ -86,21 +87,14 @@ def test_a_share_of_one_measure_under_a_filter_is_not_one(runtime_factory):
     assert all(value < 1 for value in ratio)
 
 
-def test_a_filtered_metric_beside_its_unfiltered_measure_keeps_its_filter(runtime_factory):
+def test_a_filtered_metric_beside_its_unfiltered_measure_keeps_its_filter(runtime):
     # repeat_customer_orders is order_count (count_distinct) under a filter.
     select = [
-        {
-            "expression": {"kind": "metric", "metric": "metric.sales.repeat_customer_orders"},
-            "as": "repeat",
-        },
+        {"expression": "metric.sales.repeat_customer_orders", "as": "repeat"},
         {"expression": {**_ORDERS, "aggregation": "count_distinct"}, "as": "orders"},
     ]
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        together = _query(runtime, select)
-        alone = _each_alone(runtime, select)
-    finally:
-        runtime.close()
+    together = _query(runtime, select)
+    alone = _each_alone(runtime, select)
 
     assert together == alone
     assert alone["repeat"] != alone["orders"]
@@ -119,10 +113,7 @@ def _two_clock_config(runtime):
     )
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["order-clock-first", "first-order-first"])
-def test_aggregates_of_one_measure_that_differ_by_clock_keep_their_own_columns(
-    runtime_factory, reverse
-):
+def test_aggregates_of_one_measure_that_differ_by_clock_keep_their_own_columns(runtime):
     # The query's clock is the sessions', which order_count lacks, so each order
     # aggregate falls back to its own clock; session_starts keeps the query valid.
     select = [
@@ -133,34 +124,29 @@ def test_aggregates_of_one_measure_that_differ_by_clock_keep_their_own_columns(
             "as": "sessions",
         },
     ]
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        config = _two_clock_config(runtime)
-        ordered = [select[1], select[0], select[2]] if reverse else select
-        together = _query(runtime, ordered, role=_SESSION_TIME, config=config)
-        alone = {
-            item["as"]: _query(runtime, [item, select[2]], role=_SESSION_TIME, config=config)[
-                item["as"]
-            ]
-            for item in select[:2]
-        }
-    finally:
-        runtime.close()
+    config = _two_clock_config(runtime)
+    together = [
+        _query(runtime, ordered, role=_SESSION_TIME, config=config)
+        for ordered in (select, [select[1], select[0], select[2]])
+    ]
+    alone = {
+        item["as"]: _query(runtime, [item, select[2]], role=_SESSION_TIME, config=config)[
+            item["as"]
+        ]
+        for item in select[:2]
+    }
 
-    assert {key: together[key] for key in alone} == alone
+    for result in together:
+        assert {key: result[key] for key in alone} == alone
     assert alone["by_order"] != alone["by_first_order"]
 
 
-def test_an_explicit_clock_equal_to_the_querys_and_no_clock_both_answer(runtime_factory):
+def test_an_explicit_clock_equal_to_the_querys_and_no_clock_both_answer(runtime):
     select = [
         {"expression": {**_ORDERS, "temporal_role": _ORDER_TIME}, "as": "explicit"},
         {"expression": _ORDERS, "as": "implicit"},
     ]
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        together = _query(runtime, select)
-    finally:
-        runtime.close()
+    together = _query(runtime, select)
 
     assert together["explicit"] == together["implicit"]
     assert together["implicit"]
@@ -180,20 +166,14 @@ def _order_conversion(converted_filter: list[dict]) -> dict:
     }
 
 
-@pytest.mark.parametrize("reverse", [False, True], ids=["filtered-first", "unfiltered-first"])
-def test_conversions_that_differ_by_an_operand_filter_keep_their_own_columns(
-    runtime_factory, reverse
-):
+def test_conversions_that_differ_by_an_operand_filter_keep_their_own_columns(runtime):
     select = [
         {"expression": _order_conversion([_new_customer(False)]), "as": "to_repeat"},
         {"expression": _order_conversion([]), "as": "to_any"},
     ]
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        together = _query(runtime, select[::-1] if reverse else select)
-        alone = _each_alone(runtime, select)
-    finally:
-        runtime.close()
+    together = [_query(runtime, ordered) for ordered in (select, select[::-1])]
+    alone = _each_alone(runtime, select)
 
-    assert together == alone
+    for result in together:
+        assert result == alone
     assert alone["to_repeat"] != alone["to_any"]

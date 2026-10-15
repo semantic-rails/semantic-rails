@@ -1,20 +1,19 @@
-"""Regression tests for boolean ``not`` in expression parsing and the
-post-aggregation (metric_filters) lowering path.
+"""Boolean ``not`` in expression parsing and in every lowering path.
 
-Bug: ``_compile_post_expr`` folded ``BooleanExpr`` strictly as a binary
-chain (``current = rendered[0]; for item in rendered[1:]: ...``), so a
-``{kind: 'boolean', op: 'not', args: [<cmp>]}`` expression — explicitly
-permitted by the query IR schema — silently returned the UN-NEGATED arg.
-``parse_semantic_expression`` also accepted any ``op`` string, deferring
-unsupported ops to an opaque render-time failure.
+``not`` was folded as a binary chain, so ``{kind: boolean, op: not, args: [<cmp>]}`` returned
+the un-negated argument, and parsing accepted any ``op``, failing later at render time. The
+post-aggregation, measure-expression and relation-pipeline lowerings each had the same fold.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
-from semantic_rails.compiler import compile_query
+from semantic_rails.compiler_parts.bind import _config_expr_to_sql
 from semantic_rails.compiler_parts.post_aggregation import _compile_post_expr
+from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
     BooleanExpr,
@@ -22,272 +21,118 @@ from semantic_rails.expressions import (
     LiteralExpr,
     parse_semantic_expression,
 )
-from semantic_rails.registry import Registry
-from semantic_rails.sql_ast import SqlBinary, SqlLiteral
+from semantic_rails.relation_pipelines import _semantic_expr_to_sql
+from semantic_rails.renderer import render_expr
+from tests.semantic_rails.conftest import copy_package_config
+
+ORDERS = "measure.jaffle.order_count"
+STORE = "dimension.jaffle_store_name"
 
 
-def _comparison_dict(threshold: int = 10) -> dict:
+@pytest.fixture(scope="module")
+def config(tmp_path_factory):
+    path = copy_package_config(tmp_path_factory.mktemp("package"), "jaffle_shop")
+    return load_package_config(str(path))
+
+
+def _orders_over(threshold: int, orders: Any = None) -> dict:
+    """``orders > threshold``; the engine's own form unless a call's reference is given."""
     return {
         "kind": "comparison",
         "op": ">",
-        "left": {"measure": "measure.jaffle.order_count"},
+        "left": orders or {"kind": "measure", "measure": ORDERS},
         "right": {"kind": "literal", "value": threshold},
     }
 
 
-def _not_query(threshold: int = 10) -> dict:
-    return {
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-        "group_by": ["dimension.jaffle_store_name"],
-        "metric_filters": [
-            {
-                "expression": {
-                    "kind": "boolean",
-                    "op": "not",
-                    "args": [_comparison_dict(threshold)],
-                },
-                "op": "=",
-                "value": True,
-            }
-        ],
-    }
+def _boolean(op: str, count: int) -> dict:
+    return {"kind": "boolean", "op": op, "args": [_orders_over(n) for n in range(count)]}
 
 
-# ---------------------------------------------------------------------------
-# Parse-time validation (expressions.py)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_accepts_not_and_normalizes_case():
-    for raw_op in ("not", "NOT", "Not"):
-        parsed = parse_semantic_expression(
-            {"kind": "boolean", "op": raw_op, "args": [_comparison_dict()]}, context="query"
-        )
+def test_parse_normalizes_the_case_of_each_boolean_op():
+    for raw_op, count in [("not", 1), ("NOT", 1), ("Not", 1), ("AND", 2), ("Or", 2)]:
+        parsed = parse_semantic_expression(_boolean(raw_op, count), context="query")
         assert isinstance(parsed, BooleanExpr)
-        assert parsed.op == "not"
-        assert len(parsed.args) == 1
+        assert (parsed.op, len(parsed.args)) == (raw_op.lower(), count)
 
 
-def test_parse_normalizes_and_or_case():
-    for raw_op, expected in (("AND", "and"), ("Or", "or")):
-        parsed = parse_semantic_expression(
-            {
-                "kind": "boolean",
-                "op": raw_op,
-                "args": [_comparison_dict(1), _comparison_dict(2)],
-            },
-            context="query",
-        )
-        assert isinstance(parsed, BooleanExpr)
-        assert parsed.op == expected
+def test_parse_rejects_an_unknown_op_a_binary_not_and_no_args():
+    for op, count, details, hint in [
+        (
+            "xor",
+            2,
+            {"allowed": ["and", "or", "not"], "received_value": "xor"},
+            "USE_SUPPORTED_BOOLEAN_OP",
+        ),
+        ("not", 2, {"received_arg_count": 2}, "WRAP_NOT_ARGS"),
+        ("and", 0, {}, ""),
+    ]:
+        with pytest.raises(SemanticLayerError) as exc:
+            parse_semantic_expression(_boolean(op, count), context="query")
+        assert exc.value.code == "INVALID_EXPRESSION_AST"
+        assert details.items() <= exc.value.details.items(), op
+        if hint:
+            assert exc.value.details["recovery_hints"][0]["code"] == hint
 
 
-def test_parse_rejects_unsupported_boolean_op():
-    with pytest.raises(SemanticLayerError) as exc_info:
-        parse_semantic_expression(
-            {"kind": "boolean", "op": "xor", "args": [_comparison_dict(), _comparison_dict()]},
-            context="query",
-        )
-    err = exc_info.value
-    assert err.code == "INVALID_EXPRESSION_AST"
-    assert err.details["allowed"] == ["and", "or", "not"]
-    assert err.details["received_value"] == "xor"
-    assert err.details["recovery_hints"]
-    assert err.details["recovery_hints"][0]["code"] == "USE_SUPPORTED_BOOLEAN_OP"
+ONE_OVER_FIVE = ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(5))
+THREE_UNDER_FOUR = ComparisonExpr(op="<", left=LiteralExpr(3), right=LiteralExpr(4))
+LOWERINGS = {
+    "post_aggregation": lambda expr, config: _compile_post_expr(expr, config),
+    "measure_expression": lambda expr, config: _config_expr_to_sql(
+        expr, config.measures[0], config
+    ),
+    "relation_pipeline": lambda expr, config: _semantic_expr_to_sql(expr),
+}
 
 
-def test_parse_rejects_not_with_multiple_args():
-    with pytest.raises(SemanticLayerError) as exc_info:
-        parse_semantic_expression(
-            {
-                "kind": "boolean",
-                "op": "not",
-                "args": [_comparison_dict(1), _comparison_dict(2)],
-            },
-            context="query",
-        )
-    err = exc_info.value
-    assert err.code == "INVALID_EXPRESSION_AST"
-    assert err.details["received_arg_count"] == 2
-    assert err.details["recovery_hints"][0]["code"] == "WRAP_NOT_ARGS"
+@pytest.mark.parametrize("lowering", sorted(LOWERINGS))
+def test_each_lowering_negates_not_and_refuses_two_arguments(config, lowering):
+    # Negation is ``FALSE = (arg)``: NOT's three-valued truth table, parenthesized for chains.
+    lower = LOWERINGS[lowering]
+    negated = lower(BooleanExpr(op="not", args=[ONE_OVER_FIVE]), config)
+    assert render_expr(negated) == "FALSE = (1 > 5)"
+    with pytest.raises(SemanticLayerError) as exc:
+        lower(BooleanExpr(op="not", args=[ONE_OVER_FIVE, ONE_OVER_FIVE]), config)
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
 
 
-def test_parse_still_rejects_empty_args():
-    with pytest.raises(SemanticLayerError) as exc_info:
-        parse_semantic_expression({"kind": "boolean", "op": "and", "args": []}, context="query")
-    assert exc_info.value.code == "INVALID_EXPRESSION_AST"
-
-
-# ---------------------------------------------------------------------------
-# Post-aggregation lowering (compiler_parts/post_aggregation.py)
-# ---------------------------------------------------------------------------
-
-
-def _not_expr(inner: ComparisonExpr | None = None) -> BooleanExpr:
-    inner = inner or ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(2))
-    return BooleanExpr(op="not", args=[inner])
-
-
-def test_compile_post_expr_not_emits_negation(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    compiled = _compile_post_expr(_not_expr(), config)
-    # Negation is composed as ``FALSE = (arg)`` (same three-valued truth
-    # table as ``NOT arg``); the un-negated arg must not leak through.
-    assert isinstance(compiled, SqlBinary)
-    assert compiled.op == "="
-    assert compiled.left == SqlLiteral(False)
-    assert isinstance(compiled.right, SqlBinary)
-    assert compiled.right.op == ">"
-
-
-@pytest.mark.parametrize(
-    ("op", "detail_key", "detail_value"),
-    [
-        pytest.param("not", "received_arg_count", 2, id="not-requires-one-arg"),
-        pytest.param("xor", "allowed", ["and", "or", "not"], id="unsupported-op"),
-    ],
-)
-def test_compile_post_expr_rejects_invalid_boolean(
-    package_config_factory, op, detail_key, detail_value
-):
-    config, _ = package_config_factory("jaffle_shop")
-    expression = BooleanExpr(
-        op=op,
-        args=[
-            ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(2)),
-            ComparisonExpr(op="<", left=LiteralExpr(3), right=LiteralExpr(4)),
-        ],
-    )
-    with pytest.raises(SemanticLayerError) as exc_info:
-        _compile_post_expr(expression, config)
-    err = exc_info.value
-    assert err.code == "INVALID_EXPRESSION_AST"
-    assert err.details[detail_key] == detail_value
-
-
-def test_compile_post_expr_rejects_empty_boolean_args(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    with pytest.raises(SemanticLayerError) as exc_info:
-        _compile_post_expr(BooleanExpr(op="and", args=[]), config)
-    assert exc_info.value.code == "INVALID_EXPRESSION_AST"
-
-
-def test_compile_post_expr_and_fold_unchanged(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    fold = BooleanExpr(
-        op="and",
-        args=[
-            ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(2)),
-            ComparisonExpr(op="<", left=LiteralExpr(3), right=LiteralExpr(4)),
-        ],
-    )
-    compiled = _compile_post_expr(fold, config)
-    assert isinstance(compiled, SqlBinary)
-    assert compiled.op == "AND"
-
-
-def test_metric_filter_not_renders_negated_sql(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    compiled = compile_query(config, Registry(config), _not_query(threshold=10))
-    rendered = compiled["sql"]
-    # The arg must be negated AND parenthesized — chained comparisons
-    # (``x > 10 = FALSE``) are non-associative in Snowflake/Postgres.
-    assert "FALSE = (base.m1 > 10)" in rendered
-
-
-def test_metric_filter_not_uppercase_op_renders_negated_sql(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    query = _not_query(threshold=10)
-    query["metric_filters"][0]["expression"]["op"] = "NOT"
-    compiled = compile_query(config, Registry(config), query)
-    assert "FALSE = (base.m1 > 10)" in compiled["sql"]
-
-
-# ---------------------------------------------------------------------------
-# End-to-end semantics on real DuckDB data
-# ---------------------------------------------------------------------------
+def test_post_aggregation_lowering_folds_and_and_refuses_other_shapes(config):
+    two = [ONE_OVER_FIVE, THREE_UNDER_FOUR]
+    assert _compile_post_expr(BooleanExpr(op="and", args=two), config).op == "AND"
+    for op, args, details in [
+        ("not", two, {"received_arg_count": 2}),
+        ("xor", two, {"allowed": ["and", "or", "not"]}),
+        ("and", [], {}),
+    ]:
+        with pytest.raises(SemanticLayerError) as exc:
+            _compile_post_expr(BooleanExpr(op=op, args=args), config)
+        assert exc.value.code == "INVALID_EXPRESSION_AST"
+        assert details.items() <= exc.value.details.items(), op
 
 
 def test_metric_filter_not_executes_as_complement(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
+    base = {"select": [{"expression": ORDERS, "as": "orders"}], "group_by": [STORE]}
     try:
-        base = {
-            "version": 1,
-            "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-            "group_by": ["dimension.jaffle_store_name"],
-        }
-        unfiltered = runtime.query(base)
-        counts = {row["dimension.jaffle_store_name"]: row["orders"] for row in unfiltered["rows"]}
+        counts = {row[STORE]: row["orders"] for row in runtime.query(base)["rows"]}
         assert len(counts) > 1
         # Split the stores: ``> threshold`` keeps the strictly-larger ones,
         # ``not (> threshold)`` must keep exactly the rest.
         threshold = min(counts.values())
-
-        def _query(negate: bool) -> dict:
-            comparison = _comparison_dict(threshold)
-            expression = (
-                {"kind": "boolean", "op": "not", "args": [comparison]} if negate else comparison
-            )
-            payload = dict(base)
-            payload["metric_filters"] = [{"expression": expression, "op": "=", "value": True}]
-            return payload
-
-        negated = runtime.query(_query(negate=True))
-        positive = runtime.query(_query(negate=False))
-
-        negated_stores = {row["dimension.jaffle_store_name"] for row in negated["rows"]}
-        positive_stores = {row["dimension.jaffle_store_name"] for row in positive["rows"]}
-
-        assert negated_stores == {store for store, c in counts.items() if not c > threshold}
-        assert positive_stores == {store for store, c in counts.items() if c > threshold}
-        assert negated_stores.isdisjoint(positive_stores)
-        assert negated_stores | positive_stores == set(counts)
+        kept = {}
+        for negate in (True, False):
+            expression = _orders_over(threshold, ORDERS)
+            if negate:
+                expression = {"kind": "boolean", "op": "not", "args": [expression]}
+            query = {
+                **base,
+                "select": [*base["select"], {"expression": expression, "as": "kept"}],
+                "having": [{"field": "kept", "op": "is", "value": True}],
+            }
+            kept[negate] = {row[STORE] for row in runtime.query(query)["rows"]}
     finally:
         runtime.close()
 
-
-class TestConfigExprNotLowering:
-    """The same dropped-``not`` fold existed in the pre-aggregation
-    config-expression lowering (``bind._config_expr_to_sql``) and the
-    relation-pipeline expression lowering
-    (``relation_pipelines._semantic_expr_to_sql``)."""
-
-    def test_bind_config_expr_not_is_negated(self, package_config_factory) -> None:
-        from semantic_rails.compiler_parts.bind import _config_expr_to_sql
-        from semantic_rails.renderer import render_expr
-
-        config, _ = package_config_factory("jaffle_shop")
-        measure = config.measures[0]
-        comparison = ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(5))
-        rendered = render_expr(
-            _config_expr_to_sql(BooleanExpr(op="not", args=[comparison]), measure, config)
-        )
-        assert rendered == "FALSE = (1 > 5)"
-
-    def test_bind_config_expr_not_requires_one_arg(self, package_config_factory) -> None:
-        from semantic_rails.compiler_parts.bind import _config_expr_to_sql
-
-        config, _ = package_config_factory("jaffle_shop")
-        measure = config.measures[0]
-        comparison = ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(5))
-        with pytest.raises(SemanticLayerError) as exc:
-            _config_expr_to_sql(
-                BooleanExpr(op="not", args=[comparison, comparison]), measure, config
-            )
-        assert exc.value.code == "INVALID_EXPRESSION_AST"
-
-    def test_relation_pipeline_expr_not_is_negated(self) -> None:
-        from semantic_rails.relation_pipelines import _semantic_expr_to_sql
-        from semantic_rails.renderer import render_expr
-
-        comparison = ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(5))
-        rendered = render_expr(_semantic_expr_to_sql(BooleanExpr(op="not", args=[comparison])))
-        assert rendered == "FALSE = (1 > 5)"
-
-    def test_relation_pipeline_expr_not_requires_one_arg(self) -> None:
-        from semantic_rails.relation_pipelines import _semantic_expr_to_sql
-
-        comparison = ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(5))
-        with pytest.raises(SemanticLayerError) as exc:
-            _semantic_expr_to_sql(BooleanExpr(op="not", args=[comparison, comparison]))
-        assert exc.value.code == "INVALID_EXPRESSION_AST"
+    assert kept[True] == {store for store, count in counts.items() if not count > threshold}
+    assert kept[False] == {store for store, count in counts.items() if count > threshold}

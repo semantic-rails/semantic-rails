@@ -8,10 +8,12 @@ so callers keep importing from there.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..errors import SemanticLayerError
 from ..sql_ast import (
+    SqlAggregateFilter,
     SqlBinary,
     SqlCall,
     SqlCallWithOrder,
@@ -27,6 +29,7 @@ from ..sql_ast import (
     SqlInterval,
     SqlIsNull,
     SqlJoin,
+    SqlLike,
     SqlLiteral,
     SqlNamedArg,
     SqlOrder,
@@ -76,6 +79,8 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             return SqlExists(query=_select(expr.query), negated=expr.negated)
         if isinstance(expr, SqlIsNull):
             return SqlIsNull(expr=_expr(expr.expr))
+        if isinstance(expr, SqlLike):
+            return SqlLike(expr=_expr(expr.expr), pattern=expr.pattern, negated=expr.negated)
         if isinstance(expr, SqlCaseWhen):
             return SqlCaseWhen(condition=_expr(expr.condition), result=_expr(expr.result))
         if isinstance(expr, SqlCase):
@@ -99,11 +104,11 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
                 function=_expr(expr.function), order_by=[_expr(item) for item in expr.order_by]
             )
         if isinstance(expr, SqlCallWithOrder):
-            return SqlCallWithOrder(
-                call=_expr(expr.call),
-                order_by=[_expr(item) for item in expr.order_by],
-                limit=expr.limit,
+            return replace(
+                expr, call=_expr(expr.call), order_by=[_expr(item) for item in expr.order_by]
             )
+        if isinstance(expr, SqlAggregateFilter):
+            return SqlAggregateFilter(call=_expr(expr.call), where=_expr(expr.where))
         if isinstance(expr, SqlIndexAccess):
             return SqlIndexAccess(
                 expr=_expr(expr.expr), index=_expr(expr.index), wrapper=expr.wrapper

@@ -1,17 +1,6 @@
-"""MCP tool descriptions — must be agent guidance, not URL stubs.
+"""MCP tool descriptions are agent guidance: when to call, a gotcha, a bounded length.
 
-Audit finding I4: every tool description used to be a one-liner ending
-in 'Equivalent to POST /api/v1/X.' That's an HTTP-SDK stencil, not
-agent-first guidance. An LLM ranking tools by description had no signal
-about which tool to call first, no input-shape note, no gotcha. The
-workflow itself is stated once, in the server instructions
-(``MCP_SERVER_INSTRUCTIONS``; see test_mcp_instructions.py). This test pins
-three constraints:
-
-  1. Each description says when to use its tool (after/before/first/step).
-  2. Each description names a concrete gotcha or call-shape note.
-  3. Each description is non-trivial in length (>= 200 chars) so it
-     can't silently regress to a one-liner.
+The workflow itself is stated once, in the server instructions (see test_mcp_instructions.py).
 """
 
 from __future__ import annotations
@@ -21,70 +10,33 @@ import copy
 from semantic_rails.mcp import list_tool_definitions
 
 LOOP_KEYWORDS = ("after", "before", "step", "first")
-GOTCHA_KEYWORDS = ("gotcha", "must be", "do not", "don't", "skip", "only after", "cost")
+GOTCHA_KEYWORDS = ("gotcha", "must be", "do not", "don't", "skip", "only after", "cost", "needs no")
 
 
-def test_every_tool_description_says_when_to_use_it():
-    for tool in list_tool_definitions():
-        desc = tool["description"].lower()
-        assert any(kw in desc for kw in LOOP_KEYWORDS), (tool["name"], tool["description"])
+def test_every_tool_description_says_when_and_how_to_call_it():
+    tools = {tool["name"]: tool["description"] for tool in list_tool_definitions()}
+    for name, description in tools.items():
+        lowered = description.lower()
+        assert any(kw in lowered for kw in LOOP_KEYWORDS), (name, description)
+        assert any(kw in lowered for kw in GOTCHA_KEYWORDS), (name, description)
+        # Non-trivial, never only an HTTP-equivalence stub, and still scannable.
+        assert len(description) >= 200, (name, description)
+        assert len(description.split("Equivalent to POST")[0].strip()) >= 150, (name, description)
+        assert len(description) <= (850 if name == "execute" else 700), name
+    # plan teaches the agent to branch on its empty-result blocks.
+    assert "out_of_scope" in tools["plan"] or "low_relevance" in tools["plan"]
+    # The positional item shapes are taught once, on execute.
+    for marker in ("select", "group_by", "where/having [{field, op, value}]", "order_by"):
+        assert marker in tools["execute"], marker
 
 
-def test_every_tool_description_names_a_gotcha_or_call_shape():
+def test_execute_schema_is_the_call_and_empty_select_lists_rows(runtime_factory):
     tools = list_tool_definitions()
-    for tool in tools:
-        desc = tool["description"].lower()
-        assert any(kw in desc for kw in GOTCHA_KEYWORDS), (
-            f"tool {tool['name']!r} description should name a gotcha or "
-            f"call-shape note; got: {tool['description']!r}"
-        )
-
-
-def test_every_tool_description_is_non_trivial():
-    tools = list_tool_definitions()
-    for tool in tools:
-        desc = tool["description"]
-        assert len(desc) >= 200, (
-            f"tool {tool['name']!r} description is too short ({len(desc)} chars); "
-            f"agent-first descriptions need at least a what + when + gotcha. "
-            f"Got: {desc!r}"
-        )
-        # Catch the old URL-stub regression: descriptions that are ONLY
-        # the http equivalence sentence.
-        without_http = desc.split("Equivalent to POST")[0].strip()
-        assert len(without_http) >= 150, (
-            f"tool {tool['name']!r} description is mostly the HTTP-equivalence "
-            f"sentence; add what/when/gotcha. Got: {desc!r}"
-        )
-
-
-def test_every_tool_description_stays_scannable():
-    """Upper bound so descriptions stay scannable in tools/list."""
-    tools = list_tool_definitions()
-    for tool in tools:
-        desc = tool["description"]
-        assert len(desc) <= (850 if tool["name"] == "execute" else 700), (
-            f"tool {tool['name']!r} description is too long ({len(desc)} chars); "
-            f"keep agent-rated descriptions scannable."
-        )
-
-
-def test_plan_description_mentions_out_of_scope_branch():
-    """Fix 1 added 'out_of_scope' / 'low_relevance' blocks. The plan
-    description must teach the agent to branch on them so the LLM doesn't
-    blindly trust ``best`` when both fields are present."""
-    tools = list_tool_definitions()
-    plan = next(t for t in tools if t["name"] == "plan")
-    desc = plan["description"].lower()
-    assert "out_of_scope" in desc or "low_relevance" in desc, (
-        f"plan description should mention the empty-result blocks; got: {plan['description']!r}"
-    )
-
-
-def test_execute_description_shapes_and_empty_select_validate(runtime_factory):
-    tools = list_tool_definitions()
-    execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
-    assert "{aggregation, measure} | {metric}" in execute_desc
+    execute = next(t for t in tools if t["name"] == "execute")
+    execute_desc = execute["description"]
+    # The query schema's kind table lists every inline kind; the description stays short.
+    table = execute["inputSchema"]["$defs"]["Expression"]["description"].split("): ", 1)[1]
+    kinds = [name for row in table.split(";") for name in row.split(":", 1)[0].split("/")]
     for kind in (
         "prior_period",
         "rolling",
@@ -95,13 +47,9 @@ def test_execute_description_shapes_and_empty_select_validate(runtime_factory):
         "between",
         "arithmetic",
     ):
-        assert kind in execute_desc
-    assert "ratio: per-order sum / order count" in execute_desc
-    assert "arithmetic composes expressions" in execute_desc
-    assert "aggregation: avg" in execute_desc
-    assert "{kind: call, name: date_diff, args: [...]}" in execute_desc
-    assert "select may be empty: group_by alone lists rows" in execute_desc
-    assert "a query that already ran needs no validate" in execute_desc
+        assert kind in kinds
+    assert "group_by dimension ids (alone, it lists rows)" in execute_desc
+    assert "'validate' only checks (skip it: run a call directly)" in execute_desc
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
     adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
@@ -143,106 +91,33 @@ def test_no_orphan_explain_tool_references():
 
 
 def test_ir_accepting_tool_descriptions_teach_positional_shapes():
-    """Round-six finding B6: select/group_by/where/order_by use three
-    different key vocabularies (`as`, bare string, `field`). A blind
-    agent had to discover each by validator rejection. The positional
-    teach ships once, on execute.
-    """
+    """select, group_by, where and order_by each have their own item shape; the
+    positional teach ships once, on execute (the schema has the rest)."""
     tools = list_tool_definitions()
     execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
-    for marker in ("select[]", "group_by[]", "where[]", "order_by[]"):
+    for marker in ("select", "group_by", "where/having [{field, op, value}]", "order_by"):
         assert marker in execute_desc, (
             f"execute description must teach the {marker} shape; got {execute_desc!r}"
         )
 
 
-def test_range_last_query_schema_describes_object_shape():
-    """Round-six finding B1: the QUERY_SCHEMA `range.last` used to say
-    `string` and showed `{last: '90 days'}` while the runtime + JSON
-    Schema both demand `{unit, value}`. Pin the corrected schema."""
+def test_last_query_schema_describes_object_shape():
+    """``time.last`` is an object ``{unit, value}``, never a string like '90 days'."""
     from semantic_rails.mcp import QUERY_SCHEMA
 
     time_block = QUERY_SCHEMA["properties"]["time"]
-    range_block = time_block["properties"]["range"]
-    last = range_block["properties"]["last"]
-    assert last["type"] == "object", f"range.last must be declared as object; got {last['type']!r}"
-    assert set(last["required"]) == {"unit", "value"}, (
-        f"range.last must require unit + value; got required={last['required']!r}"
-    )
-    assert "unit" in last["properties"]
-    assert "value" in last["properties"]
-    # Description should also drop the misleading string shorthand.
-    desc = range_block["description"]
-    assert "unit" in desc and "value" in desc, (
-        f"range block description should mention unit + value; got {desc!r}"
-    )
-
-
-def test_expression_shapes_examples_parse(runtime_factory):
-    """Round-six finding B2: `_EXPRESSION_SHAPES["rolling"].example` was
-    `{window: 7, grain: "day"}` — both invalid (window must be dict; grain
-    is not a valid key). Verify every shipped example actually parses
-    through the AST so future shape edits stay self-consistent."""
-    from semantic_rails.expressions import parse_semantic_expression
-    from semantic_rails.metadata_parts.capabilities import _EXPRESSION_SHAPES
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        for shape in _EXPRESSION_SHAPES:
-            # Deep copy: the placeholder swap must not edit the shared shapes.
-            example = copy.deepcopy(shape["example"])
-            # Replace placeholder ids with real ones the parser can resolve
-            # at validate-time. The parser only checks the IR shape; entity
-            # resolution happens later.
-            _replace_placeholder_ids(example)
-            # parse_semantic_expression raises SemanticLayerError on shape
-            # problems — the test passes as long as no exception escapes.
-            parse_semantic_expression(example, context="query")
-    finally:
-        runtime.close()
-
-
-def _replace_placeholder_ids(node):
-    """Walk an example dict and replace `measure.<id>`-style placeholders
-    with concrete jaffle_shop ids that exist. The parser does not check
-    these against the package, but downstream identifiers like
-    `entity.<id>` raise on validation. Keep it light."""
-    placeholders = {
-        "measure.<id>": "measure.jaffle.revenue_usd",
-        "measure.<num>": "measure.jaffle.revenue_usd",
-        "measure.<den>": "measure.jaffle.order_count",
-        "measure.<start>": "measure.jaffle.session_count",
-        "measure.<end>": "measure.jaffle.order_count",
-        "metric.<id>": "metric.sales.aov_usd",
-        "entity.<id>": "entity.jaffle_order",
-    }
-    if isinstance(node, dict):
-        for key, value in list(node.items()):
-            if isinstance(value, str) and value in placeholders:
-                node[key] = placeholders[value]
-            else:
-                _replace_placeholder_ids(value)
-    elif isinstance(node, list):
-        for item in node:
-            _replace_placeholder_ids(item)
+    assert "range" not in time_block["properties"]
+    last = time_block["properties"]["last"]
+    assert last["type"] == "object", f"time.last must be declared as object; got {last!r}"
+    assert set(last["required"]) == {"unit", "value"}
+    assert last["additionalProperties"] is False
 
 
 def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
-    """Round-eight: the slim MCP tool descriptions point agents at
-    ``capabilities.expression_shapes[].example`` as the rescue path
-    for advanced kinds (prior_period, rolling, ...). Parsing the
-    example is necessary but not sufficient — the agent will wrap it
-    in ``{select: [{expression: <example>, as: ...}]}`` and call
-    ``validate``. If validate rejects the wrapped form with a
-    shape-related error, the rescue path is broken.
-
-    Wrap each shape's example, replace placeholder ids with concrete
-    jaffle_shop ids, and assert validate does not return shape errors
-    (errors whose path points INTO ``select`` or whose code names a
-    structural problem with the expression).
-    """
+    """Each shipped expression example, wrapped as a select item with placeholder ids
+    replaced, validates without a shape error: it is the rescue path for advanced kinds."""
     from semantic_rails.mcp import SemanticLayerMCPAdapter
-    from semantic_rails.metadata_parts.capabilities import _EXPRESSION_SHAPES
+    from semantic_rails.query_call import EXPRESSION_SHAPES
 
     # Some shapes need scaffolding beyond a single select expression:
     # - conversion + aggregate_if reference column refs that must bind
@@ -283,7 +158,7 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         failures = []
-        for shape in _EXPRESSION_SHAPES:
+        for shape in EXPRESSION_SHAPES:
             # Deep copy: the placeholder swap must not edit the shared shapes.
             example = copy.deepcopy(shape["example"])
             replace(example)
@@ -331,9 +206,6 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
 
 
 def test_capabilities_payload_ships_expression_shapes(runtime_factory):
-    """Companion structured surface for F4: capabilities exposes the
-    expression shapes as a queryable list of {name, description, example}
-    dicts. Lets agents introspect at runtime without parsing description text."""
     from semantic_rails.metadata_parts.capabilities import capabilities_payload
 
     runtime = runtime_factory("jaffle_shop")
@@ -356,6 +228,6 @@ def test_capabilities_payload_ships_expression_shapes(runtime_factory):
             assert isinstance(shape, dict)
             assert shape.get("name"), f"shape missing name: {shape}"
             assert shape.get("description"), f"shape missing description: {shape}"
-            assert isinstance(shape.get("example"), dict), f"shape missing example dict: {shape}"
+            assert isinstance(shape.get("example"), (dict, str)), f"shape missing example: {shape}"
     finally:
         runtime.close()

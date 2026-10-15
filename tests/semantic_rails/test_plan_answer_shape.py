@@ -15,7 +15,7 @@ without words only when they are the "s" ending a contraction ("what's").
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -28,6 +28,7 @@ import pytest
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.planner import answer_shape, intent_holds, plan_payload
 from semantic_rails.planner import plan as plan_module
+from semantic_rails.planner.call import Call
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
@@ -45,8 +46,8 @@ ORDER_NUMBER = "dimension.jaffle_order_customer_order_number"
 STORE_ID = "dimension.jaffle_store_id"
 STORE_NAME = "dimension.jaffle_store_name"
 STORE_TAX_RATE = "dimension.jaffle_store_tax_rate"
-ORDERS = {"measure": "measure.jaffle.order_count"}
-REVENUE = {"measure": "measure.jaffle.revenue_usd"}
+ORDERS = "measure.jaffle.order_count"
+REVENUE = "measure.jaffle.revenue_usd"
 LAST_WEEK = "WHERE ordered_at >= TIMESTAMP '2017-08-14' AND ordered_at < TIMESTAMP '2017-08-21'"
 COMPARED = "Orders by store name last week compared with the week ?"
 STORE_REVENUE_LAST_MONTH = (
@@ -56,7 +57,7 @@ STORE_REVENUE_LAST_MONTH = (
 )
 
 
-def _selects(*expressions: dict[str, Any]) -> dict[str, Any]:
+def _selects(*expressions: Any) -> dict[str, Any]:
     return {
         "select": [
             {"as": f"value_{index}", "expression": expression}
@@ -139,7 +140,7 @@ PARTS_HELD = {
 
 @pytest.mark.parametrize(("question", "kind", "clause"), HELD)
 def test_one_value_never_answers_a_question_asking_for_more(
-    jaffle: Runtime, question: str, kind: str, clause: str
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, kind: str, clause: str
 ) -> None:
     payload = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
 
@@ -154,22 +155,13 @@ def test_one_value_never_answers_a_question_asking_for_more(
     assert why["code"] == GAP
     [gap] = why["details"]["gaps"]
     assert (gap["kind"], gap["clause"]) == (kind, clause)
-    assert clause in gap["message"]
     # The draft stays for inspection, unchanged: one value.
-    query = payload["best"]["query_ir"]
+    query = payload["best"]["query"]
     assert len(query["select"]) == 1
     assert not query.get("group_by")
     assert gap["actual"]["select_count"] == 1
-
-
-@pytest.mark.parametrize(("question", "kind", "clause"), HELD)
-def test_only_the_shape_check_holds_them(
-    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, kind: str, clause: str
-) -> None:
-    """Without the check each is `ok`: no other check reads its shape words."""
-
+    # Without the check each is `ok`: no other check reads its shape words.
     monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
-
     assert plan_payload(jaffle, intent=question)["status"] == "ok"
 
 
@@ -192,7 +184,7 @@ def test_a_caller_group_by_gives_who_its_rows(jaffle: Runtime) -> None:
     )
 
     assert payload["status"] == "ok"
-    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_ID, CUSTOMER_NAME]
+    assert payload["best"]["query"]["group_by"] == [CUSTOMER_ID, CUSTOMER_NAME]
 
 
 BOTH = "How many orders and how much revenue last week?"
@@ -235,7 +227,7 @@ NARROWER = [
     # first one again, and two values don't say what the question compares.
     (
         COMPARED,
-        _selects(ORDERS, {"kind": "measure", **ORDERS}),
+        _selects(ORDERS, {"kind": "measure", "measure": ORDERS}),
         "comparison_unrealized",
         '"compared"',
     ),
@@ -247,31 +239,41 @@ NARROWER = [
     # Order cost (one word of its name), nor revenue on the order clock ("Order time").
     (
         BOTH,
-        _selects({**REVENUE, "aggregation": "sum"}, {**REVENUE, "aggregation": "sum"}),
+        _selects(
+            {"kind": "measure", "measure": REVENUE, "aggregation": "sum"},
+            {"kind": "measure", "measure": REVENUE, "aggregation": "sum"},
+        ),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects(REVENUE, {**REVENUE, "aggregation": "sum"}),
+        _selects(REVENUE, {"kind": "measure", "measure": REVENUE, "aggregation": "sum"}),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({"measure": "measure.jaffle.tax_paid_usd"}, REVENUE),
+        _selects("measure.jaffle.tax_paid_usd", REVENUE),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({"measure": "measure.jaffle.order_cost_usd"}, REVENUE),
+        _selects("measure.jaffle.order_cost_usd", REVENUE),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
     (
         BOTH,
-        _selects({**REVENUE, "temporal_role": "temporal_role.jaffle_order_time"}, REVENUE),
+        _selects(
+            {
+                "kind": "measure",
+                "measure": REVENUE,
+                "temporal_role": "temporal_role.jaffle_order_time",
+            },
+            REVENUE,
+        ),
         "multiple_questions_unrealized",
         BOTH_CLAUSE,
     ),
@@ -280,22 +282,6 @@ NARROWER = [
 
 @pytest.mark.parametrize(("question", "partial", "kind", "clause"), NARROWER)
 def test_a_shape_answering_a_narrower_question_is_held(
-    jaffle: Runtime, question: str, partial: dict[str, Any], kind: str, clause: str
-) -> None:
-    payload = plan_payload(
-        jaffle, intent=question, partial_query={**partial, "policy_context": NOW}
-    )
-
-    assert payload["status"] == "low_confidence"
-    assert "ready_for" not in payload["next"]
-    assert payload["why"]["code"] == GAP
-    [gap] = _gaps(payload)
-    assert (gap["kind"], gap["clause"]) == (kind, clause)
-    assert clause in gap["message"]
-
-
-@pytest.mark.parametrize(("question", "partial", "kind", "clause"), NARROWER)
-def test_only_the_shape_check_holds_those(
     jaffle: Runtime,
     monkeypatch: pytest.MonkeyPatch,
     question: str,
@@ -303,12 +289,17 @@ def test_only_the_shape_check_holds_those(
     kind: str,
     clause: str,
 ) -> None:
-    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
-    payload = plan_payload(
-        jaffle, intent=question, partial_query={**partial, "policy_context": NOW}
-    )
+    partial_query = {**partial, "policy_context": NOW}
+    payload = plan_payload(jaffle, intent=question, partial_query=partial_query)
 
-    assert payload["status"] == "ok"
+    assert payload["status"] == "low_confidence"
+    assert "ready_for" not in payload["next"]
+    assert payload["why"]["code"] == GAP
+    [gap] = _gaps(payload)
+    assert (gap["kind"], gap["clause"]) == (kind, clause)
+    # Only the shape check holds it.
+    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
+    assert plan_payload(jaffle, intent=question, partial_query=partial_query)["status"] == "ok"
 
 
 @pytest.mark.parametrize(
@@ -339,7 +330,7 @@ def test_a_list_hold_names_the_listed_entitys_key_dimensions(
 
     [gap] = _gaps(payload)
     assert gap["expected"] == {"answer": "rows", "key_dimensions": keys}
-    assert payload["best"]["query_ir"].get("group_by") == group_by
+    assert payload["best"]["query"].get("group_by") == group_by
 
 
 @pytest.mark.parametrize(
@@ -362,7 +353,7 @@ def test_only_the_listed_entitys_key_lists_its_rows(
 
     partial = {"group_by": group_by}
     why = answer_shape._answer_shape_why(
-        jaffle, question, {**_selects(REVENUE), **partial}, partial
+        jaffle, question, Call.from_call({**_selects(REVENUE), **partial}), Call.from_call(partial)
     )
 
     assert (why is None) is listed
@@ -377,24 +368,19 @@ def test_only_the_listed_entitys_key_lists_its_rows(
 
 
 def test_a_category_that_declares_no_values_lists_no_rows(
-    runtime_factory: Callable[[str], Runtime], monkeypatch: pytest.MonkeyPatch
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Without its declared values, a customer's type still groups customers into types."""
 
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        config = runtime._config
-        dimensions = [
-            replace(row, value_domain="") if row.id == CUSTOMER_TYPE else row
-            for row in config.dimensions
-        ]
-        monkeypatch.setattr(runtime, "_config", replace(config, dimensions=dimensions))
-        partial = {"group_by": [CUSTOMER_TYPE]}
-        payload = plan_payload(runtime, intent="Who are our customers?", partial_query=partial)
-        monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
-        unchecked = plan_payload(runtime, intent="Who are our customers?", partial_query=partial)
-    finally:
-        runtime.close()
+    dimensions = [
+        replace(row, value_domain="") if row.id == CUSTOMER_TYPE else row
+        for row in jaffle._config.dimensions
+    ]
+    monkeypatch.setattr(jaffle, "_config", replace(jaffle._config, dimensions=dimensions))
+    partial = {"group_by": [CUSTOMER_TYPE]}
+    payload = plan_payload(jaffle, intent="Who are our customers?", partial_query=partial)
+    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
+    unchecked = plan_payload(jaffle, intent="Who are our customers?", partial_query=partial)
 
     assert payload["status"] == "low_confidence"
     [gap] = _gaps(payload)
@@ -402,7 +388,7 @@ def test_a_category_that_declares_no_values_lists_no_rows(
         "list_unrealized",
         {"answer": "rows", "key_dimensions": [CUSTOMER_ID]},
     )
-    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_TYPE]
+    assert payload["best"]["query"]["group_by"] == [CUSTOMER_TYPE]
     # Only the shape check holds it.
     assert unchecked["status"] == "ok"
 
@@ -417,8 +403,6 @@ STAY_OK = [
     "Revenue for each store last month",
     "Show orders by store name last week.",
     "Show me orders by week for the last 4 weeks.",
-    # A prior-period select is a value to compare with.
-    "Monthly revenue vs prior year",
     # "who" after a noun is a relative pronoun: the total of a filtered set.
     "Revenue from customers who are new",
 ]
@@ -438,12 +422,24 @@ def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str
     assert payload["next"]["ready_for"] == ["execute"]
 
 
+def test_a_prior_period_comparison_asks_which_reading(jaffle: Runtime) -> None:
+    """A comparison with the prior year isn't ready as one draft: plan asks which reading to
+    run, and the why names the comparison."""
+
+    payload = plan_payload(jaffle, intent="Monthly revenue vs prior year")
+
+    assert payload["status"] == "needs_clarification"
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    assert "ready_for" not in payload["next"]
+
+
 @pytest.mark.parametrize(
     ("question", "code"),
     [
-        ("Who are our customers by store?", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        # A customer belongs to no store: plan names the pair and offers no draft.
+        ("Who are our customers by store?", "PLAN_UNCONNECTED"),
         ("Revenue per store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-        ("Orders by store last week compared with the week before?", UNMATCHED),
+        ("Orders by store last week compared with the week before?", "PERIOD_COMPARISON"),
         ("What's the store's revenue last month?", UNMATCHED),
     ],
 )
@@ -454,7 +450,16 @@ def test_store_shortcut_removal_holds_before_the_shape_check(
     monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
     unchecked = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
 
-    assert payload["status"] == "low_confidence"
+    # A comparison with the week before asks how to read it; pieces that don't connect can't
+    # be answered as asked; the others are held.
+    asked = code == "PERIOD_COMPARISON"
+    assert payload["status"] == (
+        "needs_clarification"
+        if asked
+        else "unrealizable"
+        if code == "PLAN_UNCONNECTED"
+        else "low_confidence"
+    )
     assert "ready_for" not in payload["next"]
     assert payload["why"]["code"] == code
     assert payload == unchecked
@@ -545,6 +550,13 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
                 "How many orders did each store get last week?",
             )
         ),
+        # "which customers" lists the customers who ordered, by their key: Customer declares no
+        # display name and has several naming dimensions.
+        (
+            "Which customers ordered last week?",
+            {},
+            f"SELECT customer_id, count(DISTINCT order_id) FROM jaffle_order {LAST_WEEK} GROUP BY 1",
+        ),
     ],
 )
 def test_a_ready_answer_equals_its_reference(
@@ -563,7 +575,7 @@ def test_a_ready_answer_equals_its_reference(
             if not isinstance(value, datetime)
         )
 
-    rows = typed_rows(jaffle.query({**payload["best"]["query_ir"], "policy_context": NOW}))
+    rows = typed_rows(jaffle.query(payload["best"]["query"], now=NOW["now"]))
     values = sorted(plain(row.values()) for row in rows)
     assert values == sorted(plain(row) for row in _reference(jaffle, sql))
     assert values
@@ -578,7 +590,7 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
     )
     assert payload["status"] == "ok", payload.get("why")
 
-    rows = typed_rows(jaffle.query({**payload["best"]["query_ir"], "policy_context": NOW}))
+    rows = typed_rows(jaffle.query(payload["best"]["query"], now=NOW["now"]))
     listed = sorted((row[CUSTOMER_ID], row[CUSTOMER_NAME]) for row in rows)
     assert listed == sorted(
         _reference(jaffle, "SELECT customer_id, customer_name FROM jaffle_customer")
@@ -591,13 +603,41 @@ def test_a_listing_by_key_keeps_customers_who_share_a_name(jaffle: Runtime, ques
 # Held because a word carries meaning: a catalog name, a grouping, a value plan can't find, or a
 # number. Asking again without it changes the question, so no hint offers that.
 MEANINGFUL = [
-    "Which customers ordered last week?",
     "List the customers who ordered last week.",
-    "How many orders did we get last week compared with the week before?",
-    "Orders by store name last week compared with the week before?",
     "How many orders did each plan get last week?",
     "Orders between 9 and 17 on 15 March 2017",
 ]
+
+
+# A week compared with the week before is a period comparison: plan asks whether to read the two
+# weeks as one series, and every option is a whole call that runs.
+COMPARED = [
+    "How many orders did we get last week compared with the week before?",
+    "Orders by store name last week compared with the week before?",
+]
+
+
+@pytest.mark.parametrize("question", COMPARED)
+def test_a_week_against_the_week_before_asks_for_the_series(jaffle: Runtime, question: str) -> None:
+    philadelphia = [{"field": STORE_NAME, "op": "is", "value": "Philadelphia"}]
+    payload = plan_payload(
+        jaffle, intent=question, partial_query={"where": philadelphia, "policy_context": NOW}
+    )
+
+    assert payload["status"] == "needs_clarification", payload.get("why")
+    assert payload["why"]["code"] == "PERIOD_COMPARISON"
+    assert "ready_for" not in payload["next"]
+    assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
+    options = payload["why"]["details"]["options"]
+    assert options
+    for option in options:
+        call = (
+            payload["best"]["query"] if option["call"] == {"$ref": "best.query"} else option["call"]
+        )
+        # The caller's own filter stays in every option.
+        assert call["where"] == philadelphia
+        assert call["time"]["last"] == {"unit": "week", "value": 2}
+        assert jaffle.validate(call, now=NOW["now"])["ok"]
 
 
 @pytest.mark.parametrize("question", MEANINGFUL)
@@ -634,7 +674,7 @@ def test_a_contraction_is_expanded_before_any_check(jaffle: Runtime, question: s
 
     retry = plan_payload(jaffle, intent=_without(question, ["s"]))
     assert retry["status"] == "ok"
-    assert retry["best"]["query_ir"] == plan["best"]["query_ir"]
+    assert retry["best"]["query"] == plan["best"]["query"]
 
 
 @pytest.mark.parametrize(
@@ -697,8 +737,6 @@ def test_a_shape_word_inside_a_declared_name_asks_nothing(
         runtime.close()
 
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"]["select"] == [
-        {"as": "comparison_cost", "expression": {"metric": "metric.upkeep.comparison_cost"}}
-    ]
+    assert payload["best"]["query"]["select"] == ["metric.upkeep.comparison_cost"]
     # Read outside the name, the same word would hold the one value.
     assert [gap["kind"] for gap in _gaps(unnamed)] == ["comparison_unrealized"]

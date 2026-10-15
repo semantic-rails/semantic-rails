@@ -12,9 +12,11 @@ dialect-portable and inspectable.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
+from . import operators
 from .errors import SemanticLayerError
 from .sql_preparation import ParameterSlot
 
@@ -84,9 +86,14 @@ SQL_FUNCTION_NAMES = frozenset(
         "ARRAY_AGG",
         # Implicit-calendar day series (dialects.SqlDialect.day_series):
         # Snowflake, BigQuery, Trino/Athena and Databricks spellings. Engine-only:
-        # expressions.accepted_call_names keeps them out of `call` expressions.
+        # the dialects' call_names keep them out of `call` expressions.
         "ARRAY_GENERATE_RANGE",
         "AVG",
+        # A boolean group's lowest and highest value (dialects.SqlDialect.boolean_bounds).
+        "BOOL_AND",
+        "BOOL_OR",
+        "BOOLAND_AGG",
+        "BOOLOR_AGG",
         "CEIL",
         "CEILING",
         "COALESCE",
@@ -129,6 +136,8 @@ SQL_FUNCTION_NAMES = frozenset(
         "LENGTH",
         "LN",
         "LOG",
+        "LOGICAL_AND",
+        "LOGICAL_OR",
         "LOWER",
         "MAX",
         "MAX_BY",
@@ -137,7 +146,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "MIN_BY",
         # The current time and a value's physical type, for base time coverage on DuckDB
         # and Postgres (dialects.SqlDialect.now and utc_timestamp). Engine-only:
-        # expressions.accepted_call_names keeps them out of `call` expressions.
+        # the dialects' call_names keep them out of `call` expressions.
         "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.
@@ -296,6 +305,9 @@ class SqlIdentifier:
 @dataclass(frozen=True)
 class SqlLiteral:
     value: Any
+    # Date or timestamp text compared with a clock or date column, which a warehouse whose
+    # comparisons don't coerce text spells with its type (``SqlDialect.temporal_literal``).
+    temporal: bool = False
 
 
 @dataclass(frozen=True)
@@ -303,11 +315,6 @@ class SqlParameter:
     """A positional ``?`` that the runtime binds per request; never a value."""
 
     slot: ParameterSlot
-
-
-@dataclass(frozen=True)
-class SqlStar:
-    qualifier: str = ""
 
 
 @dataclass(frozen=True)
@@ -328,8 +335,16 @@ class SqlBinary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "op", normalize_sql_binary_operator(self.op))
-        if self.op in {"IS", "IS NOT"} and isinstance(self.right, SqlLiteral):
-            validate_single_value_filter_shape(self.op, self.right.value, path="expression")
+        if (
+            self.op in {"IS", "IS NOT"}
+            and isinstance(self.right, SqlLiteral)
+            and not (self.right.value is None or isinstance(self.right.value, bool))
+        ):
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"expression: op '{self.op}' accepts only NULL, TRUE or FALSE",
+                details={"path": "expression", "op": self.op},
+            )
         if self.op in _NULL_LITERAL_GUARDED_OPS and (
             is_null_literal(self.left) or is_null_literal(self.right)
         ):
@@ -337,6 +352,16 @@ class SqlBinary:
                 "INVALID_EXPRESSION_AST",
                 "Comparisons with a null literal must use build_comparison_condition",
             )
+
+
+@dataclass(frozen=True)
+class SqlLike:
+    """``fold(expr) [NOT] LIKE fold(pattern)``, both sides folded by the dialect's one lowercase
+    function; ``\\`` escapes ``%``, ``_`` and itself in ``pattern``."""
+
+    expr: SqlExpr
+    pattern: str
+    negated: bool = False
 
 
 @dataclass(frozen=True)
@@ -373,6 +398,14 @@ class SqlInterval:
 class SqlExists:
     query: SqlSelect
     negated: bool = False
+
+
+@dataclass(frozen=True)
+class SqlInQuery:
+    """``expr IN (SELECT …)``: an uncorrelated subquery returning one column."""
+
+    expr: SqlExpr
+    query: SqlSelect
 
 
 @dataclass(frozen=True)
@@ -430,22 +463,31 @@ class SqlWithinGroup:
 @dataclass(frozen=True)
 class SqlCallWithOrder:
     """Aggregate call with function-internal ORDER BY (and optional LIMIT):
-    ``name(args ORDER BY … [LIMIT n])``. Used by dialects without
+    ``name(args [IGNORE NULLS] ORDER BY … [LIMIT n])``. Used by dialects without
     MIN_BY/ARG_MIN — Postgres ``array_agg(x ORDER BY y)``, BigQuery
-    ``ARRAY_AGG(x ORDER BY y LIMIT 1)``."""
+    ``ARRAY_AGG(x IGNORE NULLS ORDER BY y LIMIT 1)``."""
 
     call: SqlCall
     order_by: list[SqlOrderTerm] = field(default_factory=list)
     limit: int | None = None
+    ignore_nulls: bool = False
 
 
-_INDEX_WRAPPERS = frozenset({"", "OFFSET", "ORDINAL"})
+@dataclass(frozen=True)
+class SqlAggregateFilter:
+    """``call FILTER (WHERE where)``: an aggregate that reads only the rows ``where`` keeps."""
+
+    call: SqlExpr
+    where: SqlExpr
+
+
+_INDEX_WRAPPERS = frozenset({"", "OFFSET", "ORDINAL", "SAFE_OFFSET"})
 
 
 @dataclass(frozen=True)
 class SqlIndexAccess:
-    """Array subscript: ``expr[index]``, or BigQuery's
-    ``expr[OFFSET(index)]`` / ``expr[ORDINAL(index)]``."""
+    """Array subscript: ``expr[index]``, or BigQuery's ``expr[OFFSET(index)]`` /
+    ``expr[ORDINAL(index)]`` / ``expr[SAFE_OFFSET(index)]`` (NULL out of bounds)."""
 
     expr: SqlExpr
     index: SqlExpr
@@ -488,19 +530,21 @@ SqlExpr = (
     SqlIdentifier
     | SqlLiteral
     | SqlParameter
-    | SqlStar
     | SqlCall
     | SqlBinary
+    | SqlLike
     | SqlIn
     | SqlDatePart
     | SqlInterval
     | SqlExists
+    | SqlInQuery
     | SqlIsNull
     | SqlCase
     | SqlCast
     | SqlWindow
     | SqlWithinGroup
     | SqlCallWithOrder
+    | SqlAggregateFilter
     | SqlIndexAccess
     | SqlParameterizedCall
     | SqlJsonExtract
@@ -602,105 +646,54 @@ _NULL_LITERAL_GUARDED_OPS = (
 
 
 def filter_rejects_null(op: Any, value: Any) -> bool:
-    """Classify NULL-excluding filter forms using the lowering's operator classes."""
-    op_normalized = _compact_token(str(op or "=")).upper()
-    if op_normalized in {"IS NOT NULL", "IN", "NOT IN"}:
-        return True
+    """Whether a filter drops the rows whose value is unknown."""
     try:
-        op_normalized = normalize_sql_binary_operator(op_normalized)
+        word, value = operators.normalize_condition(op, value, path="where", internal=True)
     except SemanticLayerError:
         return False
-    if value is None:
-        return op_normalized in _NULL_TEST_INEQUALITY_OPS
-    return op_normalized in _NULL_LITERAL_GUARDED_OPS
+    return operators.rejects_unknown(word, value)
 
 
-def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "where") -> SqlExpr:
-    """Build the SQL condition for a ``{field, op, value}``-style filter.
+def build_filter_condition(
+    expr: SqlExpr, op: Any, value: Any, *, path: str = "where", temporal: bool = False
+) -> SqlExpr:
+    """The SQL condition for a ``{field, op, value}`` filter, read from the operator table.
 
-    The single home for the op/value → condition mapping used by every
-    filter lowering site (query ``where[]``, measure-bound filters,
-    metric_filter envelopes, predicate sources). Centralizing it keeps
-    NULL semantics consistent everywhere:
-
-    - ``IN`` / ``NOT IN`` take a list of scalars; a bare scalar is
-      treated as a one-element list (never character-split); an empty
-      list compiles to constant FALSE / TRUE (vacuous membership)
-      instead of erroring.
-    - ``IS NULL`` / ``IS NOT NULL`` ignore ``value`` entirely.
-    - ``IS`` / ``IS NOT`` accept only null or boolean values.
-    - ``value: null`` with any other op follows
-      :func:`build_comparison_condition`, like every comparison with a
-      null literal.
+    The single home for the op/value → condition mapping used by every filter lowering
+    site. ``not`` keeps rows whose value is unknown: ``(x <> v OR x IS NULL)``, the
+    portable form on every dialect. The text words are case-insensitive literal matches, and
+    their ``not_`` forms keep unknown rows the same way.
+    ``temporal`` says the field is a date or timestamp, so its text values are temporal
+    literals.
     """
-    op_normalized = _compact_token(str(op or "=")).upper()
-    if op_normalized in {"IN", "NOT IN"}:
-        negated = op_normalized == "NOT IN"
-        if value is None:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                f"{path}: op '{op_normalized}' requires a list value, got null",
-                details={
-                    "path": path,
-                    "op": op_normalized,
-                    "received_value": None,
-                    "recovery_hints": [
-                        {
-                            "code": "USE_LIST_VALUE_OR_NULL_TEST",
-                            "message": (
-                                f"'{op_normalized}' compares against a list of scalar "
-                                "values — pass value: [..]. To test for NULL, use "
-                                "op 'IS NULL' / 'IS NOT NULL' instead."
-                            ),
-                        }
-                    ],
-                },
-            )
-        values = list(value) if isinstance(value, (list, tuple)) else [value]
+
+    def literal(item: Any) -> SqlLiteral:
+        return SqlLiteral(item, temporal=temporal and isinstance(item, str))
+
+    word, value = operators.normalize_condition(op, value, path=path, internal=True)
+    if word == "missing":
+        return SqlIsNull(expr=expr) if value else SqlBinary(expr, "IS NOT", SqlLiteral(None))
+    if word in {"is", "not"}:
+        values = operators.values_of(word, value)
         if not values:
-            # `x IN ()` is invalid SQL; an empty membership list is
-            # vacuously false (and NOT IN vacuously true). Compile to a
-            # constant so the query stays runnable.
-            return SqlLiteral(bool(negated))
-        return SqlIn(expr=expr, values=[SqlLiteral(item) for item in values], negated=negated)
-    if op_normalized == "IS NULL":
-        return build_comparison_condition(expr, "IS", SqlLiteral(None), path=path)
-    if op_normalized == "IS NOT NULL":
-        return build_comparison_condition(expr, "IS NOT", SqlLiteral(None), path=path)
-    validate_single_value_filter_shape(op, value, path=path)
-    try:
-        return build_comparison_condition(expr, str(op or "="), SqlLiteral(value), path=path)
-    except SemanticLayerError as exc:
-        if (
-            not path.startswith("where")
-            or exc.code != "INVALID_EXPRESSION_AST"
-            or exc.details.get("token_kind") != "operator"
-        ):
-            raise
-        raise SemanticLayerError(
-            exc.code,
-            f"Unsupported filter operator: {op!r}",
-            details={
-                **exc.details,
-                "path": path,
-                "expression_position": "where",
-                "op": str(op),
-                "allowed": [
-                    "=",
-                    "!=",
-                    "<",
-                    "<=",
-                    ">",
-                    ">=",
-                    "IN",
-                    "NOT IN",
-                    "LIKE",
-                    "NOT LIKE",
-                    "IS NULL",
-                    "IS NOT NULL",
-                ],
-            },
-        ) from None
+            # Membership in no values: vacuously false (is) or true (not).
+            return SqlLiteral(word == "not")
+        literals: list[SqlExpr] = [literal(item) for item in values]
+        if word == "is":
+            return (
+                SqlBinary(expr, "=", literals[0]) if len(literals) == 1 else SqlIn(expr, literals)
+            )
+        differs = (
+            SqlBinary(expr, "<>", literals[0])
+            if len(literals) == 1
+            else SqlIn(expr, literals, negated=True)
+        )
+        return SqlBinary(differs, "OR", SqlIsNull(expr=expr))
+    if word in operators.RANGE_WORDS:
+        return SqlBinary(expr, operators.COMPARISON_SQL[word], literal(value))
+    negated = word in operators.NEGATED_WORDS
+    like = SqlLike(expr, operators.like_pattern(word, str(value)), negated)
+    return SqlBinary(like, "OR", SqlIsNull(expr=expr)) if negated else like
 
 
 def is_null_literal(expr: object) -> bool:
@@ -710,7 +703,15 @@ def is_null_literal(expr: object) -> bool:
 def build_comparison_condition(
     left: SqlExpr, op: str, right: SqlExpr, *, path: str = "expression"
 ) -> SqlExpr:
-    """``left <op> right``, where a null literal on either side follows the op's class."""
+    """``left <op> right``, where a null literal on either side follows the op's class. A text
+    word reads a dimension's column (``bind``), never an aggregate or a raw expression."""
+    word = operators.word_of(op)
+    if word in operators.TEXT_WORDS:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"{path}: '{word}' compares a dimension's column with a text literal",
+            details={"path": path, "op": word},
+        )
     op_normalized = normalize_sql_binary_operator(op)
     if not (is_null_literal(left) or is_null_literal(right)):
         return SqlBinary(left, op_normalized, right)
@@ -735,8 +736,9 @@ def build_comparison_condition(
                     {
                         "code": "USE_NULL_TEST_OR_SCALAR",
                         "message": (
-                            "To test for NULL use op 'IS NULL' / 'IS NOT NULL'; "
-                            f"otherwise pass a non-null scalar value for '{op_normalized}'."
+                            "To test for no value, compare with = or != against null (a where "
+                            "filter says op 'missing'); otherwise pass a non-null scalar value "
+                            f"for '{op_normalized}'."
                         ),
                     }
                 ],
@@ -757,50 +759,12 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
     return SqlBinary(SqlLiteral(False), "=", arg)
 
 
-def validate_single_value_filter_shape(op: Any, value: Any, *, path: str = "where") -> None:
-    """Check scalar operands before dimension type checks and SQL construction."""
-    op_normalized = _compact_token(str(op or "=")).upper()
-    if op_normalized in {"IS", "IS NOT"} and value is not None and not isinstance(value, bool):
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"{path}: op '{op_normalized}' accepts only NULL, TRUE or FALSE",
-            details={
-                "path": path,
-                "op": op_normalized,
-                "recovery_hints": [
-                    {
-                        "code": "USE_EQUALITY_FOR_SCALAR",
-                        "message": (
-                            "Use '=' / '!=' to compare other values; "
-                            "'IS' / 'IS NOT' accept only NULL, TRUE or FALSE."
-                        ),
-                    }
-                ],
-            },
-        )
-    if op_normalized in {"IN", "NOT IN", "IS NULL", "IS NOT NULL"} or not isinstance(
-        value, (list, tuple)
-    ):
-        return
-    raise SemanticLayerError(
-        "INVALID_QUERY",
-        f"{path}: op '{op_normalized}' compares against one value, got a list",
-        details={
-            "path": path,
-            "op": op_normalized,
-            "received_value": list(value),
-            "why_invalid": (
-                f"'<expr> {op_normalized} <list>' would compare against the list as one "
-                "string and silently match no rows."
-            ),
-            "recovery_hints": [
-                {
-                    "code": "USE_IN_FOR_LIST_VALUE",
-                    "message": (
-                        "To match any of several values use op 'IN' (or 'NOT IN' to "
-                        f"exclude them); otherwise pass a single value for '{op_normalized}'."
-                    ),
-                }
-            ],
-        },
-    )
+def sql_nodes(node: Any) -> Iterator[Any]:
+    """Every node of a SQL AST, found generically so no node type can hide a read."""
+    if isinstance(node, list | tuple):
+        for item in node:
+            yield from sql_nodes(item)
+    elif is_dataclass(node) and not isinstance(node, type):
+        yield node
+        for item in fields(node):
+            yield from sql_nodes(getattr(node, item.name))

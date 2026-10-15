@@ -23,6 +23,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.dialects import _WAREHOUSE_CONNECTORS
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_config_expression
+from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
@@ -47,8 +48,8 @@ PRODUCT = "dimension.obs_sale_product"
 SNAPSHOT_STORE = "dimension.obs_snapshot_store_id"
 SOLD = "temporal_role.obs_sale_sold_at"
 AS_OF = "temporal_role.obs_snapshot_as_of"
-QTY = {"measure": "measure.obs.qty"}
-SALES = {"measure": "measure.obs.sale_count"}
+QTY = "measure.obs.qty"
+SALES = "measure.obs.sale_count"
 QTY_METRIC = "metric.obs.qty"
 REGIONAL = RequestContext(actor="end-user", audience="regional", attributes={"region": "east"})
 
@@ -120,13 +121,20 @@ def _gold(sql: str) -> list[tuple[Any, ...]]:
         return connection.execute(sql).fetchall()
 
 
-def _ask(runtime: Runtime, scope: str | None, **query: Any) -> dict[str, Any]:
-    payload = {"version": 1, **query, **({"observation_scope": scope} if scope else {})}
-    return runtime.query(payload)
+def _ask(
+    runtime: Runtime, scope: str | None, *, context: Any = None, **query: Any
+) -> dict[str, Any]:
+    options = {key: query.pop(key) for key in ("verbosity", "limits", "request_id") if key in query}
+    payload = {**query, **({"observation_scope": scope} if scope else {})}
+    return runtime.query(payload, context=context, **options)
+
+
+def _compile(config: Any, query: dict[str, Any]) -> dict[str, Any]:
+    return compile_query(config, Registry(config), read_call(query, config=config)[0])
 
 
 def _codes(response: dict[str, Any]) -> list[str]:
-    return [item["code"] for item in response["warnings"]]
+    return [item["code"] for item in response.get("warnings", [])]
 
 
 def _where(field: str, value: Any, op: str = "=") -> list[dict[str, Any]]:
@@ -173,13 +181,16 @@ def test_apples_whose_quantity_is_unknown_stay_unknown(runtime: Runtime, scope: 
     assert ("NO_DATA_IN_SCOPE" in _codes(quantity)) is (scope == "query")
 
 
-@pytest.mark.parametrize("warehouse", sorted(_WAREHOUSE_CONNECTORS))
+# One warehouse per dialect family: DuckLake and MotherDuck render as DuckDB does.
+@pytest.mark.parametrize(
+    "warehouse", sorted(set(_WAREHOUSE_CONNECTORS) - {"ducklake", "motherduck"})
+)
 def test_every_warehouse_probes_with_plain_ctes(package: Path, warehouse: str) -> None:
     """The probe is a first-row CTE counted and cross-joined, which every warehouse runs."""
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    query = {"version": 1, "select": _select(qty=QTY), "where": APPLES_AT_S5}
-    sql = compile_query(config, Registry(config), query)["sql"]
+    query = {"select": _select(qty=QTY), "where": APPLES_AT_S5}
+    sql = _compile(config, query)["sql"]
     assert "observed_1_rows AS" in sql and "LIMIT 1" in sql and "CROSS JOIN observed_1" in sql
     assert "EXISTS" not in sql
 
@@ -190,8 +201,8 @@ def test_the_invariant_detects_each_lost_authored_condition(
 ) -> None:
     config = load_package_config(str(package))
     regional_apples = {
-        **QTY,
         "kind": "aggregate",
+        "measure": QTY,
         "filter": {
             "all": [
                 *_where(PRODUCT, "apple"),
@@ -199,14 +210,8 @@ def test_the_invariant_detects_each_lost_authored_condition(
             ]
         },
     }
-    compiled = compile_query(
-        config,
-        Registry(config),
-        {
-            "version": 1,
-            "select": _select(qty=regional_apples),
-            "where": _where(STORE, "s5"),
-        },
+    compiled = _compile(
+        config, {"select": _select(qty=regional_apples), "where": _where(STORE, "s5")}
     )
     assert_settled_in_one_place(compiled, config)
     probe = next(cte.query for cte in compiled["sql_ast"].ctes if cte.name == "observed_1_rows")
@@ -224,7 +229,9 @@ def test_a_misspelled_filter_value(runtime: Runtime, scope: str) -> None:
         sql = DATASET_QTY.format(where=where)
     response = _ask(runtime, scope, select=_select(qty=QTY), where=_where(PRODUCT, "appel"))
     assert [tuple(row.values()) for row in response["rows"]] == _gold(sql)
-    typos = [item for item in response["warnings"] if item["code"] == "FILTER_VALUE_NOT_FOUND"]
+    typos = [
+        item for item in response.get("warnings", []) if item["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
     if scope == "query":
         assert typos == [] and "NO_DATA_IN_SCOPE" in _codes(response)
         return
@@ -236,6 +243,21 @@ def test_a_misspelled_filter_value(runtime: Runtime, scope: str) -> None:
     assert "'appel'" in typo["message"] and "did you mean 'apple'?" in typo["message"]
 
 
+def test_a_misspelled_value_in_a_not_is_named(runtime: Runtime) -> None:
+    """'not appel' leaves out nothing, so the answer names the value that matched no row."""
+    response = _ask(
+        runtime, "dataset", select=_select(qty=QTY), where=_where(PRODUCT, "appel", "not")
+    )
+    sql = "SELECT SUM(qty) FROM sales WHERE product <> 'appel' OR product IS NULL"
+    assert [tuple(row.values()) for row in response["rows"]] == _gold(sql)
+    (typo,) = [
+        item for item in response.get("warnings", []) if item["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
+    assert typo["details"]["filters"] == [
+        {"dimension": PRODUCT, "value": "appel", "suggestion": "apple"}
+    ]
+
+
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
 def test_a_granted_metric_keeps_the_unverified_filter_warning(
     runtime: Runtime, verbosity: str
@@ -244,9 +266,9 @@ def test_a_granted_metric_keeps_the_unverified_filter_warning(
     response = _ask(
         runtime,
         None,
-        select=_select(qty={"metric": QTY_METRIC}),
+        select=_select(qty=QTY_METRIC),
         where=_where(PRODUCT, "appel"),
-        policy_context=context.to_policy_context(),
+        context=context,
         verbosity=verbosity,
     )
     assert response["ok"]
@@ -257,7 +279,7 @@ def test_a_granted_metric_keeps_the_unverified_filter_warning(
         == _gold(DATASET_QTY.format(where="product = 'appel'"))
         == [(0,)]
     )
-    (warning,) = response["warnings"]
+    (warning,) = response.get("warnings", [])
     # The dimension-only existence probe remains forbidden by the resource grant.
     assert warning["code"] == "FILTER_VALUE_UNVERIFIED"
     assert "'appel'" in warning["message"]
@@ -271,9 +293,9 @@ def test_a_granted_metric_still_refuses_an_ungranted_filter(runtime: Runtime) ->
         _ask(
             runtime,
             None,
-            select=_select(qty={"metric": QTY_METRIC}),
+            select=_select(qty=QTY_METRIC),
             where=_where(STORE, "s5"),
-            policy_context=context.to_policy_context(),
+            context=context,
         )
     assert exc.value.code == "RESOURCE_ACCESS_DENIED"
 
@@ -281,7 +303,9 @@ def test_a_granted_metric_still_refuses_an_ungranted_filter(runtime: Runtime) ->
 def test_one_warning_names_every_value_that_matched_nothing(runtime: Runtime) -> None:
     where = [*_where(PRODUCT, ["apple", "peer"], "IN"), *_where(STORE, "s9")]
     response = _ask(runtime, None, select=_select(qty=QTY), where=where)
-    (typo,) = [item for item in response["warnings"] if item["code"] == "FILTER_VALUE_NOT_FOUND"]
+    (typo,) = [
+        item for item in response.get("warnings", []) if item["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
     assert [(row["dimension"], row["value"]) for row in typo["details"]["filters"]] == [
         (PRODUCT, "peer"),
         (STORE, "s9"),
@@ -307,7 +331,7 @@ def test_a_failed_value_probe_never_silences_the_guard(
     response = _ask(runtime, "dataset", select=_select(qty=QTY), where=_where(PRODUCT, "appel"))
     assert response["rows"] == [{"qty": 0}]
     code = "FILTER_VALUE_UNVERIFIED" if failed_execution == 2 else "FILTER_VALUE_NOT_FOUND"
-    (warning,) = [item for item in response["warnings"] if item["code"] == code]
+    (warning,) = [item for item in response.get("warnings", []) if item["code"] == code]
     (value,) = warning["details"]["filters"]
     assert value["dimension"] == PRODUCT and value["value"] == "appel"
     if failed_execution == 2:
@@ -334,7 +358,9 @@ def test_a_filter_only_dimension_reports_unverified_values(package: Path) -> Non
             where=_where(PRODUCT, ["apple", "appel"], "IN"),
         )
         assert response["rows"] == [{"qty": 5}]
-        (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_UNVERIFIED"]
+        (warning,) = [
+            w for w in response.get("warnings", []) if w["code"] == "FILTER_VALUE_UNVERIFIED"
+        ]
         assert [(v["dimension"], v["value"]) for v in warning["details"]["filters"]] == [
             (PRODUCT, "apple"),
             (PRODUCT, "appel"),
@@ -364,7 +390,7 @@ def test_each_literal_uses_warehouse_equality(package: Path, data_type: str) -> 
     finally:
         engine.close()
     assert response["rows"] == [{"qty": 5}]
-    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+    (warning,) = [w for w in response.get("warnings", []) if w["code"] == "FILTER_VALUE_NOT_FOUND"]
     assert warning["details"]["filters"] == [
         {"dimension": PRODUCT, "value": "Apple", "suggestion": "apple"},
     ]
@@ -373,16 +399,15 @@ def test_each_literal_uses_warehouse_equality(package: Path, data_type: str) -> 
 def test_every_value_probe_keeps_request_limits_and_identity(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = Runtime.query
+    original = Runtime.query_internal
     calls: list[dict[str, Any]] = []
 
     def query(engine: Runtime, payload: dict[str, Any]) -> dict[str, Any]:
         calls.append(payload)
         return original(engine, payload)
 
-    monkeypatch.setattr(Runtime, "query", query)
+    monkeypatch.setattr(Runtime, "query_internal", query)
     limits = {"statement_timeout_ms": 1000}
-    context = REGIONAL.to_policy_context()
     response = _ask(
         runtime,
         "dataset",
@@ -390,10 +415,11 @@ def test_every_value_probe_keeps_request_limits_and_identity(
         where=_where(PRODUCT, "appel"),
         limits=limits,
         request_id="value-probe",
-        policy_context=context,
+        context=REGIONAL,
     )
     assert "FILTER_VALUE_NOT_FOUND" in _codes(response)
     assert len(calls) == 3  # answer, existence, optional suggestion
+    context = {**REGIONAL.to_policy_context(), "now": calls[0]["policy_context"]["now"]}
     for probe in calls[1:]:
         assert probe["limits"] == limits
         assert probe["request_id"] == "value-probe"
@@ -412,13 +438,12 @@ def test_the_settlement_read_keeps_policy_parameters_and_timeout(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(adapter, "query_prepared", query)
-    context = replace(REGIONAL, attributes={"region": "west"}).to_policy_context()
     response = _ask(
         runtime,
         "dataset",
         select=_select(qty=QTY),
         where=[*_where(PRODUCT, "apple"), *_where(STORE, "s4")],
-        policy_context=context,
+        context=replace(REGIONAL, attributes={"region": "west"}),
         limits={"statement_timeout_ms": 1000},
     )
     assert response["rows"] == [{"qty": None}]
@@ -461,7 +486,7 @@ def test_the_settlement_read_retains_derived_relation_dependencies(tmp_path: Pat
 @pytest.mark.parametrize("scope", ["dataset", "query"])
 def test_an_authored_condition_that_never_matched_reads_null(runtime: Runtime, scope: str) -> None:
     """No durian was ever sold: the filtered measure has no data anywhere, in either scope."""
-    durian = {**QTY, "kind": "aggregate", "filter": {"all": _where(PRODUCT, "durian")}}
+    durian = {"kind": "aggregate", "measure": QTY, "filter": {"all": _where(PRODUCT, "durian")}}
     (expected,) = _gold("SELECT SUM(qty) FROM sales WHERE product = 'durian'")
     assert expected == (None,)
     response = _ask(runtime, scope, select=_select(durian=durian), where=_where(STORE, "s1"))
@@ -494,7 +519,7 @@ def test_a_never_matched_case_observes_only_policy_visible_source_rows(
     config = replace(
         runtime.config,
         measures=[
-            replace(measure, expr=expression) if measure.id == selected["measure"] else measure
+            replace(measure, expr=expression) if measure.id == selected else measure
             for measure in runtime.config.measures
         ],
     )
@@ -506,7 +531,7 @@ def test_a_never_matched_case_observes_only_policy_visible_source_rows(
             "dataset",
             select=_select(value=selected),
             where=_where(STORE, "s1"),
-            policy_context=context.to_policy_context(),
+            context=context,
         )
         amount = (
             "COUNT(CASE WHEN product = 'durian' THEN sale_id END)"
@@ -531,8 +556,7 @@ def test_a_window_with_no_rows_reads_zero_while_other_dates_have_data(
     runtime: Runtime, scope: str
 ) -> None:
     """February has no sale, but quantities exist in other months: untimed, as before."""
-    time = {"temporal_role": SOLD, "grain": "month", "fill": True}
-    time.update(start="2025-02-01", end="2025-03-01")
+    time = {"temporal_role": SOLD, "grain": "month", "start": "2025-02-01", "end": "2025-03-01"}
     (expected,) = _gold(
         "SELECT CASE WHEN COUNT(*) > 0 THEN SUM(qty) WHEN EXISTS (SELECT 1 FROM sales "
         "WHERE qty IS NOT NULL) THEN 0 END FROM sales "
@@ -552,7 +576,7 @@ def test_a_filtered_empty_month_observes_the_selected_scope(runtime: Runtime, sc
         f"{observation}) THEN 0 END FROM sales WHERE product = 'pear' AND store_id = 's1' "
         "AND sold_at >= TIMESTAMP '2025-02-01' AND sold_at < TIMESTAMP '2025-03-01'"
     )
-    pears = {**QTY, "kind": "aggregate", "filter": {"all": _where(PRODUCT, "pear")}}
+    pears = {"kind": "aggregate", "measure": QTY, "filter": {"all": _where(PRODUCT, "pear")}}
     response = _ask(
         runtime,
         scope,
@@ -561,7 +585,6 @@ def test_a_filtered_empty_month_observes_the_selected_scope(runtime: Runtime, sc
         time={
             "temporal_role": SOLD,
             "grain": "month",
-            "fill": True,
             "start": "2025-02-01",
             "end": "2025-03-01",
         },
@@ -573,8 +596,8 @@ def test_a_filtered_empty_month_observes_the_selected_scope(runtime: Runtime, sc
 def test_a_regional_caller_never_observes_a_hidden_region(runtime: Runtime) -> None:
     """Kale sold only in the west: for an east caller it has no data anywhere, so it reads
     NULL, never 0, and the value probe neither finds kale nor suggests it."""
-    kale = {**QTY, "kind": "aggregate", "filter": {"all": _where(PRODUCT, "kale")}}
-    context = {"policy_context": REGIONAL.to_policy_context()}
+    kale = {"kind": "aggregate", "measure": QTY, "filter": {"all": _where(PRODUCT, "kale")}}
+    context = {"context": REGIONAL}
     response = _ask(runtime, None, select=_select(kale=kale), where=_where(STORE, "s1"), **context)
     assert response["rows"] == [{"kale": None}]
     assert "NO_DATA_IN_SCOPE" in _codes(response)
@@ -584,16 +607,15 @@ def test_a_regional_caller_never_observes_a_hidden_region(runtime: Runtime) -> N
         filtered = _ask(
             runtime, None, select=_select(qty=QTY), where=_where(PRODUCT, value), **context
         )
-        (typo,) = [w for w in filtered["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+        (typo,) = [w for w in filtered.get("warnings", []) if w["code"] == "FILTER_VALUE_NOT_FOUND"]
         (miss,) = typo["details"]["filters"]
         assert miss["value"] == value and miss["suggestion"] in {None, "apple", "pear"}
 
 
 def test_a_stock_summed_across_entities_leaves_an_empty_group_null(runtime: Runtime) -> None:
     """No snapshot in February and none for s2 in March: NULL, never carried forward or 0."""
-    on_hand = {"measure": "measure.obs.on_hand"}
-    time = {"temporal_role": AS_OF, "grain": "month", "fill": True}
-    time.update(start="2025-01-01", end="2025-04-01")
+    on_hand = "measure.obs.on_hand"
+    time = {"temporal_role": AS_OF, "grain": "month", "start": "2025-01-01", "end": "2025-04-01"}
     for scope in ("dataset", "query"):
         response = _ask(
             runtime,
@@ -603,10 +625,7 @@ def test_a_stock_summed_across_entities_leaves_an_empty_group_null(runtime: Runt
             where=_where(SNAPSHOT_STORE, ["s1", "s2"], "IN"),
             time=time,
         )
-        got = {
-            (row[SNAPSHOT_STORE], str(row[f"{AS_OF}__month"])[:7]): row["on_hand"]
-            for row in response["rows"]
-        }
+        got = {(row[SNAPSHOT_STORE], row["period"][:7]): row["on_hand"] for row in response["rows"]}
         assert got == {
             ("s1", "2025-01"): 10,
             ("s1", "2025-02"): None,
@@ -638,9 +657,9 @@ def test_the_package_default_switches_the_scope_and_a_query_overrides_it(
 
 def test_an_unknown_scope_is_an_invalid_query(package: Path) -> None:
     config = load_package_config(str(package))
-    query = {"version": 1, "select": _select(qty=QTY), "observation_scope": "everything"}
+    query = {"select": _select(qty=QTY), "observation_scope": "everything"}
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), query)
+        _compile(config, query)
     assert raised.value.code == "INVALID_QUERY"
     assert raised.value.details["path"] == "observation_scope"
 
@@ -654,14 +673,14 @@ def test_a_shape_that_cannot_judge_outside_its_filters_refuses(package: Path) ->
         "function": "median",
         "over": {"kind": "entity_value", "entity": "entity.obs_sale", "input": QTY},
     }
-    query = {"version": 1, "select": _select(qty=QTY, median=median), "where": APPLES_AT_S5}
+    query = {"select": _select(qty=QTY, median=median), "where": APPLES_AT_S5}
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), query)
+        _compile(config, query)
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
     assert raised.value.details["observation_scope"] == "dataset"
-    compile_query(config, Registry(config), {**query, "observation_scope": "query"})
+    _compile(config, {**query, "observation_scope": "query"})
     # Unfiltered, the answer itself shows whether the measure has data: no probe, no refusal.
-    compile_query(config, Registry(config), {**query, "where": []})
+    _compile(config, {**query, "where": []})
 
 
 def test_a_nested_case_that_cannot_tell_unknown_from_no_rows_refuses(package: Path) -> None:
@@ -676,12 +695,12 @@ def test_a_nested_case_that_cannot_tell_unknown_from_no_rows_refuses(package: Pa
                 "then": {"kind": "column", "column": "qty"}}]}}  # fmt: skip
     doubled = replace(sales, id="measure.obs.doubled_east", expr=parse_config_expression(expr))
     config = replace(config, measures=[*config.measures, doubled])
-    query = {"version": 1, "select": _select(d={"measure": doubled.id}), "where": APPLES_AT_S5}
+    query = {"select": _select(d=doubled.id), "where": APPLES_AT_S5}
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), query)
+        _compile(config, query)
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
-    compile_query(config, Registry(config), {**query, "observation_scope": "query"})
+    _compile(config, {**query, "observation_scope": "query"})
 
 
-def _select(**expressions: dict[str, Any]) -> list[dict[str, Any]]:
+def _select(**expressions: Any) -> list[dict[str, Any]]:
     return [{"expression": expression, "as": alias} for alias, expression in expressions.items()]

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from datetime import date, timedelta
 from typing import Any
 
 from ._base import (
     _NAME_CONNECTORS,
     _dimension,
+    _grouped_dimensions,
     _last_token,
     _object_by_id,
     _requested_grouping_spans,
@@ -19,9 +19,10 @@ from ._base import (
     _strip_leading_rank_count,
     _tokens,
 )
+from .call import Call, Time
 from .time_phrases import _TIME_UNITS, _names_time_axis
 from .time_windows import _time_window
-from .visibility import visible_dimensions, visible_value_domains
+from .visibility import discovery_query, visible_dimensions, visible_value_domains
 
 
 def _explicit_grain(text: str, clock: str = "") -> str:
@@ -58,44 +59,21 @@ def _explicit_grain(text: str, clock: str = "") -> str:
     return ""
 
 
-def _single_bucket_grain(bounds: dict[str, Any]) -> str:
-    """The finest calendar grain that holds the whole window in one bucket, or ``""``."""
+def _time_spec(role: str, text: str, clock: str = "") -> Time | None:
+    """The time block a question asks for on ``role``: the grain it names (a series it asks
+    for "over time" is monthly) and its window. A window without a grain is one total; a
+    question with neither has no time block."""
 
-    try:
-        start = date.fromisoformat(str(bounds["start"])[:10])
-        last = date.fromisoformat(str(bounds["end"])[:10]) - timedelta(days=1)
-    except (KeyError, ValueError):
-        return ""
-    if last < start:
-        return ""
-    if start.year != last.year:
-        # Whole calendar years ("in 2016 and 2017") read as one total per year.
-        whole_years = (start.month, start.day, last.month, last.day) == (1, 1, 12, 31)
-        return "year" if whole_years else ""
-    if start == last:
-        return "day"
-    if start.weekday() == 0 and last == start + timedelta(days=6):
-        return "week"
-    if start.month == last.month:
-        return "month"
-    if (start.month - 1) // 3 == (last.month - 1) // 3:
-        return "quarter"
-    return "year"
-
-
-def _time_spec(role: str, text: str, clock: str = "") -> dict[str, Any]:
+    reading = _time_window(text)
+    # A unit a window names ("last week") asks for no buckets of it.
     lowered = str(text or "").lower()
-    grain = _explicit_grain(text, clock)
-    window = _time_window(text)
-    if not grain and window.relative_unit:
-        # A relative window ("last 7 days", "yesterday") buckets at its own
-        # unit instead of the generic month default.
-        grain = window.relative_unit
-    if not grain and not _TREND_CUE_RE.search(lowered):
-        # A total over a calendar window ("revenue in 2017", "orders in the
-        # first half of 2017") needs a grain that yields one bucket.
-        grain = _single_bucket_grain(window.bounds)
-    return {"temporal_role": role, "grain": grain or "month", **window.bounds}
+    for start, end in sorted(reading.spans, reverse=True):
+        lowered = f"{lowered[:start]}{' ' * (end - start)}{lowered[end:]}"
+    grain = _explicit_grain(lowered, clock) or ("month" if _TREND_CUE_RE.search(lowered) else "")
+    window = reading.bounds
+    if not role or not (grain or window):
+        return None
+    return Time(temporal_role=role, grain=grain).with_window(window)
 
 
 # Cues that ask for a series over time even without a named grain.
@@ -151,15 +129,16 @@ def _entity_stand_ins(config: Any, entity: Any, term: str = "") -> tuple[list[st
     one-column key), and the one that names a row beside them.
 
     That is its ``display`` dimension, else its one dimension (not a clock) whose own words name
-    ``term`` ("Store name" for "store"), else none. A composite key, or a key the caller can't
-    see, has no stand-ins. Drafting and every readiness check read the entity through this.
+    ``term`` ("Store name" for "store"), else none. A composite key, no key (row grain), or a
+    key the caller can't see has no stand-ins. Drafting and every readiness check read the
+    entity through this.
     """
 
-    if len(entity.key) != 1:
+    if len(entity.key_columns) != 1:
         return [], []
     owned = [row for row in visible_dimensions(config) if row.entity == entity.id]
-    keys = [row.id for row in owned if row.column == entity.key[0]]
-    others = [row for row in owned if row.column != entity.key[0]]
+    keys = [row.id for row in owned if row.column == entity.key_columns[0]]
+    others = [row for row in owned if row.column != entity.key_columns[0]]
     shown = [row.id for row in others if entity.display and row.id == entity.display]
     if not shown:
         clocks = {row.dimension for row in config.temporal_roles}
@@ -182,20 +161,41 @@ def _entity_grouping(config: Any, term: str) -> tuple[Any, list[str]] | None:
     return (named[0], [*keys, *shown]) if len(keys) == 1 else None
 
 
+def _display_entities(runtime: Any, query: Call) -> list[Any]:
+    """The entities with a visible ``display`` dimension that the draft's subject reaches: whom
+    "who" may list when its clause names no entity."""
+
+    from ..errors import SemanticLayerError  # noqa: WPS433
+    from ..metadata import _availability_for_object, _selection_context  # noqa: WPS433
+
+    config = runtime._config
+    out: list[Any] = []
+    try:
+        root = _selection_context(config, discovery_query(runtime, query))["root_entity"]
+        for entity in config.entities if root else []:
+            keys, shown = _entity_stand_ins(config, entity)
+            if (
+                entity.display
+                and len(keys) == 1
+                and shown == [entity.display]
+                and _availability_for_object(config, root, entity.id, "entity").available
+            ):
+                out.append(entity)
+    except SemanticLayerError:
+        return []
+    return out
+
+
 def _key_only_assumptions(
-    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any] | None = None
+    config: Any, question: str, query: Call, partial_query: Call | None = None
 ) -> list[str]:
     """A line for each entity the draft shows by its key alone because nothing else names its
     rows: the caller sees no display for it and no one dimension of its own names it. A
     caller's grouping needs none, nor a key the question names beyond its entity ("by store
     id")."""
 
-    caller = set((partial_query or {}).get("group_by") or [])
-    grouped = [
-        row
-        for item in dict.fromkeys(query.get("group_by") or [])
-        if (row := _object_by_id(config.dimensions, item)) is not None
-    ]
+    caller = set(partial_query.group_by if partial_query else ())
+    grouped = _grouped_dimensions(config, query)
     lines: list[str] = []
     for row in grouped:
         entity = _object_by_id(config.entities, row.entity)
@@ -258,7 +258,15 @@ def _each_terms(config: Any, text: str) -> list[str]:
 
     lowered = str(text or "").lower()
     spans = [_named_run(config, lowered, match.end()) for match in _EACH_RE.finditer(lowered)]
-    return [lowered[span[0] : span[1]] for span in spans if span is not None]
+    return [
+        lowered[span[0] : span[1]]
+        for span in spans
+        # "every store except Brooklyn" names the stores an exclusion keeps, not a row each.
+        if span is not None and not _EXCEPT_AFTER_RE.match(lowered, span[1])
+    ]
+
+
+_EXCEPT_AFTER_RE = re.compile(r"\s+(?:except|excluding|but|other\s+than|apart\s+from|besides)\b")
 
 
 def _requested_grouping_terms(text: str) -> list[str]:
@@ -305,22 +313,21 @@ def _listed_grouping_terms(text: str, config: Any) -> list[str]:
         term = pieces[index].strip()
         if not term:
             continue
-        if (
-            index
-            and "," in pieces[index - 1]
-            and not (
-                _is_temporal_grouping_term(term)
-                or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
-                or any(
-                    row.calendar_id and _names_time_axis(term, row.label) for row in config.entities
-                )
-                or any(_grouping_matches(term, row) for row in config.dimensions)
-                or any(_grouping_matches(term, row, entity=True) for row in config.entities)
-            )
-        ):
+        if index and "," in pieces[index - 1] and not _names_a_grouping(term, config):
             break
         terms.append(term)
     return terms
+
+
+def _names_a_grouping(term: str, config: Any) -> bool:
+    """Whether a term names a time grain, a clock, a calendar, a dimension or an entity."""
+    return (
+        _is_temporal_grouping_term(term)
+        or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
+        or any(row.calendar_id and _names_time_axis(term, row.label) for row in config.entities)
+        or any(_grouping_matches(term, row) for row in config.dimensions)
+        or any(_grouping_matches(term, row, entity=True) for row in config.entities)
+    )
 
 
 def _is_temporal_grouping_term(term: str) -> bool:
@@ -365,13 +372,8 @@ def _maybe_group_by(
     (``_entity_grouping``), never a dimension scored by its description."""
 
     lowered = str(text or "").lower()
-    terms = _runtime_composition_terms(text)
     target_set = {term for term in target_terms if term}
     group_by: list[str] = []
-    if terms & {"segment", "segments"} and ("customer" in terms or "historical" in terms):
-        dim = _object_by_id(visible_dimensions(config), "dimension.jaffle_customer_history_segment")
-        if dim is not None:
-            group_by.append(dim.id)
     if any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:

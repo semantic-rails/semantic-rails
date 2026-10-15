@@ -1,23 +1,19 @@
 {
   "order_by": [
     {
-      "direction": "ASC",
-      "field": "temporal_role.jaffle_session_started_at__month"
+      "direction": "asc",
+      "field": "period"
     }
   ],
   "select": [
     {
       "as": "same_store_conversion_rate_50m",
       "expression": {
-        "base": {
-          "measure": "measure.jaffle.session_starts"
-        },
+        "base": "measure.jaffle.session_starts",
         "constant_properties": [
           "dimension.jaffle_store_name"
         ],
-        "converted": {
-          "measure": "measure.jaffle.order_count"
-        },
+        "converted": "measure.jaffle.order_count",
         "entity": "entity.jaffle_customer",
         "kind": "conversion",
         "matching_mode": "first_converted_after_base",
@@ -31,6 +27,5 @@
   "time": {
     "grain": "month",
     "temporal_role": "temporal_role.jaffle_session_started_at"
-  },
-  "version": 1
+  }
 }

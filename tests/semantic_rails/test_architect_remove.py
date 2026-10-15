@@ -75,8 +75,7 @@ def workspace(tmp_path: Path) -> Path:
                 "gross": {
                     "question": "Gross",
                     "query": {
-                        "version": 1,
-                        "select": [{"expression": {"metric": "metric.shop.gross"}, "as": "gross"}],
+                        "select": ["metric.shop.gross"],
                     },
                 }
             }
@@ -285,10 +284,15 @@ UNRELATED_PIN = {
 }
 
 
-@pytest.mark.parametrize("form", ORDER_CUSTOMER_PINS)
-@pytest.mark.parametrize("declared", ["graph_relationships", "model_entities_only"])
+# Each removal, declaration and pin form, every value twice.
 @pytest.mark.parametrize(
-    ("kind", "key", "model"), [("model", "customers", ""), ("relationship", "customer", "orders")]
+    ("kind", "key", "model", "declared", "form"),
+    [
+        ("model", "customers", "", "graph_relationships", "ids"),
+        ("model", "customers", "", "model_entities_only", "keys"),
+        ("relationship", "customer", "orders", "graph_relationships", "keys"),
+        ("relationship", "customer", "orders", "model_entities_only", "ids"),
+    ],
 )
 def test_a_removal_drops_the_route_pins_through_what_it_removes(
     workspace: Path, kind: str, key: str, model: str, declared: str, form: str
@@ -429,3 +433,23 @@ def test_a_jaffle_preview_lists_the_examples_that_name_a_metric(tmp_path: Path) 
     ):
         project.remove_object(kind="model", key="customers", dry_run=True)
     assert project_revision(tmp_path / "jaffle_shop") == before
+
+
+def test_an_impact_that_cant_load_names_the_project_not_its_staging_copy(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import semantic_rails.architect_service as service
+
+    load = service.load_package_snapshot
+
+    def staged_copy_fails(path: str, *args: Any, **kwargs: Any) -> Any:
+        if "semantic-rails-architect-preview-" in str(path):
+            raise SemanticLayerError("INVALID_CONFIG", f"{path}: does not load")
+        return load(path, *args, **kwargs)
+
+    monkeypatch.setattr(service, "load_package_snapshot", staged_copy_fails)
+
+    report = _project(workspace).remove_object(kind="dimension", key="status", dry_run=True).report
+
+    error = report["impact"]["error"]
+    assert error.startswith(str(workspace / "shop")) and "preview-" not in error

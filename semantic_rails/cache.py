@@ -126,8 +126,13 @@ def compilation_cache_key(
             "warehouse": warehouse,
             "relation_profile": relation_profile,
             "render_profile": render_profile,
-            "policy_context": {k: v for k, v in policy_context.items() if k != "attributes"},
+            # ``now`` is already resolved into the query's window bounds.
+            "policy_context": {
+                k: v for k, v in policy_context.items() if k not in {"attributes", "now"}
+            },
             "attributes": {name: attributes.get(name) for name in attributes.names},
+            # Host-verified roles decide row-filter exemptions; header roles are in the context.
+            "trusted_roles": list(attributes.roles),
             "aggregate_routing": aggregate_routing,
             "visibility": stable_json_hash(sorted(visibility)),
         }

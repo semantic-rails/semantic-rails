@@ -14,8 +14,8 @@ SELECT
 FROM leaf_1 AS base
 )
 SELECT
-  base.t AS "temporal_role.jaffle_lifecycle_delivered_at__month",
-  base.m1 AS delivered_revenue
+  base.t AS "period",
+  base.m1 AS "delivered_revenue"
 FROM guarded_base AS base
 ORDER BY
-  t ASC
+  t ASC NULLS LAST

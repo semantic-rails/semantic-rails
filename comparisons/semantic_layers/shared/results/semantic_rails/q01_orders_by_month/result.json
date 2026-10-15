@@ -1,16 +1,17 @@
 {
-  "assumptions": [],
+  "clock": "temporal_role.jaffle_order_time",
   "column_types": {
     "orders": {
       "type": "integer"
     },
-    "temporal_role.jaffle_order_time__month": {
-      "timezone": "naive",
-      "type": "timestamp"
+    "period": {
+      "type": "date"
+    },
+    "period_partial": {
+      "type": "boolean"
     }
   },
   "dialect": "duckdb",
-  "errors": [],
   "explain": {
     "alias_resolution": {
       "group_by": [],
@@ -29,8 +30,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.485,
-      "compile_ms": 0.851,
+      "cache_lookup_ms": 0.567,
+      "compile_ms": 4.386,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -45,7 +46,7 @@
       "group_by": [],
       "leaf_grains": {
         "measure.jaffle.order_count": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -53,12 +54,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -86,7 +90,7 @@
         "group_by": [],
         "leaf_grains": {
           "measure.jaffle.order_count": [
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ]
         },
         "measure_entities": [
@@ -94,12 +98,15 @@
         ],
         "root_entity": "entity.jaffle_order",
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [],
@@ -118,7 +125,7 @@
           },
           "cte_name": "leaf_1",
           "grain_keys": [
-            "temporal_role.jaffle_order_time__month"
+            "period"
           ],
           "path_selections": [],
           "required_entities": [
@@ -136,15 +143,13 @@
       },
       "query": {
         "debug": false,
-        "explain": false,
-        "export": false,
         "group_by": [],
         "limit": null,
         "metric_filters": [],
         "order_by": [
           {
             "direction": "ASC",
-            "field": "temporal_role.jaffle_order_time__month"
+            "field": "period"
           }
         ],
         "select": [
@@ -158,12 +163,15 @@
         ],
         "temporal_role_overrides": {},
         "time": {
-          "calendar_id": "default",
           "end": null,
           "fill": false,
           "grain": "month",
+          "last_unit": "",
+          "last_value": 0,
           "start": null,
-          "temporal_role": "temporal_role.jaffle_order_time"
+          "temporal_role": "temporal_role.jaffle_order_time",
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -234,26 +242,27 @@
       },
       "synthetic_measures": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
     "normalized_query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [],
       "limit": null,
       "metric_filters": [],
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_order_time__month"
+          "field": "period"
         }
       ],
       "select": [
@@ -267,12 +276,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -292,12 +304,15 @@
           "relation": "comparison_orders",
           "scan_id": "leaf_1_scan",
           "time_filter": {
-            "calendar_id": "default",
             "end": null,
             "fill": false,
             "grain": "month",
+            "last_unit": "",
+            "last_value": 0,
             "start": null,
-            "temporal_role": "temporal_role.jaffle_order_time"
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "this": "",
+            "to_now": false
           }
         }
       ],
@@ -339,7 +354,7 @@
       "notes": [],
       "pre_aggregation_grain": {
         "leaf_1": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "raw_fact_count": 1,
@@ -379,12 +394,15 @@
             "pushed_to_scan": true,
             "query_filters": [],
             "time_filter": {
-              "calendar_id": "default",
               "end": null,
               "fill": false,
               "grain": "month",
+              "last_unit": "",
+              "last_value": 0,
               "start": null,
-              "temporal_role": "temporal_role.jaffle_order_time"
+              "temporal_role": "temporal_role.jaffle_order_time",
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -403,7 +421,7 @@
             "aggregate_relation_id": "",
             "folded_measure_count": 1,
             "grain": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "measures": [
               {
@@ -423,7 +441,7 @@
         {
           "details": {
             "key_aliases": [
-              "temporal_role.jaffle_order_time__month"
+              "period"
             ],
             "outputs": [
               "orders"
@@ -457,7 +475,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -524,6 +542,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -552,6 +571,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -639,6 +659,7 @@
                         },
                         "op": ">",
                         "right": {
+                          "temporal": false,
                           "value": 0
                         }
                       },
@@ -651,6 +672,7 @@
                             ]
                           },
                           {
+                            "temporal": false,
                             "value": 0
                           }
                         ],
@@ -684,13 +706,13 @@
               "t"
             ]
           },
-          "nulls_last": false
+          "nulls_last": true
         }
       ],
       "qualify": [],
       "select": [
         {
-          "alias": "temporal_role.jaffle_order_time__month",
+          "alias": "period",
           "expression": {
             "parts": [
               "base",
@@ -711,8 +733,6 @@
       "where": []
     }
   },
-  "freshness_as_of": "",
-  "freshness_by_leaf": [],
   "hop_profile": {
     "hop_limit": 4,
     "long_hop_targets": [],
@@ -745,7 +765,7 @@
       "group_by": [],
       "leaf_grains": {
         "measure.jaffle.order_count": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ]
       },
       "measure_entities": [
@@ -753,12 +773,15 @@
       ],
       "root_entity": "entity.jaffle_order",
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [],
@@ -777,7 +800,7 @@
         },
         "cte_name": "leaf_1",
         "grain_keys": [
-          "temporal_role.jaffle_order_time__month"
+          "period"
         ],
         "path_selections": [],
         "required_entities": [
@@ -795,15 +818,13 @@
     },
     "query": {
       "debug": false,
-      "explain": false,
-      "export": false,
       "group_by": [],
       "limit": null,
       "metric_filters": [],
       "order_by": [
         {
           "direction": "ASC",
-          "field": "temporal_role.jaffle_order_time__month"
+          "field": "period"
         }
       ],
       "select": [
@@ -817,12 +838,15 @@
       ],
       "temporal_role_overrides": {},
       "time": {
-        "calendar_id": "default",
         "end": null,
         "fill": false,
         "grain": "month",
+        "last_unit": "",
+        "last_value": 0,
         "start": null,
-        "temporal_role": "temporal_role.jaffle_order_time"
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -893,58 +917,50 @@
     },
     "synthetic_measures": {},
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
-  "methodology_hints": [],
   "normalized_query": {
-    "debug": false,
-    "explain": false,
-    "export": false,
-    "group_by": [],
-    "limit": null,
-    "metric_filters": [],
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_order_time__month"
+        "direction": "asc",
+        "field": "period"
       }
     ],
     "select": [
-      {
-        "as": "orders",
-        "expression": {
-          "kind": "metric",
-          "metric": "metric.jaffle.orders"
-        }
-      }
+      "metric.jaffle.orders"
     ],
-    "temporal_role_overrides": {},
     "time": {
-      "calendar_id": "default",
-      "end": null,
-      "fill": false,
       "grain": "month",
-      "start": null,
       "temporal_role": "temporal_role.jaffle_order_time"
-    },
-    "version": 1,
-    "where": []
+    }
   },
+  "observation_scope": "dataset",
   "ok": true,
   "output_columns": [
     {
       "display_label": "Order time",
-      "field": "temporal_role.jaffle_order_time__month",
+      "field": "period",
+      "grain": "month",
       "semantic_id": "temporal_role.jaffle_order_time",
-      "sql_alias": "temporal_role.jaffle_order_time__month",
+      "sql_alias": "period",
       "type": "time"
+    },
+    {
+      "display_label": "Partial period",
+      "field": "period_partial",
+      "semantic_id": "temporal_role.jaffle_order_time",
+      "sql_alias": "period_partial",
+      "type": "boolean"
     },
     {
       "display_label": "Orders",
@@ -954,98 +970,104 @@
       "type": "count"
     }
   ],
-  "policy_effects": [],
   "provenance_summary": {
     "policy_effects": [],
     "rewrite_status": "direct",
     "root_entity": "entity.jaffle_order",
     "selected_paths": [],
     "time": {
-      "calendar_id": "default",
       "end": null,
       "fill": false,
       "grain": "month",
+      "last_unit": "",
+      "last_value": 0,
       "start": null,
-      "temporal_role": "temporal_role.jaffle_order_time"
+      "temporal_role": "temporal_role.jaffle_order_time",
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
     "order_by": [
       {
-        "direction": "ASC",
-        "field": "temporal_role.jaffle_order_time__month"
+        "direction": "asc",
+        "field": "period"
       }
     ],
     "select": [
-      {
-        "as": "orders",
-        "expression": {
-          "metric": "metric.jaffle.orders"
-        }
-      }
+      "metric.jaffle.orders"
     ],
     "time": {
       "grain": "month",
       "temporal_role": "temporal_role.jaffle_order_time"
-    },
-    "version": 1
+    }
   },
-  "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
-  "request_context": {},
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
   "row_count": 12,
   "rows": [
     {
       "orders": 1367,
-      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
+      "period": "2016-09-01",
+      "period_partial": false
     },
     {
       "orders": 1685,
-      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
+      "period": "2016-10-01",
+      "period_partial": false
     },
     {
       "orders": 2280,
-      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
+      "period": "2016-11-01",
+      "period_partial": false
     },
     {
       "orders": 2862,
-      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
+      "period": "2016-12-01",
+      "period_partial": false
     },
     {
       "orders": 3410,
-      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
+      "period": "2017-01-01",
+      "period_partial": false
     },
     {
       "orders": 3357,
-      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
+      "period": "2017-02-01",
+      "period_partial": false
     },
     {
       "orders": 6078,
-      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
+      "period": "2017-03-01",
+      "period_partial": false
     },
     {
       "orders": 6596,
-      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
+      "period": "2017-04-01",
+      "period_partial": false
     },
     {
       "orders": 7956,
-      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
+      "period": "2017-05-01",
+      "period_partial": false
     },
     {
       "orders": 7881,
-      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
+      "period": "2017-06-01",
+      "period_partial": false
     },
     {
       "orders": 7438,
-      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
+      "period": "2017-07-01",
+      "period_partial": false
     },
     {
       "orders": 8742,
-      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
+      "period": "2017-08-01",
+      "period_partial": false
     }
   ],
-  "semantic_fingerprint": "sha256:4580d1a69a70b25078c207bc3aad9ec478730725a4e300dd72a23a23ec266478",
-  "source_fingerprint": "00c61f83b3a4a8f0abbc6cbf57077968ea8f14a9c3a155096ed119fb7a22d8b4",
+  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
       {
@@ -1061,6 +1083,7 @@
             {
               "args": [
                 {
+                  "temporal": false,
                   "value": "month"
                 },
                 {
@@ -1089,6 +1112,7 @@
               "expression": {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -1176,6 +1200,7 @@
                       },
                       "op": ">",
                       "right": {
+                        "temporal": false,
                         "value": 0
                       }
                     },
@@ -1188,6 +1213,7 @@
                           ]
                         },
                         {
+                          "temporal": false,
                           "value": 0
                         }
                       ],
@@ -1221,13 +1247,13 @@
             "t"
           ]
         },
-        "nulls_last": false
+        "nulls_last": true
       }
     ],
     "qualify": [],
     "select": [
       {
-        "alias": "temporal_role.jaffle_order_time__month",
+        "alias": "period",
         "expression": {
           "parts": [
             "base",
@@ -1287,5 +1313,8 @@
     "snapshot_row_selection": "aggregate_join",
     "timestamp_type": "TIMESTAMP"
   },
-  "warnings": []
+  "window": {
+    "now": "2026-10-14T20:11:47.002987Z",
+    "partial": false
+  }
 }

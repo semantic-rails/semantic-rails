@@ -16,13 +16,22 @@ import pytest
 from semantic_rails.config import load_package_config
 from semantic_rails.db import Database
 from semantic_rails.db_parts.adbc import AdbcAdapter
+from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.result_values import result_rows
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, finalize_parameters
 from tests.semantic_rails.result_helpers import typed_rows
-from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _package, _q
+from tests.semantic_rails.test_row_filters import (
+    BY_STORE,
+    OWN_ORDERS,
+    OWN_STORE,
+    A,
+    B,
+    _as,
+    _package,
+)
 from tests.semantic_rails.test_time_fill_calendar_buckets import (
     _calendar_runtime,
     _query_buckets,
@@ -187,7 +196,6 @@ def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
         with pytest.raises(SemanticLayerError) as caught:
             runtime.query(
                 {
-                    "version": 1,
                     "select": [
                         {
                             "expression": {
@@ -199,7 +207,7 @@ def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
                         }
                     ],
                     "group_by": ["dimension.rf_order_order_ref"],
-                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "ASC"}],
+                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "asc"}],
                 }
             )
         assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
@@ -262,11 +270,10 @@ def test_postgres_runtime_interval_row_encodes_identically_to_duckdb(adbc, tmp_p
     adbc.query("CREATE TEMP TABLE order_fact(amount INTERVAL)")
     adbc.query(f"INSERT INTO order_fact VALUES (INTERVAL '{literal}'), (NULL)")
     runtime.set_adapter(adbc)
-    db = Database.connect_in_memory()
+    db = Database.connect(":memory:")
     try:
         result = runtime.query(
             {
-                "version": 1,
                 "select": [
                     {
                         "expression": {
@@ -325,6 +332,21 @@ def test_postgres_binds_all_slot_types_without_interpolation(adbc):
     assert canary not in prepared.sql
 
 
+def test_postgres_binds_list_items_one_per_placeholder(adbc):
+    regions = tuple(ParameterSlot("regions", "string", index) for index in range(2))
+    tiers = tuple(ParameterSlot("tiers", "integer", index) for index in range(2))
+    prepared = finalize_parameters(
+        PreparedQuery(
+            "SELECT COUNT(*) AS n FROM (VALUES ('West', 1), ('East', 2), ('West', 3), "
+            "('North', 1)) AS t(region, tier) WHERE region IN (?, ?) AND tier IN (?, ?)",
+            parameters=(*regions, *tiers),
+        ),
+        "postgres_native",
+    )
+    assert prepared.sql.endswith("region IN ($1, $2) AND tier IN ($3, $4)")
+    assert adbc.query_prepared(prepared, parameters=("West", "East", 1, 2)) == [{"n": 2}]
+
+
 def test_postgres_identifier_suffix_and_escape_string_bind(adbc):
     assert adbc.query("SELECT 1 AS account$1") == [{"account$1": 1}]
     prepared = finalize_parameters(
@@ -343,7 +365,7 @@ def test_postgres_identifier_suffix_and_escape_string_bind(adbc):
 
 
 def test_postgres_row_filter_isolation(adbc, tmp_path):
-    root = _package(tmp_path / "filtered", [OWN_ORDERS])
+    root = _package(tmp_path / "filtered", [OWN_ORDERS, OWN_STORE])
     config = load_package_config(str(root))
     package = replace(
         config.package,
@@ -363,7 +385,7 @@ def test_postgres_row_filter_isolation(adbc, tmp_path):
     )
     runtime.set_adapter(adbc)
     try:
-        results = [runtime.query(_q(BY_STORE, customer_id=customer)) for customer in (A, B, A, B)]
+        results = [_as(runtime.query, BY_STORE, customer_id=customer) for customer in (A, B, A, B)]
         for customer, result in zip((A, B, A, B), results, strict=True):
             assert result["column_types"]["revenue"] == {"type": "decimal"}
             actual = [
@@ -380,10 +402,27 @@ def test_postgres_row_filter_isolation(adbc, tmp_path):
             )
             assert "$1" in result["rendered_sql"] and "?" not in result["rendered_sql"]
         assert results[0]["rendered_sql"] == results[1]["rendered_sql"]
-        assert runtime.query(_q(BY_STORE, customer_id="' OR true --"))["rows"] == []
+        assert _as(runtime.query, BY_STORE, customer_id="' OR true --")["rows"] == []
         with pytest.raises(SemanticLayerError) as caught:
-            runtime.query(_q(BY_STORE))
+            _as(runtime.query, BY_STORE)
         assert caught.value.code == "POLICY_DENIED"
+        # Lists: each item binds its own placeholder, here under two filters at once.
+        both = _as(runtime.query, BY_STORE, customer_id=[A, B])
+        assert [(r["dimension.rf_order_store_id"], r["revenue"]) for r in typed_rows(both)] == [
+            ("s1", 410),
+            ("s2", 20),
+            ("s3", 300),
+        ]
+        assert "IN ($1, $2)" in both["rendered_sql"]
+        attributes = {"customer_id": [B, A], "store_id": ["s3", "s1"]}
+        context = RequestContext(
+            audience="customer", roles=("store_scoped",), attributes=attributes
+        )
+        combined = runtime.query(BY_STORE, context=context)
+        assert [(r["dimension.rf_order_store_id"], r["revenue"]) for r in typed_rows(combined)] == [
+            ("s1", 410),
+            ("s3", 300),
+        ]
     finally:
         runtime.close()
 

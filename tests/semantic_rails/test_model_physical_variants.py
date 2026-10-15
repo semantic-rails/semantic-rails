@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
@@ -15,6 +16,7 @@ from semantic_rails.config import _merge_package_dir, load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts.assumptions import hidden_columns
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -68,7 +70,7 @@ def _write_variant_package(package_dir: Path) -> None:
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "dimension_id": "dimension.demo_order_ordered_at",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
@@ -95,14 +97,14 @@ def _write_variant_package(package_dir: Path) -> None:
                         "as": "measure.demo.revenue_usd",
                         "kind": "aggregate",
                         "expr": "order_total_cents / 100.0",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         "rollup": "additive",
                     },
                     "order_count": {
                         "as": "measure.demo.order_count",
                         "kind": "entity_count",
                         "entity_key": "order_id",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         "rollup": "additive",
                     },
                 },
@@ -154,22 +156,10 @@ def test_model_variants_normalize_to_explicit_aggregate_relations(tmp_path: Path
 @pytest.mark.parametrize(
     ("dimension", "selected_relation", "other_relation", "selected"),
     [
-        pytest.param(
-            "dimension.demo_store_id",
-            "order_monthly",
-            "order_fact",
-            ["aggregate_relation.orders_monthly"],
-            id="lossless-variant",
-        ),
-        pytest.param(
-            "dimension.demo_customer_id",
-            "order_fact",
-            "order_monthly",
-            [],
-            id="missing-dimension-fallback",
-        ),
+        pytest.param("dimension.demo_store_id", "order_monthly", "order_fact", ["aggregate_relation.orders_monthly"], id="lossless-variant"),
+        pytest.param("dimension.demo_customer_id", "order_fact", "order_monthly", [], id="missing-dimension-fallback"),
     ],
-)
+)  # fmt: skip
 def test_monthly_query_variant_routing(
     tmp_path: Path, dimension, selected_relation, other_relation, selected
 ):
@@ -323,25 +313,23 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         **overrides.get("entity", {}),
     }
     entities = {"order": order}
-    if overrides.get("fiscal_calendar") or overrides.get("fact_days"):  # quarters start in Feb
+    if overrides.get("fact_days"):  # a day's rows, one per store
         entities["fiscal"] = {"kind": "time", "key": ["date_day"], "model": "fiscal_days"}
+        entities["order_day"] = {"key": ["date_day", "store_id"], "model": "order_days"}
         day = {"column": "date_day", "kind": "date", "class": "calendar_time"}
-        # A fact model's days bucket on the default calendar; fiscal ones are refused.
-        calendar_id = "fiscal" if overrides.get("fiscal_calendar") else "default"
-        calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": calendar_id}
+        # The days bucket on the default calendar.
+        calendar = {"id": "fiscal_days", "relation": "fiscal_days", "calendar_id": "default"}
         calendar |= {"entities": {"fiscal": {}}, "times": {"date_day": day}}
         calendar["dimensions"] = {"quarter_start": {"kind": "date"}}
         _write_yaml(package_dir / "models" / "fiscal_days.yml", {"model": calendar})
-    if overrides.get("fact_days"):  # a fact model whose rows repeat a day across stores
-        day = {"id": "temporal_role.day", "column": "date_day", "kind": "date", "default": True}
-        fact = {"id": "order_days", "kind": "fact", "relation": "order_days"}
-        fact |= {"time_entity": "fiscal", "time_column": "date_day"}
+        day = {"as": "temporal_role.day", "column": "date_day", "kind": "date", "default": True}
+        fact = {"id": "order_days", "relation": "order_days", "entities": {"order_day": {}}}
         fact["times"] = {"date_day": {**day, "class": "event_time"}}
         fact["dimensions"] = {"store_id": {"as": "dimension.day_store_id", "kind": "categorical"}}
         fact["measures"] = {
-            "days": {"as": "measure.days", "kind": "entity_count", "time": "date_day"}
+            "days": {"as": "measure.days", "kind": "entity_count", "entity_key": "date_day"}
         }
-        fact["measures"]["days"].update(overrides.get("day_measure", {}))
+        fact["measures"]["days"].update(overrides.get("day_measure", {}), times=["date_day"])
         fact["variants"] = variants
         _write_yaml(package_dir / "models" / "order_days.yml", {"model": fact})
     graph: dict = {"entities": entities, "relationships": {}}
@@ -355,7 +343,7 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         }
         lines["dimensions"] = {"product": product}
         graph["relationships"]["lines_order"] = {
-            "id": _LINE_ORDER,
+            "as": _LINE_ORDER,
             "entities": ["line", "order"],
             "cardinality": "many_to_one",
         }
@@ -377,7 +365,7 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         graph["relationships"].update(
             {
                 key: {
-                    "id": f"relationship.orders_{key}",
+                    "as": f"relationship.orders_{key}",
                     "entities": ["order", "customer"],
                     "via": [key + "_id"],
                     "cardinality": "many_to_one",
@@ -390,9 +378,9 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         key: {"as": f"dimension.{key}", "column": key, "kind": "categorical"}
         for key in ("store_id", "customer_id")
     }
-    time = {"id": "temporal_role.t", "dimension_id": "dimension.ordered_at", "column": "ordered_at"}
+    time = {"as": "temporal_role.t", "dimension_id": "dimension.ordered_at", "column": "ordered_at"}
     time.update(overrides.get("time", {}))
-    measure = {"time": "ordered_at", "rollup": "additive"}
+    measure = {"times": ["ordered_at"], "rollup": "additive"}
     stock = {"accumulation": {"kind": "stock", "snapshot": "end_of_period"}}
     model = {
         "id": "orders",
@@ -437,7 +425,6 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
 
 def _rollup_query(measure: str, aggregation: str, grain: str, **time) -> dict:
     return {
-        "version": 1,
         "select": [
             {
                 "expression": {"kind": "aggregate", "measure": measure, "aggregation": aggregation},
@@ -556,24 +543,9 @@ _SHIP_TO_KEY = {
     ("rollups", "query", "reason"),
     [
         # Wrong answers on DuckDB before the guards; each must now run on the base tables.
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_BUYERS, "count_distinct", "quarter"),
-            "aggregation_not_reaggregable",
-            id="distinct-buyers-month-to-quarter",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_BUYERS, "count_distinct", "month"),
-            "aggregation_not_reaggregable",
-            id="distinct-buyers-across-stores",
-        ),
-        pytest.param(
-            ({"monthly": _MONTHLY}, {"entity": {"key": ["customer_id", "order_id"]}}),
-            _rollup_query(_BUYERS, "count_distinct", "quarter"),
-            "aggregation_not_reaggregable",
-            id="distinct-buyers-composite-key",
-        ),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_BUYERS, "count_distinct", "quarter"), "aggregation_not_reaggregable", id="distinct-buyers-month-to-quarter"),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_BUYERS, "count_distinct", "month"), "aggregation_not_reaggregable", id="distinct-buyers-across-stores"),
+        pytest.param(({"monthly": _MONTHLY}, {"entity": {"key": ["customer_id", "order_id"]}}), _rollup_query(_BUYERS, "count_distinct", "quarter"), "aggregation_not_reaggregable", id="distinct-buyers-composite-key"),
         pytest.param(
             # A related entity's key cannot make monthly distinct-buyer counts safe to re-sum into quarterly totals.
             ({"monthly": _MONTHLY}, {"ship_to": None}),
@@ -581,182 +553,42 @@ _SHIP_TO_KEY = {
             "aggregation_not_reaggregable",
             id="distinct-entity-key-not-row-grain",
         ),
-        pytest.param(
-            (
-                {"monthly": _MONTHLY},
-                {"time": {"timezone": "America/New_York", "column_timezone": "UTC"}},
-            ),
-            _rollup_query(_REVENUE, "sum", "month"),
-            "timezone_mismatch",
-            id="role-converts-timezone",
-        ),
-        pytest.param(
-            ({"weekly": _WEEKLY},),
-            _rollup_query(_REVENUE, "sum", "month"),
-            "unsupported_query_grain",
-            id="weekly-rollup-default-grains",
-        ),
-        pytest.param(
-            ({"weekly": {**_WEEKLY, "eligible_time_grains": ["week", "month"]}},),
-            _rollup_query(_REVENUE, "sum", "month"),
-            "non_nesting_grain",
-            id="weekly-rollup-declares-month",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "sum", "month", start="2026-01-15", end="2026-03-31"),
-            "time_bounds_not_aligned",
-            id="bounds-not-on-month-boundaries",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _PREDICATE_QUERY,
-            "metric_predicate_filter",
-            id="measure-metric-predicate",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            {
-                **_rollup_query(_REVENUE, "sum", "month"),
-                "metric_filters": [{"expression": _BIG_ORDERS, "op": "=", "value": True}],
-            },
-            "metric_predicate_filter",
-            id="query-metric-predicate",
-        ),
-        pytest.param(
-            ({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True}),
-            _DAYS_QUERY,
-            "aggregation_not_reaggregable",
-            id="distinct-fact-model-row-key",
-        ),
-        pytest.param(
-            (
-                {"days_monthly": _DAYS_MONTHLY},
-                {"fact_days": True, "day_measure": {"kind": "aggregate", "expr": "1"}},
-            ),
-            {
-                **_DAYS_QUERY,
-                "select": _rollup_query("measure.days", "sum", "quarter")["select"],
-            },
-            None,
-            id="fact-model-additive",
-        ),
+        pytest.param(({"monthly": _MONTHLY}, {"time": {"timezone": "America/New_York", "column_timezone": "UTC"}}), _rollup_query(_REVENUE, "sum", "month"), "timezone_mismatch", id="role-converts-timezone"),
+        pytest.param(({"weekly": _WEEKLY},), _rollup_query(_REVENUE, "sum", "month"), "unsupported_query_grain", id="weekly-rollup-default-grains"),
+        pytest.param(({"weekly": {**_WEEKLY, "eligible_time_grains": ["week", "month"]}},), _rollup_query(_REVENUE, "sum", "month"), "non_nesting_grain", id="weekly-rollup-declares-month"),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "month", start="2026-01-15", end="2026-03-31"), "time_bounds_not_aligned", id="bounds-not-on-month-boundaries"),
+        pytest.param(_MONTHLY_ONLY, _PREDICATE_QUERY, "metric_predicate_filter", id="measure-metric-predicate"),
+        pytest.param(_MONTHLY_ONLY, {**_rollup_query(_REVENUE, "sum", "month"), "metric_filters": [{"expression": _BIG_ORDERS, "op": "=", "value": True}]}, "metric_predicate_filter", id="query-metric-predicate"),
+        pytest.param(({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True}), _DAYS_QUERY, "aggregation_not_reaggregable", id="distinct-day-keyed-row-key"),
+        pytest.param(({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True, "day_measure": {"kind": "aggregate", "expr": "1"}}), {**_DAYS_QUERY, "select": _rollup_query("measure.days", "sum", "quarter")["select"]}, None, id="day-keyed-additive"),
         pytest.param(_MONTHLY_ONLY, _NO_TIME_QUERY, "missing_query_time_grain", id="no-time"),
-        pytest.param(
-            ({"hourly": _HOURLY},),
-            _rollup_query(_REVENUE, "sum", "day", start="2026-01-10T05:00:00"),
-            "time_bounds_not_aligned",
-            id="hourly-bound-inside-a-day",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "sum", "month", start="2026-02-01T00:00:00.0000001"),
-            "time_bounds_not_aligned",
-            id="bound-past-microseconds",
-        ),
+        pytest.param(({"hourly": _HOURLY},), _rollup_query(_REVENUE, "sum", "day", start="2026-01-10T05:00:00"), "time_bounds_not_aligned", id="hourly-bound-inside-a-day"),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "month", start="2026-02-01T00:00:00.0000001"), "time_bounds_not_aligned", id="bound-past-microseconds"),
         # Rollup columns declare what they hold (`holds:`); each pair of what a column holds and
         # what the query asks for must re-aggregate exactly.
-        pytest.param(
-            _monthly(revenue={"column": "max_amount", "holds": "max"}),
-            _rollup_query(_REVENUE, "max", "quarter"),
-            None,
-            id="max",
-        ),
-        pytest.param(
-            _monthly(revenue={"column": "min_amount", "holds": "min"}),
-            _grouped(_rollup_query(_REVENUE, "min", "year"), _STORE),
-            None,
-            id="min-by-store",
-        ),
-        pytest.param(
-            _monthly(revenue={"column": "max_amount", "holds": "max"}),
-            _rollup_query(_REVENUE, "sum", "quarter"),
-            "aggregation_not_reaggregable",
-            id="sum-from-a-max-column",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "max", "quarter"),
-            "aggregation_not_reaggregable",
-            id="max-from-a-sum-column",
-        ),
-        pytest.param(
-            _monthly(revenue={"column": "max_amount", "holds": "max", "aggregation": "sum"}),
-            _rollup_query(_REVENUE, "max", "quarter"),
-            "unsupported_rollup_aggregation",
-            id="max-column-re-added",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "avg", "quarter"),
-            "unsupported_query_aggregation",
-            id="avg",
-        ),
+        pytest.param(_monthly(revenue={"column": "max_amount", "holds": "max"}), _rollup_query(_REVENUE, "max", "quarter"), None, id="max"),
+        pytest.param(_monthly(revenue={"column": "min_amount", "holds": "min"}), _grouped(_rollup_query(_REVENUE, "min", "year"), _STORE), None, id="min-by-store"),
+        pytest.param(_monthly(revenue={"column": "max_amount", "holds": "max"}), _rollup_query(_REVENUE, "sum", "quarter"), "aggregation_not_reaggregable", id="sum-from-a-max-column"),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "max", "quarter"), "aggregation_not_reaggregable", id="max-from-a-sum-column"),
+        pytest.param(_monthly(revenue={"column": "max_amount", "holds": "max", "aggregation": "sum"}), _rollup_query(_REVENUE, "max", "quarter"), "unsupported_rollup_aggregation", id="max-column-re-added"),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "avg", "quarter"), "unsupported_query_aggregation", id="avg"),
         pytest.param(
             _monthly(balance="revenue"),
             _rollup_query("measure.balance", "sum", "quarter"),
             "aggregation_not_reaggregable",
             id="stock-measure",  # the base path sums each order's last value per quarter
         ),
-        pytest.param(
-            _monthly(balance={"column": "revenue", "holds": "sum"}),
-            _rollup_query("measure.balance", "sum", "quarter"),
-            "aggregation_not_reaggregable",
-            id="stock-measure-declared-sum",
-        ),
+        pytest.param(_monthly(balance={"column": "revenue", "holds": "sum"}), _rollup_query("measure.balance", "sum", "quarter"), "aggregation_not_reaggregable", id="stock-measure-declared-sum"),
         # A distinct count of a key other than the row key answers only one rollup row per
         # output row: the rollup's grain, and every rollup dimension grouped or pinned by `=`.
-        pytest.param(
-            _DISTINCT_BUYERS,
-            _grouped(_BUYERS_MONTH, _STORE),
-            None,
-            id="distinct-by-every-dimension",
-        ),
-        pytest.param(
-            _DISTINCT_BUYERS,
-            _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": "=", "value": "s1"}]),
-            None,
-            id="distinct-dimension-pinned",
-        ),
-        pytest.param(
-            _DISTINCT_BUYERS,
-            _with_filter(
-                _rollup_query(_BUYERS, "count_distinct", "month"),
-                {"field": _STORE, "op": "=", "value": "s2"},
-            ),
-            None,
-            id="distinct-dimension-pinned-by-measure-filter",
-        ),
-        pytest.param(
-            _DISTINCT_BUYERS,
-            _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": "in", "value": ["s1", "s2"]}]),
-            "aggregation_not_reaggregable",
-            id="distinct-dimension-in-list",
-        ),
-        pytest.param(
-            _DISTINCT_BUYERS,
-            _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": ">=", "value": "s1"}]),
-            "aggregation_not_reaggregable",
-            id="distinct-dimension-range",
-        ),
-        pytest.param(
-            _DISTINCT_BUYERS,
-            _BUYERS_MONTH,
-            "aggregation_not_reaggregable",
-            id="distinct-dimension-not-grouped",
-        ),
-        pytest.param(
-            _DISTINCT_BUYERS,
-            _grouped(_rollup_query(_BUYERS, "count_distinct", "quarter"), _STORE),
-            "aggregation_not_reaggregable",
-            id="distinct-coarser-grain",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _grouped(_BUYERS_MONTH, _STORE),
-            "aggregation_not_reaggregable",
-            id="distinct-without-holds",
-        ),
+        pytest.param(_DISTINCT_BUYERS, _grouped(_BUYERS_MONTH, _STORE), None, id="distinct-by-every-dimension"),
+        pytest.param(_DISTINCT_BUYERS, _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": "=", "value": "s1"}]), None, id="distinct-dimension-pinned"),
+        pytest.param(_DISTINCT_BUYERS, _with_filter(_rollup_query(_BUYERS, "count_distinct", "month"), {"field": _STORE, "op": "=", "value": "s2"}), None, id="distinct-dimension-pinned-by-measure-filter"),
+        pytest.param(_DISTINCT_BUYERS, _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": "in", "value": ["s1", "s2"]}]), "aggregation_not_reaggregable", id="distinct-dimension-in-list"),
+        pytest.param(_DISTINCT_BUYERS, _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": ">=", "value": "s1"}]), "aggregation_not_reaggregable", id="distinct-dimension-range"),
+        pytest.param(_DISTINCT_BUYERS, _BUYERS_MONTH, "aggregation_not_reaggregable", id="distinct-dimension-not-grouped"),
+        pytest.param(_DISTINCT_BUYERS, _grouped(_rollup_query(_BUYERS, "count_distinct", "quarter"), _STORE), "aggregation_not_reaggregable", id="distinct-coarser-grain"),
+        pytest.param(_MONTHLY_ONLY, _grouped(_BUYERS_MONTH, _STORE), "aggregation_not_reaggregable", id="distinct-without-holds"),
         pytest.param(
             (
                 {
@@ -771,54 +603,29 @@ _SHIP_TO_KEY = {
             id="distinct-entity-grain-not-a-dimension",  # rows per order can't be grouped
         ),
         # A column pre-joined from another model routes only along the query's join path.
-        pytest.param(
-            ({"region": _REGION}, {"ship_to": False}), _BY_REGION, None, id="pre-joined-path"
-        ),
+        pytest.param(({"region": _REGION}, {"ship_to": False}), _BY_REGION, None, id="pre-joined-path"),
         pytest.param(
             ({"region": _REGION}, {"ship_to": False}),
             _rollup_query(_REVENUE, "sum", "month"),
             "join_path_mismatch",
             id="pre-joined-column-unused",  # its inner join left out order 13 (no such customer)
         ),
-        pytest.param(
-            ({"no_role": _NO_ROLE}, {"ship_to": False}),
-            _rollup_query(_REVENUE, "sum", "month"),
-            "temporal_role_mismatch",
-            id="rollup-without-a-time-role",
-        ),
+        pytest.param(({"no_role": _NO_ROLE}, {"ship_to": False}), _rollup_query(_REVENUE, "sum", "month"), "temporal_role_mismatch", id="rollup-without-a-time-role"),
         pytest.param(
             ({"region": _REGION}, {"ship_to": True}),
             _BY_REGION,
             "join_path_mismatch",
             id="pre-joined-other-path",  # the query joins customers by the ship-to
         ),
-        pytest.param(
-            ({"no_path": _NO_PATH}, {"ship_to": False}),
-            _BY_REGION,
-            "join_path_mismatch",
-            id="pre-joined-path-undeclared",
-        ),
-        pytest.param(
-            ({"region": _REGION}, {"ship_to": False}),
-            _grouped(
-                _rollup_query(_REVENUE, "sum", "month"),
-                where=[{"field": "dimension.region", "op": "=", "value": "east"}],
-            ),
-            None,
-            id="pre-joined-path-filter",
-        ),
+        pytest.param(({"no_path": _NO_PATH}, {"ship_to": False}), _BY_REGION, "join_path_mismatch", id="pre-joined-path-undeclared"),
+        pytest.param(({"region": _REGION}, {"ship_to": False}), _grouped(_rollup_query(_REVENUE, "sum", "month"), where=[{"field": "dimension.region", "op": "=", "value": "east"}]), None, id="pre-joined-path-filter"),
         pytest.param(
             ({"ship_to_key": _SHIP_TO_KEY}, {"ship_to": False}),
             _grouped(_rollup_query(_REVENUE, "sum", "month"), _CUSTOMER_KEY),
             "join_path_mismatch",
             id="foreign-key-with-two-relationships",  # the base reads the buyer's key
         ),
-        pytest.param(
-            ({"buyer_key": _BUYER_KEY}, {"ship_to": None}),
-            _grouped(_rollup_query(_REVENUE, "sum", "month"), _CUSTOMER_KEY),
-            None,
-            id="foreign-key-with-one-relationship",
-        ),
+        pytest.param(({"buyer_key": _BUYER_KEY}, {"ship_to": None}), _grouped(_rollup_query(_REVENUE, "sum", "month"), _CUSTOMER_KEY), None, id="foreign-key-with-one-relationship"),
         pytest.param(
             ({"product": _PRODUCT}, {"lines": True}),
             _rollup_query(_REVENUE, "sum", "month"),
@@ -834,114 +641,28 @@ _SHIP_TO_KEY = {
             "one_to_many_hop",
             id="rollup-pre-joined-one-to-many-filter",  # the base counts each order once
         ),
-        pytest.param(
-            ({"monthly": _MONTHLY}, {"ship_to": None}),
-            _rollup_query("measure.weight", "sum", "month"),
-            "join_path_mismatch",
-            id="measure-read-from-another-model",
-        ),
+        pytest.param(({"monthly": _MONTHLY}, {"ship_to": None}), _rollup_query("measure.weight", "sum", "month"), "join_path_mismatch", id="measure-read-from-another-model"),
         # Reason codes that predate the rollup guards.
-        pytest.param(
-            ({"monthly": {**_MONTHLY, "equivalence": {"kind": "approximate"}}},),
-            _rollup_query(_REVENUE, "sum", "quarter"),
-            "non_exact_equivalence",
-            id="approximate-rollup",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _grouped(_rollup_query(_REVENUE, "sum", "month"), "dimension.customer_id"),
-            "missing_dimension",
-            id="excluded-dimension",
-        ),
-        pytest.param(
-            ({"monthly": {**_MONTHLY, "eligible_time_grains": ["day", "month"]}},),
-            _rollup_query(_REVENUE, "sum", "day"),
-            "aggregate_grain_too_coarse",
-            id="day-from-a-month-rollup",
-        ),
-        pytest.param(
-            (
-                {
-                    "monthly": {
-                        **_MONTHLY,
-                        "excludes": {**_MONTHLY["excludes"], "measures": ["revenue"]},
-                    }
-                },
-            ),
-            _rollup_query(_REVENUE, "sum", "quarter"),
-            "missing_measure",
-            id="excluded-measure",
-        ),
-        pytest.param(
-            ({"no_role": {**_NO_ROLE, "time": _MONTHLY["time"], "columns": _UNDECLARED_COLUMNS}},),
-            _rollup_query(_REVENUE, "sum", "quarter"),
-            "unsupported_rollup",
-            id="column-without-rollup-or-holds",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "sum", "month", start="2026-02-01T00:00:00.0000000"),
-            None,
-            id="bound-with-zero-digits-past-microseconds",
-        ),
+        pytest.param(({"monthly": {**_MONTHLY, "equivalence": {"kind": "approximate"}}},), _rollup_query(_REVENUE, "sum", "quarter"), "non_exact_equivalence", id="approximate-rollup"),
+        pytest.param(_MONTHLY_ONLY, _grouped(_rollup_query(_REVENUE, "sum", "month"), "dimension.customer_id"), "missing_dimension", id="excluded-dimension"),
+        pytest.param(({"monthly": {**_MONTHLY, "eligible_time_grains": ["day", "month"]}},), _rollup_query(_REVENUE, "sum", "day"), "aggregate_grain_too_coarse", id="day-from-a-month-rollup"),
+        pytest.param(({"monthly": {**_MONTHLY, "excludes": {**_MONTHLY["excludes"], "measures": ["revenue"]}} },), _rollup_query(_REVENUE, "sum", "quarter"), "missing_measure", id="excluded-measure",),
+        pytest.param(({"no_role": {**_NO_ROLE, "time": _MONTHLY["time"], "columns": _UNDECLARED_COLUMNS}},), _rollup_query(_REVENUE, "sum", "quarter"), "unsupported_rollup", id="column-without-rollup-or-holds"),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "month", start="2026-02-01T00:00:00.0000000"), None, id="bound-with-zero-digits-past-microseconds"),
         # Exact rollup answers that must keep routing.
         pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "quarter"), None, id="sum"),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query("measure.order_count", "count_distinct", "quarter"),
-            None,
-            id="distinct-fact-key",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "sum", "quarter", start="2026-02-01", end="2026-04-01"),
-            None,
-            id="aligned-bounds",
-        ),
-        pytest.param(
-            ({"weekly": _WEEKLY},), _rollup_query(_REVENUE, "sum", "week"), None, id="week"
-        ),
-        pytest.param(
-            ({"hourly": _HOURLY},),
-            _rollup_query(_REVENUE, "sum", "day", start="2026-01-01", end="2026-04-01"),
-            None,
-            id="hourly-day-bounds",
-        ),
-        pytest.param(
-            ({"minutely": _MINUTELY},),
-            _rollup_query(_REVENUE, "sum", "day", start="2026-01-01", end="2026-04-01"),
-            None,
-            id="minutely-day-bounds",
-        ),
-        pytest.param(
-            ({"monthly": _MONTHLY}, {"time": {"timezone": "America/New_York"}}),
-            _rollup_query(_REVENUE, "sum", "month"),
-            None,
-            id="role-zone-without-conversion",
-        ),
-        pytest.param(
-            ({"monthly": _MONTHLY}, {"time": {"timezone": "UTC", "column_timezone": "UTC"}}),
-            _rollup_query(_REVENUE, "sum", "month"),
-            None,
-            id="role-same-zones",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _rollup_query(_REVENUE, "sum", "quarter", calendar_id="default"),
-            None,
-            id="default-calendar",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _with_filter(
-                _rollup_query(_REVENUE, "sum", "month"),
-                {"field": "dimension.store_id", "op": "=", "value": "s1"},
-            ),
-            None,
-            id="measure-dimension-filter",
-        ),
+        pytest.param(_MONTHLY_ONLY, _rollup_query("measure.order_count", "count_distinct", "quarter"), None, id="distinct-fact-key"),
+        # Open windows: a named window bounds its zeros by the base's loaded data instead.
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "quarter", start="2026-02-01"), None, id="aligned-bounds"),
+        pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "quarter", start="2026-02-01", end="2026-04-01"), "base_time_coverage_required", id="named-window"),
+        pytest.param(({"weekly": _WEEKLY},), _rollup_query(_REVENUE, "sum", "week"), None, id="week"),
+        pytest.param(({"hourly": _HOURLY},), _rollup_query(_REVENUE, "sum", "day", start="2026-01-01"), None, id="hourly-day-bounds"),
+        pytest.param(({"minutely": _MINUTELY},), _rollup_query(_REVENUE, "sum", "day", start="2026-01-01"), None, id="minutely-day-bounds"),
+        pytest.param(({"monthly": _MONTHLY}, {"time": {"timezone": "America/New_York"}}), _rollup_query(_REVENUE, "sum", "month"), None, id="role-zone-without-conversion"),
+        pytest.param(({"monthly": _MONTHLY}, {"time": {"timezone": "UTC", "column_timezone": "UTC"}}), _rollup_query(_REVENUE, "sum", "month"), None, id="role-same-zones"),
+        pytest.param(_MONTHLY_ONLY, _with_filter(_rollup_query(_REVENUE, "sum", "month"), {"field": "dimension.store_id", "op": "=", "value": "s1"}), None, id="measure-dimension-filter"),
     ],
-)
+)  # fmt: skip
 def test_rollup_routing_matches_base_tables(
     tmp_path: Path, rollups: tuple, query: dict, reason: str | None
 ):
@@ -953,36 +674,11 @@ def test_rollup_routing_matches_base_tables(
     assert _decisions(routing) == {f"leaf_1:{relation}": reason or "selected"}
 
 
-def test_a_non_default_calendar_refuses_before_routing(tmp_path: Path) -> None:
-    query = _rollup_query(_REVENUE, "sum", "quarter", calendar_id="fiscal", fill=True)
-    with pytest.raises(SemanticLayerError) as refused:
-        _routed_answers(tmp_path, ({"monthly": _MONTHLY}, {"fiscal_calendar": True}), query)
-
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["reason"] == "calendar_not_supported_yet"
-
-
 @pytest.mark.parametrize(
     ("rollups", "query", "decisions"),
     [
-        pytest.param(
-            ({"monthly": _MONTHLY, "spare": {**_MONTHLY, "selection": {"priority": -1}}},),
-            _rollup_query(_REVENUE, "sum", "quarter"),
-            {
-                "leaf_1:aggregate_relation.orders_monthly": "selected",
-                "leaf_1:aggregate_relation.orders_spare": "eligible",
-            },
-            id="lower-priority-rollup",
-        ),
-        pytest.param(
-            _MONTHLY_ONLY,
-            _TWO_LEAVES,
-            {
-                "leaf_1:aggregate_relation.orders_monthly": "selected",
-                "leaf_2:aggregate_relation.orders_monthly": "aggregation_not_reaggregable",
-            },
-            id="one-leaf-routed-one-on-base-tables",
-        ),
+        pytest.param(({"monthly": _MONTHLY, "spare": {**_MONTHLY, "selection": {"priority": -1}}},), _rollup_query(_REVENUE, "sum", "quarter"), {"leaf_1:aggregate_relation.orders_monthly": "selected", "leaf_1:aggregate_relation.orders_spare": "eligible"}, id="lower-priority-rollup"),
+        pytest.param(_MONTHLY_ONLY, _TWO_LEAVES, {"leaf_1:aggregate_relation.orders_monthly": "selected", "leaf_2:aggregate_relation.orders_monthly": "aggregation_not_reaggregable"}, id="one-leaf-routed-one-on-base-tables"),
         pytest.param(
             _MONTHLY_ONLY,
             _DISTRIBUTION,
@@ -996,7 +692,7 @@ def test_a_non_default_calendar_refuses_before_routing(tmp_path: Path) -> None:
             id="distribution-beside-a-routed-sum",  # the sum's branch reads the rollup
         ),
     ],
-)
+)  # fmt: skip
 def test_routing_report_lists_each_rollup_per_leaf(
     tmp_path: Path, rollups: tuple, query: dict, decisions: dict
 ):
@@ -1006,17 +702,11 @@ def test_routing_report_lists_each_rollup_per_leaf(
 @pytest.mark.parametrize(
     ("columns", "error"),
     [
-        pytest.param(
-            {"revenue": {"column": "max_amount", "hold": "max"}}, "unknown keys", id="typo"
-        ),
+        pytest.param({"revenue": {"column": "max_amount", "hold": "max"}}, "unknown keys", id="typo"),
         pytest.param({"revenue": {"column": "revenue", "holds": "avg"}}, "holds 'avg'", id="value"),
-        pytest.param(
-            {"revenue": {"column": "revenue", "holds": "count_distinct"}},
-            "holds 'count_distinct'",
-            id="not-allowed-for-the-measure",
-        ),
+        pytest.param({"revenue": {"column": "revenue", "holds": "count_distinct"}}, "holds 'count_distinct'", id="not-allowed-for-the-measure"),
     ],
-)
+)  # fmt: skip
 def test_rollup_bindings_are_checked(tmp_path: Path, columns: dict, error: str):
     _rollup_package(tmp_path / "p", *_monthly(**columns))
     with pytest.raises(SemanticLayerError, match=error):
@@ -1031,22 +721,31 @@ def test_rollup_bindings_are_checked(tmp_path: Path, columns: dict, error: str):
         load_package_config(str(tmp_path / "q"))
 
 
-@pytest.mark.parametrize("single_file", [False, True], ids=["directory", "single-file"])
+# Each refusal once, alternating a package directory and a single-file package.
 @pytest.mark.parametrize(
-    ("location", "fields", "error"),
+    ("location", "fields", "error", "single_file"),
     [
-        ("package", {"aggregate_relations": []}, "declare rollups under the model's `variants:`"),
-        ("package", {"aggregate_relations": None}, "declare rollups under the model's `variants:`"),
-        ("model", {"default_variant": "tx"}, "default_variant"),
-        ("variant", {"time_grain": "month"}, "time_grain"),
-        ("variant", {"time_column": "month_start"}, "time_column"),
-        ("variant", {"temporal_role": "temporal_role.t"}, "temporal_role"),
-        ("variant", {"grain": "month"}, "grain must be a mapping"),
-        ("variant", {"grain": {"time": "transaction"}, "time_column": "bad"}, "time_column"),
-        ("variant", {"covers": "inherit_all"}, "covers"),
-        ("variant", {"selection": {"prefer_for_grains": ["month"]}}, "prefer_for_grains"),
-        ("variant", {"equivalence": {"baseline": "tx"}}, "baseline"),
-        ("variant", {"filters": _S1_ONLY["filters"]}, "filters"),
+        (*case, i % 2 == 1)
+        for i, case in enumerate(
+            [
+                ("package", {"aggregate_relations": []}, "`variants:`"),
+                ("package", {"aggregate_relations": None}, "`variants:`"),
+                ("model", {"default_variant": "tx"}, "default_variant"),
+                ("variant", {"time_grain": "month"}, "time_grain"),
+                ("variant", {"time_column": "month_start"}, "time_column"),
+                ("variant", {"temporal_role": "temporal_role.t"}, "temporal_role"),
+                ("variant", {"grain": "month"}, "grain must be a mapping"),
+                (
+                    "variant",
+                    {"grain": {"time": "transaction"}, "time_column": "bad"},
+                    "time_column",
+                ),
+                ("variant", {"covers": "inherit_all"}, "covers"),
+                ("variant", {"selection": {"prefer_for_grains": ["month"]}}, "prefer_for_grains"),
+                ("variant", {"equivalence": {"baseline": "tx"}}, "baseline"),
+                ("variant", {"filters": _S1_ONLY["filters"]}, "filters"),
+            ]
+        )
     ],
 )
 def test_noncanonical_rollups_are_refused(tmp_path: Path, single_file, location, fields, error):
@@ -1098,7 +797,7 @@ def test_foreign_key_rollup_checks_its_declared_path(tmp_path: Path, fanout_path
     graph_path = package / "graph.yml"
     graph = yaml.safe_load(graph_path.read_text())
     graph["graph"]["relationships"]["lines_customer"] = {
-        "id": "relationship.lines_customer",
+        "as": "relationship.lines_customer",
         "entities": ["line", "customer"],
         "cardinality": "many_to_one",
     }
@@ -1142,6 +841,15 @@ def test_foreign_key_rollup_checks_its_declared_path(tmp_path: Path, fanout_path
     assert report["selected"] == ([] if fanout_path else [relation_id])
 
 
+def _public_rows(connection: Any, compiled: dict) -> list[tuple]:
+    """The answer's columns: a re-aggregated measure's source-row count is the runtime's own,
+    and a rollup holds no source rows to count."""
+    cursor = connection.execute(compiled["sql"])
+    hidden = set(hidden_columns(compiled))
+    keep = [index for index, column in enumerate(cursor.description) if column[0] not in hidden]
+    return [tuple(row[index] for index in keep) for row in cursor.fetchall()]
+
+
 def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
     """Check that the package without its rollups, with them, and with routing off all return
     the same rows; return the routing report with them."""
@@ -1154,10 +862,7 @@ def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
         compiled[name] = compile_query(config, Registry(config), query)
     with aggregate_routing(False):
         compiled["off"] = compile_query(config, Registry(config), query)
-    rows = {
-        name: sorted(connection.execute(c["sql"]).fetchall(), key=str)
-        for name, c in compiled.items()
-    }
+    rows = {name: sorted(_public_rows(connection, c), key=str) for name, c in compiled.items()}
 
     assert rows["rollup"] == rows["off"]
     # A dimension a rollup holds from another model keeps its inner join in this package (see
@@ -1204,10 +909,10 @@ def _decisions(routing: dict) -> dict[str, str]:
 def test_routing_switch_applies_on_a_warm_compile_cache(tmp_path: Path, monkeypatch):
     _rollup_package(tmp_path / "p", {"monthly": _MONTHLY})
     runtime = Runtime.from_path(str(tmp_path / "p"))
-    payload = {**_rollup_query(_REVENUE, "sum", "quarter"), "verbosity": "full"}
+    payload = _rollup_query(_REVENUE, "sum", "quarter")
 
     def compile_once(runtime: Runtime) -> tuple[list[str], bool]:
-        compiled = runtime.compile(payload)
+        compiled = runtime.compile(payload, verbosity="full")
         routing = compiled["performance_plan"]["aggregate_routing"]
         return routing["selected"], compiled["compile_stats"]["cache_hit"]
 

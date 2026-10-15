@@ -33,28 +33,32 @@ surface.
 - rolling expressions
 - prior-period expressions
 - period-to-date expressions
-- post-aggregation metric filters
+- result thresholds (`having`) and entity filters (`any`, `none`, or `having` with `over`)
+- `share` of a total, with the denominator stated in `assumptions`
+- a statistic override (`aggregation`) the measure allows, stated in `assumptions`
+- grouping by an entity's display name keyed by the entity, so namesakes stay apart
 - query-level time grain selection
-- `time.fill`
-- `time.calendar_id`
+- named windows (`last`, `this`, `start`/`end`) that answer every period (on ClickHouse, the
+  periods with rows, stated as `OBSERVED_PERIODS_ONLY`), and `time.fill` on an open window
 - compile and validate before execution
-- `order_by.field = "time"` when a query has a time axis
+- `order_by.field = "period"` when a query has a time axis
 
 ### Planner Semantics
 
 - safe fact-to-dimension traversal
 - multi-hop entity traversal with per-hop cardinality checks (default ceiling
   4 relationships; raisable to 8 via `graph.path_policy.max_hops`)
-- route rule: a query's own `route_decisions` row for the pair, else a
+- route rule: a call's own `routes` entry for the pair, else a
   `graph.path_preferences` row for the pair, else the start entity's one direct
-  key (noted with `ROUTE_COLOCATED_KEY`), else the routes that follow every row
+  key (named in the answer's `routes`), else the routes that follow every row
   whose pair they walk through, if one remains; anything else is refused as
   `AMBIGUOUS_PATH` (`reason: route_decision_required`, with
   `details.clarification`: the question in business words and, per route, its
   meaning and the row that decides it), whatever the routes' lengths. Hop count
   and weights never decide, and adding a route never changes an answer silently.
-- route choice per query (`route_decisions`, the chosen option's row; disclosed
-  as `ROUTE_CHOSEN_BY_QUERY`, refused under a row filter) or as the package
+- route choice per call (`routes`, from the chosen option's `query`; disclosed
+  in the answer's `routes` with one-step switches to the other options, refused
+  under a row filter) or as the package
   default (Architect `record_route_decision`)
 - route recording via `graph.path_preferences` (load-time validated, and again
   for a configuration built in code; rows that disagree about a pair are
@@ -98,7 +102,6 @@ measure), jaffle ships both so authors can compare the trade-offs.
   with `accumulation: { kind: stock, snapshot: ... }`)
 - historical attribute slicing
 - executed event-pair conversion metrics
-- alternate-calendar dense fill
 - median and percentile aggregations
 
 ### Metadata APIs
@@ -119,7 +122,7 @@ measure), jaffle ships both so authors can compare the trade-offs.
 - metric temporal-role metadata
 - dimension provenance for non-local dimensions
 - measure-first aggregation guidance, recommended dimensions, and search-term ranking
-- plan output with `status`, `intent_ir`, `best.query_ir`, and optional alternatives
+- plan output with `status`, `intent_ir`, `best.query`, and optional alternatives
 - comparison-aware planning with validated inline comparison drafts
 - comparison-family and clock-variant metadata on object cards
 - starter query patches on measure, metric, and dimension inspection cards
@@ -170,12 +173,12 @@ In practice:
   (entity key, output grain) before it aggregates, so the filter means EXISTS
 - a distinct count grouped by such a dimension counts each row once in every group it
   has a matching child in ("orders that included each product type"); both carry a
-  `REWRITE_APPLIED` warning (`fanout_dedup`)
-- a child group in `where` (`{child, match: any|none, where}`) says whether its
+  `REWRITE_APPLIED` note (severity `info`, `fanout_dedup`)
+- an entity filter in `where` (`{entity, any | none}`) says whether its
   conditions apply to the same child row; it lowers to correlated `EXISTS` or
-  `NOT EXISTS`. Two or more positive plain filters on one child, or one negated one,
-  are refused with `AMBIGUOUS_CHILD_SCOPE`, whose clarification offers each reading as a
-  `where` list
+  `NOT EXISTS`. Two or more positive plain conditions on one child, or one `not` or
+  `missing` one, are refused with `AMBIGUOUS_CHILD_SCOPE`, whose clarification offers each
+  reading as a `where` list
 - unsupported grain-expanding shapes still fail fast rather than silently miscomputing:
   other aggregations grouped across the hop (order revenue by item product type reads
   as either an item split or each containing order's total), negated, null or `false`
@@ -211,10 +214,10 @@ Current guardrails:
 - weekly rollups answer only week queries, and query bounds must fall on the
   rollup's bucket boundaries
 - `count_distinct` routes across rollup rows only for the single-column row key
-  of a model that isn't a fact model; a declared `holds: count_distinct` column
+  of a model; a declared `holds: count_distinct` column
   also answers at the rollup's own grain when every rollup dimension is grouped
-  or pinned by `=`
-- query-time `metric_predicate` filters, relations that declare `filters`, roles
+  or pinned by a one-value `is`
+- entity filters on aggregates and other `metric_predicate` filters, relations that declare `filters`, roles
   that convert time zones and non-default calendars do not route yet
 - `logical_plan.measure_plans[].aggregate_relation_rejections` gives the reason
   for each rejected rollup
@@ -235,13 +238,13 @@ Surface signals:
 
 Current guardrails:
 
-- predicate expressions are valid inside published metrics and `metric_filters.expression`
+- predicate expressions are valid inside published metrics, and in a call as an entity filter's `having` or an inline `metric_predicate` (an aggregate's `filter`, a scoped aggregate's `predicates`)
 - predicate expressions are not selectable directly as projected result columns
-- query-time predicates default to contextual scope
-- package-authored predicates must declare `scope_mode`
+- a call's predicate states `over` (`all_time`, `window` or `period`); without it the call is refused with `ENTITY_FILTER_PERIOD_UNSTATED`
+- package-authored predicates must declare `scope_mode` (`entity_only`, `entity_period`, or `contextual`, which only a package metric can use)
 - contextual predicates inherit the outer time bucket and compatible grouped context entities
 - a contextual predicate measured on another clock than the query's is refused (`INVALID_TEMPORAL_BINDING`) unless it sets `time_alignment: same_query_period` and names one clock
-- an entity-only window predicate with an incompatible query clock refuses (`INVALID_TEMPORAL_BINDING`) when its input has multiple compatible clocks; pin the input clock before executing
+- a window predicate (`over: window`) with an incompatible query clock refuses (`INVALID_TEMPORAL_BINDING`) when its input has multiple compatible clocks; pin the input clock before executing
 - a threshold that zero satisfies counts entities with no rows as 0 for counts and sums; an average, minimum, maximum or ratio over no rows is NULL, so those entities never satisfy a threshold
 - outer compatible filters are inherited into the predicate subquery without widening the scoped join key
 - finer-grain or non-deterministic time mixes fail with semantic errors rather than smearing values
@@ -262,7 +265,7 @@ a separate two-step pattern. Worked example:
 #### Plan phrase support for population-percentile rollups
 
 The plan pattern detector recognises natural-language phrases
-naming a population percentile and emits the inline-threshold IR
+naming a population percentile and emits the inline threshold
 directly. Triggers include:
 
 - `top decile of` → `p = 0.9`
@@ -274,7 +277,7 @@ directly. Triggers include:
 - `above the Nth percentile` → `p = N / 100`
 
 Example: `"revenue from top decile of customers by lifetime spend"`
-produces a `scoped_aggregate` IR with a `metric_predicate` whose
+produces a `scoped_aggregate` with a `metric_predicate` whose
 `value` is `{kind: "percentile", p: 0.9}`. The detector reuses the
 existing `_qualified_metric_rollup` path — no new pattern, only new
 trigger phrases and percentile-shaped threshold values.
@@ -282,7 +285,7 @@ trigger phrases and percentile-shaped threshold values.
 ### Output Safety
 
 - duplicate projected output names are rejected with `DUPLICATE_OUTPUT_ALIAS`
-- collisions are checked across explicit select aliases, grouped dimension IDs, and the projected time-axis alias
+- collisions are checked across explicit select aliases, grouped dimension IDs, and the `period` column
 - cumulative expressions with a bounded `query.time.start` fail with `CUMULATIVE_TIME_FILTER_UNSUPPORTED` instead of silently computing from truncated history; so does a `where` filter on a date or calendar dimension other than an upper bound, and rolling, prior-period and period-to-date windows fail the same way with `WINDOWED_TIME_FILTER_UNSUPPORTED`
 - the same temporal-filter guard covers conditions on the window's own measure inputs, including authored metric inputs, and row policies applied to the statement's scans; these refuse after object authorization instead of computing over incomplete lookback history, without disclosing authored conditions or offering a patch that removes the condition or policy
 
@@ -361,13 +364,11 @@ and executes without any conversion semantics. This includes the
 positive same-store 7d conversion case anchored on
 `temporal_role.jaffle_session_started_at`:
 
-```jsonc
+```json
 {
   "select": [
     {
-      "expression": {
-        "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-      },
+      "expression": "metric.sales.session_to_order_conversion_rate_7d_same_store",
       "as": "same_store_conversion_rate_7d"
     }
   ],
@@ -387,27 +388,23 @@ must be packaged inside an authored conversion metric such as
 `metric.sales.session_to_order_conversion_rate_7d`. The metric
 declares the base clock, the converted clock, the entity matching the
 two events, and the window. The runtime then executes a governed
-event-pair conversion. Free-form cross-clock joins in user-supplied
-IR are not supported; reach for an authored metric instead.
+event-pair conversion. Free-form cross-clock joins in a caller's
+call are not supported; reach for an authored metric instead.
 
 ### Pairings that fail at validate with `INVALID_TEMPORAL_BINDING`
 
 If the top-level `time.temporal_role` does not match the conversion
 metric's declared anchor (and is not the converted clock either), the
-runtime now rejects the request at `validate` with the
-`INVALID_TEMPORAL_BINDING` error code (added in the Phase 3 binder
-safety gate). Before that gate, the same query would compile and
-fail at execute with a DuckDB binder error. The error envelope's
+runtime rejects the request at `validate` with the
+`INVALID_TEMPORAL_BINDING` error code, before any SQL runs. The error envelope's
 `recovery_hints` includes the metric's allowed anchor roles and a
 suggested rewrite (`kind: "filter_on_conversion_anchor"`).
 
-```jsonc
+```json
 {
   "select": [
     {
-      "expression": {
-        "metric": "metric.sales.session_to_order_conversion_rate_7d_same_store"
-      },
+      "expression": "metric.sales.session_to_order_conversion_rate_7d_same_store",
       "as": "rate"
     }
   ],
@@ -416,8 +413,11 @@ suggested rewrite (`kind: "filter_on_conversion_anchor"`).
     "grain": "month"
   }
 }
+```
+
+```jsonc
+// INVALID_TEMPORAL_BINDING
 // -> validate.ok = false
-// -> errors[0].code = "INVALID_TEMPORAL_BINDING"
 // -> errors[0].details.anchor_temporal_role
 //      = "temporal_role.jaffle_session_started_at"
 // -> errors[0].recovery_hints[0].kind
@@ -441,15 +441,14 @@ lands in one place rather than scattering across the codebase.
 - **Per-row event-anchored windows.** Aggregations over a window
   that varies per row of an outer entity (e.g. "revenue in the 90
   days following each customer's first order") are still not
-  executable end-to-end. The IR contract DID land in round three —
+  executable end-to-end. The call shape is in place:
   `scoped_aggregate` accepts `anchor: {temporal_role}` and
   `window: {unit, value, direction}` keys, the parser validates
   the shape, and the bind layer raises `INVALID_ANCHOR_ROLE` with
   `feature_status: ir_contract_only` and a structured
   `feature_pending_sql_lowering` recovery hint when the SQL
-  lowering would be invoked. Authors can build queries against
-  the locked IR shape today; SQL emission ships in the next
-  round. A metric recipe that authors the same anchor and window
+  lowering would be invoked. Calls can use the shape today;
+  SQL emission ships in a later release. A metric recipe that authors the same anchor and window
   is refused the same way, so it is not a workaround. Supported
   shapes meanwhile: a column that carries the offset from the
   anchor (for example days since the first order) with a measure
@@ -465,12 +464,6 @@ lands in one place rather than scattering across the codebase.
 - **Fully general nested predicate planning** beyond contextual and
   entity-only cases used by the active package. See "Predicate
   Generality" below.
-- **Runtime JSON-Schema enforcement** of the published
-  [`schemas/query_ir.v1.json`](../schemas/query_ir.v1.json). The
-  schema is the durable contract today but the runtime does not yet
-  reject unknown top-level keys against it (forward-compat); the
-  parser raises `INVALID_EXPRESSION_KEY` only inside expression
-  positions.
 
 ## When To Expect An Error
 
@@ -509,7 +502,6 @@ Good for:
 - compound-key snapshot entities
 - historical customer attributes
 - multiple business clocks
-- fiscal-calendar examples
 - governed predicate-style metrics such as repeat/high-value customer orders and contextual “10+ orders in period” metrics
 - package-local regression coverage for core finance, customer lifetime, product margin, supply, time-series, monthly comparison, snapshot, lifecycle, predicate, distribution, and conversion/adoption primitives
 
@@ -518,13 +510,13 @@ Not yet complete for:
 - a broader fully general predicate planner beyond the supported contextual and entity-only cases
 - a richer managed execution story beyond local/customer-side DuckDB and Snowflake connector workflows
 
-## Worked-example IR files
+## Worked-example call files
 
-Each shape called out above has a committed IR file under
+Each shape called out above has a committed call file under
 [`examples/`](../examples). The regression suite at
 [`tests/semantic_rails/test_examples.py`](../tests/semantic_rails/test_examples.py)
 runs every file through schema validation, `Runtime.validate`, and
-`Runtime.compile` so the docs stay honest as the IR contract evolves.
+`Runtime.compile` so the docs stay honest as the call evolves.
 
 | Shape | File |
 | --- | --- |

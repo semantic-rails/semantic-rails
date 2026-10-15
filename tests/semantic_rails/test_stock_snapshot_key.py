@@ -23,6 +23,7 @@ from semantic_rails.compiler_parts.sql_lowering import _snapshot_series_columns
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 
 ROLE = "temporal_role.f4stock_repo_snapshot_snapshot_date"
@@ -93,8 +94,7 @@ def _package(
 
 def _weekly(runtime: Runtime, measure: str, role: str | None = ROLE) -> list[dict]:
     query: dict = {
-        "version": 1,
-        "select": [{"expression": {"measure": f"measure.f4stock.{measure}"}, "as": "v"}],
+        "select": [{"expression": f"measure.f4stock.{measure}", "as": "v"}],
     }
     if role:
         query["time"] = {"temporal_role": role, "grain": "week"}
@@ -106,19 +106,18 @@ def _weekly(runtime: Runtime, measure: str, role: str | None = ROLE) -> list[dic
 def _query_warning_codes(runtime: Runtime, measure: str) -> list[str]:
     result = runtime.query(
         {
-            "version": 1,
-            "select": [{"expression": {"measure": measure}, "as": "v"}],
+            "select": [{"expression": measure, "as": "v"}],
             "time": {"temporal_role": ROLE, "grain": "week"},
         }
     )
     assert result["ok"], result.get("errors")
-    return [warning["code"] for warning in result["warnings"]]
+    return [warning["code"] for warning in result.get("warnings", [])]
 
 
 def _warning_codes(package: Path) -> list[str]:
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
     assert report["ok"], report["errors"]
-    return [warning["code"] for warning in report["warnings"]]
+    return [warning["code"] for warning in report.get("warnings", [])]
 
 
 def test_compound_key_takes_one_snapshot_per_series(tmp_path: Path) -> None:
@@ -155,8 +154,9 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
     # these clocks warn at authoring time instead of refusing.
     package = _package(tmp_path, key="[repo_snapshot_key]", clock_class=clock_class)
     runtime = Runtime.from_path(str(package))
-    # Knowingly unrefused: this sums the two snapshots (the true value is 1), which
-    # is also the right answer for a table with one row per series. The answer says so.
+    # Knowingly unrefused: on an event or state clock each series is read as keyed, so this
+    # sums the two snapshots (the true value is 1), which is also the right answer for a table
+    # with one row per series. The answer says so.
     assert _weekly(runtime, "stars") == [2]
     assert _warning_codes(package).count(WARNING) == 2
     assert _query_warning_codes(runtime, "measure.f4stock.stars").count(WARNING) == 1
@@ -167,27 +167,24 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
             "execute",
             {
                 "query": {
-                    "version": 1,
-                    "select": [{"as": "v", "expression": {"measure": "measure.f4stock.stars"}}],
+                    "select": [{"as": "v", "expression": "measure.f4stock.stars"}],
                     "time": {"temporal_role": ROLE, "grain": "week"},
                 }
             },
         )
     finally:
         adapter.close()
-    assert [row["code"] for row in response["warnings"]].count(WARNING) == 1
+    assert [row["code"] for row in response.get("warnings", [])].count(WARNING) == 1
     # So does a dry-run validation, and a ratio reading both stocks warns for each.
-    validated = runtime.validate(
-        {"version": 1, "select": [{"expression": {"measure": "measure.f4stock.stars"}, "as": "v"}]}
-    )
-    assert [row["code"] for row in validated["warnings"]].count(WARNING) == 1
+    validated = runtime.validate({"select": [{"expression": "measure.f4stock.stars", "as": "v"}]})
+    assert [row["code"] for row in validated.get("warnings", [])].count(WARNING) == 1
     ratio = {
         "kind": "ratio",
-        "numerator": {"measure": "measure.f4stock.stars"},
-        "denominator": {"measure": "measure.f4stock.visitors_14d"},
+        "numerator": "measure.f4stock.stars",
+        "denominator": "measure.f4stock.visitors_14d",
     }
-    result = runtime.query({"version": 1, "select": [{"expression": ratio, "as": "v"}]})
-    assert [row["code"] for row in result["warnings"]].count(WARNING) == 2
+    result = runtime.query({"select": [{"expression": ratio, "as": "v"}]})
+    assert [row["code"] for row in result.get("warnings", [])].count(WARNING) == 2
     # A key holding the clock warns about nothing.
     keyed = _package(tmp_path / "keyed", key="[repo, snapshot_date]", clock_class=clock_class)
     assert WARNING not in _query_warning_codes(
@@ -206,22 +203,22 @@ def test_a_stock_read_only_by_a_metric_predicate_warns_too(
     # its series and clock, it stays silent.
     package = _package(tmp_path, key=key, clock_class="state_time")
     runtime = Runtime.from_path(str(package))
+    starred = {"field": "measure.f4stock.stars", "op": "gt", "value": 0}
     predicate = {
         "kind": "metric_predicate",
         "entity": "entity.f4stock_repo_snapshot",
-        "input": {"measure": "measure.f4stock.stars"},
-        "op": ">",
-        "value": 0,
+        "input": starred["field"],
+        "op": starred["op"],
+        "value": starred["value"],
+        "over": "all_time",
     }
     visitors = {"kind": "aggregate", "measure": "measure.f4stock.visitors_14d"}
     for query in (
         {
-            "version": 1,
             "select": [{"expression": visitors, "as": "v"}],
-            "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
+            "where": [{"entity": predicate["entity"], "having": [starred], "over": "all_time"}],
         },
         {
-            "version": 1,
             "select": [
                 {
                     "expression": {**visitors, "filter": {"all": [{"expression": predicate}]}},
@@ -234,7 +231,9 @@ def test_a_stock_read_only_by_a_metric_predicate_warns_too(
             result = runtime.query(query)
             assert result["explain"]["compile_stats"]["cache_hit"] is cached
             warned = [
-                row["details"]["measure_id"] for row in result["warnings"] if row["code"] == WARNING
+                row["details"]["measure_id"]
+                for row in result.get("warnings", [])
+                if row["code"] == WARNING
             ]
             assert warned.count("measure.f4stock.stars") == warnings
 
@@ -253,7 +252,7 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
         measure_times=", times: [collected_at, snapshot_date]",
     )
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if row["code"] == WARNING]
+    flagged = [row for row in report.get("warnings", []) if row["code"] == WARNING]
     assert {row["details"]["clock_class"] for row in flagged} == {"as_of_time"}
     assert all("Its queries are refused" in row["message"] for row in flagged)
     # The key can't tell snapshots apart, so the stock refuses on its event clock and
@@ -280,13 +279,9 @@ def test_an_as_of_gap_leads_the_warning_of_a_two_clock_stock(tmp_path: Path) -> 
         # Two as-of clocks with one in the key: right on that one, refused on the other.
         ("[repo, snapshot_date]", "as_of_time", {ROLE: [1], COLLECTED: "snapshot_date"}),
         # Two as-of clocks in the key: either one leaves the other in the series.
-        (
-            "[repo, snapshot_date, collected_at]",
-            "as_of_time",
-            {ROLE: "collected_at", COLLECTED: "snapshot_date"},
-        ),
+        ("[repo, snapshot_date, collected_at]", "as_of_time", {ROLE: "collected_at", COLLECTED: "snapshot_date"}),
     ],
-)
+)  # fmt: skip
 def test_a_series_holding_an_as_of_clock_refuses(
     tmp_path: Path, key: str, collected_class: str, answers: dict
 ) -> None:
@@ -303,11 +298,11 @@ def test_a_series_holding_an_as_of_clock_refuses(
             assert _weekly(runtime, "stars", role) == answer
             # Examining the model's other clocks doesn't make them query inputs.
             query = {
-                "version": 1,
-                "select": [{"expression": {"measure": "measure.f4stock.stars"}, "as": "v"}],
+                "select": [{"expression": "measure.f4stock.stars", "as": "v"}],
                 "time": {"temporal_role": role, "grain": "week"},
             }
-            assert COLLECTED not in bind_query(runtime.config, None, query).object_ids
+            bound = bind_query(runtime.config, None, read_call(query, config=runtime.config)[0])
+            assert COLLECTED not in bound.object_ids
             continue
         # Each used to return 2 (true 1). The error names neither the as-of clock at
         # fault nor a key holding it (a policy may hide it); the parse warning does.
@@ -320,7 +315,7 @@ def test_a_series_holding_an_as_of_clock_refuses(
         advice = "Keep one as-of clock" if "collected_at" in key else "Query it on its as-of"
         assert advice in str(raised.value)
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if row["code"] == SERIES_WARNING]
+    flagged = [row for row in report.get("warnings", []) if row["code"] == SERIES_WARNING]
     assert len(flagged) == 2
     if isinstance(answers[ROLE], list):
         # The warning names the clock that answers.
@@ -358,29 +353,26 @@ def test_current_state_stock_in_jaffle_warns_but_answers(tmp_path_factory) -> No
         tmp_path_factory.mktemp("stock_key"), "jaffle_shop", preseed_db=True
     )
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if row["code"] == WARNING]
+    flagged = [row for row in report.get("warnings", []) if row["code"] == WARNING]
     assert [row["details"]["measure_id"] for row in flagged] == [
         "measure.jaffle.lifetime_spend_usd"
     ]
     result = Runtime.from_path(str(package)).query(
         {
-            "version": 1,
-            "select": [
-                {"expression": {"measure": "measure.jaffle.lifetime_spend_usd"}, "as": "spend"}
-            ],
+            "select": [{"expression": "measure.jaffle.lifetime_spend_usd", "as": "spend"}],
         }
     )
     assert result["ok"] and result["rows"][0]["spend"] > 0
-    assert [row["code"] for row in result["warnings"]] == [WARNING]
+    assert [row["code"] for row in result.get("warnings", [])] == [WARNING]
     # A segment filtering on it through a metric predicate carries the warning too.
     runtime = Runtime.from_path(str(package))
     for answer in (
         runtime.segment_validate("segment.jaffle.high_value_customers"),
         runtime.segment_explain("segment.jaffle.high_value_customers"),
     ):
-        assert [(row["code"], row["details"]["measure_id"]) for row in answer["warnings"]] == [
-            (WARNING, "measure.jaffle.lifetime_spend_usd")
-        ]
+        assert [
+            (row["code"], row["details"]["measure_id"]) for row in answer.get("warnings", [])
+        ] == [(WARNING, "measure.jaffle.lifetime_spend_usd")]
 
 
 def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_factory) -> None:
@@ -392,7 +384,9 @@ def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_fac
     monthly = package / "models" / "core" / "monthly_metrics.yml"
     monthly.write_text(monthly.read_text().replace("class: calendar_time", "class: as_of_time", 1))
     report, _ = parse_config_report(PackageReference(source_path=str(package)))
-    flagged = [row for row in report["warnings"] if str(row.get("code", "")).startswith("STOCK_")]
+    flagged = [
+        row for row in report.get("warnings", []) if str(row.get("code", "")).startswith("STOCK_")
+    ]
     assert [row["details"]["measure_id"] for row in flagged] == [
         "measure.jaffle.lifetime_spend_usd"
     ]
@@ -403,8 +397,7 @@ def test_an_as_of_clock_on_one_fact_model_leaves_its_siblings_alone(tmp_path_fac
     ):
         result = runtime.query(
             {
-                "version": 1,
-                "select": [{"expression": {"measure": f"measure.jaffle.{measure}"}, "as": "v"}],
+                "select": [{"expression": f"measure.jaffle.{measure}", "as": "v"}],
                 "time": {"temporal_role": role, "grain": "month"},
             }
         )
