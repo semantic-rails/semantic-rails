@@ -185,6 +185,28 @@ def test_like_in_an_arithmetic_expression_is_refused_the_same_way(runtime):
     assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
 
 
+@pytest.mark.parametrize("column", ["customer_order_number", "CUSTOMER_ORDER_NUMBER"])
+def test_call_reader_uses_the_supplied_column_lookup_for_like(runtime, column):
+    from semantic_rails.compiler_parts.paths import dimensions_over_column
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.query_call import read_call
+
+    call = _aggregate_if("LIKE", "1%")
+    call["select"][0]["expression"]["condition"]["left"] = {
+        "kind": "column",
+        "column": column,
+        "entity": "entity.jaffle_order",
+    }
+    with pytest.raises(SemanticLayerError) as caught:
+        read_call(
+            call,
+            config=runtime.package_config,
+            column_dimensions=dimensions_over_column,
+        )
+    assert caught.value.details["path"] == "select[0].expression.condition.op"
+    assert "is integer" in caught.value.message
+
+
 @pytest.mark.parametrize(
     ("column", "said"),
     [("customer_order_number", "is integer"), ("no_such_column", "is the column of no dimension")],
