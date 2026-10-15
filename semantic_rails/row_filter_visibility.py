@@ -21,9 +21,20 @@ from typing import Any
 
 from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import _reaches_at_most_one
+from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError
 from .fanout import package_route
-from .row_filters import ParentHop, RowFilter, Visibility, filter_refusal, relation_key
+from .policy_rules import policy_matches
+from .relation_pipelines import pipeline_cte_names
+from .row_filters import (
+    ParentHop,
+    RowFilter,
+    Visibility,
+    filter_refusal,
+    is_row_filter,
+    relation_key,
+    row_filter,
+)
 from .schema import PackageConfig, base_of
 
 
@@ -183,9 +194,6 @@ def visibility_for(config: PackageConfig, filters: Sequence[RowFilter]) -> Visib
         for relation, hop in reach.hops.items():
             parents.setdefault(relation, set()).add(hop)
         refused.update(reach.refused)
-    from .dialects import dialect_for_warehouse
-    from .relation_pipelines import pipeline_cte_names
-
     return Visibility(
         tuple(filters),
         parents={relation: tuple(sorted(hops)) for relation, hops in sorted(parents.items())},
@@ -204,8 +212,6 @@ def visibility_for(config: PackageConfig, filters: Sequence[RowFilter]) -> Visib
 def coverage_report(config: PackageConfig) -> list[dict[str, Any]]:
     """Per row filter: the models it filters, covers and leaves uncovered (the ones it holds
     unless ``shared``), and the ones it refuses, with why."""
-    from .row_filters import is_row_filter, row_filter
-
     base = base_of(config)
     analysis = get_package_analysis(base)
     out = []
@@ -310,9 +316,6 @@ def withheld_value_dimensions(
     declared value domains are withheld, so a value list comes from the caller's own rows.
     A view is keyed by the roles a request claims, not the ones its host verified, so an
     exemption (``unless_roles``) doesn't count here: an exempt caller reads values live too."""
-    from .policy_rules import policy_matches
-    from .row_filters import is_row_filter, row_filter
-
     base = base_of(config)
     models: set[str] = set()
     for policy in base.semantic_policies:
