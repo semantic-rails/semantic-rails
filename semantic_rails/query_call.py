@@ -385,6 +385,8 @@ class CallContext:
     # The compiler's one dimension a text word compares on an entity's column (refused at the
     # path when there is none, several, or one that isn't text); the caller passes it in.
     text_dimension: Callable[[str, str, str, PackageConfig, str], Any] | None = None
+    # Physical-column matching belongs to the compiler, supplied by the runtime.
+    column_dimensions: Callable[[str, str, PackageConfig], list[Any]] | None = None
     partial: bool = False
     notes: list[dict[str, Any]] = field(default_factory=list)
     # The call's group_by ids (dimensions lifted from select join it) and whether its time
@@ -400,6 +402,7 @@ def read_call(
     now: Any = None,
     default_clock: Callable[[str], str] | None = None,
     text_dimension: Callable[[str, str, str, PackageConfig, str], Any] | None = None,
+    column_dimensions: Callable[[str, str, PackageConfig], list[Any]] | None = None,
     partial: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """``(engine query, notes)`` for a call. ``partial`` reads a plan's or builder's draft."""
@@ -420,6 +423,7 @@ def read_call(
         now=parse_now(now),
         default_clock=default_clock,
         text_dimension=text_dimension,
+        column_dimensions=column_dimensions,
         partial=partial,
         group_by=group_by,
         timed=timed,
@@ -898,17 +902,17 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
     left = raw.get("left")
     if (
         context.config is not None
+        and context.column_dimensions is not None
         and spelling.replace("_", " ") in operators.LIKE_SPELLINGS
         and isinstance(left, Mapping)
         and left.get("kind") == "column"
     ):
-        from .compiler_parts.paths import dimensions_over_column
         from .expressions import resolve_table_entity
 
         entity = str(left.get("entity") or "").strip() or resolve_table_entity(
             context.config, str(left.get("table") or "")
         )
-        dims = dimensions_over_column(entity or "", str(left.get("column")), context.config)
+        dims = context.column_dimensions(entity or "", str(left.get("column")), context.config)
         if len(dims) == 1:
             operators.check_text_operand(
                 spelling, dims[0].data_type, f"{path}.op", dims[0].id, comparison=True

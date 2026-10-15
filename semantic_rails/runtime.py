@@ -77,7 +77,7 @@ from .compiler_parts.empty_groups import (
     observation_scope,
     observed_outside_filters,
 )
-from .compiler_parts.paths import text_dimension
+from .compiler_parts.paths import dimensions_over_column, text_dimension
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -1719,6 +1719,7 @@ class Runtime:
                     now=instant,
                     default_clock=self._default_clock,
                     text_dimension=text_dimension,
+                    column_dimensions=dimensions_over_column,
                     partial=partial,
                 )
         payload: dict[str, Any] = {**internal, "policy_context": policy}

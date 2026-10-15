@@ -204,7 +204,7 @@ def test_call_reader_uses_the_supplied_column_lookup_for_like(runtime, column):
             column_dimensions=dimensions_over_column,
         )
     assert caught.value.details["path"] == "select[0].expression.condition.op"
-    assert "is integer" in caught.value.message
+    assert "is integer" in str(caught.value)
 
 
 @pytest.mark.parametrize(

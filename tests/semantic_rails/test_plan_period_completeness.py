@@ -433,8 +433,14 @@ def test_the_option_ends_before_a_date_filter_cuts_a_period(growth: Runtime) -> 
     assert "2018-06-01" not in _growth_rows(growth, option["call"])
 
 
-def test_a_date_filter_on_the_end_of_a_complete_window_holds_nothing(growth: Runtime) -> None:
-    call = _growth_call(growth, "2018-07-01", _cut(growth, "lt", "2018-07-01"))
+@pytest.mark.parametrize(
+    ("op", "bound"),
+    [("lt", "2018-07-01"), ("<", "2018-07-01"), ("lte", "2018-06-30"), ("<=", "2018-06-30")],
+)
+def test_a_date_filter_on_the_end_of_a_complete_window_holds_nothing(
+    growth: Runtime, op: str, bound: str
+) -> None:
+    call = _growth_call(growth, "2018-07-01", _cut(growth, op, bound))
     payload = _plan_example(growth, call, GROWTH_NOW)
     assert payload["status"] == "ok" and _ready(payload), payload.get("why")
     assert _growth_rows(growth, call)["2018-06-01"] == 0

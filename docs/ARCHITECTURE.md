@@ -306,6 +306,8 @@ reference and `schemas/query.v2.json` its schema, generated from the parser's ow
   post-aggregation filters, an entity filter's `having` a `metric_predicate`, `any`/`none` a
   child group, and `routes` route decisions. `call_from_query` is the inverse, used for echoes,
   clarification options and plan drafts. A refusal names the path and carries one hint.
+  The runtime supplies compiler-owned column lookups for text comparisons; the call reader
+  does not import compiler modules.
 - **Filter words.** `semantic_rails/operators.py` is the one table of filter operators (`is`,
   `not`, `gt`, `gte`, `lt`, `lte`, the text words `contains`, `starts_with`, `ends_with` and
   their `not_` forms, `missing`): value shape, whether an unknown row matches, the exact

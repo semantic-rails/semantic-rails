@@ -33,6 +33,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from . import operators
 from .ast import normalize_query
 from .clock import UNITS, floor_period, local_now, parse_now, shift_period
 from .compiler_parts.bind import _bound_filter_clauses
@@ -442,10 +443,6 @@ def _unchecked_reads(config: Any, parsed: Any, leaves: list[Any]) -> str:
     return ""
 
 
-# A where bound's ops: the one a comparison can run beside is an upper bound.
-_UPPER = {"lt": "lt", "<": "lt", "lte": "lte", "<=": "lte"}
-
-
 def _bounds(
     config: Any, query: Mapping[str, Any], roles: list[Any], zone: str
 ) -> tuple[list[tuple[str, tuple[datetime, bool] | None]], list[str], list[tuple[str, str]]]:
@@ -482,10 +479,11 @@ def _bounds(
             dimension = dimensions.get(str(row.get("field")))
             if dimension is None or not _is_dated(dimension):
                 continue
-            field, op = str(row.get("field")), _UPPER.get(str(row.get("op", "")).lower())
+            field = str(row.get("field"))
+            op = operators.COMPARISON_SQL.get(operators.word_of(row.get("op", "")))
             if (
                 nested
-                or op is None
+                or op not in {"<", "<="}
                 or len(roles) != 1
                 or not utc
                 or (dimension.entity, dimension.column) not in clocks
@@ -502,7 +500,7 @@ def _bounds(
                 bounds.append((source, None))
                 continue
             moment = _local(value, zone)
-            if op == "lte":  # through the value: a DATE through its whole day
+            if op == "<=":  # through the value: a DATE through its whole day
                 pure_date = str(row.get("value")).strip()[10:] == ""
                 day = str(getattr(dimension, "data_type", "")).lower() == "date"
                 moment += timedelta(days=1) if day and pure_date else timedelta(microseconds=1)
