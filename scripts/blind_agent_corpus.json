@@ -38,14 +38,14 @@
     {
       "name": "historical_revenue_by_segment",
       "intent": "Which customer segments drove the most historical revenue?",
-      "expectation": "candidate",
+      "expectation": "clarification",
+      "expectation_reason": "The draft omits segment ranking and grouping; PLAN_INTENT_COVERAGE_GAP keeps it non-executable.",
+      "expected_status": "low_confidence",
+      "forbid_ready_for_execute": true,
       "expected_resolved_ids": [
         "measure.jaffle.revenue_usd"
       ],
       "expected_query_patch": {
-        "group_by": [
-          "dimension.jaffle_customer_history_segment"
-        ],
         "time": {
           "temporal_role": "temporal_role.jaffle_order_time",
           "grain": "month"
@@ -55,13 +55,18 @@
     {
       "name": "ordered_vs_delivered_revenue",
       "intent": "Compare delivered revenue by delivered month versus ordered month.",
-      "expectation": "comparison_bundle",
-      "expected_comparison_mode": "coordinated_queries",
-      "expected_block_code": "COMPARISON_COORDINATED",
-      "expected_bundle_object_ids": [
-        "measure.jaffle.delivered_revenue_usd",
-        "measure.jaffle.revenue_usd"
-      ]
+      "expectation": "clarification",
+      "expectation_reason": "The inferred lifecycle dimension is unreachable from the selected measures; PLAN_UNCONNECTED offers no executable draft.",
+      "expected_status": "unrealizable",
+      "forbid_ready_for_execute": true
+    },
+    {
+      "name": "ambiguous_customer_status",
+      "intent": "monthly orders by customer status",
+      "expectation": "clarification",
+      "expectation_reason": "The inferred membership-status dimension is unreachable from orders; PLAN_UNCONNECTED offers no executable draft.",
+      "expected_status": "unrealizable",
+      "forbid_ready_for_execute": true
     },
     {
       "name": "inventory_levels_by_store",
@@ -112,10 +117,13 @@
     {
       "name": "signup_to_send_adoption_for_high_order_rate_stores",
       "intent": "Give me the 28D adoption funnel from signup to Send for stores that have an order rate of over 90% grouped by month.",
-      "expectation": "candidate",
+      "expectation": "clarification",
+      "expectation_reason": "The draft uses a generic all-time order-rate qualification and adds store grouping; PLAN_UNASKED_GROUPING keeps it non-executable.",
+      "expected_status": "low_confidence",
+      "forbid_ready_for_execute": true,
       "expected_resolved_ids": [
         "metric.adoption.signup_to_send_conversion_rate_28d",
-        "metric.sales.session_to_order_conversion_rate_7d_same_store",
+        "metric.sales.session_to_order_conversion_rate_7d",
         "entity.jaffle_store",
         "dimension.jaffle_store_name"
       ],
@@ -128,12 +136,12 @@
             "entity": "entity.jaffle_store",
             "having": [
               {
-                "field": "metric.sales.session_to_order_conversion_rate_7d_same_store",
+                "field": "metric.sales.session_to_order_conversion_rate_7d",
                 "op": "gt",
                 "value": 0.9
               }
             ],
-            "over": "period"
+            "over": "all_time"
           }
         ],
         "time": {

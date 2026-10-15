@@ -27,8 +27,9 @@ class FakeRuntime:
     def clock(self) -> float:
         return self.now
 
-    def compile(self, query: dict) -> dict:
-        assert query["verbosity"] == "full"
+    def compile(self, query: dict, *, verbosity: str) -> dict:
+        assert "verbosity" not in query
+        assert verbosity == "full"
         self.now += self.durations_ms[self.calls] / 1000
         hit = self.hits[self.calls]
         self.calls += 1

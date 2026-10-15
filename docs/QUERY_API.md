@@ -910,6 +910,9 @@ name the intended dimension, such as "by store id" or "by store name".
 compile cost and warms the runtime compile cache. Agents can forward
 `best.query` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the call by hand.
+Pass response options separately from the call: for example,
+`runtime.compile(best["query"], verbosity="full")`. Putting `verbosity` inside
+`best.query` is refused before compilation.
 
 A confirmed row name contributes its key filter; words inside it never also become value
 filters. For example, "North Star" can name an account without filtering its region to
