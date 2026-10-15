@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
+from functools import cached_property
 from typing import Any, cast
 
 from .errors import SemanticLayerError
@@ -124,7 +125,7 @@ class Visibility:
     # Whether the warehouse accepts a subquery in a join's ON (``SqlDialect``); unproven, no.
     subquery_in_join_on: bool = False
 
-    @property
+    @cached_property
     def restricted(self) -> frozenset[str]:
         return frozenset(relation_key(row.table) for row in self.filters) | frozenset(self.parents)
 
