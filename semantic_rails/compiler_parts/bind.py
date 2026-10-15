@@ -5,10 +5,11 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import Any
 
 from .. import operators
-from ..ast import NormalizedQuery, normalize_query
+from ..ast import MetricFilter, NormalizedQuery, QuerySelect, normalize_query
 from ..dialects import SqlDialect, dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -41,6 +42,7 @@ from ..expressions import (
     reads_temporal_value,
     resolve_filter_dimension,
     resolve_measure_temporal_role,
+    resolve_table_entity,
     validate_boolean_argument_count,
 )
 from ..ir import BoundMeasure
@@ -65,7 +67,6 @@ from .indexes import (
     _recipe_index,
     _recipe_or_raise,
     _relationship_index,
-    _resolve_table_entity,
 )
 from .paths import (
     _column_ref,
@@ -283,7 +284,7 @@ def _resolve_expr_entity(ref: ColumnRefExpr, measure: MeasureConfig, config: Pac
     if ref.entity:
         entity_id = ref.entity
     elif ref.table:
-        entity_id = _resolve_table_entity(config, ref.table, owner=measure.entity) or ""
+        entity_id = resolve_table_entity(config, ref.table, owner=measure.entity) or ""
         if not entity_id:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
@@ -1073,7 +1074,7 @@ def _resolve_column_entity(ref: ColumnRefExpr, config: PackageConfig) -> str:
     if ref.entity:
         return ref.entity
     if ref.table:
-        entity_id = _resolve_table_entity(config, ref.table)
+        entity_id = resolve_table_entity(config, ref.table)
         if entity_id:
             return entity_id
         raise SemanticLayerError(
@@ -1502,10 +1503,6 @@ def lift_conditional_aggregates(
     freshly synthesised ``MeasureConfig``. Returns the rewritten query
     plus the synthetic-measure dict to attach to the ``LogicalPlan``.
     """
-    from dataclasses import replace as _replace
-
-    from ..ast import MetricFilter, QuerySelect
-
     synthetic: dict[str, MeasureConfig] = {}
 
     def _maybe_rewrite(expr: SemanticExpr | None) -> SemanticExpr | None:
@@ -1527,4 +1524,4 @@ def lift_conditional_aggregates(
     ]
     if not synthetic:
         return query, {}
-    return _replace(query, select=new_select, metric_filters=new_metric_filters), synthetic
+    return replace(query, select=new_select, metric_filters=new_metric_filters), synthetic

@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, replace
 from typing import Any
 
-from .ast import normalize_query, time_output_alias
+from .ast import normalize_query
 from .compiler_parts import nested
 from .compiler_parts.bind import _collect_conversion_exprs as _collect_conversion_exprs
 from .compiler_parts.binding import BoundQuery, _record_bound_plan, bind_query
@@ -31,7 +31,9 @@ from .compiler_parts.conversion import _conversion_sources as _conversion_source
 from .compiler_parts.conversion import _conversion_supported as _conversion_supported
 from .compiler_parts.dependencies import candidate_planning, plan_bindings
 from .compiler_parts.empty_groups import recording_zero_outputs
+from .compiler_parts.lowering_common import _query_key_aliases
 from .compiler_parts.paths import inner_lookups
+from .compiler_parts.physical_plan import build_performance_plan, build_physical_plan
 from .compiler_parts.plan_checks import NonAdditiveRefusal as NonAdditiveRefusal
 from .compiler_parts.plan_checks import (
     _object_default_query_temporal_role as _object_default_query_temporal_role,
@@ -54,12 +56,13 @@ from .compiler_parts.predicate import _reduced_context_entities as _reduced_cont
 from .compiler_parts.predicate import (
     _refuse_overridden_predicate_input as _refuse_overridden_predicate_input,
 )
+from .compiler_parts.row_counts import override_row_counts, share_group_counts
 from .compiler_parts.sql_lowering import lower_to_sql
 from .compiler_parts.temporal import _requires_query_time as _requires_query_time
 from .compiler_parts.temporal import _time_bound_relationship_ids as _time_bound_relationship_ids
 from .diagnostics import relationship_contract_payload
 from .dialects import dialect_for_warehouse
-from .ir import ExplainArtifact, LogicalPlan
+from .ir import ExplainArtifact
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import collecting_slots, render_select_for_profile
@@ -68,6 +71,7 @@ from .schema import PackageConfig
 from .sql_ast import SqlSelect
 from .sql_preparation import PreparedQuery, finalize_parameters
 from .temporal_support import validate_temporal_support
+from .top_n import limit_order
 
 
 def _compile_query_sql_ast(
@@ -86,17 +90,10 @@ def _compile_query_sql_ast(
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
-        from .top_n import limit_order
-
         select = attach_relation_ctes(
             config, lower_to_sql(plan, config, guard_empty=guard_empty, default_order=False)
         )
-        return limit_order(select, _tie_breakers(plan))[0]
-
-
-def _tie_breakers(plan: LogicalPlan) -> list[str]:
-    """The columns that break ties at a ``limit``: the group_by columns, then the period."""
-    return [*plan.group_by, *([time_output_alias(plan.time)] if plan.time else [])]
+        return limit_order(select, _query_key_aliases(plan))[0]
 
 
 def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
@@ -152,12 +149,8 @@ def compile_query(
         else bind_query(config, registry, payload, row_filters=row_filters)
     )
     plan, config = bound.plan, bound.config
-    from .top_n import limit_order
-
-    sql_ast, limit_order_keys = limit_order(bound.sql_ast, _tie_breakers(plan))
+    sql_ast, limit_order_keys = limit_order(bound.sql_ast, _query_key_aliases(plan))
     outputs = {field.alias for field in sql_ast.select}
-    from .compiler_parts.row_counts import override_row_counts, share_group_counts
-
     # The hidden columns the runtime reads and removes: each re-aggregated measure's row count,
     # and the rows each share's total spans.
     override_rows, share_groups = (
@@ -182,8 +175,6 @@ def compile_query(
     if limit_order_keys and sql_ast.limit is not None and sql_ast.limit > 0:
         limit_probe = prepare(replace(sql_ast, limit=sql_ast.limit + 1))
     rendered = prepared.sql
-    from .compiler_parts.physical_plan import build_performance_plan, build_physical_plan
-
     physical_plan = build_physical_plan(plan, config)
     performance_plan = build_performance_plan(
         plan, config, physical_plan, rendered, bound.rollup_scans, sql_ast

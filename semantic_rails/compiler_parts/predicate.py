@@ -79,6 +79,7 @@ from .indexes import (
 from .lowering_common import (
     _path_has_temporal_validity,
     _refuse_converted_role,
+    _source_time_window,
 )
 from .namespacing import _namespace_sql_select
 from .paths import (
@@ -955,8 +956,6 @@ def _predicate_set_fields(scope: dict[str, Any]) -> tuple[list[SqlField], list[s
 
 def _predicate_window_filters(time: dict[str, Any], config: PackageConfig) -> list[dict[str, Any]]:
     """Build raw-column window filters only for roles without timezone conversion."""
-    from .lowering_common import _source_time_window
-
     role = _temporal_role_index(config)[str(time["temporal_role"])]
     _refuse_converted_role(role, "entity_only_predicate_window")
     column = SqlIdentifier(parts=[role.dimension])

@@ -118,7 +118,7 @@ from .paths import (
     dimension_filter,
     unknown_as_null,
 )
-from .plan_checks import child_group_route
+from .plan_checks import _validate_non_additive_sums, child_group_route
 from .predicate import _predicate_ctes_and_join
 from .predicate_sets import (
     _reads_chosen_snapshot,
@@ -558,8 +558,6 @@ def _parent_lookup_leaf_select(
     the child rows only. A parent with no source rows reads 0 while the source is observed (the
     gate), a NULL key reads NULL, and the guard proves one total per output row, so MAX picks it.
     """
-    from .plan_checks import _validate_non_additive_sums
-
     bound = measure_plan.bound_measure
     # Every plan that reaches this leaf passes the one-total-per-row guard here as well.
     _validate_non_additive_sums([bound], config, normalize_query(plan.query))

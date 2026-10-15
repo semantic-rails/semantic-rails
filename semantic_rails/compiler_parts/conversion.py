@@ -74,7 +74,12 @@ from .indexes import (
 )
 from .leaf_paths import _unique_path_selections
 from .leaves import _count_key_expr
-from .lowering_common import _edge_cap, _query_metric_predicates, _refuse_converted_role
+from .lowering_common import (
+    _edge_cap,
+    _query_metric_predicates,
+    _refuse_converted_role,
+    _source_time_window,
+)
 from .namespacing import _namespace_sql_select
 from .paths import (
     _column_ref,
@@ -782,8 +787,6 @@ def _conversion_leaf_cte(
         group_time_expr = (
             dialect.date_trunc(plan.time["grain"], raw_expr) if plan.time.get("grain") else raw_expr
         )
-        from .lowering_common import _source_time_window
-
         base_group_where.extend(_source_time_window(raw_expr, plan.time, config))
 
     for item in refuse_child_groups(query.where, "in a conversion metric"):
