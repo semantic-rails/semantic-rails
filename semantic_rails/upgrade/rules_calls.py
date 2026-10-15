@@ -50,13 +50,11 @@ def _site(text: str) -> YamlPath:
     return tuple(int(part) if part.isdigit() else part for part in re.findall(r"[^.\[\]]+", text))
 
 
-def rewritten(files: PackageFiles, file: str, path: YamlPath, query: Any) -> Result | None:
-    """The translation of an example's or test's query written in the previous call shape;
-    None for every other query. Refusal tests are detected too, then named as hand edits."""
-    entry = _at(files.documents[file], path[:-1])
-    if not path or path[-1] not in QUERY_KEYS or not isinstance(entry, dict):
-        return None
-    return previous_call(query)
+def rewritten(path: YamlPath, query: Any) -> Result | None:
+    """The translation of an example's or test's query (a ``PackageFiles.queries`` row) written
+    in the previous call shape; None for every other query. Refusal tests are detected too,
+    then named as hand edits."""
+    return previous_call(query) if path[-1] in QUERY_KEYS else None
 
 
 def _edits(file: str, path: YamlPath, old: Any, new: Any) -> list[Edit]:
@@ -84,7 +82,7 @@ def _edits(file: str, path: YamlPath, old: Any, new: Any) -> list[Edit]:
 
 def _calls(files: PackageFiles) -> Iterator[Finding]:
     for file, path, query in files.queries():
-        result = rewritten(files, file, path, query)
+        result = rewritten(path, query)
         if result is None:
             continue
         entry_path = path[:-1]

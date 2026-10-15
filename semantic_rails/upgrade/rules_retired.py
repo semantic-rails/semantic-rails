@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from typing import Any
 
+from .edits import _get
 from .model import Edit, Finding, PackageFiles, Rule, YamlPath, _walk
 from .rules_calls import rewritten
 
@@ -26,9 +26,7 @@ def _prune(
     Only for blocks the loader reads the same empty or absent (defaults, ``rollup_safe``), so
     the editor removes whole lines instead of reformatting an emptied block mapping.
     """
-    document: Any = files.documents[file]
-    for part in path:
-        document = document[part]
+    document = _get(files.documents[file], path)
     keys = tuple(key for key in keys if key in document)
     if path and set(document) == set(keys):
         path, keys = path[:-1], (str(path[-1]),)
@@ -40,7 +38,7 @@ def _null_behavior(files: PackageFiles) -> Iterator[Finding]:
     rows = [*files.metrics(), *files.expressions()]
     # A query in the previous call shape is rewritten whole, without null_behavior.
     for file, path, query in files.queries():
-        if rewritten(files, file, path, query) is None:
+        if rewritten(path, query) is None:
             rows.extend(
                 (file, child_path, child)
                 for child_path, child in _walk(query, path, expression=True)
@@ -100,7 +98,7 @@ def _path_preference(files: PackageFiles) -> Iterator[Finding]:
 def _query_path_policy(files: PackageFiles) -> Iterator[Finding]:
     message = f"the query key path_policy was retired; delete it ({_NOTE})"
     for file, path, query in files.queries():
-        if "path_policy" in query and rewritten(files, file, path, query) is None:
+        if "path_policy" in query and rewritten(path, query) is None:
             yield _delete("query-path-policy", files, file, path, ("path_policy",), message)
 
 
