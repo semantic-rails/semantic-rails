@@ -443,12 +443,7 @@ def _require_filtered_series_operand(
     measure = _measure_index(config)[row.bound_measure.measure_id]
     conditions = []
     for item in _bound_filter_clauses(row.bound_measure, config):
-        value, _ = _direct_dimension_source_expr(
-            measure.entity,
-            str(item["field"]),
-            config,
-        ) or _resolve_dimension_expr(str(item["field"]), config)
-        conditions.append(_value_filter_condition(value, item, config))
+        conditions.append(_filter_condition_for_item(measure.entity, item, config))
     aggregate = next(
         field.expression for field in leaf.select if field.alias == row.bound_measure.alias
     )
@@ -625,10 +620,7 @@ def _dataset_scope(
         return None
     where = []
     for item in _bound_filter_clauses(bound, config):
-        expr, _ = _direct_dimension_source_expr(
-            measure.entity, str(item["field"]), config
-        ) or _resolve_dimension_expr(str(item["field"]), config)
-        where.append(_value_filter_condition(expr, item, config))
+        where.append(_filter_condition_for_item(measure.entity, item, config))
     # Rows past a declared edge are never read, so they observe nothing either.
     where.extend(_edge_cap(measure, role_id, config))
     relation = _entity_index(config)[measure.entity].table
@@ -828,6 +820,16 @@ def _value_filter_condition(
     field = str(item.get("field", "") or "")
     op, value = item.get("op", "="), item.get("value")
     return dimension_filter(value_expr, field, op, value, config, path=path)
+
+
+def _filter_condition_for_item(
+    measure_entity: str, item: dict[str, Any], config: PackageConfig
+) -> Any:
+    """``item``'s condition on the measure's own column when it has one, else on its dimension."""
+    expr, _ = _direct_dimension_source_expr(
+        measure_entity, str(item["field"]), config
+    ) or _resolve_dimension_expr(str(item["field"]), config)
+    return _value_filter_condition(expr, item, config)
 
 
 def _validate_metric_predicate_filter_envelope(item: dict[str, Any]) -> None:
