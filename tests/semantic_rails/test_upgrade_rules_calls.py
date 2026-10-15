@@ -456,7 +456,7 @@ def test_answer_changing_translations_require_a_hand_edit(tmp_path, op, value):
     assert _contents(project) == before
 
 
-@pytest.mark.parametrize("field", ["metric_query", "expected_query"])
+@pytest.mark.parametrize("field", ["query", "metric_query", "expected_query"])
 @pytest.mark.parametrize("call", [{"now": NOW}, {"audience": "finance"}])
 def test_comparison_call_arguments_need_a_hand_edit(tmp_path, field, call):
     from semantic_rails.architect_scaffold import dump_project_yaml
@@ -468,6 +468,8 @@ def test_comparison_call_arguments_need_a_hand_edit(tmp_path, field, call):
         "expected_query": NEW_QUERY,
         field: old,
     }
+    if field == "query":
+        spec.pop("metric_query")  # The runner accepts query as the comparison's first call.
     project = _package(
         tmp_path,
         {
