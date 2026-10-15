@@ -490,6 +490,15 @@ def test_distribution_boundary_gate_rejects_private_paths_and_symbols():
     assert forbidden_symbols["private client type"] == ["semantic_rails/cloud_client_boundary.py"]
 
 
+def test_distribution_gate_requires_every_shipped_contract():
+    from scripts.verify_package_distribution import REQUIRED_WHEEL_SUFFIXES
+    from semantic_rails.contracts import CONTRACT_NAMES
+
+    contracts = Path("semantic_rails/contracts")
+    required = {Path(s).name for s in REQUIRED_WHEEL_SUFFIXES if Path(s).parent == contracts}
+    assert required == set(CONTRACT_NAMES)
+
+
 def test_node_dependency_audits_are_ci_gates_and_the_cube_install_is_locked():
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "uv run --no-sync python scripts/audit_dependencies.py" in ci

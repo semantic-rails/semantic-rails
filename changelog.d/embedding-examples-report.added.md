@@ -1,1 +1,0 @@
-- The embedding facade exports `run_examples_report`.
