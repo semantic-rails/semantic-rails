@@ -324,13 +324,7 @@ def _number_spans(
     return spans
 
 
-def _window_spans(
-    lowered: str,
-    time: dict[str, Any],
-    policy_context: dict[str, Any] | None = None,
-    *,
-    timezone: str | None = None,
-) -> list[tuple[int, int]]:
+def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
     """The spans of the question a window in the draft's ``query.time`` consumes.
 
     One rule: the draft's window consumes the date phrases plan resolved only if it agrees with
@@ -340,10 +334,10 @@ def _window_spans(
     refused rather than matched to the window by value.
     """
 
-    windows, others = _question_time(lowered, policy_context, timezone=timezone)
+    windows, others = _question_time(lowered)
     if not windows and not time:
         return []
-    if not _window_agrees(windows, time, policy_context, timezone=timezone):
+    if not _window_agrees(windows, time):
         return []
     return [span for span, _bounds in windows] + others
 
