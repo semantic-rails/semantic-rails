@@ -147,6 +147,12 @@ def _stock_row_key(measure, config: PackageConfig) -> list[str]:
     ]
 
 
+# The fixes that name no clock, so a refusal can pass them on to any caller.
+_KEY_BY_SNAPSHOT_FIX = (
+    "Key the entity by the series columns plus its snapshot time, e.g. key: [store_id, date_day]."
+)
+
+
 def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) -> dict[str, Any]:
     """Why a stock measure's row key can't tell its snapshots apart on this clock, or ``{}``.
 
@@ -172,15 +178,8 @@ def _stock_clock_key_gap(measure, temporal_role_id: str, config: PackageConfig) 
         "clock_column": clock.column,
         "clock_class": role.temporal_class,
         "row_key": key,
-        "fix": "Key the entity by the series columns plus its snapshot time, "
-        "e.g. key: [store_id, date_day].",
+        "fix": _KEY_BY_SNAPSHOT_FIX,
     }
-
-
-# The fixes that name no clock, so a refusal can pass them on to any caller.
-_KEY_BY_SNAPSHOT_FIX = (
-    "Key the entity by the series columns plus its snapshot time, e.g. key: [store_id, date_day]."
-)
 
 
 _ONE_AS_OF_CLOCK_FIX = "Keep one as-of clock in the key and query the stock on it."
