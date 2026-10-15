@@ -126,7 +126,7 @@ def test_previous_call_examples_and_tests_are_rewritten(tmp_path, monkeypatch, c
     preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
     assert preview["status"] == "preview", preview
     assert [(row["id"], row["tier"]) for row in preview["rules"]] == [
-        ("query-call-v2", "certified")
+        ("query-call-v2", "translated")
     ]
     hits = {(hit["file"], hit["line"]): hit["message"] for hit in preview["rules"][0]["hits"]}
     assert sorted(hits) == [
@@ -338,7 +338,7 @@ def test_every_test_kind_rewrites_or_names_each_query(tmp_path, kind, fields):
         assert all(spec[field] == NEW_QUERY for field in fields)
 
 
-def test_comparison_queries_share_the_certified_upgrade_check(tmp_path):
+def test_comparison_queries_share_the_translation_check(tmp_path):
     from semantic_rails.architect_scaffold import dump_project_yaml
     from semantic_rails.package_tools import _run_test
 
@@ -352,7 +352,7 @@ def test_comparison_queries_share_the_certified_upgrade_check(tmp_path):
         },
     )
     preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
-    assert preview["proof"]["tier"] == "certified", preview
+    assert preview["proof"]["tier"] == "translated", preview
     assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
     report = _architect(
         tmp_path,

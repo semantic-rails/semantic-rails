@@ -69,7 +69,7 @@ class Rule:
     """A detection rule with unchanged meaning, advisory drops, or retired semantics.
 
     ``refused`` means this engine refuses the legacy form at load, and the rewrite
-    was proven when the rule landed. It permits a certified baseline without
+    was checked when the rule landed. It permits a translated baseline without
     changing the rule's semantic effect.
     """
 

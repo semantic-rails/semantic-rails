@@ -31,9 +31,21 @@ PREDICATE = {
 CONTEXTUAL = {
     **OLD_QUERY,
     "version": 1,
+    "select": [{"expression": PREDICATE["input"]}],
     "group_by": [DIM],
     "time": {"temporal_role": ROLE, "grain": "day"},
     "metric_filters": [{"expression": PREDICATE, "op": "=", "value": True}],
+}
+
+CUSTOMERS = {
+    **UPGRADED,
+    "graph.yml": UPGRADED["graph.yml"]
+    + "    customer: {label: Customer, key: [customer_id], model: customers}\n",
+    "models/events.yml": UPGRADED["models/events.yml"].replace(
+        "    event: {}\n", "    event: {}\n    customer: {}\n"
+    ),
+    "models/customers.yml": "model:\n  id: customers\n  label: Customers\n"
+    "  relation: raw_customers\n  entities: {customer: {}}\n",
 }
 
 
@@ -42,6 +54,42 @@ CONTEXTUAL = {
     [
         (CONTEXTUAL, "grouping context and inherited filters"),
         ({**CONTEXTUAL, "group_by": []}, "grouping context and inherited filters"),
+        (
+            {**CONTEXTUAL, "group_by": [], "time": None},
+            "needs time.grain",
+        ),
+        (
+            {
+                **CONTEXTUAL,
+                "metric_filters": [
+                    {
+                        "expression": {
+                            key: value for key, value in PREDICATE.items() if key != "scope_mode"
+                        },
+                        "op": "=",
+                        "value": True,
+                    }
+                ],
+            },
+            "grouping context and inherited filters",
+        ),
+        (
+            {
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "scoped_aggregate",
+                            "measure": "measure.shop.total_amount",
+                            "predicates": [
+                                {key: value for key, value in PREDICATE.items() if key != "kind"}
+                            ],
+                        }
+                    }
+                ],
+                "time": CONTEXTUAL["time"],
+            },
+            "grouping context and inherited filters",
+        ),
         (
             {**CONTEXTUAL, "where": [{"field": DIM, "op": "=", "value": "signup"}]},
             "grouping context and inherited filters",
@@ -55,15 +103,32 @@ CONTEXTUAL = {
             "upper bound",
         ),
         (
+            {
+                **OLD_QUERY,
+                "time": {"temporal_role": ROLE, "start": "2024-07-01", "end": None},
+            },
+            "upper bound",
+        ),
+        (
             {**OLD_QUERY, "where": [{"field": DIM, "op": "LIKE", "value": "sign%"}]},
-            "ignore case",
+            "ignores case",
         ),
     ],
-    ids=["contextual-group", "contextual-day", "contextual-inherited-filter", "start-only", "like"],
+    ids=[
+        "contextual-group",
+        "contextual-day",
+        "contextual-no-grain",
+        "default-contextual",
+        "scoped-contextual",
+        "contextual-inherited-filter",
+        "start-only",
+        "start-null-end",
+        "like",
+    ],
 )
 def test_unsafe_query_rewrites_stop_and_write_nothing(tmp_path, query, reason):
     files = {
-        **UPGRADED,
+        **CUSTOMERS,
         "examples/core.yml": dump_project_yaml({"examples": {"amount": {"query": query}}}),
         "tests/core.yml": "tests: {}\n",
     }
@@ -158,3 +223,59 @@ def test_compile_checks_keep_entry_clock_and_context(tmp_path, monkeypatch, fiel
     report = _architect(tmp_path, "upgrade_project", project_path=str(project))
     assert report["status"] == "preview", report
     assert seen and all(call.get("now") == NOW and call.get("context") == context for call in seen)
+
+
+@pytest.mark.parametrize("case", ["contextual", "start-only"])
+def test_held_translations_have_different_answers_on_the_reviewed_rows(tmp_path, case):
+    import duckdb
+
+    from semantic_rails.package_snapshot import load_package_snapshot
+
+    project = _package(tmp_path, CUSTOMERS)
+    (project / "data").mkdir()
+    with duckdb.connect(str(project / "data/shop.duckdb")) as connection:
+        connection.execute("CREATE TABLE raw_customers (customer_id INTEGER)")
+        connection.execute("INSERT INTO raw_customers VALUES (1)")
+        connection.execute(
+            "CREATE TABLE raw_events (event_id INTEGER, customer_id INTEGER, amount INTEGER, "
+            "occurred_at TIMESTAMP, event_type VARCHAR)"
+        )
+        if case == "contextual":
+            connection.execute(
+                "INSERT INTO raw_events VALUES (1, 1, 30, '2024-07-01', 'signup'), "
+                "(2, 1, 30, '2024-07-01', 'purchase')"
+            )
+            query = CONTEXTUAL
+            reference = connection.execute(
+                "SELECT event_type, SUM(amount) FROM raw_events "
+                "GROUP BY event_type, customer_id, occurred_at HAVING SUM(amount) > 50"
+            ).fetchall()
+            assert reference == []
+        else:
+            connection.execute(
+                "INSERT INTO raw_events VALUES (1, 1, 10, '2024-07-01', 'signup'), "
+                "(2, 1, 30, '2024-07-03', 'signup'), (3, 1, 20, '2024-07-06', 'signup')"
+            )
+            query = {
+                "select": [{"expression": PREDICATE["input"]}],
+                "time": {"temporal_role": ROLE, "grain": "day", "start": "2024-07-01"},
+                "policy_context": {"now": NOW},
+            }
+            reference = connection.execute(
+                "SELECT SUM(amount) FROM raw_events WHERE occurred_at >= '2024-07-01' "
+                "GROUP BY occurred_at ORDER BY occurred_at"
+            ).fetchall()
+            assert reference == [(10,), (30,), (20,)]
+    result = translate_query(query)
+    runtime = Runtime.from_snapshot(load_package_snapshot(project))
+    try:
+        before = runtime.query_internal(query)["rows"]
+        after = runtime.query(result.query, now=NOW)["rows"]
+        if case == "contextual":
+            assert before == []
+            assert sorted(row["total_amount"] for row in after) == [30, 30]
+        else:
+            assert sorted(row["total_amount"] for row in before) == [10, 20, 30]
+            assert sorted(row["total_amount"] for row in after) == [10, 30]
+    finally:
+        runtime.close()

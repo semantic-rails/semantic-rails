@@ -1047,7 +1047,10 @@ package's example and test queries written in the previous shape, including both
 comparison test ([rule `query-call-v2`](PACKAGE_AUTHORING.md#upgrading-a-package)). Refusal tests
 receive a hand-edit hint naming the expected code to verify. Translations that can change an
 answer, such as `LIKE` to a case-insensitive text word or `!=` to a `not` that keeps unknown
-rows, stop for a hand edit; the upgrade writes nothing until those sites are resolved.
+rows, contextual predicates that inherit query grouping and filters, and start-only time
+windows that would gain an upper bound at `now`, stop for a hand edit; the upgrade writes nothing until those sites are resolved. Rewritten calls are reported as
+`translated`: the staged package loads and current calls compile with entry `now` and `context`,
+but no data is executed and legacy answers are not compared. Review the diff.
 
 | Retired | Now |
 |---|---|

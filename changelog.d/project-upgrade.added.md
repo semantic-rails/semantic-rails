@@ -2,8 +2,9 @@
   current forms in one change, and the Architect tool `upgrade_project` does the same. It
   previews the rules, a proof line and the diff by default; `--write` writes every file in one
   parse-gated transaction, keeping comments. Each rewrite is `proven` (the package's semantic
-  fingerprint and its baseline-compilable example and test SQL are unchanged) or `certified` (this
-  engine refuses the legacy form); a rewrite that changes an answer is refused with
+  fingerprint and its baseline-compilable example and test SQL are unchanged) or `translated` (this
+  engine refuses the legacy form, so there is no before/after equivalence comparison); a rewrite
+  that changes an answer is refused with
   `upgrade_not_equivalent`. The rules delete the declarations 0.3.2rc3 retired. A rule that
   needs a decision stops with exit code 2 until
   `--choose KEY=OPTION` answers it. `project validate`, `project_status` and Architect writes

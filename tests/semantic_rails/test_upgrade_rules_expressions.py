@@ -130,7 +130,7 @@ def test_a_retired_expression_upgrade_loads_with_the_same_semantics(tmp_path):
 
     assert report["ok"] and report["status"] == "upgraded", report
     assert {rule["id"]: rule["tier"] for rule in report["rules"]} == {
-        "expression-arithmetic": "certified"
+        "expression-arithmetic": "translated"
     }
     assert source.read_text() == text
     assert load_package_snapshot(source).semantic_fingerprint == baseline.semantic_fingerprint

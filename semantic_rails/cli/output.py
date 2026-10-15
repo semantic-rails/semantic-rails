@@ -332,13 +332,19 @@ def _print_project_upgrade(report: dict[str, Any], *, command: str) -> None:
     if "proven" in tiers:
         queries = int(proof.get("examples", 0)) + int(proof.get("tests", 0))
         print(f"proven: fingerprint and {queries} example and test queries unchanged")
-    certified = [rule for rule in rules if rule["tier"] == "certified"]
-    if certified:
-        notes = ", ".join(sorted({rule["since"] for rule in certified}))
-        print(
-            f"certified: {len(certified)} rules for forms this engine refuses "
-            f"(see the {notes} upgrade notes)"
-        )
+    translated = [rule for rule in rules if rule["tier"] == "translated"]
+    if translated:
+        if any(rule["id"] == "query-call-v2" for rule in translated):
+            print("translated: spelling-only query rewrites; review the diff")
+            print(
+                "  Current calls compiled with entry now/context; queries were not run and "
+                "legacy answers were not compared"
+            )
+        else:
+            print(
+                f"translated: {len(translated)} rules for forms this engine refuses; "
+                "review the diff (no before/after equivalence comparison)"
+            )
     for choice in report.get("choices", []) or []:
         if choice.get("changes_answers"):
             print(f"  {choice['key']} = {choice['option']}: changes answers by your choice")

@@ -158,7 +158,11 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
                     f"[{part}]" if isinstance(part, int) else f".{part}"
                     for part in site[len(entry_path) :]
                 ).lstrip(".")
-                message = f"{where}: {'; '.join(reasons)}"
+                suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
+                message = (
+                    f"{where}: {'; '.join(reasons)}. Hint: start from {suggestion}; "
+                    "resolve the flagged scope or meaning by hand before using this call"
+                )
                 yield Finding(_RULE, file, files.line(file, site), site, message)
             continue
         notes = [

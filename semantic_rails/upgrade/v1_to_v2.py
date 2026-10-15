@@ -67,6 +67,11 @@ FLAG_CODES: dict[str, tuple[str, str]] = {
     # Sites translated; a person checks the meaning.
     "NOT_KEEPS_UNKNOWNS": (REVIEW, "'not' keeps the NULL rows the previous op dropped"),
     "CONTAINS_CASE_INSENSITIVE": (REVIEW, "the text words ignore case; LIKE did not"),
+    "CONTEXTUAL_SCOPE_CHANGED": (
+        REVIEW,
+        "an entity filter loses grouping context and inherited filters",
+    ),
+    "OPEN_ENDED_WINDOW": (REVIEW, "a start-only window gains an upper bound at now"),
     "ALIGNMENT_COLLAPSED": (REVIEW, "a predicate time_alignment folded into an over word"),
     # Sites translated with a note.
     "NAMED_WINDOW": (INFO, "a named window, which answers every period"),
@@ -715,6 +720,12 @@ def _over_word(pred: dict[str, Any], path: str, ctx: _Ctx) -> str | None:
                 f"{path}.time_alignment",
                 "same_query_period became over: period",
             )
+        ctx.flag(
+            "CONTEXTUAL_SCOPE_CHANGED",
+            path,
+            "over: period loses the query's grouping context and inherited filters; "
+            "author the intended scope by hand",
+        )
         return "period"
     ctx.flag("INVALID_V1_SHAPE", f"{path}.scope_mode", f"unknown scope_mode {scope!r}")
     return None
@@ -936,6 +947,13 @@ def _translate_time(time: Any, path: str, ctx: _Ctx) -> Any:
         ctx.flag("INVALID_V1_SHAPE", f"{path}.range", "range takes only {last: {unit, value}}")
         return time
     start, end = time.get("start"), time.get("end")
+    if start is not None and end is None:
+        ctx.flag(
+            "OPEN_ENDED_WINDOW",
+            f"{path}.start",
+            "a start-only window would acquire an upper bound at now; "
+            "choose an explicit end by hand",
+        )
     named = (
         (start is not None and end is not None)
         or span is not _MISSING
