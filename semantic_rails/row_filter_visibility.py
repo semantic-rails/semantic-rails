@@ -23,7 +23,7 @@ from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import _reaches_at_most_one
 from .errors import SemanticLayerError
 from .fanout import package_route
-from .row_filters import ParentHop, RowFilter, Visibility, relation_key
+from .row_filters import ParentHop, RowFilter, Visibility, filter_refusal, relation_key
 from .schema import PackageConfig, base_of
 
 
@@ -271,15 +271,11 @@ def hold_unowned_reads(
 
     def hold(reason: str, *named: str) -> SemanticLayerError:
         shown = not set(named) & hidden
-        return SemanticLayerError(
-            "POLICY_DENIED",
-            f"A row filter applies to this request, and {_HOLDS[reason]}."
-            + (f" (Read: {', '.join(named)}.)" if shown else ""),
-            details={
-                "reason": reason,
-                "policy_ids": sorted({row.policy_id for row in visibility.filters}),
-                **({"objects": list(named)} if shown else {}),
-            },
+        return filter_refusal(
+            visibility.filters,
+            reason,
+            f"{_HOLDS[reason]}." + (f" (Read: {', '.join(named)}.)" if shown else ""),
+            **({"objects": list(named)} if shown else {}),
         )
 
     for model in sorted(roots):

@@ -310,14 +310,10 @@ def _add_predicates(select: SqlSelect, visibility: Visibility, ctes: Collection[
         if not visibility.subquery_in_join_on and any(
             isinstance(node, SqlInQuery) for node in sql_nodes(predicate)
         ):
-            raise SemanticLayerError(
-                "POLICY_DENIED",
-                "A row filter applies to this request, and its warehouse can't yet read the "
-                "visibility of a relation joined optionally here.",
-                details={
-                    "reason": "row_filter_shape_unsupported_by_warehouse",
-                    "policy_ids": sorted({row.policy_id for row in visibility.filters}),
-                },
+            raise filter_refusal(
+                visibility.filters,
+                "row_filter_shape_unsupported_by_warehouse",
+                "its warehouse can't yet read the visibility of a relation joined optionally here.",
             )
         if not _leads(join.on, predicate):
             on = predicate if join.on is None else SqlBinary(predicate, "AND", join.on)
@@ -463,27 +459,36 @@ def _observes(scan: SqlSelect) -> bool:
     )
 
 
-def untraced(filters: Sequence[RowFilter]) -> SemanticLayerError:
+def filter_refusal(
+    filters: Sequence[RowFilter], reason: str, problem: str, **details: Any
+) -> SemanticLayerError:
+    """The refusal of a request ``filters`` apply to, with its reason and their policies."""
     return SemanticLayerError(
         "POLICY_DENIED",
-        "A row filter applies to this request, and it reads a relation whose rows the filter "
-        "can't be traced to by one package route, so it can't be answered under it.",
+        f"A row filter applies to this request, and {problem}",
         details={
-            "reason": "row_filter_coverage_unsupported",
+            "reason": reason,
             "policy_ids": sorted({row.policy_id for row in filters}),
+            **details,
         },
     )
 
 
+def untraced(filters: Sequence[RowFilter]) -> SemanticLayerError:
+    return filter_refusal(
+        filters,
+        "row_filter_coverage_unsupported",
+        "it reads a relation whose rows the filter can't be traced to by one package route, "
+        "so it can't be answered under it.",
+    )
+
+
 def unsupported(filters: Sequence[RowFilter]) -> SemanticLayerError:
-    return SemanticLayerError(
-        "POLICY_DENIED",
-        "A row filter applies to this request, and this query reads a relation in a way the "
-        "filter can't be proven to hold for, so it can't be answered under it.",
-        details={
-            "reason": "row_filter_unsupported_query",
-            "policy_ids": sorted({row.policy_id for row in filters}),
-        },
+    return filter_refusal(
+        filters,
+        "row_filter_unsupported_query",
+        "this query reads a relation in a way the filter can't be proven to hold for, so it "
+        "can't be answered under it.",
     )
 
 
