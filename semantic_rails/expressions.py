@@ -10,6 +10,7 @@ these nodes; the compiler consumes them.
 from __future__ import annotations
 
 import ast as pyast
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -889,6 +890,10 @@ def _parse_python_expr(text: str) -> SemanticExpr:
 
 
 def parse_config_expression(raw: Any) -> SemanticExpr:
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if not math.isfinite(raw):
+            raise SemanticLayerError("INVALID_CONFIG", f"{raw!r} is not a finite number")
+        raw = str(raw)  # `expr: 1` is the literal it spells, as `expr: "1"` is
     if isinstance(raw, str):
         text = raw.strip()
         if not text:
@@ -911,6 +916,31 @@ ARITHMETIC_OPS = {
     "/": "divide",
     "divide": "divide",
 }
+
+
+def _unsupported_arithmetic_op(spelling: str, context: str) -> SemanticLayerError:
+    """An arithmetic op the engine doesn't read, at its path, with the ops it does and the
+    closest of them."""
+    words = list(dict.fromkeys(ARITHMETIC_OPS.values()))
+    lowered = spelling.lower()
+    closest = [word for word in words if lowered and word.startswith(lowered[:3])]
+    closest = closest or _closest_key_matches(lowered, words)
+    fix = (
+        f"Did you mean '{closest[0]}'? " if closest else ""
+    ) + "Use add, subtract, multiply or divide."
+    return SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        f"Unsupported arithmetic op '{spelling}': use add, subtract, multiply or divide",
+        details={
+            "expression_kind": "arithmetic",
+            "expression_position": context,
+            "path": "expression.op",
+            "received_value": spelling,
+            "allowed": words,
+            "closest_matches": closest,
+            "recovery_hints": [{"kind": "use_supported_arithmetic_op", "message": fix}],
+        },
+    )
 
 
 def _normalize_arithmetic_op(op: Any) -> str:
@@ -1393,8 +1423,11 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
     if like is not None:
         raise like
     if kind == "arithmetic":
+        op = _normalize_arithmetic_op(expr.get("op", ""))
+        if op not in ARITHMETIC_OPS.values():
+            raise _unsupported_arithmetic_op(str(expr.get("op", "")).strip(), context)
         return ArithmeticExpr(
-            op=_normalize_arithmetic_op(expr.get("op", "")),
+            op=op,
             left=parse_semantic_expression(expr.get("left"), context=context),
             right=parse_semantic_expression(expr.get("right"), context=context),
         )

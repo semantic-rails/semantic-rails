@@ -498,8 +498,10 @@ def test_a_hidden_row_kept_by_mistake_is_refused_after_binding(package, monkeypa
     original = visible_view.build_view
     revenue = next(row for row in config.measures if row.id == REVENUE)
 
-    def leaky(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
-        view = original(base, hidden)
+    def leaky(
+        base: PackageConfig, hidden: frozenset[str], withheld: frozenset[str] = frozenset()
+    ) -> PackageConfig:
+        view = original(base, hidden, withheld)
         return replace(view, measures=[*view.measures, revenue])
 
     monkeypatch.setattr(visible_view, "build_view", leaky)

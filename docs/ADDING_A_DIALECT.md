@@ -342,7 +342,8 @@ statement captured at the driver boundary, including alias restoration and limit
 
 **Parameterized statements.** `PreparedQuery.parameters` lists a `ParameterSlot`
 for each positional `?` placeholder: the trusted request attribute that supplies
-the value and its exact type (`string`, `integer` or `boolean`). The runtime binds
+the value and its exact type (`string`, `integer` or `boolean`); a slot with an
+`index` binds that item of a list attribute. The runtime binds
 values per request from the host's `TrustedAttributes`; a missing attribute or a
 value of another type is denied with `POLICY_DENIED`, never bound as NULL or
 coerced. Only an adapter that sets `supports_parameters = True` receives such a
@@ -351,7 +352,11 @@ must send the values to its driver separately from the SQL. Every other adapter,
 including the base fallback, denies it before reaching its driver. Never render a
 value into SQL text as a fallback. `DuckDBAdapter`, Postgres ADBC and Snowflake
 ADBC support binding today; qualify a driver's parameter API with tests before
-enabling another.
+enabling another. A list attribute binds one placeholder per item, so no placeholder
+ever receives a list. Record the warehouse's documented limit, with its source, in
+`sql_preparation.MAX_PARAMETERS` (parameters in one statement; Postgres 65,535) or
+`MAX_LIST_ITEMS` (values in one list; Snowflake 200,000): compilation refuses a statement
+over it with `POLICY_DENIED` before anything executes.
 
 Rules every adapter follows:
 

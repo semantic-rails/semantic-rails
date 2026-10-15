@@ -17,8 +17,9 @@ re-exported here so external callers (``api``, ``asgi``,
 from __future__ import annotations
 
 import os
+import re
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from . import operations
@@ -51,6 +52,7 @@ from .query_call import EXPRESSION_SHAPES
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
+    loopback_host,
     request_context_payload,
 )
 from .request_payload import identity_claim_refusal, refuse_identity_claims
@@ -62,6 +64,7 @@ __all__ = [
     "HTTPInputError",
     "PUBLIC_V1_ROUTES",
     "SemanticHTTPService",
+    "allowed_hosts",
     "clean_request_id",
     "coerce_bool",
     "coerce_int",
@@ -72,6 +75,7 @@ __all__ = [
     "issue",
     "normalize_route",
     "public_api_route",
+    "rebinding_refusal",
     "request_id_from_parts",
     "status_label",
 ]
@@ -145,10 +149,79 @@ def cors_origin_header(request_origin: str | None) -> str:
         return ""
     if "*" in allowed:
         return "*"
-    origin = (request_origin or "").strip()
+    origin = (request_origin or "").strip(" \t")  # HTTP whitespace only
     if origin and origin in allowed:
         return origin
     return ""
+
+
+def allowed_hosts() -> tuple[str, ...]:
+    """Parse `SEMANTIC_RAILS_ALLOWED_HOSTS`: host names a request may name besides loopback."""
+    raw = os.environ.get("SEMANTIC_RAILS_ALLOWED_HOSTS", "")
+    return tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+# A whole authority: a bracketed IPv6 address or a plain name, then an optional port.
+_AUTHORITY = re.compile(
+    r"(?:\[([0-9a-f.]*:[0-9a-f:.]*)\]|([a-z0-9._~-]+))(?::([0-9]{1,5}))?", re.ASCII | re.IGNORECASE
+)
+
+
+def _allowed_authority(authority: str, listed: tuple[str, ...]) -> bool:
+    match = _AUTHORITY.fullmatch(authority)
+    if match is None or int(match[3] or 0) > 65535:
+        return False
+    name = (match[1] or match[2]).lower()
+    return loopback_host(name) or name in listed
+
+
+def rebinding_refusal(
+    headers: Mapping[str, Any] | Iterable[tuple[Any, Any]],
+    server_host: str | None = None,
+    *,
+    target: str = "",
+) -> tuple[int, dict[str, Any]] | None:
+    """The status and minimal body refusing a request a web page could send by DNS rebinding.
+
+    One check before every response, `/api/v1` and `/mcp` alike. Pass the raw header
+    pairs, so a repeated `Host` or `Origin` is refused rather than collapsed. When the
+    request reached the server on a loopback address (`server_host`), or
+    `SEMANTIC_RAILS_ALLOWED_HOSTS` is set, it needs one well-formed `Host` naming loopback
+    or a listed host, with any port, and so does the authority of an absolute-form
+    `target` (421). An `Origin`, even an empty one, must be on `SEMANTIC_RAILS_CORS_ORIGINS`
+    (403); clients that send none pass. The body names no package and no identity.
+    """
+    found: dict[str, list[str]] = {"host": [], "origin": []}
+    for name, value in headers.items() if isinstance(headers, Mapping) else headers:
+        if str(name).lower() in found:  # trim HTTP whitespace only, not other spacing
+            found[str(name).lower()].append(str(value).strip(" \t"))
+    hosts, origins = found["host"], found["origin"]
+    listed = allowed_hosts()
+    # An absolute-form target names a host, even behind a path prefix; it must pass like Host.
+    _, absolute, rest = re.split(r"[?#]", target, maxsplit=1)[0].partition("://")
+    authorities = [*hosts, rest.partition("/")[0]] if absolute else hosts
+    if len(hosts) > 1 or (
+        (listed or loopback_host(server_host or ""))
+        and not (hosts and all(_allowed_authority(a, listed) for a in authorities))
+    ):
+        status, refused = (
+            421,
+            issue(
+                "HOST_NOT_ALLOWED",
+                f"Host {' '.join(hosts)!r} is not allowed; list it in SEMANTIC_RAILS_ALLOWED_HOSTS.",
+            ),
+        )
+    elif origins and (len(origins) > 1 or not cors_origin_header(origins[0])):
+        status, refused = (
+            403,
+            issue(
+                "ORIGIN_NOT_ALLOWED",
+                f"Origin {' '.join(origins)!r} is not allowed; list it in SEMANTIC_RAILS_CORS_ORIGINS.",
+            ),
+        )
+    else:
+        return None
+    return status, {"ok": False, "error": refused, "errors": [refused]}
 
 
 # Options a REST call may set beside its query (``{"query": ..., "options": {...}}``).

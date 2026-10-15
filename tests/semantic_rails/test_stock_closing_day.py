@@ -12,15 +12,19 @@ Every expected number below comes from the hand SQL beside it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import duckdb
 import pytest
 
+from semantic_rails import runtime as runtime_module
 from semantic_rails.compiler import compile_query
+from semantic_rails.compiler_parts import empty_groups
 from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
 from semantic_rails.embedding import RequestContext
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_select_for_profile
 from semantic_rails.runtime import Runtime
@@ -28,6 +32,8 @@ from semantic_rails.runtime_parts.answer_warnings import (
     closing_day_disclosures,
     granted_closing_day,
 )
+from semantic_rails.sql_ast import SqlJoin, SqlTableRef
+from semantic_rails.sql_preparation import ParameterSlot, parameters_denied
 from tests.semantic_rails import shared_seed
 from tests.semantic_rails.conftest import opened
 
@@ -366,6 +372,207 @@ def test_the_closing_day_and_its_counts_are_read_under_the_callers_row_filter(
         assert _one(runtime.query(_call("inv_stagger", **YEAR)), "warnings", MISSING)
     finally:
         runtime.close()
+
+
+ONE_DENSE_BUILDING = ONE_BUILDING.replace("inv_stagger", "inv_dense")
+
+
+@pytest.fixture
+def dense_by_building(tmp_path: Path) -> Runtime:
+    runtime = opened(Runtime.from_path(str(_write_package(tmp_path / "inv", ONE_DENSE_BUILDING))))
+    yield runtime
+    runtime.close()
+
+
+def _building(building: str) -> RequestContext:
+    return RequestContext(actor="u", audience="tenant", attributes={"building": building})
+
+
+MONTHLY_DENSE = _call("inv_dense", grain="month", **YEAR)
+DENSE_AREA = "measure.inv.inv_dense_area"
+
+
+def test_balance_coverage_uses_only_the_callers_visible_rows(dense_by_building: Runtime) -> None:
+    """C's snapshots stop after April; other buildings' run to December. C's answer says its
+    data ends April 1 and its later months have no data yet; A's data ends in December."""
+    result = dense_by_building.query(MONTHLY_DENSE, context=_building("C"))
+    assert _values(result) == [50.0] * 4 + [None] * 8
+    assert result["window"]["data_through"] == "2020-04-01"
+    assert _one(result, "warnings", "NO_DATA_YET")["details"]["measures"] == [
+        {"id": DENSE_AREA, "edge": "2020-04-01", "edge_source": "last_row"}
+    ]
+    result = dense_by_building.query(MONTHLY_DENSE, context=_building("A"))
+    assert _values(result) == [100.0] * 12
+    assert result["window"]["data_through"] == "2020-12-01"
+    assert "NO_DATA_YET" not in _codes(result, "warnings")
+
+
+def test_every_balance_coverage_cte_carries_the_row_filter(
+    dense_by_building: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The coverage read binds the caller's filter: one slot for each filtered scan."""
+    statements: list = []
+    real = runtime_module._adapter_query
+
+    def recording(adapter, query, **kwargs):
+        statements.append(query)
+        return real(adapter, query, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "_adapter_query", recording)
+    dense_by_building.query(MONTHLY_DENSE, context=_building("C"))
+    (coverage,) = [row for row in statements if "balance_coverage_1__data_through" in row.sql]
+    assert coverage.sql.count("building = ?") == coverage.sql.count("?") == 1
+    assert coverage.parameters == (ParameterSlot("building", "string"),)
+
+
+@pytest.mark.parametrize("read", ["coverage", "closing_day"])
+def test_a_refused_coverage_read_is_not_swallowed(
+    dense_by_building: Runtime, monkeypatch: pytest.MonkeyPatch, read: str
+) -> None:
+    """A policy refusal while reading a balance's coverage or closing day refuses the answer;
+    any other failure leaves the answer as it is, without what that read would have said."""
+    real = runtime_module._probe_row
+    failure: Exception = parameters_denied("parameter_count_mismatch")
+
+    def failing(runtime, compiled, payload, probe):
+        names = [cte.name for cte in probe.ctes]
+        if any(name.startswith("balance_coverage") for name in names) == (read == "coverage"):
+            raise failure
+        return real(runtime, compiled, payload, probe)
+
+    monkeypatch.setattr(runtime_module, "_probe_row", failing)
+    with pytest.raises(SemanticLayerError) as caught:
+        dense_by_building.query(MONTHLY_DENSE, context=_building("C"))
+    assert (caught.value.code, caught.value.details) == ("POLICY_DENIED", failure.details)
+    failure = RuntimeError("the warehouse went away")
+    result = dense_by_building.query(MONTHLY_DENSE, context=_building("C"))
+    assert _values(result) == [50.0] * 4 + [None] * 8
+    if read == "coverage":
+        assert "data_through" not in result["window"]
+    else:
+        assert _one(result, "assumptions", CLOSING)["closing_day"] == ""
+
+
+def test_a_balance_coverage_read_that_cannot_be_filtered_refuses_the_request(
+    dense_by_building: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Coverage that reads a relation no model reads (here a second spelling of the filtered
+    one) is refused under a row filter, never read unfiltered; a caller with no filter still
+    reads it."""
+    real = empty_groups.coverage_select
+
+    def joined(scope, dialect):
+        select = real(scope, dialect)
+        return replace(select, joins=[SqlJoin("CROSS", SqlTableRef("main.inv_dense", "again"))])
+
+    monkeypatch.setattr(empty_groups, "coverage_select", joined)
+    with pytest.raises(SemanticLayerError) as caught:
+        dense_by_building.query(MONTHLY_DENSE, context=_building("C"))
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details["reason"] == "row_filter_unsupported_query"
+    assert caught.value.details["policy_ids"] == ["policy.inv.one_building"]
+    assert dense_by_building.query(MONTHLY_DENSE)["window"]["data_through"] == "2020-12-01"
+
+
+HIDDEN_REGION_RULE = f"""{ONE_DENSE_BUILDING}  - id: policy.inv.secret_region_rule
+    kind: row_filter
+    dimension: dimension.inv_inv_dense_region
+    attribute: region
+    type: string
+    audiences: [tenant]
+  - id: policy.inv.hide_region
+    kind: object_visibility
+    action: hidden
+    object_ids: [dimension.inv_inv_dense_region]
+    audiences: [tenant]
+"""
+PIPELINE_BALANCE = """model:
+  id: dense_pipe
+  relation: dense_pipe
+  entities: {dense_pipe: {}}
+  times:
+    snap_date: {column: snap_date, kind: date, class: event_time, default: true}
+  measures:
+    pipe_area: {kind: aggregate, expr: area, value_type: number,
+      accumulation: {kind: stock, snapshot: end_of_period}}
+"""
+
+
+@pytest.fixture
+def hidden_region(tmp_path: Path) -> Runtime:
+    """A tenant sees only its building; a second filter, on a region it can't see, applies
+    too. A pipeline reads the filtered relation."""
+    root = _write_package(tmp_path / "inv", HIDDEN_REGION_RULE)
+    (root / "relations.yml").write_text(
+        "relations:\n  dense_pipe:\n    columns: [building, snap_date, area]\n"
+        "    steps:\n      - source: inv_dense\n"
+    )
+    (root / "models" / "dense_pipe.yml").write_text(PIPELINE_BALANCE)
+    (root / "models" / "inv_dense.yml").write_text(
+        _snapshot_model("inv_dense").replace(
+            "{building:", "{region: {kind: categorical}, building:"
+        )
+    )
+    with (root / "graph.yml").open("a") as graph:
+        graph.write("    dense_pipe: {key: [building, snap_date], model: dense_pipe}\n")
+    with duckdb.connect(str(root / "data" / "inv.duckdb")) as con:
+        con.execute("ALTER TABLE inv_dense ADD COLUMN region VARCHAR DEFAULT 'north'")
+    runtime = Runtime.from_path(str(root))
+    yield runtime
+    runtime.close()
+
+
+PIPE_AREA = [{"expression": {"kind": "measure", "measure": "measure.inv.pipe_area"}, "as": "v"}]
+PIPE_MONTHLY = {
+    "select": PIPE_AREA,
+    "time": {"temporal_role": "temporal_role.inv_dense_pipe_snap_date", "grain": "month", **YEAR},
+}
+
+
+def _tenant(**attributes: object) -> RequestContext:
+    return RequestContext(actor="u", audience="tenant", attributes=attributes)
+
+
+def test_a_refusal_names_no_row_filter_hidden_from_the_caller(hidden_region: Runtime) -> None:
+    """A balance read through a pipeline over a filtered relation is refused, timed or not;
+    the refusal names the caller's own filter and only the kind of one hidden from them."""
+    context = _tenant(building="C", region="north")
+    with pytest.raises(SemanticLayerError) as untimed:
+        hidden_region.query({"select": PIPE_AREA}, context=context)
+    assert untimed.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
+    with pytest.raises(SemanticLayerError) as caught:
+        hidden_region.query(PIPE_MONTHLY, context=context)
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details["policy_ids"] == ["policy.inv.one_building", "row_filter"]
+    assert "region" not in f"{caught.value} {caught.value.details}"
+
+
+def _refusal(runtime: Runtime, surface: str, context: RequestContext) -> tuple[dict, str]:
+    """The refusal's details and everything a caller reads about it, on ``surface``."""
+    if surface == "validate":
+        out = runtime.validate({"select": PIPE_AREA}, context=context)
+        (error,) = out["errors"]
+        return error["details"], json.dumps([error, out["recovery_hints"], out["query_ir_hints"]])
+    with pytest.raises(SemanticLayerError) as caught:
+        getattr(runtime, surface)({"select": PIPE_AREA}, context=context)
+    assert caught.value.code == "POLICY_DENIED"
+    return caught.value.details, f"{caught.value} {json.dumps(caught.value.details)}"
+
+
+@pytest.mark.parametrize("surface", ["query", "compile", "validate"])
+@pytest.mark.parametrize("region", [None, 7])
+def test_an_attribute_refusal_names_no_row_filter_hidden_from_the_caller(
+    hidden_region: Runtime, surface: str, region: int | None
+) -> None:
+    """A missing or mistyped attribute of a filter the caller can't see is refused without
+    naming it; one of the caller's own filters is named, so they can fix it."""
+    attributes: dict = {"building": "C"} if region is None else {"building": "C", "region": 7}
+    details, said = _refusal(hidden_region, surface, _tenant(**attributes))
+    assert details == {"reason": "row_filter_denied"}
+    assert "region" not in said
+    details, said = _refusal(hidden_region, surface, _tenant(region="north"))
+    assert details == {"reason": "missing_attribute", "attribute": "building"}
+    assert "building" in said
 
 
 def test_a_probe_that_fails_still_discloses_the_rule() -> None:

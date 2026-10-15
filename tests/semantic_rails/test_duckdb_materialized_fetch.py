@@ -63,9 +63,6 @@ class RecordingConnection:
     def extract_statements(self, sql):
         return self.raw.extract_statements(sql)
 
-    def interrupt(self):  # the key search's deadline
-        self.raw.interrupt()
-
     @property
     def description(self):
         raise AssertionError("read the materialized relation's description")

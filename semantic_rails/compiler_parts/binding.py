@@ -48,6 +48,7 @@ from ..ir import (
 from ..query_call import engine_where, refusal
 from ..registry import Registry
 from ..relation_pipelines import attach_relation_ctes
+from ..row_filter_visibility import Visibility, hold_unowned_reads, visibility_for
 from ..row_filters import RowFilter, apply_row_filters
 from ..schema import (
     PackageConfig,
@@ -57,11 +58,13 @@ from ..schema import (
 )
 from ..sql_ast import (
     SqlCte,
+    SqlParameter,
     SqlSelect,
+    sql_nodes,
 )
-from ..sql_preparation import ParameterSlot
 from .bind import (
     _expression_alias,
+    refusing_fallible_calls,
 )
 from .dependencies import (
     binding_dependencies,
@@ -150,8 +153,8 @@ class BoundQuery:
     leaf_objects: dict[str, frozenset[str]]
     # Every rollup the SQL reads, including separately compiled branches.
     rollup_scans: frozenset[str] = frozenset()
-    # The statement's ``?`` placeholders, in order: one per applied row filter.
-    parameters: tuple[ParameterSlot, ...] = ()
+    # What the request's row filters let it read; every statement it runs is held to it.
+    visibility: Visibility | None = None
     # The key gap of every event/state-clock stock the SQL reads, nested compiles included.
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
     # Every output that reads 0 or NULL for an empty group, with the measures behind it.
@@ -166,7 +169,7 @@ class BoundQuery:
     # The request's ``now`` the SQL's loaded coverage caps at ("" when it reads none).
     coverage_now: str = ""
     # Each output that reads only balances, with the coverage CTEs (kept apart from the
-    # query's SQL) that say where their data ends.
+    # query's SQL, row-filtered like it) that say where their data ends.
     balance_edges: tuple[dict[str, Any], ...] = ()
     balance_coverage: tuple[SqlCte, ...] = ()
     # Each balance read on its closing day (nested reads included), the outputs it counts for,
@@ -336,15 +339,33 @@ def _bind_with_row_filters(
     row_filters: Sequence[RowFilter],
 ) -> BoundQuery:
     decided = query_route_rows(config, payload, row_filters=row_filters)
+    # Enforcement reads the whole package; a refusal names only policies the caller sees (a
+    # hidden one by its kind), whichever statement it refuses.
+    shown = {row.id for row in config.semantic_policies}
+    shown_filters = [
+        row if row.policy_id in shown else replace(row, policy_id="row_filter")
+        for row in row_filters
+    ]
     try:
         # A rollup may not hold the filter column, so a row-filtered query reads its base relation.
         with (
             aggregate_routing(not row_filters),
+            refusing_fallible_calls(tuple(row.policy_id for row in shown_filters)),
             query_route_decisions(
                 {pair: row.relationship_path for pair, (_, row) in decided.items()}
             ),
         ):
             bound = _bind_query(config, registry, payload)
+    except SemanticLayerError as exc:
+        if row_filters and exc.code == "AMBIGUOUS_PATH":
+            # Offered only if every option can be taken and answers under the caller's filters.
+            pair = (exc.details["start"], exc.details["target"])
+            _guard_route_row_filters(base_of(config), pair, row_filters, "", config)
+            visibility = visibility_for(config, shown_filters)
+            for option in (exc.details.get("clarification") or {}).get("options") or []:
+                route = (*pair, option["relationship_path"])
+                hold_unowned_reads(config, visibility, roots=(), routes=[route])
+        raise
     except RecursionError as exc:
         raise SemanticLayerError(
             "INVALID_CONFIG", "Expression dependencies are cyclic or too deep."
@@ -369,34 +390,46 @@ def _bind_with_row_filters(
                     "refusal offered, with the same source_entity and target_entity.",
                 },
             )
-    load_logs = {
-        row.zero_through.relation
-        for row in config.measures
-        if row.zero_through is not None and row.zero_through.kind == "loaded"
-    }
-    sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters, load_logs=load_logs)
-    # A closing-day probe reads the stock's rows as its leaf does, under the same filters.
+    row_filters = shown_filters
+    visibility = visibility_for(config, row_filters)
+    sql_ast = apply_row_filters(bound.sql_ast, visibility)
+    if row_filters:
+        # Holds only: a refusal here never authorizes anything the pass doesn't prove.
+        hold_unowned_reads(
+            config,
+            visibility,
+            roots=_row_roots(bound),
+            routes=read_routes(bound.plan, bound.route_choices),
+        )
+
+    def filtered(statement: Any) -> SqlSelect:
+        return apply_row_filters(statement, visibility)
+
+    # A closing-day probe reads the stock's rows as its leaf does, under the same filters, and
+    # so does a balance's coverage (its data_through); one that can't be filtered is refused.
     closing_reads = tuple(
-        {**read, "probe": apply_row_filters(read["probe"], row_filters, load_logs=load_logs)[0]}
-        for read in bound.closing_reads
+        {**read, "probe": filtered(read["probe"])} for read in bound.closing_reads
+    )
+    balance_coverage = tuple(
+        replace(cte, query=filtered(cte.query)) for cte in bound.balance_coverage
     )
     if row_filters:
-        # Enforcement reads the whole package; a refusal names only policies the caller sees.
-        shown = {row.id for row in bound.config.semantic_policies}
+        bound_slots = [node.slot for node in sql_nodes(sql_ast) if isinstance(node, SqlParameter)]
         _validate_restrictive_time_semantics(
             normalize_query(bound.plan.query, config=bound.config),
             base_of(bound.config),
             # Original slots identify applied policies; missing slots keep the guard conservative.
             row_filters=[
-                row if row.policy_id in shown else replace(row, policy_id="row_filter")
+                row
                 for row in row_filters
-                if not parameters or any(slot is row.slot for slot in parameters)
+                if not bound_slots or any(slot is row.slot for slot in bound_slots)
             ],
         )
     return replace(
         bound,
         sql_ast=sql_ast,
-        parameters=parameters,
+        visibility=visibility if row_filters else None,
+        balance_coverage=balance_coverage,
         closing_reads=closing_reads,
         route_decisions=tuple(
             {
@@ -408,6 +441,17 @@ def _bind_with_row_filters(
             for pair, (_, row) in decided.items()
         ),
     )
+
+
+def _row_roots(bound: BoundQuery) -> set[str]:
+    """The models whose rows a value starts from: the root, every measure's model (nested
+    reads and predicates included) and the root of each route the SQL reads."""
+    measures = get_package_analysis(bound.config).measures
+    return {
+        bound.plan.root_entity,
+        *(plan.source_entity for plan in bound.plan.measure_plans),
+        *(measures[oid].entity for oid in bound.object_ids if oid in measures),
+    } - {""}
 
 
 def query_route_rows(
@@ -460,6 +504,8 @@ def query_route_rows(
                     "refusal offered.",
                 },
             )
+        if row_filters:
+            _hold_decided_route(config, pair, list(row.relationship_path), row_filters, where)
         _guard_route_row_filters(base, pair, row_filters, where, config)
         decided[pair] = (index, row)
     return decided
@@ -497,6 +543,30 @@ def _via_candidates(config: PackageConfig, source: str, target: str) -> dict[str
     return {**found, "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": message}]}
 
 
+def _hold_decided_route(
+    config: PackageConfig,
+    pair: tuple[str, str],
+    route: list[str],
+    row_filters: Sequence[RowFilter],
+    where: str,
+) -> None:
+    """A decided route the plan hold refuses is refused at its row (``where``), naming only
+    the policies the caller's view shows."""
+    shown = {row.id for row in config.semantic_policies}
+    filters = [
+        row if row.policy_id in shown else replace(row, policy_id="row_filter")
+        for row in row_filters
+    ]
+    try:
+        hold_unowned_reads(
+            config, visibility_for(config, filters), roots=(), routes=[(*pair, route)]
+        )
+    except SemanticLayerError as exc:
+        raise SemanticLayerError(
+            exc.code, f"{where}: {exc}", details={**exc.details, "path": where}
+        ) from None
+
+
 def _guard_route_row_filters(
     config: PackageConfig,
     pair: tuple[str, str],
@@ -515,13 +585,14 @@ def _guard_route_row_filters(
     policies = {row.policy_id for row in row_filters if row.table in tables}
     if policies:
         shown = {row.id for row in display_config.semantic_policies}
+        asked = f"{where} chooses" if where else "This question needs a choice of"
         raise SemanticLayerError(
             "POLICY_DENIED",
-            f"{where} chooses a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
+            f"{asked} a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
             "a query cannot choose a route under a row filter",
             details={
                 "reason": "route_override_under_row_policy",
-                "path": where,
+                **({"path": where} if where else {}),
                 "policy_ids": sorted(policies & shown),
                 "hint": "Under a row filter only a reviewed graph.path_preferences row "
                 "(record_route_decision) changes which route the package means.",

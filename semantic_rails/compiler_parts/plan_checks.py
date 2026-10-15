@@ -6,6 +6,7 @@ windows, and a where value's type.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import asdict, fields, is_dataclass
 from typing import Any
@@ -21,6 +22,7 @@ from ..ast import (
 )
 from ..clock import UNITS, known_zone
 from ..config_parts.lookup_measures import lookup_links
+from ..config_parts.measure_rows import KEYED_AGGREGATIONS
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -301,12 +303,13 @@ def _window_total(
 
 
 def _measures_under_summing_wrappers(
-    expr: Any, config: PackageConfig, wrapper: str = ""
+    expr: Any, config: PackageConfig, wrapper: str = "", wrappers: tuple[type, ...] = ()
 ) -> Iterable[tuple[str, str]]:
-    """(measure id, construct) for each measure a window or per-entity rollup reaches."""
+    """(measure id, construct) for each measure a window or per-entity rollup reaches (or one
+    of ``wrappers``, when given)."""
     # A prior-period offset reads one other period's value; it adds nothing.
     offset = isinstance(expr, OffsetWindowExpr) and expr.aggregate in {"lag", "lead"}
-    if isinstance(expr, _SUMMING_WRAPPERS) and not offset:
+    if any(isinstance(expr, kind) for kind in wrappers or _SUMMING_WRAPPERS) and not offset:
         wrapper = wrapper or expr_kind(expr)
     if wrapper and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         yield expr.measure, wrapper
@@ -315,7 +318,9 @@ def _measures_under_summing_wrappers(
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         if recipe is not None:
-            yield from _measures_under_summing_wrappers(recipe.expression, config, wrapper)
+            yield from _measures_under_summing_wrappers(
+                recipe.expression, config, wrapper, wrappers
+            )
         return
     if not is_dataclass(expr):
         return
@@ -323,7 +328,7 @@ def _measures_under_summing_wrappers(
         value = getattr(expr, item.name)
         for child in value if isinstance(value, list) else [value]:
             if is_dataclass(child):
-                yield from _measures_under_summing_wrappers(child, config, wrapper)
+                yield from _measures_under_summing_wrappers(child, config, wrapper, wrappers)
 
 
 def _single_valued_columns(
@@ -483,9 +488,10 @@ def _validate_non_additive_sums(
             ):
                 _raise_non_additive_sum(measure, "parent_lookup", via_columns, config)
             continue
-        if aggregation not in {"sum", "last_value", "first_value"}:
+        if aggregation not in KEYED_AGGREGATIONS:
             continue
-        # Read only here: a row-grain model's rows have no key to fix, so this refuses for it.
+        if not measure.row_grain and entity.is_row_grain:
+            _raise_row_grain_non_additive(measure, aggregation, entity)
         key = list(measure.row_grain or entity.key)
         required = key
         if measure.measure_class == "semi_additive":
@@ -514,6 +520,25 @@ class NonAdditiveRefusal(SemanticLayerError):
         self.dimensions = dimensions
 
 
+def _statistics(measure: MeasureConfig) -> list[str]:
+    """The aggregations an `additive: false` measure answers at any grain."""
+    return [
+        name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
+    ]
+
+
+def _raise_row_grain_non_additive(measure: MeasureConfig, aggregation: str, entity: Any) -> None:
+    model = entity.model or entity.id
+    instead = " / ".join(_statistics(measure))
+    raise SemanticLayerError(
+        "ROW_GRAIN_UNSUPPORTED",
+        f"Measure '{measure.id}' is additive: false, and its {aggregation} needs each of its rows' "
+        f"key fixed, but '{entity.label or model}' is row grain (no key). Use aggregation "
+        f"{instead}, or declare a key on {model} if its rows have one.",
+        details={"model": model, "entity": entity.id, "measure_id": measure.id},
+    )
+
+
 def _raise_non_additive_sum(
     measure: MeasureConfig, construct: str, missing: list[str], config: PackageConfig
 ) -> None:
@@ -534,9 +559,7 @@ def _raise_non_additive_sum(
         )
     elif missing:
         key = "series key" if measure.measure_class == "semi_additive" else "key"
-        statistics = [
-            name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
-        ]
+        statistics = _statistics(measure)
         instead = f", or use aggregation {' / '.join(statistics)}" if statistics else ""
         message = (
             f"Measure '{measure.id}' is additive: false, and this query would sum more than one "
@@ -716,6 +739,30 @@ _FANOUT_DEDUP_AGGREGATIONS = frozenset(
 _FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
 
 
+# Grouped across link hops only (a one-per-key model to the rows of its own relation), each
+# entity counts once in every group its key has a row in: a link carries no amount to split,
+# so sums, counts and averages over the de-duplicated rows have one reading.
+_LINK_GROUPED_AGGREGATIONS = frozenset({"sum", "count", "avg", "count_distinct"})
+
+
+def crosses_link(selection: PathSelection) -> bool:
+    """Whether the path walks a link to the rows of a one-per-key model's relation."""
+    return any(
+        row.get("link") and row.get("directional_safety") == "requires_rewrite"
+        for row in selection.analysis.get("relationships", []) or []
+    )
+
+
+def _link_hops(selection: PathSelection) -> list[dict[str, Any]] | None:
+    """The one-to-many hops of the path when every one is a link, else None."""
+    hops = [
+        row
+        for row in selection.analysis.get("relationships", []) or []
+        if row.get("directional_safety") == "requires_rewrite"
+    ]
+    return hops if hops and all(row.get("link") for row in hops) else None
+
+
 def _negated_filter(item: dict[str, Any], dim: Any) -> bool:
     """A filter whose EXISTS reading ("has a row that is not X") differs from "has no row that
     is X": ``not`` or a ``not_`` text word, ``missing: true``, or on a boolean dimension anything
@@ -805,7 +852,10 @@ def _fanout_dedup_refusal(
             row,
         )
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-    if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
+    links = bool(grouped) and all(_link_hops(row) is not None for row in grouped)
+    if grouped and aggregation not in (
+        _LINK_GROUPED_AGGREGATIONS if links else _FANOUT_GROUPED_AGGREGATIONS
+    ):
         return (
             f"'{aggregation}' of {subject} grouped by a dimension of "
             f"'{grouped[0].target_entity}' is ambiguous across a one-to-many hop: the amount "
@@ -819,10 +869,13 @@ def _fanout_dedup_refusal(
     # model's rows need none there. Grouped de-duplication and the one-row-per-key leaf of a
     # warehouse without correlated EXISTS read the key.
     row_grain_filter = entity.is_row_grain and not grouped and correlated_exists
+    # A distinct count grouped across links counts values, not rows: DISTINCT (group, value)
+    # keeps each one, so a row-grain model's rows need no key there either.
+    row_grain_values = entity.is_row_grain and links and aggregation == "count_distinct"
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and (row_grain_filter or _measure_has_source_row_key(measure, entity))
+        and (row_grain_filter or row_grain_values or _measure_has_source_row_key(measure, entity))
     ):
         return (
             f"'{aggregation}' of {subject} is not defined over one row per "
@@ -864,6 +917,17 @@ def _fanout_dedup_refusal(
             "is not supported across a one-to-many hop.",
             (grouped or selections)[0],
         )
+    if links and any(
+        measure_id == bound.measure_id
+        for root in roots
+        for measure_id, _ in _measures_under_summing_wrappers(root, config, wrappers=(ShareExpr,))
+    ):
+        return (
+            "A share across a link is not supported: each entity counts in every group it has "
+            "a row in, so the groups overlap and their sum is not the total of the entities. "
+            "Ask for the ungrouped total in its own query.",
+            grouped[0],
+        )
     conditions = _hop_conditions(bound, selections, config, query)
     if groups:
         refusal = _second_child_scope(selections, conditions)
@@ -876,7 +940,7 @@ def _fanout_dedup_refusal(
             if isinstance(ambiguity, str):
                 return ambiguity, hop
             raise ambiguity
-    if len(conditions) > 1:
+    if len(conditions) > 1 and not _one_link_conditions(conditions):
         return _two_hop_conditions(conditions)
     for dim, item, hop in conditions:
         if item and _negated_filter(item, dim):
@@ -1186,6 +1250,18 @@ def _hop_conditions(
     return conditions
 
 
+def _one_link_conditions(conditions: list[tuple[Any, dict[str, Any], PathSelection]]) -> bool:
+    """Whether a grouping and the other conditions all cross one link hop by one route. Each
+    reads a row of the link's relation, so together they read the same row: two groupings are
+    the values one stored row holds together, never every pairing of a key's values."""
+    paths = {tuple(hop.chosen_path) for _, _, hop in conditions}
+    return (
+        len(paths) == 1
+        and any(hop.purpose == "group_by" for _, _, hop in conditions)
+        and all(len(_link_hops(hop) or ()) == 1 for _, _, hop in conditions)
+    )
+
+
 def _two_hop_conditions(
     conditions: list[tuple[Any, dict[str, Any], PathSelection]],
 ) -> tuple[str, PathSelection]:
@@ -1253,6 +1329,11 @@ def _hop_steps(
     if crossing != "fanout_dedup":
         return []
     none = any(group.match == "none" for group in child_groups(query.where))
+    linked = any(
+        row.purpose == "group_by" and _link_hops(row) is not None
+        for row in path_selections
+        if row.analysis.get("status") != "ok"
+    )
     return [
         RewriteStep(
             kind="fanout_dedup",
@@ -1263,6 +1344,12 @@ def _hop_steps(
                 f"{', '.join(repr(target) for target in sorted(crossed))}; a filter there means "
                 "it has at least one matching row"
                 + ("; a 'none' child group means it has none." if none else ".")
+                + (
+                    " Across a link it counts in every group it has a row in, so the groups "
+                    "can overlap and need not add up to the total."
+                    if linked
+                    else ""
+                )
             ),
             details={"paths": crossed},
         )
@@ -1351,6 +1438,17 @@ def _unsupported_conversion(expr: ConversionExpr) -> SemanticLayerError:
 
 
 _NUMERIC_DATA_TYPES = {"integer", "number"}
+_TEMPORAL_DATA_TYPES = {"date", "timestamp", "datetime"}
+
+
+def _clearly_invalid_temporal_literal(text: str) -> bool:
+    """Refuse obvious mistakes; the warehouse owns its temporal literal syntax."""
+    if not any(character.isdigit() for character in text):
+        return True
+    date_prefix = re.match(r"^\d{4}-(\d{2})-(\d{2})(?:$|[ T])", text.strip())
+    return bool(
+        date_prefix and not (1 <= int(date_prefix[1]) <= 12 and 1 <= int(date_prefix[2]) <= 31)
+    )
 
 
 def _validate_where_value_type(dim, item, path: str = "where") -> None:
@@ -1414,7 +1512,13 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
                 f"where filter on dimension {dim.id!r} expects a {expected} value but "
                 f"got {value!r} (type {type(value).__name__})."
             ),
-            details={"dimension": dim.id, "data_type": data_type, "value": value, "op": item.op},
+            details={
+                "dimension": dim.id,
+                "data_type": data_type,
+                "value": value,
+                "op": item.op,
+                "path": f"{path}.value",
+            },
         )
 
     for value in values:
@@ -1435,6 +1539,13 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
             if isinstance(value, str) and value.lower() in {"true", "false"}:
                 continue
             raise mismatch("boolean", value)
+        # Preserve date-like text for the warehouse, whose syntax can be wider than ISO.
+        if (
+            data_type in _TEMPORAL_DATA_TYPES
+            and isinstance(value, str)
+            and _clearly_invalid_temporal_literal(value)
+        ):
+            raise mismatch("date or date-time", value)
 
 
 def _group_path(query: Any, group: ChildGroup) -> str:

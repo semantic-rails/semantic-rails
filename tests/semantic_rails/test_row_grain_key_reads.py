@@ -22,17 +22,28 @@ SWITCHED = {
     ("compiler_parts/bind.py", "_measure_count_distinct_key_columns"),
     ("compiler_parts/bind.py", "_synthetic_conditional_measure"),
     ("compiler_parts/indexes.py", "_measure_has_source_row_key"),
+    # A distinct count across links needs no row key; every other aggregation reads `.key`.
+    ("compiler_parts/leaves.py", "_fanout_dedup_leaf_select"),
     ("compiler_parts/lowering_common.py", "_entity_in_terms_of_anchor_plan"),
     ("compiler_parts/paths.py", "_direct_dimension_source_expr"),
     ("compiler_parts/paths.py", "display_key"),
     ("compiler_parts/paths.py", "keyed_entity"),
     ("compiler_parts/plan_checks.py", "_fanout_dedup_refusal"),
     ("compiler_parts/plan_checks.py", "child_group_route"),
+    # Also the keyed sum of a non-additive measure: a row-grain model's refuses with its own fix.
+    ("compiler_parts/plan_checks.py", "_validate_non_additive_sums"),
     ("compiler_parts/post_aggregation.py", "_summing_window_parts.additive"),
     ("compiler_parts/row_counts.py", "_names_in_use"),
     # Also a join's source key: a row-grain source holds no key, so its side reads "foreign".
     ("config_parts/package_rows.py", "_parse_package"),
+    # A one-per-key model has a key (loading refuses one without); a link's source has none.
+    ("config_parts/one_per_key.py", "_columns_read"),
+    ("config_parts/one_per_key.py", "one_per_key_relation"),
+    ("config_parts/one_per_key.py", "with_one_per_key.link"),
     ("contracts/producer.py", "_resources_from_normalized"),
+    # Refusal context only: a row-grain target is named, and has no shared key columns.
+    ("diagnostics.py", "_isolated_start"),
+    ("diagnostics.py", "enrich_path_not_found"),
     ("fanout.py", "pass_through_disclosure"),
     ("interop/ossie/export.py", "_Exporter.datasets"),
     ("interop/package_writer.py", "_Writer.dimensions"),
@@ -77,10 +88,12 @@ REFUSES = {
     ("schema.py", "EntityConfig.primary_key"),
     ("segments.py", "member_key_dimensions"),
 }
-# `.key` or `.primary_key` on something else: CLI arguments and a visibility key.
+# `.key` or `.primary_key` on something else: CLI arguments and visibility keys.
 NOT_AN_ENTITY = {
     ("cli/commands/project.py", "cmd_init_project"),
     ("cli/commands/project.py", "cmd_project_new"),
+    # ParentHop.key is the join's single owner column, not EntityConfig.key.
+    ("row_filters.py", "Visibility._predicate"),
     ("visible_view.py", "request_view"),
 }
 # Reads and projections of `key_columns` by field name (a string), not by attribute: each

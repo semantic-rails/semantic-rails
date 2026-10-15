@@ -179,33 +179,51 @@ def governed_metric_exists(config: PackageConfig, compiled: dict[str, Any]) -> l
 def share_of_total(
     compiled: dict[str, Any], hidden: dict[str, list[Any]] | None = None
 ) -> list[dict[str, Any]]:
-    """``SHARE_OF_TOTAL`` for each share column: a fraction of its input's total over the
+    """``SHARE_OF_TOTAL`` for every share in a select expression: its input's total over the
     ``over`` columns, among the rows the query keeps, and how many rows that total spans when
     every returned row's total spans the same number."""
     columns = dict(compiled.get("share_groups") or {})
     out: list[dict[str, Any]] = []
     for row in compiled["logical_plan"].query.get("select") or []:
         expression = row.get("expression") or {}
-        if expression.get("kind") != "share":
-            continue
-        source = expression.get("input") or {}
-        entry: dict[str, Any] = {
-            "code": "SHARE_OF_TOTAL",
-            "column": row.get("as"),
-            "input": source.get("measure") or source.get("metric"),
-            "over": list(expression.get("over") or []),
-            "unit": "fraction",
-        }
-        spans = set((hidden or {}).get(columns.get(row.get("as"), ""), []))
-        if len(spans) == 1:
-            entry["rows"] = int(spans.pop())
-        rows = f" ({entry['rows']} rows per total)" if "rows" in entry else ""
-        entry["message"] = (
-            f"{entry['column']} is a fraction of the total of {entry['input']} across "
-            f"{' and '.join(entry['over'])} in the rows the call keeps{rows}."
-        )
-        out.append(entry)
+        for share in _shares(expression):
+            source = share.get("input") or {}
+            entry: dict[str, Any] = {
+                "code": "SHARE_OF_TOTAL",
+                "column": row.get("as"),
+                "input": source.get("measure") or source.get("metric"),
+                "over": list(share.get("over") or []),
+                "unit": "fraction",
+            }
+            # The hidden row count belongs only to a bare share's denominator.
+            spans = (
+                set((hidden or {}).get(columns.get(row.get("as"), ""), []))
+                if share is expression
+                else set()
+            )
+            if len(spans) == 1:
+                entry["rows"] = int(spans.pop())
+            rows = f" ({entry['rows']} rows per total)" if "rows" in entry else ""
+            subject = entry["column"] if share is expression else f"The share in {entry['column']}"
+            entry["message"] = (
+                f"{subject} is a fraction of the total of {entry['input']} across "
+                f"{' and '.join(entry['over'])} in the rows the call keeps{rows}."
+            )
+            out.append(entry)
     return out
+
+
+def _shares(node: Any) -> Iterable[dict[str, Any]]:
+    """Select expression shares at any depth, excluding literal and parameter data."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _shares(item)
+    elif isinstance(node, dict):
+        if node.get("kind") == "share":
+            yield node
+        for key, value in node.items():
+            if not _opaque_expression_data(node, key):
+                yield from _shares(value)
 
 
 def grouped_by_key(

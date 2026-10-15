@@ -67,7 +67,7 @@ from .sql_preparation import (
     _PARAMETER_TOKEN,
     ParameterValue,
     PreparedQuery,
-    checked_parameter_values,
+    checked_bound_values,
 )
 
 __all__ = [
@@ -86,6 +86,24 @@ __all__ = [
     "seed_db",
     "seed_digest",
 ]
+
+
+def temporal_cast_error_value(exc: BaseException) -> str | None:
+    """Read a DuckDB temporal conversion's input for in-process path matching only.
+
+    Never forward driver text: it can also contain SQL and source row values.
+    Other driver errors retain their ordinary redacted execution error.
+    """
+    while isinstance(exc, SemanticLayerError) and exc.__cause__ is not None:
+        exc = exc.__cause__
+    if duckdb is None or not isinstance(exc, duckdb.ConversionException):
+        return None
+    match = re.match(
+        r"Conversion Error: (?:invalid (?:timestamp|date) field format|"
+        r'(?:timestamp|date) field value out of range): "([^"\n]*)"',
+        str(exc),
+    )
+    return match[1] if match else None
 
 
 def _row_to_dict(description: Any, row: Any) -> dict[str, Any]:
@@ -286,7 +304,7 @@ class DuckDBAdapter(WarehouseAdapter):
         parameters: Sequence[Any] = (),
     ) -> list[dict[str, Any]]:
         """Send slot values through DuckDB's parameter binding, never the SQL text."""
-        values = checked_parameter_values(prepared, parameters)
+        values = checked_bound_values(prepared, parameters)
         if not values:
             return super().query_prepared(prepared, limits=limits)
         rows = self.query(prepared.sql, limits=limits, parameters=values)

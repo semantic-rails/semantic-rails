@@ -514,12 +514,17 @@ def test_a_count_reads_only_its_number_of(
 def test_a_description_that_negates_the_word_does_not_answer_it(billing: Runtime) -> None:
     payload = plan_payload(billing, intent="discounts granted by region")
 
-    # The draft takes the measure whose description holds "discounts", not the one named for them.
-    [select] = payload["best"]["query"]["select"]
-    assert select == "measure.billing.charge_amount"
-    _not_ready(payload, ["discounts"])
-    # The warning names it too: a description no longer accounts for a word.
-    assert payload["warnings"][0]["details"]["terms"] == ["discounts", "granted"]
+    # The catch-all would take the measure whose description holds "discounts", which no word
+    # of the question names: plan offers no draft on it, and names both candidates.
+    assert payload["status"] == "low_confidence"
+    assert payload["best"] is None
+    assert payload["why"]["code"] == "PLAN_SUBJECT_UNMATCHED"
+    assert payload["why"]["details"]["terms"] == ["discounts", "granted"]
+    assert [row["id"] for row in payload["why"]["details"]["candidates"]] == [
+        "measure.billing.charge_amount",
+        "measure.billing.discount_amount",
+    ]
+    select = "measure.billing.charge_amount"
     charges = {"select": [select]}
     assert _unmatched_terms(billing, "discounts granted", charges) == [
         "discounts",

@@ -651,8 +651,13 @@ Supported request controls:
 - `stage`
 - `verbosity`
 - `kinds` — an array, a comma-separated string, or a JSON array in a string. Ranked kinds are
-  `measure`, `metric`, `segment`, `dimension`, `entity` and `dimension_value`; a value that
-  does not parse or names another kind is refused with `400` instead of returning empty buckets.
+  `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value` and `relationship`,
+  each also by its plural (`measures`); a value that does not parse or names another kind is
+  refused with `400` instead of returning empty buckets. Relationships are ranked only when
+  `kinds` names them, in a `relationships` bucket whose cards carry `source_entity`,
+  `target_entity`, `cardinality`, `allowed_directions`, `source_columns` and `target_columns`.
+  With `verbosity: "full"`, an entity card carries its `relationships` as `inspect` returns
+  them.
   In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced, and the
   refusal lists them in `details.valid_kinds`. A `limit` below 1 is refused.
 
@@ -673,7 +678,7 @@ Response keys:
 - `query_state`
 - `card`
 
-Measure cards expose aggregation guidance, default time behavior, recommended dimensions, and related curated metrics. Dimension cards expose categorical semantics, preferred filter operators, and sample values when available.
+Measure cards expose aggregation guidance, default time behavior, recommended dimensions, and related curated metrics. Dimension cards expose categorical semantics, preferred filter operators, and sample values when available. Entity cards list the entity's `relationships` (seen from its side) and its `reachable_entities` within the hop ceiling, with each route and whether recorded route rows chose it or the call must choose one; see [Catalog And Metadata](MCP_INTERFACE.md#catalog-and-metadata).
 History-backed cards can also expose:
 
 - `coverage_notes`
@@ -825,8 +830,10 @@ Response keys:
 `source` is typically `value_domain` or `duckdb`. Without a declared domain and
 with `allow_live_query=false` (the default), HTTP 200 returns `ok: false`,
 `status: "needs_live_query"`, `source: "none"`, empty `values`, and a
-`VALID_VALUES_NO_DOMAIN` warning. Retry with `allow_live_query=true` to permit a
-live lookup. A declared empty domain remains a successful empty result. This
+`VALID_VALUES_NO_DOMAIN` warning. Its message and recovery hint name the dimension, say no
+values were read, and give the argument that returns them: the same call with
+`allow_live_query: true` (the hint's `patch`), which a first call may pass too. A declared empty
+domain remains a successful empty result. This
 payload is shared with MCP; only MCP adds `next_call` naming its tool. HTTP
 returns no `next_call`.
 
@@ -882,9 +889,16 @@ refusals (`OUT_OF_SCOPE`) from relevance-floor refusals
 never counts toward relevance or appears in the sample.
 
 For `status="low_confidence"`, inspect `why` before execution. In particular,
-`PLAN_FALLBACK_SEMANTIC_DRIFT` means a fallback draft validated but changed or dropped requested
-intent slots such as target, grouping, qualification, filters, or time scope; the runtime keeps the
-closest primary draft instead of silently returning a semantically different answer.
+`PLAN_FALLBACK_SEMANTIC_DRIFT` means the named pattern's draft, which `best.query` holds, fails
+validation (`why.details.primary_errors`), and a fallback draft validated but changed or dropped
+requested intent slots such as target, grouping, qualification, filters, or time scope; the
+runtime keeps the closest primary draft instead of silently returning a semantically different
+answer. Two holds offer no draft (`best: null`): `PLAN_UNCONNECTED` (`unrealizable`) when the
+draft's measure can't reach a dimension it groups or filters by (`why.details` names the
+`subjects`, the `dimensions` and the engine's `error`), and `PLAN_SUBJECT_UNMATCHED` when no
+word the question asks about names the measure or metric the draft would read
+(`why.details.terms`, with the `candidates` whose names or descriptions mention them;
+`unrealizable` when there are none).
 Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort
 and time scope can be proven. Grouping by entity keys or selecting a key count alone does not
 prove that the qualification was applied. Store grouping terms use the same
@@ -896,6 +910,13 @@ name the intended dimension, such as "by store id" or "by store name".
 compile cost and warms the runtime compile cache. Agents can forward
 `best.query` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the call by hand.
+
+A confirmed row name contributes its key filter; words inside it never also become value
+filters. For example, "North Star" can name an account without filtering its region to
+"north"; an explicit "where region is north" outside the name still applies. Unquoted names
+leave a complete declared name of the selected measure or metric at either edge outside the
+lookup ("Acme MRR" looks up "Acme"). Other name words stay whole: "Acme Accounts" does not
+silently shorten to "Acme". Quote a name when it includes the requested metric's own name.
 
 Planning reads the time reference against the request's `now` (`options.now` over HTTP, the
 `now` argument over MCP; default the server clock): `today`,
@@ -1164,8 +1185,10 @@ The response `warnings` array can carry these non-error signals:
   default) when a string `is` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
   Aggregate-filter literals of a retained additive series are checked in both observation scopes.
-  One warning per query; `details.filters` lists each `dimension`, `value` and the closest
-  `suggestion`.
+  One warning per query; `details.filters` lists each `dimension`, `value` and the likely
+  `suggestion` (the same text in another case, or a close spelling; none for an id
+  dimension, a value with a digit or a weak match), the first 10 of `details.missing_count`;
+  the message names the first 5.
 - `FILTERED_SERIES_BUCKETS_DROPPED` — an unsupported filtered additive series omits
   observed buckets. `details.dropped_buckets` lists their time and grouping keys from a
   separately authorized source query; averages over returned rows omit those buckets.
@@ -1268,11 +1291,11 @@ jaffle_shop:
         {
           "id": "order_customer_history",
           "meaning": "the Customer history valid at the time of any of the Customer's Orders",
-          "relationship_path": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+          "relationship_path": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"],
           "decision": {
             "source_entity": "entity.jaffle_customer",
             "target_entity": "entity.jaffle_customer_history",
-            "relationship_path": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+            "relationship_path": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"],
             "label": "the Customer history valid at the time of any of the Customer's Orders"
           },
           "query": {
@@ -1280,7 +1303,7 @@ jaffle_shop:
             "group_by": ["dimension.jaffle_customer_history_segment"],
             "time": {"grain": "year"},
             "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
-                        "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]}]
+                        "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"]}]
           }
         }
       ]

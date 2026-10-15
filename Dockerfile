@@ -8,6 +8,7 @@ FROM python:3.12.13-slim-trixie AS runtime
 # non-local deployment set:
 #   SEMANTIC_RAILS_API_KEYS / SEMANTIC_RAILS_API_KEY_FILE  (require API keys)
 #   SEMANTIC_RAILS_CORS_ORIGINS                            (CORS allow-list)
+#   SEMANTIC_RAILS_ALLOWED_HOSTS                           (Host allow-list)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     SEMANTIC_RAILS_PACKAGE=jaffle_shop \
@@ -35,4 +36,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request,os; urllib.request.urlopen('http://127.0.0.1:%s/api/v1/ready' % os.environ.get('SEMANTIC_RAILS_PORT','8080'), timeout=3).read()"
 
-CMD ["sh", "-c", "uvicorn semantic_rails.asgi:app --host ${SEMANTIC_RAILS_HOST} --port ${SEMANTIC_RAILS_PORT}"]
+CMD ["sh", "-c", "uvicorn semantic_rails.asgi:app --http h11 --host ${SEMANTIC_RAILS_HOST} --port ${SEMANTIC_RAILS_PORT}"]

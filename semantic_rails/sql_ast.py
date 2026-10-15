@@ -89,6 +89,11 @@ SQL_FUNCTION_NAMES = frozenset(
         # the dialects' call_names keep them out of `call` expressions.
         "ARRAY_GENERATE_RANGE",
         "AVG",
+        # A boolean group's lowest and highest value (dialects.SqlDialect.boolean_bounds).
+        "BOOL_AND",
+        "BOOL_OR",
+        "BOOLAND_AGG",
+        "BOOLOR_AGG",
         "CEIL",
         "CEILING",
         "COALESCE",
@@ -131,6 +136,8 @@ SQL_FUNCTION_NAMES = frozenset(
         "LENGTH",
         "LN",
         "LOG",
+        "LOGICAL_AND",
+        "LOGICAL_OR",
         "LOWER",
         "MAX",
         "MAX_BY",
@@ -394,6 +401,14 @@ class SqlExists:
 
 
 @dataclass(frozen=True)
+class SqlInQuery:
+    """``expr IN (SELECT …)``: an uncorrelated subquery returning one column."""
+
+    expr: SqlExpr
+    query: SqlSelect
+
+
+@dataclass(frozen=True)
 class SqlIsNull:
     expr: SqlExpr
 
@@ -522,6 +537,7 @@ SqlExpr = (
     | SqlDatePart
     | SqlInterval
     | SqlExists
+    | SqlInQuery
     | SqlIsNull
     | SqlCase
     | SqlCast

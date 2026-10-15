@@ -43,7 +43,8 @@ JOIN_INTO_SCANS = (
     "relationship.order_scans joins into 'shipment_scans', a row-grain model (no key), so one row "
     "can't be looked up there. Fix: write it from shipment_scans's side (entities: "
     "[shipment_scans, order], cardinality: many_to_one, via: [order_id]), or declare a key on "
-    "shipment_scans if its rows have one."
+    "shipment_scans if its rows have one. To look up what is fixed per key, model its relation "
+    "again with one_per_key: true."
 )
 
 
@@ -175,6 +176,15 @@ def test_which_entities_blocks_make_a_model_row_grain(tmp_path, entities, same_n
             [_scans(lambda model: model["entities"].update(account_day={"expr": "order_id"}))],
             "join 'shipment_scans.account_day' key width does not match target key",
         ),
+        (  # summing a value that must not be summed needs each row's key, which it hasn't
+            [_scans(lambda model: model["measures"]["heaviest_scan"].update(default_agg="sum"))],
+            "measure 'heaviest_scan' is additive: false on row-grain model 'shipment_scans' (no "
+            "key), so its default_agg 'sum' can't be computed",
+        ),
+        (  # sum is also the default aggregation
+            [_scans(lambda model: model["measures"]["heaviest_scan"].pop("default_agg"))],
+            "Set default_agg to one of avg, min, max",
+        ),
     ],
 )
 def test_what_a_row_grain_model_refuses_to_load(tmp_path, edits, message):
@@ -205,7 +215,8 @@ def test_another_model_listing_a_row_grain_model_is_a_join_into_it(tmp_path):
         "relationship.refunds_shipment_scans joins into 'shipment_scans', a row-grain model (no "
         "key), so one row can't be looked up there. Fix: write it from shipment_scans's side "
         "(entities: [shipment_scans, refund], cardinality: many_to_one, via: [refund_id]), or "
-        "declare a key on shipment_scans if its rows have one."
+        "declare a key on shipment_scans if its rows have one. To look up what is fixed per "
+        "key, model its relation again with one_per_key: true."
     )
 
 
@@ -278,6 +289,28 @@ def test_telling_its_rows_apart_refuses(shop, query):
     with pytest.raises(SemanticLayerError) as raised:
         shop.query(query)
     assert (raised.value.code, str(raised.value)) == ("ROW_GRAIN_UNSUPPORTED", ROW_GRAIN_MESSAGE)
+
+
+def test_a_sum_of_a_non_additive_measure_names_what_it_can_be(shop):
+    query = {
+        "select": [
+            {
+                "as": "total",
+                "expression": {
+                    "kind": "measure",
+                    "measure": "measure.shop.heaviest_scan",
+                    "aggregation": "sum",
+                },
+            }
+        ]
+    }
+    with pytest.raises(SemanticLayerError) as raised:
+        shop.query(query)
+    assert raised.value.code == "ROW_GRAIN_UNSUPPORTED"
+    message = str(raised.value)
+    assert "'measure.shop.heaviest_scan' is additive: false" in message
+    assert "avg / min / max" in message and "sum its values" not in message
+    assert raised.value.details["model"] == "shipment_scans"
 
 
 def test_segments_and_conversions_on_a_row_grain_model_refuse(tmp_path):
@@ -364,7 +397,9 @@ def test_validate_names_the_row_grain_models(tmp_path, capsys):
         base_ref="",
     )
     project_commands.cmd_project_validate(args)
-    assert "Row grain (no key): order_tags, shipment_scans" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Row grain (no key): order_tags, room_bookings, room_rows, shipment_scans" in out
+    assert "One row per key: Room" in out
 
 
 def test_policies_hide_it_and_filter_its_rows(tmp_path):
@@ -393,12 +428,13 @@ def test_policies_hide_it_and_filter_its_rows(tmp_path):
         assert runtime.query({"select": [SCAN_COUNT]}, context=carrier)["rows"] == [
             {"scan_count": 7}
         ]
-        with pytest.raises(SemanticLayerError) as raised:  # a joined statement can't be filtered
-            runtime.query(
-                {"select": [SCAN_COUNT], "group_by": ["dimension.shop_order_store_id"]},
-                context=carrier,
-            )
-        assert raised.value.code == "POLICY_DENIED"
+        # Orders are reference data the filter doesn't reach: a scan looks its order up.
+        by_store = {"select": [SCAN_COUNT], "group_by": ["dimension.shop_order_store_id"]}
+        pickup = {"field": SCAN_TYPE, "op": "is", "value": "pickup"}
+        assert (
+            runtime.query(by_store, context=carrier)["rows"]
+            == runtime.query({**by_store, "where": [pickup]})["rows"]
+        )
     finally:
         runtime.close()
 

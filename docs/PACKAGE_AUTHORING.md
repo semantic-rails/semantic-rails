@@ -703,7 +703,7 @@ and `action`, even when empty. Each kind also accepts only:
 | `object_visibility`, `protected_object` | none |
 | `object_access` | `max_rank` |
 | `metric_constraint` | `required_group_by`, `allowed_group_by`, `required_where`, `allowed_where`, `allow_metric_filters`, `allowed_metric_filter_entities`, `allowed_metric_filter_metrics`, `allowed_temporal_roles` |
-| `row_filter` | `dimension`, `attribute`, `type` |
+| `row_filter` | `dimension`, `attribute`, `type`, `unless_roles`, `shared` |
 
 Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
 are refused with `INVALID_CONFIG`, including policies built in Python. Use
@@ -807,27 +807,108 @@ kind names must match exactly.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.
-- **`row_filter`** — limits a relation's rows to one customer (or other
-  principal) by comparing a `dimension` with a trusted request `attribute`
-  that the embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The
-  compiler adds `<column> = ?` to the relation's scan and the runtime binds the
-  attribute's value as a parameter; values never enter SQL text. The dimension
-  must be a plain `string`, `integer` or `boolean` column; an id-kind dimension
-  needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
-  it applies to is denied if the attribute is missing or of another type, and
-  so is any query outside the qualified family: the compiled statement must
-  read one ordinary scan of the filtered relation, as its only relation. Engine-generated
-  observation and coverage scans may repeat that relation; each receives the same policy
-  filter. Joins, entity filters, calendar spines (prior-period comparisons, fill) and
-  other second scans are refused, and rollups are not routed to. The zero-row
-  data-coverage probe is skipped. Such a policy loads for any warehouse, but only
-  DuckDB and Postgres execute these statements today; every other adapter
-  refuses them. Postgres finalizes the placeholders as `$1`, `$2`, … before
-  execution and binds trusted values through ADBC.
+- **`row_filter`** — limits the rows a caller can see to one customer, region or other
+  principal, by comparing a `dimension` with a trusted request `attribute` that the
+  embedding host supplies (see [EMBEDDING.md](EMBEDDING.md)). The compiler compares
+  `<column> = ?` and the runtime binds the attribute's value as a parameter; values never
+  enter SQL text. A list value (strings or integers, for example a manager's regions)
+  compares `<column> IN (?, ?, …)` with one parameter per item, so the caller reads the
+  rows of any of them; a statement over the warehouse's documented limit (Postgres: 65,535
+  parameters in one statement; Snowflake: 200,000 values in one list) is refused before it
+  runs. The dimension must be a plain `string`, `integer` or `boolean`
+  column; an id-kind dimension needs `type:`, and a `boolean` filter takes one value. The
+  policy takes no `object_ids`, `action` or operator. A request it applies to is denied
+  (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
+  of nothing).
+
+  **What a filtered caller sees.** Each caller reads a *visible database*: the package's
+  data with every row they can't see removed, and every answer (totals, groups, shares,
+  distinct counts, `EXISTS` filters, windows, prior periods, coverage dates and
+  `NO_DATA_YET`) is the answer an unfiltered caller would get on that data. A row is
+  visible when it passes its relation's own filter and every *owner* on its route to the
+  filtered model is visible. A model's owners are found through the package's own route to
+  the filtered model (the route `resolve_path` picks for the package, never a query's
+  route decision) when every hop of that route reaches at most one row (`many_to_one` or
+  `one_to_one`) on a single-column key. With a filter on stores' region, an order belongs
+  to its store and an order line to its order, so a West manager's revenue, order counts
+  and line quantities count only West stores' orders, by store or in total, and a store
+  with a hidden duplicate key still shows only the caller's copy. `validate` lists, per
+  row filter, the models it *filters*, the models it *covers* through their owners, the
+  ones it leaves *uncovered*, and the ones it can't trace (*unsupported*).
+
+  - An order with no store (or a store id no store row has) has no visible owner, so it
+    counts for no filtered caller; roles in `unless_roles` see it. Regions can therefore
+    sum to less than the company total. To give such rows an owner, model one: an
+    "Online" or "Unassigned" store row, and grant it to the callers who should see them.
+  - A model no filter reaches (customers, when orders belong to stores) is reference data:
+    filtered rows may look it up (revenue by customer segment answers), but a question
+    that counts or lists it ("how many customers do we have?") is refused with
+    `row_filter_uncovered_root`; ask about the rows the filter does reach instead
+    ("customers who bought in my stores"). List such a model in the filter's `shared:`
+    (entity ids) to let every caller the filter applies to read all of its rows. `shared`
+    only loosens, and names only models the filter doesn't reach: a model it filters, covers
+    or can't trace fails to load (`INVALID_CONFIG`).
+  - A lookup into a filtered or covered model along a route that isn't how the walking
+    model is owned (revenue by a customer's *home* store, when orders belong to the store
+    they were placed in) is refused with `row_filter_route_not_owned`: visible orders would
+    land under stores the caller can't see. Ask by the owner's route instead.
+  - A model whose route to the filtered model is undecided, composite, crosses a
+    `temporal_validity` relationship, or disagrees with its owner's route is refused under
+    the filter (`row_filter_coverage_unsupported`); decide its route with a
+    `graph.path_preferences` row or give it one owner. So is a relation read under two
+    names, or by models that disagree on its owner.
+  - Refused under a filter too (`row_filter_unsupported_query` unless noted): relation
+    pipelines over a filtered or covered relation, relations no model reads, table
+    functions other than the engine's day series, a `RIGHT` or `FULL` join beside a
+    filtered relation, a load log the filter restricts (`row_filter_on_load_log`), and any
+    row-level call other than `COALESCE`, `NULLIF`, `CONCAT`, `LOWER`, `UPPER`, `TRIM`,
+    `REPLACE`, `LENGTH`, `ROUND`, `FLOOR`, `CEIL`, `DATE_TRUNC`, `DATE_PART`, `LEFT`,
+    `RIGHT` and a `CAST` to text (`row_filter_fallible_expression`), whoever wrote it, since
+    an error on a hidden row would tell something about it. Rollups are not routed to; the
+    query reads its base relations. When a window returns no rows, the data coverage the
+    answer reports is that of the caller's own visible rows.
+  - A filtered or covered model's declared value `domain:` is withheld from every caller in
+    the filter's scope, including those its `unless_roles` exempts: a value list (valid
+    values, the inspect card, search) is read live, from the caller's own rows, so a West
+    manager's store picker lists only West stores, and an exempt caller's lists every store.
+
+  Every statement a filtered request runs is checked before it runs: each read of a
+  filtered or covered relation must carry its visibility condition, and anything the check
+  can't prove is refused, never run unfiltered. Such a policy loads for any warehouse, but
+  only DuckDB, Postgres and Snowflake (through ADBC) execute these statements today; every
+  other adapter refuses them. Known limitation in this release: on Snowflake, an optional
+  (`LEFT`) lookup into a model a filter covers (refunds by their order's region, order lines
+  by store) is refused, until its tests prove the subquery that condition needs there.
+  Postgres finalizes the placeholders as `$1`, `$2`, … before execution and binds trusted
+  values through ADBC.
+
+  A measure's row arithmetic is computed in the same `SELECT` that checks its rows'
+  visibility. DuckDB computes it only for visible rows, so a value that would overflow on a
+  hidden row never changes a filtered answer; on Postgres and Snowflake the warehouse's plan
+  decides the order inside that `SELECT`, so such an overflow, or a hidden text value the
+  warehouse can't convert where a measure reads text as a number (`COALESCE(amount_text, 0)`),
+  can refuse a filtered question with an execution error (it never returns a hidden value).
+
+  A filter value on a model no filter reaches (`where` on a customer's segment, say) isn't
+  checked against the data for a filtered caller, since listing that model is held: such a
+  query gets no `FILTER_VALUE_NOT_FOUND` warning, where an unfiltered caller could.
+
+  Known limitation: the SQL a row-filtered caller can see (`mode: sql`, `rendered_sql`)
+  shows the names of the filter's tables and columns, and of the tables it reaches, never
+  their values. A host that hides those from a caller should not grant that caller SQL
+  output.
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host
-  always sets them from verified identity for end-user requests. A policy of
+  always sets them from verified identity for end-user requests. `validate` warns
+  about a filter scoped by `roles:`, since every other role reads every row. To
+  let named roles read every row instead, list them in `unless_roles:` (for example
+  `[auditor]`): a request is not filtered when the embedding host verified one of them
+  for the caller (`TrustedAttributes(..., roles=...)`, see [EMBEDDING.md](EMBEDDING.md)),
+  and every other request is filtered, or denied without the attribute. A role that a
+  request header or the context's `roles` claims never exempts a request, so under the
+  default header resolver `unless_roles` exempts no one. `unless_roles` is a non-empty
+  list and shares no role with `roles:`. A policy of
   another kind that carries `attribute:`, or a kind that is a near miss of
   `row_filter` (`row-filter`, `row_filters`, ...), fails to load rather than
   being ignored.
@@ -867,7 +948,15 @@ semantic_policies:
     kind: row_filter
     dimension: dimension.shop_order_customer_id
     attribute: customer_id
-    rationale: Each customer sees only their own orders.
+    unless_roles: [auditor]
+    rationale: Each customer sees only their own orders; auditors see every order.
+
+  - id: policy.shop.own_region
+    kind: row_filter
+    dimension: dimension.shop_store_region
+    attribute: region
+    shared: [entity.shop_customer]
+    rationale: Managers see their region's stores and the orders placed in them.
 ```
 
 ### Objects visible only to named roles
@@ -1084,8 +1173,8 @@ The graph is the canonical source for entity identity. It declares the entities
 the package exposes, their key column names, and any non-default relationships
 between them.
 
-Each graph entity you author must have a key, declared on the entity or through its own
-model's `keys.primary:`. An explicit graph model binding makes that
+Each graph entity you author must have a key: `key:` on the entity, or the `expr:` of its
+entry in its own model's `entities:` block. An explicit graph model binding makes that
 entity the model's primary entity, regardless of the order of its `entities:` block. A
 conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
 including for implicit bindings and bindings by model name. A
@@ -1178,12 +1267,21 @@ row, a dbt snapshot) is the usual cause of an empty group.
 entity's own model's `dimensions:`, never its key. Anything else fails with `INVALID_CONFIG`.
 `label` names the entity type and `key` identifies a row; `display` is what a person reads.
 
-When a question groups by or ranks an entity ("by customer", "each customer", "top 5
-customers by revenue"), `plan` groups by the entity's key and its `display` dimension,
+When a question groups by, lists or ranks an entity ("by customer", "which customers",
+"top 5 customers by revenue"), `plan` groups by the entity's key and its `display` dimension,
 so names that repeat stay separate rows. Without `display:`, it uses the entity's one dimension
 whose own name names it ("Store name" for "store"), if exactly one does; otherwise the key
 alone, with an assumption line saying so. A caller who can't see the display dimension gets
 the same answer as a package without `display:`; the entity itself stays visible.
+
+A text `display:` dimension also makes the entity's rows findable by name. When a question
+names a row with capitalized or quoted words that match nothing in the catalog ("How many
+orders did Acme place last month?", "What's Globex's MRR?"), `plan` looks the words up in the
+display of each entity the question's measure reaches, under the caller's row filters. One
+row whose display holds the words, as whole words in any case ("Acme" finds "Acme Data Co",
+not "Acmeco"), is answered: the draft filters on that row's key and groups by its display, so
+the answer names it. Several rows ask which one; none leaves the question held. Declare a
+`domain:` instead for a short fixed list of values, which needs no lookup.
 
 A call that groups by the `display` dimension itself groups by the entity's one-column key
 too, just before the name, so two customers named Ann stay two rows; the answer carries the
@@ -1254,6 +1352,43 @@ limitations](QUERY_CALL.md#known-limitations)):
 - A child row whose parent id is missing from the parent table still counts in entity filters:
   the engine trusts the child's id.
 
+### Two roles on one pair
+
+An event has a buyer and a seller, both customers: two relationships between `event` and
+`customer`, each on its own columns. Write the first as the model's foreign key and the second
+as a named `graph.relationships` entry with its own `via`:
+
+```yaml
+# models/events.yml: the buyer, the model's foreign key (relationship.events_customer)
+model:
+  id: events
+  relation: raw_events
+  entities: {event: {}, customer: {expr: buyer_id}}
+```
+
+```yaml
+# graph.yml: the seller, a second role (relationship.event_seller)
+graph:
+  relationships:
+    event_seller:
+      entities: [event, customer]
+      cardinality: many_to_one
+      via: [seller_id]
+      target: [customer_id]
+  path_preferences:       # what "an event's customer" means when a question doesn't say
+    - source_entity: event
+      target_entity: customer
+      relationship_path: [relationship.events_customer]
+```
+
+Through Architect MCP, the same two writes are `upsert_relationship(from_entity: event,
+to_entity: customer, columns: [buyer_id])`, then `upsert_relationship(from_entity: event,
+to_entity: customer, columns: [seller_id], name: event_seller, keep_existing_routes: true)`,
+which also records the buyer as the pair's default route. Without a row for the pair, a
+question that reaches the customer is refused as `AMBIGUOUS_PATH` with both roles as options
+(see [the route rule](#the-route-rule)); a query that means the seller names it in
+[`routes`](QUERY_CALL.md#routes).
+
 ## Models
 
 A model declares one warehouse table or mart, the entities it exposes, the
@@ -1304,6 +1439,9 @@ model:
       value_type: count
 ```
 
+Freshness metadata (`freshness_source`, `freshness_sla_seconds`, `freshness_as_of`) is
+declared on the model, or on one of its physical variants, never on its graph entity.
+
 ### `model.entities:` — explicit declaration of exposed entities
 
 Required on every model. Lists which entities the model exposes. Defaults bind to
@@ -1323,13 +1461,12 @@ The **primary entity** of a model is the entity whose `graph.entities.<x>.model:
 names the model (the jaffle and tpch packages author it this way), and the model's rows
 are keyed by that entity's canonical key, or its `expr:` override.
 
-Without an explicit graph model binding, the loader resolves the primary from an
-authored `entity:` beside the `entities:` block, then a graph entity named like the model,
-with no explicit binding, when the block is empty or lists the model's name. It back-fills
-implicit graph bindings from the resolved identity. Declaration order never selects the
-primary: a model none of these resolves is row grain, and two graph entities bound to one
-model fail with `INVALID_CONFIG`. Two models claiming the same unbound graph entity also
-fail with `INVALID_CONFIG` naming both models.
+Without an explicit graph model binding, the loader resolves the primary from a graph
+entity named like the model, with no explicit binding, when the block is empty or lists the
+model's name. It back-fills implicit graph bindings from the resolved identity. Declaration
+order never selects the primary: a model neither resolves is row grain, and two graph
+entities bound to one model fail with `INVALID_CONFIG`. Two models claiming the same unbound
+graph entity also fail with `INVALID_CONFIG` naming both models.
 
 Rows finer than an entity are an entity of their own: several payments of one
 order, or one snapshot of a repository per day. Key that entity by its rows
@@ -1380,6 +1517,66 @@ model:                         # models/readings.yml: nothing in graph.entities 
 Declare a key, a graph entity homed on the model, when its rows have one. `kind: fact` is gone:
 give such a model an entity keyed by its time column (a daily series keyed by `[date_day]`), or
 leave it row grain.
+
+### One row per key
+
+A table whose rows repeat a key (a membership table, one row per person and department) has no
+key of its own, so nothing can look up a person in it. Model the same relation twice: once with
+`one_per_key: true`, read as one row per its entity's key, for what is fixed per person; and
+once row grain, for what varies, with a foreign key on that same key.
+
+```yaml
+# graph.yml
+entities:
+  person: {key: [person_id], model: people}
+# models/people.yml: one row per person, read from memberships
+model:
+  id: people
+  relation: memberships
+  one_per_key: true
+  entities: {person: {}}
+  dimensions:
+    person_name: {kind: categorical}            # fixed per person
+  measures:
+    headcount: {kind: aggregate, expr: {kind: literal, value: 1}, value_type: count}
+    salary: {kind: aggregate, expr: salary}
+# models/memberships.yml: every stored row, as row grain
+model:
+  id: memberships
+  relation: memberships
+  entities: {person: {}}                        # on the person's own key: a link
+  dimensions:
+    department: {kind: categorical}             # can differ across a person's rows
+```
+
+- The loader reads the relation as `source → where every key column is set → group by the key`.
+  Each other column is the key's one value: `{NULL, x}` reads `x`, and two values read NULL, so
+  a measure column with two values in a key adds nothing (no pick, no double count). The data is
+  the owner's to fix; nothing checks or warns at answer time. A row with no key is no entity,
+  though the row-grain model still counts it.
+- Lookups into the model are ordinary many-to-one joins (`entities: {person: {}}` on any other
+  model), unique by construction. A lookup that finds no row reads NULL.
+- The row-grain model over the same relation, with a foreign key on the one-per-key model's key,
+  is its **link**. Its columns are reached from the person one to many; how groups across a link
+  count is in [QUERY_CALL.md](QUERY_CALL.md#groups-across-a-link). "Headcount by department"
+  counts each person once in every department they have a row in, and a person with no row
+  there is the NULL group.
+- The link is walked in reverse, from the person to their rows. A package whose
+  `defaults.relationship.traversal` allows only `forward` refuses that walk with
+  `PATH_NOT_FOUND`, naming the link; allow it with `allowed_directions: [forward, reverse]` on a
+  `graph.relationships` row for the link (`entities: [memberships, person]`).
+- Put each column on one model: on the one-per-key model when it is fixed per key, on the
+  row-grain model when it can vary. A row filter on a one-per-key model's dimension and
+  `variants:` on a one-per-key model are `INVALID_CONFIG` (a stored rollup isn't read one row per
+  key). Its rows hold only the columns the package reads on it (its dimensions, measures and
+  joins), so a measure on any model, or an `aggregate_if`, reading another column of the relation
+  is refused with a hint to declare it. Its relation is read under a name starting
+  `sr_one_per_key__` (`sr_one_per_key__shop_person` for `entity.shop_person`): once a package has
+  a one-per-key model, a table, relation or pipeline string holding `sr_one_per_key` (in any
+  case, padded or with other punctuation) is `INVALID_CONFIG`. On Postgres, a key with very many
+  distinct values in a one-per-key column can fail the query (out of memory or array size)
+  instead of reading NULL. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
+  under "One row per key".
 
 ### `bridge:` — link tables and junction tables
 
@@ -1451,7 +1648,10 @@ A measure is timed by the roles in its own `times:` list, or, when it lists none
 model's `default: true` time. A measure with neither has no clock: it answers without `time`
 or grouped by a plain date dimension, but a query that puts it on a time grain (for example
 `time: {temporal_role: ..., grain: month}`) is refused with `INCOMPATIBLE_TEMPORAL_ROLE`. Mark
-the role `default: true` or list it under the measure's `times:`.
+the role `default: true` or list it under the measure's `times:`. When the refusal is for a
+role a measure's `times:` doesn't list, its message and `details.measures` name the measure
+(and the metric that reads it): list each role it can be read by there, as the model's time
+keys or role ids (`times: [ordered_at, shipped_at]`).
 
 `timezone:` (default `UTC`) is the zone the role answers in. Every grain's
 buckets, and a query's `start`/`end` bounds, are in that zone:
@@ -1583,8 +1783,11 @@ measures:
     value_type: count
 ```
 
-An `aggregate` measure with `expr: "1"`, `default_agg: sum`,
-`accumulation: { kind: flow }`, and `value_type: count` counts source rows.
+An `aggregate` measure with `expr: 1` (or `"1"`), `default_agg: sum`,
+`accumulation: { kind: flow }`, and `value_type: count` counts source rows. `expr:` is a
+column or formula as text, a finite number, or an expression object (`{kind: literal, value:
+1}`); anything else (`true`, a list, `.inf`, `.nan`) is refused at load, naming the model and
+measure.
 Package checks treat literal values as constants with no column dependencies;
 columns inside compound expressions are still checked against the warehouse.
 
@@ -1732,6 +1935,10 @@ visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages 
 - `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
   visitors is a real question), and so does `prior_period`. Cumulative, rolling and
   period-to-date metrics, scoped aggregates and metric predicates over it are refused.
+- On a [row-grain model](#row-grain-models) no row key can be fixed, so its `sum`, first and
+  last refuse with `ROW_GRAIN_UNSUPPORTED`, and a `default_agg` of one of them (`sum` is the
+  default) is refused at load: give it `default_agg: avg`, `min`, `max`, `median` or
+  `percentile`.
 - `project validate` probes such a measure grouped by those dimensions.
 - It only applies to `kind: aggregate`: an `entity_count` is a distinct count the
   engine computes itself.
@@ -1780,9 +1987,8 @@ never added across two parents, or repeated over the child's own child rows.
   none; an `avg`, `min` or `max` source reads NULL for it.
 - The source is compiled as its own query, so its access policies apply. The lookup's
   direct relationship is also a bound dependency: denying it refuses
-  validate, compile and query with `POLICY_DENIED` before rendering or execution. A row filter
-  allows one relation per query, so a lookup under any row filter is refused with
-  `POLICY_DENIED`.
+  validate, compile and query with `POLICY_DENIED` before rendering or execution. Under a row
+  filter the source reads the caller's visible rows, as every read does.
 - Time: the carried value is the parent's all-time total. A query's `where`, `time`
   window and buckets on the child's own clocks select child rows, and leave the value
   unchanged. Bucketing by the source's clock, prior-period, cumulative, rolling and
@@ -2043,6 +2249,10 @@ metrics:
     value_type: currency
 ```
 
+`as:` works the same way on graph entities and relationships, dimensions, times,
+measures, metrics and segments; `id:` on any of them is refused. A model's `id:` stays its
+identity in a `model:` file.
+
 `as:` does not cross namespaces — single-package authoring only. The validator
 rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 `as:` produces an ID identical to the auto-derived one (use is unnecessary).
@@ -2067,12 +2277,17 @@ form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
 |---|---|---|
 | `package.schema_strict` (either value) | Delete it: one set of rules applies to every package | `package-schema-strict` |
 | A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures). A measure with no `publish:` key or with `publish: true` no longer publishes its metric either, and the upgrade can't detect it: [author those metrics by hand](#metrics-a-measure-published-implicitly) | `measure-auto-publish` |
-| `id:` on a graph entity, dimension or measure | The key derives the id; `as:` only to keep a public id | `object-as` |
+| `id:` on a graph entity or relationship, dimension, time, measure, metric or segment | The key derives the id; `as:` only to keep a public id | `object-as` |
+| A measure's `time:` | `times: [<role>]` | `measure-times` |
+| A measure's `aggregation:` (never read) | `default_agg:` | |
+| A dimension's `valid_values:` | `domain:` | |
+| `freshness_source`, `freshness_sla_seconds` or `freshness_as_of` on a graph entity | The same keys on the entity's model | |
+| `from_` or `label` in a measure's `validity_windows` or `external_discontinuities` row | `from`; `semantics` (validity window) or `what` (discontinuity) | |
 | A model `grain:` | The bound entity's key keys the model's rows; rows finer than an entity are an [entity of their own](#graphyml) | `model-grain` |
-| A singular `entity:` without `entities:`; `keys.foreign:`; `keys.primary:` beside `entities:` | List the model's entities under `entities:` | `model-primary-key` |
+| A model's singular `entity:` or `keys:` | Bind the model with `graph.entities.<x>.model` and list its entities under `entities:` | `model-primary-key` |
 | A model `joins:` block | One `graph.relationships` row per join | `model-joins` |
 | A model `id:` that differs from its key in a `models:` map | Delete it: the key is the model's id | |
-| `topics:` on a dimension, measure, metric or segment; `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
+| `topics:` on any object (model, graph entity, dimension, time, measure, metric or segment); `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
 | A measure without `kind:` | `kind: aggregate`, `entity_count` or `lookup` | |
 | A metric with an absent, null or blank `value_type:` | Declare it; `number` is valid when intentional | |
 | `relations:` in a directory package's `package.yml` | `relations.yml` or `relations/` | |
@@ -2471,9 +2686,11 @@ Architect's `project_status`) carries `route_census`:
   with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
   meaning and `details.clarification.options[*].decision`, the row that records
   it). One `ROUTES_UNDECIDED` warning gives
-  their `count` and `pairs`. Record the route each pair means as a
-  `graph.path_preferences` row with `record_route_decision` before a question
-  needs it. The warning is
+  their `count` and `pairs`, and `first_pair_rows`, the rows that would decide
+  the first pair. Record the route each pair means as a
+  `graph.path_preferences` row before a question needs it: write it in
+  `graph.yml` (`semantic-rails project validate` prints the first pair's rows
+  to choose from) or with Architect's `record_route_decision`. The warning is
   advisory and never blocks a promotion. Leaving a pair undecided is a valid end state: the
   engine asks which route a question means when one needs it. Don't record a meaning the
   business doesn't hold.
@@ -2721,7 +2938,7 @@ between daily, weekly, and monthly rollups, then override only the differences.
 ## Default-time cascade
 
 A model's default `times:` entry (the one with `default: true`) cascades to its
-measures. Measures only need an explicit `time:` field when they override the
+measures. Measures only need an explicit `times:` list when they override the
 model default:
 
 ```yaml
@@ -2734,12 +2951,12 @@ model:
   measures:
     order_count:
       kind: entity_count
-      entity_key: order_id     # inherits time: ordered_at
+      entity_key: order_id     # inherits ordered_at
     refund_amount:
       kind: aggregate
       expr: refund_usd
       default_agg: sum
-      time: refund_recognized_time   # explicit override
+      times: [refund_recognized_time]   # explicit override
 ```
 
 Metrics do NOT inherit a model's default time — they remain explicit because
@@ -3028,20 +3245,20 @@ set: the document top level; `package:` and `package.seed`; `defaults:` and its 
 entries and their `rollup_safe`; `graph.path_policy`; `semantic_caveats` rows and their
 `time`; every model (including `defaults:`, which no model reads) and its `entities` entries,
 `dimensions`, `times`, `measures` (and each measure's `accumulation:`, which takes `kind` and
-`snapshot`, as does `defaults.measure.accumulation`), `joins` and `variants`, with each
+`snapshot`, as does `defaults.measure.accumulation`, and its `validity_windows` and
+`external_discontinuities` rows) and `variants`, with each
 variant's `grain`, `time`, `excludes`, `selection`, `equivalence` and every `columns:`
 binding; metrics; segments and their `membership`. A `columns:` binding takes the keys of what
 its name resolves to: a measure (by key or by the one id the loader gives it: `as:` when set,
-else `id:`, else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
-dimension (by key, by `as:` when set, else `id:`, or a `dimension.` id, which the loader
+else the id the namespace gives it, such as `measure.shop.revenue_usd`), a
+dimension (by key, by `as:` when set, or a `dimension.` id, which the loader
 refuses when the package has no such dimension), or a key or foreign-key column the
 loader turns into a key dimension (including the key of a graph entity named after the model,
 which binds it by default). A name that resolves to none of them is refused, with the names it
 could mean: the loader would ignore it, and a measure it meant to bind would read the column
-named after the measure, summed. An `id:` that `as:` replaces names nothing: bind by the
-`as:` value. Each `relations` entry and each of its steps is closed too: a step is one key
-naming its kind, and its mapping takes the keys that kind reads (a `select` or `window` step
-may instead hold its columns directly), each in one spelling. So does each mapping nested in a
+named after the measure, summed. Each `relations` entry and each of its steps is closed too:
+a step is one key naming its kind, and its mapping takes the keys that kind reads (a `select`
+or `window` step may instead hold its columns directly), each in one spelling. So does each mapping nested in a
 step: a `group_by` aggregate, a join's `on` rows, `date_lag` and `pre_aggregate` sides, a
 window's specs and `order_by` rows, an `attribution_join` key and `lookback`, and a `union_all`
 branch. A key that starts with `_` is an annotation, beside a step's kind too.
@@ -3240,7 +3457,8 @@ named definition by hand before upgrading.
 | `model-grain` | 0.3.2 | A model `grain:` beside `entities:` | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
 | `model-primary-key` | 0.3.2 | `keys:` and a singular `entity:` (and a block-less model's `grain:`) | An `entities:` block that states the same keys (`bridge: false` when the legacy keys inferred no relationship). A key with a role, keys that disagree with the block, or a model with no row key stop |
 | `model-joins` | 0.3.2 | A model `joins:` block | `graph.relationships` rows with the same ids (`traversal` becomes `allowed_directions`). A join that never read its cardinality as one, names no columns under a different key, or isn't on its entity's home model stops |
-| `object-as` | 0.3.2 | `id:` on graph entities, dimensions and measures | Renamed to `as:`, or deleted when the key derives the same id |
+| `object-as` | 0.3.2 | `id:` on graph entities and relationships, dimensions, times, measures, metrics and segments | Renamed to `as:`, or deleted when the key derives the same id. A metric or segment alone in its file and without `name:` takes its key from that `id:`, so it stops: author it under the file's `metrics:` or `segments:` map |
+| `measure-times` | 0.3.2 | A measure's `time:` (also under `defaults.measure`) | `times: [<role>]` naming the clock the loader read; deleted beside a non-empty `times:` (the measure's, or `defaults.measure.times` when the measure has no `times:` key), which the loader read instead. When the rewrite would move any measure's clock (a measure's empty `time:` or `times:` under a `defaults.measure.time:`), that measure and `defaults.measure` stop: rewrite them by hand |
 
 ## Reference
 

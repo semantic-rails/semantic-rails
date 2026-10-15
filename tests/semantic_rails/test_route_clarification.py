@@ -207,7 +207,7 @@ def _write_package(root: Path, *, decisions: list[dict[str, Any]] | None = None)
     relationships: dict[str, Any] = {}
     for name, (source, target, via, key) in _RELATIONSHIPS.items():
         relationships[name] = {
-            "id": f"relationship.{name}",
+            "as": f"relationship.{name}",
             "entities": [source, target],
             "cardinality": "many_to_one",
             "via": [via],
@@ -669,6 +669,44 @@ def test_a_route_decision_is_refused_under_a_row_policy_on_any_route(tmp_path, d
     assert exc_info.value.details["policy_ids"] == ["policy.bank.owner"]
 
 
+def test_an_ambiguous_route_under_a_row_policy_is_refused_up_front(tmp_path):
+    """Under a row filter a query can't take a route option on a pair the filter's relation
+    is on, so the question is refused with that reason instead of offering options whose
+    every answer would be refused."""
+    config = load_package_config(str(_write_package(tmp_path)))
+    policy = {"dimension": "dimension.bank_owner_name", "attribute": "owner", "type": "string"}
+    config = replace(
+        config,
+        semantic_policies=[SemanticPolicyConfig(id="policy.bank.owner", kind="row_filter", config=policy)],
+    )  # fmt: skip
+    query = _engine(BALANCE_BY_DISTRICT, config)
+    with pytest.raises(SemanticLayerError) as asked:
+        compile_query(config, Registry(config), query)
+    assert asked.value.code == "AMBIGUOUS_PATH"
+    context = RequestContext(attributes={"owner": "Ann"}).to_policy_context()
+    with pytest.raises(SemanticLayerError) as refused:
+        compile_query(
+            config, Registry(config), query, row_filters=row_filters_for_context(config, context)
+        )
+    assert refused.value.code == "POLICY_DENIED"
+    assert refused.value.details["reason"] == "route_override_under_row_policy"
+    assert refused.value.details["policy_ids"] == ["policy.bank.owner"]
+    assert "clarification" not in refused.value.details and refused.value.details["hint"]
+    # Each option sent back is refused the same way: nothing offered could be taken.
+    for path in (BRANCH_ROUTE, OWNER_ROUTE):
+        routed = _engine(
+            _routed(BALANCE_BY_DISTRICT, {**DIAMOND_ROW, "relationship_path": path}), config
+        )
+        with pytest.raises(SemanticLayerError) as taken:
+            compile_query(
+                config,
+                Registry(config),
+                routed,
+                row_filters=row_filters_for_context(config, context),
+            )
+        assert taken.value.details["reason"] == "route_override_under_row_policy"
+
+
 def _refused_at(
     entry: str, runtime: Runtime, query: dict[str, Any], context: RequestContext | None = None
 ) -> tuple[str, dict, str]:
@@ -780,7 +818,7 @@ def test_query_switches_use_only_the_options_the_package_refusal_offered(tmp_pat
     graph["relationships"]["accounts_branch"]["label"] = "Branch"
     graph["relationships"]["accounts_other_branch"] = {
         **graph["relationships"]["accounts_branch"],
-        "id": "relationship.accounts_other_branch",
+        "as": "relationship.accounts_other_branch",
         "via": ["other_branch_id"],
     }
     seed_file = pkg / "data" / "seed.sql"

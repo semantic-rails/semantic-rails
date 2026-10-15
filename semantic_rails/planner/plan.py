@@ -29,10 +29,11 @@ from typing import Any
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import _governed_target, _resolved
-from .answer_shape import _answer_shape_why
+from ._base import QUOTED, _governed_target, _resolved
+from .answer_shape import _answer_shape_why, _listed_entity_terms
 from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
+from .coverage import CoverageGap, _coverage_why
 from .examples import example_plan
 from .faithfulness import (
     hidden_governor_why,
@@ -58,6 +59,8 @@ from .intent_holds import (
     _with_time_gap,
 )
 from .intent_ir import compose_hints, parse_intent
+from .names import name_filters, name_question, name_readings, with_name_lookups
+from .no_draft import unconnected_why, unmatched_subject_why, unnamed_subject_terms
 from .orchestrator import compose
 from .plan_query import (
     _merge_partial_query,
@@ -72,7 +75,7 @@ from .plan_trace import (
     _select_best_plan,
     _slim_best,
 )
-from .question_parts import MAX_PARTS, QUOTED, QuestionSplit, split_question
+from .question_parts import MAX_PARTS, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
 from .unasked_groupings import _unasked_grouping_why
@@ -117,6 +120,7 @@ def _normalize_question(text: str, declared: Iterable[str] = ()) -> str:
 @runtime_request_scope
 @with_dimension_visibility
 @with_time_reference
+@with_name_lookups
 def plan_payload(
     runtime: Any,
     *,
@@ -233,6 +237,12 @@ def _question_payload(
     from ..scope import classify_question  # noqa: WPS433
 
     intent_str = intent
+    name_question(
+        intent_str
+        if partial_query is None or not (partial_query.where or partial_query.group_by)
+        else "",
+        unknown_words=lambda query: unconsumed_unknown_words(runtime, intent_str, query),
+    )
     example, invalid_examples = example_plan(
         runtime,
         intent_str,
@@ -381,6 +391,7 @@ def _question_payload(
                 break
 
     best = _select_best_plan(planned, intent_ir=intent_ir)
+    best, name_ask = _with_named_rows(runtime, intent_str, best, planned, partial_query, intent_ir)
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
@@ -426,7 +437,9 @@ def _question_payload(
     )
     time_why = (
         atemporal_why
-        or _unresolved_time_why(intent_str, partial_query, read.spans if read else ())
+        or _unresolved_time_why(
+            intent_str, partial_query, read.spans if read else (), config=runtime._config
+        )
         # A period comparison is ready only when each period it returns has ended; keeping
         # the rows from a dropped start would still return the one in progress.
         or _incomplete_period_why(runtime, best_draft.query, dropped_start)
@@ -494,7 +507,13 @@ def _question_payload(
                 set(intent_ir.unresolved),
             )
             or grouping_why
-            or _unasked_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+            or _unasked_grouping_why(
+                runtime,
+                intent_str,
+                best_draft.query,
+                partial_query,
+                _listed_entity_terms(runtime, intent_str, best_draft.query),
+            )
             or _qualifying_entity_why(runtime, intent_ir, best_draft.query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
@@ -516,10 +535,27 @@ def _question_payload(
     # A balance compared, or asked per week or month where the package reads it per day; or the
     # question a draft asks once it is otherwise ready (``RuntimeCompositionDraft.ask``).
     clarify_why = best.get("clarify") or (best.get("ask") if ready else None)
+    if name_ask and (value_why or {}).get("details", {}).get("kind") == "filter_values_unrealized":
+        # The question's one name, read as several rows, is all that holds the draft: ask which.
+        clarify_why = clarify_why or name_ask
     ready = ready and clarify_why is None
     # A named period with explicit readings to choose from.
     time_details = (time_why or {}).get("details")
     readings = isinstance(time_details, dict) and bool(time_details.get("possible_readings"))
+    if not ready and clarify_why is None and not readings:
+        # A held draft on a subject the question doesn't name, or on pieces that don't
+        # connect, is no help to fix: plan offers none and says why (planner/no_draft.py).
+        no_draft = unmatched_subject_why(runtime, intent_str, best, partial_query) or (
+            unconnected_why(runtime, best, partial_query) if not best_ok else None
+        )
+        if no_draft is not None:
+            return finish(_no_draft_payload(intent, intent_ir.to_dict(), no_draft))
+    for row in planned:
+        # A fallback shown on a subject the question doesn't name says it is a placeholder.
+        if row["pattern"] == "catalog_fallback" and unnamed_subject_terms(
+            runtime._config, intent_str, row["draft"].query
+        ):
+            row["placeholder"] = True
     payload = {
         "plan_version": _VERSION,
         "intent": intent,
@@ -590,6 +626,7 @@ def _question_payload(
         assumptions += _key_only_assumptions(
             runtime._config, intent_str, best_draft.query, partial_query
         )
+        assumptions += name_readings(intent_str, best_draft.query)
     if assumptions:
         payload["assumptions"] = assumptions
     if unmatched:
@@ -712,6 +749,9 @@ def _planned_row(
             "start_dropped": "",
         }
     require_visible_objects(config, merged_draft.query, merged_draft.resolved)
+    if merged_draft.interpreted_intent.get("lists") and partial_query and partial_query.having:
+        # Which rows a list keeps is the caller's having or the list's own rule, never both.
+        return _blocked_row(merged_draft, pattern, _list_beside_having_why(), blocked)
     if merged_draft.blocked_reason:
         why = _with_ready_options(runtime, dict(merged_draft.blocked_reason), partial_query)
         clarify = "clarification" in (why.get("details") or {})
@@ -784,6 +824,30 @@ def _planned_row(
         "start_dropped": start_dropped,
         **({"ask": ask} if ask else {}),
     }
+
+
+def _list_beside_having_why() -> dict[str, Any]:
+    """Why plan holds a list whose caller sends a ``having`` of their own: the list keeps the
+    rows with a known value that isn't 0, which may drop rows the caller's having keeps."""
+
+    gap = CoverageGap(
+        kind="list_unrealized",
+        clause="having",
+        message=(
+            "The question lists rows, and the call's own having says which rows to keep; the "
+            "list keeps only rows with a known value that isn't 0, which may contradict it, so "
+            "plan doesn't call the draft ready."
+        ),
+        expected={"answer": "rows"},
+        recovery_hint={
+            "kind": "list_with_having",
+            "message": (
+                "Group best.query by the listed entity's key and keep only your having, then "
+                "validate; or plan again without the having."
+            ),
+        },
+    )
+    return _coverage_why([gap]) or {}
 
 
 def _child_scope_ask(query: Call, validation: dict[str, Any]) -> dict[str, Any] | None:
@@ -880,6 +944,9 @@ def _governed_draft(config: Any, question: str, draft: Any, partial_query: Call 
             Order(alias, row.direction) if row.field == item.alias else row
             for row in query.order_by
         )
+        .having(
+            replace(row, field=alias) if row.field == item.alias else row for row in query.having
+        )
         .build()
     )
     drafted = set(item.references())
@@ -892,6 +959,43 @@ def _governed_draft(config: Any, question: str, draft: Any, partial_query: Call 
         resolved=[_resolved(metric) if row.get("id") in drafted else row for row in draft.resolved],
         interpreted_intent=intent,
     )
+
+
+def _with_named_rows(
+    runtime: Any,
+    question: str,
+    best: dict[str, Any],
+    planned: list[dict[str, Any]],
+    partial_query: Call | None,
+    intent_ir: Any,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The best draft reading the one row each name in the question gives (``name_filters``),
+    and why plan asks which row a name means, if it does.
+
+    Only the words the draft would be held on as unknown (``_dropped_value_why``) are looked up,
+    and only when the caller's ``partial_query`` sets no filter or grouping. A draft the filter
+    makes invalid stays as it was, for readiness to hold. The ask leaves the draft as it is:
+    plan asks only when that hold is all that holds the draft, and offers no call.
+    """
+
+    if not best["validation"].get("ok") or (
+        partial_query is not None and (partial_query.where or partial_query.group_by)
+    ):
+        return best, None
+    draft = best["draft"]
+    unknown = unconsumed_unknown_words(runtime, question, draft.query)
+    held = _dropped_value_why(question, unknown, set(intent_ir.unresolved))
+    if held is None:
+        return best, None
+    query, ask = name_filters(runtime, question, draft.query, held["details"]["terms"])
+    if ask is not None or query is draft.query:
+        return best, ask
+    validation = _validate_query(runtime, query)
+    if not validation["ok"]:
+        return best, None
+    row = {**best, "draft": replace(draft, query=query), "validation": validation}
+    planned[next(index for index, item in enumerate(planned) if item is best)] = row
+    return row, None
 
 
 def _blocked_row(
@@ -976,6 +1080,26 @@ def _valid_values_next_steps(query: Call) -> list[dict[str, Any]]:
         for row in entity_filter.conditions
     ]
     return [{"dimension_id": field_id} for field_id in fields]
+
+
+def _no_draft_payload(
+    intent: str, intent_ir: dict[str, Any], why: dict[str, Any]
+) -> dict[str, Any]:
+    """A held plan that offers no draft (``no_draft``): ``unrealizable`` when the package can't
+    answer as asked (pieces that don't connect, or nothing in the catalog matches what the
+    question asks about), else ``low_confidence`` (catalog objects mention its words)."""
+
+    terms = list(why["details"].get("terms") or [])
+    candidates = why["code"] == "PLAN_SUBJECT_UNMATCHED" and why["details"]["candidates"]
+    return {
+        "plan_version": _VERSION,
+        "intent": intent,
+        "intent_ir": intent_ir,
+        "status": "low_confidence" if candidates else "unrealizable",
+        "best": None,
+        "why": why,
+        "next": {"discover": {"terms": " ".join(terms)}} if terms else {},
+    }
 
 
 def _out_of_scope_envelope(runtime: Any, intent: str, why: dict[str, Any]) -> dict[str, Any]:

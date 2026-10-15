@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.961,
-      "compile_ms": 0.42,
+      "cache_lookup_ms": 0.793,
+      "compile_ms": 0.434,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -108,7 +108,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -207,7 +208,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [
@@ -330,7 +332,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_order_time",
-          "this": ""
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -410,7 +413,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
@@ -445,7 +449,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -472,7 +477,8 @@
             "last_value": 0,
             "start": null,
             "temporal_role": "temporal_role.jaffle_order_time",
-            "this": ""
+            "this": "",
+            "to_now": false
           }
         }
       ],
@@ -633,7 +639,8 @@
               "last_value": 0,
               "start": null,
               "temporal_role": "temporal_role.jaffle_order_time",
-              "this": ""
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -857,6 +864,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -917,6 +925,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -946,6 +955,7 @@
                       },
                       "op": "/",
                       "right": {
+                        "temporal": false,
                         "value": 100.0
                       }
                     }
@@ -959,6 +969,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": 1
                     }
                   ],
@@ -1040,6 +1051,7 @@
                               },
                               "op": ">",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             },
@@ -1063,12 +1075,14 @@
                                 },
                                 "op": "=",
                                 "right": {
+                                  "temporal": false,
                                   "value": 0
                                 }
                               }
                             }
                           },
                           "result": {
+                            "temporal": false,
                             "value": 0
                           }
                         }
@@ -1234,7 +1248,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [
@@ -1357,7 +1372,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_order_time",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -1437,7 +1453,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
@@ -1505,7 +1522,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_order_time",
-      "this": ""
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
@@ -1528,7 +1546,7 @@
   },
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 3.954,
+  "timing_ms": 3.749,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1570,6 +1588,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-11T20:14:29.517435Z"
+    "now": "2026-10-14T20:11:47.152832Z"
   }
 }

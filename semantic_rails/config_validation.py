@@ -475,17 +475,8 @@ def _validate_split_package(
                 relation_refs.add(relation_ref)
             # A model lists its entities under `entities:`, and the loader derives its keys
             # from them.
-            if "entities" in model and model.get("keys") is None:
-                pass
-            elif model.get("keys") is None:
+            if "entities" not in model:
                 add_error(errors, f"{model_path} must list its entities under entities:")
-            else:
-                keys = expect_mapping(model.get("keys"), f"{model_path}.keys", errors)
-                if keys is None:
-                    continue
-                primary = expect_list(keys.get("primary"), f"{model_path}.keys.primary", errors)
-                if primary is not None and not primary:
-                    add_error(errors, f"{model_path}.keys.primary must not be empty")
 
     for entity_id, entity in entities.items():
         entity_path = f"{graph_yml}.graph.entities.{entity_id}"
@@ -507,6 +498,26 @@ def _validate_split_package(
     return errors
 
 
+def _no_metrics_message(config) -> str:
+    """The refusal of a package with no metrics, with the shortest entry that adds one."""
+    message = (
+        "the package declares no metrics, and needs at least one: add an entry under metrics: "
+        "(a file in metrics/)"
+    )
+    if not config.measures:
+        return message
+    measure = config.measures[0]
+    entry = {
+        "kind": "aggregate",
+        "measure": measure.id,
+        "value_type": measure.value_type or "number",
+        "description": measure.label or measure.id,
+    }
+    key = measure.id.rpartition(".")[2]
+    shortest = yaml.safe_dump({key: entry}, default_flow_style=True, sort_keys=False, width=1000)
+    return f"{message}, for example `metrics: {shortest.strip()}`"
+
+
 def _compiled_package_errors(config, source_path: Path) -> list[str]:
     errors: list[str] = []
     if not config.entities:
@@ -514,7 +525,7 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
     if not config.measures:
         add_error(errors, f"{source_path}: compiled package must declare measures")
     if not config.metric_recipes:
-        add_error(errors, f"{source_path}: compiled package must declare metric recipes")
+        add_error(errors, f"{source_path}: {_no_metrics_message(config)}")
 
     for measure in config.measures:
         prefix = f"{source_path}: public measure {measure.id}"
@@ -961,6 +972,42 @@ def _compiled_package_warnings(
                 )
             )
     warnings.extend(semantic_collision_warnings(config, source_path))
+    warnings.extend(
+        _error_payload(
+            "ROW_FILTER_SCOPED_BY_ROLE",
+            f"{source_path}: row filter {policy.id} applies only to requests with one of the "
+            f"roles {list(policy.roles)}, so every other request reads all of its relation's "
+            "rows. Drop roles: to filter every request, and list the roles that may read every "
+            "row in unless_roles.",
+            details={"policy_id": policy.id, "roles": list(policy.roles)},
+        )
+        for policy in config.semantic_policies
+        if policy.kind == "row_filter" and policy.roles
+    )
+    from .row_filter_visibility import coverage_report
+
+    warnings.extend(
+        _error_payload(
+            "ROW_FILTER_COVERAGE",
+            f"{source_path}: row filter {row['policy_id']} filters {row['filtered']} and "
+            f"reaches {row['covered']} through their owners. Under it, "
+            + (
+                f"{row['uncovered']} are held (no filter reaches them; list one in shared: "
+                "to let every filtered caller read all of its rows); "
+                if row["uncovered"]
+                else ""
+            )
+            + (
+                f"{sorted(row['unsupported'])} are refused (decide their route with a "
+                "graph.path_preferences row, or give them one owner)."
+                if row["unsupported"]
+                else "every other model is answered."
+            ),
+            details=row,
+        )
+        for row in coverage_report(config)
+        if row["uncovered"] or row["unsupported"]
+    )
     if undecided := _undecided_routes_warning(census, source_path):
         warnings.append(undecided)
     warnings.extend(
@@ -990,14 +1037,19 @@ def _undecided_routes_warning(
     named = [f"{pair['source_entity']} -> {pair['target_entity']}" for pair in pairs[:5]]
     if len(pairs) > len(named):
         named.append(f"{len(pairs) - len(named)} more")
+    first = census["undecided"][0]["details"].get("clarification", {}).get("options", [])
     return _error_payload(
         "ROUTES_UNDECIDED",
         f"{source_path}: {len(pairs)} entity pairs reach their target by two or more routes "
         f"and no route is recorded ({', '.join(named)}); a query that needs one is refused "
-        "as AMBIGUOUS_PATH. Choose each pair's route from "
-        "route_census.undecided[*].details.clarification.options and pass its decision "
-        "to record_route_decision to write the graph.path_preferences row.",
-        details={"count": len(pairs), "pairs": pairs},
+        "as AMBIGUOUS_PATH. Record the route each pair means as a graph.path_preferences row: "
+        "the decision of one of its options in route_census.undecided[*].details.clarification.",
+        details={
+            "count": len(pairs),
+            "pairs": pairs,
+            # The rows that would decide the first pair, one per route: an author writes one.
+            "first_pair_rows": [option["decision"] for option in first if "decision" in option],
+        },
     )
 
 
@@ -1066,7 +1118,11 @@ def parse_snapshot_report(
         source = capture_package_source(ref.source_path)
         messages = validate_runtime_package(Path(ref.source_path))
         if not messages:
-            snapshot = load_package_snapshot(ref.source_path)
+            from .row_filter_visibility import check_shared
+
+            loaded = load_package_snapshot(ref.source_path)
+            check_shared(loaded.config)
+            snapshot = loaded
             if snapshot.source_fingerprint != source.fingerprint:
                 messages.append(
                     "Package sources changed during validation; retry after writes complete."

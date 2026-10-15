@@ -163,6 +163,11 @@
             "default": "event",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -248,6 +253,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -424,6 +433,11 @@
       "description": "Return the package's revision (pass it as expected_revision), files and parse report. Use first, and again when the package may have changed. Gotcha: include_runtime_checks also runs runtime validation, examples and tests, which query the warehouse.",
       "inputSchema": {
         "properties": {
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "include_runtime_checks": {
             "default": false,
             "type": "boolean"
@@ -524,6 +538,11 @@
             },
             "type": "array"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -590,6 +609,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -815,7 +838,7 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Upsert a model and its graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs): its columns are ordinary dimensions; time.fill and every time bucket use the implicit Gregorian calendar. calendar: false reverts that. On a regular model, calendar_id binds its times to a calendar; a non-default calendar is refused in this release. Fields merge into an existing model. An existing dimension, time or measure given only label, description, synonyms or meta keeps its other fields; given anything else it is rewritten, and dropped_fields lists what that drops. replace: true rewrites the model from the arguments, keeping only its id, entities, calendar_id and zero_through (how far its tables are loaded), and lists what it drops in dropped_fields. Relationships go through upsert_relationship.",
+      "description": "Upsert a model and its graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs): its columns are ordinary dimensions; time.fill and every time bucket use the implicit Gregorian calendar. calendar: false reverts that. On a regular model, calendar_id binds its times to a calendar; a non-default calendar is refused in this release. Fields merge into an existing model. An existing dimension, time or measure given only label, description, synonyms or meta keeps its other fields; given anything else it is rewritten, and dropped_fields lists what that drops. replace: true rewrites the model from the arguments, keeping only its id, entities, calendar_id, zero_through (how far its tables are loaded) and one_per_key, and lists what it drops in dropped_fields. one_per_key: true reads a relation whose rows repeat the key as one row per primary_key, each column the key's one value (NULL where its rows disagree); keep the columns that vary on a row-grain model of the same relation. primary_key [] makes a row-grain model (no key); entities ({parent: {} or {expr: column}}) merges the model's parent entities. Relationships also go through upsert_relationship.",
       "inputSchema": {
         "properties": {
           "calendar": {
@@ -853,11 +876,28 @@
             "default": false,
             "type": "boolean"
           },
+          "entities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "entity_key": {
             "type": "string"
           },
           "expected_revision": {
             "type": "string"
+          },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
           },
           "group": {
             "default": "core",
@@ -884,6 +924,17 @@
           },
           "model_id": {
             "type": "string"
+          },
+          "one_per_key": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "primary_key": {
             "items": {
@@ -972,6 +1023,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -1145,7 +1200,7 @@
         "readOnlyHint": false,
         "title": "Upsert relationship"
       },
-      "description": "Relate two entities: columns on from_entity's model hold to_entity's key, in key order. cardinality: many_to_one or one_to_one. Set keep_existing_routes=true to record every moved pair's previous route in this transaction; otherwise unrecorded route changes refuse the write.",
+      "description": "Relate two entities: columns on from_entity's model hold to_entity's key, in key order. cardinality: many_to_one or one_to_one. from_entity may be a row-grain model's id. name writes graph.relationships.<name> with these columns as its via: a second role on the pair (a buyer and a seller), or that role again; a pair with two roles needs it. Set keep_existing_routes=true to record every moved pair's previous route in this transaction; otherwise unrecorded route changes refuse the write.",
       "inputSchema": {
         "properties": {
           "cardinality": {
@@ -1168,12 +1223,21 @@
           "from_entity": {
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
           "keep_existing_routes": {
             "default": false,
             "type": "boolean"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
           },
           "project_path": {
             "type": "string"
@@ -1239,6 +1303,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -1437,6 +1505,11 @@
           "expected_revision": {
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -1516,6 +1589,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -1703,6 +1780,11 @@
             "default": "",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "group": {
             "default": "core",
             "type": "string"
@@ -1790,6 +1872,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -1977,6 +2063,11 @@
             "default": "core.yml",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -2051,6 +2142,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -2241,6 +2336,11 @@
             "default": "core.yml",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -2308,6 +2408,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -2495,6 +2599,11 @@
             "default": "core.yml",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -2565,6 +2674,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -2785,6 +2898,11 @@
           "expected_revision": {
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -2862,6 +2980,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -3251,6 +3373,11 @@
           "expected_revision": {
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "group": {
             "default": "dbt",
             "type": "string"
@@ -3331,6 +3458,10 @@
               "diff": {
                 "default": "",
                 "type": "string"
+              },
+              "diff_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "operation": {
                 "enum": [
@@ -3519,6 +3650,11 @@
             "default": "",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
+          },
           "mode": {
             "default": "parse",
             "type": "string"
@@ -3627,6 +3763,11 @@
           },
           "environment": {
             "type": "string"
+          },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report (default: a summary; see its report field)",
+            "type": "boolean"
           },
           "project_path": {
             "type": "string"

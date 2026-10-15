@@ -99,6 +99,44 @@ def _row_marker(expr: Any) -> Any:
 
 
 _earlier_settlement: ContextVar[bool] = ContextVar("earlier_settlement", default=False)
+# The row filters a request binds under (their policy ids), while it binds: a row-level call
+# that can raise on a value is refused, since its error could tell a hidden row's value.
+_filtered_bind: ContextVar[tuple[str, ...]] = ContextVar("filtered_bind", default=())
+# The row-level calls that return a value for every input of their types on every warehouse
+# (a CAST only to text); under a row filter every other call is refused.
+_TOTAL_CALLS = frozenset(
+    {"COALESCE", "NULLIF", "CONCAT", "LOWER", "UPPER", "TRIM", "REPLACE", "LENGTH", "ROUND"}
+    | {"FLOOR", "CEIL", "CEILING", "DATE_TRUNC", "DATE_PART", "LEFT", "RIGHT"}
+)
+
+
+@contextmanager
+def refusing_fallible_calls(policy_ids: tuple[str, ...]) -> Iterator[None]:
+    """While a row-filtered request binds, refuse row-level calls that can raise on a value."""
+    with holding(_filtered_bind, policy_ids):
+        yield
+
+
+def _refuse_fallible_call(expr: CallExpr) -> None:
+    policies = _filtered_bind.get()
+    name = str(expr.name).upper()
+    cast_type = (
+        str(expr.args[1].value).strip().upper()
+        if name == "CAST" and len(expr.args) == 2 and isinstance(expr.args[1], LiteralExpr)
+        else ""
+    )
+    if policies and name not in _TOTAL_CALLS and not (name == "CAST" and cast_type == "VARCHAR"):
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            f"A row filter applies to this request, and {name} on each row can fail on a "
+            "value, so a failure could tell something about a row you can't see. Ask without "
+            "it, or ask the package author for a measure that doesn't need it.",
+            details={
+                "reason": "row_filter_fallible_expression",
+                "function": name,
+                "policy_ids": sorted(set(policies)),
+            },
+        )
 
 
 @contextmanager
@@ -243,15 +281,52 @@ def _aggregation_expr(
 
 def _resolve_expr_entity(ref: ColumnRefExpr, measure: MeasureConfig, config: PackageConfig) -> str:
     if ref.entity:
-        return ref.entity
-    if ref.table:
-        entity_id = _resolve_table_entity(config, ref.table, owner=measure.entity)
-        if entity_id:
-            return entity_id
-        raise SemanticLayerError(
-            "INVALID_CONFIG", f"Unknown table reference '{ref.table}' in measure '{measure.id}'"
-        )
-    return measure.entity
+        entity_id = ref.entity
+    elif ref.table:
+        entity_id = _resolve_table_entity(config, ref.table, owner=measure.entity) or ""
+        if not entity_id:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"Unknown table reference '{ref.table}' in measure '{measure.id}'",
+            )
+    else:
+        entity_id = measure.entity
+    _require_projected_column(ref.column, entity_id, measure, config)
+    return entity_id
+
+
+def _require_projected_column(
+    column: str, entity_id: str, measure: MeasureConfig, config: PackageConfig
+) -> None:
+    """A one-per-key model's rows hold only the columns the package reads on it (its dimensions,
+    its own measures and its joins): an expression, of any measure or an aggregate_if, reading
+    another column of its relation is refused, naming the declaration that adds it."""
+    entity = _entity_index(config).get(entity_id)
+    if entity is None or not entity.one_per_key:
+        return
+    relation = next((row for row in config.relations if row.id == entity.relation_id), None)
+    if relation is None or column in relation.columns:
+        return
+    conditional = is_conditional_aggregate(measure)
+    reader = "aggregate_if" if conditional else f"Measure '{measure.id}'"
+    raise SemanticLayerError(
+        "UNSUPPORTED_CONDITIONAL_AGGREGATE" if conditional else "INVALID_CONFIG",
+        f"{reader} reads column '{column}' of '{entity.id}', a one-per-key model whose rows hold "
+        "only the columns the package declares on it.",
+        details={
+            "column": column,
+            "entity": entity.id,
+            "recovery_hints": [
+                {
+                    "kind": "declare_column",
+                    "message": (
+                        f"In the package, declare a dimension or measure on '{column}' in the "
+                        f"model of '{entity.id}', so its one-per-key rows read it."
+                    ),
+                }
+            ],
+        },
+    )
 
 
 def _measure_required_entities(measure: MeasureConfig, config: PackageConfig) -> set[str]:
@@ -387,6 +462,7 @@ def _config_expr_to_sql_inner(
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
+        _refuse_fallible_call(expr)
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [_config_expr_to_sql(arg, measure, config) for arg in expr.args],
@@ -540,9 +616,13 @@ def _bind_measure(
         if not measure.compatible_temporal_roles:
             # No clock at all: name the role asked for, so the hint says to declare one.
             details["requested"] = temporal_role
+        roles = ", ".join(measure.compatible_temporal_roles)
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
-            f"Temporal role '{temporal_role}' is not compatible with '{measure_id}'",
+            f"Measure '{measure_id}' is not timed by temporal role '{temporal_role}' "
+            + (f"(its roles: {roles})" if roles else "(it has no time role)")
+            + "; add the role to the measure's `times:` in its model"
+            + (", or use one of its roles." if roles else "."),
             details=details,
         )
     query_role = query.time.temporal_role if query.time else ""

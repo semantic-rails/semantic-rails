@@ -811,6 +811,8 @@ OK = "ok"
 UNMATCHED = "PLAN_UNMATCHED_TERMS"
 UNASKED = "PLAN_UNASKED_GROUPING"
 INVALID = "VALIDATION_FAILED"
+# Revenue, read per order, can't reach the grouping: plan names the pair and offers no draft.
+UNCONNECTED = "PLAN_UNCONNECTED"
 DRIFT = "PLAN_FALLBACK_SEMANTIC_DRIFT"
 GAP = "PLAN_INTENT_COVERAGE_GAP"
 WINDOW = "TIME_WINDOW_UNRESOLVED"
@@ -859,11 +861,11 @@ _BEFORE = [
     _Before("revenue by store, last month and customer type", UNMATCHED),
     _Before("revenue by store last month and customer type", OK),
     _Before("the top 5 stores by revenue", OK),
-    _Before("revenue by customer segment", INVALID),
+    _Before("revenue by customer segment", UNCONNECTED),
     _Before("order count by month, name", UNMATCHED),
     _Before("top customers by revenue", OK),
     _Before("top 10 customers by revenue in Q1 2017", OK),
-    _Before("revenue by item in 2017", INVALID),
+    _Before("revenue by item in 2017", UNCONNECTED),
     _Before("order count by month, customer id", UNMATCHED),
     _Before("item revenue by month, name", UNMATCHED),
     _Before("item revenue by name", OK, held=True),
@@ -934,9 +936,9 @@ _BEFORE = [
     _Before("revenue by order", OK),
     _Before("revenue by customer", OK),
     _Before("revenue by stores", OK),
-    _Before("revenue by supply", INVALID),
-    _Before("revenue by item", INVALID),
-    _Before("revenue by product", INVALID),
+    _Before("revenue by supply", UNCONNECTED),
+    _Before("revenue by item", UNCONNECTED),
+    _Before("revenue by product", UNCONNECTED),
     _Before("revenue by customer history", OK, held=True),
     _Before("revenue by store name", OK),
     _Before("revenue by customer type", OK),
@@ -1089,8 +1091,8 @@ def test_the_check_only_holds_a_plan_that_was_ready(
     # Without the checks, plan answers as it did before they existed.
     assert _outcome(before) == case.before
     # The checks never change the draft.
-    assert after["best"].get("query") == before["best"].get("query")
-    assert after["best"].get("pattern") == before["best"].get("pattern")
+    assert (after["best"] or {}).get("query") == (before["best"] or {}).get("query")
+    assert (after["best"] or {}).get("pattern") == (before["best"] or {}).get("pattern")
     if case.held:
         # They only hold a plan that was ready, and never ready one or pick another.
         assert case.before == OK

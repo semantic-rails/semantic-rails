@@ -120,7 +120,7 @@ def _package(root: Path, relationship: dict[str, Any], **keys: Any) -> Path:
                 name: {"label": name, "key": key, "model": HOMES[name]}
                 for name, key in {**KEYS, **keys}.items()
             },
-            "relationships": {"probe": {"id": "relationship.probe", **relationship}},
+            "relationships": {"probe": relationship},
         }
     }
     files = {

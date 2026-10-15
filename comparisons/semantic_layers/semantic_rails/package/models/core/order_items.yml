@@ -30,7 +30,7 @@ model:
         kind: flow
       value_type: currency
       currency: USD
-      time: temporal_role.jaffle_order_time
+      times: [temporal_role.jaffle_order_time]
       meta:
         owner_team: finance_analytics
         review_priority: high

@@ -107,7 +107,7 @@ graph:
 ROLLUP_SAFE_ITEMS = """
   relationships:
     items_order:
-      id: relationship.items_order
+      as: relationship.items_order
       entities: [item, order]
       cardinality: many_to_one
       rollup_safe:
@@ -236,7 +236,7 @@ def _write_package(
     (pkg / "metrics.yml").write_text(METRICS)
     segments = {
         name: {
-            "id": f"segment.geo.{name}",
+            "as": f"segment.geo.{name}",
             "label": name,
             "entity": "entity.geo_order",
             "basis_metric": "metric.geo.order_amount",
@@ -711,7 +711,7 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
 # route the order count walks to a product.
 OTHER_ORDER = """
     items_other_order:
-      id: relationship.items_other_order
+      as: relationship.items_other_order
       entities: [item, order]
       via: other_order_id
       cardinality: many_to_one

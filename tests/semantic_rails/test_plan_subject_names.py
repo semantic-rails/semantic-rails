@@ -211,7 +211,10 @@ def test_counting_words_name_the_count_measure(
 
     plan = plan_payload(jaffle, intent=question)
     if question == "number of customers by store":
-        assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        # A customer belongs to no store: plan names the pair, with the count measure.
+        assert plan["status"] == "unrealizable", plan
+        assert plan["why"]["code"] == "PLAN_UNCONNECTED"
+        assert plan["why"]["details"]["subjects"] == [measure]
         return
     if measure.endswith("_eop") and unconsumed:
         # Read on the last complete day, the draft still leaves "items" unconsumed.

@@ -19,8 +19,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.643,
-      "compile_ms": 0.349,
+      "cache_lookup_ms": 0.618,
+      "compile_ms": 0.353,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -50,7 +50,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "logical_plan": {
@@ -93,7 +94,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-          "this": ""
+          "this": "",
+          "to_now": false
         }
       },
       "group_by": [],
@@ -157,7 +159,8 @@
           "last_value": 0,
           "start": null,
           "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-          "this": ""
+          "this": "",
+          "to_now": false
         },
         "version": 1,
         "where": []
@@ -235,7 +238,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 2
     },
@@ -268,7 +272,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -295,7 +300,8 @@
             "last_value": 0,
             "start": null,
             "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-            "this": ""
+            "this": "",
+            "to_now": false
           }
         }
       ],
@@ -384,7 +390,8 @@
               "last_value": 0,
               "start": null,
               "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-              "this": ""
+              "this": "",
+              "to_now": false
             }
           },
           "id": "leaf_1_filter",
@@ -524,6 +531,7 @@
               {
                 "args": [
                   {
+                    "temporal": false,
                     "value": "month"
                   },
                   {
@@ -552,6 +560,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": "month"
                     },
                     {
@@ -581,6 +590,7 @@
                       },
                       "op": "/",
                       "right": {
+                        "temporal": false,
                         "value": 100.0
                       }
                     }
@@ -594,6 +604,7 @@
                 "expression": {
                   "args": [
                     {
+                      "temporal": false,
                       "value": 1
                     }
                   ],
@@ -666,6 +677,7 @@
                               },
                               "op": ">",
                               "right": {
+                                "temporal": false,
                                 "value": 0
                               }
                             },
@@ -689,12 +701,14 @@
                                 },
                                 "op": "=",
                                 "right": {
+                                  "temporal": false,
                                   "value": 0
                                 }
                               }
                             }
                           },
                           "result": {
+                            "temporal": false,
                             "value": 0
                           }
                         }
@@ -795,7 +809,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-        "this": ""
+        "this": "",
+        "to_now": false
       }
     },
     "group_by": [],
@@ -859,7 +874,8 @@
         "last_value": 0,
         "start": null,
         "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-        "this": ""
+        "this": "",
+        "to_now": false
       },
       "version": 1,
       "where": []
@@ -937,7 +953,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-      "this": ""
+      "this": "",
+      "to_now": false
     },
     "version": 2
   },
@@ -995,7 +1012,8 @@
       "last_value": 0,
       "start": null,
       "temporal_role": "temporal_role.jaffle_lifecycle_delivered_at",
-      "this": ""
+      "this": "",
+      "to_now": false
     }
   },
   "query": {
@@ -1015,7 +1033,7 @@
   },
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 3.03,
+  "timing_ms": 3.099,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1055,6 +1073,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-11T20:14:30.135853Z"
+    "now": "2026-10-14T20:11:47.313612Z"
   }
 }

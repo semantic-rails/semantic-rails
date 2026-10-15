@@ -62,8 +62,8 @@ from .dialects import dialect_for_warehouse
 from .ir import ExplainArtifact, LogicalPlan
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
-from .renderer import render_select_for_profile
-from .row_filters import RowFilter
+from .renderer import collecting_slots, render_select_for_profile
+from .row_filters import RowFilter, verify_row_filters
 from .schema import PackageConfig
 from .sql_ast import SqlSelect
 from .sql_preparation import PreparedQuery, finalize_parameters
@@ -168,8 +168,13 @@ def compile_query(
     sql_profile = str(payload.get("sql_profile", "audit") or "audit")
 
     def prepare(select: SqlSelect) -> PreparedQuery:
-        rendered = render_select_for_profile(select, sql_profile, dialect=dialect)
-        prepared = replace(dialect.prepare_query(rendered), parameters=bound.parameters)
+        if bound.visibility is not None:
+            verify_row_filters(select, bound.visibility)
+        # The slots of the very render that is executed, in the order its text holds them.
+        with collecting_slots() as slots:
+            rendered = render_select_for_profile(select, sql_profile, dialect=dialect)
+        rendered, parameters = slots.read(rendered)
+        prepared = replace(dialect.prepare_query(rendered), parameters=parameters)
         return finalize_parameters(prepared, config.package.connection.kind)
 
     prepared = prepare(sql_ast)
@@ -241,4 +246,6 @@ def compile_query(
         "balance_edges": list(bound.balance_edges),
         "balance_coverage": list(bound.balance_coverage),
         "closing_reads": list(bound.closing_reads),
+        # Every probe the runtime builds from this statement is held to it again.
+        "row_filter_visibility": bound.visibility,
     }

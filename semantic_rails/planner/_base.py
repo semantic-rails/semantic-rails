@@ -25,6 +25,9 @@ from ..naming import last_token as _last_token
 from .call import Call
 from .visibility import visible_dimensions, visible_object_ids
 
+# Quoted text, which is never split and keeps its spelling.
+QUOTED = r"\"[^\"]*\"|“[^”]*”|(?<!\w)['‘].*?['’](?!\w)"
+
 
 @dataclass(frozen=True)
 class RuntimeCompositionDraft:

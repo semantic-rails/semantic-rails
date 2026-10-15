@@ -26,6 +26,7 @@ from ..config import (
     _suggested_aggregations,
     load_package_snapshot,
 )
+from ..config_parts.one_per_key import one_per_key_source
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
 from ..naming import slug as _slug
@@ -52,7 +53,13 @@ _CARDINALITY = {
     "M:N": "many_to_many",
 }
 _ROLLUPS = {"rollup_safe_aggregations_reverse": "reverse"}
-_MODEL_FIELDS = {"calendar_id", "freshness_source", "freshness_sla_seconds", "freshness_as_of"}
+_MODEL_FIELDS = {
+    "calendar_id",
+    "freshness_source",
+    "freshness_sla_seconds",
+    "freshness_as_of",
+    "one_per_key",
+}
 _MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides")
 
 
@@ -97,7 +104,9 @@ class _Writer:
         entity, key = self.entities[entity_id], self.keys[entity_id][0]
         # A row-grain model lists only its parents: no graph entity is homed on it.
         own = {} if entity.is_row_grain else {key: None}
-        spec: dict[str, Any] = {"relation": entity.table, "entities": own}
+        # A one-per-key model names the relation its pipeline reads, not the pipeline.
+        relation = one_per_key_source(self.config, entity) or entity.table
+        spec: dict[str, Any] = {"relation": relation, "entities": own}
         return key, self.models.setdefault(key, spec)
 
     def graph(self) -> dict[str, Any]:
@@ -166,7 +175,7 @@ class _Writer:
                         f"{', '.join(untimed)}; the declaring model cannot be recovered",
                     )
             time = _described(role, "temporal_class", "supported_grains", skip={"dimension"})
-            time["id"] = role.id
+            time["as"] = role.id
             if (dimension.name, dimension.label) == (role.name, role.label) and not (
                 dimension.aliases or domain
             ):  # one times entry creates the role and its dimension
@@ -208,8 +217,10 @@ class _Writer:
 
     def relationship(self, row: Any) -> tuple[str, dict[str, Any]]:
         ends = {"source_entity", "target_entity", "source_column", "target_column", *_ROLLUPS}
+        ends.add("link")  # derived from the two models
+        key, alias = _keyed(row.id, "relationship.")
         spec = {
-            "id": row.id,
+            **alias,
             "entities": [self.keys[row.source_entity][0], self.keys[row.target_entity][0]],
             **_described(row, "safety", skip=ends),
             "cardinality": _CARDINALITY.get(row.cardinality, row.cardinality),
@@ -217,12 +228,12 @@ class _Writer:
         rollups = {side: getattr(row, name) for name, side in _ROLLUPS.items()}
         if any(rollups.values()):
             spec["rollup_safe"] = {side: aggs for side, aggs in rollups.items() if aggs}
-        return _slug(row.id.split(".", 1)[-1]), spec
+        return key, spec
 
     def metric(self, row: Any) -> tuple[str, dict[str, Any]]:
         # The loader reads filter_spec and window_spec off the expression; aliases aren't authored.
         skip = {"expression", "filter_spec", "window_spec", "aliases"}
-        spec = {"id": row.id, "expression": expr_to_dict(row.expression)}
+        spec = {"as": row.id, "expression": expr_to_dict(row.expression)}
         spec.update(
             _described(
                 row, "kind", "value_type", skip=skip, renames={"example_entries": "examples"}
@@ -233,7 +244,7 @@ class _Writer:
         return row.id.split(".", 1)[-1], spec
 
     def segment(self, row: Any) -> tuple[str, dict[str, Any]]:
-        spec = {"id": row.id, **_described(row, "entity", "basis_metric", skip=_MEMBERSHIP)}
+        spec = {"as": row.id, **_described(row, "entity", "basis_metric", skip=_MEMBERSHIP)}
         membership = {key: getattr(row, key) for key in _MEMBERSHIP if getattr(row, key)}
         if membership:
             spec["membership"] = membership

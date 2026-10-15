@@ -185,6 +185,24 @@ def test_like_in_an_arithmetic_expression_is_refused_the_same_way(runtime):
     assert error["recovery_hints"][0]["code"] == "USE_FILTER_WORD"
 
 
+@pytest.mark.parametrize(
+    ("column", "said"),
+    [("customer_order_number", "is integer"), ("no_such_column", "is the column of no dimension")],
+)
+def test_a_comparison_text_word_off_a_text_dimension_is_refused_at_its_column(
+    runtime, column, said
+):
+    expression = _aggregate_if("starts_with", "1")["select"][0]["expression"]
+    expression["condition"]["left"] = {
+        "kind": "column",
+        "column": column,
+        "entity": "entity.jaffle_order",
+    }
+    error = _error(runtime, {"select": [{"expression": expression, "as": "n"}]})
+    assert error["details"]["path"] == "select[0].expression.condition.left"
+    assert said in error["message"]
+
+
 def test_a_comparison_text_word_needs_a_text_literal(runtime):
     expression = _aggregate_if("starts_with", "Phil")["select"][0]["expression"]
     expression["condition"]["right"] = {"kind": "literal", "value": 7}

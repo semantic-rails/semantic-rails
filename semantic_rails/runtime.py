@@ -15,6 +15,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shlex
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -75,8 +76,8 @@ from .compiler_parts.empty_groups import (
     CoverageClock,
     observation_scope,
     observed_outside_filters,
-    sql_nodes,
 )
+from .compiler_parts.paths import text_dimension
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -92,6 +93,7 @@ from .db import (
     build_seed_database,
     create_warehouse_adapter,
     seed_digest,
+    temporal_cast_error_value,
 )
 from .db_parts.base import query_with_limits, reject_parameters
 from .db_parts.duckdb_confinement import confinement_directory, require_inside
@@ -119,7 +121,7 @@ from .policy_rules import check_request_environment
 from .query_call import read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
-from .renderer import render_select_for_profile
+from .renderer import render_with_slots
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -152,7 +154,7 @@ from .seed_provenance import (
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
 from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
 from .sql_identifiers import plain_relation_parts
-from .sql_preparation import PreparedQuery, checked_parameter_values
+from .sql_preparation import PreparedQuery, checked_parameter_values, finalize_parameters
 
 
 def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveRefusal:
@@ -187,8 +189,44 @@ def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveR
     )
 
 
-def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayerError:
-    """Run every applicable diagnostics enricher over a runtime error, on the caller's view.
+_SELECT_PATH = re.compile(r"\bselect\[(\d+)\]")
+
+
+def _caller_select_paths(exc: SemanticLayerError, notes: Any) -> SemanticLayerError:
+    """The error with each ``select[i]`` the engine wrote as the caller's index: a dimension
+    the call lifted from select into group_by (a call note) is not in the engine's select."""
+    lifted = sorted(
+        int(match.group(1))
+        for note in notes or []
+        if "group_by" in (note.get("canonical") or {})
+        and (match := re.fullmatch(r"select\[(\d+)\]", str(note.get("path", ""))))
+    )
+    if not lifted:
+        return exc
+
+    def caller(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        for at in lifted:
+            index += at <= index
+        return f"select[{index}]"
+
+    def remap(value: Any) -> Any:
+        if isinstance(value, str):
+            return _SELECT_PATH.sub(caller, value)
+        if isinstance(value, list):
+            return [remap(item) for item in value]
+        if isinstance(value, dict):
+            return {key: remap(item) for key, item in value.items()}
+        return value
+
+    return SemanticLayerError(exc.code, remap(str(exc)), details=remap(dict(exc.details or {})))
+
+
+def _enrich_runtime_error(
+    exc: SemanticLayerError, config: Any, notes: Any = ()
+) -> SemanticLayerError:
+    """Run every applicable diagnostics enricher over a runtime error, on the caller's view,
+    with its select paths at the caller's indexes (``notes``, the call's).
 
     Each enricher is a no-op when its code doesn't match, so we can
     chain them safely. Keeping this in one place means new enrichers
@@ -197,6 +235,7 @@ def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayer
     exc = visible_view.public_error(exc, config)
     if isinstance(exc, NonAdditiveRefusal):
         exc = _named_key_refusal(exc, config)
+    exc = _caller_select_paths(exc, notes)
     exc = enrich_object_not_found(exc, config)
     exc = enrich_expression_ast_error(exc, config)
     exc = enrich_column_expression(exc, config)
@@ -405,9 +444,17 @@ def _unchained_failure(exc: Exception, adapter: Any, query: PreparedQuery) -> Se
 
 
 def _coverage_probe_query(
-    warehouse: str, table: str, column: str, *, entity: str, dimension: str
+    warehouse: str,
+    table: str,
+    column: str,
+    *,
+    entity: str,
+    dimension: str,
+    visibility: Any = None,
+    connection_kind: str = "",
 ) -> PreparedQuery:
-    """``SELECT MIN(column), MAX(column) FROM table``, rendered as compiled SQL is.
+    """``SELECT MIN(column), MAX(column) FROM table``, rendered as compiled SQL is, and held to
+    the request's row filters (``visibility``) as every statement it runs is.
 
     Both names come from package config, so each must be a plain SQL identifier;
     anything else refuses before any SQL is built.
@@ -431,8 +478,15 @@ def _coverage_probe_query(
         ],
         from_table=SqlTableRef(table),
     )
+    if visibility is not None:
+        from .row_filters import apply_row_filters
+
+        probe = apply_row_filters(probe, visibility)
     dialect = dialect_for_warehouse(warehouse)
-    return dialect.prepare_query(render_select_for_profile(probe, dialect=dialect))
+    rendered, slots = render_with_slots(probe, dialect=dialect)
+    return finalize_parameters(
+        replace(dialect.prepare_query(rendered), parameters=slots), connection_kind
+    )
 
 
 def _data_coverage_probe(
@@ -443,6 +497,8 @@ def _data_coverage_probe(
     root_entity: str,
     temporal_role: str,
     limits: dict[str, Any],
+    visibility: Any = None,
+    policy_context: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """Run a single ``SELECT MIN(<col>), MAX(<col>) FROM <table>`` probe
     to discover what time window actually has data for the root entity's
@@ -472,8 +528,10 @@ def _data_coverage_probe(
             dim_row.column,
             entity=entity_row.id,
             dimension=dim_row.id,
+            visibility=visibility,
+            connection_kind=config.package.connection.kind if visibility is not None else "",
         )
-        rows = _adapter_query(adapter, query, limits=limits)
+        rows = _adapter_query(adapter, query, limits=limits, policy_context=policy_context)
         if not rows:
             return {}
         first = rows[0] or {}
@@ -538,24 +596,19 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
 
 
 def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
-    """The first row of ``probe``, a select whose parameters are all in its CTEs, run as the
-    answer's own SQL is: bound row filters and request limits kept."""
+    """The first row of ``probe``, run as the answer's own SQL is: held to its row filters
+    again (after its relation CTEs are attached), its slots read from its render, and the
+    request's limits kept."""
     from .relation_pipelines import attach_relation_ctes
-    from .renderer import render_select_for_profile
-    from .sql_ast import SqlParameter
-    from .sql_preparation import finalize_parameters
+    from .row_filters import apply_row_filters
 
     probe = attach_relation_ctes(runtime._config, probe)
+    visibility = compiled.get("row_filter_visibility")
+    if visibility is not None:
+        probe = apply_row_filters(probe, visibility)
     dialect = dialect_for_warehouse(runtime.warehouse)
-    prepared = replace(
-        dialect.prepare_query(render_select_for_profile(probe, dialect=dialect)),
-        parameters=tuple(
-            node.slot
-            for cte in probe.ctes
-            for node in sql_nodes(cte.query)
-            if isinstance(node, SqlParameter)
-        ),
-    )
+    rendered, slots = render_with_slots(probe, dialect=dialect)
+    prepared = replace(dialect.prepare_query(rendered), parameters=slots)
     prepared = finalize_parameters(prepared, runtime._config.package.connection.kind)
     with runtime._query_lock:
         rows = _adapter_query(
@@ -571,7 +624,8 @@ def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
 
 def _closing_reads(runtime, compiled, payload) -> list[dict[str, Any]]:
     """For each balance read on its closing day, its probe's row (keys case-folded), or no
-    counts when the read failed. Each distinct probe runs once, whatever reads share it."""
+    counts when the read failed (a policy's refusal is raised). Each distinct probe runs once,
+    whatever reads share it."""
     rows: list[tuple[Any, dict[str, Any]]] = []
     reads = []
     for read in compiled.get("closing_reads") or ():
@@ -579,7 +633,9 @@ def _closing_reads(runtime, compiled, payload) -> list[dict[str, Any]]:
         if row is None:
             try:
                 row = _probe_row(runtime, compiled, payload, read["probe"])
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, SemanticLayerError) and exc.code == "POLICY_DENIED":
+                    raise
                 row = {}
             rows.append((read["probe"], row))
         counts = {key.casefold(): value for key, value in row.items()}
@@ -596,7 +652,7 @@ def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
     ``edge_source`` (``loaded`` or ``now``) and how the answer names it (``declared``); a
     coverage CTE that only declared edges read keeps its last row as ``last_row`` instead.
     ``{}`` when the SQL reads no coverage or the read fails: a failed disclosure read never
-    changes the answer or its warnings.
+    changes the answer or its warnings, but a policy's refusal of it is raised.
     """
     by_alias, _ = _guard_probe_names(compiled, "coverage_")
     edges, _ = _guard_probe_names(compiled, "edge_")
@@ -612,7 +668,9 @@ def _coverage_read(runtime, compiled, payload) -> dict[str, Any]:
     }
     try:
         coverage = _compiled_cte_row(runtime, compiled, payload, columns)
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, SemanticLayerError) and exc.code == "POLICY_DENIED":
+            raise
         return {}
     zone = ZoneInfo(_time_zone(runtime._config, compiled) or "UTC")
     ctes = {cte.name: cte.query for cte in compiled["sql_ast"].ctes}
@@ -718,6 +776,11 @@ def _no_data_in_scope_warnings(
     ]
 
 
+# A filter value list can be long: the missing-value warning names this many and lists this many.
+_NAMED_MISSES = 5
+_LISTED_MISSES = 10
+
+
 def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
     """Probe string filter literals that can otherwise read a confident zero.
 
@@ -745,12 +808,20 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
         if key in payload:
             probe[key] = payload[key]
 
+    held: set[str] = set()
+
     def values(field: str, where: list[dict[str, Any]], limit: int) -> list[str] | None:
         try:
             result = runtime.query_internal(
                 {**probe, "group_by": [field], "where": where, "limit": limit}
             )
-        except SemanticLayerError:
+        except SemanticLayerError as exc:
+            if exc.code == "POLICY_DENIED" and str(exc.details.get("reason", "")).startswith(
+                "row_filter_"
+            ):
+                # A row filter holds the listing (the model no filter reaches): the answered
+                # query says nothing about the value rather than call it unverified.
+                held.add(field)
             return None
         return [str(row[field]) for row in result["rows"] if row.get(field) is not None]
 
@@ -773,7 +844,8 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
                 else None
             )
             if found is None:
-                unverified.append({"dimension": field, "value": literal})
+                if field not in held:
+                    unverified.append({"dimension": field, "value": literal})
             elif not found:
                 misses.append({"dimension": field, "value": literal})
     limit = max_valid_values_limit()
@@ -784,18 +856,26 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
             page = values(miss["dimension"], [], limit) or []
             known[miss["dimension"]] = page if len(page) < limit else []
         message, suggestion = filter_value_miss(
-            "This query", miss["dimension"], miss["value"], known[miss["dimension"]]
+            "This query",
+            miss["dimension"],
+            miss["value"],
+            known[miss["dimension"]],
+            dimensions[miss["dimension"]].data_type,
         )
         miss.update(message=message, suggestion=suggestion)
     warnings = []
     if misses:
+        # The warning names a few misses and counts the rest, whatever the filter lists.
+        named = [miss.pop("message") for miss in misses][:_NAMED_MISSES]
+        rest = len(misses) - len(named)
         warnings.append(
             semantic_issue(
                 code="FILTER_VALUE_NOT_FOUND",
-                message="; ".join(miss.pop("message") for miss in misses),
+                message="; ".join(named)
+                + (f"; and {rest} more values match nothing" if rest else ""),
                 severity="warning",
                 stage="execution",
-                details={"filters": misses},
+                details={"filters": misses[:_LISTED_MISSES], "missing_count": len(misses)},
                 object_ids=sorted({miss["dimension"] for miss in misses}),
             )
         )
@@ -1060,16 +1140,20 @@ class Runtime:
 
     def _view(self) -> visible_view.ViewEntry:
         pinned = visible_view.pinned_view(self)
-        return pinned.entry if pinned is not None else self._views[frozenset()]
+        return pinned.entry if pinned is not None else self._views[frozenset(), frozenset()]
 
     def _replace_base(self, config: Any) -> None:
         """Serve ``config`` as the whole package (``package_config``); every view of the
         previous one is dropped with the caches computed from it."""
+        from .row_filter_visibility import check_shared
+
+        check_shared(config)
         with self._cache_lock:
             self.package_config = config
             self._generation += 1
-            self._views: dict[frozenset[str], visible_view.ViewEntry] = {
-                frozenset(): visible_view.ViewEntry(config, Registry(config))
+            # Keyed by the caller's hidden objects and withheld value domains.
+            self._views: dict[tuple[frozenset[str], frozenset[str]], visible_view.ViewEntry] = {
+                (frozenset(), frozenset()): visible_view.ViewEntry(config, Registry(config))
             }
 
     def view_for(self, context: Any) -> Any:
@@ -1634,6 +1718,7 @@ class Runtime:
                     config=self._config,
                     now=instant,
                     default_clock=self._default_clock,
+                    text_dimension=text_dimension,
                     partial=partial,
                 )
         payload: dict[str, Any] = {**internal, "policy_context": policy}
@@ -1776,7 +1861,7 @@ class Runtime:
                 kind="validate",
             )
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config)
+            exc = _enrich_runtime_error(exc, self._config, payload.get("_call_notes"))
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -1821,7 +1906,7 @@ class Runtime:
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         public_effects = visible_view.public_effects(policy_effects, self._config)
         out = {
@@ -1875,7 +1960,7 @@ class Runtime:
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         public_effects = visible_view.public_effects(policy_effects, self._config)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
@@ -1940,16 +2025,32 @@ class Runtime:
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
-            raise query_execution_error(
-                _query_execution_error_details(
-                    engine=self.warehouse_engine,
-                    sql=compiled["sql"],
-                    payload=payload,
-                    policy_context=policy_context,
-                    extra=exc.details if isinstance(exc, SemanticLayerError) else None,
-                    seed_warnings=self._seed_warnings,
-                ),
-            ) from exc
+            details = _query_execution_error_details(
+                engine=self.warehouse_engine,
+                sql=compiled["sql"],
+                payload=payload,
+                policy_context=policy_context,
+                extra=exc.details if isinstance(exc, SemanticLayerError) else None,
+                seed_warnings=self._seed_warnings,
+            )
+            value = temporal_cast_error_value(exc)
+            if value is not None:
+                dimensions = {dim.id: dim for dim in self._config.dimensions}
+                paths = [
+                    f"where[{index}].value"
+                    for index, item in enumerate(payload.get("where") or [])
+                    if (dimension := dimensions.get(item.get("field"))) is not None
+                    and dimension.data_type.lower() in {"date", "timestamp", "datetime"}
+                    and value
+                    in (
+                        item["value"]
+                        if isinstance(item.get("value"), list)
+                        else [item.get("value")]
+                    )
+                ]
+                if len(paths) == 1:
+                    details["path"] = paths[0]
+            raise query_execution_error(details) from exc
         mark_partial_periods(
             rows,
             compiled,
@@ -2088,18 +2189,18 @@ class Runtime:
                 # still ships. The probe only fires on the zero-row path
                 # (we already paid for the original query) so the
                 # round-three "signal only, no probes" rule still holds.
-                # The probe reads the whole relation, so a row-filtered query skips it.
-                actual_data_coverage: dict[str, str] = {}
-                if not compiled["prepared_query"].parameters:
-                    with self._query_lock:
-                        actual_data_coverage = _data_coverage_probe(
-                            self._get_adapter(),
-                            self._config,
-                            warehouse=self.warehouse,
-                            root_entity=root_entity,
-                            temporal_role=str(time_block.get("temporal_role", "") or ""),
-                            limits=limits,
-                        )
+                # Under a row filter the probe reads only the caller's visible rows.
+                with self._query_lock:
+                    actual_data_coverage = _data_coverage_probe(
+                        self._get_adapter(),
+                        self._config,
+                        warehouse=self.warehouse,
+                        root_entity=root_entity,
+                        temporal_role=str(time_block.get("temporal_role", "") or ""),
+                        limits=limits,
+                        visibility=compiled.get("row_filter_visibility"),
+                        policy_context=policy_context,
+                    )
                 # The resolved bounds show where the filter landed: a relative window
                 # resolves against now, which can fall far outside historical data.
                 requested_window = _requested_window(compiled, payload)

@@ -25,7 +25,7 @@
   "query.v2.default.max_structured_tokens": 2411,
   "query.v2.default.max_text_tokens": 2411,
   "query.v2.default.plan_tokens": 244,
-  "query.v2.default.segment_explain_tokens": 1456,
+  "query.v2.default.segment_explain_tokens": 1582,
   "query.v2.default.segment_preview_tokens": 2424,
   "query.v2.default.segment_validate_tokens": 780,
   "query.v2.default.valid_values_tokens": 265,

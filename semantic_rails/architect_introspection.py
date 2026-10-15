@@ -27,7 +27,6 @@ import itertools
 import math
 import os
 import re
-import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -47,7 +46,7 @@ MAX_SAMPLE_CHARS = 200
 DEFAULT_PROFILE_ROWS = 1_000_000
 MAX_PROFILE_ROWS = 1_000_000
 MAX_SUGGESTION_KEY_COLUMNS = 8
-# One deadline covers a key search: sampling, refuting and confirming every candidate.
+# One deadline, checked between statements, covers sampling and the whole key search.
 KEY_SEARCH_SECONDS = 60.0
 
 _KEY_SUFFIXES = ("_id", "_key", "_code", "_sk")
@@ -323,8 +322,19 @@ def _qualified(warehouse: DuckDBWarehouse, schema: str, name: str) -> str:
     return ".".join(quote_identifier(str(part)) for part in (catalog, schema, name))
 
 
+class _OutOfTime(Exception):
+    """A key search's deadline passed."""
+
+
+def _in_time(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise _OutOfTime
+
+
 @contextlib.contextmanager
-def _sample(warehouse: DuckDBWarehouse, source: str, row_cap: int) -> Iterator[tuple[str, int]]:
+def _sample(
+    warehouse: DuckDBWarehouse, source: str, row_cap: int, deadline: float = math.inf
+) -> Iterator[tuple[str, int]]:
     """The relation, or above ``row_cap`` rows one repeatable reservoir sample of it in a
     temporary table, which every read of the profile and the key search shares; and its rows."""
     (row_count,) = warehouse.execute(f"SELECT system.main.count(*) FROM {source}")[1][0]
@@ -332,6 +342,7 @@ def _sample(warehouse: DuckDBWarehouse, source: str, row_cap: int) -> Iterator[t
         yield source, int(row_count)
         return
     sample = quote_identifier(f"semantic_rails_sample_{uuid.uuid4().hex}")  # never a relation's
+    _in_time(deadline)
     warehouse.execute(
         f"CREATE TEMP TABLE {sample} AS SELECT * FROM {source} "
         f"USING SAMPLE reservoir({row_cap} ROWS) REPEATABLE (0)"
@@ -339,7 +350,7 @@ def _sample(warehouse: DuckDBWarehouse, source: str, row_cap: int) -> Iterator[t
     try:
         yield sample, int(row_count)
     finally:
-        warehouse.execute(f"DROP TABLE IF EXISTS {sample}")
+        warehouse.execute(f"DROP TABLE IF EXISTS {sample}")  # past the deadline too
 
 
 def _profile(
@@ -350,11 +361,13 @@ def _profile(
     row_count: int,
     row_cap: int,
     limit: int,
+    deadline: float = math.inf,
 ) -> dict[str, Any]:
     available = {column["name"]: column for column in described["columns"]}
     sampled = row_count > row_cap
     profiles: list[dict[str, Any]] = []
     for column in wanted:
+        _in_time(deadline)
         quoted = quote_identifier(column)
         data_type = str(available[column]["type"])
         extremes = (
@@ -751,27 +764,29 @@ def _suggest_key(
     deadline: float,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """The key suggestion (None for row grain) and how the search ended: ``confirmed``,
-    ``none_found`` (with how many sets it ``checked``), ``timed_out`` (with the sets left
-    ``unconfirmed``, which no draft writes) or ``empty_table``.
+    ``none_found`` (with how many sets it ``checked``), ``timed_out`` (with the candidate sets
+    left ``unconfirmed``, most likely first, none checked on the whole relation, which no draft
+    writes) or ``empty_table``.
 
     Each candidate (a declared PRIMARY KEY, then declared UNIQUE columns) is refuted on the
     profile's own sample, and a survivor is confirmed never null and unique on the whole
-    relation; a rejection moves on. ``deadline`` is the whole search's (``time.monotonic``).
+    relation; a rejection moves on. An empty relation keeps only a declared key. ``deadline``
+    (``time.monotonic``) is checked before each statement and each ending.
     """
-    if not profile["row_count"]:
-        return None, {"status": "empty_table"}  # no rows are no evidence of a key
     declared = described["primary_key"]
+    if not profile["row_count"] and not declared:
+        _in_time(deadline)
+        return None, {"status": "empty_table"}  # no rows are no evidence of a key
     candidates = [*([declared] if declared else []), *described["unique"]]
     candidates = [*candidates, *_key_candidates(profile, entity)]
     candidates = [cols for i, cols in enumerate(candidates) if cols not in candidates[:i]]
     index = 0
     try:
         for index, columns in enumerate(candidates):
-            if time.monotonic() >= deadline:
-                raise duckdb.InterruptException
             keys = ", ".join(quote_identifier(column) for column in columns)
             null = " OR ".join(f"{quote_identifier(column)} IS NULL" for column in columns)
             for relation in [scan, *([source] if profile["sampled"] else [])]:
+                _in_time(deadline)
                 # Grouped by each column, as joins compare them (a collation's equal values).
                 rows, repeated, nulls = warehouse.execute(
                     f"SELECT system.main.count(*), (SELECT system.main.count(*) FROM (SELECT 1 "
@@ -781,12 +796,14 @@ def _suggest_key(
                 if nulls or repeated:
                     break  # refuted on the sample, or rejected on the whole relation
             else:
+                _in_time(deadline)
                 reason = f"({', '.join(columns)}) is never null and unique in all {rows} rows"
                 reason = "declared PRIMARY KEY" if columns == declared else reason
                 key = {"columns": columns, "confidence": "high", "reason": reason}
                 return key, {"status": "confirmed", "checked": index + 1}
-    except duckdb.InterruptException:
+    except _OutOfTime:
         return None, {"status": "timed_out", "unconfirmed": candidates[index:]}
+    _in_time(deadline)
     return None, {"status": "none_found", "checked": len(candidates)}
 
 
@@ -872,25 +889,15 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     # Without a profile in time, the roles come from the column types alone.
     profile: dict[str, Any] = {"row_count": None, "sampled": None, "columns": described["columns"]}
     key, search = None, {"status": "timed_out", "unconfirmed": []}
-    # One deadline covers sampling, profiling and the key search; a query past it is interrupted.
-    deadline = time.monotonic() + KEY_SEARCH_SECONDS
-    timer = threading.Timer(KEY_SEARCH_SECONDS, warehouse.connection.interrupt)
-    timer.start()
-    try:
-        with _sample(warehouse, source, MAX_PROFILE_ROWS) as (scan, row_count):
-            try:
-                profile = _profile(
-                    warehouse, described, columns, scan, row_count, MAX_PROFILE_ROWS, 0
-                )
-                key, search = _suggest_key(
-                    warehouse, described, profile, entity, source, scan, deadline
-                )
-            finally:
-                timer.cancel()  # the sample is dropped uninterrupted
-    except duckdb.InterruptException:
-        pass  # out of time while sampling or profiling: no key
-    finally:
-        timer.cancel()
+    deadline = time.monotonic() + KEY_SEARCH_SECONDS  # sampling, profiling and the key search
+    with (
+        contextlib.suppress(_OutOfTime),  # out of time before the search ended: no key
+        _sample(warehouse, source, MAX_PROFILE_ROWS, deadline) as (scan, row_count),
+    ):
+        profile = _profile(
+            warehouse, described, columns, scan, row_count, MAX_PROFILE_ROWS, 0, deadline
+        )
+        key, search = _suggest_key(warehouse, described, profile, entity, source, scan, deadline)
     key_columns = list(key["columns"]) if key else []
     links = _foreign_keys(warehouse, described, key_columns)
     roles, unmodeled = draft_roles(

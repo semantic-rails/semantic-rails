@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import math
+import textwrap
 import unicodedata
 from datetime import datetime
 from datetime import time as dt_time
 from decimal import Decimal
 from typing import Any
+
+import yaml
 
 from ..errors import refusal_text
 from .common import _BUNDLED_NOTE, _print, _quote
@@ -257,6 +260,7 @@ def _print_project_validation(report: dict[str, Any]) -> None:
             print(f"  {warning}")
         if len(warnings) > 10:
             print(f"  ... {len(warnings) - 10} more warning(s)")
+    _print_route_rows(report)
     errors = list(report.get("errors", []) or [])
     if errors:
         print("Errors:")
@@ -279,6 +283,33 @@ def _print_project_validation(report: dict[str, Any]) -> None:
                 print(f"    hint: {hint}")
         if len(counts) > 10:
             print(f"  ... {len(counts) - 10} more error(s)")
+
+
+def _print_route_rows(report: dict[str, Any]) -> None:
+    """For the first undecided entity pair, the graph.path_preferences rows to choose from."""
+    parse = report.get("parse")
+    warnings = [*(report.get("warnings") or []), *((parse or {}).get("warnings") or [])]
+    rows: list[dict[str, Any]] = next(
+        (
+            row["details"]["first_pair_rows"]
+            for row in warnings
+            if isinstance(row, dict)
+            and row.get("code") == "ROUTES_UNDECIDED"
+            and row.get("details", {}).get("first_pair_rows")
+        ),
+        [],
+    )
+    if not rows:
+        return
+    pair = f"{rows[0]['source_entity']} -> {rows[0]['target_entity']}"
+    print(
+        f"Route decisions: {pair} has {len(rows)} routes. Add the row of the one it means "
+        "under graph.path_preferences in graph.yml:"
+    )
+    print(textwrap.indent(yaml.safe_dump(rows, sort_keys=False, width=1000), "    "), end="")
+    source = str((report.get("package") or {}).get("source_path") or "")
+    command = f"semantic-rails parse-config --path {_quote(source)}" if source else "parse-config"
+    print(f"  `{command}` lists every undecided pair's rows under route_census.undecided.")
 
 
 def _print_project_upgrade(report: dict[str, Any], *, command: str) -> None:

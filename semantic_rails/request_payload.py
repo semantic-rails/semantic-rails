@@ -81,8 +81,29 @@ def checked_string_list(value: Any, *, field: str) -> list[str]:
 
 
 DISCOVER_RANKED_KINDS: frozenset[str] = frozenset(
-    {"measure", "metric", "segment", "dimension", "entity", "dimension_value"}
+    {"measure", "metric", "segment", "dimension", "entity", "dimension_value", "relationship"}
 )
+# A kind may also be named by its results' bucket: ``measures`` means ``measure``.
+_KIND_PLURALS = {
+    "measures": "measure",
+    "metrics": "metric",
+    "segments": "segment",
+    "dimensions": "dimension",
+    "entities": "entity",
+    "dimension_values": "dimension_value",
+    "relationships": "relationship",
+    "temporal_roles": "temporal_role",
+    "value_domains": "value_domain",
+}
+
+
+# Every spelling accepted by ranked discovery or the empty-terms catalog listing.
+DISCOVER_KIND_NAMES = frozenset(_KIND_PLURALS) | frozenset(_KIND_PLURALS.values())
+
+
+def singular_kinds(kinds: Sequence[str] | None) -> list[str]:
+    """``kinds`` with each plural read as its singular, in order."""
+    return [_KIND_PLURALS.get(kind, kind) for kind in kinds or []]
 
 
 def unknown_discover_kinds_error(
@@ -97,14 +118,15 @@ def unknown_discover_kinds_error(
 
 
 def checked_discover_kinds(kinds: Sequence[str] | None, valid: frozenset[str]) -> list[str]:
-    """Return ``kinds`` unchanged, or refuse when any value is not in ``valid``.
+    """Return ``kinds`` with each plural read as its singular (``measures`` is
+    ``measure``), or refuse when any value is not in ``valid``.
 
     A ``kinds`` filter that names no real kind would empty every bucket, and an
     empty result reads as "nothing matches". Refusing keeps that text for
     searches that really ran over the requested kinds.
     """
 
-    requested = list(kinds or [])
+    requested = singular_kinds(kinds)
     unknown = [kind for kind in requested if kind not in valid]
     if unknown:
         raise unknown_discover_kinds_error(unknown, valid)

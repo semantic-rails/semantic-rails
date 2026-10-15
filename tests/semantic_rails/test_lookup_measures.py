@@ -649,7 +649,6 @@ _VALIDITY = {"valid_from": "coverage.valid_from", "valid_to": "coverage.valid_to
         (_claims_measure(**{"from": "premium_amount", "via": "claim_line"}), "via"),  # 1:N
         (_claims_measure(**{"from": "premium_amount", "via": "policy"}), "via"),  # not direct
         (_claims_measure(**{"from": "line_amount"}), "via"),  # the source can't reach coverage
-        (_claims_measure(**{"from": "premium_amount", "aggregation": "max"}), "aggregation"),
         (_claims_measure(**{"from": "premium_amount", "default_agg": "max"}), "default_agg"),
         (_claims_measure(**{"from": "premium_amount", "additive": True}), "additive"),
         (_claims_measure(**{"from": "premium_amount", "accumulation": "stock"}), "accumulation"),

@@ -71,7 +71,7 @@ def _write_minimal_package(
                 "relation": "order_fact",
                 "times": {
                     "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
+                        "as": "temporal_role.demo_order_time",
                         "name": "demo.Order.ordered_at",
                         "label": "Order time",
                         "column": "ordered_at",
@@ -85,7 +85,7 @@ def _write_minimal_package(
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
-                        "time": "ordered_at",
+                        "times": ["ordered_at"],
                         **dict(measure_extra or {}),
                     }
                 },
@@ -99,7 +99,7 @@ def _write_minimal_package(
             "metrics": {
                 "sales.orders": {
                     "value_type": "number",
-                    "id": "metric.sales.orders",
+                    "as": "metric.sales.orders",
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "label": "Orders",
@@ -107,7 +107,7 @@ def _write_minimal_package(
                 },
                 "sales.orders_copy": {
                     "value_type": "number",
-                    "id": "metric.sales.orders_copy",
+                    "as": "metric.sales.orders_copy",
                     "name": "sales.orders_copy",
                     "label": "Orders copy",
                     "kind": "derived",
@@ -426,7 +426,7 @@ _OWNER_REQUIRED = {"owner": {"type": "string", "required": True}}
             ],
         ),
         (
-            {"metric_extra": {"id": "metric.sales.orders"}},
+            {"metric_extra": {"as": "metric.sales.orders"}},
             ["duplicate metric id 'metric.sales.orders'"],
         ),
         (

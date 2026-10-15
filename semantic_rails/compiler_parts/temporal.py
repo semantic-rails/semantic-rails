@@ -684,15 +684,46 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
                 continue
             if _allows_coarse_snapshot_alignment(requested, compatible, query, config):
                 continue
-            raise SemanticLayerError(
-                "INCOMPATIBLE_TEMPORAL_ROLE",
-                f"Temporal role '{requested}' is not compatible with expression '{expr_kind(expr)}'",
-                details={
-                    "requested": requested,
-                    "compatible": sorted(compatible),
-                    "expression": expr_to_dict(expr),
-                },
-            )
+            raise _incompatible_role(expr, requested, compatible, config, query)
+
+
+def _incompatible_role(
+    expr: SemanticExpr,
+    requested: str,
+    compatible: set[str],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> SemanticLayerError:
+    """The refusal of a query role that ``expr`` isn't timed by, naming the measures it reads
+    that the role doesn't time and the ``times:`` list that would add it."""
+    measures = sorted(
+        {
+            leaf.measure
+            for leaf in _window_measure_exprs(expr, config)
+            if requested not in _expr_compatible_temporal_roles(leaf, config, query)
+        }
+    )
+    named = ", ".join(f"'{measure}'" for measure in measures)
+    noun, verb = ("measure", "is") if len(measures) == 1 else ("measures", "are")
+    if not measures:
+        head = f"Expression '{expr_kind(expr)}' is"
+    elif isinstance(expr, MetricRecipeRefExpr):
+        head = f"Metric '{expr.metric_recipe}' reads {noun} {named}, which {verb}"
+    else:
+        head = f"{noun.capitalize()} {named} {verb}"
+    roles = ", ".join(sorted(compatible))
+    return SemanticLayerError(
+        "INCOMPATIBLE_TEMPORAL_ROLE",
+        f"{head} not timed by temporal role '{requested}' (its roles: {roles}). A measure is "
+        "timed only by the roles its `times:` lists: add this role to the measure's `times:` in "
+        "its model (the time's key, or the role id), or query one of its roles.",
+        details={
+            "requested": requested,
+            "compatible": sorted(compatible),
+            "expression": expr_to_dict(expr),
+            "measures": measures,
+        },
+    )
 
 
 def _cumulative_window(expr: SemanticExpr) -> bool | None:

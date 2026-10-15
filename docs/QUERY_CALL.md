@@ -72,8 +72,9 @@ arguments beside it:
 
 An HTTP body is `{"query": <call>, "options": {...}}`, or the call itself; any other key
 beside `query` and `options` is refused. A tool argument sent inside the call (`"now"`,
-`"max_rows"`, `"verbosity"`, ...) is refused with "pass it beside `query`". MCP also reads a
-`query` sent as a JSON string.
+`"max_rows"`, `"verbosity"`, ...) is refused with "pass it beside `query`", and MCP refuses a
+key of the call sent beside `query` (`"limit"`, ...) with the hint to move it inside. MCP also
+reads a `query` sent as a JSON string.
 
 ```bash
 uv run semantic-rails query --package jaffle_shop --now 2017-09-04T12:00:00Z \
@@ -175,6 +176,33 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
+### Groups across a link
+
+A [link](PACKAGE_AUTHORING.md#one-row-per-key) reaches the columns that can hold several values
+per key: a person's departments, read from the rows of the person's own relation. Grouped by
+one, each entity counts once in every group it has a row in.
+
+- A measure of the person, or of a fact that looks the person up (people in rooms, rooms in
+  departments), is a sum, count, average or distinct count over one row per (entity, group):
+  an average is over the entities in the group, a distinct count over their values, and a
+  ratio divides each group's own totals. A row with no value there, or that finds no row, is
+  the NULL group (ClickHouse joins a link as it joins lookups, inner, and drops a row that finds
+  none).
+- The groups can overlap, so their sum can exceed the total; the answer's `REWRITE_APPLIED`
+  says so. A call with no such grouping crosses no link, so its total counts each entity once.
+- A filter on such a column keeps the entities with a row that meets it (`EXISTS`), each
+  counted once. Beside a grouping on the same link, the filter and the grouping read the same
+  stored row, and two groupings are the values one row holds together, never every pairing of
+  an entity's values. A `not` or `missing` test there asks which reading is meant, or is refused
+  beside a grouping, as across any one-to-many hop.
+- A share, a window (`cumulative`, `rolling`, ...), a per-entity value or a distribution across
+  a link is refused with `MIXED_GRAIN_INVALID`: it would add overlapping groups. Ask for the
+  total in its own query.
+- A model with no key reaching a link answers a distinct count only; its sums and row counts are
+  refused, since nothing tells its rows apart.
+
+Their limits are listed under [Known limitations](#links-and-one-per-key-models).
+
 ## `where`
 
 Items are ANDed. Each is a condition on a dimension or an [entity filter](#entity-filters).
@@ -187,6 +215,11 @@ Items are ANDed. Each is a condition on a dimension or an [entity filter](#entit
 A measure or metric in `where` is refused with the entity filter that says it ("customers with
 20 or more orders" is an entity filter on the customer), or `having` for a result threshold. A
 condition on a date dimension is legal; for a time window, use `time`.
+The warehouse parses date and timestamp filter values; validation rejects only obvious
+mistakes such as text without digits or a month outside 1–12. DuckDB also accepts forms
+such as `2017-09-04 12:00:00 UTC` and `2017-09-04T24:00:00`. If DuckDB rejects a temporal
+cast and its reported value identifies one date filter, the redacted
+`QUERY_EXECUTION_ERROR` names that filter's `where[i].value` path.
 
 ### Filter words
 
@@ -217,6 +250,9 @@ condition on a date dimension is legal; for a time window, use `time`.
   pattern's shape: `'X%'` is `starts_with`, `'%X'` is `ends_with` and `'%X%'` is `contains`
   (`NOT LIKE` takes the `not_` form), each ignoring case. A pattern with `_` or an inner `%`
   has no word; the hint is `is` (or `not`) with the exact values, which `valid-values` lists.
+  In a query call, on a dimension declared as an id or another non-text type, the hint uses exact
+  values instead of a text word, even when the stored codes contain letters. In a
+  `comparison`, use `=` or `<>` with an exact value.
   A package's own `comparison` (a measure's `expr`) refuses `LIKE` the same way.
 - A text word ignores case by lowering the value and the text with the same function, so it
   gives the same rows on every warehouse. A column's own collation is set aside first: Postgres
@@ -423,7 +459,9 @@ The complements are exact: `is` ↔ `not`, `missing: true` ↔ `missing: false`.
 
 Conditions on result rows, after aggregation. `field` is a select alias, or a measure or metric
 id (computed for the test, not returned). Same words; `{"op": "missing", "value": true}` keeps
-results that are NULL. "Which X did Y" is `group_by` X plus a `having`:
+results that are NULL. To filter on a composed aggregate expression, add it to `select`
+with an alias and use that alias as `having.field`; an unselected expression is refused
+with this hint. "Which X did Y" is `group_by` X plus a `having`:
 
 ```json
 {"select": ["measure.jaffle.revenue_usd"],
@@ -746,7 +784,7 @@ option's route in `routes`.
  "group_by": ["dimension.jaffle_customer_history_segment"],
  "time": {"grain": "year"},
  "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
-             "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]}]}
+             "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"]}]}
 ```
 
 ```jsonc
@@ -754,10 +792,10 @@ option's route in `routes`.
           {"dimension.jaffle_customer_history_segment": null, "period": "2016-01-01", "period_partial": false, "customer_count": 273},
           {"dimension.jaffle_customer_history_segment": null, "period": "2017-01-01", "period_partial": true, "customer_count": 662}],
  "routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
-             "via": ["relationship.orders_customer", "relationship.order_to_customer_history"],
+             "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"],
              "other_routes": [{"from": "entity.jaffle_customer", "to": "entity.jaffle_customer_history",
                                "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order",
-                                       "relationship.order_to_customer_history"]}]},
+                                       "relationship.jaffle_order_customer_history"]}]},
             {"from": "entity.jaffle_order", "to": "entity.jaffle_customer", "via": ["relationship.orders_customer"]}]}
 ```
 
@@ -914,6 +952,11 @@ returned row's total spans the same number:
                   "message": "store_share is a fraction of the total of measure.jaffle.revenue_usd across dimension.jaffle_store_name in the rows the call keeps (2 rows per total)."}]}
 ```
 
+`SHARE_OF_TOTAL` also accompanies a share nested inside `round(...)`, arithmetic or any
+other select expression, for every share it contains. The disclosure describes the nested
+share's denominator; the enclosing expression can change the output's unit (for example,
+multiplying by 100 returns a percentage). Nested shares omit the optional row count.
+
 ### Per-entity value filters
 
 In a `distribution`, `entity_value.where` filters each entity's computed value. Each item takes
@@ -1040,8 +1083,61 @@ for error in jsonschema.Draft202012Validator(schema).iter_errors(call):
 
 `validate` (MCP `execute` with mode `validate`, `POST /api/v1/validate`, `Runtime.validate`,
 `semantic-rails validate`) checks a call against the package and its policies without reading
-the warehouse. The fenced JSON calls in this page and the other query docs are validated
-against the schema and the `jaffle_shop` package by the test suite.
+the warehouse. It uses the same route/path resolution and SQL compilation as execution;
+a missing path fails validation with the execution diagnostic. The fenced JSON calls in this
+page and the other query docs are validated against the schema and the `jaffle_shop` package
+by the test suite.
+
+## Known limitations
+
+The engine trusts the data as it is stored in three cases:
+
+- **Orphan foreign keys.** A child row whose parent id is missing from the parent table counts
+  in entity filters: the engine trusts the child's id.
+- **Lossy joins.** Joining columns of different types or collations (a text id to an integer
+  key, or a case-insensitive collation) can match several parent rows, so totals can double.
+  Keep join columns the same type.
+- **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
+  their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
+  children carry, so the totals across
+  groups can exceed the whole, and a parent with no child rows is left out of that grouping.
+  Combined labels ("Lab + Office") are a possible future option.
+
+### Links and one-per-key models
+
+- An entity counts under each of its groups, so groups across a link don't add up to the
+  total.
+- A one-per-key model's column with two values in one key reads NULL, so a sum of it leaves that
+  key out.
+- A model with no key that reaches a link answers distinct counts only; its sums and row counts
+  are refused.
+- On Postgres, a key with very many distinct values in a one-per-key column can fail the query
+  (out of memory or array size) instead of reading NULL.
+
+### Text words
+
+The text words (`contains`, `starts_with`, `ends_with` and their `not_` forms) give the same rows
+on every warehouse by refusing what the warehouses lower differently:
+
+- Search text holding one of these letters is refused, because some warehouse lowers it
+  differently from the rest: Greek sigma (`Σ σ ς`, whose lower case depends on the next
+  letter), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining dot above), the
+  Kelvin, Ångström and Ohm signs, rare Latin letters with a stroke, hook or tail, the cased
+  letters of U+2000 to U+2FFF (Roman numerals, circled letters, Glagolitic, Coptic, Georgian
+  Nuskhuri and its capitals), and letters whose case pair is newer than Unicode 13. Match such
+  values exactly with `is`.
+- A stored value holding one of these letters is lowered as its warehouse lowers it, so text
+  that lines up with that letter can match on one warehouse and not another (`is` against a
+  stored `İs`, or `k` against a stored Kelvin sign).
+- A letter that a later Unicode version gives a case pair can lower differently by warehouse
+  until the engine adds it to the list.
+- On Postgres the text words need ICU (the `und-x-icu` collation, built in wherever Postgres
+  has ICU); without it the query fails rather than answering differently.
+- On ClickHouse a `FixedString` value with a zero byte inside it, not just as trailing
+  padding, is compared only up to that first zero byte.
+- Text holding a NUL character or an unpaired surrogate is refused in the query call, but
+  not yet in package YAML: an expression literal or `unknown_values` entry holding one can
+  stop the package loading or make its queries fail.
 
 ## Known limitations
 

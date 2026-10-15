@@ -330,7 +330,7 @@ EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
         ),
         "example": {
             "kind": "between",
-            "expr": {"kind": "column", "column": "<col>"},
+            "expr": "measure.<id>",
             "low": {"kind": "literal", "value": 0},
             "high": {"kind": "literal", "value": 100},
         },
@@ -382,6 +382,9 @@ class CallContext:
     now: datetime
     # The default clock of a selected measure or metric id ("" when it reads no time).
     default_clock: Callable[[str], str] | None = None
+    # The compiler's one dimension a text word compares on an entity's column (refused at the
+    # path when there is none, several, or one that isn't text); the caller passes it in.
+    text_dimension: Callable[[str, str, str, PackageConfig, str], Any] | None = None
     partial: bool = False
     notes: list[dict[str, Any]] = field(default_factory=list)
     # The call's group_by ids (dimensions lifted from select join it) and whether its time
@@ -396,6 +399,7 @@ def read_call(
     config: PackageConfig | None = None,
     now: Any = None,
     default_clock: Callable[[str], str] | None = None,
+    text_dimension: Callable[[str, str, str, PackageConfig, str], Any] | None = None,
     partial: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """``(engine query, notes)`` for a call. ``partial`` reads a plan's or builder's draft."""
@@ -415,6 +419,7 @@ def read_call(
         config=config,
         now=parse_now(now),
         default_clock=default_clock,
+        text_dimension=text_dimension,
         partial=partial,
         group_by=group_by,
         timed=timed,
@@ -725,16 +730,45 @@ def _refuse_duplicate_columns(
 _KINDLESS_FIX = 'A reference is the id string itself, e.g. "metric.<id>" or "measure.<id>".'
 
 
+def _dimension_in_measure_slot(raw: Any, path: str, context: CallContext) -> None:
+    """Refuse a dimension id where a measure or metric goes, naming the measures that count
+    its column's distinct values on its entity, and group_by to split by it."""
+    if context.config is None or not isinstance(raw, str):
+        return
+    dimension = next((row for row in context.config.dimensions if row.id == raw.strip()), None)
+    if dimension is None:
+        return
+    from .expressions import ColumnRefExpr
+
+    counts = [
+        row.id
+        for row in context.config.measures
+        if row.entity == dimension.entity
+        and row.default_aggregation == "count_distinct"
+        and isinstance(row.expr, ColumnRefExpr)
+        and row.expr.column == dimension.column
+    ]
+    count = f"To count its distinct values, select {' or '.join(counts)}; t" if counts else "T"
+    raise refusal(
+        path,
+        f"'{dimension.id}' is a dimension, not a measure or metric",
+        fix=f"{count}o split the answer by it, add it to group_by.",
+        closest_matches=counts,
+    )
+
+
 def _operand(raw: Any, path: str, context: CallContext) -> Any:
     """An operand inside a kind: a reference or kind is read; a literal passes to the parser."""
     if isinstance(raw, Mapping) or (isinstance(raw, str) and raw.startswith(REFERENCE_PREFIXES)):
         return _expression(raw, path, context)
+    _dimension_in_measure_slot(raw, path, context)
     return raw
 
 
 def _expression(raw: Any, path: str, context: CallContext) -> Any:
     """An inline expression with its references expanded to the engine's ref objects."""
     if isinstance(raw, str):
+        _dimension_in_measure_slot(raw, path, context)
         return _reference(raw, path)
     if not isinstance(raw, Mapping):
         raise refusal(path, "is an id string or an object with 'kind'", fix=_KINDLESS_FIX)
@@ -779,6 +813,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
                 )
     if kind == "share":
         _check_share(raw, path, context)
+    _dimension_in_measure_slot(raw.get("measure"), f"{path}.measure", context)
     node: dict[str, Any] = {}
     for key, value in raw.items():
         child = f"{path}.{key}"
@@ -859,6 +894,25 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
         if isinstance(right, Mapping) and right.get("kind") == "literal"
         else None
     )
+    # Before offering a text word for LIKE, check whether this column can read one.
+    left = raw.get("left")
+    if (
+        context.config is not None
+        and spelling.replace("_", " ") in operators.LIKE_SPELLINGS
+        and isinstance(left, Mapping)
+        and left.get("kind") == "column"
+    ):
+        from .compiler_parts.paths import dimensions_over_column
+        from .expressions import resolve_table_entity
+
+        entity = str(left.get("entity") or "").strip() or resolve_table_entity(
+            context.config, str(left.get("table") or "")
+        )
+        dims = dimensions_over_column(entity or "", str(left.get("column")), context.config)
+        if len(dims) == 1:
+            operators.check_text_operand(
+                spelling, dims[0].data_type, f"{path}.op", dims[0].id, comparison=True
+            )
     like = operators.like_refusal(op, right, f"{path}.op")
     if like is not None:
         raise like
@@ -894,15 +948,15 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
             fix='Write "left": {"kind": "column", "column": "<column>", "entity": "entity.<id>"}.',
         )
     table = str(left.get("table") or "").strip()
-    if context.config is not None and (left.get("entity") or table):
-        from .compiler_parts.paths import text_dimension
+    lookup = context.text_dimension
+    if context.config is not None and lookup is not None and (left.get("entity") or table):
         from .expressions import resolve_table_entity
 
         entity = str(left.get("entity") or "").strip() or resolve_table_entity(
             context.config, table
         )
         if entity:
-            text_dimension(entity, str(left.get("column")), word, context.config, f"{path}.left")
+            lookup(entity, str(left.get("column")), word, context.config, f"{path}.left")
     return word
 
 
@@ -1006,8 +1060,10 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
         }
     if not isinstance(item, Mapping) or "field" not in item and "dimension" not in item:
         return item
-    word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
-    if context.config is not None and word in operators.TEXT_WORDS:
+    word = operators.word_of(item.get("op", "is"))
+    if context.config is not None and (
+        word in operators.TEXT_WORDS or word.replace("_", " ") in operators.LIKE_SPELLINGS
+    ):
         from .expressions import resolve_filter_dimension
 
         try:
@@ -1016,6 +1072,7 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
             field = ""
         for dim in (row for row in context.config.dimensions if row.id == field):
             operators.check_text_operand(word, dim.data_type, f"{path}.op", dim.id)
+    word, value = operators.normalize_condition(item.get("op", "is"), item.get("value"), path=path)
     return {**item, "op": word, "value": value}
 
 
@@ -1083,7 +1140,7 @@ def _over_unstated(path: str, node: Mapping[str, Any]) -> SemanticLayerError:
     )
 
 
-def _condition(item: Any, path: str) -> dict[str, Any]:
+def _condition(item: Any, path: str, context: CallContext | None = None) -> dict[str, Any]:
     if not isinstance(item, Mapping):
         raise refusal(
             path,
@@ -1096,8 +1153,12 @@ def _condition(item: Any, path: str) -> dict[str, Any]:
         raise refusal(f"{path}.field", "is a dimension id", fix='Write "dimension.<id>".')
     if "op" not in item:
         raise refusal(f"{path}.op", "is required", fix=f"Use one of {list(operators.WORDS)}.")
-    word, value = operators.normalize_condition(item["op"], item.get("value"), path=path)
-    return {"field": field_id.strip(), "op": word, "value": value}
+    if context is None:
+        word, value = operators.normalize_condition(item["op"], item.get("value"), path=path)
+        return {"field": field_id.strip(), "op": word, "value": value}
+    return _inline_condition(
+        {"field": field_id.strip(), "op": item["op"], "value": item.get("value")}, path, context
+    )
 
 
 def _where(
@@ -1121,7 +1182,7 @@ def _where(
         ):
             raise _child_group_refusal(item, path)
         if isinstance(item, Mapping) and "entity" in item:
-            group, having = _entity_filter(item, path, grain)
+            group, having = _entity_filter(item, path, grain, context)
             rows.extend(group)
             entity_having.extend(having)
             continue
@@ -1137,7 +1198,7 @@ def _where(
                     'or filter results with "having".'
                 ),
             )
-        rows.append(_condition(item, path))
+        rows.append(_condition(item, path, context))
     return rows, entity_having
 
 
@@ -1165,7 +1226,7 @@ def _child_group_refusal(item: Mapping[str, Any], path: str) -> SemanticLayerErr
 
 
 def _entity_filter(
-    item: Mapping[str, Any], path: str, grain: Any
+    item: Mapping[str, Any], path: str, grain: Any, context: CallContext | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     _check_keys(item, ENTITY_FILTER_KEYS, path)
     entity = item.get("entity")
@@ -1194,7 +1255,7 @@ def _entity_filter(
             at = f"{path}.{part}[{index}]"
             if isinstance(condition, Mapping) and "entity" in condition:
                 raise refusal(at, "entity filters do not nest", fix="Make it its own where item.")
-            where.append(_condition(condition, at))
+            where.append(_condition(condition, at, context))
         return [{"child": entity.strip(), "match": part, "where": where}], []
     over = item.get("over")
     if over is None:
@@ -1263,11 +1324,19 @@ def _having(raw: Any, aliases: Mapping[str, Any]) -> list[dict[str, Any]]:
         raise refusal(
             "having", "is a list", fix='Write [{"field": "<alias>", "op": "gt", "value": 0}].'
         )
+    expression_hint = (
+        'Add the aggregate expression to "select" with an alias, then use that '
+        'alias as field in "having". Or name a measure or metric by its id.'
+    )
     out = []
     for index, item in enumerate(raw):
         path = f"having[{index}]"
         if not isinstance(item, Mapping):
             raise refusal(path, "is {field, op, value}", fix="Name a select alias in field.")
+        if "expression" in item:
+            raise refusal(
+                f"{path}.expression", "takes a select alias in field", fix=expression_hint
+            )
         _check_keys(item, CONDITION_KEYS, path)
         field_id = str(item.get("field", "")).strip()
         if field_id in aliases:
@@ -1278,7 +1347,7 @@ def _having(raw: Any, aliases: Mapping[str, Any]) -> list[dict[str, Any]]:
             raise refusal(
                 f"{path}.field",
                 f"'{field_id}' is not a select alias, measure or metric",
-                fix=f"Use one of {sorted(aliases)}." if aliases else "Name a measure or metric.",
+                fix=expression_hint,
             )
         operators.refuse_text_on_number(
             item.get("op"), f"{path}.op", "a result", operators.NUMBER_WORDS

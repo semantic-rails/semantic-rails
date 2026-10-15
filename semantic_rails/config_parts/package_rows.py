@@ -37,6 +37,7 @@ from .loader_chain import _ensure_unique_object_ids, _parse_package_meta
 from .lookup_measures import lookup_measure_spec, resolve_lookup_measures
 from .measure_governance import with_published_flags
 from .measure_rows import (
+    KEYED_AGGREGATIONS,
     _authored_additive,
     _default_topics,
     _derive_measure_semantics,
@@ -53,6 +54,7 @@ from .model_rows import (
     _parse_relations,
     _with_displays,
 )
+from .one_per_key import check_one_per_key_names, with_one_per_key
 from .policy_rows import (
     _parse_caveats,
     _parse_path_policy,
@@ -68,7 +70,6 @@ from .row_values import (
     _optional_int,
     _slug,
     _titleize,
-    _unique_aliases,
 )
 from .temporal_rows import (
     _coarser_time_grains,
@@ -98,6 +99,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     entities: list[EntityConfig] = []
     entity_lookup: dict[str, str] = {}
     model_to_entity: dict[str, str] = {}
+    one_per_key: dict[str, str] = {}  # entity id -> the relation its model names
     model_rows = {str(k): dict(v or {}) for k, v in model_rows.items()}
     time_calendar_ids_seen: set[str] = set()
 
@@ -133,6 +135,19 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         if not key and not entity_spec.get("_row_grain"):
             raise SemanticLayerError(
                 "INVALID_CONFIG", f"{path}: graph entity '{entity_key}' must declare key"
+            )
+        if model.get("one_per_key") is True and model.get("variants"):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: model '{model_id}' is one_per_key, so it can't have variants: a stored "
+                "rollup isn't read one row per key, so it could answer otherwise than the model",
+            )
+        if model.get("one_per_key") is True and not key:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: model '{model_id}' is one_per_key, which reads its relation as one row "
+                "per its entity's key, but no graph entity is homed on it: list its entity under "
+                "entities: and declare that entity's key in graph.entities",
             )
         if entity_kind == "time":
             time_calendar_id = str(model.get("calendar_id", "") or "default")
@@ -181,18 +196,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 name=entity_name,
                 label=entity_label,
                 description=str(entity_spec.get("description", entity_label)),
-                topics=_ensure_list(entity_spec.get("topics")),
                 calendar_id=str(model.get("calendar_id", "")),
                 allowed_as_root=bool(entity_spec.get("allowed_as_root", True)),
-                freshness_source=str(
-                    model.get("freshness_source", entity_spec.get("freshness_source", ""))
-                ),
-                freshness_sla_seconds=_optional_int(
-                    model.get("freshness_sla_seconds", entity_spec.get("freshness_sla_seconds"))
-                ),
-                freshness_as_of=str(
-                    model.get("freshness_as_of", entity_spec.get("freshness_as_of", "")) or ""
-                ),
+                freshness_source=str(model.get("freshness_source", "")),
+                freshness_sla_seconds=_optional_int(model.get("freshness_sla_seconds")),
+                freshness_as_of=str(model.get("freshness_as_of", "") or ""),
                 disallowed_names=[
                     str(item).strip()
                     for item in _ensure_list(entity_spec.get("disallowed_names"))
@@ -200,11 +208,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ],
                 bridge=model.get("_bridge_declared") is True,
                 model=model_id if entity_spec.get("_row_grain") else "",
+                one_per_key=model.get("one_per_key") is True,
             )
         )
         entity_lookup[str(entity_key)] = entity_id
         entity_lookup[entity_name] = entity_id
         model_to_entity[model_id] = entity_id
+        if model.get("one_per_key") is True:
+            one_per_key[entity_id] = relation_table
 
     dimensions: list[DimensionConfig] = []
     temporal_roles: list[TemporalRoleConfig] = []
@@ -233,7 +244,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model_meta = _normalize_meta(model.get("meta"), f"{path}: model '{model_id}'")
         entity_id = model_to_entity[model_id]
         entity_cfg = next(row for row in entities if row.id == entity_id)
-        model_topics = _ensure_list(model.get("topics"))
         model_operational_defaults = normalize_operational_payload(
             model.get("operational_defaults"),
             contract=operational_contract,
@@ -257,7 +267,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             name = str(dim_spec.get("name", f"{entity_cfg.name}.{dim_key}"))
             # Read in any case and spacing, as authoring validation reads it.
             kind = str(dim_spec.get("kind") or "categorical").strip().lower()
-            domain_values = list(dim_spec.get("domain", dim_spec.get("valid_values", [])) or [])
+            domain_values = list(dim_spec.get("domain") or [])
             value_domain_id = ""
             if domain_values:
                 value_domain_id = str(
@@ -307,7 +317,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     label=label,
                     description=str(dim_spec.get("description", label)),
                     semantic_kind=kind,
-                    topics=_unique_aliases(model_topics, _ensure_list(dim_spec.get("topics"))),
                     sample_values_strategy=str(dim_spec.get("sample_values_strategy", "")),
                     filterable=bool(dim_spec.get("filterable", True)),
                     groupable=bool(dim_spec.get("groupable", True)),
@@ -337,7 +346,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         label=label,
                         description=str(time_spec.get("description", label)),
                         semantic_kind=str(time_spec.get("kind", "timestamp")),
-                        topics=_unique_aliases(model_topics, _ensure_list(time_spec.get("topics"))),
                         sample_values_strategy=str(time_spec.get("sample_values_strategy", "")),
                         filterable=bool(time_spec.get("filterable", True)),
                         groupable=bool(time_spec.get("groupable", True)),
@@ -417,12 +425,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{path}: measure '{measure_key}' has default_agg '{default_aggregation}' which is not in allowed_aggregations {allowed_aggregations}",
                 )
             kind = str(measure_spec.get("kind", "")).strip().lower()
-            authoring_warnings: list[str] = []
-            raw_aggregation = str(raw_measure_spec.get("aggregation", "") or "").strip().lower()
-            if raw_aggregation == "count_distinct" and kind != "entity_count":
-                authoring_warnings.append(
-                    f"measure '{measure_id}' declares aggregation: count_distinct, but measure-level aggregation is ignored for kind '{kind or 'additive'}'; use kind: entity_count with entity_key for count-distinct measures"
-                )
             entity_key = _ensure_list(measure_spec.get("entity_key") or row_grain)
             if kind == "entity_count":
                 expr_raw = measure_spec.get("expr")
@@ -448,18 +450,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         f"{path}: measure '{measure_key}' (kind '{kind}') is missing expr",
                     )
             temporal_refs = _ensure_list(
-                measure_spec.get("times")
-                or measure_spec.get("time")
-                or ([default_time] if default_time else [])
+                measure_spec.get("times") or ([default_time] if default_time else [])
             )
             compatible_temporal_roles = [
                 temporal_lookup[(model_id, ref)] if (model_id, ref) in temporal_lookup else str(ref)
                 for ref in temporal_refs
             ]
             _, structured_example_entries = _normalize_examples(measure_spec.get("examples"))
-            measure_topics = _unique_aliases(
-                model_topics, _ensure_list(measure_spec.get("topics"))
-            ) or _default_topics(measure_name, fallback=model_id)
+            measure_topics = _default_topics(measure_name, fallback=model_id)
             default_temporal_role = str(
                 measure_spec.get("default_temporal_role")
                 or (compatible_temporal_roles[0] if compatible_temporal_roles else "")
@@ -478,11 +476,33 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 target="measure",
                 path=f"{path}: measure '{measure_id}' operational",
             )
+            additive = _authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'")
+            if (
+                not additive
+                and entity_cfg.is_row_grain
+                and default_aggregation in KEYED_AGGREGATIONS
+            ):
+                usable = [agg for agg in allowed_aggregations if agg not in KEYED_AGGREGATIONS]
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: measure '{measure_key}' is additive: false on row-grain model "
+                    f"'{model_id}' (no key), so its default_agg '{default_aggregation}' can't be "
+                    "computed: that needs each row's key fixed. Set default_agg to one of "
+                    f"{', '.join(usable)}, or declare a key on {model_id}.",
+                )
+            try:
+                measure_expr = parse_config_expression(expr_raw)
+            except SemanticLayerError as exc:
+                raise SemanticLayerError(
+                    exc.code,
+                    f"{path}: model '{model_id}' measure '{measure_key}' expr: {exc}",
+                    details=exc.details,
+                ) from exc
             measure = MeasureConfig(
                 id=measure_id,
                 entity=entity_id,
                 row_grain=list(row_grain),
-                expr=parse_config_expression(expr_raw),
+                expr=measure_expr,
                 default_aggregation=default_aggregation,
                 allowed_aggregations=allowed_aggregations,
                 invalid_aggregations=invalid_aggregations,
@@ -519,8 +539,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 cross_window_policy=str(
                     measure_spec.get("cross_window_policy", "caveat") or "caveat"
                 ),
-                authoring_warnings=authoring_warnings,
-                additive=_authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'"),
+                additive=additive,
                 lookup_from=str(measure_spec.get("from", "") or "").strip(),
                 lookup_via=str(measure_spec.get("via", "") or "").strip(),
                 publish=measure_spec.get("publish") is not False,
@@ -556,7 +575,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{rel_id} joins into '{target_ref}', a row-grain model (no key), so one row "
                     f"can't be looked up there. Fix: write it from {target_ref}'s side (entities: "
                     f"[{target_ref}, {source}], cardinality: many_to_one, via: "
-                    f"[{', '.join(via)}]), or declare a key on {target_ref} if its rows have one.",
+                    f"[{', '.join(via)}]), or declare a key on {target_ref} if its rows have one. "
+                    "To look up what is fixed per key, model its relation again with "
+                    "one_per_key: true.",
                     details={"relationship": rel_id, "model": target_ref},
                 )
             target_cols = _ensure_list(join_spec.get("target") or target_cfg.key)
@@ -653,6 +674,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             )
     entities = _with_displays(
         entities, graph_entities, model_rows, dimension_lookup, dimensions, path=path
+    )
+    entities, relationships, relations = with_one_per_key(
+        entities, one_per_key, dimensions, measures, relationships, relations
     )
     path_preferences = _parse_path_preferences(
         raw,
@@ -895,8 +919,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             name=str(spec.get("name", metric_key)),
             label=str(spec.get("label", _titleize(metric_key))),
             description=str(spec.get("description", spec.get("label", ""))),
-            topics=_ensure_list(spec.get("topics"))
-            or _default_topics(str(spec.get("name", metric_key))),
+            topics=_default_topics(str(spec.get("name", metric_key))),
             comparison_family=str(spec.get("comparison_family", "")),
             comparison_mode=str(spec.get("comparison_mode", "")),
             preferred_companion_metrics=_ensure_list(spec.get("preferred_companion_metrics")),
@@ -964,8 +987,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 name=str(spec.get("name", segment_id)),
                 label=str(spec.get("label", _titleize(segment_key))),
                 description=str(spec.get("description", spec.get("label", ""))),
-                topics=_ensure_list(spec.get("topics"))
-                or _default_topics(str(spec.get("name", segment_id)), fallback="segments"),
+                topics=_default_topics(str(spec.get("name", segment_id)), fallback="segments"),
             )
         )
 
@@ -1268,8 +1290,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                                 variant.get("eligible_time_grains")
                             )
                             or _coarser_time_grains(time_grain),
-                            "excluded_entities": list(excluded_entities),
-                            "excluded_dimensions": list(excluded_dimensions),
+                            "excluded_entities": sorted(excluded_entities),
+                            "excluded_dimensions": sorted(excluded_dimensions),
                             "selection_priority": int(selection.get("priority", 0) or 0),
                             "equivalence_kind": str(equivalence.get("kind", "exact") or "exact"),
                             "model_id": model_id,
@@ -1307,6 +1329,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         meta_contract=meta_contract,
     )
     config = with_published_flags(config)
+    check_one_per_key_names(config)
     _ensure_unique_object_ids(config, path=path)
     _validate_caveat_refs(config, path=path)
     validate_row_filters(config)

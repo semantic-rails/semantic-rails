@@ -19,6 +19,7 @@ from semantic_rails import package_tools, result_values, yaml_loader
 from semantic_rails.ast import PERIOD_PARTIAL as PARTIAL
 from semantic_rails.clock import parse_now
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.request_context import TrustedAttributes, context_from_policy_context
 from semantic_rails.runtime import _time_zone
 from semantic_rails.runtime_parts.responses import output_columns
 from semantic_rails.yaml_loader import Yaml12SafeLoader
@@ -28,8 +29,8 @@ from .conftest import SHOP, VARIANTS, _rows, _runtime, _write_variant
 ROOT = SHOP.parents[3]
 LEDGER = SHOP / "tests" / "answers.yml"
 KEYS = {"kind", "query", "now", "context", "expected_rows", "expected_rows_by_backend", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "partial_query", "known_wrong"}  # fmt: skip
-TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result", "row-grain"}  # fmt: skip
-TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days", "tickets", "ticket_loads", "ticket_audits", "ticket_exports", "shipment_scans", "order_tags", "tags"]  # fmt: skip
+TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result", "row-grain", "one-per-key", "link", "row-filter"}  # fmt: skip
+TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days", "tickets", "ticket_loads", "ticket_audits", "ticket_exports", "shipment_scans", "order_tags", "tags", "room_rows", "people", "room_bookings", "stores"]  # fmt: skip
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
 DECISIONS = {
     "docs/QUERY_CALL.md#select",
@@ -40,6 +41,8 @@ DECISIONS = {
     "docs/QUERY_CALL.md#order_by",
     "docs/QUERY_CALL.md#inline-expression-kinds",
     "docs/QUERY_CALL.md#empty-groups-null-or-0",
+    "docs/QUERY_CALL.md#groups-across-a-link",
+    "docs/PACKAGE_AUTHORING.md#one-row-per-key",
 }
 KINDS = {
     "answer": "query_matches_snapshot",
@@ -61,8 +64,17 @@ def instant(value):
 
 
 def call_arguments(spec):
-    """The arguments an entry sends beside its query: ``now`` and ``context``."""
-    return package_tools._call_arguments(spec)
+    """The arguments an entry sends beside its query: ``now`` and ``context``.
+
+    The ledger asks as an embedding host does, so a context's ``attributes`` arrive as the
+    trusted attributes a host attaches from verified identity (a row filter reads them); a
+    caller's JSON can't carry them."""
+    call = package_tools._call_arguments(spec)
+    context = call["context"]
+    if isinstance(context, dict) and "attributes" in context:
+        trusted = TrustedAttributes(context["attributes"])
+        call["context"] = context_from_policy_context({**context, "attributes": trusted})
+    return call
 
 
 class DecimalLoader(Yaml12SafeLoader):
@@ -213,7 +225,9 @@ def messages(entries, fixture, runtime):
 
 def encode(runtime, spec, reference=None):
     payload = runtime.engine_payload(spec["query"], **call_arguments(spec))
-    compiled = runtime._compile(payload, policy_context=payload["policy_context"])
+    # Output columns are the call's, whoever asks: compiled as package tests do, outside the
+    # caller's row filters, so a reference check never waits on the engine answering.
+    compiled = runtime._compile(payload, policy_context={})
     columns = output_columns(runtime._config, compiled)
     zone = _time_zone(runtime._config, compiled)
     rows = spec.get("expected_rows") or []

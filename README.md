@@ -268,6 +268,9 @@ In the current release:
 - The text filter words refuse search text holding letters that warehouses lower
   differently, such as Greek sigma, `ß` and `İ`, and need ICU on Postgres; see
   [the text words' known limitations](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_CALL.md#known-limitations).
+- A warehouse table named like one of the engine's generated query steps (`leaf_<n>`,
+  `guarded_base`, `projected`, …) can be shadowed by that step: rename the table, or name it
+  with its schema in the model's `relation:` (`analytics.projected`).
 
 ### Roadmap
 

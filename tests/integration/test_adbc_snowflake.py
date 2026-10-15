@@ -153,5 +153,65 @@ def test_snowflake_adbc_row_filter_isolation(adbc, tmp_path):
         with pytest.raises(SemanticLayerError) as caught:
             _as(runtime.query, BY_STORE)
         assert caught.value.code == "POLICY_DENIED"
+        # Lists expand to one qmark per item; each binds a scalar, never a list.
+        both = _as(runtime.query, BY_STORE, customer_id=[A, B])
+        rows = [{key.lower(): value for key, value in row.items()} for row in typed_rows(both)]
+        assert [(r["dimension.rf_order_store_id"], r["revenue"]) for r in rows] == [
+            ("s1", 410),
+            ("s2", 20),
+            ("s3", 300),
+        ]
+        assert "IN (?, ?)" in both["rendered_sql"]
+    finally:
+        runtime.close()
+
+
+def test_snowflake_adbc_optional_lookup_into_a_covered_relation(adbc, tmp_path, monkeypatch):
+    """The proof that lets Snowflake declare ``subquery_in_join_on``: an optional (LEFT)
+    lookup into a relation a row filter covers carries ``fk IN (SELECT …)`` in its ON, and a
+    hidden duplicate owner key (s1 Secret East) must not move a West caller's answer. Until
+    this passes on a credentialed runner, Snowflake refuses that shape."""
+    from semantic_rails.dialects import SnowflakeDialect
+    from tests.semantic_rails.test_row_filters_through_joins import QTY, WEST, _query
+    from tests.semantic_rails.test_row_filters_through_joins import _package as joins_package
+
+    monkeypatch.setattr(SnowflakeDialect, "subquery_in_join_on", True)
+    root = joins_package(tmp_path / "rj")
+    config = load_package_config(str(root))
+    package = replace(
+        config.package,
+        warehouse="snowflake",
+        default_db="",
+        seed=SeedSpec(),
+        connection=ConnectionSpec(kind="snowflake_adbc", options=adbc.options),
+    )
+    runtime = Runtime.from_config(
+        replace(config, package=package), source_path=str(root), package_id="rj"
+    )
+    runtime.set_adapter(adbc)
+    try:
+        for statement in (
+            "CREATE TEMP TABLE store_dim(store_id VARCHAR, store_name VARCHAR, region VARCHAR, sqft NUMBER)",
+            "INSERT INTO store_dim VALUES ('s1', 'Elm', 'West', 100), ('s2', 'Oak', 'West', 200), "
+            "('s3', 'Pine', 'East', 300), ('s1', 'Secret', 'East', 999)",
+            "CREATE TEMP TABLE order_fact(order_id VARCHAR, store_id VARCHAR, customer_id VARCHAR, "
+            "ordered_at TIMESTAMP_NTZ, amount NUMBER)",
+            "INSERT INTO order_fact VALUES ('o1', 's1', 'c1', '2026-01-10', 10), "
+            "('o2', 's1', 'c2', '2026-02-10', 20), ('o3', 's2', 'c1', '2026-02-11', 30), "
+            "('o4', 's3', 'c1', '2026-01-12', 400), ('o6', NULL, 'c2', '2026-02-14', 7)",
+            "CREATE TEMP TABLE order_line(line_id VARCHAR, order_id VARCHAR, qty NUMBER)",
+            "INSERT INTO order_line VALUES ('l1', 'o1', 1), ('l2', 'o1', 2), ('l3', 'o4', 5), "
+            "('l4', 'o3', 1), ('l5', 'o6', 4)",
+        ):
+            adbc.query(statement)
+        result = runtime.query(
+            _query({"qty": QTY}, ["dimension.rj_store_store_name"]), context=WEST
+        )
+        assert "LEFT JOIN order_fact ON (order_fact.store_id IN (" in result["rendered_sql"]
+        rows = [{key.lower(): value for key, value in row.items()} for row in typed_rows(result)]
+        assert sorted((row["dimension.rj_store_store_name"], row["qty"]) for row in rows) == [
+            ("Elm", 3),
+            ("Oak", 1),
+        ]
     finally:
         runtime.close()

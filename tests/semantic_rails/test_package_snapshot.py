@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -83,6 +86,31 @@ def test_unstable_source_capture_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_bytes", read_and_edit)
     with pytest.raises(SemanticLayerError, match="sources changed"):
         capture_package_source(path)
+
+
+REPO = Path(__file__).resolve().parents[2]
+_FINGERPRINT = (
+    "import sys; from semantic_rails.config import load_package_snapshot; "
+    "print(load_package_snapshot(sys.argv[1]).semantic_fingerprint)"
+)
+
+
+def test_semantic_fingerprint_is_the_same_in_every_process():
+    """A set's order changes with the hash seed; the fingerprint must not."""
+    package = REPO / "tests" / "integration" / "correctness" / "shop"
+    fingerprints = {
+        subprocess.run(
+            [sys.executable, "-c", _FINGERPRINT, str(package)],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            cwd=REPO,
+            check=True,
+        ).stdout.strip()
+        for seed in ("0", "1", "2", "3")
+    }
+    assert len(fingerprints) == 1, fingerprints
 
 
 def test_semantic_identity_excludes_deployment_locators(tmp_path):

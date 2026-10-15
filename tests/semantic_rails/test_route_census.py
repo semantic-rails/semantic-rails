@@ -277,13 +277,16 @@ def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_pat
     config = load_package_config(str(pkg))
     census = route_census(config)
     assert census["undecided"] == census["assumed"] == []
-    (crossing,) = census["pass_through"]
-    assert (crossing["source_entity"], crossing["target_entity"]) == (
-        "entity.shop_customer",
-        "entity.shop_customer_history",
-    )
-    assert crossing["details"]["route_basis"] == "only_route"
-    assert [row["entity"] for row in crossing["details"]["through"]] == ["entity.shop_order"]
+    # Customers and stores meet only through their orders.
+    assert [(row["source_entity"], row["target_entity"]) for row in census["pass_through"]] == [
+        ("entity.shop_customer", "entity.shop_customer_history"),
+        ("entity.shop_customer", "entity.shop_store"),
+        ("entity.shop_store", "entity.shop_customer"),
+        ("entity.shop_store", "entity.shop_customer_history"),
+    ]
+    for crossing in census["pass_through"]:
+        assert crossing["details"]["route_basis"] == "only_route"
+        assert [row["entity"] for row in crossing["details"]["through"]] == ["entity.shop_order"]
     if surface == "census":
         return
     if surface == "parse":
@@ -295,22 +298,23 @@ def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_pat
         copy = tmp_path / "shop"
         shutil.copytree(pkg, copy)
         server = create_architect_mcp_server(workspace_root=tmp_path)
-        status = _mcp(server, "project_status", {"project_path": str(copy)})
+        status = _mcp(server, "project_status", {"project_path": str(copy), "full_report": True})
         assert status["route_census"] == census
         assert not any(action.startswith("Decide") for action in status["next_actions"])
         report = status["parse"]
     assert report["ok"]
-    (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
-    assert warning["severity"] == "warning"
-    assert warning["object_ids"] == [crossing["source_entity"], crossing["target_entity"]]
-    assert warning["details"] == crossing["details"]
-    assert warning["message"] == crossing["message"]
+    warnings = [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
+    for warning, crossing in zip(warnings, census["pass_through"], strict=True):
+        assert warning["severity"] == "warning"
+        assert warning["object_ids"] == [crossing["source_entity"], crossing["target_entity"]]
+        assert warning["details"] == crossing["details"]
+        assert warning["message"] == crossing["message"]
 
 
 def test_status_setup_and_promotion_point_at_the_undecided_pairs(tmp_path):
     pkg = _write_package(tmp_path)
     server = create_architect_mcp_server(workspace_root=tmp_path)
-    status = _mcp(server, "project_status", {"project_path": str(pkg)})
+    status = _mcp(server, "project_status", {"project_path": str(pkg), "full_report": True})
     assert _pairs(status["route_census"]["undecided"]) == DIAMOND_UNDECIDED
     assert "route_census" not in status["parse"]
     assert status["next_actions"][0].startswith("Decide the 13 undecided join routes")
@@ -444,7 +448,7 @@ def _with_home_region(project: ArchitectProject) -> dict[str, Any]:
     graph = _graph(project)
     source, target, via, key = _RELATIONSHIPS["owners_home_region"]
     graph["graph"]["relationships"]["owners_home_region"] = {
-        "id": "relationship.owners_home_region",
+        "as": "relationship.owners_home_region",
         "entities": [source, target],
         "cardinality": "many_to_one",
         "via": [via],
@@ -555,7 +559,7 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
 
         graph = _graph(project)
         graph["graph"]["relationships"]["legs_origin_airport"] = {
-            "id": ORIGIN,
+            "as": ORIGIN,
             "entities": ["leg", "airport"],
             "cardinality": "many_to_one",
             "via": ["origin_code"],
@@ -759,7 +763,7 @@ def _small_package(tmp_path, entities, relationships, seed):
         "entities": {key: {"key": ["id"], "model": key} for key in entities},
         "relationships": {
             name: {
-                "id": f"relationship.{name}",
+                "as": f"relationship.{name}",
                 "entities": [source, target],
                 "via": [column],
                 "target": ["id"],
@@ -820,7 +824,7 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
         INSERT INTO d VALUES (1, 'yes'), (2, 'no');
         """,
     )
-    child_model = {"model": {"id": "c", "relation": "c", "keys": {"primary": ["id"]}}}
+    child_model = {"model": {"id": "c", "relation": "c", "entities": {"c": {"expr": "id"}}}}
     (pkg / "models/c.yml").write_text(yaml.safe_dump(child_model))
     project = ArchitectProject(pkg, workspace_root=tmp_path)
     graph = _graph(project)
@@ -846,7 +850,7 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
     gold = answer()
     assert gold == [(100,)]
     relationship = {
-        "id": "relationship.ac",
+        "as": "relationship.ac",
         "entities": ["a", "c"],
         "cardinality": cardinality,
         "allowed_directions": ["forward"],
@@ -996,7 +1000,7 @@ def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path, decide):
     relationship = graph["graph"]["relationships"].pop("accounts_branch_region")
     graph["graph"]["relationships"]["accounts_billing_region"] = {
         **relationship,
-        "id": "relationship.accounts_billing_region",
+        "as": "relationship.accounts_billing_region",
         "via": ["billing_region_id"],
     }
     if decide:
@@ -1155,7 +1159,7 @@ def test_an_invalid_intermediate_write_cannot_erase_the_branch_region_baseline(t
     source, target, via, key = _RELATIONSHIPS["invoices_issued_region"]
     relationships = graph["graph"]["relationships"]
     relationships["invoices_issued_region"] = {
-        "id": "relationship.invoices_issued_region",
+        "as": "relationship.invoices_issued_region",
         "entities": [source, target],
         "cardinality": "many_to_one",
         "via": [via],
@@ -1259,7 +1263,7 @@ def test_an_explicit_shorter_row_keeps_both_answers_and_follows_the_loader(tmp_p
     relative = "package.yml" if layout == "inline" else "graph.yml"
     document = yaml.safe_load((pkg / relative).read_text())
     document["graph"]["relationships"]["owner_district"] = {
-        "id": "relationship.owner_district",
+        "as": "relationship.owner_district",
         "entities": ["owner", "district"],
         "via": ["district_id"],
         "target": ["id"],
@@ -1293,7 +1297,7 @@ def test_an_edited_row_that_moves_an_inherited_pair_requires_its_own_decision(tm
     project.record_route_decision(**_pin(SMALL_ACCOUNT, DISTRICT, SMALL_BRANCH))
     graph = _graph(project)
     graph["graph"]["relationships"]["owner_district"] = {
-        "id": "relationship.owner_district",
+        "as": "relationship.owner_district",
         "entities": ["owner", "district"],
         "via": ["district_id"],
         "target": ["id"],
@@ -1326,7 +1330,7 @@ def test_package_census_impact_and_guard_ignore_query_route_overrides(tmp_path, 
     for pkg, route in ((base, SMALL_BRANCH), (head, SMALL_HOME)):
         graph = yaml.safe_load((pkg / "graph.yml").read_text())
         graph["graph"]["relationships"]["owner_district"] = {
-            "id": "relationship.owner_district",
+            "as": "relationship.owner_district",
             "entities": ["owner", "district"],
             "via": ["district_id"],
             "target": ["id"],
@@ -1405,7 +1409,7 @@ def test_batch_route_swap_refuses_every_file_without_recorded_decision(tmp_path,
     relationship = graph["graph"]["relationships"].pop("accounts_branch_region")
     graph["graph"]["relationships"]["accounts_billing_region"] = {
         **relationship,
-        "id": "relationship.accounts_billing_region",
+        "as": "relationship.accounts_billing_region",
         "via": ["billing_region_id"],
     }
     revision, before = project.revision(), _files_and_receipts(project)

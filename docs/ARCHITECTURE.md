@@ -170,7 +170,7 @@ Measure rules:
 
 - measures are modeled in the owning model file
 - `expr` is a typed AST mapping or simple arithmetic string parsed into AST
-- there is no `primitive:` shorthand and no separate `snapshot_policy:` field; authors declare an explicit `accumulation:` block. Authored model relations use `relation`, dimensions use `kind`, time entries use `class`, metrics use `temporal_role`, and segments use `basis_metric`; the loader refuses alternate spellings as unknown keys. For stock-like measures, the snapshot policy lives nested as `accumulation: { kind: stock, snapshot: end_of_period }`.
+- there is no `primitive:` shorthand and no separate `snapshot_policy:` field; authors declare an explicit `accumulation:` block. Authored model relations use `relation`, dimensions use `kind`, time entries use `class`, metrics use `temporal_role`, and segments use `basis_metric`; measures name their clocks with `times:` and their default aggregation with `default_agg:`, dimensions list their values with `domain:`, every object but a model keeps a public id with `as:` (never `id:`), and a model binds its primary entity through `graph.entities.<x>.model` and its `entities:` block; the loader refuses alternate spellings as unknown keys. For stock-like measures, the snapshot policy lives nested as `accumulation: { kind: stock, snapshot: end_of_period }`.
 - `accumulation: { kind: stock }` lowers to semi-additive behavior; `disallowed_aggregations:` removes any aggregation kind that does not make business sense for the measure.
 
 ### Relationship
@@ -582,12 +582,23 @@ adapter concerns. Legacy direct `query(sql)` calls use the same preparation once
 A statement may carry typed parameter slots that the runtime binds per request
 from trusted attributes; only adapters that bind values separately execute it
 (see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)). Row-filter policies produce
-them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the one
-ordinary scan and every engine-tagged observation or coverage scan of a filtered relation.
-It denies other repeated reads, joins, other relations and rollups (routing is off under
-a row filter). DuckDB binds `?` directly; Postgres preparation finalizes slots as
-`$1`, `$2`, … and ADBC validates them before connecting. Other adapters deny
-parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
+them. `semantic_rails.row_filter_visibility` computes, once per package, which models each
+filter restricts: its own relation, and every model whose package route reaches it through
+N:1 owners on single-column keys (anything ambiguous, composite, temporal or inconsistent
+is refused under the filter). `Visibility.predicate` in `semantic_rails.row_filters` is the
+one builder of a relation's visibility predicate: its own `<column> = ?` (or
+`<column> IN (?, …)`) AND, per owner, `fk IN (SELECT key FROM owner WHERE <owner's
+predicate>)`. After lowering, `enforce_row_filters` puts it on every occurrence of a
+restricted relation where the occurrence enters its scope (the WHERE for FROM, INNER and
+CROSS, the ON for LEFT; RIGHT and FULL are refused there), and `verify_row_filters` checks
+the tree by value and refuses anything else that could read a restricted row (unmodeled
+relations, table functions other than the day series, restricted reads inside relation
+pipelines, shadowing CTE names). Bind, compile preparation and every runtime probe run the
+check; a plan pre-check in `compiler_parts/binding.py` can only refuse (uncovered roots,
+lookups along a route that isn't the owner's), never authorize. Slots are read from the
+executed render in text order, and rollup routing is off under a row filter. DuckDB binds
+`?` directly; Postgres preparation finalizes slots as `$1`, `$2`, … and ADBC validates
+them before connecting. Other adapters deny parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
 observation determines whether zero is defined, each sum's leaf counts the rows it read so
 zero goes only to a group with none (never to rows whose amounts are all NULL; a leaf without
 the count is refused). A query with a distribution branch, and a metric predicate's source

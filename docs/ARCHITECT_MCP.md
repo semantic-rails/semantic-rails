@@ -101,16 +101,31 @@ package with one model, its count and amount metrics, an example, a package test
    logical mutation and reuse that key only when retrying the identical call.
    `upsert_model` with `primary_key: []` writes a row-grain model: no graph entity, an
    `entities` block of its parents only. It is refused while a graph entity named `entity_key`
-   exists.
+   exists. `entities` (`{parent: {}}`, or `{parent: {expr: column}}` when the column is named
+   differently from the parent's key) merges parent entities into any model's `entities` block.
+   `one_per_key: true` writes a [one-per-key model](PACKAGE_AUTHORING.md#one-row-per-key)
+   (refused with `primary_key: []`); `false` removes it, and `replace` keeps it.
    `upsert_relationship` relates `from_entity` to `to_entity`: `columns` on `from_entity`'s
    model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
-   `expr` when named differently). That is a many-to-one relationship; `cardinality:
-   one_to_one` also records it in `graph.relationships`. Relate one-to-many from the many
+   `expr` when named differently). Name either entity by its key (`order`) or its id
+   (`entity.shop_order`); `from_entity` may be a row-grain model, by its model id or its entity
+   id, and its block then lists only its parents. That is a many-to-one relationship; `cardinality:
+   one_to_one` also records it in `graph.relationships` (not from a row-grain model, whose rows
+   nothing looks up). A relationship into a row-grain model is refused with the call that writes
+   it from that model's side. Relate one-to-many from the many
    side, and many-to-many through a bridge model related to each side. A model that already
    relates `to_entity` in a legacy `joins:` or `keys.foreign:` block is refused, since that
-   block would override the columns, and so is a pair that may have several roles
-   (role-playing keys: several `graph.relationships` entries in either direction, or an entry
-   with its own `via` beside the model's foreign key): edit those in `graph.yml`.
+   block would override the columns.
+   `name` writes one role of the pair as its own `graph.relationships.<name>` entry
+   (`entities`, `cardinality`, `via: columns`, `target`: the key) and leaves the model as it
+   is: a second role beside the model's foreign key (an event's buyer and its seller, both
+   customers), or that role again with new columns. A role on columns another role of the pair
+   already joins on, or named like the model's foreign key (`<model>_<entity>`), is refused
+   naming that relationship. A pair that may have several roles
+   (several `graph.relationships` entries in either direction, or an entry with its own `via`
+   beside the model's foreign key) is refused without `name`. A second role makes the pair's
+   questions ambiguous: pass `keep_existing_routes: true` to keep the first role as the
+   default (see [Two roles on one pair](PACKAGE_AUTHORING.md#two-roles-on-one-pair)).
    To add a relationship while preserving existing routes, pass `keep_existing_routes: true`.
    The same transaction records each moved pair's previous path and confirms newly ambiguous
    own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if a previously
@@ -130,6 +145,18 @@ package with one model, its count and amount metrics, an example, a package test
    the Account's Owner."). Preview it with `dry_run: true` like every other write.
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
+
+Writes, `validate_project`, `project_status` and `promotion_check` answer with a summary that an
+MCP client shows whole, whatever the package's size: each `warnings` list as `warning_counts` by
+code and 10 of its warnings without their `details`, the first of each code before any repeat, in
+report order (`warnings_omitted` counts the rest), the
+route census as its `counts` and its first 3 `undecided` pairs (whole, with the options that
+record them), `project_status` `files` without those under dot-directories (transaction
+receipts), only the failing `probes`, `examples` and `tests`, and file `changes` with their
+`diff` but no `proposed_content` (diffs share a 12,000-character budget; a cut one says
+`diff_truncated`). Errors, revisions, `changed_files`, and refusals' `details` (such as
+`CONFIG_CONFLICT`'s `retry`) are never cut. The `report` field says so. `full_report: true`
+returns the whole report.
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
    `promotion_check` with `compare_path` or `base_ref` when an environment gate matters.
 
@@ -165,12 +192,17 @@ never create, seed or change it.
   and a survivor is confirmed never null and unique on the whole relation, grouped by its
   columns as joins compare them (so a case-insensitive collation's `a` and `A` repeat, even
   under a declared primary key); a rejection moves on to the next. The sample is a temporary
-  table, dropped afterwards. One 60-second deadline covers sampling, profiling and the search;
-  out of time, the draft has no key. `key_search.status` says how it ended:
+  table, dropped afterwards. One 60-second deadline covers sampling, profiling and the search.
+  The deadline is checked between statements, so one long statement may run past it; a search
+  that ends past it has no key, though one whose proof ended in time may finish its cleanup
+  after the deadline and still report `confirmed`. `key_search.status` says how it ended:
   `confirmed`, `none_found` (with the number `checked`), `timed_out` (with the `unconfirmed`
-  sets, which you may declare yourself) or `empty_table`. Only a confirmed key is suggested;
-  otherwise the draft is a [row-grain model](PACKAGE_AUTHORING.md#row-grain-models)
-  (`primary_key: []`) with a `<entity>_rows` count of its rows. A declared foreign key is
+  candidate key sets, most likely first, none of them checked against the whole relation: check
+  a set is never null and unique before you declare it) or `empty_table` (no rows and no
+  declared primary key; no row contradicts a declared one, so an empty table keeps it). Only a
+  confirmed key is suggested; otherwise the draft is a
+  [row-grain model](PACKAGE_AUTHORING.md#row-grain-models) (`primary_key: []`) with a
+  `<entity>_rows` count of its rows. A declared foreign key is
   authoritative. Otherwise a key-like column (`id`, or ending in `_id`, `_key`, `_code`, `_sk`)
   links to each other relation whose declared single-column primary key has the same name and a
   compatible type; values are not compared, so such a link is `medium`, or `low` when several
@@ -356,7 +388,8 @@ same report: `rules` (each with its tier and hits), `proof`, `choices_pending`, 
 Which route between two entities a question means is a business definition (see
 [the route census](PACKAGE_AUTHORING.md#route-census-and-route-changes)).
 
-- `project_status` returns `route_census` once, outside `parse`: `undecided` lists the
+- `project_status` (with `full_report: true`; by default its counts and first pairs) returns
+  `route_census` once, outside `parse`: `undecided` lists the
   entity pairs a question can need that are refused until a `graph.path_preferences` row records
   their route, each with the `AMBIGUOUS_PATH` refusal's `details.clarification.options`
   (pass an option's `decision` to `record_route_decision`); `assumed` lists the multi-route pairs

@@ -53,6 +53,8 @@ PINS: dict[str, dict[str, int]] = {
         "renderer.py": 9,
         "repl/authoring.py": 1,
         "runtime_parts/answer_warnings.py": 1,
+        # The upgrade rule names the not_in expression kind whose retired `left` it rewrites.
+        "upgrade/rules_expressions.py": 1,
     },
     "identity rebuilt outside ingress": {
         "cache.py": 1,

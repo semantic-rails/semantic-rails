@@ -433,3 +433,23 @@ def test_a_jaffle_preview_lists_the_examples_that_name_a_metric(tmp_path: Path) 
     ):
         project.remove_object(kind="model", key="customers", dry_run=True)
     assert project_revision(tmp_path / "jaffle_shop") == before
+
+
+def test_an_impact_that_cant_load_names_the_project_not_its_staging_copy(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import semantic_rails.architect_service as service
+
+    load = service.load_package_snapshot
+
+    def staged_copy_fails(path: str, *args: Any, **kwargs: Any) -> Any:
+        if "semantic-rails-architect-preview-" in str(path):
+            raise SemanticLayerError("INVALID_CONFIG", f"{path}: does not load")
+        return load(path, *args, **kwargs)
+
+    monkeypatch.setattr(service, "load_package_snapshot", staged_copy_fails)
+
+    report = _project(workspace).remove_object(kind="dimension", key="status", dry_run=True).report
+
+    error = report["impact"]["error"]
+    assert error.startswith(str(workspace / "shop")) and "preview-" not in error

@@ -230,6 +230,14 @@ def valid_values_payload(
         }
     if not allow_live_query:
         hint_message = _valid_values_lookup_hint(False)
+        # Exactly how to get the values: this call again with one more argument, which a
+        # first call may pass too (with no query seed, a declared domain still answers it
+        # without a warehouse read).
+        retry_message = (
+            f"'{dimension_id}' has no declared value domain, so no values were read. Send this "
+            "call again with allow_live_query: true to read its values from the warehouse; "
+            "a first call that passes it gets them at once."
+        )
         return {
             "ok": False,
             "status": "needs_live_query",
@@ -252,13 +260,13 @@ def valid_values_payload(
                 {
                     "code": "VALID_VALUES_NO_DOMAIN",
                     "severity": "warning",
-                    "message": hint_message,
+                    "message": retry_message,
                 }
             ],
             "recovery_hints": [
                 {
                     "kind": "enable_live_query",
-                    "message": hint_message,
+                    "message": retry_message,
                     "patch": {"allow_live_query": True},
                 }
             ],

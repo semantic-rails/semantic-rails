@@ -76,8 +76,8 @@ CANDIDATE_CASES = {
         "Storefront session",
         "other_routes",
         [
-            {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.orders_customer", "relationship.order_to_customer_history"]},
-            {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order", "relationship.order_to_customer_history"]},
+            {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.orders_customer", "relationship.jaffle_order_customer_history"]},
+            {"from": CUSTOMER, "to": HISTORY, "via": ["relationship.storefront_sessions_customer", "relationship.storefront_sessions_order", "relationship.jaffle_order_customer_history"]},
         ],
     ),
 }  # fmt: skip

@@ -280,7 +280,9 @@ def _temporal_tables(config: PackageConfig) -> dict[str, frozenset[str]]:
 
 
 # Functions whose result has their argument's type: MIN(day) is a date when day is.
-_TYPE_PRESERVING = frozenset({"MIN", "MAX", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE"})
+_TYPE_PRESERVING = frozenset(
+    {"MIN", "MAX", "SINGLE_VALUE", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE"}
+)
 
 
 # A table alias's lookup from a column it reads to that column's lineage (None if unknown).
@@ -542,6 +544,10 @@ def _aggregate_expr(spec: Any, *, warehouse: str) -> SqlExpr:
     if not function:
         raise SemanticLayerError("INVALID_CONFIG", "group_by aggregate requires function")
     expr_raw = config.get("expr", "*")
+    if function == "SINGLE_VALUE":  # the group's one value, NULL where it holds two
+        return dialect_for_warehouse(warehouse).single_value(
+            _expr(expr_raw, warehouse=warehouse), boolean=bool(config.get("boolean"))
+        )
     if expr_raw == "*":
         return SqlCall(function, [SqlLiteral(1)], distinct=bool(config.get("distinct", False)))
     return SqlCall(
@@ -1340,6 +1346,17 @@ def _required_relation_ctes(config: PackageConfig, query: SqlSelect) -> list[Sql
             seen.add(cte.name)
             ctes.append(cte)
     return ctes
+
+
+def pipeline_cte_names(config: PackageConfig) -> frozenset[str]:
+    """Every CTE name ``attach_relation_ctes`` may add: each pipeline's output and steps."""
+    if not config.relations:
+        return frozenset()
+    lowered = _lower_relations_for_config(config).values()
+    return frozenset(
+        {row.relation.output_name for row in lowered}
+        | {name for row in lowered for name in row.cte_names}
+    )
 
 
 def attach_relation_ctes(config: PackageConfig, query: SqlSelect) -> SqlSelect:

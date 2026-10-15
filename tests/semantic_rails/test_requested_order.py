@@ -10,9 +10,10 @@ from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 
 ORDERS = {"measure": "measure.jaffle.order_count"}
+# The opening balance: a closing-day balance's share by entity sets is refused.
 INVENTORY = {
     "kind": "scoped_aggregate",
-    "measure": "measure.jaffle.inventory_on_hand_eop",
+    "measure": "measure.jaffle.inventory_on_hand_sop",
     "aggregation": "sum",
 }
 # Each lowering path that builds the final ORDER BY: the requested field, its rendered
