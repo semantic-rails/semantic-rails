@@ -89,6 +89,7 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
             continue
         entry_path = path[:-1]
         entry = _at(files.documents[file], entry_path)
+        suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
         # Each site the rewrite can't make, as (its path, why).
         stops = [((*path, *_site(flag["path"])), flag["detail"]) for flag in result.kept_flags]
         stops += [
@@ -100,7 +101,6 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
             if FLAG_CODES[flag["code"]][0] == REVIEW
         ]
         if entry.get("kind") == "validate_fails_with_code":
-            suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
             stops.append(
                 (
                     path,
@@ -158,7 +158,6 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
                     f"[{part}]" if isinstance(part, int) else f".{part}"
                     for part in site[len(entry_path) :]
                 ).lstrip(".")
-                suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
                 message = (
                     f"{where}: {'; '.join(reasons)}. Hint: start from {suggestion}; "
                     "resolve the flagged scope or meaning by hand before using this call"
