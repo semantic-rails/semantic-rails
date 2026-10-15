@@ -296,10 +296,10 @@ NEW_QUERY = {"select": ["measure.shop.total_amount"]}
 def test_query_field_coverage_matches_the_test_kind_registry():
     from semantic_rails.architect_service import _TEST_FIELDS
 
-    assert QUERY_FIELDS == {
+    assert {
         kind: tuple(key for key in fields if key.endswith("query"))
         for kind, fields in _TEST_FIELDS.items()
-    }
+    } == QUERY_FIELDS
 
 
 @pytest.mark.parametrize("kind,fields", QUERY_FIELDS.items())
@@ -453,4 +453,71 @@ def test_answer_changing_translations_require_a_hand_edit(tmp_path, op, value):
         idempotency_key="changed-meaning",
     )
     assert not report["ok"]
+    assert _contents(project) == before
+
+
+@pytest.mark.parametrize("field", ["metric_query", "expected_query"])
+@pytest.mark.parametrize("call", [{"now": NOW}, {"audience": "finance"}])
+def test_comparison_call_arguments_need_a_hand_edit(tmp_path, field, call):
+    from semantic_rails.architect_scaffold import dump_project_yaml
+
+    old = {**OLD_QUERY, "policy_context": call}
+    spec = {
+        "kind": "metric_equals_query",
+        "metric_query": NEW_QUERY,
+        "expected_query": NEW_QUERY,
+        field: old,
+    }
+    project = _package(
+        tmp_path,
+        {
+            **UPGRADED,
+            "examples/core.yml": "examples: {}\n",
+            "tests/core.yml": dump_project_yaml({"tests": {"amount": spec}}),
+        },
+    )
+    result = plan(PackageFiles(project), RULES, {})
+    assert result.pending
+    assert not result.files
+    assert any("both queries" in f.message and "hand" in f.message for f in result.pending)
+
+
+@pytest.mark.parametrize("field", ["metric_query", "expected_query"])
+def test_proof_refuses_a_changed_comparison_answer(tmp_path, monkeypatch, field):
+    from semantic_rails.architect_scaffold import dump_project_yaml
+    from semantic_rails.upgrade.model import Edit, Finding, Rule
+    from tests.semantic_rails.test_project_upgrade import _with_rules
+
+    def change_answer(files):
+        for file, path, query in files.queries():
+            if path[-1] == field and query == NEW_QUERY:
+                edit = Edit(file, "replace", (*path, "select", 0), value="measure.shop.event_count")
+                yield Finding("change-answer", file, 1, path, "select", (edit,))
+
+    _with_rules(
+        monkeypatch,
+        (Rule("change-answer", "0.3.2", "same_meaning", "Wrong on purpose", change_answer),),
+    )
+    spec = {"kind": "metric_equals_query", "metric_query": NEW_QUERY, "expected_query": NEW_QUERY}
+    project = _package(
+        tmp_path,
+        {
+            **UPGRADED,
+            "examples/core.yml": "examples: {}\n",
+            "tests/core.yml": dump_project_yaml({"tests": {"amount": spec}}),
+        },
+    )
+    before = _contents(project)
+    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
+    report = _architect(
+        tmp_path,
+        "upgrade_project",
+        project_path=str(project),
+        dry_run=False,
+        expected_revision=preview["revision"],
+        idempotency_key="changed-answer",
+    )
+    assert not report["ok"], report
+    assert report["error"]["code"] == "CONFIG_CONFLICT"
+    assert report["error"]["details"]["difference"]["query"].endswith(field)
     assert _contents(project) == before
