@@ -73,8 +73,10 @@ FLAG_CODES: dict[str, tuple[str, str]] = {
     ),
     "OPEN_ENDED_WINDOW": (REVIEW, "a start-only window gains an upper bound at now"),
     "ALIGNMENT_COLLAPSED": (REVIEW, "a predicate time_alignment folded into an over word"),
+    "NAMED_WINDOW_NO_FILL": (REVIEW, "fill: false asked for no empty periods"),
+    "NAMED_WINDOW_LIMIT": (REVIEW, "a limit can pick a period that now answers 0"),
     # Sites translated with a note.
-    "NAMED_WINDOW": (INFO, "a named window, which answers every period"),
+    "NAMED_WINDOW": (INFO, "a named window answers every period; one with no data answers 0"),
     "NAMED_WINDOW_FILL_DROPPED": (INFO, "fill on a named window is implied"),
     "EXPLAIN_DROPPED": (INFO, "explain: true left the body"),
     "REF_POSITION_UNLISTED": (INFO, "a reference in a slot the translation leaves as it is"),
@@ -981,17 +983,29 @@ def _translate_time(time: Any, path: str, ctx: _Ctx) -> Any:
         elif key == "fill" and named:
             if value:
                 ctx.flag("NAMED_WINDOW_FILL_DROPPED", at, "fill is implied by a named window")
+            elif value is False and ctx.grain:
+                ctx.flag(
+                    "NAMED_WINDOW_NO_FILL",
+                    at,
+                    "fill: false asked for no empty periods, but a named window answers every "
+                    "period and one with no data answers 0; edit by hand",
+                )
         elif not (key in ("start", "end") and value is None):
             out[key] = value
     if not out.get("grain") and not {"start", "end", "last", "this"} & set(out):
         ctx.flag("TIME_NEEDS_GRAIN_OR_WINDOW", path, "time with only temporal_role is refused")
     if start is not None and end is not None:
-        ctx.flag("NAMED_WINDOW", path, "start and end: a named window, which answers every period")
+        ctx.flag(
+            "NAMED_WINDOW",
+            path,
+            "start and end: a named window answers every period; one with no data answers 0",
+        )
     elif span is not _MISSING:
         ctx.flag(
             "NAMED_WINDOW",
             path,
-            "range.last became last: a named window, which answers every period",
+            "range.last became last: a named window answers every period; "
+            "one with no data answers 0",
         )
     return out
 
@@ -1392,6 +1406,13 @@ def translate_query(query: Any) -> Result:
             if value is not None:
                 if value == 0 and not isinstance(value, bool):
                     ctx.flag("LIMIT_ZERO", key, "limit 0 is refused")
+                elif ctx.grain and any(flag["code"] == "NAMED_WINDOW" for flag in ctx.flags):
+                    ctx.flag(
+                        "NAMED_WINDOW_LIMIT",
+                        key,
+                        "a limit over a named window can pick a period with no data, which now "
+                        "answers 0; edit by hand (having > 0 keeps only periods with data)",
+                    )
                 out[key] = value
         elif key in ("observation_scope", "routes"):
             if value is not None:

@@ -12,6 +12,7 @@
   (`!=` or `NOT IN` keeps unknown rows; a text word replacing `LIKE` ignores case) and sites
   with no current form stop the upgrade at their file, line and path. Nothing is written
   until the hand edits are resolved. Edits keep the lines and comments they don't change.
-- Contextual predicates and start-only time windows require hand edits: an entity filter
-  loses the query's grouping context and inherited filters, and a start-only window gains
-  an upper bound at `now`. The preview includes the suggested call and reason; nothing is written.
+- Contextual predicates, start-only time windows, and windows with a grain that set
+  `fill: false` or carry a `limit` require hand edits: an entity filter loses the query's
+  grouping context and inherited filters, a start-only window gains an upper bound at `now`,
+  and a named window answers every period, one with no data as 0. The preview includes the suggested call and reason; nothing is written.

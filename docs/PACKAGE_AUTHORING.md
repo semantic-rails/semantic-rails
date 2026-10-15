@@ -3412,8 +3412,9 @@ The report gives each rule a tier describing what was actually checked:
   entry's `now` and `context` (a fixed clock of `2026-01-01T00:00:00Z` when no clock is given).
   It never executes data or compares legacy answers, and does not certify these translations.
   Contextual predicates (whose grouping context and inherited filters would be lost), start-only
-  windows (which would gain an upper bound at `now`), and case-changing `LIKE` translations
-  require hand edits with suggested calls and reasons; nothing is written until resolved.
+  windows (which would gain an upper bound at `now`), windows with a grain that set `fill: false`
+  or carry a `limit` (a named window answers every period, and a period with no data answers 0,
+  which a limit can pick), and case-changing `LIKE` translations require hand edits with suggested calls and reasons; nothing is written until resolved.
   Other rules for refused forms are also `translated`: a rule with effect `retired` follows a
   release that removed the meaning and claims no equivalence. When the package does not load
   as authored, the baseline is the shortest prefix, in registry order, of applicable retired
