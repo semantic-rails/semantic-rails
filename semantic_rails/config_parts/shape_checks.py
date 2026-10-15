@@ -15,7 +15,7 @@ def add_error(errors: list[str], message: str) -> None:
 
 
 # Canonical enum for authored `dimension.kind:` values. Kept in sync with
-# `_map_dimension_kind` in config.py and the supported set listed in
+# `_map_dimension_kind` in model_rows.py and the supported set listed in
 # docs/PACKAGE_AUTHORING.md. `id` is intentionally excluded — key
 # dimensions auto-create from graph entity keys (rejected separately).
 _VALID_DIMENSION_KINDS: frozenset[str] = frozenset(
@@ -54,7 +54,7 @@ _VALID_TIME_CLASSES: frozenset[str] = frozenset(
 # behavior (additive semantics, empty expression) — fail loudly instead.
 _VALID_MEASURE_KINDS: frozenset[str] = frozenset({"aggregate", "entity_count", "lookup"})
 _VALID_ACCUMULATION_KINDS: frozenset[str] = frozenset({"event", "flow", "stock", "population"})
-# What the loader reads from an `accumulation:` block (config.py `_normalize_accumulation`).
+# What the loader reads from an `accumulation:` block (measure_rows.py `_normalize_accumulation`).
 _ACCUMULATION_KEYS: frozenset[str] = frozenset({"kind", "snapshot"})
 # The loader reads any other snapshot as end_of_period, so a typo would read the closing balance.
 _VALID_ACCUMULATION_SNAPSHOTS: frozenset[str] = frozenset({"start_of_period", "end_of_period"})
@@ -64,7 +64,7 @@ _REPLACES_DEFAULT = "a measure's `accumulation:` replaces `defaults.measure.accu
 # it does not read, so a typo'd key (`agg:` for `default_agg:`) silently
 # changes behavior — the same "worst class of authoring bug" the enum
 # checks above exist for. Each set is the union of every key the loader
-# (config.py / config_parts/package_loader.py) actually reads for that
+# (config_parts/package_loader.py and the *_rows.py parsers) actually reads for that
 # shape, plus the `id`/`as`/`name` override escape hatches.
 _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
     {
@@ -220,7 +220,7 @@ _GRAPH_RELATIONSHIP_KEYS: frozenset[str] = frozenset(_RELATIONSHIP_PASSTHROUGH) 
     "rollup_safe",
 }
 _ROLLUP_SAFE_KEYS: frozenset[str] = frozenset({"reverse"})
-# What the loader reads from a relation spec (config.py `_parse_relations`).
+# What the loader reads from a relation spec (model_rows.py `_parse_relations`).
 _RELATION_KEYS: frozenset[str] = frozenset(
     {"id", "name", "label", "description", "meta", "steps", "output_name", "columns"}
 )
@@ -902,7 +902,7 @@ def _check_metric(
 
 def _accumulation_parts(accumulation: Any) -> tuple[str, str | None]:
     """The kind and snapshot the loader reads from an ``accumulation:`` value
-    (config.py ``_normalize_accumulation``); the snapshot is None when the value sets none."""
+    (measure_rows.py ``_normalize_accumulation``); the snapshot is None when the value sets none."""
     if not isinstance(accumulation, dict):
         return str(accumulation or "").strip().lower(), None
     kind = str(accumulation.get("kind", "") or "").strip().lower()

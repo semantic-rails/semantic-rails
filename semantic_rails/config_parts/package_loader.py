@@ -275,7 +275,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         # the column is already declared).
         existing_columns = {str((dimensions[dk] or {}).get("column", dk)) for dk in dimensions}
         # Also exclude columns covered by the times: block — they get a
-        # backing dimension created by the temporal-roles pass in config.py
+        # backing dimension created by the temporal-roles pass in package_rows.py
         # (using the role's `dimension_id:` if authored).
         for tk, tv in (model.get("times") or {}).items():
             if isinstance(tv, dict):
@@ -466,7 +466,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                     edge_spec[passthrough] = spec[passthrough]
             # `allowed_directions:` on the graph.relationships block maps
             # to the join-spec `traversal:` field (the canonical reader
-            # in config.py reads `traversal:` when populating
+            # in package_rows.py reads `traversal:` when populating
             # RelationshipConfig.allowed_directions). Author-facing field stays
             # `allowed_directions:`; we rename here at the translator boundary.
             if "allowed_directions" in spec:

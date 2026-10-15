@@ -216,7 +216,6 @@ _BLOCK_FILES = (
 # loader's files and object directories, and the examples and tests the package tools run.
 _PACKAGE_ROOT_FILES = frozenset({"package.yml", *(name for name, _ in _BLOCK_FILES)})
 _OBJECT_DIRS = ("models", "relations", "metrics", "segments")
-_PACKAGE_ROOT_DIRS = PACKAGE_SOURCE_DIRS
 
 
 def _unread_root_errors(
@@ -251,7 +250,7 @@ def _unread_root_errors(
     unread: set[tuple[str, bool]] = set()
     for source in sources:
         top, *rest = Path(source).parts
-        known = _PACKAGE_ROOT_DIRS if rest else _PACKAGE_ROOT_FILES
+        known = PACKAGE_SOURCE_DIRS if rest else _PACKAGE_ROOT_FILES
         if (
             source.endswith((".yml", ".yaml"))
             and not top.startswith(("_", "."))
@@ -264,7 +263,7 @@ def _unread_root_errors(
             fix = (
                 f"write these {name} in {name}.yml"
                 if name in ("policies", "caveats")
-                else f"move them under {', '.join(f'{d}/' for d in sorted(_PACKAGE_ROOT_DIRS))}"
+                else f"move them under {', '.join(f'{d}/' for d in sorted(PACKAGE_SOURCE_DIRS))}"
                 " or start the directory name with '_'"
             )
         else:
