@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.benchmark_plan import _compile_after_plan, _gate_exit_code
+from scripts.benchmark_plan import _compile_after_plan, _gate_exit_code, _load_cases, _run_case
+from semantic_rails.planner import plan_payload
 
 PAYLOAD = {"status": "ok", "best": {"query": {"select": [{"metric": "m"}]}}}
+
+
+@pytest.fixture()
+def runtime(runtime_factory):
+    return runtime_factory("jaffle_shop")
 
 
 class FakeRuntime:
@@ -99,3 +105,53 @@ def test_cache_miss_stops_repeating() -> None:
     assert runtime.calls == 1
     assert probe["cache_hit"] is False
     assert probe["elapsed_ms"] == pytest.approx(40)
+
+
+def test_public_plan_warms_compile_cache(runtime) -> None:
+    payload = plan_payload(runtime, intent="total orders")
+    assert payload["status"] == "ok"
+
+    probe = _compile_after_plan(runtime, payload, repeats=1)
+
+    assert probe["ok"], probe
+    assert probe["cache_hit"], probe
+
+
+@pytest.mark.parametrize(
+    ("name", "status", "code"),
+    [
+        ("ordered_vs_delivered_revenue", "unrealizable", "PLAN_UNCONNECTED"),
+        ("ambiguous_customer_status", "unrealizable", "PLAN_UNCONNECTED"),
+        ("historical_revenue_by_segment", "low_confidence", "PLAN_INTENT_COVERAGE_GAP"),
+        (
+            "signup_to_send_adoption_for_high_order_rate_stores",
+            "low_confidence",
+            "PLAN_UNASKED_GROUPING",
+        ),
+    ],
+)
+def test_held_case_contract(runtime, name, status, code) -> None:
+    case = next(case for case in _load_cases() if case["name"] == name)
+    payload = plan_payload(runtime, intent=case["intent"])
+    assert payload["status"] == status
+    assert payload["why"]["code"] == code
+    assert "execute" not in payload.get("next", {}).get("ready_for", [])
+    assert case["expected"] == "clarify"
+    assert case["expected_status"] == status
+    assert case["forbid_ready_for_execute"]
+    row = _run_case(runtime, case)
+    assert row["missing_expected_ids"] == []
+    assert row["missing_expected_query_patch"] == []
+    assert not row["unexpected_execute_ready"]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_exit"),
+    [("unrealizable", 0), ("out_of_scope", 0), ("ok", 1), ("low_confidence", 1)],
+)
+def test_size_gate_requires_a_smaller_draft_only_when_one_can_be_offered(
+    status, expected_exit
+) -> None:
+    _, rows = _gate([3], [True])
+    rows[0].update(status=status, full_status=status, best_bytes=20, full_bytes=20)
+    assert _gate_exit_code(rows, max_best_bytes=6_500, max_cache_hit_p95_ms=25) == expected_exit
