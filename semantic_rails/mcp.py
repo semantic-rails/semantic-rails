@@ -38,8 +38,10 @@ from .request_context import (
     request_context_payload,
 )
 from .request_payload import (
+    DISCOVER_KIND_NAMES,
     checked_discover_kinds,
     parse_string_list,
+    singular_kinds,
 )
 from .request_payload import (
     clean_request_id as _clean_request_id,
@@ -399,20 +401,18 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="discover",
         description=(
-            "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). "
-            "Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; "
-            f"empty terms list ids per kind instead, {_DISCOVER_ID_PAGE} at a time "
-            "(limit, offset). Default: slim cards (id, label, "
-            "description); compact keeps slim cards and omits blocked candidates. "
-            "Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty "
-            "buckets; branch before using a candidate."
+            f"Rank objects by business terms; empty terms list ids ({_DISCOVER_ID_PAGE} per kind; limit, offset). "
+            "Default: id, label, description; compact omits blocked cards. "
+            "Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; "
+            "branch before using a candidate."
         ),
         input_schema=_schema(
             {
                 "terms": {"type": "string"},
                 "kinds": {
-                    "oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
-                    "description": "Object kinds to rank, such as measure or metric. Default: all.",
+                    "type": ["string", "array"],
+                    "items": {"type": "string", "enum": sorted(DISCOVER_KIND_NAMES)},
+                    "description": "Default: all but relationship.",
                 },
                 "query": QUERY_SEED_SCHEMA,
                 "stage": {
@@ -1321,7 +1321,7 @@ _DISCOVER_SCREENED_KEYS = ("low_relevance", "out_of_scope")
 
 def _coerce_kinds(value: Any) -> list[str]:
     try:
-        return parse_string_list(value)
+        return singular_kinds(parse_string_list(value))
     except ValueError as exc:
         raise _argument_error(f"MCP argument 'kinds' {exc}.", field="kinds", value=value) from exc
 
@@ -1362,6 +1362,7 @@ _DISCOVER_BUCKETS = (
     "segments",
     "dimensions",
     "entities",
+    "relationships",
     "dimension_values",
     "blocked",
 )

@@ -651,8 +651,13 @@ Supported request controls:
 - `stage`
 - `verbosity`
 - `kinds` — an array, a comma-separated string, or a JSON array in a string. Ranked kinds are
-  `measure`, `metric`, `segment`, `dimension`, `entity` and `dimension_value`; a value that
-  does not parse or names another kind is refused with `400` instead of returning empty buckets.
+  `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value` and `relationship`,
+  each also by its plural (`measures`); a value that does not parse or names another kind is
+  refused with `400` instead of returning empty buckets. Relationships are ranked only when
+  `kinds` names them, in a `relationships` bucket whose cards carry `source_entity`,
+  `target_entity`, `cardinality`, `allowed_directions`, `source_columns` and `target_columns`.
+  With `verbosity: "full"`, an entity card carries its `relationships` as `inspect` returns
+  them.
   In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced, and the
   refusal lists them in `details.valid_kinds`. A `limit` below 1 is refused.
 
@@ -673,7 +678,7 @@ Response keys:
 - `query_state`
 - `card`
 
-Measure cards expose aggregation guidance, default time behavior, recommended dimensions, and related curated metrics. Dimension cards expose categorical semantics, preferred filter operators, and sample values when available.
+Measure cards expose aggregation guidance, default time behavior, recommended dimensions, and related curated metrics. Dimension cards expose categorical semantics, preferred filter operators, and sample values when available. Entity cards list the entity's `relationships` (seen from its side) and its `reachable_entities` within the hop ceiling, with each route and whether recorded route rows chose it or the call must choose one; see [Catalog And Metadata](MCP_INTERFACE.md#catalog-and-metadata).
 History-backed cards can also expose:
 
 - `coverage_notes`
@@ -825,8 +830,10 @@ Response keys:
 `source` is typically `value_domain` or `duckdb`. Without a declared domain and
 with `allow_live_query=false` (the default), HTTP 200 returns `ok: false`,
 `status: "needs_live_query"`, `source: "none"`, empty `values`, and a
-`VALID_VALUES_NO_DOMAIN` warning. Retry with `allow_live_query=true` to permit a
-live lookup. A declared empty domain remains a successful empty result. This
+`VALID_VALUES_NO_DOMAIN` warning. Its message and recovery hint name the dimension, say no
+values were read, and give the argument that returns them: the same call with
+`allow_live_query: true` (the hint's `patch`), which a first call may pass too. A declared empty
+domain remains a successful empty result. This
 payload is shared with MCP; only MCP adds `next_call` naming its tool. HTTP
 returns no `next_call`.
 

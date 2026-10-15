@@ -161,7 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Kinds to include: comma-separated or a JSON array (entity, dimension, "
-            "measure, metric, segment, dimension_value). An unknown kind is refused."
+            "measure, metric, segment, dimension_value, relationship; plurals work). "
+            "Relationships are ranked only when named. An unknown kind is refused."
         ),
     )
     p_discover.add_argument(

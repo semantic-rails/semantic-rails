@@ -219,22 +219,38 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description); compact keeps slim cards and omits blocked candidates. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank objects by business terms; empty terms list ids (100 per kind; limit, offset). Default: id, label, description; compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
           "kinds": {
-            "description": "Object kinds to rank, such as measure or metric. Default: all.",
-            "oneOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "string"
-              }
+            "description": "Default: all but relationship.",
+            "items": {
+              "enum": [
+                "dimension",
+                "dimension_value",
+                "dimension_values",
+                "dimensions",
+                "entities",
+                "entity",
+                "measure",
+                "measures",
+                "metric",
+                "metrics",
+                "relationship",
+                "relationships",
+                "segment",
+                "segments",
+                "temporal_role",
+                "temporal_roles",
+                "value_domain",
+                "value_domains"
+              ],
+              "type": "string"
+            },
+            "type": [
+              "string",
+              "array"
             ]
           },
           "limit": {
