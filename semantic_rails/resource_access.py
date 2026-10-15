@@ -353,7 +353,7 @@ def _restricted_plan(
     intent = kwargs.get("intent")
     if not isinstance(intent, str) or not intent.strip():
         raise access_denied()
-    partial = {
+    call = {
         key: value
         for key, value in dict(kwargs.get("partial_query") or {}).items()
         if key not in {"policy_context", "request_context", "request_id"}
@@ -386,7 +386,6 @@ def _restricted_plan(
         }
     row = matches[0]
     granted = [{"expression": row["id"], "as": "value"}]
-    call = {**partial}
     call.setdefault("select", granted)
     dimensions = [
         candidate["id"]
@@ -541,7 +540,7 @@ def run_authorized_operation(
         raise
     with pinned as view:
         try:
-            return _run_in_view(operation, runtime, args, kwargs)
+            return _run_in_view(operation, runtime, args, kwargs, name, payload)
         except SemanticLayerError as exc:
             public = visible_view.public_error(exc, view.entry.config)
             if public is exc:
@@ -550,10 +549,13 @@ def run_authorized_operation(
 
 
 def _run_in_view(
-    operation: Callable[..., Any], runtime: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
+    operation: Callable[..., Any],
+    runtime: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    name: str,
+    payload: dict[str, Any],
 ) -> Any:
-    name = _operation_name(operation)
-    payload = _context_payload(name, args, kwargs)
     if (payload.get("policy_context") or {}).get("metric_allowlist") is None:
         return operation(runtime, *args, **kwargs)
     access = ResourceAccess.from_context(runtime._config, payload.get("policy_context"))
