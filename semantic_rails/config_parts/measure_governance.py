@@ -101,7 +101,10 @@ def governed_out_of_view(config: PackageConfig, measure_id: str) -> bool:
     number is never answered (a hold, never a wrong number), and nothing names the metric."""
 
     shown = {metric.id for metric in config.metric_recipes}
-    return any(metric.id not in shown for metric in governing_metrics(base_of(config), measure_id))
+    base = base_of(config)
+    if all(metric.id in shown for metric in base.metric_recipes):
+        return False  # nothing is out of view: skip walking every metric's expression
+    return any(metric.id not in shown for metric in governing_metrics(base, measure_id))
 
 
 def _reachable_entities(config: PackageConfig, entity: str) -> set[str]:
