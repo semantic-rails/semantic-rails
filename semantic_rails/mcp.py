@@ -690,12 +690,18 @@ MCP_RESOURCE_DEFINITIONS = tuple(definition.to_dict() for definition in RESOURCE
 MCP_PROMPT_DEFINITIONS = tuple(definition.to_dict() for definition in PROMPT_DEFINITIONS)
 
 
-def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
-    return [
-        definition.to_dict()
+def _offered_tool_names(config: PackageConfig | None) -> set[str]:
+    """The tools a package offers: no segment tool when it defines no segment."""
+    return {
+        definition.name
         for definition in TOOL_DEFINITIONS
         if definition.name != "segment" or config is None or config.segments
-    ]
+    }
+
+
+def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
+    offered = _offered_tool_names(config)
+    return [definition.to_dict() for definition in TOOL_DEFINITIONS if definition.name in offered]
 
 
 def list_resource_definitions() -> list[dict[str, Any]]:
@@ -1480,7 +1486,7 @@ class SemanticLayerMCPAdapter:
     @property
     def instructions(self) -> str:
         instructions = MCP_SERVER_INSTRUCTIONS
-        if not any(tool["name"] == "segment" for tool in self.list_tools()):
+        if "segment" not in _offered_tool_names(self.runtime.config):
             instructions = instructions.replace(
                 "segment(segment_id, action) validates, explains or previews a package-authored "
                 "segment.\n\n",
@@ -1519,19 +1525,19 @@ class SemanticLayerMCPAdapter:
     def list_tools(self) -> list[dict[str, Any]]:
         return list_tool_definitions(config=self.runtime.config)
 
-    def _caller_tools(self) -> list[dict[str, Any]]:
+    def _caller_tool_names(self) -> set[str]:
         """The tools a caller's view offers: no segment tool when they see no segment."""
         try:
             view = self.runtime.view_for(_caller())
         except Exception:  # noqa: BLE001 — the call itself refuses an unresolved view
-            return self.list_tools()
-        return list_tool_definitions(config=view)
+            view = self.runtime.config
+        return _offered_tool_names(view)
 
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        has_segment = any(tool["name"] == "segment" for tool in self.list_tools())
+        has_segment = "segment" in _offered_tool_names(self.runtime.config)
         return [
             prompt
             for prompt in list_prompt_definitions()
@@ -1640,9 +1646,9 @@ class SemanticLayerMCPAdapter:
         except SemanticLayerError as exc:
             return finish(self._error_response(exc, args_dict))
         handler = self._tool_handlers.get(name)
-        available_tools = {tool["name"] for tool in self.list_tools()}
+        available_tools = _offered_tool_names(self.runtime.config)
         if handler is None or name not in available_tools or name == "segment":
-            available_tools = {tool["name"] for tool in self._caller_tools()}
+            available_tools = self._caller_tool_names()
         if handler is None or name not in available_tools:
             details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"
@@ -2206,22 +2212,6 @@ class SemanticLayerMCPAdapter:
             "sql_profile": str(args.get("sql_profile") or "").strip() or None,
         }
 
-    def _handle_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        def _run(args: dict[str, Any]) -> dict[str, Any]:
-            return operations.run(
-                "validate", self.runtime, query=args["query"], **self._call_options(args)
-            )
-
-        return self._guarded(arguments, _run)
-
-    def _handle_compile(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        def _run(args: dict[str, Any]) -> dict[str, Any]:
-            return operations.run(
-                "compile", self.runtime, query=args["query"], **self._call_options(args)
-            )
-
-        return self._guarded(arguments, _run)
-
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         def _run(args: dict[str, Any]) -> dict[str, Any]:
             row_format = _row_format_arg(args)
@@ -2284,8 +2274,14 @@ class SemanticLayerMCPAdapter:
         args = {key: value for key, value in arguments.items() if key != "mode"}
         if mode == "run":
             return self._handle_execute(args)
-        args = _strip_execute_transport_args(args)
-        return self._handle_validate(args) if mode == "validate" else self._handle_compile(args)
+        operation = "validate" if mode == "validate" else "compile"
+
+        def run(args: dict[str, Any]) -> dict[str, Any]:
+            return operations.run(
+                operation, self.runtime, query=args["query"], **self._call_options(args)
+            )
+
+        return self._guarded(_strip_execute_transport_args(args), run)
 
     def _handle_segment_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """``segment``: validate, explain or preview a segment, at minimal
