@@ -639,15 +639,7 @@ def _require_metric_filter_object(item: Any, index: int) -> dict[str, Any]:
 
 def _metric_filter_op(item: dict[str, Any], index: int) -> str:
     """The word for a result filter's op (``value`` keeps its shape for the lowering)."""
-    raw = item.get("op", "is")
-    value = item.get("value")
-    if value is None or isinstance(value, bool):
-        spelling = " ".join(str(raw).strip().lower().split())
-        if spelling in {"=", "==", "is", "eq"}:
-            return "is"
-        if spelling in {"!=", "<>", "not", "neq"}:
-            return "not"
-    return operators.operator_word(raw, path=f"metric_filters[{index}].op")
+    return operators.operator_word(item.get("op", "is"), path=f"metric_filters[{index}].op")
 
 
 def _assert_unique_output_aliases(

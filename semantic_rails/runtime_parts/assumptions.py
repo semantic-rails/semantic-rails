@@ -103,19 +103,26 @@ def _nodes(node: Any) -> Iterable[dict[str, Any]]:
             yield from _nodes(value)
 
 
-def _measure_ids(node: Any) -> Iterable[str]:
-    """Every measure id a caller's expressions name, at any depth; a metric's own definition is
-    the package's and is never expanded, and literal or parameter values are data."""
+def _expression_nodes(node: Any) -> Iterable[dict[str, Any]]:
+    """Every node of a caller's expressions, parents first; literal and parameter values are
+    data, not nodes."""
     if isinstance(node, list):
         for item in node:
-            yield from _measure_ids(item)
+            yield from _expression_nodes(item)
     elif isinstance(node, dict):
-        measure = node.get("measure")
-        if isinstance(measure, str) and measure.startswith("measure."):
-            yield measure
+        yield node
         for key, value in node.items():
             if not _opaque_expression_data(node, key):
-                yield from _measure_ids(value)
+                yield from _expression_nodes(value)
+
+
+def _measure_ids(node: Any) -> Iterable[str]:
+    """Every measure id a caller's expressions name, at any depth; a metric's own definition is
+    the package's and is never expanded."""
+    for row in _expression_nodes(node):
+        measure = row.get("measure")
+        if isinstance(measure, str) and measure.startswith("measure."):
+            yield measure
 
 
 def refuse_hidden_governors(config: PackageConfig, query: dict[str, Any]) -> None:
@@ -214,16 +221,8 @@ def share_of_total(
 
 
 def _shares(node: Any) -> Iterable[dict[str, Any]]:
-    """Select expression shares at any depth, excluding literal and parameter data."""
-    if isinstance(node, list):
-        for item in node:
-            yield from _shares(item)
-    elif isinstance(node, dict):
-        if node.get("kind") == "share":
-            yield node
-        for key, value in node.items():
-            if not _opaque_expression_data(node, key):
-                yield from _shares(value)
+    """Select expression shares at any depth."""
+    return (row for row in _expression_nodes(node) if row.get("kind") == "share")
 
 
 def grouped_by_key(

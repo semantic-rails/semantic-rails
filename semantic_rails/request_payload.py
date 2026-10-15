@@ -153,11 +153,11 @@ def identity_claim_refusal(
     from .query_call import refusal
 
     if remote:
-        fix = f"Remove {path}; the server reads the caller's identity from the credentials."
-        return SemanticLayerError(
-            "IDENTITY_CLAIM_REFUSED",
-            f"{path}: a request may not say who is asking; that comes from its credentials",
-            details={"path": path, "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": fix}]},
+        return refusal(
+            path,
+            "a request may not say who is asking; that comes from its credentials",
+            fix=f"Remove {path}; the server reads the caller's identity from the credentials.",
+            code="IDENTITY_CLAIM_REFUSED",
         )
     return refusal(
         path,
