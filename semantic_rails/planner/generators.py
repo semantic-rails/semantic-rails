@@ -22,6 +22,7 @@ from typing import Any
 from ._base import RuntimeCompositionDraft
 from .call import Call, QueryBuilder, Time
 from .exclusions import exclusion_clauses, exclusion_regions
+from .groupings import _term_matches_value_domain
 from .visibility import (
     discovery_query,
     visible_dimensions,
@@ -465,37 +466,20 @@ def _is_temporal_grouping_term(term: str) -> bool:
     )
 
 
-def _term_matches_value_domain(config: Any, term: str) -> bool:
-    from ..catalog_search import tokenize_search_value  # noqa: WPS433
-
-    term_tokens = set(tokenize_search_value(term))
-    if not term_tokens:
-        return False
-    for domain in visible_value_domains(config):
-        for row in list(domain.values or []):
-            values = [
-                str(row.value),
-                str(row.label),
-                *[str(alias) for alias in list(row.aliases or [])],
-            ]
-            for value in values:
-                value_tokens = set(tokenize_search_value(value))
-                if value_tokens and value_tokens.issubset(term_tokens):
-                    return True
-    return False
-
-
 def _grouping_term_matches(
     runtime: Any, query: Call, term: str, *, limit: int = 5
 ) -> list[str] | None:
     """Return discovery's matched dimension IDs, or None for a skipped grouping term."""
 
+    from ..catalog_search import tokenize_search_value  # noqa: WPS433
     from ..metadata import discover_payload  # noqa: WPS433 - shared metadata helper
 
     visible_ids = {row.id for row in visible_dimensions(runtime._config)}
     if not visible_ids:
         return []
-    if _is_temporal_grouping_term(term) or _term_matches_value_domain(runtime._config, term):
+    if _is_temporal_grouping_term(term) or _term_matches_value_domain(
+        runtime._config, term, tokenize_search_value
+    ):
         return None
     dim_discovery = discover_payload(
         runtime,
