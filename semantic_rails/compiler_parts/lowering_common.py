@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from .. import operators
 from ..ast import (
+    NormalizedQuery,
     child_groups,
     normalize_query,
     refuse_child_groups,
@@ -1137,7 +1138,7 @@ def _path_signature(path_selections: Iterable[PathSelection]) -> tuple[tuple[str
 
 
 def _foldable_leaf_signature(
-    plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
+    plan: LogicalPlan, measure_plan: MeasurePlan, query: NormalizedQuery, config: PackageConfig
 ) -> tuple[Any, ...] | None:
     measures = _measure_index(config)
     measure = measures[measure_plan.bound_measure.measure_id]
@@ -1161,7 +1162,7 @@ def _foldable_leaf_signature(
         _path_signature(measure_plan.path_selections),
         tuple(plan.group_by),
         _freeze_payload(plan.time),
-        _leaf_time_role(measure_plan.bound_measure, normalize_query(plan.query), config),
+        _leaf_time_role(measure_plan.bound_measure, query, config),
         _freeze_payload(plan.query.get("where", []) or []),
         _freeze_payload(measure_plan.bound_measure.filter_spec),
         _preserves_filtered_series(plan, measure_plan, config),
@@ -1171,8 +1172,9 @@ def _foldable_leaf_signature(
 def _measure_plan_groups(plan: LogicalPlan, config: PackageConfig) -> list[list[MeasurePlan]]:
     grouped: dict[tuple[Any, ...], list[MeasurePlan]] = {}
     ordered: list[tuple[Any, ...]] = []
+    query = normalize_query(plan.query)
     for measure_plan in plan.measure_plans:
-        signature = _foldable_leaf_signature(plan, measure_plan, config)
+        signature = _foldable_leaf_signature(plan, measure_plan, query, config)
         if signature is None:
             signature = ("single_leaf", measure_plan.cte_name)
         if signature not in grouped:
