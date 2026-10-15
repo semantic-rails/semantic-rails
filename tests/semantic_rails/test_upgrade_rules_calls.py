@@ -306,7 +306,12 @@ def test_query_field_coverage_matches_the_test_kind_registry():
 def test_every_test_kind_rewrites_or_names_each_query(tmp_path, kind, fields):
     from semantic_rails.architect_scaffold import dump_project_yaml
 
-    spec = {"kind": kind, "code": "UNKNOWN_METRIC", **dict.fromkeys(fields, OLD_QUERY)}
+    query = (
+        {"select": [{"metric": "metric.shop.missing"}]}
+        if kind == "validate_fails_with_code"
+        else OLD_QUERY
+    )
+    spec = {"kind": kind, "code": "OBJECT_NOT_FOUND", **dict.fromkeys(fields, query)}
     files = {
         **UPGRADED,
         "examples/core.yml": "examples: {}\n",
@@ -321,7 +326,7 @@ def test_every_test_kind_rewrites_or_names_each_query(tmp_path, kind, fields):
         assert all(
             not f.edits
             and "hand" in f.message
-            and "UNKNOWN_METRIC" in f.message
+            and "OBJECT_NOT_FOUND" in f.message
             and "Hint:" in f.message
             for f in hits
         )
@@ -370,20 +375,50 @@ def test_comparison_queries_share_the_certified_upgrade_check(tmp_path):
             "INSERT INTO raw_events VALUES (1, 3, '2024-01-01', 'signup'), "
             "(2, 4, '2024-01-02', 'purchase')"
         )
+        reference_total = connection.execute("SELECT SUM(amount) FROM raw_events").fetchone()[0]
     runtime = Runtime.from_snapshot(load_package_snapshot(project))
     try:
         entry = PackageFiles(project).documents["tests/core.yml"]["tests"]["amount"]
         assert _run_test(runtime, "amount", entry, NOW)["ok"]
-        assert runtime.query(entry["metric_query"], now=NOW)["rows"] == [{"total_amount": 7}]
+        assert runtime.query(entry["metric_query"], now=NOW)["rows"] == [
+            {"total_amount": reference_total}
+        ]
+        assert reference_total == 7
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize(
-    "code",
-    ["UNKNOWN_METRIC", "UNKNOWN_DIMENSION", "AMBIGUOUS_PATH", "FANOUT_UNSAFE", "INVALID_QUERY"],
+    "query,code",
+    [
+        ({"select": [{"metric": "metric.shop.missing"}]}, "OBJECT_NOT_FOUND"),
+        ({"select": [{"measure": "measure.shop.missing"}]}, "OBJECT_NOT_FOUND"),
+        (
+            {**OLD_QUERY, "group_by": [{"dimension": "dimension.shop_event_missing"}]},
+            "OBJECT_NOT_FOUND",
+        ),
+        (
+            {
+                **OLD_QUERY,
+                "time": {"temporal_role": "temporal_role.shop_event_missing", "grain": "day"},
+            },
+            "INVALID_TEMPORAL_ROLE",
+        ),
+        (
+            {
+                **OLD_QUERY,
+                "time": {
+                    "temporal_role": "temporal_role.shop_event_occurred_at",
+                    "grain": "quarter",
+                    "calendar_id": "fiscal",
+                },
+            },
+            "INVALID_QUERY",
+        ),
+    ],
+    ids=["metric", "measure", "dimension", "clock", "calendar"],
 )
-def test_refusal_queries_are_explicit_hand_edits_and_write_nothing(tmp_path, code):
+def test_refusal_queries_are_explicit_hand_edits_and_write_nothing(tmp_path, query, code):
     from semantic_rails.architect_scaffold import dump_project_yaml
 
     project = _package(
@@ -397,7 +432,7 @@ def test_refusal_queries_are_explicit_hand_edits_and_write_nothing(tmp_path, cod
                         "refusal": {
                             "kind": "validate_fails_with_code",
                             "code": code,
-                            "query": OLD_QUERY,
+                            "query": query,
                         }
                     }
                 }
@@ -419,6 +454,14 @@ def test_refusal_queries_are_explicit_hand_edits_and_write_nothing(tmp_path, cod
     )
     assert not report["ok"], report
     assert _contents(project) == before
+    from semantic_rails.upgrade.v1_to_v2 import translate_query
+
+    runtime = Runtime.from_snapshot(load_package_snapshot(project))
+    try:
+        validation = runtime.validate(translate_query(query).query, now=NOW)
+        assert not validation["ok"] and validation["errors"][0]["code"] == code
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(
