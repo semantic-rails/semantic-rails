@@ -79,11 +79,7 @@ from .question_parts import MAX_PARTS, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
 from .unasked_groupings import _unasked_grouping_why
-from .unmatched_words import (
-    unconsumed_catalog_words,
-    unconsumed_unknown_words,
-    unmatched_intent_terms,
-)
+from .unmatched_words import _unconsumed_words, unconsumed_unknown_words, unmatched_intent_terms
 from .visibility import caller_hidden_ids, require_visible_objects, with_dimension_visibility
 
 _VERSION = 1
@@ -479,16 +475,12 @@ def _question_payload(
         if best_ok
         else None
     )
-    value_why = (
-        (
+    value_why: dict[str, Any] | None = None
+    if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why):
+        catalog_words, unknown_words = _unconsumed_words(runtime, intent_str, best_draft.query)
+        value_why = (
             _define_metric_why(
-                runtime,
-                intent_str,
-                best_draft.query,
-                [
-                    *unconsumed_catalog_words(runtime, intent_str, best_draft.query),
-                    *unconsumed_unknown_words(runtime, intent_str, best_draft.query),
-                ],
+                runtime, intent_str, best_draft.query, [*catalog_words, *unknown_words]
             )
             or _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
             # A shared grouping needs options even when fallback discovery consumed
@@ -498,14 +490,8 @@ def _question_payload(
                 if (grouping_why or {}).get("details", {}).get("clarification")
                 else None
             )
-            or _unconsumed_catalog_why(
-                intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
-            )
-            or _dropped_value_why(
-                intent_str,
-                unconsumed_unknown_words(runtime, intent_str, best_draft.query),
-                set(intent_ir.unresolved),
-            )
+            or _unconsumed_catalog_why(intent_str, catalog_words)
+            or _dropped_value_why(intent_str, unknown_words, set(intent_ir.unresolved))
             or grouping_why
             or _unasked_grouping_why(
                 runtime,
@@ -516,9 +502,6 @@ def _question_payload(
             )
             or _qualifying_entity_why(runtime, intent_ir, best_draft.query)
         )
-        if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
-        else None
-    )
     # Last, the draft's result holds what the question's shape asks for: the listed entity's
     # rows for "who" or "which", a row per item for "each", a value to compare with for a
     # comparison, and a select of its own for each of several questions. It runs only when
