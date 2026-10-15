@@ -377,7 +377,9 @@ def tagged_origin(tmp_path_factory) -> Path:
     env |= {"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
 
     def git(*args: str) -> None:
-        subprocess.run(["git", *args], cwd=work, env=env, check=True, capture_output=True)
+        subprocess.run(
+            ["git", *args], cwd=work, env=env, check=True, capture_output=True, timeout=60
+        )
 
     work.mkdir()
     git("init", "-q", "-b", "main")
