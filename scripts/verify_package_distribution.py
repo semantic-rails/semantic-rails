@@ -42,7 +42,8 @@ REQUIRED_WHEEL_SUFFIXES = {
     "semantic_rails/contracts/architect_mcp.v1.json",
     "semantic_rails/contracts/http_api.v1.openapi.json",
     "semantic_rails/contracts/package.v1.json",
-    "semantic_rails/contracts/query_ir.v1.json",
+    "semantic_rails/contracts/query.v2.json",
+    "semantic_rails/contracts/query_mcp.v2.json",
     "semantic_rails/contracts/semantic_contract.v1.json",
     "semantic_rails/contracts/metric_portability.v1.json",
     "semantic_rails/contracts/fixtures/metric_portability.v1.json",
@@ -299,11 +300,7 @@ def _assert_installed_wheel(wheel: Path, work_dir: Path) -> None:
         print(" - installed wheel catalog did not load jaffle_shop")
         raise SystemExit(1)
 
-    query = {
-        "version": 1,
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "order_count"}],
-        "limit": 1,
-    }
+    query = {"select": ["measure.jaffle.order_count"], "limit": 1}
     result = _run(
         [
             str(python),
