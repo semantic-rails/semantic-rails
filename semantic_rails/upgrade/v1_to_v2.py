@@ -169,6 +169,12 @@ class Result:
         return [flag for flag in self.flags if FLAG_CODES[flag["code"]][0] == KEPT]
 
 
+def _flag(code: str, path: str, detail: str) -> dict[str, str]:
+    """A translator flag, checked against its own registry (not a runtime issue)."""
+    assert code in FLAG_CODES, code
+    return {"code": code, "path": path, "detail": detail}
+
+
 class _Ctx:
     def __init__(self) -> None:
         self.flags: list[dict[str, str]] = []
@@ -178,8 +184,7 @@ class _Ctx:
         self.select_exprs: list[tuple[Any, Any]] = []
 
     def flag(self, code: str, path: str, detail: str) -> None:
-        assert code in FLAG_CODES, code
-        self.flags.append({"code": code, "path": path, "detail": detail})
+        self.flags.append(_flag(code, path, detail))
 
     def sub(self) -> _Ctx:
         """A context whose flags are kept only if the site translates."""
@@ -1397,9 +1402,7 @@ def rename_output_key(key: Any) -> Any:
 
 def _role_key_flag(key: Any, path: str, flags: list[dict[str, str]]) -> None:
     if isinstance(key, str) and _ROLE_KEY.match(key) and not _ROLE_GRAIN_KEY.match(key):
-        flags.append(
-            {"code": "ROLE_KEY_RAW", "path": path, "detail": f"{key} has no day to year grain"}
-        )
+        flags.append(_flag("ROLE_KEY_RAW", path, f"{key} has no day to year grain"))
 
 
 def translate_rows(rows: Any, path: str = "expected_rows") -> tuple[Any, list[dict[str, str]]]:
@@ -1417,9 +1420,7 @@ def translate_rows(rows: Any, path: str = "expected_rows") -> tuple[Any, list[di
             _role_key_flag(key, f"{at}.{key}", flags)
         renamed = [rename_output_key(key) for key in row]
         if renamed.count("period") > 1:
-            flags.append(
-                {"code": "PERIOD_KEY_CONFLICT", "path": at, "detail": "two keys would be 'period'"}
-            )
+            flags.append(_flag("PERIOD_KEY_CONFLICT", at, "two keys would be 'period'"))
             out.append(row)
             continue
         out.append({rename_output_key(key): value for key, value in row.items()})
@@ -1435,9 +1436,7 @@ def translate_columns(columns: Any, path: str = "columns") -> tuple[Any, list[di
         _role_key_flag(name, f"{path}[{index}]", flags)
     renamed = [rename_output_key(name) for name in columns]
     if renamed.count("period") > 1:
-        flags.append(
-            {"code": "PERIOD_KEY_CONFLICT", "path": path, "detail": "two columns would be 'period'"}
-        )
+        flags.append(_flag("PERIOD_KEY_CONFLICT", path, "two columns would be 'period'"))
         return columns, flags
     return renamed, flags
 

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from typing import Any
 
 from ..errors import refusal_text
-from .model import Edit, Finding, PackageFiles, Rule, YamlPath
+from .model import QUERY_KEYS, Edit, Finding, PackageFiles, Rule, YamlPath
 from .v1_to_v2 import (
     FLAG_CODES,
     KEPT,
+    REVIEW,
     Result,
     previous_call,
     refusal,
@@ -50,11 +52,9 @@ def _site(text: str) -> YamlPath:
 
 def rewritten(files: PackageFiles, file: str, path: YamlPath, query: Any) -> Result | None:
     """The translation of an example's or test's query written in the previous call shape;
-    None for every other query, a refusal test's included (its query is meant to be refused)."""
+    None for every other query. Refusal tests are detected too, then named as hand edits."""
     entry = _at(files.documents[file], path[:-1])
-    if path[-1:] != ("query",) or not isinstance(entry, dict):
-        return None
-    if entry.get("kind") == "validate_fails_with_code":
+    if not path or path[-1] not in QUERY_KEYS or not isinstance(entry, dict):
         return None
     return previous_call(query)
 
@@ -91,6 +91,23 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
         entry = _at(files.documents[file], entry_path)
         # Each site the rewrite can't make, as (its path, why).
         stops = [((*path, *_site(flag["path"])), flag["detail"]) for flag in result.kept_flags]
+        stops += [
+            (
+                (*path, *_site(flag["path"])),
+                f"{flag['detail']}; edit by hand to preserve the answer",
+            )
+            for flag in result.flags
+            if FLAG_CODES[flag["code"]][0] == REVIEW
+        ]
+        if entry.get("kind") == "validate_fails_with_code":
+            suggestion = json.dumps({str(path[-1]): result.query, **result.call}, default=str)
+            stops.append(
+                (
+                    path,
+                    f"edit this refusal test by hand and verify its expected code "
+                    f"{entry.get('code')!r}. Hint: start from {suggestion}",
+                )
+            )
         now = result.call.get("now") or entry.get("now")
         if not stops and (error := refusal(result.query, now)) is not None:
             where = str(error.details.get("path") or "")
@@ -107,8 +124,19 @@ def _calls(files: PackageFiles) -> Iterator[Finding]:
             for key in _HELD
             if key in result.call and entry.get(key) not in (None, result.call[key])
         ]
+        if path[-1] in {"metric_query", "expected_query"}:
+            stops += [
+                (
+                    (*path, "policy_context"),
+                    f"moving {key} would affect both queries; "
+                    "edit by hand. Hint: set the shared argument on the test entry and verify "
+                    "both queries",
+                )
+                for key in _HELD
+                if key in result.call and entry.get(key) != result.call[key]
+            ]
         edits = _edits(file, path, query, result.query)
-        after = "query"
+        after = str(path[-1])
         for key in _HELD:
             if key in result.call and entry.get(key) is None:
                 edits.append(
@@ -149,9 +177,8 @@ RULES: tuple[Rule, ...] = (
         "same_meaning",
         "Rewrite each example and test query written in the previous call shape as the current "
         "call, with its now and context beside the query and its expected time column renamed "
-        "period. A hit names each site whose meaning a person should check: not keeps unknown "
-        "rows, and the text words a LIKE becomes ignore case. A site with no current form "
-        "stops the upgrade; refusal tests keep their queries.",
+        "period. Answer-changing translations and sites with no current form stop the upgrade "
+        "for a hand edit. Refusal tests receive a hint to rewrite and verify their expected code.",
         _calls,
     ),
 )

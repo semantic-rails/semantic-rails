@@ -17,6 +17,7 @@ from ..yaml_loader import safe_load
 
 YamlPath = tuple[str | int, ...]
 Row = tuple[str, YamlPath, dict[str, Any]]
+QUERY_KEYS = ("query", "metric_query", "expected_query")
 _SECTION_FILES = {
     "defaults": "defaults.yml",
     "graph": "graph.yml",
@@ -245,8 +246,9 @@ class PackageFiles:
     def queries(self) -> Iterator[Row]:
         for section in ("examples", "tests"):
             for file, path, row in self._objects(section):
-                if isinstance(row.get("query"), dict):
-                    yield file, (*path, "query"), row["query"]
+                for key in QUERY_KEYS:
+                    if isinstance(row.get(key), dict):
+                        yield file, (*path, key), row[key]
         for file, path, row in self.segments():
             if isinstance(row.get("membership"), dict):
                 yield file, (*path, "membership"), row["membership"]

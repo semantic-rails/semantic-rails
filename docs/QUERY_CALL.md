@@ -1043,8 +1043,11 @@ send, `route_decisions` as `routes`, a reference object as its id, `LIKE 'text%'
 `starts_with`, `'%text'` as `ends_with` and `'%text%'` as `contains`, `BETWEEN` as `gte` and
 `lte` (it includes both ends). An item with no mechanical rewrite (a predicate grouped by the
 query's dimensions, say) gets the general hint. `semantic-rails project upgrade` rewrites a
-package's example and test queries written in the previous shape
-([rule `query-call-v2`](PACKAGE_AUTHORING.md#upgrading-a-package)).
+package's example and test queries written in the previous shape, including both sides of a
+comparison test ([rule `query-call-v2`](PACKAGE_AUTHORING.md#upgrading-a-package)). Refusal tests
+receive a hand-edit hint naming the expected code to verify. Translations that can change an
+answer, such as `LIKE` to a case-insensitive text word or `!=` to a `not` that keeps unknown
+rows, stop for a hand edit; the upgrade writes nothing until those sites are resolved.
 
 | Retired | Now |
 |---|---|

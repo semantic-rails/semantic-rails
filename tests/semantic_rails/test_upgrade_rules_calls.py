@@ -508,13 +508,13 @@ def test_proof_refuses_a_changed_comparison_answer(tmp_path, monkeypatch, field)
         },
     )
     before = _contents(project)
-    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
+    revision = _architect(tmp_path, "project_status", project_path=str(project))["revision"]
     report = _architect(
         tmp_path,
         "upgrade_project",
         project_path=str(project),
         dry_run=False,
-        expected_revision=preview["revision"],
+        expected_revision=revision,
         idempotency_key="changed-answer",
     )
     assert not report["ok"], report

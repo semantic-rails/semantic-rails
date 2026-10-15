@@ -57,7 +57,7 @@
     the rows the lookup can't match (a "not operating" count through a lookup: 1 → 10). A dimension may declare
     `unknown_values` that read as unknown.
   - A `LIKE` filter is refused with the text word its pattern says (`'%x%'` is `contains`, `'x%'`
-    `starts_with`, `'%x'` `ends_with`), and `project upgrade` writes that word. The text words
+    `starts_with`, `'%x'` `ends_with`); `project upgrade` names it as a hand edit. The text words
     ignore case where `LIKE` matched it on most warehouses, so the same pattern can count more
     rows: a search for `"shop"` also matches `"Shop"`.
   - A balance on an `as_of_time` clock reads each period's closing day (its last day with a
