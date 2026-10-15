@@ -107,6 +107,12 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     }
 
 
+def _clarify_why(gaps: list[CoverageGap], clarification: dict[str, Any]) -> dict[str, Any]:
+    """``_coverage_why`` for gaps plan asks the user about, with the question to ask."""
+    why = _coverage_why(gaps) or {}
+    return {**why, "details": {**why.get("details", {}), "clarification": clarification}}
+
+
 def _engine_query(runtime: Any, query: Call) -> dict[str, Any]:
     """The draft in the engine's own form, for the binder and catalog reads."""
     from .time_reference import time_policy_context  # noqa: WPS433

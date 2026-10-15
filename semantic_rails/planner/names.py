@@ -27,7 +27,7 @@ from typing import Any, ParamSpec, TypeVar
 from .. import visible_view
 from ._base import QUOTED, _name_matches
 from .call import Call, QueryBuilder, condition
-from .coverage import CoverageGap, _coverage_why, _referenced_ids
+from .coverage import CoverageGap, _clarify_why, _referenced_ids
 from .groupings import _display_entities, _entity_stand_ins
 
 _WORD_RE = re.compile(r"[^\W_]+")
@@ -329,13 +329,12 @@ def _ask_why(asks: list[tuple[list[NamedRow], bool]]) -> dict[str, Any]:
         )
         for matches, whole in asks
     ]
-    why = _coverage_why(gaps) or {}
     matches = asks[0][0]
     question = (
         f"Which one does '{matches[0].said}' mean: "
         f"{' or '.join(match.shown() for match in matches)}?"
     )
-    return {**why, "details": {**why.get("details", {}), "clarification": {"question": question}}}
+    return _clarify_why(gaps, {"question": question})
 
 
 def honored_names(question: str, query: Call) -> tuple[NamedRow, ...]:

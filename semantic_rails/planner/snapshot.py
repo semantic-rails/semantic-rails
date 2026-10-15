@@ -26,6 +26,7 @@ from .coverage import (
     _COMPARISON_WORDS,
     _TIME_FRAMING_WORDS,
     CoverageGap,
+    _clarify_why,
     _coverage_why,
     _projected_subject_ids,
     _query_contains_prior_period,
@@ -335,13 +336,12 @@ def _ask_why(ask: _Ask, query: Call) -> dict[str, Any]:
             ),
         },
     )
-    why = _coverage_why([gap]) or {}
     question = (
         "Which days should the balance be read on?"
         if compare
         else "A balance is read per day: which day, or daily values?"
     )
-    return {**why, "details": {**why.get("details", {}), "clarification": {"question": question}}}
+    return _clarify_why([gap], {"question": question})
 
 
 def shape_snapshot(
@@ -441,9 +441,8 @@ def _read_by_day(
             f"or ask for daily values ('daily {label}').",
         },
     )
-    why = _coverage_why([gap]) or {}
     ask = {"question": f"{label} is read per day: which day, or daily values?"}
-    return query, {**why, "details": {**why.get("details", {}), "clarification": ask}}
+    return query, _clarify_why([gap], ask)
 
 
 def snapshot_read(runtime: Any, question: str, query: Call) -> _Read | None:
