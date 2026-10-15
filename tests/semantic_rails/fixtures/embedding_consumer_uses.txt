@@ -18,7 +18,7 @@ PreparedQuery().column_mapping
 PreparedQuery().sql
 PreparedQuery(_)
 PreparedQuery(_, _)
-RequestContext().to_policy_context()
+RequestContext()
 RequestContext(actor=, attributes=, audience=, dimension_allowlist=, environment=, metric_allowlist=, project=, request_id=, roles=, tenant=)
 RequestContext(actor=, environment=, project=, request_id=, roles=, tenant=)
 RequestContext(tenant=)
