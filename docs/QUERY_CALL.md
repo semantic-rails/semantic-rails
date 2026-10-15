@@ -1042,7 +1042,15 @@ each `metric_filters` item as its `having` row or entity filter, `time.range` as
 send, `route_decisions` as `routes`, a reference object as its id, `LIKE 'text%'` as
 `starts_with`, `'%text'` as `ends_with` and `'%text%'` as `contains`, `BETWEEN` as `gte` and
 `lte` (it includes both ends). An item with no mechanical rewrite (a predicate grouped by the
-query's dimensions, say) gets the general hint.
+query's dimensions, say) gets the general hint. `semantic-rails project upgrade` rewrites a
+package's example and test queries written in the previous shape, including both sides of a
+comparison test ([rule `query-call-v2`](PACKAGE_AUTHORING.md#upgrading-a-package)). Refusal tests
+receive a hand-edit hint naming the expected code to verify. Translations that can change an
+answer, such as `LIKE` to a case-insensitive text word or `!=` to a `not` that keeps unknown
+rows, contextual predicates that inherit query grouping and filters, and start-only time
+windows that would gain an upper bound at `now`, stop for a hand edit; the upgrade writes nothing until those sites are resolved. Rewritten calls are reported as
+`translated`: the staged package loads and current calls compile with entry `now` and `context`,
+but no data is executed and legacy answers are not compared. Review the diff.
 
 | Retired | Now |
 |---|---|
@@ -1111,6 +1119,46 @@ The engine trusts the data as it is stored in three cases:
   are refused.
 - On Postgres, a key with very many distinct values in a one-per-key column can fail the query
   (out of memory or array size) instead of reading NULL.
+
+### Text words
+
+The text words (`contains`, `starts_with`, `ends_with` and their `not_` forms) give the same rows
+on every warehouse by refusing what the warehouses lower differently:
+
+- Search text holding one of these letters is refused, because some warehouse lowers it
+  differently from the rest: Greek sigma (`Σ σ ς`, whose lower case depends on the next
+  letter), sharp s (`ß ẞ`), dotted and dotless i (`İ ı`, and a combining dot above), the
+  Kelvin, Ångström and Ohm signs, rare Latin letters with a stroke, hook or tail, the cased
+  letters of U+2000 to U+2FFF (Roman numerals, circled letters, Glagolitic, Coptic, Georgian
+  Nuskhuri and its capitals), and letters whose case pair is newer than Unicode 13. Match such
+  values exactly with `is`.
+- A stored value holding one of these letters is lowered as its warehouse lowers it, so text
+  that lines up with that letter can match on one warehouse and not another (`is` against a
+  stored `İs`, or `k` against a stored Kelvin sign).
+- A letter that a later Unicode version gives a case pair can lower differently by warehouse
+  until the engine adds it to the list.
+- On Postgres the text words need ICU (the `und-x-icu` collation, built in wherever Postgres
+  has ICU); without it the query fails rather than answering differently.
+- On ClickHouse a `FixedString` value with a zero byte inside it, not just as trailing
+  padding, is compared only up to that first zero byte.
+- Text holding a NUL character or an unpaired surrogate is refused in the query call, but
+  not yet in package YAML: an expression literal or `unknown_values` entry holding one can
+  stop the package loading or make its queries fail.
+
+## Known limitations
+
+The engine trusts the data as it is stored in three cases:
+
+- **Orphan foreign keys.** A child row whose parent id is missing from the parent table counts
+  in entity filters: the engine trusts the child's id.
+- **Lossy joins.** Joining columns of different types or collations (a text id to an integer
+  key, or a case-insensitive collation) can match several parent rows, so totals can double.
+  Keep join columns the same type.
+- **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
+  their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
+  children carry, so the totals across
+  groups can exceed the whole, and a parent with no child rows is left out of that grouping.
+  Combined labels ("Lab + Office") are a possible future option.
 
 ### Text words
 

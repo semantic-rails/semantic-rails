@@ -130,21 +130,28 @@ def _spelling_hint(spelling: str, value: Any) -> str:
     return _SPELLING_HINTS.get(spelling, "")
 
 
-def like_hint(spelling: str, pattern: Any, *, operand: str = "value") -> str:
-    """The text word a LIKE ``pattern`` says: 'X%' starts_with, '%X' ends_with, '%X%' contains,
-    and their ``not_`` forms for a NOT LIKE; never contains for a prefix or a suffix. Any other
-    pattern has no word, so the hint is the exact values. ``operand`` is ``right`` for a
-    comparison expression."""
-    negated = spelling.startswith("not ")
+def like_word(spelling: str, pattern: Any) -> tuple[str, str] | None:
+    """``(word, text)`` for a LIKE (or NOT LIKE) ``pattern``: 'X%' starts_with, '%X' ends_with,
+    '%X%' contains, each a ``not_`` form for a NOT LIKE; never contains for a prefix or a suffix.
+    None for any other pattern, or for text a warehouse lowers differently."""
     for word, shape in _LIKE_SHAPES:
         found = re.fullmatch(shape, pattern) if isinstance(pattern, str) else None
         if found and not any(letter in UNSTABLE_CASE_LETTERS for letter in found.group(1)):
-            shown = json.dumps(found.group(1))
-            if operand == "right":
-                shown = f'{{"kind": "literal", "value": {shown}}}'
-            form = f'{{"op": "{"not_" if negated else ""}{word}", "{operand}": {shown}}}'
-            keeps = " and keeps rows with no value" if negated else ""
-            return f"{form}, which ignores case{keeps}"
+            return f"{'not_' if spelling.startswith('not ') else ''}{word}", found.group(1)
+    return None
+
+
+def like_hint(spelling: str, pattern: Any, *, operand: str = "value") -> str:
+    """The text word a LIKE ``pattern`` says (:func:`like_word`); any other pattern has no
+    word, so the hint is the exact values. ``operand`` is ``right`` for a comparison
+    expression."""
+    negated = spelling.startswith("not ")
+    if said := like_word(spelling, pattern):
+        shown = json.dumps(said[1])
+        if operand == "right":
+            shown = f'{{"kind": "literal", "value": {shown}}}'
+        keeps = " and keeps rows with no value" if negated else ""
+        return f'{{"op": "{said[0]}", "{operand}": {shown}}}, which ignores case{keeps}'
     exact = (
         f'{{"kind": "{"not_in" if negated else "in"}", "expr": <the column>, "values": [...]}}'
         if operand == "right"

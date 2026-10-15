@@ -187,7 +187,7 @@ QUERY_VERSION = Rule("query-version", "9.9", "same_meaning", "Write version: 1",
 
 
 @pytest.mark.parametrize("surface", ["cli", "architect"])
-def test_package_from_an_earlier_release_upgrades_in_one_certified_change(
+def test_package_from_an_earlier_release_upgrades_in_one_translated_change(
     tmp_path, monkeypatch, capsys, surface
 ):
     project = _package(tmp_path)
@@ -196,15 +196,15 @@ def test_package_from_an_earlier_release_upgrades_in_one_certified_change(
     if surface == "cli":
         code, text = _cli(monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project))
         assert code == 0
-        assert "certified: 2 rules for forms this engine refuses" in text
+        assert "translated: 2 rules for forms this engine refuses" in text
         assert "-    null_behavior: null_if_zero\n" in text and "-  measure:\n" in text
         assert "--write" in text
     else:
         report = _architect(tmp_path, "upgrade_project", project_path=str(project))
-        assert report["status"] == "preview" and report["proof"]["tier"] == "certified"
+        assert report["status"] == "preview" and report["proof"]["tier"] == "translated"
         assert {row["id"]: row["tier"] for row in report["rules"]} == {
-            "null-behavior": "certified",
-            "measure-parent-rollup": "certified",
+            "null-behavior": "translated",
+            "measure-parent-rollup": "translated",
         }
         assert [hit["line"] for hit in report["rules"][0]["hits"]] == [14, 23]
     assert _contents(project) == before
@@ -234,8 +234,8 @@ def test_package_from_an_earlier_release_upgrades_in_one_certified_change(
     if surface == "architect":
         assert report["status"] == "upgraded"
         assert report["proof"] == {
-            "tier": "certified",
-            "baseline": "after_certified_rules",
+            "tier": "translated",
+            "baseline": "after_translated_rules",
             "fingerprint_before": report["proof"]["fingerprint_after"],
             "fingerprint_after": report["proof"]["fingerprint_after"],
             "masks": [],
@@ -344,11 +344,11 @@ def test_unflagged_same_meaning_rule_is_proven_after_the_baseline(tmp_path):
 
     report = service.upgrade_project(project, workspace_root=tmp_path, rules=(METRIC_AS, *RULES))
 
-    assert report["proof"]["baseline"] == "after_certified_rules"
+    assert report["proof"]["baseline"] == "after_translated_rules"
     assert {row["id"]: row["tier"] for row in report["rules"]} == {
         "metric-as": "proven",
-        "null-behavior": "certified",
-        "measure-parent-rollup": "certified",
+        "null-behavior": "translated",
+        "measure-parent-rollup": "translated",
     }
     assert _contents(project) == files
 
@@ -499,7 +499,7 @@ PRIMITIVE_KIND = Rule(
 
 
 @pytest.mark.parametrize(("retired", "choice"), [(False, True), (True, False)])
-def test_refused_same_meaning_rule_forms_a_certified_baseline(
+def test_refused_same_meaning_rule_forms_a_translated_baseline(
     tmp_path, monkeypatch, capsys, retired, choice
 ):
     current = LEGACY if retired else UPGRADED
@@ -515,12 +515,16 @@ def test_refused_same_meaning_rule_forms_a_certified_baseline(
     _with_rules(monkeypatch, rules)
     preview = service.upgrade_project(project, workspace_root=tmp_path, rules=rules)
     tiers = {row["id"]: row["tier"] for row in preview["rules"]}
-    assert preview["proof"]["baseline"] == "after_certified_rules"
-    assert preview["proof"]["tier"] == "certified"
+    assert preview["proof"]["baseline"] == "after_translated_rules"
+    assert preview["proof"]["tier"] == "translated"
     assert tiers == {
         "metric-as": "proven",
-        "primitive-kind": "certified",
-        **({"null-behavior": "certified", "measure-parent-rollup": "certified"} if retired else {}),
+        "primitive-kind": "translated",
+        **(
+            {"null-behavior": "translated", "measure-parent-rollup": "translated"}
+            if retired
+            else {}
+        ),
         **({"relabel": "choice"} if choice else {}),
     }
     assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
@@ -591,7 +595,7 @@ def test_unflagged_rule_that_repairs_loading_is_named_as_the_blocker(tmp_path, d
         assert report["proof"]["baseline"] == "none"
         assert [action.split(":")[0] for action in report["next_actions"]] == [
             "Upgrade rule 'primitive-kind' rewrites a form this engine refuses at load, but the "
-            "rule is not marked refused, so its rewrite cannot be certified"
+            "rule is not marked refused, so its rewrite cannot establish a baseline"
         ]
     else:
         from semantic_rails.errors import SemanticLayerError
@@ -630,16 +634,16 @@ CURRENT_POLICIES = (
 )
 
 
-def test_legacy_policy_forms_upgrade_in_one_certified_write(tmp_path):
+def test_legacy_policy_forms_upgrade_in_one_translated_write(tmp_path):
     project = _package(tmp_path, {**LEGACY, "policies.yml": LEGACY_POLICIES})
 
     preview = service.upgrade_project(project, workspace_root=tmp_path)
-    assert preview["proof"]["baseline"] == "after_certified_rules"
+    assert preview["proof"]["baseline"] == "after_translated_rules"
     assert {row["id"]: row["tier"] for row in preview["rules"]} == {
-        "null-behavior": "certified",
-        "measure-parent-rollup": "certified",
-        "policy-flat": "certified",
-        "policy-redact-deny": "certified",
+        "null-behavior": "translated",
+        "measure-parent-rollup": "translated",
+        "policy-flat": "translated",
+        "policy-redact-deny": "translated",
     }
     assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (1, 1)
     assert preview["next_actions"] == []
@@ -896,7 +900,7 @@ def test_single_file_starter_preview_and_apply(tmp_path, monkeypatch, capsys, cw
     args = ("upgrade", "--path", str(source))
 
     code, text = _cli(monkeypatch, capsys, directory, *args)
-    assert code == 0 and "certified" in text
+    assert code == 0 and "translated" in text
     assert source.read_text() == legacy
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
     code, text = _cli(monkeypatch, capsys, directory, *args, "--json")
@@ -905,7 +909,7 @@ def test_single_file_starter_preview_and_apply(tmp_path, monkeypatch, capsys, cw
     assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
     assert preview["proof"]["examples"] == 1
     assert [(row["id"], row["tier"]) for row in preview["rules"]] == [
-        ("measure-parent-rollup", "certified")
+        ("measure-parent-rollup", "translated")
     ]
 
     code, text = _cli(monkeypatch, capsys, directory, *args, "--write", "--json")
@@ -1065,7 +1069,7 @@ def test_upgrade_keeps_a_linked_data_directory(tmp_path):
     (project / "data").symlink_to(data, target_is_directory=True)
 
     preview = service.upgrade_project(project, workspace_root=tmp_path)
-    assert preview["proof"]["tier"] == "certified"
+    assert preview["proof"]["tier"] == "translated"
     report = service.upgrade_project(
         project, workspace_root=tmp_path, dry_run=False, expected_revision=preview["revision"]
     )
@@ -1143,8 +1147,8 @@ def test_query_rewrites_are_isolated_after_all_retired_forms(
         )
     assert report["status"] == "upgraded", report
     assert {row["id"]: row["tier"] for row in report["rules"]} == {
-        retired_key: "certified",
-        "query-version": "certified",
+        retired_key: "translated",
+        "query-version": "translated",
     }
     assert _contents(project) == UPGRADED
     runtime = Runtime.from_snapshot(load_package_snapshot(project))

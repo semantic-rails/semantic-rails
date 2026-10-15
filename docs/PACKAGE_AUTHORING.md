@@ -708,7 +708,7 @@ and `action`, even when empty. Each kind also accepts only:
 Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
 are refused with `INVALID_CONFIG`, including policies built in Python. Use
 `semantic-rails project upgrade` to rewrite them: the `policy-flat` alias rewrite and
-the `policy-redact-deny` action rewrite are `certified` rules for forms this engine
+the `policy-redact-deny` action rewrite are `translated` rules for forms this engine
 refuses, so `--write` applies them with the package's other legacy forms. Nested scope or
 identity fields, disagreeing alias values, and action rewrites that would change release
 labels are stops with no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
@@ -3400,30 +3400,37 @@ uv run semantic-rails project upgrade --path ./my_pkg --write   # write the chan
 - The Architect tool [`upgrade_project`](ARCHITECT_MCP.md#upgrading-a-package) runs the same
   upgrade.
 
-Every rewrite is proven or certified, and the report gives each rule's tier:
+The report gives each rule a tier describing what was actually checked:
 
 - `proven`: the package loads on this engine before the rewrite, and the rewrite leaves its semantic
   fingerprint and the SQL of every example and test query the baseline compiles unchanged. A
   non-retired rule touching a baseline-refused query must make it compile on its own above all
-  retired rewrites and the certified baseline, or be `unverified`. Queries are compiled, never run.
-- `certified`: this engine refuses the legacy form, so there is nothing to compare it with. The rule
-  was checked when it was added, and the release notes say what changed: a rule with effect
-  `retired` follows a release that removed the meaning, and claims no equivalence.
-  When the package does not load as authored, the baseline is the shortest prefix, in registry
-  order, of applicable retired rules and rules explicitly marked `refused` at load that makes
-  it load. Those prefix rules are `certified`; rules after that baseline still pass the proof.
+  retired rewrites and the translated baseline, or be `unverified`. Queries are compiled, never run.
+- `translated`: a query-call spelling rewrite, or a rule rewriting a form the engine refuses
+  before it can compare equivalence. Query-call rewrites are spelling-only translations:
+  review the diff. The upgrade loads the staged package and compiles rewritten calls with the
+  entry's `now` and `context` (a fixed clock of `2026-01-01T00:00:00Z` when no clock is given).
+  It never executes data or compares legacy answers, and does not certify these translations.
+  Contextual predicates (whose grouping context and inherited filters would be lost), start-only
+  windows (which would gain an upper bound at `now`), and case-changing `LIKE` translations
+  require hand edits with suggested calls and reasons; nothing is written until resolved.
+  Other rules for refused forms are also `translated`: a rule with effect `retired` follows a
+  release that removed the meaning and claims no equivalence. When the package does not load
+  as authored, the baseline is the shortest prefix, in registry order, of applicable retired
+  rules and rules explicitly marked `refused` at load that makes it load. Those prefix rules
+  are `translated`; rules after that baseline still pass the fingerprint and SQL checks.
   A `same_meaning` rule can be marked `refused` without changing its effect.
 - A rule that changes the fingerprint or an example's or test's SQL is refused with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"`, `details.rule` and the
   first difference. Nothing is written.
 - A preview reports `unverified` when no baseline loads, or a non-retired rule cannot make its
-  affected baseline-refused queries compile on its own above all retired rewrites and the certified
+  affected baseline-refused queries compile on its own above all retired rewrites and the translated
   baseline. A write refuses
   any `unverified` rule with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
   is written. When no baseline loads, the refusal and `next_actions` give the load error in
   `details.difference.load_error`, and `details.rule` names the first other rule whose rewrite
-  would make the package load (it rewrites a refused form it can't certify; report it), or is
+  would make the package load (it rewrites a refused form without a permitted baseline; report it), or is
   `null` when no rule covers the error.
 - The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as
   `graph.path_preferences` rows; examples that don't compile appear there with their codes.
@@ -3449,6 +3456,7 @@ named definition by hand before upgrading.
 | `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `expression-arithmetic` | 0.3.2 | Expression `kind: binary` and `kind: measure_ref`, conversion `matching:` and `in`/`not_in` `left:`, in metrics, segments, measure `expr:`, relation steps and example, test and segment membership queries | `kind: arithmetic`, `kind: measure`, `matching_mode:` and `expr:`, which parse to the same nodes; when both keys appear, the retired one (which was ignored) is deleted |
+| `query-call-v2` | 0.3.2 | Example and test queries in the previous call shape: `query`, and both `metric_query` and `expected_query` of comparison tests; reference objects, select dimensions, `metric_filters`, child groups, predicate scopes, `route_decisions` and route options, `policy_context`, `time.range`, SQL ops, `div`/`sub`/`mul`, `operands`/`terms`, tool arguments inside the query, and the retired spellings above inside it | The current call: id strings, `group_by`, `having` and entity filters, `routes`, `time.last`, equivalent filter words, `now:` and `context:` on the entry, and `period` for the time column in `columns`, `expected_shape.columns` and `expected_rows` keys. Refusal tests (`validate_fails_with_code`) require a hand edit with a suggested call and the expected code to verify. Moving a comparison's clock or context to its shared entry requires a hand edit too. Contextual predicates and start-only windows also require hand edits. Answer-changing translations (`not` keeps unknown rows; text words replacing `LIKE` ignore case) and sites with no current form (a pattern with `_`, a route option id, `max_rows`, a fiscal `calendar_id`, ...) stop at their file, line and path; nothing is written |
 | `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
 | `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
 | `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |

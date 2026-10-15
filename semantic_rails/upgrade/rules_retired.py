@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 
 from .model import Edit, Finding, PackageFiles, Rule, YamlPath, _walk
+from .rules_calls import rewritten
 
 _NOTE = "see the 0.3.2rc3 upgrade notes"
 
@@ -37,10 +38,13 @@ def _prune(
 def _null_behavior(files: PackageFiles) -> Iterator[Finding]:
     message = f"null_behavior was retired; delete it ({_NOTE})"
     rows = [*files.metrics(), *files.expressions()]
+    # A query in the previous call shape is rewritten whole, without null_behavior.
     for file, path, query in files.queries():
-        rows.extend(
-            (file, child_path, child) for child_path, child in _walk(query, path, expression=True)
-        )
+        if rewritten(files, file, path, query) is None:
+            rows.extend(
+                (file, child_path, child)
+                for child_path, child in _walk(query, path, expression=True)
+            )
     seen = set()
     for file, path, row in rows:
         if isinstance(row, dict) and "null_behavior" in row and (file, path) not in seen:
@@ -96,7 +100,7 @@ def _path_preference(files: PackageFiles) -> Iterator[Finding]:
 def _query_path_policy(files: PackageFiles) -> Iterator[Finding]:
     message = f"the query key path_policy was retired; delete it ({_NOTE})"
     for file, path, query in files.queries():
-        if "path_policy" in query:
+        if "path_policy" in query and rewritten(files, file, path, query) is None:
             yield _delete("query-path-policy", files, file, path, ("path_policy",), message)
 
 
