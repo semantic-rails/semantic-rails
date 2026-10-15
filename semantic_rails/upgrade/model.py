@@ -9,7 +9,7 @@ from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal
 
-from ..config import _authored_direct_fields
+from ..config_parts.metric_rows import _authored_direct_fields
 from ..errors import SemanticLayerError
 from ..expressions import _expression_children
 from ..package_snapshot import capture_package_source

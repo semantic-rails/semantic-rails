@@ -6,8 +6,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from ..config import _ensure_list
 from ..config_parts.package_loader import _RELATIONSHIP_PASSTHROUGH, _column_list
+from ..config_parts.row_values import _ensure_list
 from ..naming import slug, title
 from ..schema import OBSERVATION_SCOPES
 from .model import Edit, Finding, Option, PackageFiles, Rule, YamlPath, plan
