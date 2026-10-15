@@ -55,6 +55,7 @@ from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .policy_rules import visible_only_listed as _visible_only_listed
+from .query_call import refusal
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
@@ -448,20 +449,12 @@ def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> N
     ]
     refused = [field for field in dict.fromkeys(fields) if field in unfilterable]
     if refused:
-        path = paths.get(refused[0], "where")
-        raise SemanticLayerError(
-            "POLICY_DENIED",
-            f"{path}: {refused[0]} is not filterable; the package declares filterable: false",
-            details={
-                "path": path,
-                "policy_violations": [{"kind": "not_filterable", "disallowed": refused}],
-                "recovery_hints": [
-                    {
-                        "code": "FIX_QUERY_CALL",
-                        "message": "Remove the condition; group by the dimension instead.",
-                    }
-                ],
-            },
+        raise refusal(
+            paths.get(refused[0], "where"),
+            f"{refused[0]} is not filterable; the package declares filterable: false",
+            fix="Remove the condition; group by the dimension instead.",
+            code="POLICY_DENIED",
+            policy_violations=[{"kind": "not_filterable", "disallowed": refused}],
         )
 
 
