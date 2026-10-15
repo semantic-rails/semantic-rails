@@ -1,1 +1,0 @@
-- The MetricFlow importer (`semantic-rails import --from metricflow`) is removed.
