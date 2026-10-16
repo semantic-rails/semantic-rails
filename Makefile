@@ -46,7 +46,7 @@ packages:
 
 # The same suites and parallelism as CI's backend job.
 test-backend:
-	uv run pytest -q tests/semantic_rails -n auto
+	uv run pytest -q tests/semantic_rails -n auto --dist worksteal
 
 test: test-backend release-check
 

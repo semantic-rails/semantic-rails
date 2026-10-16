@@ -832,6 +832,20 @@ def test_unknown_files_use_median_cost():
     assert test_sharding.assign_files(["b", "a"], {}, 2) == {"a": 0, "b": 1}
 
 
+def test_every_backend_test_file_has_a_recorded_duration():
+    # A file without an entry costs the median, so a slow new file can unbalance every shard.
+    recorded = json.loads(test_sharding.DURATIONS.read_text(encoding="utf-8"))
+    missing = [
+        file
+        for file in test_sharding.test_files(ROOT)
+        if file.startswith("tests/semantic_rails/") and file not in recorded
+    ]
+    assert not missing, (
+        "Add each file's summed test seconds to tests/shard_durations.json (a local "
+        f"estimate is fine until the table is next refreshed from CI reports): {missing}"
+    )
+
+
 @pytest.mark.parametrize("cost", [0, -1, float("nan"), float("inf")])
 def test_cost_assignment_rejects_invalid_costs(cost):
     with pytest.raises(ValueError, match="finite and positive"):
