@@ -144,6 +144,7 @@ def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary(
             segments=[],
             semantic_policies=[],
         ),
+        snapshot=types.SimpleNamespace(has_segments=False),
     )
     runtime._config = runtime.config
     adapter, other = SemanticLayerMCPAdapter(runtime), SemanticLayerMCPAdapter(runtime)

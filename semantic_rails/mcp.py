@@ -684,17 +684,17 @@ MCP_RESOURCE_DEFINITIONS = tuple(definition.to_dict() for definition in RESOURCE
 MCP_PROMPT_DEFINITIONS = tuple(definition.to_dict() for definition in PROMPT_DEFINITIONS)
 
 
-def _offered_tool_names(config: PackageConfig | None) -> set[str]:
+def _offered_tool_names(has_segments: bool) -> set[str]:
     """The tools a package offers: no segment tool when it defines no segment."""
     return {
         definition.name
         for definition in TOOL_DEFINITIONS
-        if definition.name != "segment" or config is None or config.segments
+        if definition.name != "segment" or has_segments
     }
 
 
 def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
-    offered = _offered_tool_names(config)
+    offered = _offered_tool_names(config is None or bool(config.segments))
     return [definition.to_dict() for definition in TOOL_DEFINITIONS if definition.name in offered]
 
 
@@ -1467,7 +1467,7 @@ class SemanticLayerMCPAdapter:
     @property
     def instructions(self) -> str:
         instructions = MCP_SERVER_INSTRUCTIONS
-        if "segment" not in _offered_tool_names(self.runtime.config):
+        if "segment" not in self._package_tool_names():
             instructions = instructions.replace(
                 "segment(segment_id, action) validates, explains or previews a package-authored "
                 "segment.\n\n",
@@ -1506,19 +1506,24 @@ class SemanticLayerMCPAdapter:
     def list_tools(self) -> list[dict[str, Any]]:
         return list_tool_definitions(config=self.runtime.config)
 
+    def _package_tool_names(self) -> set[str]:
+        """The tools the whole package offers. Every call reads this, so it asks the snapshot:
+        ``Runtime.config`` copies the whole package."""
+        return _offered_tool_names(self.runtime.snapshot.has_segments)
+
     def _caller_tool_names(self) -> set[str]:
         """The tools a caller's view offers: no segment tool when they see no segment."""
         try:
             view = self.runtime.view_for(_caller())
         except Exception:  # noqa: BLE001 — the call itself refuses an unresolved view
-            view = self.runtime.config
-        return _offered_tool_names(view)
+            return self._package_tool_names()
+        return _offered_tool_names(bool(view.segments))
 
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        has_segment = "segment" in _offered_tool_names(self.runtime.config)
+        has_segment = "segment" in self._package_tool_names()
         return [
             prompt
             for prompt in list_prompt_definitions()
@@ -1627,7 +1632,7 @@ class SemanticLayerMCPAdapter:
         except SemanticLayerError as exc:
             return finish(self._error_response(exc, args_dict))
         handler = self._tool_handlers.get(name)
-        available_tools = _offered_tool_names(self.runtime.config)
+        available_tools = self._package_tool_names()
         if handler is None or name not in available_tools or name == "segment":
             available_tools = self._caller_tool_names()
         if handler is None or name not in available_tools:

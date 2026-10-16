@@ -26,6 +26,7 @@ from semantic_rails.mcp import (
     list_tool_definitions,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
+from semantic_rails.package_snapshot import LoadedPackageSnapshot
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -118,6 +119,18 @@ def test_package_segments_control_the_tool_registry(
         assert served.list_tools()[0]["inputSchema"]["properties"]
     finally:
         served.close()
+
+
+def test_tool_calls_never_copy_the_package(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ``Runtime.config`` deep-copies the package: once read per call, it cost more than the call.
+    def copied(snapshot: LoadedPackageSnapshot) -> None:
+        raise AssertionError("an MCP tool call copied the package")
+
+    monkeypatch.setattr(LoadedPackageSnapshot, "config", property(copied))
+    for tool, arguments in MINIMAL_ARGUMENTS.items():
+        assert adapter.call_tool(tool, arguments)["ok"] is True, tool
 
 
 @pytest.mark.parametrize("grant", [False, True])

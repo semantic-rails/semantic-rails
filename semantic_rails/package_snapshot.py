@@ -191,6 +191,11 @@ class LoadedPackageSnapshot:
         return deepcopy(self._config)
 
     @property
+    def has_segments(self) -> bool:
+        """Whether the package defines a segment, read without copying the package."""
+        return bool(self._config.segments)
+
+    @property
     def authored(self) -> dict[str, Any]:
         return deepcopy(self._authored)
 
