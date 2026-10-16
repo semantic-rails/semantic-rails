@@ -88,7 +88,7 @@ jobs:
           prune-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --locked
-      - run: uv run pytest -q tests/semantic_rails -n auto
+      - run: uv run pytest -q tests/semantic_rails -n auto --dist worksteal
 
   test:
     name: Build and test release

@@ -96,7 +96,7 @@ Run these before opening a PR (`make install lint typecheck test-backend contrac
 
 ```bash
 uv sync --group dev --locked
-uv run pytest -q tests/semantic_rails -n auto
+uv run pytest -q tests/semantic_rails -n auto --dist worksteal
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy semantic_rails
@@ -144,9 +144,13 @@ and 3.14. The merge queue is the complete compatibility gate: a failure on anoth
 Python version ejects the change before merging. Files are assigned longest first
 to the lightest shard, with paths and shard indices breaking ties.
 `tests/shard_durations.json` records summed
-per-test seconds for each file; unknown files use the median cost. Ownership uses
-the full on-disk test-file inventory so targeted runs and the flake guard retain
-the full suite's assignment. Set `SR_SHARD_COUNT`
+per-test seconds for each file, and `test_ci_hygiene` fails when a file under
+`tests/semantic_rails/` has no entry: a new file needs an estimate (its summed local test
+seconds) until the next refresh. Files without an entry, such as `tests/integration`, use
+the median cost. Within a shard, xdist's `worksteal` scheduler lets idle workers take
+queued tests, so long parametrized cases do not leave the last worker running alone.
+Ownership uses the full on-disk test-file inventory so targeted runs and the flake
+guard retain the full suite's assignment. Set `SR_SHARD_COUNT`
 and zero-based `SR_SHARD_INDEX` to reproduce a shard locally; unset both to run
 without partitioning. Quarantine IDs are validated against the full collection
 before partitioning. Every Python/version shard uploads its JUnit report, and the

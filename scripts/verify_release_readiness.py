@@ -837,7 +837,7 @@ def main(argv: list[str] | None = None) -> int:
     ci = read(".github/workflows/ci.yml")
     for required_ci_command in (
         "uv run python scripts/changelog_fragments.py check",
-        "uv run pytest -q tests/semantic_rails -n auto",
+        "uv run pytest -q tests/semantic_rails -n auto --dist worksteal",
         "uv run semantic-rails parse-config --package jaffle_shop",
         "uv run semantic-rails validate-config --package jaffle_shop --quiet",
         "uv run semantic-rails test-package --package jaffle_shop",
