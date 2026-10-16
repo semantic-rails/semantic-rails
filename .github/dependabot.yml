@@ -7,17 +7,39 @@ updates:
       day: monday
       time: "07:00"
       timezone: "America/New_York"
-    open-pull-requests-limit: 5
+    # Room for the per-dependency PRs below next to the two group PRs.
+    open-pull-requests-limit: 10
     ignore:
       # A new mcp major breaks the SDK integration; the migration that adopts it sets the bound itself.
       - dependency-name: "mcp"
         update-types: ["version-update:semver-major"]
+    # Number-affecting dependencies get their own PR, never a weekly group: DuckDB, Arrow and
+    # pandas (Databricks results go through pandas), time-zone and date parsing, and every
+    # warehouse driver. Keep both lists in sync.
     groups:
       python-deps:
         patterns: ["*"]
+        exclude-patterns:
+          - "duckdb"
+          - "pyarrow"
+          - "pandas"
+          - "numpy"
+          - "tzdata"
+          - "pytz"
+          - "python-dateutil"
+          - "adbc-*"
+          - "snowflake-*"
+          - "google-cloud-bigquery*"
+          - "databricks-*"
+          - "clickhouse-*"
+          - "pyathena"
+          - "boto3"
         update-types: ["minor", "patch"]
       python-deps-major:
         patterns: ["*"]
+        exclude-patterns: ["duckdb", "pyarrow", "pandas", "numpy", "tzdata", "pytz",
+                           "python-dateutil", "adbc-*", "snowflake-*", "google-cloud-bigquery*",
+                           "databricks-*", "clickhouse-*", "pyathena", "boto3"]
         update-types: ["major"]
 
   - package-ecosystem: github-actions
