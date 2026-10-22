@@ -1434,7 +1434,12 @@ which describes semantic lineage and authored types.
 
 A column's JSON type follows the driver's result type, never the authored type: DECIMAL and
 NUMERIC become canonical strings (`Decimal("0.10")` → `"0.1"`), FLOAT, DOUBLE and INTEGER
-become numbers. Mixed numeric values take Decimal over float over integer for the whole column;
+become numbers. The one exception comes from the query itself: a count (a `count` or
+`count_distinct`, or a sum, difference, product, running total, period-to-date or prior value of
+counts, directly or through a metric) is an integer even where the driver widens it to a
+decimal, as Postgres does when it sums bigint counts (an aggregate table's counts, a running
+total) and Snowflake's high-precision Arrow results do for every `NUMBER(18,0)`. A count the
+warehouse returns with a fraction keeps its decimal string. Mixed numeric values take Decimal over float over integer for the whole column;
 an integer that a float cannot hold exactly refuses with `RESULT_VALUE_UNSUPPORTED` rather than
 rounding. Numeric-looking text stays text. The same aggregate can have a different type per
 warehouse (`AVG` is DOUBLE on DuckDB and NUMERIC on Postgres); `column_types` reports what the
