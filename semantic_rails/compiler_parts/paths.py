@@ -500,6 +500,20 @@ def _time_anchor_expr(
     return _column_ref(entities[dim.entity].table, dim.column)
 
 
+def _day_end_anchor(time_spec: dict[str, Any], config: PackageConfig) -> Any:
+    """The end of each row's day on the query's clock: the next midnight after the day the row's
+    time falls in, as ``time.grain: day`` buckets it (in the role's ``timezone``), back in the
+    column's own zone so it compares with the validity columns as the row's time does."""
+    from .lowering_common import _apply_role_timezone, _role_conversion
+
+    role = _temporal_role_index(config)[str(time_spec["temporal_role"])]
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    local = _apply_role_timezone(_time_anchor_expr(time_spec, config), role, config)
+    edge = dialect.date_add("day", SqlLiteral(1), dialect.date_trunc("day", local))
+    zones = _role_conversion(role)
+    return dialect.convert_timezone(zones[1], zones[0], edge) if zones else edge
+
+
 def _join_on_for_relationship(
     rel: RelationshipConfig,
     current_entity: str,
@@ -552,10 +566,15 @@ def _join_on_for_relationship(
     if time_anchor is not None and enters_window:
         valid_from = str(rel.temporal_validity.get("valid_from", "")).strip()
         valid_to = str(rel.temporal_validity.get("valid_to", "")).strip()
+        # The version valid at the row's time, or at the last instant of its day: one that
+        # starts before the next midnight and hasn't ended by it.
+        start, end = "<=", ">"
+        if rel.temporal_validity.get("as_of") == "end_of_day":
+            time_anchor, start, end = _day_end_anchor(dict(time_spec or {}), config), "<", ">="
         if valid_from:
             table, column = _split_column_ref(valid_from)
             condition = SqlBinary(
-                condition, "AND", SqlBinary(_column_ref(table, column), "<=", time_anchor)
+                condition, "AND", SqlBinary(_column_ref(table, column), start, time_anchor)
             )
         if valid_to:
             table, column = _split_column_ref(valid_to)
@@ -564,7 +583,7 @@ def _join_on_for_relationship(
                 condition,
                 "AND",
                 SqlBinary(
-                    SqlBinary(valid_to_expr, ">", time_anchor), "OR", SqlIsNull(valid_to_expr)
+                    SqlBinary(valid_to_expr, end, time_anchor), "OR", SqlIsNull(valid_to_expr)
                 ),
             )
     return condition, right_table, next_entity
