@@ -500,12 +500,38 @@ def _time_anchor_expr(
     return _column_ref(entities[dim.entity].table, dim.column)
 
 
+def _role_conversion(role: Any) -> tuple[str, str] | None:
+    """The role's ``(column_timezone, timezone)`` when they differ, else ``None``."""
+    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
+    target_tz = str(getattr(role, "timezone", "") or "").strip()
+    if not column_tz or not target_tz or column_tz == target_tz:
+        return None
+    return column_tz, target_tz
+
+
+def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
+    """Wrap a temporal role's raw column expression with a timezone conversion
+    when the role's ``column_timezone`` is set and differs from ``timezone``.
+
+    The wrap is applied to ``raw_expr`` before any ``date_trunc`` and before
+    use in WHERE filter comparisons, so truncation and filtering happen in
+    the target zone. A DATE clock enters through the dialect's
+    ``naive_date_clock``. A path that reads a role's raw column without this
+    wrap calls ``_refuse_converted_role`` first.
+    """
+    zones = _role_conversion(role)
+    if zones is None:
+        return raw_expr
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if _dimension_index(config)[role.dimension].data_type == "date":
+        raw_expr = dialect.naive_date_clock(raw_expr)
+    return dialect.convert_timezone(*zones, raw_expr)
+
+
 def _day_end_anchor(time_spec: dict[str, Any], config: PackageConfig) -> Any:
     """The end of each row's day on the query's clock: the next midnight after the day the row's
     time falls in, as ``time.grain: day`` buckets it (in the role's ``timezone``), back in the
     column's own zone so it compares with the validity columns as the row's time does."""
-    from .lowering_common import _apply_role_timezone, _role_conversion
-
     role = _temporal_role_index(config)[str(time_spec["temporal_role"])]
     dialect = dialect_for_warehouse(config.package.warehouse)
     local = _apply_role_timezone(_time_anchor_expr(time_spec, config), role, config)

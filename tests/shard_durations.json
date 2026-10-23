@@ -92,6 +92,7 @@
   "tests/semantic_rails/test_duckdb_timestamptz_values.py": 0.838,
   "tests/semantic_rails/test_embedding_consumer_contract.py": 16.083,
   "tests/semantic_rails/test_empty_groups.py": 32.177,
+  "tests/semantic_rails/test_end_of_day_validity.py": 1.2,
   "tests/semantic_rails/test_entity_graph_cards.py": 4.652,
   "tests/semantic_rails/test_entity_value_filters.py": 2.161,
   "tests/semantic_rails/test_ergonomics_v2.py": 2.23,
