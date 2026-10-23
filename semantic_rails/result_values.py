@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import math
 import re
+from collections.abc import Collection
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -131,17 +132,25 @@ def _json_container(value: Any) -> Any:
 PERIOD_GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
 
 
+def _whole(value: Any) -> bool:
+    if isinstance(value, Decimal):
+        return value.is_finite() and value == value.to_integral_value()
+    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+
+
 def result_rows(
     rows: list[dict[str, Any]],
     *,
     output_columns: list[dict[str, Any]] | None = None,
     zone: str = "",
+    counts: Collection[str] = (),
 ) -> dict[str, Any]:
     """Encode rows once, retaining observed logical types beside their values.
 
     All public row producers use this boundary, including injected adapters.
     Nulls do not override a non-null type. Conflicting column types refuse
-    rather than making numeric strings indistinguishable from text.
+    rather than making numeric strings indistinguishable from text. ``counts``
+    names the columns the query makes counts.
     """
     encoded: list[dict[str, Any]] = []
     types: dict[str, dict[str, str]] = {}
@@ -156,7 +165,8 @@ def result_rows(
         for column in output_columns or []
         if column["field"] in buckets and column.get("grain") in PERIOD_GRAINS
     }
-    # Choose once from observed driver types; authored types never encode values.
+    # Choose once from observed driver types; authored types never encode values, and only
+    # the query's own counts read a whole decimal as an integer.
     numeric_types: dict[str, str] = {}
     priority = {"integer": 0, "float": 1, "decimal": 2}
     for row in rows:
@@ -172,6 +182,12 @@ def result_rows(
             )
             prior_type = numeric_types.get(column, observed)
             numeric_types[column] = max((prior_type, observed), key=priority.__getitem__)
+    # A count is whole whatever type the driver widened it to: Postgres sums bigint counts as
+    # NUMERIC, and Snowflake's high-precision Arrow results type NUMBER(18,0) as a decimal. A
+    # count column whose values are all whole is an integer; any other keeps its observed type.
+    for column in counts:
+        if numeric_types.get(column) == "decimal" and all(_whole(row.get(column)) for row in rows):
+            numeric_types[column] = "integer"
     for row in rows:
         output: dict[str, Any] = {}
         for column, value in row.items():
