@@ -105,6 +105,7 @@ from .indexes import (
     get_package_analysis,
 )
 from .paths import (
+    _apply_role_timezone,
     _column_ref,
     _direct_dimension_source_expr,
     _entity_in_terms_of_parent_relationship,
@@ -112,6 +113,7 @@ from .paths import (
     _leaf_time_role,
     _path_selection,
     _resolve_dimension_expr,
+    _role_conversion,
     dimension_filter,
     rollup_held_lookups,
 )
@@ -710,34 +712,6 @@ def _refuse_varying_time_key(plan: LogicalPlan, leaf: Any) -> None:
         raise window_total_refusal(
             plan.time, "part of this query still groups by the raw time", time_keys=varying
         )
-
-
-def _role_conversion(role: Any) -> tuple[str, str] | None:
-    """The role's ``(column_timezone, timezone)`` when they differ, else ``None``."""
-    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
-    target_tz = str(getattr(role, "timezone", "") or "").strip()
-    if not column_tz or not target_tz or column_tz == target_tz:
-        return None
-    return column_tz, target_tz
-
-
-def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
-    """Wrap a temporal role's raw column expression with a timezone conversion
-    when the role's ``column_timezone`` is set and differs from ``timezone``.
-
-    The wrap is applied to ``raw_expr`` before any ``date_trunc`` and before
-    use in WHERE filter comparisons, so truncation and filtering happen in
-    the target zone. A DATE clock enters through the dialect's
-    ``naive_date_clock``. A path that reads a role's raw column without this
-    wrap calls ``_refuse_converted_role`` first.
-    """
-    zones = _role_conversion(role)
-    if zones is None:
-        return raw_expr
-    dialect = _dialect(config)
-    if _dimension_index(config)[role.dimension].data_type == "date":
-        raw_expr = dialect.naive_date_clock(raw_expr)
-    return dialect.convert_timezone(*zones, raw_expr)
 
 
 _CONVERTED_ROLE_PATHS = {

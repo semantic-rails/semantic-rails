@@ -174,6 +174,12 @@ def _entity_keys(config: PackageConfig) -> dict[str, str]:
     return {entity_id: _slug(tail[len(prefix) :]) for entity_id, tail in tails.items()}
 
 
+def reads_end_of_day(rel: RelationshipConfig) -> bool:
+    """Whether a hop into ``rel``'s validity window reads the version in force at the end of
+    each row's day (``as_of: end_of_day``) rather than at the row's time."""
+    return (rel.temporal_validity or {}).get("as_of") == "end_of_day"
+
+
 def hop_reach(rel: RelationshipConfig, current_entity: str, near_table: str) -> str:
     """How many rows a ``current_entity`` row reaches over ``rel``: ``"as_of"`` (the far row's
     version valid at the row's time), ``"one"`` (functional) or ``"many"``."""
@@ -220,7 +226,7 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
     Branch": every entity on the route, each hop to an entity named by its label. A hop whose
     entity pair has more than one relationship is named by its authored relationship label,
     else by its foreign-key columns; a one-to-many hop reads "any of the …", and a hop into a
-    validity window "the … valid at the time" (``hop_reach``)."""
+    validity window "the … valid at the time" (``hop_reach``), or "at the end of the day"."""
     analysis = get_package_analysis(config)
     pairs = Counter(
         frozenset((rel.source_entity, rel.target_entity)) for rel in analysis.relationships.values()
@@ -244,7 +250,9 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
         many = reach == "many"
         word = (_plural(noun) if many else noun) + (f" ({qualifier})" if qualifier else "")
         if reach == "as_of":
-            word += " valid at the time"
+            word += (
+                " valid at the end of the day" if reads_end_of_day(rel) else " valid at the time"
+            )
         phrase = (
             f"the {word} of {phrase}" if phrase else f"the {entity_label(config, start)}'s {word}"
         )

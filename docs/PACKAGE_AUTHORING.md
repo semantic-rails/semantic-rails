@@ -1216,6 +1216,7 @@ graph:
       temporal_validity:                        # <model relation name>.<column>
         valid_from: shop_customer_history.effective_from
         valid_to: shop_customer_history.effective_to
+        # as_of: end_of_day                     # read at the end of the row's day (default: time)
 ```
 
 A query that joins into the table holding the window needs a `time`, so each row reads the
@@ -1225,6 +1226,16 @@ count a row once per version. A hop out of that table (`customer_history → cus
 reads one version per row and needs no time. The validity predicate applies only when joining
 into the versioned table: an outgoing lookup keeps the existing version's dimensions even
 when the query clock is its `valid_to`, including a NULL end time on an open version.
+`as_of` says when each row reads its version. `time` (the default) reads the version valid at
+the row's time. `end_of_day` reads the version in force at the end of the row's day on the
+query's clock (the time role's `timezone`, the day `time.grain: day` buckets the row in): one
+that starts before the next midnight and hasn't ended by it. Use it when the history is written
+a moment after the row it describes, as billing writes a workspace's plan seconds after the
+workspace: read at the row's own time, no version exists yet, so every new workspace would read
+an empty Plan. The day's last version is the one read: a workspace that signs up on Pro and moves
+to Builder the same day reads Builder, and one whose only version ends that day reads none. Route
+readings and `NULL_PRESERVING_HISTORY` say "valid at the end of the day". `as_of` is refused
+without `valid_from`, as is any other key.
 A metric predicate is stricter: when the path from
 its input to its entity, context or filters crosses a time-valid relationship in either
 direction, it needs a time of its own (a contextual predicate takes the query's `time`).
