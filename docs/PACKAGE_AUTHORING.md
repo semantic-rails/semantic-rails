@@ -632,11 +632,15 @@ certificate authority's revocation lists (CRLs). The default,
 `cert_revocation_check_mode: advisory`, refuses a revoked certificate but still
 connects when a revocation list cannot be fetched, so a revocation-server
 outage does not stop queries. Set `enabled` to refuse a connection whenever
-revocation cannot be confirmed, or `disabled` to turn the check off.
-Certificate and hostname validation apply in every mode. A named profile keeps
-its own setting unless the package sets this option. The connector applies the
-mode to the whole Python process, so packages served from one process should
-use the same mode. `snowflake_cli` follows the Snow CLI's own configuration.
+revocation cannot be confirmed, or `disabled` to turn the check off; any other
+value fails validation. Certificate and hostname validation apply in every
+mode. A named profile that sets `cert_revocation_check_mode` keeps it unless
+the package sets the option. Revocation lists are cached in memory, not on
+disk, so a read-only home directory does not affect connections. The
+connector applies the most recent connection's mode to the whole Python
+process; see [docs/EMBEDDING.md](EMBEDDING.md#snowflake-revocation-mode-is-process-wide)
+when one process serves several packages. `snowflake_cli` follows the Snow
+CLI's own configuration.
 
 ### Secrets
 

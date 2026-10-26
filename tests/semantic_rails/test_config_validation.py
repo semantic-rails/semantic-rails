@@ -849,6 +849,22 @@ _STANDARD_OPTIONS = {
             {"kind": "snowflake_native", "options": _NATIVE_ENV},
             "snowflake_native direct connection",
         ),
+        (
+            {
+                "kind": "snowflake_native",
+                "name": "prod_native",
+                "options": {"cert_revocation_check_mode": "Enabled"},
+            },
+            {"options": {"cert_revocation_check_mode": "Enabled"}},
+        ),
+        (
+            {
+                "kind": "snowflake_native",
+                "name": "prod_native",
+                "options": {"cert_revocation_check_mode": "strict"},
+            },
+            "'cert_revocation_check_mode' must be one of: advisory, enabled, disabled",
+        ),
         ({"kind": "snowflake_cli"}, "snowflake_cli packages must declare package.connection.name"),
         (
             {
@@ -865,6 +881,8 @@ _STANDARD_OPTIONS = {
         "native-secret-env",
         "native-direct",
         "native-without-auth",
+        "native-revocation-mode",
+        "native-unknown-revocation-mode",
         "cli-without-name",
         "cli-unsupported-option",
     ],

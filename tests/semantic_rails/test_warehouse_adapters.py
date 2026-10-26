@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -767,13 +768,24 @@ def test_snowflake_direct_connection_sends_revocation_check_mode(monkeypatch, au
         options["cert_revocation_check_mode"] = authored
     SnowflakeNativeAdapter(options=options)._connection()
     assert connect.call_args.kwargs["cert_revocation_check_mode"] == expected
+    assert connect.call_args.kwargs["enable_crl_file_cache"] is False
 
 
-@pytest.mark.parametrize(("authored", "expected"), [(None, None), ("enabled", "ENABLED")])
-def test_snowflake_named_profile_owns_revocation_check_mode_unless_authored(
-    monkeypatch, authored, expected
+@pytest.mark.parametrize(
+    ("profile", "authored", "expected"),
+    [
+        ({}, None, "ADVISORY"),
+        ({"cert_revocation_check_mode": "ENABLED"}, None, None),
+        ({"cert_revocation_check_mode": "ENABLED"}, "disabled", "DISABLED"),
+    ],
+)
+def test_snowflake_named_profile_keeps_its_own_revocation_check_mode(
+    monkeypatch, profile, authored, expected
 ):
     connect = _fake_snowflake_connector(monkeypatch)
+    config_module = types.ModuleType("snowflake.connector.config_manager")
+    config_module.CONFIG_MANAGER = {"connections": {"analytics": profile}}
+    monkeypatch.setitem(sys.modules, "snowflake.connector.config_manager", config_module)
     options = {} if authored is None else {"cert_revocation_check_mode": authored}
     SnowflakeNativeAdapter("analytics", options=options)._connection()
     assert connect.call_args.kwargs["connection_name"] == "analytics"
@@ -782,11 +794,10 @@ def test_snowflake_named_profile_owns_revocation_check_mode_unless_authored(
 
 def test_snowflake_refuses_unknown_revocation_check_mode_before_connect(monkeypatch):
     connect = _fake_snowflake_connector(monkeypatch)
-    adapter = SnowflakeNativeAdapter("analytics", options={"cert_revocation_check_mode": "strict"})
     with pytest.raises(SemanticLayerError) as exc:
-        adapter._connection()
+        SnowflakeNativeAdapter("analytics", options={"cert_revocation_check_mode": "strict"})
     assert exc.value.code == "INVALID_CONFIG"
-    assert exc.value.details["option"] == "cert_revocation_check_mode"
+    assert "cert_revocation_check_mode" in str(exc.value)
     assert "strict" not in str(exc.value)
     connect.assert_not_called()
 
@@ -796,11 +807,115 @@ def test_snowflake_connector_accepts_every_revocation_check_mode():
     from snowflake.connector.connection import DEFAULT_CONFIGURATION
     from snowflake.connector.crl import CertRevocationCheckMode
 
-    from semantic_rails.db_parts.snowflake import _CERT_REVOCATION_CHECK_MODES
+    from semantic_rails.dialects import SNOWFLAKE_CERT_REVOCATION_CHECK_MODES
 
-    assert "cert_revocation_check_mode" in DEFAULT_CONFIGURATION
-    for mode in _CERT_REVOCATION_CHECK_MODES:
+    assert {"cert_revocation_check_mode", "enable_crl_file_cache"} <= set(DEFAULT_CONFIGURATION)
+    for mode in SNOWFLAKE_CERT_REVOCATION_CHECK_MODES:
         assert CertRevocationCheckMode(mode.upper()).value == mode.upper()
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions")
+def test_snowflake_advisory_revocation_check_connects_with_unwritable_home(monkeypatch, tmp_path):
+    """The connector's default CRL file cache lives under HOME; a read-only HOME
+    (as in a hardened container) must not fail an advisory-mode TLS handshake."""
+    import datetime
+    import ssl
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from unittest.mock import patch
+
+    pytest.importorskip("snowflake.connector")
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from snowflake.connector import connection as sf_connection
+    from snowflake.connector import ssl_wrap_socket
+    from snowflake.connector.crl_cache import CRLCacheFactory
+    from snowflake.connector.network import SnowflakeRestful
+    from snowflake.connector.vendored import urllib3
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(1)
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=30))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path, key_path = tmp_path / "cert.pem", tmp_path / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *_args):
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o500)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(ssl_wrap_socket, "FEATURE_CRL_CONFIG", ssl_wrap_socket.FEATURE_CRL_CONFIG)
+    monkeypatch.setattr(CRLCacheFactory, "_file_cache_instance", None)
+    monkeypatch.setenv("SR_TEST_ACCOUNT", "example")
+    monkeypatch.setenv("SR_TEST_USER", "example")
+    monkeypatch.setenv("SR_TEST_PASSWORD", "example")
+    kwargs = SnowflakeNativeAdapter(
+        options={
+            "account_env": "SR_TEST_ACCOUNT",
+            "user_env": "SR_TEST_USER",
+            "password_env": "SR_TEST_PASSWORD",
+        }
+    )._connect_kwargs()
+
+    def open_without_login(self):
+        # Building the REST client applies the connection's revocation settings.
+        self._rest = SnowflakeRestful(
+            host=self.host, port=self.port, protocol=self._protocol, connection=self
+        )
+
+    def get():
+        pool = urllib3.PoolManager(
+            cert_reqs="CERT_REQUIRED", ca_certs=str(cert_path), retries=False
+        )
+        return pool.request("GET", f"https://localhost:{server.server_port}/")
+
+    try:
+        open_patch = "_SnowflakeConnection__open_connection"
+        with patch.object(sf_connection.SnowflakeConnection, open_patch, open_without_login):
+            sf_connection.SnowflakeConnection(**kwargs)
+        assert ssl_wrap_socket.FEATURE_CRL_CONFIG.cert_revocation_check_mode.name == "ADVISORY"
+        assert get().data == b"ok"
+        # Sanity: the connector's on-disk cache is what fails under this HOME.
+        with patch.object(sf_connection.SnowflakeConnection, open_patch, open_without_login):
+            sf_connection.SnowflakeConnection(**{**kwargs, "enable_crl_file_cache": True})
+        with pytest.raises(urllib3.exceptions.ProtocolError, match="Permission denied"):
+            get()
+    finally:
+        server.shutdown()
+        server.server_close()
+        home.chmod(0o700)
 
 
 @pytest.mark.parametrize(

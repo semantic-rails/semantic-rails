@@ -1581,6 +1581,9 @@ SNOWFLAKE_NATIVE_CONNECTION_OPTIONS: tuple[str, ...] = (
     "cert_revocation_check_mode",
 )
 
+# Values of the snowflake_native ``cert_revocation_check_mode`` option.
+SNOWFLAKE_CERT_REVOCATION_CHECK_MODES: tuple[str, ...] = ("advisory", "enabled", "disabled")
+
 SNOWFLAKE_NATIVE_DIRECT_AUTH_OPTIONS: tuple[str, ...] = (
     "password_env",
     "token_env",
@@ -1809,6 +1812,15 @@ def connection_option_errors(warehouse: str, kind: str, options: dict[str, Any])
             continue
         if not isinstance(value, str) or not value.strip():
             errors.append(f"package.connection option '{raw_key}' must be a non-empty string")
+        elif (
+            key == "cert_revocation_check_mode"
+            and value.strip().lower() not in SNOWFLAKE_CERT_REVOCATION_CHECK_MODES
+        ):
+            # The connector would silently skip the check on an unknown mode.
+            errors.append(
+                f"package.connection option '{raw_key}' must be one of: "
+                + ", ".join(SNOWFLAKE_CERT_REVOCATION_CHECK_MODES)
+            )
     return tuple(errors)
 
 
