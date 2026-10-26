@@ -1153,7 +1153,11 @@ def parse_snapshot_report(
     if not errors:
         assert snapshot is not None
         config = snapshot.config
-        census = route_census(config, queries=package_queries(config, ref.source_path))
+        census = route_census(
+            config,
+            queries=package_queries(config, ref.source_path),
+            package=snapshot.source_fingerprint,
+        )
         for warning in _compiled_package_warnings(config, Path(ref.source_path), census=census):
             if isinstance(warning, dict):
                 warnings.append(dict(warning))

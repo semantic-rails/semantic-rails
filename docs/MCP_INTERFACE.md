@@ -488,8 +488,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   `AMBIGUOUS_PATH`: `why.message` asks which route the question means in business words, and
   each `why.details.options[]` (`id`, `reads`, `call`, `decision`) is the draft with that route in
   `routes` (this question only) and the `graph.path_preferences` row that makes it the package
-  default. Only readings the engine answers are offered; with none, plan holds the draft as
-  before. Two or
+  default. Only readings the engine answers are offered (`why.details.unrunnable` names the
+  others); with none, plan holds the draft as before. Two or
   more questions for a
   value, "how many", "how much", "what is", "what was" or "what's", need a select of their
   own each that names what the question asks about:

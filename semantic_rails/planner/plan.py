@@ -792,16 +792,16 @@ def _planned_row(
         ask = _with_ready_options(runtime, child_scope)
         if ask["details"]["options"]:
             return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
-    if pattern != "catalog_fallback" and (route := _route_ask(runtime, validation)) is not None:
-        # The question's pieces connect by two or more routes: ask which one it means, never
-        # on a placeholder draft.
-        return _blocked_row(merged_draft, pattern, route, blocked, clarify=True)
     # A question needs two readings the engine runs; with one, the draft is that reading.
     ask = _with_ready_options(runtime, merged_draft.ask, partial_query) if merged_draft.ask else {}
     if len(ask.get("details", {}).get("options") or []) < 2:
         ask = {}
     if ask and not validation["ok"]:
         return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
+    if pattern != "catalog_fallback" and (route := _route_ask(runtime, validation)) is not None:
+        # The question's pieces connect by two or more routes: ask which one it means, after
+        # the draft's own question and never on a placeholder draft.
+        return _blocked_row(merged_draft, pattern, route, blocked, clarify=True)
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
@@ -914,6 +914,7 @@ def _route_ask(runtime: Any, validation: dict[str, Any]) -> dict[str, Any] | Non
             }
         ],
     }
+    offered = [option["reads"] for option in why["details"]["options"]]
     why = _with_ready_options(runtime, why)
     readings = [option["reads"] for option in why["details"]["options"]]
     if not readings:
@@ -926,6 +927,9 @@ def _route_ask(runtime: Any, validation: dict[str, Any]) -> dict[str, Any] | Non
         else f"{question} Only one reading runs: {readings[0]}. Which reading the question means "
         "is a business definition, so plan asks before using it."
     )
+    if unrunnable := [reads for reads in offered if reads not in readings]:
+        message += f" This question can't be answered as {', or as '.join(unrunnable)}."
+        why["details"]["unrunnable"] = unrunnable
     return {"code": why.pop("code"), "message": message, **why}
 
 

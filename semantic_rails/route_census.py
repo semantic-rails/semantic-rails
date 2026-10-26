@@ -19,14 +19,17 @@ on the child itself).
 
 from __future__ import annotations
 
-from collections import deque
+import hashlib
+import json
+from collections import OrderedDict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 # Through the compiler, which registers the nested compiles a binding runs.
-from .compiler import bind_query
+from .compiler import bind_query, read_routes
 from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import dimensions_over_column, text_dimension
 from .compiler_parts.plan_checks import _object_default_query_temporal_role
@@ -51,6 +54,11 @@ Pair = tuple[str, str]
 PackageQuery = tuple[str, list[dict[str, Any]], Any]
 # A metric that reads periods compiles only with a time block: one of these grains.
 _GRAINS = ("day", "month", "quarter", "year")
+# The walks of the last few packages, by source fingerprint and queries: an Architect write
+# parses the same package more than once.
+_WALKS: OrderedDict[str, dict[Pair, list[str]]] = OrderedDict()
+_WALKS_LOCK = Lock()
+_WALKS_KEPT = 8
 
 
 @dataclass(frozen=True)
@@ -159,7 +167,9 @@ def walked_pairs(config: PackageConfig, queries: Iterable[PackageQuery]) -> dict
                     text_dimension=text_dimension,
                     column_dimensions=dimensions_over_column,
                 )
-                choices = bind_query(config, registry, payload).route_choices
+                bound = bind_query(config, registry, payload)
+                # The plan's own paths (a group_by's, a measure's) and those lowering read.
+                choices = read_routes(bound.plan, bound.route_choices)
             except (TypeError, ValueError):
                 # The expression parser raises these for some malformed values; the
                 # examples and tests report their own failures.
@@ -190,8 +200,27 @@ def walked_pairs(config: PackageConfig, queries: Iterable[PackageQuery]) -> dict
     return walked
 
 
+def _walks(
+    config: PackageConfig, queries: list[PackageQuery], package: str
+) -> dict[Pair, list[str]]:
+    """``walked_pairs``, reused for the same ``package`` (its source fingerprint) and queries."""
+    if not package:
+        return walked_pairs(config, queries)
+    key = hashlib.sha256(json.dumps([package, queries], default=str).encode()).hexdigest()
+    with _WALKS_LOCK:
+        if (walked := _WALKS.get(key)) is not None:
+            _WALKS.move_to_end(key)
+            return walked
+    walked = walked_pairs(config, queries)
+    with _WALKS_LOCK:
+        _WALKS[key] = walked
+        while len(_WALKS) > _WALKS_KEPT:
+            _WALKS.popitem(last=False)
+    return walked
+
+
 def route_census(
-    config: PackageConfig, *, queries: Iterable[PackageQuery] = ()
+    config: PackageConfig, *, queries: Iterable[PackageQuery] = (), package: str = ""
 ) -> dict[str, list[dict[str, Any]]]:
     """The census pairs that need a business decision or a crossing disclosure.
 
@@ -203,7 +232,9 @@ def route_census(
 
     Each undecided and pass-through pair lists in ``needed_by`` the ``queries`` that walk it
     (``walked_pairs``): the package's own (``package_queries``) or a caller's, such as the
-    questions people asked. Undecided pairs some query needs come first.
+    questions people asked. Undecided pairs some query needs come first. ``package``, the
+    package's source fingerprint, reuses the walks of an earlier census of the same package and
+    queries.
     """
     undecided: list[dict[str, Any]] = []
     assumed: list[dict[str, Any]] = []
@@ -220,9 +251,9 @@ def route_census(
             )
             if disclosure:
                 pass_through.append({**ends, "message": disclosure[0], "details": disclosure[1]})
-    walked = walked_pairs(config, queries) if undecided or pass_through else {}
+    walked = _walks(config, list(queries), package) if undecided or pass_through else {}
     for row in [*undecided, *pass_through]:
-        row["needed_by"] = walked.get((row["source_entity"], row["target_entity"]), [])
+        row["needed_by"] = list(walked.get((row["source_entity"], row["target_entity"]), []))
     undecided.sort(key=lambda row: not row["needed_by"])
     return {"undecided": undecided, "assumed": assumed, "pass_through": pass_through}
 

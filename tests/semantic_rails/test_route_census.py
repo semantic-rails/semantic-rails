@@ -34,6 +34,7 @@ from semantic_rails.fanout import query_route_decisions, resolve_path
 from semantic_rails.package_tools import impact_report, promote_package_report
 from semantic_rails.route_census import census_pairs, route_census
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.test_role_paths import (
     CODE,
     DESTINATION,
@@ -402,6 +403,65 @@ def test_a_query_past_a_fork_is_walked_to_its_end(tmp_path):
         None,
         *({"grain": grain} for grain in ("day", "month", "quarter", "year")),
     ]
+
+
+def test_a_route_the_plan_reads_is_walked(tmp_path):
+    """A group_by's own route is read from the plan, not only from what lowering records.
+    Without the row that decides a customer's products, their one route goes through the
+    customer's orders and their items: the examples and tests that count customers by product
+    type need that crossing, and it is the one the parse report warns about for them."""
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    graph = package / "graph.yml"
+    document = yaml.safe_load(graph.read_text(encoding="utf-8"))
+    rows = document["graph"]["path_preferences"]
+    document["graph"]["path_preferences"] = [
+        row
+        for row in rows
+        if (row["source_entity"], row["target_entity"]) != ("customer", "product")
+    ]
+    graph.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    report, _ = parse_config_report(PackageReference(source_path=str(package)))
+    crossings = {
+        (row["source_entity"], row["target_entity"]): row["needed_by"]
+        for row in report["route_census"]["pass_through"]
+    }
+    assert crossings[("entity.jaffle_customer", "entity.jaffle_product")] == [
+        "example.customers_who_bought_product_type",
+        "example.repeat_customers_who_bought_product_type",
+        "test.entity_hop_customers_by_product_type_executes",
+        "test.entity_hop_customers_by_product_type_with_customer_filter_executes",
+    ]
+    warned = [
+        tuple(row["object_ids"])
+        for row in report["warnings"]
+        if row["code"] == "ROUTE_PASS_THROUGH"
+    ]
+    assert ("entity.jaffle_customer", "entity.jaffle_product") in warned
+    assert sorted(warned) == sorted(pair for pair, needed in crossings.items() if needed)
+
+
+def test_a_second_parse_of_the_same_package_reuses_its_walks(tmp_path, monkeypatch):
+    """An Architect write parses a package more than once: its queries are walked once per
+    package source and queries, and again after either changes."""
+    copy = _with_examples(_write_package(tmp_path / "bank"), tmp_path / "walked")
+    walks: list[int] = []
+    walk = census_module.walked_pairs
+
+    def counted(config, queries):
+        walks.append(len(queries))
+        return walk(config, queries)
+
+    monkeypatch.setattr(census_module, "walked_pairs", counted)
+    monkeypatch.setattr(census_module, "_WALKS", type(census_module._WALKS)())
+    ref = PackageReference(source_path=str(copy))
+    first, _ = parse_config_report(ref)
+    again, _ = parse_config_report(ref)
+    assert len(walks) == 1 and again["route_census"] == first["route_census"]
+    examples = copy / "examples" / "walks.yml"
+    examples.write_text(yaml.safe_dump({"examples": {"amount": {"query": AMOUNT_BY_REGION}}}))
+    edited, _ = parse_config_report(ref)
+    assert len(walks) == 2
+    assert edited["route_census"]["undecided"][0]["needed_by"] == ["example.amount"]
 
 
 def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
