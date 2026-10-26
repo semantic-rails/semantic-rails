@@ -628,6 +628,23 @@ supplied and attempts cancellation if result waiting times out. Athena cancels
 an unfinished query before returning its polling timeout; its request limit
 remains best-effort, with the client polling margin and workgroup server limits.
 
+### Snowflake certificate revocation checks
+
+`snowflake_native` connections check Snowflake's TLS certificates against the
+certificate authority's revocation lists (CRLs). The default,
+`cert_revocation_check_mode: advisory`, refuses a revoked certificate but still
+connects when a revocation list cannot be fetched, so a revocation-server
+outage does not stop queries. Set `enabled` to refuse a connection whenever
+revocation cannot be confirmed, or `disabled` to turn the check off; any other
+value fails validation. Certificate and hostname validation apply in every
+mode. A named profile that sets `cert_revocation_check_mode` keeps it unless
+the package sets the option. Revocation lists are cached in memory, not on
+disk, so a read-only home directory does not affect connections. The
+connector applies the most recent connection's mode to the whole Python
+process; see [docs/EMBEDDING.md](EMBEDDING.md#snowflake-revocation-mode-is-process-wide)
+when one process serves several packages. `snowflake_cli` follows the Snow
+CLI's own configuration.
+
 ### Secrets
 
 **Secrets must come from process environment or an external secret store. Package

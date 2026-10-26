@@ -110,13 +110,14 @@ If `test_embedding_consumer_contract.py` fails, the change breaks a known embedd
 
 ### ADBC tests
 
-The Python 3.12 backend CI shards installs the `snowflake-adbc` and `postgres`
-extras and requires both ADBC unit test modules to run without skips. These
-tests use local Arrow batches and stub connections; warehouse credentials are
-not needed. To run them locally with the same extras:
+The Python 3.12 backend CI shards install the `snowflake`, `snowflake-adbc` and
+`postgres` extras and require both ADBC unit test modules to run without skips.
+These tests use local Arrow batches and stub connections; warehouse credentials
+are not needed. The Snowflake connector tests in `test_warehouse_adapters.py`
+also run there. To run them locally with the same extras:
 
 ```bash
-uv sync --group dev --extra snowflake-adbc --extra postgres --locked
+uv sync --group dev --extra snowflake --extra snowflake-adbc --extra postgres --locked
 uv run --no-sync pytest -q tests/semantic_rails/test_adbc_adapter.py tests/semantic_rails/test_adbc_snowflake.py -n 4
 ```
 
