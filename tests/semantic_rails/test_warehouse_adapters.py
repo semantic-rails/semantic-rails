@@ -539,6 +539,7 @@ def test_snowflake_native_accepts_public_in_memory_credential_provider():
     assert kwargs["schema"] == "CORE"
     assert kwargs["authenticator"] == "oauth"
     assert kwargs["session_parameters"]["QUERY_TAG"] == "hosted-query"
+    assert kwargs["cert_revocation_check_mode"] == "ADVISORY"
 
     adapter.close()
 
@@ -734,6 +735,72 @@ def test_snowflake_direct_connection_passes_tag_as_session_parameter(monkeypatch
     assert "connection_name" not in connect.call_args.kwargs
     assert connect.call_args.kwargs["session_parameters"] == {"QUERY_TAG": tag}
     connect.return_value.cursor.assert_not_called()
+
+
+def _fake_snowflake_connector(monkeypatch):
+    from unittest.mock import Mock
+
+    connect = Mock()
+    connector_module = types.ModuleType("snowflake.connector")
+    connector_module.connect = connect
+    snowflake_module = types.ModuleType("snowflake")
+    snowflake_module.connector = connector_module
+    monkeypatch.setitem(sys.modules, "snowflake", snowflake_module)
+    monkeypatch.setitem(sys.modules, "snowflake.connector", connector_module)
+    return connect
+
+
+@pytest.mark.parametrize(
+    ("authored", "expected"),
+    [(None, "ADVISORY"), ("advisory", "ADVISORY"), ("Enabled", "ENABLED"), ("disabled", "DISABLED")],
+)  # fmt: skip
+def test_snowflake_direct_connection_sends_revocation_check_mode(monkeypatch, authored, expected):
+    connect = _fake_snowflake_connector(monkeypatch)
+    monkeypatch.setenv("SR_TEST_ACCOUNT", "example")
+    monkeypatch.setenv("SR_TEST_USER", "example")
+    options = {
+        "account_env": "SR_TEST_ACCOUNT",
+        "user_env": "SR_TEST_USER",
+        "authenticator": "externalbrowser",
+    }
+    if authored is not None:
+        options["cert_revocation_check_mode"] = authored
+    SnowflakeNativeAdapter(options=options)._connection()
+    assert connect.call_args.kwargs["cert_revocation_check_mode"] == expected
+
+
+@pytest.mark.parametrize(("authored", "expected"), [(None, None), ("enabled", "ENABLED")])
+def test_snowflake_named_profile_owns_revocation_check_mode_unless_authored(
+    monkeypatch, authored, expected
+):
+    connect = _fake_snowflake_connector(monkeypatch)
+    options = {} if authored is None else {"cert_revocation_check_mode": authored}
+    SnowflakeNativeAdapter("analytics", options=options)._connection()
+    assert connect.call_args.kwargs["connection_name"] == "analytics"
+    assert connect.call_args.kwargs.get("cert_revocation_check_mode") == expected
+
+
+def test_snowflake_refuses_unknown_revocation_check_mode_before_connect(monkeypatch):
+    connect = _fake_snowflake_connector(monkeypatch)
+    adapter = SnowflakeNativeAdapter("analytics", options={"cert_revocation_check_mode": "strict"})
+    with pytest.raises(SemanticLayerError) as exc:
+        adapter._connection()
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details["option"] == "cert_revocation_check_mode"
+    assert "strict" not in str(exc.value)
+    connect.assert_not_called()
+
+
+def test_snowflake_connector_accepts_every_revocation_check_mode():
+    pytest.importorskip("snowflake.connector")
+    from snowflake.connector.connection import DEFAULT_CONFIGURATION
+    from snowflake.connector.crl import CertRevocationCheckMode
+
+    from semantic_rails.db_parts.snowflake import _CERT_REVOCATION_CHECK_MODES
+
+    assert "cert_revocation_check_mode" in DEFAULT_CONFIGURATION
+    for mode in _CERT_REVOCATION_CHECK_MODES:
+        assert CertRevocationCheckMode(mode.upper()).value == mode.upper()
 
 
 @pytest.mark.parametrize(

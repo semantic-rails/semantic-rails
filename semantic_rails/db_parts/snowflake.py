@@ -358,6 +358,8 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
             )
             kwargs["network_timeout"] = read_timeout
             kwargs["socket_timeout"] = read_timeout
+        if not named_profile or "cert_revocation_check_mode" in self.options:
+            kwargs["cert_revocation_check_mode"] = _cert_revocation_check_mode(self.options)
         kwargs.setdefault("application", "semantic-rails")
         return kwargs
 
@@ -498,6 +500,30 @@ def _normalize_snowflake_native_options(options: dict[str, Any]) -> dict[str, st
                 f"Snowflake native package.connection option '{key}' is not allowed; use env/file indirection instead",
             )
     return normalized
+
+
+# Connector 4.8 leaves certificate revocation checks off unless the caller opts
+# in. CRL checking is the connector's successor to OCSP; in advisory mode only a
+# revoked certificate fails the connection, so an unreachable CRL server never
+# stops queries.
+_CERT_REVOCATION_CHECK_MODES = ("advisory", "enabled", "disabled")
+
+
+def _cert_revocation_check_mode(options: dict[str, str]) -> str:
+    mode = options.get("cert_revocation_check_mode", "advisory").lower()
+    if mode not in _CERT_REVOCATION_CHECK_MODES:
+        # The connector would fall back to no checking on an unknown mode.
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Snowflake native package.connection option 'cert_revocation_check_mode' "
+            "must be advisory, enabled or disabled",
+            details={
+                "engine": "snowflake",
+                "connection_kind": "snowflake_native",
+                "option": "cert_revocation_check_mode",
+            },
+        )
+    return mode.upper()
 
 
 def _secret_value(
