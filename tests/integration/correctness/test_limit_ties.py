@@ -1,7 +1,6 @@
 """Top-N subsets and warnings checked against independent reference SQL."""
 
 from copy import deepcopy
-from decimal import Decimal
 
 import pytest
 
@@ -183,12 +182,14 @@ def test_a_time_bucketed_limit_without_order_by_keeps_the_series_order(request, 
         "SELECT CAST(date_trunc('month', ordered_at) AS DATE), store_id, COUNT(order_id) "
         "FROM orders GROUP BY 1, 2 ORDER BY 1, 2 LIMIT 2"
     )
-    # The monthly aggregate table answers it: Postgres sums its counts as NUMERIC, which
-    # results keep exact as decimal text, so compare the values.
+    # The monthly aggregate table answers it, and Postgres sums its bigint counts as NUMERIC:
+    # a count is still an integer, never decimal text.
     for _ in range(2):
+        result = runtime.query(query)
         rows = [
-            (row["period"], row["dimension.shop_order_store_id"], Decimal(str(row["orders"])))
-            for row in runtime.query(query)["rows"]
+            (row["period"], row["dimension.shop_order_store_id"], row["orders"])
+            for row in result["rows"]
         ]
-        assert rows == [(str(day), store, Decimal(str(count))) for day, store, count in expected]
+        assert rows == [(str(day), store, count) for day, store, count in expected]
+        assert result["column_types"]["orders"] == {"type": "integer"}
     assert rows == [("2023-11-01", "a", 1), ("2023-11-01", "b", 1)]
