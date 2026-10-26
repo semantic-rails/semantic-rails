@@ -6,7 +6,9 @@ out, and one with events in two teams (Ann) counts under both: the answer says s
 ROUTE_PASS_THROUGH, at every verbosity, and how to declare what the question means. Team
 signups read a Plan through the billing version valid at the signup's time: the January
 teams' first versions start 5 ms after their signups, so every January signup reads an
-empty Plan, and the answer says how much of it does (NULL_PRESERVING_HISTORY).
+empty Plan, and the answer says how much of it does (NULL_PRESERVING_HISTORY). Declared
+`as_of: end_of_day`, the hop reads the version in force when the signup's day ends instead,
+so the January signups read their first plans.
 
 Disclosure only: every number equals independent reference SQL and the route the engine
 reads is unchanged.
@@ -67,6 +69,11 @@ VALID_PLAN = """
   LEFT JOIN team_billing_history h ON h.team_id = {team} AND h.valid_from <= {at}
     AND (h.valid_to > {at} OR h.valid_to IS NULL)
   LEFT JOIN plans p ON p.plan_id = h.plan_id"""
+END_OF_DAY_PLAN = """
+  LEFT JOIN team_billing_history h ON h.team_id = {team}
+    AND h.valid_from < date_trunc('day', {at}) + INTERVAL '1 day'
+    AND (h.valid_to >= date_trunc('day', {at}) + INTERVAL '1 day' OR h.valid_to IS NULL)
+  LEFT JOIN plans p ON p.plan_id = h.plan_id"""
 REFERENCE = {
     "members_by_tier": """SELECT t.plan_tier, COUNT(DISTINCT e.member_id) FROM member_events e
       JOIN teams t ON t.team_id = e.team_id GROUP BY t.plan_tier""",
@@ -75,6 +82,10 @@ REFERENCE = {
       AND t.plan_tier = 'pro')""",
     "new_teams_by_plan": "SELECT p.plan_name, COUNT(*) FROM team_signups s"
     + VALID_PLAN.format(team="s.team_id", at="s.signed_up_at")
+    + " WHERE s.signed_up_at >= TIMESTAMP '{start}' AND s.signed_up_at < TIMESTAMP '{end}'"
+    " GROUP BY p.plan_name",
+    "new_teams_by_plan_end_of_day": "SELECT p.plan_name, COUNT(*) FROM team_signups s"
+    + END_OF_DAY_PLAN.format(team="s.team_id", at="s.signed_up_at")
     + " WHERE s.signed_up_at >= TIMESTAMP '{start}' AND s.signed_up_at < TIMESTAMP '{end}'"
     " GROUP BY p.plan_name",
     "teams_by_plan": "SELECT p.plan_name, COUNT(*) FROM teams t"
@@ -124,12 +135,19 @@ def _long_labels(spec: dict[str, Any]) -> None:
     spec["graph"]["entities"]["member"]["label"] = "Member with a long display label " * 20
 
 
+def _end_of_day(spec: dict[str, Any]) -> None:
+    spec["graph"]["relationships"]["billing_version_team"]["temporal_validity"]["as_of"] = (
+        "end_of_day"
+    )
+
+
 VARIANTS: dict[str, tuple[str, Callable[[dict[str, Any]], None]] | None] = {
     "base": None,
     "bridge": ("models/member_events.yml", _bridge),
     "recorded": ("graph.yml", _recorded),
     "home_team": ("models/members.yml", _home_team),
     "long_labels": ("graph.yml", _long_labels),
+    "end_of_day": ("graph.yml", _end_of_day),
 }
 
 
@@ -654,3 +672,87 @@ def test_a_hop_into_a_history_reads_valid_at_the_time(packages):
         "the Plan of the Billing version valid at the time of the Team of any of the Member's "
         "Member events"
     )
+
+
+def test_end_of_day_reads_the_version_in_force_when_the_signups_day_ends(teams):
+    """Billing writes each January team's first version 5 ms after its signup. Read at the
+    signup's time, both read an empty Plan; read when the signup's day ends, team 10 reads
+    Builder and team 20 Pro. March versions start at the signup, so both readings agree."""
+    runtime = teams.runtimes["end_of_day"]
+    january = runtime.query(_new_teams(JANUARY))
+    assert _values(january) == teams.reference("new_teams_by_plan_end_of_day", **JANUARY)
+    assert _values(january) == [("Builder", 1), ("Pro", 1)]
+    assert not _history(january)
+    # Opt-in: the package that doesn't declare it keeps its answer.
+    assert teams.answer(_new_teams(JANUARY)) == [(None, 2)]
+    march = runtime.query(_new_teams(MARCH))
+    assert _values(march) == teams.reference("new_teams_by_plan_end_of_day", **MARCH)
+    assert _values(march) == teams.answer(_new_teams(MARCH)) == [("Builder", 1), ("Pro", 1)]
+    for compiled in (runtime.validate(_new_teams(JANUARY)), runtime.compile(_new_teams(JANUARY))):
+        assert [row["message"] for row in _history(compiled)] == [
+            "Plan: the Billing version valid at the end of each row's day; rows with none read "
+            "an empty Plan."
+        ]
+
+
+def test_an_end_of_day_hop_says_so_in_its_route_and_filter_warning(teams, packages):
+    config = load_package_config(str(packages["end_of_day"]))
+    assert route_reading(config, SIGNUP, ["relationship.team_signups_team", *TO_PLAN]) == (
+        "the Plan of the Billing version valid at the end of the day of the Team signup's Team"
+    )
+    query = _select(
+        "new_teams",
+        "new_teams",
+        where=[{"field": PLAN_NAME, "op": "is", "value": "Builder"}],
+        time={"temporal_role": SIGNED_UP, **JANUARY},
+    )
+    out = teams.runtimes["end_of_day"].query(query)
+    assert [row["new_teams"] for row in out["rows"]] == [1]
+    assert [row["message"] for row in _history(out)] == [
+        "Plan filter: rows with no Billing version valid at the end of their day are left out by "
+        "this filter."
+    ]
+
+
+def _window(tmp_path: Path, window: dict[str, Any]) -> Path:
+    package = tmp_path / "teams"
+    shutil.copytree(TEAMS, package)
+
+    def change(spec: dict[str, Any]) -> None:
+        validity = spec["graph"]["relationships"]["billing_version_team"]["temporal_validity"]
+        validity.update(window)
+        for key in [key for key, value in validity.items() if value is None]:
+            validity.pop(key)
+
+    _edit(package, "graph.yml", change)
+    return package
+
+
+@pytest.mark.parametrize(
+    ("window", "error"),
+    [
+        ({"as_of": "end_of_week"}, "as_of must be 'time' or 'end_of_day'"),
+        (
+            {"as_of": "end_of_day", "valid_from": None, "valid_to": None},
+            "has as_of but no valid_from or valid_to",
+        ),
+        ({"tolerance": "5 seconds"}, "unknown key 'tolerance'"),
+    ],
+)
+def test_a_validity_window_names_what_it_accepts(tmp_path, window, error):
+    with pytest.raises(SemanticLayerError, match=error) as exc:
+        load_package_config(str(_window(tmp_path, window)))
+    assert exc.value.code == "INVALID_CONFIG"
+
+
+@pytest.mark.parametrize(
+    "window",
+    [{"valid_from": None}, {"valid_from": None, "as_of": "end_of_day"}],
+    ids=["valid_to_only", "valid_to_only_end_of_day"],
+)
+def test_a_window_with_only_valid_to_still_loads(tmp_path, window):
+    """As before this option: only an `as_of` with no column at all is refused."""
+    config = load_package_config(str(_window(tmp_path, window)))
+    (rel,) = [row for row in config.relationships if row.id == TO_PLAN[0]]
+    assert "valid_from" not in rel.temporal_validity
+    assert rel.temporal_validity["valid_to"] == "team_billing_history.valid_to"

@@ -1219,6 +1219,7 @@ graph:
       temporal_validity:                        # <model relation name>.<column>
         valid_from: shop_customer_history.effective_from
         valid_to: shop_customer_history.effective_to
+        # as_of: end_of_day                     # read at the end of the row's day (default: time)
 ```
 
 A query that joins into the table holding the window needs a `time`, so each row reads the
@@ -1228,6 +1229,31 @@ count a row once per version. A hop out of that table (`customer_history → cus
 reads one version per row and needs no time. The validity predicate applies only when joining
 into the versioned table: an outgoing lookup keeps the existing version's dimensions even
 when the query clock is its `valid_to`, including a NULL end time on an open version.
+`as_of` says when each row reads its version, on every hop into the history through that
+relationship (any query, route or metric that enters the window by it). `time` (the default)
+reads the version valid at the row's time. `end_of_day` reads the version in force at the end
+of the row's day on the query's clock (the time role's `timezone`, the day `time.grain: day`
+buckets the row in): one that starts before the next midnight and hasn't ended by it. Use it when
+the history is written a moment after the row it describes, as billing writes a workspace's plan
+seconds after the workspace: read at the row's own time, no version exists yet, so every new
+workspace would read an empty Plan. The day's last version is the one read: a workspace that
+signs up on Pro and moves to Builder the same day reads Builder, and one whose only version ends
+that day reads none. Route readings and `NULL_PRESERVING_HISTORY` say "valid at the end of the
+day". An unknown key is refused, and so is `as_of` with neither `valid_from` nor `valid_to`.
+
+The end of the day is a wall-clock timestamp in the role's zone, compared with the validity
+columns as the row's own time is:
+
+- DuckDB, MotherDuck, DuckLake and Postgres: checked, for naive and zone-aware columns (the
+  query runs in the role's zone, as above).
+- Snowflake, Databricks, Athena and ClickHouse (not yet run on a live warehouse): the end of the
+  day is naive, so it compares as intended with naive validity columns stored in the row clock's
+  zone. A zone-aware validity column (Snowflake `TIMESTAMP_LTZ`/`TIMESTAMP_TZ`,
+  Databricks `TIMESTAMP`) is compared in the session's zone, which can move the end of the day
+  by the zones' offset: store naive timestamps and declare `column_timezone:`, as for bucketing.
+- BigQuery: the end of the day is a `DATETIME`, which BigQuery won't compare with a `TIMESTAMP`
+  validity column, so the query fails rather than answer. Use `DATETIME` validity columns there,
+  or `as_of: time`.
 A metric predicate is stricter: when the path from
 its input to its entity, context or filters crosses a time-valid relationship in either
 direction, it needs a time of its own (a contextual predicate takes the query's `time`).
