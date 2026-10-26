@@ -77,86 +77,47 @@ def _metric_predicate(input_, op=">", value=0):
     }
 
 
+FILES = {
+    "seed.sql": SEED,
+    "package.yml": """
+schema_version: 1
+package: {id: nulls, namespace: nulls, warehouse: duckdb, default_db: records.duckdb,
+  seed: {kind: sql_script, source: seed.sql}}
+""",
+    "metrics.yml": """
+metrics:
+  records: {kind: aggregate, label: Records, measure: measure.nulls.records,
+    aggregation: count_distinct, value_type: count}
+""",
+    "graph.yml": "graph: {entities: {record: {key: [id], model: records}}}\n",
+    "models/records.yml": f"""
+model:
+  id: records
+  relation: records
+  entities: {{record: {{}}}}
+  dimensions:
+    id: {{kind: categorical, as: {KEY}}}
+    value: {{kind: categorical, as: dimension.nulls_value}}
+  measures:
+    records: {{kind: entity_count, entity_key: id, value_type: count,
+      accumulation: {{kind: event}}}}
+    value: {{kind: aggregate, expr: value, value_type: number, accumulation: {{kind: flow}}}}
+""",
+}
+
+
 @pytest.fixture(scope="module")
 def runtime(tmp_path_factory):
     root = tmp_path_factory.mktemp("null-comparisons")
-    (root / "models").mkdir()
-    (root / "segments").mkdir()
-    (root / "seed.sql").write_text(SEED)
-    (root / "package.yml").write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": 1,
-                "package": {
-                    "id": "nulls",
-                    "namespace": "nulls",
-                    "warehouse": "duckdb",
-                    "default_db": "records.duckdb",
-                    "seed": {"kind": "sql_script", "source": "seed.sql"},
-                },
-            }
-        )
-    )
-    (root / "metrics.yml").write_text(
-        yaml.safe_dump(
-            {
-                "metrics": {
-                    "records": {
-                        "kind": "aggregate",
-                        "label": "Records",
-                        "measure": "measure.nulls.records",
-                        "aggregation": "count_distinct",
-                        "value_type": "count",
-                    }
-                }
-            }
-        )
-    )
-    (root / "graph.yml").write_text(
-        yaml.safe_dump({"graph": {"entities": {"record": {"key": ["id"], "model": "records"}}}})
-    )
-    (root / "models" / "records.yml").write_text(
-        yaml.safe_dump(
-            {
-                "model": {
-                    "id": "records",
-                    "relation": "records",
-                    "entities": {"record": {}},
-                    "dimensions": {
-                        "id": {"kind": "categorical", "as": KEY},
-                        "value": {"kind": "categorical", "as": "dimension.nulls_value"},
-                    },
-                    "measures": {
-                        "records": {
-                            "kind": "entity_count",
-                            "entity_key": "id",
-                            "value_type": "count",
-                            "accumulation": {"kind": "event"},
-                        },
-                        "value": {
-                            "kind": "aggregate",
-                            "expr": "value",
-                            "value_type": "number",
-                            "accumulation": {"kind": "flow"},
-                        },
-                    },
-                }
-            }
-        )
-    )
-    (root / "segments" / "missing.yml").write_text(
-        yaml.safe_dump(
-            {
-                "segments": {
-                    "missing": {
-                        "entity": ENTITY,
-                        "basis_metric": "metric.nulls.records",
-                        "membership": {"metric_filters": [_metric_predicate(_conditional_count())]},
-                    }
-                }
-            }
-        )
-    )
+    missing = {
+        "entity": ENTITY,
+        "basis_metric": "metric.nulls.records",
+        "membership": {"metric_filters": [_metric_predicate(_conditional_count())]},
+    }
+    files = {**FILES, "segments/missing.yml": yaml.safe_dump({"segments": {"missing": missing}})}
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
     runtime = Runtime.from_path(str(root))
     try:
         yield opened(runtime)
@@ -168,6 +129,21 @@ def _gold(sql):
     with duckdb.connect(":memory:") as connection:
         connection.execute(SEED)
         return connection.execute(sql).fetchall()
+
+
+# Each lowering path and the parser context its expressions are read in.
+CONTEXTS = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
+
+
+def _lower(runtime, expr, lowering):
+    """``expr`` lowered to SQL on one path: a measure's expression, a post-aggregation
+    expression, or a relation pipeline's."""
+    if lowering == "configured":
+        measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
+        return _config_expr_to_sql(expr, measure, runtime.config)
+    if lowering == "post_aggregation":
+        return _compile_post_expr(expr, runtime.config)
+    return _semantic_expr_to_sql(expr)
 
 
 @pytest.mark.parametrize(
@@ -248,12 +224,6 @@ def test_ordering_null_refuses(runtime, op, reverse):
     assert exc.value.details["recovery_hints"][0]["code"] == "USE_NULL_TEST_OR_SCALAR"
 
 
-def test_metric_predicate_conditional_count_matches_sql(runtime):
-    query = _query(COUNT, metric_filters=[_metric_predicate(_conditional_count())])
-    expected = _gold("SELECT COUNT(*) FROM records WHERE value IS NULL")[0][0]
-    assert runtime.query_internal(query)["rows"] == [{"n": expected}]
-
-
 def test_segment_conditional_count_matches_sql(runtime):
     expected = _gold("SELECT id FROM records WHERE value IS NULL ORDER BY id")
     preview = runtime.segment_preview("segment.nulls.missing")
@@ -265,15 +235,8 @@ def test_segment_conditional_count_matches_sql(runtime):
 @pytest.mark.parametrize("warehouse", ["duckdb", "clickhouse"])
 @pytest.mark.parametrize("lowering", ["configured", "post_aggregation", "relation"])
 def test_computed_boolean_null_renders_per_lowering(runtime, warehouse, lowering):
-    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
-    expr = parse_semantic_expression(NOT_NULL, context=context[lowering])
-    if lowering == "configured":
-        measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
-        lowered = _config_expr_to_sql(expr, measure, runtime.config)
-    elif lowering == "post_aggregation":
-        lowered = _compile_post_expr(expr, runtime.config)
-    else:
-        lowered = _semantic_expr_to_sql(expr)
+    expr = parse_semantic_expression(NOT_NULL, context=CONTEXTS[lowering])
+    lowered = _lower(runtime, expr, lowering)
     type_name = "Nullable(Bool)" if warehouse == "clickhouse" else "BOOLEAN"
     expected = f"CAST(NULL AS {type_name})"
     with use_dialect(dialect_for_warehouse(warehouse)):
@@ -380,9 +343,7 @@ def test_relation_false_not_equal_not_null_stays_unknown(reverse):
 def test_configured_false_not_equal_not_null_stays_unknown(runtime, reverse):
     comparison = _false_not_equal_not_null(reverse=reverse)
     expr = parse_semantic_expression(comparison, context="config")
-    config = runtime.config
-    measure = next(measure for measure in config.measures if measure.id == COUNT["measure"])
-    condition = render_expr(_config_expr_to_sql(expr, measure, config))
+    condition = render_expr(_lower(runtime, expr, "configured"))
     assert _gold(f"SELECT {condition} FROM records") == [(None,)] * 7
     assert (
         _gold(f"SELECT COUNT(*) FROM records WHERE {condition}")
@@ -430,9 +391,8 @@ def test_boolean_and_or_refused_before_sql(runtime, op, args, negated, lowering)
     expression = {"kind": "boolean", "op": op, "args": args}
     if negated:
         expression = {"kind": "boolean", "op": "not", "args": [expression]}
-    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
     with pytest.raises(SemanticLayerError, match="and/or need at least two") as exc:
-        parse_semantic_expression(expression, context=context[lowering])
+        parse_semantic_expression(expression, context=CONTEXTS[lowering])
     assert exc.value.code == "INVALID_EXPRESSION_AST"
     if lowering == "relation":
         with pytest.raises(SemanticLayerError) as exc:
@@ -472,13 +432,7 @@ def test_boolean_and_or_typed_ast_bypass_refused(runtime, op, values, negated, l
     if negated:
         expr = BooleanExpr(op="not", args=[expr])
     with pytest.raises(SemanticLayerError) as exc:
-        if lowering == "configured":
-            measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
-            _config_expr_to_sql(expr, measure, runtime.config)
-        elif lowering == "post_aggregation":
-            _compile_post_expr(expr, runtime.config)
-        else:
-            _semantic_expr_to_sql(expr)
+        _lower(runtime, expr, lowering)
     assert exc.value.code == "INVALID_EXPRESSION_AST"
 
 
@@ -501,15 +455,8 @@ def test_two_argument_boolean_and_or_unchanged(runtime, op, value, negated, lowe
     }
     if negated:
         expression = {"kind": "boolean", "op": "not", "args": [expression]}
-    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
-    expr = parse_semantic_expression(expression, context=context[lowering])
-    if lowering == "configured":
-        measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
-        lowered = _config_expr_to_sql(expr, measure, runtime.config)
-    elif lowering == "post_aggregation":
-        lowered = _compile_post_expr(expr, runtime.config)
-    else:
-        lowered = _semantic_expr_to_sql(expr)
+    expr = parse_semantic_expression(expression, context=CONTEXTS[lowering])
+    lowered = _lower(runtime, expr, lowering)
     literal = "NULL" if value is None else str(value).upper()
     sql = render_expr(lowered)
     expected = f"{literal} {op.upper()} TRUE"

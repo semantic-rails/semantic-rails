@@ -167,22 +167,6 @@ def test_anchored_window_metric_refuses_instead_of_computing_lifetime(
     assert "not a workaround" in hints["use_anchor_offset_column"]["message"]
 
 
-def test_filtered_scoped_aggregate_metric_matches_independent_sql(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = _runtime(monkeypatch, _recipe_package(tmp_path, {"large_orders": LARGE_ORDERS}))
-    try:
-        result = runtime.query(_metric_query("large_orders"))
-        [(large,)] = _gold(
-            runtime, "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE is_large_order"
-        )
-        [(everything,)] = _gold(runtime, "SELECT COUNT(DISTINCT order_id) FROM jaffle_order")
-    finally:
-        runtime.close()
-    assert 0 < large < everything
-    assert result["rows"] == [{"value": large}]
-
-
 def test_scoped_aggregate_recipe_resolves_short_measure_and_dimension_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -200,8 +184,10 @@ def test_scoped_aggregate_recipe_resolves_short_measure_and_dimension_keys(
         [(large,)] = _gold(
             runtime, "SELECT COUNT(DISTINCT order_id) FROM jaffle_order WHERE is_large_order"
         )
+        [(everything,)] = _gold(runtime, "SELECT COUNT(DISTINCT order_id) FROM jaffle_order")
     finally:
         runtime.close()
+    assert 0 < large < everything
     assert result["rows"] == [{"value": large}]
 
 

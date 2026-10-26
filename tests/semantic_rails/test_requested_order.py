@@ -89,7 +89,9 @@ def _query(shape: str, direction: str) -> dict:
     }
 
 
-# Each backend renders every shape, and both directions across the shapes.
+# Each dialect family renders every shape, and both directions across the shapes. DuckLake
+# and MotherDuck render as DuckDB does.
+DIALECTS = [w for w in supported_warehouses() if w not in {"ducklake", "motherduck"}]
 DIRECTIONS = {
     "inlined": "DESC",
     "metric-filter": "ASC",
@@ -98,7 +100,7 @@ DIRECTIONS = {
 }
 
 
-@pytest.mark.parametrize("warehouse", supported_warehouses())
+@pytest.mark.parametrize("warehouse", DIALECTS)
 @pytest.mark.parametrize("shape", list(SHAPES))
 def test_requested_term_renders_nulls_last(package_config_factory, warehouse, shape):
     direction = DIRECTIONS[shape]

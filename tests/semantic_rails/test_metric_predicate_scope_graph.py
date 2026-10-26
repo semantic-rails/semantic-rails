@@ -182,6 +182,123 @@ def _load_config(package_dir: Path):
     return config, Registry(config)
 
 
+def _entity(name: str, title: str, label: str, key: list[str], model: str) -> dict:
+    return {
+        name: {
+            "as": f"entity.demo_{name}",
+            "name": f"demo.{title}",
+            "label": label,
+            "key": key,
+            "model": model,
+        }
+    }
+
+
+def _many_to_one(relationship: str, many: str, one: str, **extra) -> dict:
+    return {
+        relationship: {
+            "as": relationship,
+            "entities": [many, one],
+            "cardinality": "many_to_one",
+            **extra,
+        }
+    }
+
+
+def _dimension(model: str, key: str, as_id: str, label: str, **extra) -> dict:
+    return {key: {"as": as_id, "name": f"demo.{model}.{key}", "label": label, **extra}}
+
+
+def _time(model: str, column: str, as_id: str, label: str, temporal_class: str) -> dict:
+    return _dimension(
+        model, column, as_id, label, column=column, kind="timestamp", **{"class": temporal_class}
+    )
+
+
+def _write_model(
+    package_dir: Path,
+    folder: str,
+    model_id: str,
+    entities: dict,
+    relation: str,
+    dimensions: dict,
+    **extra,
+) -> None:
+    _write_yaml(
+        package_dir / "models" / folder / f"{model_id}s.yml",
+        {
+            "model": {
+                "id": f"{model_id}s",
+                "entities": entities,
+                "relation": relation,
+                "dimensions": dimensions,
+                **extra,
+            }
+        },
+    )
+
+
+def _fact_count(namespace: str, fact: str, time_column: str) -> dict:
+    return {
+        f"{fact}_count": {
+            "as": f"measure.demo.{fact}_count",
+            "name": f"{namespace}.{fact}s",
+            "label": f"{fact.title()}s",
+            "kind": "entity_count",
+            "times": [time_column],
+        }
+    }
+
+
+def _write_predicate_metric(package_dir: Path, namespace: str, fact: str, owner: str) -> str:
+    """A count of facts, and the facts of the owners with more than two in the query period."""
+    measure = f"measure.demo.{fact}_count"
+    key = f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period"
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": f"entity.demo_{owner}",
+        "scope_mode": "contextual",
+        "input": {"metric": f"metric.{namespace}.{fact}s"},
+        "op": ">",
+        "value": 2,
+    }
+    metrics = {
+        f"{namespace}.{fact}s": {
+            "value_type": "number",
+            "as": f"metric.{namespace}.{fact}s",
+            "kind": "aggregate",
+            "measure": measure,
+        },
+        key: {
+            "value_type": "number",
+            "as": f"metric.{key}",
+            "name": key,
+            "label": f"{fact.title()}s from {owner}s with 2+ {fact}s in period",
+            "kind": "aggregate",
+            "temporal_role": f"temporal_role.demo_{fact}_time",
+            "expression": {
+                "kind": "aggregate",
+                "measure": measure,
+                "aggregation": "count_distinct",
+                "filter": {"all": [{"expression": predicate}]},
+            },
+        },
+    }
+    _write_yaml(package_dir / "metrics.yml", {"metrics": metrics})
+    return f"metric.{key}"
+
+
+def _metric_query(metric: str, alias: str, group_by: list[str], time_role: str = "") -> dict:
+    query = {
+        "version": 1,
+        "select": [{"expression": {"metric": metric}, "as": alias}],
+        "group_by": group_by,
+    }
+    if time_role:
+        query["time"] = {"temporal_role": time_role, "grain": "month"}
+    return query
+
+
 @pytest.mark.parametrize(
     "names",
     [
@@ -227,243 +344,118 @@ def _load_config(package_dir: Path):
 def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction(
     tmp_path: Path, names: dict[str, str]
 ):
-    owner = names["owner"]
-    parent = names["parent"]
-    child = names["child"]
-    fact = names["fact"]
+    owner, parent, child, fact = names["owner"], names["parent"], names["child"], names["fact"]
     child_entity = names["child_entity"]
     child_name = "".join(part.title() for part in child_entity.split("_"))
-    namespace = names["namespace"]
-    time_column = names["time_column"]
+    namespace, time_column = names["namespace"], names["time_column"]
+    owner_title, parent_title, fact_title = owner.title(), parent.title(), fact.title()
     package_dir = tmp_path / f"{parent}_scope_demo"
     _write_package_header(
         package_dir,
         f"{parent}_scope_demo",
         {
-            owner: {
-                "as": f"entity.demo_{owner}",
-                "name": f"demo.{owner.title()}",
-                "label": owner.title(),
-                "key": [f"{owner}_id"],
-                "model": f"{owner}s",
-            },
-            parent: {
-                "as": f"entity.demo_{parent}",
-                "name": f"demo.{parent.title()}",
-                "label": parent.title(),
-                "key": [f"{parent}_id"],
-                "model": f"{parent}s",
-            },
-            child_entity: {
-                "as": f"entity.demo_{child_entity}",
-                "name": f"demo.{child_name}",
-                "label": child_entity.replace("_", " ").capitalize(),
-                "key": [f"{child}_id"],
-                "model": f"{child}s",
-            },
-            fact: {
-                "as": f"entity.demo_{fact}",
-                "name": f"demo.{fact.title()}",
-                "label": fact.title(),
-                "key": [f"{fact}_id"],
-                "model": f"{fact}s",
-            },
+            **_entity(owner, owner_title, owner_title, [f"{owner}_id"], f"{owner}s"),
+            **_entity(parent, parent_title, parent_title, [f"{parent}_id"], f"{parent}s"),
+            **_entity(
+                child_entity,
+                child_name,
+                child_entity.replace("_", " ").capitalize(),
+                [f"{child}_id"],
+                f"{child}s",
+            ),
+            **_entity(fact, fact_title, fact_title, [f"{fact}_id"], f"{fact}s"),
         },
         graph_relationships={
-            f"relationship.demo_{child}_{parent}": {
-                "as": f"relationship.demo_{child}_{parent}",
-                "entities": [child_entity, parent],
-                "cardinality": "many_to_one",
-            },
-            f"relationship.demo_{fact}_{owner}": {
-                "as": f"relationship.demo_{fact}_{owner}",
-                "entities": [fact, owner],
-                "cardinality": "many_to_one",
-            },
-            f"relationship.demo_{fact}_{child}": {
-                "as": f"relationship.demo_{fact}_{child}",
-                "entities": [fact, child_entity],
-                "cardinality": "many_to_one",
-            },
+            **_many_to_one(f"relationship.demo_{child}_{parent}", child_entity, parent),
+            **_many_to_one(f"relationship.demo_{fact}_{owner}", fact, owner),
+            **_many_to_one(f"relationship.demo_{fact}_{child}", fact, child_entity),
         },
     )
-    _write_yaml(
-        package_dir / "models" / "core" / f"{owner}s.yml",
+    _write_model(
+        package_dir,
+        "core",
+        owner,
+        {owner: {}},
+        f"demo_{owner}",
+        _dimension(owner_title, f"{owner}_id", f"dimension.demo_{owner}_id", f"{owner_title} id"),
+    )
+    _write_model(
+        package_dir,
+        "core",
+        parent,
+        {parent: {}},
+        f"demo_{parent}",
         {
-            "model": {
-                "id": f"{owner}s",
-                "entities": {owner: {}},
-                "relation": f"demo_{owner}",
-                "dimensions": {
-                    f"{owner}_id": {
-                        "as": f"dimension.demo_{owner}_id",
-                        "name": f"demo.{owner.title()}.{owner}_id",
-                        "label": f"{owner.title()} id",
-                    }
-                },
-            }
+            **_dimension(
+                parent_title, f"{parent}_id", f"dimension.demo_{parent}_id", f"{parent_title} id"
+            ),
+            **_dimension(
+                parent_title,
+                f"{parent}_name",
+                f"dimension.demo_{parent}_name",
+                f"{parent_title} name",
+                kind="categorical",
+            ),
         },
     )
-    _write_yaml(
-        package_dir / "models" / "core" / f"{parent}s.yml",
+    _write_model(
+        package_dir,
+        "core",
+        child,
+        {child_entity: {}, parent: {"expr": [f"{parent}_id"]}},
+        f"demo_{child}",
         {
-            "model": {
-                "id": f"{parent}s",
-                "entities": {parent: {}},
-                "relation": f"demo_{parent}",
-                "dimensions": {
-                    f"{parent}_id": {
-                        "as": f"dimension.demo_{parent}_id",
-                        "name": f"demo.{parent.title()}.{parent}_id",
-                        "label": f"{parent.title()} id",
-                    },
-                    f"{parent}_name": {
-                        "as": f"dimension.demo_{parent}_name",
-                        "name": f"demo.{parent.title()}.{parent}_name",
-                        "label": f"{parent.title()} name",
-                        "kind": "categorical",
-                    },
-                },
-            }
+            **_dimension(
+                child_name, f"{child}_id", f"dimension.demo_{child}_id", f"{child.title()} id"
+            ),
+            **_dimension(
+                child_name,
+                f"{parent}_id",
+                f"dimension.demo_{child}_{parent}_id",
+                f"{child.title()} {parent} id",
+            ),
+            **_dimension(
+                child_name,
+                f"{child}_name",
+                f"dimension.demo_{child}_name",
+                f"{child.title()} name",
+                kind="categorical",
+            ),
         },
     )
-    _write_yaml(
-        package_dir / "models" / "core" / f"{child}s.yml",
+    _write_model(
+        package_dir,
+        "core",
+        fact,
+        {fact: {}, owner: {"expr": [f"{owner}_id"]}, child_entity: {"expr": [f"{child}_id"]}},
+        f"demo_{fact}",
         {
-            "model": {
-                "id": f"{child}s",
-                "entities": {child_entity: {}, parent: {"expr": [f"{parent}_id"]}},
-                "relation": f"demo_{child}",
-                "dimensions": {
-                    f"{child}_id": {
-                        "as": f"dimension.demo_{child}_id",
-                        "name": f"demo.{child_name}.{child}_id",
-                        "label": f"{child.title()} id",
-                    },
-                    f"{parent}_id": {
-                        "as": f"dimension.demo_{child}_{parent}_id",
-                        "name": f"demo.{child_name}.{parent}_id",
-                        "label": f"{child.title()} {parent} id",
-                    },
-                    f"{child}_name": {
-                        "as": f"dimension.demo_{child}_name",
-                        "name": f"demo.{child_name}.{child}_name",
-                        "label": f"{child.title()} name",
-                        "kind": "categorical",
-                    },
-                },
-            }
+            **_dimension(fact_title, f"{fact}_id", f"dimension.demo_{fact}_id", f"{fact_title} id"),
+            **_dimension(
+                fact_title, f"{owner}_id", f"dimension.demo_{fact}_{owner}_id", f"{owner_title} id"
+            ),
+            **_dimension(
+                fact_title,
+                f"{child}_id",
+                f"dimension.demo_{fact}_{child}_id",
+                f"{child.title()} id",
+            ),
         },
+        times=_time(
+            fact_title,
+            time_column,
+            f"temporal_role.demo_{fact}_time",
+            f"{fact_title} time",
+            "event_time",
+        ),
+        measures=_fact_count(namespace, fact, time_column),
     )
-    _write_yaml(
-        package_dir / "models" / "core" / f"{fact}s.yml",
-        {
-            "model": {
-                "id": f"{fact}s",
-                "entities": {
-                    fact: {},
-                    owner: {"expr": [f"{owner}_id"]},
-                    child_entity: {"expr": [f"{child}_id"]},
-                },
-                "relation": f"demo_{fact}",
-                "dimensions": {
-                    f"{fact}_id": {
-                        "as": f"dimension.demo_{fact}_id",
-                        "name": f"demo.{fact.title()}.{fact}_id",
-                        "label": f"{fact.title()} id",
-                    },
-                    f"{owner}_id": {
-                        "as": f"dimension.demo_{fact}_{owner}_id",
-                        "name": f"demo.{fact.title()}.{owner}_id",
-                        "label": f"{owner.title()} id",
-                    },
-                    f"{child}_id": {
-                        "as": f"dimension.demo_{fact}_{child}_id",
-                        "name": f"demo.{fact.title()}.{child}_id",
-                        "label": f"{child.title()} id",
-                    },
-                },
-                "times": {
-                    time_column: {
-                        "as": f"temporal_role.demo_{fact}_time",
-                        "name": f"demo.{fact.title()}.{time_column}",
-                        "label": f"{fact.title()} time",
-                        "column": time_column,
-                        "kind": "timestamp",
-                        "class": "event_time",
-                    }
-                },
-                "measures": {
-                    f"{fact}_count": {
-                        "as": f"measure.demo.{fact}_count",
-                        "name": f"{namespace}.{fact}s",
-                        "label": f"{fact.title()}s",
-                        "kind": "entity_count",
-                        "times": [time_column],
-                    }
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "metrics.yml",
-        {
-            "metrics": {
-                f"{namespace}.{fact}s": {
-                    "value_type": "number",
-                    "as": f"metric.{namespace}.{fact}s",
-                    "kind": "aggregate",
-                    "measure": f"measure.demo.{fact}_count",
-                },
-                f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period": {
-                    "value_type": "number",
-                    "as": f"metric.{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
-                    "name": f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
-                    "label": f"{fact.title()}s from {owner}s with 2+ {fact}s in period",
-                    "kind": "aggregate",
-                    "temporal_role": f"temporal_role.demo_{fact}_time",
-                    "expression": {
-                        "kind": "aggregate",
-                        "measure": f"measure.demo.{fact}_count",
-                        "aggregation": "count_distinct",
-                        "filter": {
-                            "all": [
-                                {
-                                    "expression": {
-                                        "kind": "metric_predicate",
-                                        "entity": f"entity.demo_{owner}",
-                                        "scope_mode": "contextual",
-                                        "input": {"metric": f"metric.{namespace}.{fact}s"},
-                                        "op": ">",
-                                        "value": 2,
-                                    }
-                                }
-                            ]
-                        },
-                    },
-                },
-            }
-        },
-    )
+    metric = _write_predicate_metric(package_dir, namespace, fact, owner)
 
     config, registry = _load_config(package_dir)
-    compiled = compile_query(
-        config,
-        registry,
-        {
-            "version": 1,
-            "select": [
-                {
-                    "expression": {
-                        "metric": f"metric.{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period"
-                    },
-                    "as": f"{fact}s",
-                }
-            ],
-            "group_by": [f"dimension.demo_{child}_name", f"dimension.demo_{parent}_name"],
-            "time": {"temporal_role": f"temporal_role.demo_{fact}_time", "grain": "month"},
-        },
-    )
+    group_by = [f"dimension.demo_{child}_name", f"dimension.demo_{parent}_name"]
+    query = _metric_query(metric, f"{fact}s", group_by, f"temporal_role.demo_{fact}_time")
+    compiled = compile_query(config, registry, query)
 
     predicate_source_sql = compiled["sql"].split(
         f'"qualified_{owner}s_month_by_{fact}s_1" AS (', 1
@@ -481,103 +473,57 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         package_dir,
         "history_scope_demo",
         {
-            "customer": {
-                "as": "entity.demo_customer",
-                "name": "demo.Customer",
-                "label": "Customer",
-                "key": ["customer_id"],
-                "model": "customers",
-            },
-            "plan": {
-                "as": "entity.demo_plan",
-                "name": "demo.Plan",
-                "label": "Plan",
-                "key": ["plan_id"],
-                "model": "plans",
-            },
-            "customer_history": {
-                "as": "entity.demo_customer_history",
-                "name": "demo.CustomerHistory",
-                "label": "Customer history",
-                "key": ["customer_id", "valid_from"],
-                "model": "customer_history",
-            },
-            "order": {
-                "as": "entity.demo_order",
-                "name": "demo.Order",
-                "label": "Order",
-                "key": ["order_id"],
-                "model": "orders",
-            },
+            **_entity("customer", "Customer", "Customer", ["customer_id"], "customers"),
+            **_entity("plan", "Plan", "Plan", ["plan_id"], "plans"),
+            **_entity(
+                "customer_history",
+                "CustomerHistory",
+                "Customer history",
+                ["customer_id", "valid_from"],
+                "customer_history",
+            ),
+            **_entity("order", "Order", "Order", ["order_id"], "orders"),
         },
         graph_relationships={
-            "relationship.demo_customer_history_customer": {
-                "as": "relationship.demo_customer_history_customer",
-                "entities": ["customer_history", "customer"],
-                "cardinality": "many_to_one",
-            },
-            "relationship.demo_customer_history_plan": {
-                "as": "relationship.demo_customer_history_plan",
-                "entities": ["customer_history", "plan"],
-                "cardinality": "many_to_one",
-            },
-            "relationship.demo_order_customer": {
-                "as": "relationship.demo_order_customer",
-                "entities": ["order", "customer"],
-                "cardinality": "many_to_one",
-            },
-            "relationship.demo_order_customer_history": {
-                "as": "relationship.demo_order_customer_history",
-                "entities": ["order", "customer_history"],
-                "cardinality": "many_to_one",
-                "target": ["customer_id"],
-                "temporal_validity": {
+            **_many_to_one(
+                "relationship.demo_customer_history_customer", "customer_history", "customer"
+            ),
+            **_many_to_one("relationship.demo_customer_history_plan", "customer_history", "plan"),
+            **_many_to_one("relationship.demo_order_customer", "order", "customer"),
+            **_many_to_one(
+                "relationship.demo_order_customer_history",
+                "order",
+                "customer_history",
+                target=["customer_id"],
+                temporal_validity={
                     "valid_from": "demo_customer_history.valid_from",
                     "valid_to": "demo_customer_history.valid_to",
                 },
-            },
+            ),
         },
     )
-    _write_yaml(
-        package_dir / "models" / "core" / "customers.yml",
+    _write_model(
+        package_dir,
+        "core",
+        "customer",
+        {"customer": {}},
+        "demo_customer",
+        _dimension("Customer", "customer_id", "dimension.demo_customer_id", "Customer id"),
+    )
+    _write_model(
+        package_dir,
+        "core",
+        "plan",
+        {"plan": {}},
+        "demo_plan",
         {
-            "model": {
-                "id": "customers",
-                "entities": {"customer": {}},
-                "relation": "demo_customer",
-                "dimensions": {
-                    "customer_id": {
-                        "as": "dimension.demo_customer_id",
-                        "name": "demo.Customer.customer_id",
-                        "label": "Customer id",
-                    }
-                },
-            }
+            **_dimension("Plan", "plan_id", "dimension.demo_plan_id", "Plan id"),
+            **_dimension(
+                "Plan", "plan_name", "dimension.demo_plan_name", "Plan name", kind="categorical"
+            ),
         },
     )
-    _write_yaml(
-        package_dir / "models" / "core" / "plans.yml",
-        {
-            "model": {
-                "id": "plans",
-                "entities": {"plan": {}},
-                "relation": "demo_plan",
-                "dimensions": {
-                    "plan_id": {
-                        "as": "dimension.demo_plan_id",
-                        "name": "demo.Plan.plan_id",
-                        "label": "Plan id",
-                    },
-                    "plan_name": {
-                        "as": "dimension.demo_plan_name",
-                        "name": "demo.Plan.plan_name",
-                        "label": "Plan name",
-                        "kind": "categorical",
-                    },
-                },
-            }
-        },
-    )
+    history = "CustomerHistory"
     _write_yaml(
         package_dir / "models" / "extensions" / "customer_history.yml",
         {
@@ -590,129 +536,62 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                 },
                 "relation": "demo_customer_history",
                 "dimensions": {
-                    "customer_id": {
-                        "as": "dimension.demo_customer_history_customer_id",
-                        "name": "demo.CustomerHistory.customer_id",
-                        "label": "Customer history customer id",
-                    },
-                    "plan_id": {
-                        "as": "dimension.demo_customer_history_plan_id",
-                        "name": "demo.CustomerHistory.plan_id",
-                        "label": "Plan id",
-                    },
-                    "customer_status": {
-                        "as": "dimension.demo_customer_status",
-                        "name": "demo.CustomerHistory.customer_status",
-                        "label": "Customer status",
-                        "kind": "categorical",
-                    },
+                    **_dimension(
+                        history,
+                        "customer_id",
+                        "dimension.demo_customer_history_customer_id",
+                        "Customer history customer id",
+                    ),
+                    **_dimension(
+                        history, "plan_id", "dimension.demo_customer_history_plan_id", "Plan id"
+                    ),
+                    **_dimension(
+                        history,
+                        "customer_status",
+                        "dimension.demo_customer_status",
+                        "Customer status",
+                        kind="categorical",
+                    ),
                 },
                 "times": {
-                    "valid_from": {
-                        "as": "temporal_role.demo_customer_history_valid_from",
-                        "name": "demo.CustomerHistory.valid_from",
-                        "label": "History valid from",
-                        "column": "valid_from",
-                        "kind": "timestamp",
-                        "class": "state_time",
-                    },
-                    "valid_to": {
-                        "as": "temporal_role.demo_customer_history_valid_to",
-                        "name": "demo.CustomerHistory.valid_to",
-                        "label": "History valid to",
-                        "column": "valid_to",
-                        "kind": "timestamp",
-                        "class": "state_time",
-                    },
+                    **_time(
+                        history,
+                        "valid_from",
+                        "temporal_role.demo_customer_history_valid_from",
+                        "History valid from",
+                        "state_time",
+                    ),
+                    **_time(
+                        history,
+                        "valid_to",
+                        "temporal_role.demo_customer_history_valid_to",
+                        "History valid to",
+                        "state_time",
+                    ),
                 },
             }
         },
     )
-    _write_yaml(
-        package_dir / "models" / "core" / "orders.yml",
+    _write_model(
+        package_dir,
+        "core",
+        "order",
         {
-            "model": {
-                "id": "orders",
-                "entities": {
-                    "order": {},
-                    "customer": {"expr": ["customer_id"]},
-                    "customer_history": {"expr": ["customer_id"]},
-                },
-                "relation": "demo_order",
-                "dimensions": {
-                    "order_id": {
-                        "as": "dimension.demo_order_id",
-                        "name": "demo.Order.order_id",
-                        "label": "Order id",
-                    },
-                    "customer_id": {
-                        "as": "dimension.demo_order_customer_id",
-                        "name": "demo.Order.customer_id",
-                        "label": "Customer id",
-                    },
-                },
-                "times": {
-                    "ordered_at": {
-                        "as": "temporal_role.demo_order_time",
-                        "name": "demo.Order.ordered_at",
-                        "label": "Order time",
-                        "column": "ordered_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                    }
-                },
-                "measures": {
-                    "order_count": {
-                        "as": "measure.demo.order_count",
-                        "name": "sales.orders",
-                        "label": "Orders",
-                        "kind": "entity_count",
-                        "times": ["ordered_at"],
-                    }
-                },
-            }
+            "order": {},
+            "customer": {"expr": ["customer_id"]},
+            "customer_history": {"expr": ["customer_id"]},
         },
-    )
-    _write_yaml(
-        package_dir / "metrics.yml",
+        "demo_order",
         {
-            "metrics": {
-                "sales.orders": {
-                    "value_type": "number",
-                    "as": "metric.sales.orders",
-                    "kind": "aggregate",
-                    "measure": "measure.demo.order_count",
-                },
-                "sales.orders_from_customers_with_2plus_orders_in_period": {
-                    "value_type": "number",
-                    "as": "metric.sales.orders_from_customers_with_2plus_orders_in_period",
-                    "name": "sales.orders_from_customers_with_2plus_orders_in_period",
-                    "label": "Orders from customers with 2+ orders in period",
-                    "kind": "aggregate",
-                    "temporal_role": "temporal_role.demo_order_time",
-                    "expression": {
-                        "kind": "aggregate",
-                        "measure": "measure.demo.order_count",
-                        "aggregation": "count_distinct",
-                        "filter": {
-                            "all": [
-                                {
-                                    "expression": {
-                                        "kind": "metric_predicate",
-                                        "entity": "entity.demo_customer",
-                                        "scope_mode": "contextual",
-                                        "input": {"metric": "metric.sales.orders"},
-                                        "op": ">",
-                                        "value": 2,
-                                    }
-                                }
-                            ]
-                        },
-                    },
-                },
-            }
+            **_dimension("Order", "order_id", "dimension.demo_order_id", "Order id"),
+            **_dimension("Order", "customer_id", "dimension.demo_order_customer_id", "Customer id"),
         },
+        times=_time(
+            "Order", "ordered_at", "temporal_role.demo_order_time", "Order time", "event_time"
+        ),
+        measures=_fact_count("sales", "order", "ordered_at"),
     )
+    metric = _write_predicate_metric(package_dir, "sales", "order", "customer")
 
     # An order reaches a plan through the customer history row valid when it was placed, or
     # through every history row of its customer. The question means the first, so the package
@@ -730,22 +609,9 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
     ]
     _write_yaml(package_dir / "graph.yml", graph)
     config, registry = _load_config(package_dir)
+    group_by = ["dimension.demo_customer_status", "dimension.demo_plan_name"]
     compiled = compile_query(
-        config,
-        registry,
-        {
-            "version": 1,
-            "select": [
-                {
-                    "expression": {
-                        "metric": "metric.sales.orders_from_customers_with_2plus_orders_in_period"
-                    },
-                    "as": "orders",
-                }
-            ],
-            "group_by": ["dimension.demo_customer_status", "dimension.demo_plan_name"],
-            "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "month"},
-        },
+        config, registry, _metric_query(metric, "orders", group_by, "temporal_role.demo_order_time")
     )
     predicate_source_sql = compiled["sql"].split('"qualified_customers_month_by_orders_1" AS (', 1)[
         0
@@ -755,22 +621,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
     assert '"dimension.demo_plan_id"' not in predicate_source_sql
 
     with pytest.raises(SemanticLayerError) as exc:
-        compile_query(
-            config,
-            registry,
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "metric": "metric.sales.orders_from_customers_with_2plus_orders_in_period"
-                        },
-                        "as": "orders",
-                    }
-                ],
-                "group_by": ["dimension.demo_customer_status", "dimension.demo_plan_name"],
-            },
-        )
+        compile_query(config, registry, _metric_query(metric, "orders", group_by))
     # The query's own grouping crosses the time-valid hop with no time, before the predicate.
     assert exc.value.code == "FANOUT_UNSAFE"
     assert exc.value.details["relationships"] == ["relationship.demo_order_customer_history"]

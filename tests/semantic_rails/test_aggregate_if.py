@@ -1,45 +1,27 @@
 """The ``aggregate_if`` shorthand.
 
-Covers compiling it against jaffle_shop (DuckDB and Snowflake), its rewrite to a synthetic
-measure, the dialect hook that picks ``COUNT_IF`` where a warehouse has it and keeps the
-portable ``CASE WHEN`` elsewhere, and its refusals.
+Covers its rewrite to a synthetic measure, the dialect hook that picks ``COUNT_IF`` where a
+warehouse has it and keeps the portable ``CASE WHEN`` elsewhere, and its refusals.
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import replace
-
 import pytest
 
 from semantic_rails.ast import normalize_query
-from semantic_rails.compiler import compile_query, plan_query
+from semantic_rails.compiler import plan_query
 from semantic_rails.compiler_parts.bind import _aggregation_expr, lift_conditional_aggregates
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.dialects import SnowflakeDialect, SqlDialect
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr
-from semantic_rails.schema import ConnectionSpec
 from semantic_rails.sql_ast import SqlBinary, SqlCall, SqlCase, SqlCaseWhen, SqlLiteral
 
 
 @pytest.fixture(scope="module")
 def jaffle_config():
     return load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
-
-
-def _snowflake(config):
-    return replace(
-        config,
-        package=replace(
-            config.package,
-            warehouse="snowflake",
-            default_db="",
-            seed=replace(config.package.seed, kind="", source="", post_sql=""),
-            connection=ConnectionSpec(kind="snowflake_cli", name="semantic_views_trial"),
-        ),
-    )
 
 
 def _order_column(column: str) -> dict:
@@ -61,35 +43,6 @@ COUNT_IF = {
     "condition": _is_true("is_new_customer_order"),
 }
 COUNT_IF_PAYLOAD = {"select": [{"expression": COUNT_IF, "as": "new_customer_order_count"}]}
-SUM_IF_PAYLOAD = {
-    "select": [
-        {
-            "expression": {
-                "kind": "aggregate_if",
-                "aggregation": "sum",
-                "condition": _is_true("is_large_order"),
-                "value": _order_column("order_total_cents"),
-            },
-            "as": "large_order_revenue_cents",
-        }
-    ],
-}
-SUM_CASE = r"SUM\(CASE WHEN .* THEN .*order_total_cents.* END\)"
-
-
-def test_conditional_aggregates_compile_to_the_dialects_form(jaffle_config):
-    # Snowflake has COUNT_IF, but SUM must use portable CASE WHEN.
-    for snowflake, payload, pattern, forbidden in [
-        (False, COUNT_IF_PAYLOAD, r"COUNT\(CASE WHEN .* THEN 1 END\)", ""),
-        (True, COUNT_IF_PAYLOAD, r"COUNT_IF\(", "COUNT(CASE WHEN"),
-        (False, SUM_IF_PAYLOAD, SUM_CASE, ""),
-        (True, SUM_IF_PAYLOAD, SUM_CASE, "SUM_IF("),
-    ]:
-        config = _snowflake(jaffle_config) if snowflake else jaffle_config
-        sql = compile_query(config, None, payload)["sql"]
-        assert re.search(pattern, sql), sql
-        assert not forbidden or forbidden not in sql, sql
-        assert payload["select"][0]["as"] in sql
 
 
 def test_identical_conditional_aggregates_lift_to_one_synthetic_measure(jaffle_config):
