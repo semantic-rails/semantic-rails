@@ -575,7 +575,9 @@ with `QUERY_EXECUTION_ERROR`.
 Out-of-range timestamps such as `9999-12-31` refuse; cast those columns to
 `TIMESTAMP_*(6)` or `DATE` in the model.
 With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decimal`, except
-counts, which come back as integers ([result values](QUERY_CALL.md#result-values)).
+counts (a count, a row count such as `expr: 1`, and running totals of them), which come back as
+integers; a sum of a stored count column stays `decimal`
+([result values](QUERY_CALL.md#result-values)).
 Account and user may be literals (`account`, `user`) or env-indirected
 (`account_env`, `user_env`); the optional key passphrase may use
 `private_key_passphrase_env` or `private_key_passphrase_file`.

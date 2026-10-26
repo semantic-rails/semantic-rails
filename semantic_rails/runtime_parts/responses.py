@@ -10,6 +10,7 @@ from ..expressions import (
     AggregateExpr,
     ArithmeticExpr,
     CallExpr,
+    CaseExpr,
     ConditionalAggregateExpr,
     LiteralExpr,
     MeasureRefExpr,
@@ -252,18 +253,36 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
 _COUNTING = frozenset({"count", "count_distinct"})
 
 
+def _whole_literal(expr: Any) -> bool:
+    """Whether every value ``expr`` gives a row is a whole-number literal or NULL: ``1``, or a
+    CASE whose branches are (``CASE WHEN … THEN 1 ELSE 0 END``). Its sum counts rows."""
+    if isinstance(expr, LiteralExpr):
+        value = expr.value
+        return value is None or (isinstance(value, int) and not isinstance(value, bool))
+    if isinstance(expr, CaseExpr):
+        branches = [row.then for row in expr.whens] + [expr.else_expr or LiteralExpr(None)]
+        return all(isinstance(row, LiteralExpr) and _whole_literal(row) for row in branches)
+    return False
+
+
 def counted_outputs(config: Any, compiled: dict[str, Any]) -> set[str]:
-    """The select aliases the query makes counts: a count or distinct count, or a sum,
-    difference, product, running total, period-to-date or prior value of counts, directly or
-    through a metric. The result encodes them as integers (``result_rows``)."""
+    """The select aliases the query makes counts: a count or distinct count, a sum of a
+    whole-number literal (a row count, ``expr: 1``), or a sum, difference, product, running
+    total, period-to-date or prior value of counts, directly or through a metric. The result
+    encodes them as integers (``result_rows``). The engine decides this from the query, never
+    from an authored ``value_type``: a sum of a stored column keeps the driver's type."""
     measures = {row.id: row for row in config.measures}
     recipes = {row.id: row for row in config.metric_recipes}
 
     def counts(expr: Any) -> bool:
         if isinstance(expr, MeasureRefExpr | AggregateExpr | ScopedAggregateExpr):
             measure = measures.get(expr.measure)
-            aggregation = expr.aggregation or getattr(measure, "default_aggregation", "")
-            return str(aggregation).lower() in _COUNTING
+            aggregation = str(
+                expr.aggregation or getattr(measure, "default_aggregation", "")
+            ).lower()
+            return aggregation in _COUNTING or (
+                aggregation == "sum" and measure is not None and _whole_literal(measure.expr)
+            )
         if isinstance(expr, ConditionalAggregateExpr):
             return expr.aggregation.lower() in _COUNTING
         if isinstance(expr, MetricRecipeRefExpr):
