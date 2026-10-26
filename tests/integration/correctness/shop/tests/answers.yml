@@ -2200,6 +2200,76 @@ tests:
     reference_sql: SELECT CASE WHEN COUNT(*) > 0 THEN SUM(amount) WHEN EXISTS (SELECT 1 FROM orders WHERE amount IS NOT NULL) THEN 0 END, COUNT(*) FROM orders WHERE store_id = 'zzz'
     expected_rows:
       - {revenue: 0, orders: 0}
+  shop/coalesce-zero-keeps-a-covered-month-its-where-empties:
+    kind: query_matches_snapshot
+    expect: answer
+    why: COALESCE(store b revenue, 0) for customers other than Bea, November 2023 to March 2024. The where removes order 2 (store b, Bea), November's only store b order, though November has data (order 1); December and January hold no store b order and February no order, all inside the loaded data. Each of those months keeps its row and reads 0, as the bare filtered sum does; March reads order 5's 8.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
+      - tests/integration/correctness/shop/models/signups.yml#model.dimensions.name
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#where
+    tags: [null-vs-zero, time-window]
+    query:
+      select:
+        - as: store_b_revenue
+          expression:
+            kind: call
+            name: COALESCE
+            args:
+              - kind: aggregate
+                measure: measure.shop.revenue
+                filter: {all: [{field: dimension.shop_order_store_id, op: is, value: b}]}
+              - {kind: literal, value: 0}
+      where: [{field: dimension.shop_customer_name, op: not, value: Bea}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month, start: '2023-11-01', end: '2024-04-01'}
+    reference_sql: |-
+      SELECT g.b, COALESCE(SUM(CASE WHEN o.store_id = 'b' THEN o.amount END), 0)
+      FROM generate_series(TIMESTAMP '2023-11-01', TIMESTAMP '2024-03-01', INTERVAL '1 month') AS g(b)
+      LEFT JOIN (orders AS o LEFT JOIN signups AS s ON s.customer_id = o.customer_id)
+        ON date_trunc('month', o.ordered_at) = g.b AND s.name IS DISTINCT FROM 'Bea'
+      GROUP BY 1
+    expected_rows:
+      - {period: '2023-11-01', store_b_revenue: 0}
+      - {period: '2023-12-01', store_b_revenue: 0}
+      - {period: '2024-01-01', store_b_revenue: 0}
+      - {period: '2024-02-01', store_b_revenue: 0}
+      - {period: '2024-03-01', store_b_revenue: 8}
+  shop/coalesce-zero-keeps-last-month-when-its-where-empties-it:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The same COALESCE for last month, asked on December 15, 2023. November has data (orders 1 and 2), and the where removes its only store b order (order 2, Bea), so the one named month reads 0 rather than returning no row.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
+      - tests/integration/correctness/shop/models/signups.yml#model.dimensions.name
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#time
+    tags: [null-vs-zero, time-window]
+    now: '2023-12-15T12:00:00Z'
+    query:
+      select:
+        - as: store_b_revenue
+          expression:
+            kind: call
+            name: COALESCE
+            args:
+              - kind: aggregate
+                measure: measure.shop.revenue
+                filter: {all: [{field: dimension.shop_order_store_id, op: is, value: b}]}
+              - {kind: literal, value: 0}
+      where: [{field: dimension.shop_customer_name, op: not, value: Bea}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month, last: {unit: month, value: 1}}
+    reference_sql: |-
+      SELECT TIMESTAMP '2023-11-01', COALESCE(SUM(CASE WHEN o.store_id = 'b' THEN o.amount END), 0)
+      FROM orders AS o LEFT JOIN signups AS s ON s.customer_id = o.customer_id
+      WHERE o.ordered_at >= TIMESTAMP '2023-11-01' AND o.ordered_at < TIMESTAMP '2023-12-01'
+        AND s.name IS DISTINCT FROM 'Bea'
+    expected_rows:
+      - {period: '2023-11-01', store_b_revenue: 0}
   shop/absent_filtered_input_beside_an_observed_one:
     kind: query_matches_snapshot
     expect: answer
