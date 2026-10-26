@@ -30,6 +30,7 @@ from semantic_rails.request_context import (
 )
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -195,14 +196,41 @@ def _frontends(runtime):
         asyncio.run(app.aclose())
 
 
+_SERVER_SETTINGS = (
+    "SEMANTIC_RAILS_API_KEYS",
+    "SEMANTIC_RAILS_API_KEY_FILE",
+    "SEMANTIC_RAILS_CORS_ORIGINS",
+    "SEMANTIC_RAILS_ALLOWED_HOSTS",
+)
+
+
 @pytest.fixture
 def frontends(runtime_factory, monkeypatch):
-    monkeypatch.delenv("SEMANTIC_RAILS_API_KEYS", raising=False)
-    monkeypatch.delenv("SEMANTIC_RAILS_API_KEY_FILE", raising=False)
-    monkeypatch.delenv("SEMANTIC_RAILS_CORS_ORIGINS", raising=False)
-    monkeypatch.delenv("SEMANTIC_RAILS_ALLOWED_HOSTS", raising=False)
+    for name in _SERVER_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
     with _frontends(runtime_factory("jaffle_shop")) as call:
         yield call
+
+
+@pytest.fixture(scope="module")
+def _shared_frontends(tmp_path_factory):
+    root = copy_package_config(tmp_path_factory.mktemp("loopback"), "jaffle_shop", preseed_db=True)
+    with pytest.MonkeyPatch.context() as patch:
+        for name in _SERVER_SETTINGS:
+            patch.delenv(name, raising=False)
+        runtime = opened(Runtime.from_path(str(root)))
+        try:
+            with _frontends(runtime) as call:
+                yield call
+        finally:
+            runtime.close()
+
+
+@pytest.fixture
+def loopback(_shared_frontends):
+    """One server pair for the Host and Origin cases that change no setting; no body read yet."""
+    _shared_frontends.reads.clear()
+    return _shared_frontends
 
 
 @pytest.mark.parametrize(
@@ -458,22 +486,20 @@ def _assert_refused(response, path, status, code):
 @pytest.mark.parametrize(("method", "path"), [surface[:2] for surface in SURFACES])
 @pytest.mark.parametrize(("headers", "status", "code"), HOSTILE)
 def test_loopback_server_refuses_rebinding_requests(
-    frontends, backend, method, path, headers, status, code
+    loopback, backend, method, path, headers, status, code
 ):
-    response = frontends(
-        backend, method=method, path=path, headers=[*headers, UNREAD_BODY], raw=b""
-    )
+    response = loopback(backend, method=method, path=path, headers=[*headers, UNREAD_BODY], raw=b"")
     _assert_refused(response, path, status, code)
-    assert frontends.reads == []
+    assert loopback.reads == []
 
 
 @pytest.mark.parametrize("backend", ["serve", "asgi"])
 @pytest.mark.parametrize("host", [None, "localhost", "127.0.0.1:8090", "[::1]:8090", "LOCALHOST"])
-def test_loopback_hosts_without_origin_are_served(frontends, backend, host):
+def test_loopback_hosts_without_origin_are_served(loopback, backend, host):
     headers = {"Host": host} if host else {}
     for method, path, raw in SURFACES:
         expected = 204 if method == "OPTIONS" else 200
-        assert frontends(backend, method=method, path=path, headers=headers, raw=raw)[0] == expected
+        assert loopback(backend, method=method, path=path, headers=headers, raw=raw)[0] == expected
 
 
 @pytest.mark.parametrize("backend", ["serve", "asgi"])
