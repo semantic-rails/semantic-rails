@@ -33,10 +33,11 @@ def _drafted_best(runtime, intent):
     """Return the best draft's call, asserting it validates but is held, not offered as ready."""
     payload = plan_payload(runtime, intent=intent, detail="full", limit=3)
     assert payload["status"] == "low_confidence", payload.get("why")
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert "ready_for" not in payload["next"]
     assert payload["best"]["validation_ok"] is True
-    kinds = {gap["kind"] for gap in payload["why"]["details"]["gaps"]}
-    assert "stock_as_of_unrealized" in kinds
+    kinds = [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+    assert kinds == ["stock_as_of_unrealized"]
     return payload["best"]["query"]
 
 
@@ -50,7 +51,10 @@ def _drafted_best(runtime, intent):
     ],
 )
 def test_a_population_share_resolves_to_a_percentile_threshold(runtime, intent, p):
-    (predicate,) = _drafted_best(runtime, intent)["select"][0]["expression"]["predicates"]
+    query = _drafted_best(runtime, intent)
+    # A top share is a share of customers, not a ranking: the draft carries no limit.
+    assert "limit" not in query
+    (predicate,) = query["select"][0]["expression"]["predicates"]
     assert predicate["entity"] == "entity.jaffle_customer"
     assert predicate["op"] == "gte"
     assert predicate["over"] == "all_time"

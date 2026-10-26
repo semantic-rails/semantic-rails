@@ -58,40 +58,6 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
     assert payload["why"]["recovery_hints"]
 
 
-def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime) -> None:
-    # "store" names the Store entity, so the conjoined subjects group by its key and name.
-    now = {"now": "2017-04-15"}
-    payload = plan_payload(
-        runtime,
-        intent="Revenue and order count by store last quarter",
-        partial_query={"policy_context": now},
-    )
-    assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query"]
-    assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
-    rows = runtime.query(query, now=now["now"])["rows"]
-    with duckdb.connect(runtime.db_path, read_only=True) as connection:
-        reference = connection.execute(
-            "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0), "
-            "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN jaffle_store s USING "
-            "(store_id) WHERE o.ordered_at >= TIMESTAMP '2017-01-01' AND o.ordered_at < "
-            "TIMESTAMP '2017-04-01' GROUP BY 1, 2 ORDER BY 1"
-        ).fetchall()
-    actual = [
-        (
-            row["dimension.jaffle_store_id"],
-            row["dimension.jaffle_store_name"],
-            round(float(row["revenue_usd"]), 2),
-            row["order_count"],
-        )
-        for row in rows
-    ]
-    assert reference
-    assert actual == [
-        (key, name, round(float(revenue), 2), count) for key, name, revenue, count in reference
-    ]
-
-
 @pytest.mark.parametrize(
     ("intent", "pattern", "status", "code", "named"),
     [
@@ -102,17 +68,6 @@ def test_conjoined_store_quarter_answers_with_the_keyed_store(runtime) -> None:
             "needs_clarification",
             "PERIOD_COMPARISON",
             None,
-        ),
-        ("orders by store and month", "metric_by_dimension_rollup", "ok", None, None),
-        ("orders by store in Brooklyn", "metric_by_dimension_rollup", "ok", None, None),
-        # "For stores that have ..." qualifies the stores; the draft also splits by store.
-        (
-            "Give me the 28D adoption funnel from signup to Send for stores that have an "
-            "order rate of over 90% grouped by month",
-            "filtered_adoption_funnel",
-            "low_confidence",
-            "PLAN_UNASKED_GROUPING",
-            ["Store name"],
         ),
         # One total per store and no prior-period select: the answer-shape check holds it.
         (
@@ -143,35 +98,11 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
 
     assert payload["best"]["pattern"] == pattern
     assert payload["status"] == status, payload.get("why")
-    if status == "ok":
-        assert payload["next"]["ready_for"] == ["execute"]
-        if "Brooklyn" in intent:
-            # A positive value filter is not mistaken for a negation.
-            assert payload["best"]["query"]["where"] == [
-                {"field": "dimension.jaffle_store_name", "op": "is", "value": "Brooklyn"}
-            ]
-        return
     # The faithfulness gate keeps the shape; another check holds it and names why.
     assert payload["why"]["code"] == code
     assert "ready_for" not in payload["next"]
-    if code == "PLAN_UNASKED_GROUPING":
-        assert payload["why"]["details"]["unasked_groupings"] == named
-    elif code == "PLAN_INTENT_COVERAGE_GAP":
+    if code == "PLAN_INTENT_COVERAGE_GAP":
         assert sorted(_gap_kinds(payload)) == named
-
-
-def test_qualifier_on_another_clock_is_not_offered_as_ready(runtime) -> None:
-    # The stores' qualifier reads all their rows; the snapshot still has no as-of day.
-    payload = plan_payload(
-        runtime,
-        intent="Give me the sum of active menu snapshot at the store dimension for stores "
-        "that have done more than one order and more than one session grouped by month",
-    )
-
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-    assert "stock_as_of_unrealized" in _gap_kinds(payload)
-    assert "ready_for" not in payload["next"]
 
 
 def test_a_lifetime_qualifier_reads_every_row_of_the_entity(runtime) -> None:

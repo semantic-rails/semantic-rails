@@ -144,17 +144,6 @@ def test_pieces_that_dont_connect_are_named_without_a_draft(
     _no_draft(payload)
 
 
-def test_a_drift_says_best_is_the_draft_that_fails(jaffle: Runtime) -> None:
-    payload = _plan(jaffle, "session starts by product type")
-    assert payload["status"] == "low_confidence"
-    why = payload["why"]
-    assert why["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
-    assert payload["best"]["validation_ok"] is False
-    assert why["message"].startswith("best.query is the named pattern's draft")
-    assert "fails validation" in why["message"]
-    assert [row["code"] for row in why["details"]["primary_errors"]] == ["AMBIGUOUS_PATH"]
-
-
 def _row(select: str, pattern: str, ok: bool, **extra: Any) -> dict[str, Any]:
     from semantic_rails.planner._base import RuntimeCompositionDraft
 

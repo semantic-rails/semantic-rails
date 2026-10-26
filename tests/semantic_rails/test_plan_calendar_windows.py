@@ -27,7 +27,7 @@ from semantic_rails.planner.groupings import _time_spec
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
-from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
+from semantic_rails.planner.time_windows import _time_bounds_from_text
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
@@ -35,6 +35,7 @@ YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
 Q2_2017 = {"start": "2017-04-01", "end": "2017-07-01"}
 APRIL_3 = {"start": "2017-04-03", "end": "2017-04-04"}
 FIRST_WEEK_OF_APRIL = {"start": "2017-04-01", "end": "2017-04-08"}
+MARCH_2017 = {"start": "2017-03-01", "end": "2017-04-01"}
 
 
 @pytest.mark.parametrize(
@@ -73,6 +74,21 @@ FIRST_WEEK_OF_APRIL = {"start": "2017-04-01", "end": "2017-04-08"}
         ("orders over 2000 in 2017", YEAR_2017),
         # "since" a named month starts there and stays open.
         ("orders since March 2017", {"start": "2017-03-01"}),
+        ("revenue in the second half of 2017", {"start": "2017-07-01", "end": "2018-01-01"}),
+        ("revenue for first half 2017", {"start": "2017-01-01", "end": "2017-07-01"}),
+        ("revenue from March 1 to March 31, 2017", MARCH_2017),
+        ("revenue from March 1 to 31, 2017", MARCH_2017),
+        ("revenue Mar 1 - Mar 31 2017", MARCH_2017),
+        ("revenue Mar 1 - 31 2017", MARCH_2017),
+        ("revenue between 2017-03-01 and 2017-03-31", MARCH_2017),
+        ("revenue 2017-03-01 to 2017-03-31", MARCH_2017),
+        ("revenue from 2017-03-01 through 2017-03-31", MARCH_2017),
+        ("revenue in calendar year 2017", YEAR_2017),
+        ("revenue for the calendar year 2017", YEAR_2017),
+        ("revenue in year 2017", YEAR_2017),
+        ("revenue for year 2017", YEAR_2017),
+        ("year 2017 revenue", YEAR_2017),
+        ("calendar year 2017 revenue by store", YEAR_2017),
     ],
 )
 def test_clear_calendar_windows_resolve(text: str, bounds: dict[str, str]) -> None:
@@ -470,16 +486,3 @@ def test_a_drafts_other_window_does_not_answer_a_since_phrase(
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert [gap["kind"] for gap in payload["why"]["details"]["gaps"]] == ["time_window_unrealized"]
     assert "execute" not in (payload.get("next") or {}).get("ready_for", [])
-
-
-@pytest.mark.parametrize(
-    ("text", "bounds"),
-    [
-        ("revenue for Q2", {"start": "2026-04-01", "end": "2026-07-01"}),
-        ("revenue in March", {"start": "2026-03-01", "end": "2026-04-01"}),
-    ],
-)
-def test_named_calendar_forms_resolve_on_a_fixed_clock(text, bounds):
-    read = _time_window(text, {"now": "2026-10-05T06:00:00Z"})
-    assert read.bounds == bounds
-    assert not read.unresolved

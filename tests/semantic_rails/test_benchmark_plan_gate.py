@@ -129,6 +129,17 @@ def test_public_plan_warms_compile_cache(runtime) -> None:
             "low_confidence",
             "PLAN_UNASKED_GROUPING",
         ),
+        # "by revenue" after "What are the top stores" reads as a grouping it lacks.
+        ("top_stores_by_revenue", "low_confidence", "PLAN_UNMATCHED_TERMS"),
+        ("inventory_levels_by_store", "low_confidence", "PLAN_INTENT_COVERAGE_GAP"),
+        # A balance summed over each month is not the snapshot asked for; that hold comes
+        # before asking over which rows the stores qualify.
+        (
+            "active_menu_snapshot_for_high_activity_stores",
+            "low_confidence",
+            "PLAN_INTENT_COVERAGE_GAP",
+        ),
+        ("adversarial_fake_ids_route_to_real_revenue", "low_confidence", "PLAN_UNMATCHED_TERMS"),
     ],
 )
 def test_held_case_contract(runtime, name, status, code) -> None:
