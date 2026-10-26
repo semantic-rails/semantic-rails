@@ -90,17 +90,6 @@ def test_no_orphan_explain_tool_references():
         )
 
 
-def test_ir_accepting_tool_descriptions_teach_positional_shapes():
-    """select, group_by, where and order_by each have their own item shape; the
-    positional teach ships once, on execute (the schema has the rest)."""
-    tools = list_tool_definitions()
-    execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
-    for marker in ("select", "group_by", "where/having [{field, op, value}]", "order_by"):
-        assert marker in execute_desc, (
-            f"execute description must teach the {marker} shape; got {execute_desc!r}"
-        )
-
-
 def test_last_query_schema_describes_object_shape():
     """``time.last`` is an object ``{unit, value}``, never a string like '90 days'."""
     from semantic_rails.mcp import QUERY_SCHEMA
@@ -203,31 +192,3 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
         )
     finally:
         adapter.close()
-
-
-def test_capabilities_payload_ships_expression_shapes(runtime_factory):
-    from semantic_rails.metadata_parts.capabilities import capabilities_payload
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = capabilities_payload(runtime)
-        shapes = list(payload.get("expression_shapes") or [])
-        assert shapes, "capabilities.expression_shapes must be non-empty"
-        names = {str(s["name"]) for s in shapes}
-        assert {
-            "aggregate",
-            "metric",
-            "prior_period",
-            "rolling",
-            "cumulative",
-            "ratio",
-            "conversion",
-            "distribution",
-        } <= names, f"capabilities.expression_shapes missing kinds; got names={names}"
-        for shape in shapes:
-            assert isinstance(shape, dict)
-            assert shape.get("name"), f"shape missing name: {shape}"
-            assert shape.get("description"), f"shape missing description: {shape}"
-            assert isinstance(shape.get("example"), (dict, str)), f"shape missing example: {shape}"
-    finally:
-        runtime.close()

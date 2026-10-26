@@ -55,7 +55,8 @@ def _truncation(response: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_a_large_result_is_capped_and_says_more_exist(adapter: SemanticLayerMCPAdapter) -> None:
-    response = adapter.call_tool("execute", {"query": DAILY_REVENUE, "max_rows": 200})
+    # No max_rows argument: the default cap applies.
+    response = adapter.call_tool("execute", {"query": DAILY_REVENUE})
     assert response["ok"], response["errors"]
     assert response["row_count"] == len(response["rows"]) == MCP_DEFAULT_MAX_ROWS
     assert response["truncated"] is True

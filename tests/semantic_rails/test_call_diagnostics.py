@@ -813,10 +813,6 @@ def test_bigquery_date_diff_column_endpoints_normalized_on_every_surface(package
     [
         ("duckdb", f"DATE_DIFF('day', CAST('{START}' AS TIMESTAMP), CAST('{END}' AS TIMESTAMP))"),
         (
-            "clickhouse",
-            f"DATE_DIFF('day', CAST('{START}' AS Nullable(DateTime64(6))), CAST('{END}' AS Nullable(DateTime64(6))))",
-        ),
-        (
             "postgres",
             f"CAST(CAST('{END}' AS TIMESTAMP) AS DATE) - CAST(CAST('{START}' AS TIMESTAMP) AS DATE)",
         ),

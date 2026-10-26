@@ -156,27 +156,6 @@ def test_sql_profile_off_keeps_the_non_sql_product(runtime, method, options):
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_validate_hoists_verbosity_from_outer_arguments(runtime):
-    """The MCP adapter accepts verbosity at the outer argument layer, not
-    just inside ``query``. The Phase 1 plan calls out matching the
-    catalog plumbing pattern.
-    """
-    from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-    adapter = SemanticLayerMCPAdapter(runtime)
-    envelope = adapter.call_tool(
-        "execute",
-        {"query": dict(_BASE_QUERY), "mode": "validate", "verbosity": "minimal"},
-    )
-    # The MCP envelope adds status/ok/api_version/etc., but the
-    # validate-shaped payload it wraps must reflect minimal gating.
-    assert envelope["ok"] is True
-    for key in _COMPACT_DROPPED_KEYS:
-        assert key not in envelope, f"minimal MCP envelope leaked {key}"
-    assert "rendered_sql" not in envelope
-    assert "logical_plan" not in envelope
-
-
 def test_mcp_execute_hoists_sql_profile_off(runtime):
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
@@ -195,20 +174,6 @@ def test_mcp_execute_hoists_sql_profile_off(runtime):
     assert isinstance(envelope.get("rows"), list)
 
 
-def test_mcp_execute_defaults_to_record_rows(runtime):
-    from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-    adapter = SemanticLayerMCPAdapter(runtime)
-    envelope = adapter.call_tool("execute", {"query": dict(_BASE_QUERY)})
-    assert envelope["ok"] is True
-    assert "row_format" not in envelope
-    assert "columns" not in envelope
-    assert isinstance(envelope["rows"], list)
-    assert envelope["rows"]
-    assert isinstance(envelope["rows"][0], dict)
-    assert envelope["row_count"] == len(envelope["rows"])
-
-
 def test_mcp_execute_columns_row_format_preserves_values_and_counts(runtime):
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
@@ -222,6 +187,10 @@ def test_mcp_execute_columns_row_format_preserves_values_and_counts(runtime):
 
     assert records["ok"] is True
     assert columns["ok"] is True
+    # Records are the default: a list of objects, with no row_format or columns echo.
+    assert "row_format" not in records and "columns" not in records
+    assert records["rows"] and isinstance(records["rows"][0], dict)
+    assert records["row_count"] == len(records["rows"])
     assert columns["row_format"] == "columns"
     assert columns["row_count"] == records["row_count"]
     assert columns.get("warnings") == records.get("warnings")

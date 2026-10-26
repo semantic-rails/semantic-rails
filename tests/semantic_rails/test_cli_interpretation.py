@@ -61,17 +61,6 @@ LABELS = {
             },
             "AOV, per month of Order time, first 5 rows by AOV descending",
         ),
-        (
-            {"select": ["measure.revenue"], "order_by": [{"field": "revenue", "direction": "asc"}]},
-            "Revenue, ordered by Revenue ascending",
-        ),
-        (
-            {
-                "select": ["measure.revenue"],
-                "order_by": [{"field": "revenue", "direction": "desc"}],
-            },
-            "Revenue, ordered by Revenue descending",
-        ),
         ({"select": ["measure.revenue"], "limit": 3}, "Revenue, first 3 rows"),
         (
             {

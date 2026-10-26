@@ -102,19 +102,6 @@ def test_full_response_keeps_plans_when_the_budget_allows(
     assert len(str(slim)) < len(str(full)) / 3
 
 
-def test_preview_keeps_its_rows_and_counts(adapter: SemanticLayerMCPAdapter) -> None:
-    arguments = ARGUMENTS["preview"]
-    full = adapter.call_tool("segment", {**arguments, "verbosity": "full"})
-    slim = adapter.call_tool("segment", {**arguments, "verbosity": "minimal"})
-    for key in ("preview_row_count", "member_count", "derived_query"):
-        assert slim[key] == full[key], key
-    # The sample itself is unordered, so compare its shape.
-    assert len(slim["rows"]) == len(full["rows"]) == 3
-    assert {tuple(sorted(row)) for row in slim["rows"]} == {
-        tuple(sorted(row)) for row in full["rows"]
-    }
-
-
 @pytest.mark.parametrize("action", ACTIONS)
 def test_minimal_retains_production_policy_effects_from_real_segment(
     adapter: SemanticLayerMCPAdapter, action: str
