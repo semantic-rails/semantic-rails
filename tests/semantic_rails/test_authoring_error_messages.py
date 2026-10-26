@@ -187,6 +187,14 @@ def test_a_failing_example_or_test_is_named_with_its_placeholders_filled(tmp_pat
 
 def test_the_cli_prints_the_path_preferences_rows_for_an_undecided_pair(tmp_path, capsys):
     package = copy_package_config(tmp_path, "jaffle_shop")
+    # An example the package's own routes can't answer yet: delivered orders by product type.
+    query = {
+        "select": ["measure.jaffle.delivered_orders"],
+        "group_by": ["dimension.jaffle_item_product_type"],
+    }
+    (package / "examples" / "routes.yml").write_text(
+        yaml.safe_dump({"examples": {"delivered_by_type": {"query": query}}})
+    )
     ref = PackageReference(source_path=str(package))
     report = project_validation_report(ref, mode="parse")
     (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTES_UNDECIDED"]

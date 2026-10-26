@@ -482,7 +482,14 @@ A draft that validates can still leave out part of the question. `plan` returns
   ("revenue month over month") aren't answered in this release: plan returns
   `needs_clarification` with `PERIOD_COMPARISON`, whose `why.details.options[].call` reads the
   compared periods as one series (`last` with a grain), and holds a comparison whose period
-  isn't over at `now` ("this week vs last week") with `PERIOD_COMPARISON_INCOMPLETE`. Two or
+  isn't over at `now` ("this week vs last week") with `PERIOD_COMPARISON_INCOMPLETE`. A draft
+  refused only because its pieces connect by two or more routes ("balance by district", where an
+  account's district is its branch's or its owner's) returns `needs_clarification` with
+  `AMBIGUOUS_PATH`: `why.message` asks which route the question means in business words, and
+  each `why.details.options[]` (`id`, `reads`, `call`, `decision`) is the draft with that route in
+  `routes` (this question only) and the `graph.path_preferences` row that makes it the package
+  default. Only readings the engine answers are offered; with none, plan holds the draft as
+  before. Two or
   more questions for a
   value, "how many", "how much", "what is", "what was" or "what's", need a select of their
   own each that names what the question asks about:

@@ -2311,8 +2311,9 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
-- Entity pairs a question can need have two or more routes and no recorded
-  decision (`ROUTES_UNDECIDED`; see [the route census](#route-census-and-route-changes)).
+- Entity pairs the package's own metrics, examples or tests walk have two or more
+  routes and no recorded decision (`ROUTES_UNDECIDED`; see
+  [the route census](#route-census-and-route-changes)).
 
 ### Metrics a measure published implicitly
 
@@ -2660,6 +2661,7 @@ Four guard rails back this up:
 - **Route census** — parsing the package (`semantic-rails check`, `validate`)
   lists every entity pair a question can need that is still refused for want of
   a decision, role-playing keys included, and warns once with `ROUTES_UNDECIDED`
+  about those the package's own metrics, examples and tests walk
   ([below](#route-census-and-route-changes)).
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. a customer's region recorded as
@@ -2680,29 +2682,39 @@ guard comparisons resolve every pair using package decisions, independently
 of any active query route overrides.
 
 **Census.** The parse report (`semantic-rails check`, `validate`, and
-Architect's `project_status`) carries `route_census`:
+Architect's `project_status`) carries `route_census`. A large warehouse has
+thousands of entity pairs with two or more routes, and most of them no question
+ever asks about, so the census also says which ones the package's own queries
+walk: each metric alone (one that reads periods with a time block), and each
+example's and test's query (a test that expects a refusal walks none). Each is
+compiled, never run; a query refused at a route fork walks that fork, then the
+rest of the query with the fork's first route. Only those pairs warn.
 
-- `undecided`: `[{source_entity, target_entity, details}]`, the pairs refused
+- `undecided`: `[{source_entity, target_entity, needed_by, details}]`, the pairs refused
   with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
   meaning and `details.clarification.options[*].decision`, the row that records
-  it). One `ROUTES_UNDECIDED` warning gives
-  their `count` and `pairs`, and `first_pair_rows`, the rows that would decide
-  the first pair. Record the route each pair means as a
-  `graph.path_preferences` row before a question needs it: write it in
-  `graph.yml` (`semantic-rails project validate` prints the first pair's rows
-  to choose from) or with Architect's `record_route_decision`. The warning is
-  advisory and never blocks a promotion. Leaving a pair undecided is a valid end state: the
-  engine asks which route a question means when one needs it. Don't record a meaning the
-  business doesn't hold.
+  it) and `needed_by` the ids of the queries that walk the pair
+  (`metric.<id>`, `example.<id>`, `test.<id>`); pairs some query needs come first. One
+  `ROUTES_UNDECIDED` warning gives the needed pairs' `count` and `pairs` (with
+  `needed_by`), `first_pair_rows`, the rows that would decide the first one, and
+  `unwalked`, how many other pairs are undecided. Record the route each needed pair means
+  as a `graph.path_preferences` row: write it in `graph.yml` (`semantic-rails project
+  validate` prints the first pair's rows to choose from) or with Architect's
+  `record_route_decision`. The warning is advisory and never blocks a promotion. A pair no
+  query walks needs nothing now and never warns: a question that needs one is asked which
+  route it means (`plan` returns that question with a ready call per route), never
+  answered by a guess. Leaving a pair undecided is a valid end state. Don't record a
+  meaning the business doesn't hold.
 - `assumed`: `[{source_entity, target_entity, relationship_path, basis}]`, the
   pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
   another.
-- `pass_through`: `[{source_entity, target_entity, message, details}]`, resolved
-  only or inherited routes crossing undeclared child rows. The parse report and
-  `project_status` carry each as a `ROUTE_PASS_THROUGH` warning on the two entities,
-  with the same meaning, basis and fixes as an answer. These pairs are already
-  resolved and do not need a route decision.
+- `pass_through`: `[{source_entity, target_entity, needed_by, message, details}]`,
+  resolved only or inherited routes crossing undeclared child rows. The parse report and
+  `project_status` carry each one a query of the package walks as a `ROUTE_PASS_THROUGH`
+  warning on the two entities, with the same meaning, basis and fixes as an answer; any
+  other is disclosed by the answer that reads it. These pairs are already resolved and do
+  not need a route decision.
 
 **Route changes.** A new relationship can give a pair a second route, so a
 question that answered before is refused, or now takes the start's own key.

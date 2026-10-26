@@ -105,12 +105,16 @@ def test_status_and_validate_summarize_the_census_warnings_and_passing_checks(
     undecided = full["route_census"]["undecided"]
     assert len(undecided) > FIRST_UNDECIDED
     census = compact["route_census"]
-    assert census["counts"] == {name: len(rows) for name, rows in full["route_census"].items()}
+    assert census["counts"] == {
+        **{name: len(rows) for name, rows in full["route_census"].items()},
+        # No metric, example or test of the package walks one, so none warns.
+        "undecided_needed": 0,
+    }
     # The first pairs come whole, with the clarification options whose decisions record them.
     assert census["undecided"] == undecided[:FIRST_UNDECIDED]
     assert set(census) == {"counts", "undecided"}
     assert compact["revision"] == full["revision"]
-    assert compact["parse"]["warning_counts"]["ROUTES_UNDECIDED"] == 1
+    assert "ROUTES_UNDECIDED" not in compact["parse"]["warning_counts"]
     assert len(compact["parse"]["warnings"]) <= FIRST_WARNINGS
     assert _size(compact) < 20_000 < _size(full)
 
