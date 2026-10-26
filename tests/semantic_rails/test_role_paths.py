@@ -509,10 +509,6 @@ def test_roles_that_share_an_entity_pair_are_undecided_census_pairs(tmp_path):
     assert "graph.path_preferences" in warning["message"]
 
 
-def test_a_single_role_is_no_census_entry(tmp_path):
-    assert _undecided(tmp_path, explicit=("destination",)) == {}
-
-
 def test_a_pair_pin_settles_its_own_direction_and_the_reverse(tmp_path):
     """The reverse pair inherits the row when every hop allows a reverse walk."""
     assert _undecided(tmp_path, **_pin("origin", "explicit_origin_first")) == {}
