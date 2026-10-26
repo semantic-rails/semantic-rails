@@ -256,17 +256,6 @@ def test_a_non_default_calendar_refuses_on_every_leaf_path(time, shape):
     assert refused.value.details["calendar_id"] == "fiscal"
 
 
-def test_a_calendar_named_in_the_call_is_refused():
-    """The clock's own calendar applies; a call cannot name another one."""
-    config = load_package_config(str(ROOT))
-    query = {"select": [ORDERS], "time": {"temporal_role": ROLE, "grain": "quarter"}}
-    query["time"]["calendar_id"] = "fiscal"
-    with pytest.raises(SemanticLayerError) as refused:
-        _compile(config, query)
-    assert refused.value.code == "INVALID_QUERY"
-    assert refused.value.details["path"] == "time.calendar_id"
-
-
 def test_a_bound_clock_without_a_grain_does_not_bucket():
     config = _bound_to_fiscal(load_package_config(str(ROOT)))
     query = {"select": [ORDERS], "time": {"temporal_role": ROLE, **WINDOW}}

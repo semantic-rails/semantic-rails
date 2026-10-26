@@ -162,7 +162,7 @@ def _normal(row: tuple[Any, ...], types: list[str] | None = None) -> tuple[Any, 
     return tuple(one(value, types[index] if types else "") for index, value in enumerate(row))
 
 
-def _series_key(grain: str, value_sql: str, *, local: str = "ordered_at") -> str:
+def _series_key(grain: str, value_sql: str) -> str:
     """One row per bucket from the first to the last bucket with data, plus ``value_sql``.
 
     ``value_sql`` reads ``s.bucket`` (the series) and ``m`` (revenue per bucket with data);
@@ -170,7 +170,7 @@ def _series_key(grain: str, value_sql: str, *, local: str = "ordered_at") -> str
     """
     return f"""
         WITH m AS (
-          SELECT date_trunc('{grain}', {local}) AS bucket, SUM(amount) AS revenue
+          SELECT date_trunc('{grain}', ordered_at) AS bucket, SUM(amount) AS revenue
           FROM orders GROUP BY 1
         ),
         s AS (
@@ -190,13 +190,6 @@ def _revenue_at(offset: str) -> str:
         f"CASE WHEN s.bucket - INTERVAL {offset} < (SELECT MIN(bucket) FROM s) THEN NULL "
         f"ELSE COALESCE((SELECT m.revenue FROM m WHERE m.bucket = s.bucket - INTERVAL {offset}), 0)"
         " END"
-    )
-
-
-def _trailing(count: int, unit: str) -> str:
-    return (
-        "(SELECT COALESCE(SUM(m.revenue), 0) FROM m"
-        f" WHERE m.bucket <= s.bucket AND m.bucket > s.bucket - INTERVAL {count} {unit})"
     )
 
 
@@ -259,42 +252,11 @@ BOUNDED = {"start": "2023-10-15", "end": "2024-08-01"}
 BOUNDED_MONTHS = [date(2023 + (m > 12), (m - 1) % 12 + 1, 1) for m in range(10, 20)]
 BOUNDED_REVENUE = [None, 15.0, 7.0, 20.0, 0.0, 8.0, 4.0, 6.0, 3.0, None]
 WINTER = {"start": "2023-12-01", "end": "2024-04-01"}
-NEW_YORK = "(ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York'"
-# Store b has no orders from December to February: each store is filled across the whole series.
-GROUPS_KEY = """
-    WITH m AS (SELECT store_id, date_trunc('month', ordered_at) AS bucket, SUM(amount) AS revenue
-      FROM orders GROUP BY 1, 2),
-    s AS (SELECT r.bucket FROM range((SELECT MIN(bucket) FROM m),
-      (SELECT MAX(bucket) FROM m) + INTERVAL 1 MONTH, INTERVAL 1 MONTH) AS r(bucket)),
-    g AS (SELECT DISTINCT store_id FROM orders)
-    SELECT g.store_id, s.bucket,
-      COALESCE((SELECT revenue FROM m WHERE m.store_id = g.store_id AND m.bucket = s.bucket), 0),
-      CASE WHEN s.bucket = (SELECT MIN(bucket) FROM s) THEN NULL ELSE COALESCE((SELECT revenue
-        FROM m WHERE m.store_id = g.store_id AND m.bucket = s.bucket - INTERVAL 1 MONTH), 0) END
-    FROM g CROSS JOIN s
-"""
 
-# Trailing and prior-period questions at every grain, fills and named windows.
+# Fills, named windows, zones and shapes beside a calendar. The trailing and prior-period
+# questions at every grain, by store and in another zone, are answer-ledger cases (with and
+# without an authored calendar).
 MATCHES = {
-    "trailing_3_months": Case(
-        _ask("month", _rolling("month", 3)), _series_key("month", _trailing(3, "MONTH"))
-    ),
-    "revenue_and_prior_month": Case(BESIDE_PRIOR_MONTH, BESIDE_PRIOR_MONTH_KEY),
-    **{
-        f"prior_{grain}": Case(
-            _ask(grain, _prior(grain)), _series_key(grain, _revenue_at(STEP[grain]))
-        )
-        for grain in ("day", "week", "quarter", "year")
-    },
-    "trailing_7_days": Case(
-        _ask("day", _rolling("day", 7)), _series_key("day", _trailing(7, "DAY"))
-    ),
-    "prior_year_by_month": Case(
-        _ask("month", _prior("year")), _series_key("month", _revenue_at("1 YEAR"))
-    ),
-    "groups_filled_across_the_series": Case(
-        {**BESIDE_PRIOR_MONTH, "group_by": [STORE]}, GROUPS_KEY
-    ),
     # A non-additive fill is NULL, not 0, in February.
     "non_additive_fill": Case(
         _ask("month", AVERAGE, fill=True), _series_key("month", _per_order("avg(amount)"))
@@ -303,7 +265,6 @@ MATCHES = {
     "bounded_fill": Case(
         _ask("month", NOW, **BOUNDED), list(zip(BOUNDED_MONTHS, BOUNDED_REVENUE, strict=True))
     ),
-    "bounded_fill_by_store": Case({**_ask("month", NOW, **WINTER), "group_by": [STORE]}),
     # Offset bounds on a role in another zone: days in the role's zone.
     "zoned_bounded_fill": Case(
         _ask("month", NOW, start="2023-12-01T00:00:00-05:00", end="2024-04-01T04:00:00+00:00"),
@@ -311,12 +272,6 @@ MATCHES = {
     ),
     "zoned_bounded_fill_far_offsets": Case(
         _ask("month", NOW, start="2023-11-30T23:30:00-12:00", end="2024-02-29T23:00:00+14:00"),
-        package="zoned",
-    ),
-    # A zoned role buckets in its own zone: 2023-12-01 02:00 UTC is still November in New York.
-    "zoned_beside_prior_month": Case(
-        BESIDE_PRIOR_MONTH,
-        _series_key("month", f"{REVENUE_NOW}, {_revenue_at('1 MONTH')}", local=NEW_YORK),
         package="zoned",
     ),
     "no_rows": Case(
@@ -328,8 +283,6 @@ MATCHES = {
         _series_key("quarter", f"{REVENUE_NOW}, {_revenue_at('3 MONTH')}"),
         package="fiscal_only",
     ),
-    # Each part of a query compiled as sub-queries is namespaced, its day series included.
-    "sub_queries": Case(_ask("month", DISTRIBUTION, _rolling("month", 3))),
     # February has no order: the window still answers it, and its median reads NULL, not 0.
     "named_window_median": Case(
         _ask("month", MEDIAN, **WINTER),
@@ -498,24 +451,6 @@ def test_a_call_the_implicit_calendar_cannot_answer_is_refused(
         assert expected in str(refused.value)
     else:
         assert expected.items() <= refused.value.details.items()
-
-
-@pytest.mark.parametrize("function", ["median", "percentile", "avg", "sum", "min", "max"])
-def test_an_unfilled_distribution_matches_the_key(packages: dict[str, Path], function: str) -> None:
-    aggregate = "quantile_cont(amount, 0.8)" if function == "percentile" else f"{function}(amount)"
-    package = "none" if function in {"percentile", "sum", "max"} else "authored"
-    select = {**_distribution(function, REVENUE), "as": "value"}
-    key = _key(packages["authored"], _series_key("month", _per_order(aggregate)))
-
-    assert _query(packages["authored"], _ask("month", select))[0] == [
-        row for row in key if row[1] is not None
-    ]
-    # A prior-period sibling fills its own branch; the distribution reads NULL in February.
-    beside = _ask("month", _prior("month"), select)
-    assert _query(packages[package], beside)[0] == _key(
-        packages[package],
-        _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
-    )
 
 
 @pytest.mark.parametrize(

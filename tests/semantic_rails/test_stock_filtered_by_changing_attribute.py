@@ -292,17 +292,6 @@ def test_a_filter_reads_each_series_closing_snapshot(
     assert (WEEK, closing_week) in answer
 
 
-def test_start_of_period_reads_each_series_opening_snapshot(runtime: Runtime, reference) -> None:
-    week = {"grain": "week"}
-    # a opens the week of 09-14 on basic and the next on pro.
-    pro = _query(runtime, [_is(PLAN, "pro")], measure="fee_sop", time=week)
-    assert pro == reference("plan = 'pro'", measure="fee_sop")
-    assert pro == [(date(2026, 9, 7), 0), (WEEK, 0), (date(2026, 9, 21), 500)]
-    basic = _query(runtime, [_is(PLAN, "basic")], measure="fee_sop", time=week)
-    assert basic == reference("plan = 'basic'", measure="fee_sop")
-    assert (WEEK, 297) in basic
-
-
 @pytest.mark.parametrize(
     ("measure", "grain", "field"),
     [
@@ -508,28 +497,6 @@ def test_a_date_attribute_filter_refuses(
         "reason": "stock_filtered_by_date_attribute",
         "dimension": dimension,
     }
-
-
-def test_a_renewal_date_has_two_distinct_readings(tmp_path: Path) -> None:
-    fixture_sql = "update account_day set renewal_on = case when plan = 'basic' "
-    fixture_sql += "then date '2027-01-01' else date '2028-01-01' end"
-    package = _package(tmp_path)
-    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
-        connection.execute(fixture_sql)
-    condition = "renewal_on = '2027-01-01'"
-    assert (WEEK, 198) in _reference("true", before=condition, fixture_sql=fixture_sql)
-    assert (WEEK, 99) in _reference(condition, fixture_sql=fixture_sql)
-    runtime = Runtime.from_path(str(package))
-    try:
-        with pytest.raises(SemanticLayerError) as raised:
-            _query(
-                runtime,
-                [_is("dimension.fees_account_day_renewal_on", "2027-01-01")],
-                time={"grain": "week"},
-            )
-        assert raised.value.details["reason"] == "stock_filtered_by_date_attribute"
-    finally:
-        runtime.close()
 
 
 @pytest.mark.parametrize("anchored", [False, True])

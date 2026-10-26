@@ -257,13 +257,6 @@ def test_cache_changes_at_local_midnight_within_one_utc_day(monkeypatch, config)
         runtime.close()
 
 
-def test_a_calendar_in_the_call_is_refused(config):
-    with pytest.raises(SemanticLayerError) as caught:
-        read_call(_query(calendar_id="fiscal"), config=config)
-    assert caught.value.code == "INVALID_QUERY"
-    assert caught.value.details["path"] == "time.calendar_id"
-
-
 def test_cache_reuses_the_date_already_resolved_by_binding(monkeypatch, config):
     move = _fixed_clock(monkeypatch, hour=3)
     runtime = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")

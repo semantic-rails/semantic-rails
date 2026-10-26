@@ -166,6 +166,11 @@ def test_revenue_by_product_name_suggests_item_revenue(runtime_factory) -> None:
         assert len(compatible_dimensions) <= MAX_SUGGESTIONS
         # The offending dimension must not be suggested back.
         assert "dimension.jaffle_product_name" not in compatible_dimensions
+        # The enrichment never touches the warehouse: every suggestion is a registry id, and
+        # the requested measure is never suggested back.
+        assert set(compatible_measures) <= {m.id for m in runtime.config.measures}
+        assert set(compatible_dimensions) <= {d.id for d in runtime.config.dimensions}
+        assert "measure.jaffle.revenue_usd" not in compatible_measures
 
         hints = list(err.get("recovery_hints") or [])
         replace_measure = [h for h in hints if h.get("kind") == "replace_measure"]
@@ -183,24 +188,6 @@ def test_revenue_by_product_name_suggests_item_revenue(runtime_factory) -> None:
         allocation = [h for h in hints if h.get("kind") == "requires_allocation_policy"]
         assert allocation, "fan-out attribution must explicitly call out allocation semantics"
         assert "allocate" in allocation[0]["message"]
-    finally:
-        runtime.close()
-
-
-def test_revenue_by_item_product_name_also_suggests_item_revenue(runtime_factory) -> None:
-    """The item-grain spelling of the product dimension hits the same
-    wall and must carry the same escape route."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = _validate(
-            runtime,
-            measure="measure.jaffle.revenue_usd",
-            group_by=["dimension.jaffle_item_product_name"],
-        )
-        err = _first_error(report)
-        assert err["code"] == "MIXED_GRAIN_INVALID"
-        details = err.get("details") or {}
-        assert "measure.jaffle.item_revenue_usd" in list(details.get("compatible_measures") or [])
     finally:
         runtime.close()
 
@@ -261,33 +248,5 @@ def test_calendar_dimension_with_existing_time_block_keeps_query_role(runtime_fa
         time_axis = dict((err.get("details") or {}).get("time_axis_recovery") or {})
         assert time_axis.get("temporal_role") == "temporal_role.jaffle_order_time"
         assert time_axis.get("grain") == "month"
-    finally:
-        runtime.close()
-
-
-def test_enrichment_lists_are_bounded_and_registry_only(runtime_factory) -> None:
-    """Both suggestion lists stay within the suggestion cap and every
-    entry is a real registry id — the enrichment never touches the
-    warehouse, so all suggestions must resolve against config metadata."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = _validate(
-            runtime,
-            measure="measure.jaffle.revenue_usd",
-            group_by=["dimension.jaffle_product_name"],
-        )
-        err = _first_error(report)
-        details = err.get("details") or {}
-        measure_ids = {m.id for m in runtime.config.measures}
-        dimension_ids = {d.id for d in runtime.config.dimensions}
-
-        compatible_measures = list(details.get("compatible_measures") or [])
-        compatible_dimensions = list(details.get("compatible_dimensions") or [])
-        assert len(compatible_measures) <= MAX_SUGGESTIONS
-        assert len(compatible_dimensions) <= MAX_SUGGESTIONS
-        assert set(compatible_measures) <= measure_ids
-        assert set(compatible_dimensions) <= dimension_ids
-        # The requested measure is never suggested back to the agent.
-        assert "measure.jaffle.revenue_usd" not in compatible_measures
     finally:
         runtime.close()

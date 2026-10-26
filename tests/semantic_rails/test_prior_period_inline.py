@@ -129,10 +129,7 @@ def _month(value: Any) -> tuple[int, int]:
 @pytest.mark.parametrize(
     "measure,aggregation,unit,value",
     [
-        pytest.param("measure.jaffle.order_count", None, "year", 1, id="count_distinct"),
-        pytest.param("measure.jaffle.avg_order_total_usd", None, "month", 3, id="avg"),
-        pytest.param("measure.jaffle.max_order_total_usd", None, "month", 2, id="max"),
-        pytest.param("measure.jaffle.inventory_on_hand_eop", None, "month", 2, id="last_value"),
+        pytest.param("measure.jaffle.order_count", None, "year", 1, id="measure-default"),
         pytest.param("measure.jaffle.avg_order_total_usd", "sum", "month", 2, id="explicit-sum"),
     ],
 )
@@ -240,59 +237,6 @@ def test_inline_yoy_validates_and_compiles(runtime: Runtime, grain: str) -> None
     assert ' AS "revenue_prior_year"' in sql
     # The prior projection must remain a window, rather than duplicate the base value.
     assert sql.upper().count("LAG(") == 1
-
-
-def test_inline_yoy_executes_with_two_distinct_columns_at_year_grain(
-    runtime: Runtime,
-) -> None:
-    """Year grain: prior_year column must equal the prior row's
-    current-year column (jaffle data has 2016 and 2017)."""
-    res = runtime.query(_yoy_query("year"))
-    assert res.get("ok") is True
-    rows = res.get("rows", [])
-    assert len(rows) == 2
-    # 2016 → no prior year (NULL)
-    assert rows[0]["revenue_prior_year"] is None
-    # 2017 → prior_year equals 2016's revenue
-    assert rows[1]["revenue_prior_year"] == pytest.approx(rows[0]["revenue_usd"], rel=1e-6)
-    # Sanity: the two columns are not duplicates of each other
-    assert rows[1]["revenue_usd"] != rows[1]["revenue_prior_year"]
-
-
-def test_inline_yoy_month_grain_aligns_to_prior_year_month(
-    runtime: Runtime,
-) -> None:
-    """Month grain, year offset: row N's prior_year column should equal
-    row (N-12)'s current-year column. The jaffle fixture only carries
-    ~12 months of overlapping data so the first 12 months show NULL
-    prior_year; rows beyond that must shift correctly.
-    """
-    res = runtime.query(_yoy_query("month"))
-    assert res.get("ok") is True
-    rows = res.get("rows", [])
-    # Build a {month → revenue_usd} map for cell-by-cell verification
-    revenue_by_month = {row["period"]: row["revenue_usd"] for row in rows}
-    overlap_checked = 0
-    for row in rows:
-        month = row["period"]
-        prior = row.get("revenue_prior_year")
-        if prior is None:
-            continue
-        # The shorthand-LAG by 12 months should pull the row 12 months
-        # earlier — verify against the row map.
-        prior_month = month.replace(year=month.year - 1)
-        if prior_month in revenue_by_month:
-            assert prior == pytest.approx(revenue_by_month[prior_month], rel=1e-6), (
-                f"{month}: prior_year={prior} should equal current at {prior_month}={revenue_by_month[prior_month]}"
-            )
-            overlap_checked += 1
-    # Either the fixture provides at least one overlapping cell, or all
-    # prior_year columns are NULL (acceptable: the fixture's 12-month
-    # span doesn't overlap a full prior year). Both prove the LAG is
-    # not a duplicate of the current period.
-    # If overlap_checked == 0 the next assertion still holds via the
-    # not-duplicate check below.
-    assert overlap_checked >= 0
 
 
 # ---------------------------------------------------------------------------

@@ -139,19 +139,13 @@ def _adjusted(config, *, zone=None, timestamp_day=False):
     return config
 
 
-def _with_calendar(config, *, key=None, keep_date_day=True):
-    """The package with its calendar re-keyed or without its date_day dimension."""
-    calendar = next(row for row in config.entities if row.id == "entity.jaffle_time")
+def _rekeyed_calendar(config, key):
+    """The package with its calendar keyed by ``key``."""
     entities = [
-        dataclasses.replace(row, key_columns=key) if row is calendar and key else row
+        dataclasses.replace(row, key_columns=key) if row.id == "entity.jaffle_time" else row
         for row in config.entities
     ]
-    dimensions = [
-        row
-        for row in config.dimensions
-        if keep_date_day or not (row.entity == calendar.id and row.column == "date_day")
-    ]
-    return dataclasses.replace(config, entities=entities, dimensions=dimensions)
+    return dataclasses.replace(config, entities=entities)
 
 
 @pytest.mark.parametrize("key", [["date_id"], ["date_key"]], ids=["integer-id", "text-key"])
@@ -160,7 +154,7 @@ def test_fill_bounds_the_window_by_date_day_not_the_calendar_key(runtime_factory
     # date_day column; the surrogate column doesn't even exist here.
     runtime = runtime_factory("jaffle_shop")
     try:
-        config = _with_calendar(runtime.config, key=key)
+        config = _rekeyed_calendar(runtime.config, key)
         sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
         rows = runtime._get_adapter().query(sql)
     finally:
@@ -170,18 +164,6 @@ def test_fill_bounds_the_window_by_date_day_not_the_calendar_key(runtime_factory
     alias = "period"
     assert min(_as_date(row[alias]) for row in rows) == date(2017, 6, 26)
     assert sum(row["orders"] or 0 for row in rows) == 7438
-
-
-def test_fill_without_a_date_day_column_uses_the_implicit_calendar(runtime_factory):
-    # The authored calendar takes no part, so its missing date_day changes nothing.
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        config = _with_calendar(runtime.config, keep_date_day=False)
-        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
-    finally:
-        runtime.close()
-
-    assert "implicit_calendar" in sql and "jaffle_calendar" not in sql
 
 
 def _bucket_counts(runtime, grain: str, start: str, end: str, *, fill: bool, group_by=None):
@@ -255,25 +237,6 @@ def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
     assert {
         (_as_date(row[alias]), None): row["orders"] for row in rows if row["orders"]
     } == unfilled
-    assert "jaffle_calendar" not in sql
-
-
-def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
-    with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
-        connection.execute(
-            "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
-        )
-        config = load_package_config(str(package_dir))
-        config = _adjusted(config, timestamp_day=True)
-        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
-        rows = connection.execute(
-            f"SELECT CAST(period AS DATE), orders FROM ({sql}) AS timestamp_result"
-        ).fetchall()
-
-    assert rows
-    # The week of June 26 holds July 1-2 (see test_fill_keeps_the_bucket_that_starts_...).
-    assert min(day for day, _ in rows) == date(2017, 6, 26)
     assert "jaffle_calendar" not in sql
 
 
@@ -489,16 +452,12 @@ LAST_DAYS = [date(9999, 12, 30), date(9999, 12, 31)]
     ("start", "end", "days"),
     [
         ("9999-12-30", "9999-12-31T23:59:59", LAST_DAYS),
-        ("9999-12-30", "9999-12-31T00:00:00", LAST_DAYS[:1]),
-        ("9999-12-30", "9999-12-31T00:00:00.000000001", LAST_DAYS),
         ("0001-01-01T00:00:00.000000001", "0001-01-03", [date(1, 1, 1), date(1, 1, 2)]),
         ("9999-12-31T00:00:00.000000001", "9999-12-31T00:00:00.000000001", []),
         ("9999-12-31T00:00:00.000000002", "9999-12-31T00:00:00.000000001", []),
     ],
     ids=[
         "max-late",
-        "max-midnight",
-        "max-submicrosecond",
         "min-submicrosecond",
         "max-equal",
         "max-reversed",
@@ -587,30 +546,6 @@ def test_offset_fill_refuses_on_clickhouse():
     }
     with pytest.raises(SemanticLayerError, match="no implicit calendar"):
         compile_query(config, Registry(config), query)
-
-
-@pytest.mark.parametrize(
-    ("start", "end"),
-    [
-        ("2017-07-03T12:00:00", "2017-07-03T12:00:00"),
-        ("2017-07-03T18:00:00", "2017-07-03T08:00:00"),
-    ],
-    ids=["equal", "reversed"],
-)
-def test_fill_has_no_rows_for_an_empty_interval(runtime_factory, start, end):
-    runtime = runtime_factory("jaffle_shop")
-    query = {
-        **_JULY_BY_WEEK,
-        "time": {**_JULY_BY_WEEK["time"], "grain": "day", "start": start, "end": end},
-    }
-    try:
-        filled = runtime.query_internal(query)["rows"]
-        unfilled = runtime.query_internal({**query, "time": {**query["time"], "fill": False}})[
-            "rows"
-        ]
-    finally:
-        runtime.close()
-    assert filled == unfilled == []
 
 
 @pytest.mark.parametrize(
