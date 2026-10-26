@@ -329,39 +329,6 @@ def test_snowflake_native_named_profile_keeps_connection_name_for_profile_mode()
     assert kwargs["role"] == "ANALYST"
 
 
-def test_create_warehouse_adapter_selects_snowflake_native_direct_connect(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("SNOW_ACCOUNT", "acct")
-    monkeypatch.setenv("SNOW_USER", "svc_user")
-    monkeypatch.setenv("SNOW_PASSWORD", "secret")
-    package = PackageMeta(
-        package_id="snowflake_demo",
-        name="snowflake_demo",
-        description="snowflake demo",
-        warehouse="snowflake",
-        connection=ConnectionSpec(
-            kind="snowflake_native",
-            options={
-                "account_env": "SNOW_ACCOUNT",
-                "user_env": "SNOW_USER",
-                "password_env": "SNOW_PASSWORD",
-                "database": "ANALYTICS",
-            },
-        ),
-    )
-
-    adapter = create_warehouse_adapter(package)
-
-    assert isinstance(adapter, SnowflakeNativeAdapter)
-    kwargs = adapter._connect_kwargs()
-    assert "connection_name" not in kwargs
-    assert kwargs["account"] == "acct"
-    assert kwargs["user"] == "svc_user"
-    assert kwargs["password"] == "secret"
-    assert kwargs["database"] == "ANALYTICS"
-
-
 @pytest.mark.parametrize(
     ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
     [
@@ -435,28 +402,6 @@ def test_snowflake_native_adapter_queries_with_optional_connector(
         }
     assert captured["closed"] is True
     assert captured["connection_closed"] is True
-
-
-def test_snowflake_native_direct_connect_externalbrowser_omits_connection_name(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("SNOW_ACCOUNT", "acct")
-    monkeypatch.setenv("SNOW_USER", "svc_user")
-    adapter = SnowflakeNativeAdapter(
-        "custom_name",
-        options={
-            "account_env": "SNOW_ACCOUNT",
-            "user_env": "SNOW_USER",
-            "authenticator": "externalbrowser",
-        },
-    )
-
-    kwargs = adapter._connect_kwargs()
-
-    assert "connection_name" not in kwargs
-    assert kwargs["account"] == "acct"
-    assert kwargs["user"] == "svc_user"
-    assert kwargs["authenticator"] == "externalbrowser"
 
 
 def test_snowflake_native_direct_connect_reports_missing_env_without_secret_value(

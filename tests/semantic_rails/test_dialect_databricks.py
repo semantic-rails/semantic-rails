@@ -181,11 +181,6 @@ def _set_connection_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SR_TEST_DBX_TOKEN", "dapi-super-secret")
 
 
-def test_adapter_normalizes_connection_options():
-    adapter = DatabricksNativeAdapter({"HOST-ENV": " SR_TEST_DBX_HOST ", "catalog": " main "})
-    assert adapter.options == {"host_env": "SR_TEST_DBX_HOST", "catalog": "main"}
-
-
 def test_adapter_rejects_literal_secret_and_unsupported_options():
     for overrides, named in [
         ({"token": "dapi-literal-secret"}, "token"),

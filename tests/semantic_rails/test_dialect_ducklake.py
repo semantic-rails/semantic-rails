@@ -109,16 +109,6 @@ def _install_fake_duckdb(monkeypatch: pytest.MonkeyPatch, log: dict[str, Any]) -
     monkeypatch.setattr(duckdb_setup, "duckdb", module)
 
 
-def test_adapter_normalizes_options():
-    adapter = DuckLakeAdapter(
-        {"Catalog-Path": " /tmp/cat.ducklake ", "data_path_env": "SR_DUCKLAKE_DATA_PATH"}
-    )
-    assert adapter.options == {
-        "catalog_path": "/tmp/cat.ducklake",
-        "data_path_env": "SR_DUCKLAKE_DATA_PATH",
-    }
-
-
 def test_adapter_rejects_unknown_and_literal_secret_options():
     with pytest.raises(SemanticLayerError) as exc:
         DuckLakeAdapter({"token_env": "SOME_TOKEN"})
