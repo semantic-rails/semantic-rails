@@ -433,15 +433,18 @@ def test_hidden_entity_and_temporal_role_names_cannot_change_the_name_obligation
 ) -> None:
     config, _ = package_config_factory("jaffle_shop")
     spellings = ["New", "new month", "Month", "Store", "Store name", "Customer type", "Revenue"]
-    for row in [*config.entities, *config.temporal_roles]:
+    # The rows on the question's path: the calendar, the time block's clock, and the entities
+    # owning the store name and customer type it names.
+    clock = NEW_MONTH_PARTIAL["time"]["temporal_role"]
+    for hidden in (CALENDAR, clock, "entity.jaffle_store", "entity.jaffle_customer"):
         partial = Call.from_call(NEW_MONTH_PARTIAL)
         base = grouping_checks._named_groupings_unmet(
-            view_of(_new_month_alias(config, row.id), {}), question, partial
+            view_of(_new_month_alias(config, hidden), {}), question, partial
         )
         for changes in [*({"label": s} for s in spellings), *({"aliases": [s]} for s in spellings)]:
-            changed = view_of(_new_month_alias(config, row.id, **changes), {})
+            changed = view_of(_new_month_alias(config, hidden, **changes), {})
             unmet = grouping_checks._named_groupings_unmet(changed, question, partial)
-            assert unmet == base, (row.id, changes)
+            assert unmet == base, (hidden, changes)
 
 
 @pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])

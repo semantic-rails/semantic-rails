@@ -26,7 +26,6 @@ from semantic_rails.schema import MetricConfig
 from tests.semantic_rails.conftest import opened
 from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import typed_rows
-from tests.semantic_rails.test_plan_unasked_groupings import _CASES
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
 
 STORE = "dimension.jaffle_store_name"
@@ -960,15 +959,6 @@ def test_a_second_named_term_cannot_be_discharged_by_a_filter(
     assert why is not None
     assert why["code"] == "PLAN_UNMATCHED_TERMS"
     assert why["details"]["dropped_groupings"] == ["store id"]
-
-
-# Existing temporal, ranking, qualification and store questions remain holds or
-# keep exactly the same executable draft; the added reader cannot grant readiness.
-@pytest.mark.parametrize("question", [case.intent for case in _CASES])
-def test_existing_question_outcomes_only_gain_holds(
-    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str
-) -> None:
-    _compare_base(jaffle, monkeypatch, question)
 
 
 _STORE_CASES = [

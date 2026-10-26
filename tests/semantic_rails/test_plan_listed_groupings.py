@@ -34,6 +34,7 @@ from semantic_rails.schema import DimensionConfig, SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_catalog_words import _with_store_dimensions
+from tests.semantic_rails.test_plan_named_groupings import _compare_base
 from tests.semantic_rails.test_plan_value_lists import (
     STORE_DISTRICT,
     _force_fallback,
@@ -689,19 +690,14 @@ def test_a_geo_entity_keeps_its_plan(upkeep: Callable[[str, str], Runtime]) -> N
     }
 
 
-@pytest.mark.parametrize(
-    ("intent", "group_by", "grain"),
-    [("revenue by store", [STORE_ID, STORE], None), ("revenue by month", None, "month")],
-)
-def test_a_single_grouping_stays_ready(
-    jaffle: Runtime, intent: str, group_by: list[str] | None, grain: str | None
-) -> None:
-    payload = plan_payload(jaffle, intent=intent)
+def test_a_single_grouping_stays_ready(jaffle: Runtime) -> None:
+    # "revenue by store": test_plan_entity_store_answers.py.
+    payload = plan_payload(jaffle, intent="revenue by month")
 
     assert payload["status"] == "ok", payload.get("why")
     query = payload["best"]["query"]
-    assert query.get("group_by") == group_by
-    assert (query.get("time") or {}).get("grain") == grain
+    assert query.get("group_by") is None
+    assert (query.get("time") or {}).get("grain") == "month"
 
 
 @pytest.mark.parametrize(
@@ -804,9 +800,10 @@ def test_repeating_one_dimension_never_satisfies_two_listed_groupings(
     assert why["details"]["dropped_groupings"] == ["incident"]
 
 
-# What plan answered each question with before the listed-grouping check: ready (OK), or the
-# code that held it. Every question these tests ask is here, with every question a review of
-# this check has asked.
+# What plan answered each question with before the grouping checks: ready (OK), or the code that
+# held it; and the code the checks hold it with, when that is another answer. Every question
+# these tests ask is here, with every question a review of these checks has asked; one that
+# plans the same with or without the package's examples is asked once, in _GENERIC.
 OK = "ok"
 UNMATCHED = "PLAN_UNMATCHED_TERMS"
 UNASKED = "PLAN_UNASKED_GROUPING"
@@ -816,16 +813,20 @@ UNCONNECTED = "PLAN_UNCONNECTED"
 DRIFT = "PLAN_FALLBACK_SEMANTIC_DRIFT"
 GAP = "PLAN_INTENT_COVERAGE_GAP"
 WINDOW = "TIME_WINDOW_UNRESOLVED"
+RANKING = "PLAN_RANKING_PERIOD_AMBIGUOUS"
+COMPARISON = "PERIOD_COMPARISON"
+UNSTATED = "ENTITY_FILTER_PERIOD_UNSTATED"
+# The holds that ask the caller which reading the question means.
+CLARIFY = {COMPARISON, UNSTATED}
 
 
 @dataclass(frozen=True)
 class _Before:
     intent: str
     before: str
-    # The check holds this plan, which was ready.
-    held: bool = False
-    # The code that holds it: this check's, or the unasked-grouping check's after it.
-    code: str = UNMATCHED
+    # The code the checks hold it with: the listed-grouping check's, or a check's after it.
+    after: str = ""
+    # "generic": Jaffle without its package examples, so only the generic checks read it.
     package: str = "jaffle"
     # The caller's partial_query group_by.
     group_by: tuple[str, ...] = ()
@@ -833,6 +834,8 @@ class _Before:
     fallback: bool = False
     # Store dimensions added to Jaffle: (name, label, column).
     dims: tuple[tuple[str, str, str], ...] = ()
+    # The caller's time block end.
+    end: str = ""
 
 
 _TAX = (("tax", "Tax", "store_id"),)
@@ -848,7 +851,7 @@ _BEFORE = [
     _Before("revenue by month, last year", OK),
     _Before("revenue by store, 2017", WINDOW),
     _Before("revenue by store, sorted by revenue", UNMATCHED),
-    _Before("order count by customer type, order for Brooklyn store", OK, held=True),
+    _Before("order count by customer type, order for Brooklyn store", OK, UNMATCHED),
     _Before("revenue by store, customer type and product type", UNMATCHED),
     _Before("What was revenue by month, beside the revenue of the month before?", UNMATCHED),
     # Its second clause points back at the first ("of it"), so the parts plan holds it.
@@ -856,10 +859,8 @@ _BEFORE = [
         "What was revenue by month, and how much of it came from orders of 50 USD or more?",
         "PLAN_PARTS_HELD",
     ),
-    _Before("order count by customer type, order", OK, held=True),
-    _Before("order count by customer history, month", OK, held=True),
-    _Before("revenue by store, last month and customer type", UNMATCHED),
-    _Before("revenue by store last month and customer type", OK),
+    _Before("order count by customer type, order", OK, UNMATCHED),
+    _Before("order count by customer history, month", OK, UNMATCHED),
     _Before("the top 5 stores by revenue", OK),
     _Before("revenue by customer segment", UNCONNECTED),
     _Before("order count by month, name", UNMATCHED),
@@ -868,8 +869,8 @@ _BEFORE = [
     _Before("revenue by item in 2017", UNCONNECTED),
     _Before("order count by month, customer id", UNMATCHED),
     _Before("item revenue by month, name", UNMATCHED),
-    _Before("item revenue by name", OK, held=True),
-    _Before("item revenue by month and name", OK, held=True),
+    _Before("item revenue by name", OK, UNMATCHED),
+    _Before("item revenue by month and name", OK, UNMATCHED),
     _Before("order count by month, name", OK, group_by=(STORE,)),
     _Before("order count by month, name", OK, group_by=(CUSTOMER_NAME,)),
     *(
@@ -879,7 +880,7 @@ _BEFORE = [
     # Catalog discovery keeps Customer district, the first of two other entities' districts.
     *(
         _Before(
-            f"item revenue by {words}districts", OK, held=True, package="districts", fallback=True
+            f"item revenue by {words}districts", OK, UNMATCHED, package="districts", fallback=True
         )
         for words in ("", "the ", "their ", "each ")
     ),
@@ -896,13 +897,11 @@ _BEFORE = [
         )
         for fallback in (False, True)
     ),
-    _Before("order count by month and name", OK, held=True),
+    _Before("order count by month and name", OK, UNMATCHED),
     _Before("order count by month, customer name", UNMATCHED),
     _Before("order count by month, store name", "PLAN_UNMATCHED_TERMS"),
     _Before("order count by month and customer name", OK),
     _Before("order count by month and store name", OK),
-    _Before("revenue by store", OK),
-    _Before("revenue by month", OK),
     _Before("revenue by store, customer type", UNMATCHED),
     _Before("revenue by store and customer type", OK),
     _Before("revenue by store, customer type, and product type", UNMATCHED),
@@ -918,28 +917,20 @@ _BEFORE = [
     _Before("orders by store, time", UNMATCHED),
     _Before("revenue by store, statuses", UNMATCHED),
     _Before("food revenue vs drink revenue by store, customer type", UNMATCHED),
-    # Unsplit by any period, the comparison names nothing to compare the two values with.
-    _Before(
-        "food revenue vs drink revenue by store and customer type",
-        "ok",
-        held=True,
-        code=GAP,
-    ),
-    _Before("show monthly revenue by store", OK),
-    _Before("order count by name", OK, held=True),
+    _Before("order count by name", OK, UNMATCHED),
     _Before("order count by customer name", OK),
     _Before("order count by store name", OK),
-    _Before("order count by product type", OK, held=True),
+    _Before("order count by product type", OK, UNMATCHED),
     _Before("item count by product type", OK),
-    _Before("revenue by type", OK, held=True),
-    _Before("revenue by store and type", OK, held=True),
+    _Before("revenue by type", OK, UNMATCHED),
+    _Before("revenue by store and type", OK, UNMATCHED),
     _Before("revenue by order", OK),
     _Before("revenue by customer", OK),
     _Before("revenue by stores", OK),
     _Before("revenue by supply", UNCONNECTED),
     _Before("revenue by item", UNCONNECTED),
     _Before("revenue by product", UNCONNECTED),
-    _Before("revenue by customer history", OK, held=True),
+    _Before("revenue by customer history", OK, UNMATCHED),
     _Before("revenue by store name", OK),
     _Before("revenue by customer type", OK),
     # A grain phrase after a comma ends the draft's list, which groups by the store and its name at
@@ -1004,16 +995,130 @@ _BEFORE = [
     _Before("revenue by store, boxes", UNMATCHED, dims=_BOX),
     _Before("revenue by statuses", OK, group_by=("dimension.status",), dims=_STATUS),
     _Before("revenue by store, statuses", UNMATCHED, dims=_STATUS),
-    _Before("repair cost by incident name, incident", OK, held=True, package="incident"),
+    _Before("repair cost by incident name, incident", OK, UNMATCHED, package="incident"),
     _Before("repair cost by incident, incident name", OK, package="incident"),
     _Before("repair cost by incident name and incident", OK, package="incident"),
     _Before("repair cost by incident and incident name", OK, package="incident"),
     _Before("repair cost by incident name", OK, package="incident"),
     _Before("repair cost by incident", OK, package="incident"),
-    _Before("repair cost by incident name, incident", OK, held=True, package="revisions"),
-    _Before("repair cost by incident name and incident", OK, held=True, package="revisions"),
-    _Before("repair cost by repair", OK, held=True, package="repair"),
+    _Before("repair cost by incident name, incident", OK, UNMATCHED, package="revisions"),
+    _Before("repair cost by incident name and incident", OK, UNMATCHED, package="revisions"),
+    _Before("repair cost by repair", OK, UNMATCHED, package="repair"),
     _Before("geo cost by geo", OK, package="geo"),
+]
+
+
+def _ranking(intent: str) -> _Before:
+    return _Before(intent, OK, RANKING)
+
+
+# Jaffle questions read by the generic checks alone. A period comparison is ready only over
+# months that have ended (test_plan_period_completeness.py).
+_GENERIC = [
+    replace(case, package="generic")
+    for case in [
+        # A grain the question names, or one bucket.
+        _Before("revenue by month", OK),
+        _Before("monthly revenue by store", OK),
+        _Before("show monthly revenue by store", OK),
+        _Before("weekly revenue last 3 months", OK),
+        _Before("daily revenue for the last 30 days", OK),
+        _Before("revenue by order date", OK),
+        _Before("revenue by order date in March 2017", OK),
+        _Before("revenue in Q1 2017 by store", OK),
+        _Before("revenue last month by store", OK),
+        _Before("revenue yesterday", OK),
+        _Before("revenue by store from January 1 2016 to December 31 2017 by year", OK),
+        _Before("revenue in 2017", OK),
+        _Before("top 5 stores by revenue in 2017", OK),
+        _Before("new customer orders over time", OK),
+        _Before("revenue trend over time", OK),
+        _Before("month over month revenue growth by month", OK, end="2018-01-01"),
+        _Before("revenue by store in each month", OK),
+        # The comparison names no prior period to compare with.
+        _Before("revenue vs order count by store last quarter", OK, GAP),
+        _Before("orders by store and month", OK),
+        _Before("food revenue vs drink revenue in Q1 2017 by store", OK, GAP),
+        # A dimension the question asks for, or filters to values it names.
+        _Before("revenue by store", OK),
+        _Before("top stores by revenue", OK),
+        _Before("which 5 stores had the most orders", OK),
+        _Before("revenue per store", DRIFT, DRIFT),
+        _Before("revenue for each store", OK),
+        _Before("revenue for Brooklyn store by month", OK),
+        _Before("revenue for Brooklyn and Philadelphia stores by month", OK),
+        _Before("revenue by store last month and customer type", OK),
+        # Held before, for another reason.
+        _Before("top 3 stores by revenue in each month", GAP, GAP),
+        # "store" names the rows, so it doesn't pick the same-store conversion rate for "orders".
+        _Before("orders per store", GAP, GAP),
+        # "monthly revenue" is no measure's or metric's name, so the ranked value isn't named.
+        _Before("top 3 stores by monthly revenue", GAP, GAP),
+        _Before("which 3 stores have the highest monthly revenue by customer type", GAP, GAP),
+        _Before("revenue by store, last month and customer type", UNMATCHED, UNMATCHED),
+        # A ranking split by a period the question names.
+        _ranking("top 3 stores by revenue at month level"),
+        _ranking("top 1 store by revenue at month level"),
+        _ranking("top 3 stores by revenue by month"),
+        _ranking("top stores by revenue by month"),
+        _ranking("top 3 stores by cumulative revenue by month"),
+        # A ranking of more than the entity it ranks.
+        _ranking("which 3 stores have the highest revenue by customer type by month"),
+        _ranking("which 3 stores have the highest revenue by customer type"),
+        # Drafted without a grain, a comparison of two values names nothing to compare them with,
+        # which the coverage check after the grouping checks holds.
+        _Before("food revenue vs drink revenue by store and customer type", OK, GAP),
+        _Before("food revenue share vs drink revenue share by store", OK, GAP),
+        _Before("What share of revenue comes from food vs drink?", OK, GAP),
+        _Before("orders by customer type, new vs repeat", OK, GAP),
+        # A comparison of periods asks which periods it compares, with or without the checks.
+        _Before("revenue vs last month", COMPARISON, COMPARISON),
+        _Before("monthly revenue with YoY", COMPARISON, COMPARISON),
+        _Before("revenue vs prior year by store", COMPARISON, COMPARISON),
+        _Before("revenue with YoY", COMPARISON, COMPARISON),
+        _Before("revenue year over year", COMPARISON, COMPARISON),
+        _Before("revenue vs last year", COMPARISON, COMPARISON),
+        _Before("revenue compared to last year", COMPARISON, COMPARISON),
+        # A qualified ranking or rollup with no window: one total per store, its qualification
+        # over all time (their rows: test_a_one_total_matches_plain_sql).
+        _Before("top 3 stores by revenue with at least 4 distinct customers", OK),
+        _Before("top 3 stores by order count with at least 4 distinct customers", OK),
+        _Before("top stores by order count with at least 4 distinct customers", OK),
+        _Before("top 10 stores by revenue with at least 10 orders", OK),
+        _Before("revenue from customers with at least 10 orders by store", OK),
+        # A window of several periods, answered as one total over it.
+        _Before("which 3 stores have the highest revenue in the last 6 months", OK),
+        _Before("What is revenue in the last 3 months by store?", OK),
+        _Before("revenue for the last 3 months by store", OK),
+        _Before("revenue in the last 3 months", OK),
+        _Before("revenue over the past 3 months", OK),
+        _Before("revenue by store over the last 2 weeks", OK),
+        _Before("revenue in the trailing 12 months", OK),
+        _Before("revenue trailing 12 months", OK),
+        _Before("Revenue, trailing 7 days", OK),
+        _Before("revenue for the last 30 days", OK),
+        _Before("revenue last 30 days", OK),
+        _Before("revenue for the last 7 days", OK),
+        _Before("revenue last 7 days", OK),
+        _Before("revenue by store last 7 days", OK),
+        _Before("orders past 2 weeks", OK),
+        _Before("orders last three quarters", OK),
+        _Before("orders from December 30, 2016 to January 2, 2017", OK),
+        _Before("revenue in 2016 and 2017", OK),
+        _Before("revenue between 2016 and 2017", OK),
+        _Before("revenue by store from January 1 2016 to December 31 2017", OK),
+        # A store split the question never asks for.
+        _Before("new store revenue by month", UNMATCHED, UNMATCHED),
+        # A window beside a qualification: is each store's count taken in it or over all time?
+        _Before("stores with more than 2000 orders in 2017", UNSTATED, UNSTATED),
+        _Before(
+            "Give me the 28D adoption funnel from signup to Send for stores that have an order rate of over 90% grouped by month",
+            UNSTATED,
+            UNASKED,
+        ),
+        _Before("Store name", UNMATCHED, UNMATCHED),
+        _Before("item revenue where store", UNMATCHED, UNMATCHED),
+    ]
 ]
 
 
@@ -1043,6 +1148,8 @@ def _runtime_for(
         runtime = upkeep(noun, measure, revisions=case.package == "revisions")
     else:
         runtime = stack.enter_context(closing(Runtime.from_path(str(jaffle_path))))
+        if case.package == "generic":
+            monkeypatch.setattr(runtime, "_package_examples", [])
         if case.dims:
             runtime = stack.enter_context(_with_store_dimensions(runtime, *case.dims))
         if case.package in {"districts", "hidden_district"}:
@@ -1066,42 +1173,52 @@ def _runtime_for(
 def _outcome(payload: dict[str, Any]) -> str:
     if payload["status"] == "ok" and "execute" in payload["next"].get("ready_for", []):
         return OK
+    assert "execute" not in payload["next"].get("ready_for", [])
     return str((payload.get("why") or {}).get("code"))
 
 
-@pytest.mark.parametrize("case", _BEFORE, ids=_case_id)
-def test_the_check_only_holds_a_plan_that_was_ready(
+@pytest.mark.parametrize("case", [*_BEFORE, *_GENERIC], ids=_case_id)
+def test_the_checks_only_hold_a_plan_that_was_ready(
     jaffle_path: Path,
     upkeep: Callable[..., Runtime],
     monkeypatch: pytest.MonkeyPatch,
     case: _Before,
 ) -> None:
-    partial_query = {"group_by": list(case.group_by)} if case.group_by else None
+    partial_query = {
+        **({"group_by": list(case.group_by)} if case.group_by else {}),
+        **({"time": {"end": case.end}} if case.end else {}),
+    }
     with ExitStack() as stack:
         runtime = _runtime_for(case, jaffle_path, upkeep, monkeypatch, stack)
-        after = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
-        with monkeypatch.context() as without_check:
+        # The named-grouping reader only adds holds to the plan without it.
+        _, after = _compare_base(runtime, monkeypatch, case.intent, partial_query or None)
+        with monkeypatch.context() as without_checks:
             # They are the only readers of the listed groupings, with the answer-shape check
             # after them, which only holds a plan (test_plan_answer_shape.py).
-            without_check.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
-            without_check.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
-            without_check.setattr(plan_module, "_answer_shape_why", lambda *args: None)
-            before = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
+            without_checks.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
+            without_checks.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
+            without_checks.setattr(plan_module, "_answer_shape_why", lambda *args: None)
+            before = plan_payload(runtime, intent=case.intent, partial_query=partial_query or None)
 
-    # Without the checks, plan answers as it did before they existed.
+    # Without the checks, plan answers as it did before they existed; with them, the draft is
+    # the same.
     assert _outcome(before) == case.before
-    # The checks never change the draft.
     assert (after["best"] or {}).get("query") == (before["best"] or {}).get("query")
     assert (after["best"] or {}).get("pattern") == (before["best"] or {}).get("pattern")
-    if case.held:
-        # They only hold a plan that was ready, and never ready one or pick another.
-        assert case.before == OK
+    expected = case.after or case.before
+    assert _outcome(after) == expected
+    if expected in CLARIFY:
+        assert after["status"] == "needs_clarification"
+    if expected == case.before:
+        assert after["status"] == before["status"]
+        assert after["next"] == before["next"]
+        if case.package == "generic" or expected != UNMATCHED:
+            # Elsewhere the listed-grouping check may restate an unmatched-terms hold with the
+            # groupings it reads.
+            assert after.get("why") == before.get("why")
+    else:
+        # They only hold a plan, and never ready one or pick another; a prior hold can change
+        # its reason.
         assert after["status"] == "low_confidence"
         assert "ready_for" not in after["next"]
-        assert after["why"]["code"] == case.code
-    else:
-        assert after["status"] == before["status"]
-        assert _outcome(after) == _outcome(before)
-        assert after["next"] == before["next"]
-        if case.before != OK:
-            assert "execute" not in after["next"].get("ready_for", [])
+        assert after["why"]["code"] == expected
