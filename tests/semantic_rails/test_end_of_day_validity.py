@@ -11,13 +11,16 @@ written without the engine, read with scalar subqueries at each signup's day end
 
 from __future__ import annotations
 
+import re
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from semantic_rails.runtime import Runtime
+from semantic_rails.visible_view import _projected
 
 SEED_SQL = """
 CREATE TABLE signups (signup_id INTEGER, team_id INTEGER, signed_up_at TIMESTAMP,
@@ -151,3 +154,23 @@ def test_at_the_rows_time_a_version_written_after_it_reads_none(tmp_path: Path) 
         assert _plans(runtime, "utc") == [(None, 2)]
     finally:
         runtime.close()
+
+
+def test_a_callers_view_keeps_the_moment_it_reads_a_version_at(tmp_path: Path) -> None:
+    """A caller's view drops authored words that name a hidden object, but never the engine's
+    own keys: a hidden object named like the option leaves the window reading at day end."""
+    runtime = _runtime(tmp_path, "end_of_day")
+    try:
+        (rel,) = runtime.config.relationships
+    finally:
+        runtime.close()
+    window = {**rel.temporal_validity, "note": "as of the plan"}
+    shown = _projected(
+        replace(rel, temporal_validity=window), re.compile(r"\b(as_of|end_of_day)\b")
+    )
+    assert shown.temporal_validity == {
+        "valid_from": "billing.valid_from",
+        "valid_to": "billing.valid_to",
+        "as_of": "end_of_day",
+        "note": "as of the plan",
+    }

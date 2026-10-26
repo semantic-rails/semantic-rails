@@ -714,25 +714,45 @@ def test_an_end_of_day_hop_says_so_in_its_route_and_filter_warning(teams, packag
     ]
 
 
-@pytest.mark.parametrize(
-    ("window", "error"),
-    [
-        ({"as_of": "end_of_week"}, "as_of must be 'time' or 'end_of_day'"),
-        ({"as_of": "end_of_day", "valid_from": ""}, "needs valid_from"),
-        ({"tolerance": "5 seconds"}, "unknown key 'tolerance'"),
-    ],
-)
-def test_a_validity_window_names_what_it_accepts(tmp_path, window, error):
+def _window(tmp_path: Path, window: dict[str, Any]) -> Path:
     package = tmp_path / "teams"
     shutil.copytree(TEAMS, package)
 
     def change(spec: dict[str, Any]) -> None:
         validity = spec["graph"]["relationships"]["billing_version_team"]["temporal_validity"]
         validity.update(window)
-        if not validity.get("valid_from"):
-            validity.pop("valid_from")
+        for key in [key for key, value in validity.items() if value is None]:
+            validity.pop(key)
 
     _edit(package, "graph.yml", change)
+    return package
+
+
+@pytest.mark.parametrize(
+    ("window", "error"),
+    [
+        ({"as_of": "end_of_week"}, "as_of must be 'time' or 'end_of_day'"),
+        (
+            {"as_of": "end_of_day", "valid_from": None, "valid_to": None},
+            "has as_of but no valid_from or valid_to",
+        ),
+        ({"tolerance": "5 seconds"}, "unknown key 'tolerance'"),
+    ],
+)
+def test_a_validity_window_names_what_it_accepts(tmp_path, window, error):
     with pytest.raises(SemanticLayerError, match=error) as exc:
-        load_package_config(str(package))
+        load_package_config(str(_window(tmp_path, window)))
     assert exc.value.code == "INVALID_CONFIG"
+
+
+@pytest.mark.parametrize(
+    "window",
+    [{"valid_from": None}, {"valid_from": None, "as_of": "end_of_day"}],
+    ids=["valid_to_only", "valid_to_only_end_of_day"],
+)
+def test_a_window_with_only_valid_to_still_loads(tmp_path, window):
+    """As before this option: only an `as_of` with no column at all is refused."""
+    config = load_package_config(str(_window(tmp_path, window)))
+    (rel,) = [row for row in config.relationships if row.id == TO_PLAN[0]]
+    assert "valid_from" not in rel.temporal_validity
+    assert rel.temporal_validity["valid_to"] == "team_billing_history.valid_to"

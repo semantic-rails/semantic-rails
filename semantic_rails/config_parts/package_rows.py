@@ -1356,8 +1356,10 @@ def _temporal_validity(join_spec: dict[str, Any], rel_id: str, path: str) -> dic
         if unknown
         else f"as_of must be 'time' or 'end_of_day', not '{as_of}'"
         if as_of not in _VALIDITY_AS_OF
-        else "needs valid_from: as_of says when a version is read, valid_from where it starts"
-        if window and not window.get("valid_from", "").strip()
+        else "has as_of but no valid_from or valid_to: as_of says when a row reads a version, "
+        "and the window's columns say where each version starts and ends"
+        if "as_of" in window
+        and not any(window.get(key, "").strip() for key in ("valid_from", "valid_to"))
         else ""
     )
     if problem:
