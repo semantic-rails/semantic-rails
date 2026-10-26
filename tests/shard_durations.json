@@ -264,6 +264,7 @@
   "tests/semantic_rails/test_round_six_pr_c.py": 0.148,
   "tests/semantic_rails/test_round_six_pr_d.py": 0.582,
   "tests/semantic_rails/test_route_census.py": 26.672,
+  "tests/semantic_rails/test_route_census_scale.py": 4.6,
   "tests/semantic_rails/test_route_clarification.py": 58.448,
   "tests/semantic_rails/test_route_precedence.py": 35.027,
   "tests/semantic_rails/test_route_resolution.py": 13.103,

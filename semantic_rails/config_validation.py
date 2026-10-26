@@ -66,7 +66,7 @@ from .metadata import _default_time_spec_for_metric
 from .metadata_parts.valid_values import max_valid_values_limit, valid_values_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .registry import Registry
-from .route_census import route_census
+from .route_census import package_queries, route_census
 from .runtime import Runtime, runtime_request_scope
 from .segments import build_segment_query, normalize_segment
 from .semantic_collisions import semantic_collision_warnings
@@ -1020,6 +1020,8 @@ def _compiled_package_warnings(
             object_ids=[row["source_entity"], row["target_entity"]],
         )
         for row in census["pass_through"]
+        # A route no query of the package walks is disclosed in the answer that reads it.
+        if row["needed_by"]
     )
     return warnings
 
@@ -1027,28 +1029,42 @@ def _compiled_package_warnings(
 def _undecided_routes_warning(
     census: dict[str, list[dict[str, Any]]], source_path: Path
 ) -> dict[str, Any] | None:
-    """One warning for the census pairs a query is refused on until a route is recorded."""
-    pairs = [
-        {"source_entity": row["source_entity"], "target_entity": row["target_entity"]}
-        for row in census["undecided"]
-    ]
-    if not pairs:
+    """One warning for the undecided pairs the package's own queries walk (``needed_by``):
+    those queries are refused until a route is recorded. A pair none of them walks needs
+    nothing now: a question that needs it asks which route it means."""
+    needed = [row for row in census["undecided"] if row["needed_by"]]
+    if not needed:
         return None
-    named = [f"{pair['source_entity']} -> {pair['target_entity']}" for pair in pairs[:5]]
+    pairs = [
+        {key: row[key] for key in ("source_entity", "target_entity", "needed_by")} for row in needed
+    ]
+    named = [
+        f"{pair['source_entity']} -> {pair['target_entity']} for {pair['needed_by'][0]}"
+        for pair in pairs[:5]
+    ]
     if len(pairs) > len(named):
         named.append(f"{len(pairs) - len(named)} more")
-    first = census["undecided"][0]["details"].get("clarification", {}).get("options", [])
+    unwalked = len(census["undecided"]) - len(needed)
+    first = needed[0]["details"].get("clarification", {}).get("options", [])
     return _error_payload(
         "ROUTES_UNDECIDED",
-        f"{source_path}: {len(pairs)} entity pairs reach their target by two or more routes "
-        f"and no route is recorded ({', '.join(named)}); a query that needs one is refused "
-        "as AMBIGUOUS_PATH. Record the route each pair means as a graph.path_preferences row: "
-        "the decision of one of its options in route_census.undecided[*].details.clarification.",
+        f"{source_path}: {len(pairs)} of the entity pairs that the package's own metrics, "
+        f"examples or tests walk {'has' if len(pairs) == 1 else 'have'} two or more routes and "
+        f"no recorded route ({', '.join(named)}), so those queries are refused as "
+        "AMBIGUOUS_PATH. Record the route each pair means as a graph.path_preferences row: the "
+        "decision of one of its options in route_census.undecided[*].details.clarification."
+        + (
+            f" The {unwalked} other undecided pairs need nothing now: a question that needs one "
+            "is asked which route it means."
+            if unwalked
+            else ""
+        ),
         details={
             "count": len(pairs),
             "pairs": pairs,
             # The rows that would decide the first pair, one per route: an author writes one.
             "first_pair_rows": [option["decision"] for option in first if "decision" in option],
+            "unwalked": unwalked,
         },
     )
 
@@ -1137,7 +1153,11 @@ def parse_snapshot_report(
     if not errors:
         assert snapshot is not None
         config = snapshot.config
-        census = route_census(config)
+        census = route_census(
+            config,
+            queries=package_queries(config, ref.source_path),
+            package=snapshot.source_fingerprint,
+        )
         for warning in _compiled_package_warnings(config, Path(ref.source_path), census=census):
             if isinstance(warning, dict):
                 warnings.append(dict(warning))

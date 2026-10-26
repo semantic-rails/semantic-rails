@@ -314,9 +314,13 @@ def _summary(report: Any) -> Any:
             if len(value) > SUMMARY_WARNINGS:
                 out["warnings_omitted"] = len(value) - SUMMARY_WARNINGS
         elif key == "route_census" and isinstance(value, dict):
+            undecided = list(value.get("undecided") or [])
             out[key] = {
-                "counts": {name: len(rows) for name, rows in value.items()},
-                "undecided": list(value.get("undecided") or [])[:SUMMARY_UNDECIDED_ROUTES],
+                "counts": {
+                    **{name: len(rows) for name, rows in value.items()},
+                    "undecided_needed": sum(bool(row.get("needed_by")) for row in undecided),
+                },
+                "undecided": undecided[:SUMMARY_UNDECIDED_ROUTES],
             }
         elif key == "files" and isinstance(value, list):
             # Transaction receipts and archives under dot-directories aren't package files.
@@ -1054,7 +1058,7 @@ def create_architect_mcp_server(
             project = _resolve_project_path(project_path, workspace_root=root)
             parse = _parse_report(project)
             census = parse.pop("route_census", None)
-            undecided = len(census["undecided"]) if census else 0
+            needed = sum(bool(row["needed_by"]) for row in census["undecided"]) if census else 0
             out: dict[str, Any] = {
                 "ok": bool(parse.get("ok")),
                 "project_path": str(project),
@@ -1071,11 +1075,12 @@ def create_architect_mcp_server(
                 else [
                     *(
                         [
-                            f"Decide the {undecided} undecided join routes in "
-                            "route_census.undecided (a summary lists the first; full_report: "
-                            f"true lists all). {DECIDE_ROUTES_ACTION}"
+                            f"Decide the {needed} join route{'s' if needed > 1 else ''} the "
+                            "package's own metrics, examples or tests need: the first pairs in "
+                            "route_census.undecided, each naming them in needed_by (a summary "
+                            f"lists the first; full_report: true lists all). {DECIDE_ROUTES_ACTION}"
                         ]
-                        if undecided
+                        if needed
                         else []
                     ),
                     "Run validate_project with mode=runtime before release.",

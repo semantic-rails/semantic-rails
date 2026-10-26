@@ -48,6 +48,7 @@ from semantic_rails.interop.package_writer import package_documents, write_packa
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import build_options_payload, valid_values_payload
 from semantic_rails.metadata_parts.path_coverage import PathReach, _path_availability, _path_reach
+from semantic_rails.planner import plan_payload
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
@@ -477,6 +478,51 @@ def test_every_option_answers_with_its_route_per_query_or_in_the_package(tmp_pat
         assert _rows(in_package, columns) == _gold(gold)
         assert _chosen_by_query(in_package) == []
     assert len(golds) == len(options)  # the routes disagree
+
+
+def test_plan_asks_which_route_a_question_means_with_a_call_per_reading(tmp_path):
+    """A question whose pieces connect by two routes gets plan's route question in business
+    words, not a failed draft: each reading is a call ready to send (its route answers this
+    question only) and the row that makes it the package default. Each call returns its own
+    reading's numbers; once a row is recorded, the question is not asked again."""
+    pkg = _write_package(tmp_path / "asked")
+    runtime = Runtime.from_path(str(pkg))
+    seed = {"policy_context": {"now": "2020-01-01T00:00:00Z"}}
+    payload = plan_payload(runtime, intent="balance by district", partial_query=seed)
+    assert (payload["status"], payload["next"]) == ("needs_clarification", {"action": "clarify"})
+    why = payload["why"]
+    assert why["code"] == "AMBIGUOUS_PATH"
+    assert why["message"].startswith(
+        "Which District does the question mean for an Account: the District of the Account's "
+        "Branch, or the District of the Account's Owner? Each reading counts different rows"
+    )
+    assert why["details"]["clarification"] == {
+        "question": "Which District does the question mean for an Account?"
+    }
+    options = why["details"]["options"]
+    assert [option["id"] for option in options] == ["branch_district", "owner_district"]
+    by_branch = (
+        "SELECT b.district_id, SUM(a.balance) FROM accounts a JOIN branches b USING (branch_id) "
+        "GROUP BY 1"
+    )
+    by_owner = (
+        "SELECT o.home_district_id, SUM(a.balance) FROM accounts a JOIN owners o "
+        "USING (owner_id) GROUP BY 1"
+    )
+    for option, route, sql in zip(
+        options, (BRANCH_ROUTE, OWNER_ROUTE), (by_branch, by_owner), strict=True
+    ):
+        assert option["decision"]["relationship_path"] == route
+        assert option["call"]["routes"] == _routes(option["decision"])
+        out = runtime.query(option["call"])
+        assert sorted(tuple(row.values()) for row in out["rows"]) == _gold(sql)
+    assert _gold(by_branch) != _gold(by_owner)
+    recorded = _write_package(tmp_path / "recorded", decisions=[options[1]["decision"]])
+    runtime = Runtime.from_path(str(recorded))
+    again = plan_payload(runtime, intent="balance by district", partial_query=seed)
+    # The package has no time, so plan never calls a draft ready; the question is not asked.
+    assert again["why"]["code"] == "INVALID_TEMPORAL_ROLE"
+    assert again["best"]["validation_ok"] is True
 
 
 def test_a_query_row_overrides_the_package_default_for_that_query_only(tmp_path):

@@ -21,7 +21,7 @@ import yaml
 from ..architect_transactions import ProjectFileUpdate, ProjectTransaction
 from ..errors import SemanticLayerError, refusal_text
 from ..package_snapshot import LoadedPackageSnapshot, json_fingerprint, load_package_snapshot
-from ..route_census import route_census
+from ..route_census import PackageQuery, package_queries, route_census
 from ..runtime import Runtime
 from .edits import _get
 from .model import Finding, PackageFiles, Rule, YamlPath, plan
@@ -32,11 +32,13 @@ _LOAD_ERRORS = (SemanticLayerError, yaml.YAMLError, TypeError, ValueError, Attri
 
 @dataclass(frozen=True)
 class _State:
-    """One staged package: its snapshot or load error, and each query's compile outcome."""
+    """One staged package: its snapshot or load error, each query's compile outcome, and the
+    example and test calls that the route census walks."""
 
     snapshot: LoadedPackageSnapshot | None
     error: tuple[str, str] | None
     queries: dict[str, tuple[str, ...]]
+    calls: tuple[PackageQuery, ...] = ()
 
 
 def _query_key(file: str, path: YamlPath) -> str:
@@ -63,12 +65,15 @@ def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mappin
             return _State(None, (getattr(exc, "code", type(exc).__name__), relative(str(exc))), {})
         runtime = Runtime.from_snapshot(snapshot)
         queries: dict[str, tuple[str, ...]] = {}
+        calls: list[PackageQuery] = []
         try:
             for file, path, query in staged.queries():
                 if Path(file).parts[0] not in {"examples", "tests"}:
                     continue
                 try:
                     entry = _get(staged.documents[file], path[:-1])
+                    if entry.get("kind") != "validate_fails_with_code":
+                        calls.append((_query_key(file, path), [dict(query)], entry.get("now")))
                     sql = str(
                         runtime.compile(
                             dict(query),
@@ -84,7 +89,7 @@ def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mappin
                     queries[_query_key(file, path)] = ("error", code, relative(reason))
         finally:
             runtime.close()
-    return _State(snapshot, None, queries)
+    return _State(snapshot, None, queries, tuple(calls))
 
 
 def _refused_examples(state: _State) -> list[str]:
@@ -408,15 +413,19 @@ def upgrade_project(
     if final.snapshot is None:
         next_actions.append(_unloadable(blocker, final.error[1] if final.error else ""))
     else:
-        if undecided := route_census(final.snapshot.config)["undecided"]:
+        config = final.snapshot.config
+        census = route_census(config, queries=[*package_queries(config), *final.calls])
+        if undecided := [row for row in census["undecided"] if row["needed_by"]]:
             pairs = ", ".join(
                 f"{row['source_entity']} -> {row['target_entity']}" for row in undecided[:3]
             )
             more = f" and {len(undecided) - 3} more" if len(undecided) > 3 else ""
             next_actions.append(
-                f"Decide the join route of {len(undecided)} entity pairs ({pairs}{more}; "
-                "project_status lists them in route_census.undecided): record each as a "
-                "graph.path_preferences row, which record_route_decision writes."
+                f"Decide the join route of {len(undecided)} entity "
+                f"pair{'s' if len(undecided) > 1 else ''} the package's metrics, "
+                f"examples or tests need ({pairs}{more}; project_status lists them first in "
+                "route_census.undecided): record each as a graph.path_preferences row, which "
+                "record_route_decision writes."
             )
         next_actions.extend(_refused_examples(final))
 

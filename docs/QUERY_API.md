@@ -937,7 +937,10 @@ days, with its zone. A relative phrase stays relative in the draft ("last week" 
 `time.last`, "this month" `time.this`), so the call resolves against the `now` it is sent
 with. Two periods side by side ("month over month") return `needs_clarification` with
 `PERIOD_COMPARISON` and a call that reads them as one series; a comparison whose period isn't
-over at `now` holds with `PERIOD_COMPARISON_INCOMPLETE`. A caller bound is read only at a
+over at `now` holds with `PERIOD_COMPARISON_INCOMPLETE`. A draft refused only because its
+pieces connect by two or more routes returns `needs_clarification` with `AMBIGUOUS_PATH`: the
+question in business words, and per route a ready `call` (with that route in `routes`) and the
+`decision` row that makes it the package default. A caller bound is read only at a
 whole day
 (a date, or 00:00 with no offset or a UTC one), and one with a zone designator (`Z`
 or `±hh:mm`) only when its offset is the role zone's at that instant; a window

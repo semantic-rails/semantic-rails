@@ -155,6 +155,22 @@ def test_a_drift_says_best_is_the_draft_that_fails(jaffle: Runtime) -> None:
     assert [row["code"] for row in why["details"]["primary_errors"]] == ["AMBIGUOUS_PATH"]
 
 
+def test_a_route_fork_with_one_runnable_reading_asks_and_names_the_other(
+    jaffle: Runtime,
+) -> None:
+    """Delivered orders reach an item through the order or through the customer's orders; only
+    the first reading runs grouped by an item's product type. Plan asks before using it, and
+    says the other can't answer the question."""
+    payload = _plan(jaffle, "delivered orders by product type")
+    assert (payload["status"], payload["next"]) == ("needs_clarification", {"action": "clarify"})
+    why = payload["why"]
+    assert why["code"] == "AMBIGUOUS_PATH"
+    assert [option["id"] for option in why["details"]["options"]] == ["order_item"]
+    other = "any of the Items of any of the Orders of the Order lifecycle's Customer"
+    assert why["details"]["unrunnable"] == [other]
+    assert why["message"].endswith(f"This question can't be answered as {other}.")
+
+
 def _row(select: str, pattern: str, ok: bool, **extra: Any) -> dict[str, Any]:
     from semantic_rails.planner._base import RuntimeCompositionDraft
 

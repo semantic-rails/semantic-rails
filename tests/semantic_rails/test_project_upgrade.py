@@ -1211,14 +1211,24 @@ def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
         "examples:\n  broken:\n    query:\n      version: 1\n"
         "      select: [{expression: metric.jaffle.missing, as: missing}]\n"
     )
+    (project / "examples/routes.yml").write_text(
+        "examples:\n  delivered_by_type:\n    query:\n"
+        "      select: [measure.jaffle.delivered_orders]\n"
+        "      group_by: [dimension.jaffle_item_product_type]\n"
+    )
     rule = Rule("default-version", "9.9", "same_meaning", "Delete version: 1", _default_version)
 
     report = service.upgrade_project(project, workspace_root=tmp_path, rules=(rule,))
 
     assert (report["status"], report["proof"]["tier"]) == ("preview", "unverified")
     assert report["proof"]["examples"] > 10 and report["proof"]["tests"] > 10
-    routes, broken = report["next_actions"]
-    assert re.match(r"Decide the join route of \d+ entity pairs \(entity\.jaffle_", routes)
+    # Only the pair an example walks needs a decision, not the package's other forks.
+    routes, broken, refused = report["next_actions"]
+    assert routes.startswith(
+        "Decide the join route of 1 entity pair the package's metrics, examples or tests need "
+        "(entity.jaffle_order_lifecycle -> entity.jaffle_item;"
+    )
+    assert refused.startswith("Example examples/routes.yml:examples.delivered_by_type.query ")
     assert broken == (
         "Example examples/broken.yml:examples.broken.query does not compile (OBJECT_NOT_FOUND): "
         "Unknown metric recipe 'metric.jaffle.missing'"
