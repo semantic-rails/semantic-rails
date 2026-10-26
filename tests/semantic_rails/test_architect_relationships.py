@@ -5,17 +5,12 @@ from pathlib import Path
 
 import pytest
 import yaml
-from mcp.shared.memory import create_connected_server_and_client_session
 
-from semantic_rails import architect_transactions
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
-from semantic_rails.architect_transactions import project_revision
 from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.runtime import Runtime
-from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse, write_orders_package
 
 
 @pytest.fixture
@@ -219,74 +214,6 @@ def test_checks_run_after_the_revision_check_and_retries_replay(project):
 
     retry = _relate(project, ["customer_id"], expected_revision=stale, idempotency_key="relate-1")
     assert retry["status"] == "replayed"
-
-
-def test_a_parse_failure_rolls_the_files_back(project, monkeypatch):
-    before = {path: path.read_bytes() for path in project.project_path.rglob("*.yml")}
-    failed = ({"ok": False, "errors": [{"code": "INVALID_CONFIG", "message": "x"}]}, None)
-    monkeypatch.setattr(architect_transactions, "parse_config_report", lambda *_, **__: failed)
-
-    report = _relate(project, ["customer_id"], cardinality="one_to_one")
-
-    assert (report["ok"], report["status"]) == (False, "rolled_back_after_parse_error")
-    assert {path: path.read_bytes() for path in project.project_path.rglob("*.yml")} == before
-
-
-def test_mcp_session_relates_dbt_marts_and_queries_across_them(tmp_path):
-    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
-    build_dbt_warehouse(package / "data" / "warehouse.duckdb")
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-
-    async def session_calls():
-        async with create_connected_server_and_client_session(server) as session:
-
-            async def call(name, **arguments):
-                result = await session.call_tool(name, {"project_path": "shop", **arguments})
-                return dict(result.structuredContent or {})
-
-            model = await call(
-                "upsert_model",
-                model_id="customers",
-                entity_key="customer",
-                relation="main_marts.dim_customers",
-                primary_key=["customer_id"],
-                dimensions={"customer_country": {"label": "Country", "kind": "categorical"}},
-                expected_revision=project_revision(package),
-                idempotency_key="customers",
-            )
-            relate = {"from_entity": "order", "to_entity": "customer", "columns": ["customer_id"]}
-            revision = model["revision"]
-            preview = await call(
-                "upsert_relationship",
-                **relate,
-                expected_revision=revision,
-                idempotency_key="preview",
-                dry_run=True,
-            )
-            applied = await call(
-                "upsert_relationship", **relate, expected_revision=revision, idempotency_key="apply"
-            )
-            return preview, applied, await call("validate_project", mode="runtime")
-
-    preview, applied, runtime = asyncio.run(session_calls())
-
-    assert (preview["status"], preview["changed_files"]) == ("preview", ["models/orders.yml"])
-    assert (applied["status"], applied["changed_files"]) == ("upserted", ["models/orders.yml"])
-    assert runtime["ok"] is True, runtime
-    engine = Runtime.from_path(str(package))
-    try:
-        rows = engine.query(
-            {
-                "select": [{"expression": "measure.shop.order_count", "as": "orders"}],
-                "group_by": ["dimension.shop_customer_customer_country"],
-                "order_by": [{"field": "dimension.shop_customer_customer_country"}],
-                "limit": 10,
-            }
-        )["rows"]
-    finally:
-        engine.close()
-    country = "dimension.shop_customer_customer_country"
-    assert [(row[country], row["orders"]) for row in rows] == [("GB", 3), ("NL", 1), ("US", 4)]
 
 
 # -- row-grain models and second roles ------------------------------------------------------

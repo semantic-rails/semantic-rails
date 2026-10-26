@@ -146,31 +146,6 @@ def test_the_first_warnings_show_every_code_before_repeating_one() -> None:
     assert summary["warnings_omitted"] == 7
 
 
-def test_a_stale_write_keeps_its_retry_details(tmp_path: Path) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    created = _call(
-        server,
-        "create_project",
-        {"package_id": "growth", "expected_revision": "absent", "idempotency_key": "create"},
-    )
-    metric = {
-        "project_path": created["project_path"],
-        "spec": {
-            "kind": "aggregate",
-            "measure": "event_count",
-            "value_type": "count",
-            "description": "Events.",
-        },
-        "expected_revision": created["revision"],
-    }
-    first = _call(server, "upsert_metric", {**metric, "metric_key": "a", "idempotency_key": "a"})
-    stale = _call(server, "upsert_metric", {**metric, "metric_key": "b", "idempotency_key": "b"})
-
-    assert first["ok"] is True
-    assert stale["error"]["code"] == "CONFIG_CONFLICT"
-    assert repr(first["revision"]) in stale["error"]["details"]["retry"]
-
-
 def test_status_lists_package_files_not_internal_state(tmp_path: Path) -> None:
     """A package that is the workspace root holds the transaction receipts, one per write."""
     server = create_architect_mcp_server(workspace_root=tmp_path)

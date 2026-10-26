@@ -642,26 +642,19 @@ def _assert_monthly_max_from_rollup(source: Path, measure: str) -> None:
     assert "FROM orders_monthly" in result["rendered_sql"]
 
 
-def test_rollup_binding_answers_the_reference_once_its_name_resolves(tmp_path):
-    misspelled = _rollup_package(tmp_path / "misspelled", revnue=_MAX_REV)
-    with pytest.raises(SemanticLayerError, match="column 'revnue' names no measure.*'revenue'"):
-        Runtime.from_path(str(misspelled))
-
-    source = _rollup_package(tmp_path / "fixed", revenue=_MAX_REV)
-    _assert_monthly_max_from_rollup(source, "measure.rollups.revenue")
-
-
-def test_rollup_binding_by_an_id_that_as_replaces_is_refused(tmp_path):
-    ids = {"as": "measure.rollups.rev_b"}
-    by_id = _rollup_package(tmp_path / "by_id", ids, **{"measure.rollups.rev_a": _MAX_REV})
-    with pytest.raises(SemanticLayerError) as refused:
-        Runtime.from_path(str(by_id))
-    (error,) = refused.value.details["errors"]
-    assert "column 'measure.rollups.rev_a' names no measure, dimension or key column" in error
-    assert "did you mean 'measure.rollups.rev_b'" in error
-
-    by_as = _rollup_package(tmp_path / "by_as", ids, **{"measure.rollups.rev_b": _MAX_REV})
-    _assert_monthly_max_from_rollup(by_as, "measure.rollups.rev_b")
+# A binding by the measure's name or by the id its `as:` gives it reads the rollup. A misspelled
+# name, or an id the `as:` replaces, is refused (see REFUSED).
+@pytest.mark.parametrize(
+    ("fields", "binding", "measure"),
+    [
+        ({}, "revenue", "measure.rollups.revenue"),
+        ({"as": "measure.rollups.rev_b"}, "measure.rollups.rev_b", "measure.rollups.rev_b"),
+    ],
+    ids=["name", "as-id"],
+)
+def test_rollup_binding_answers_the_reference(tmp_path, fields, binding, measure):
+    source = _rollup_package(tmp_path / "rollups", fields, **{binding: _MAX_REV})
+    _assert_monthly_max_from_rollup(source, measure)
 
 
 @pytest.mark.parametrize(

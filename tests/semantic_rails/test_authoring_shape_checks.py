@@ -42,12 +42,39 @@ def _errors(path: Path) -> list[str]:
     return validate_runtime_package(path)
 
 
-def test_unknown_measure_key_is_rejected(starter_package: Path) -> None:
-    """`agg:` instead of `default_agg:` was silently ignored."""
-    path = _mutated(starter_package, "default_agg: sum", "agg: sum")
-    errors = _errors(path)
-    assert any("unknown key 'agg'" in e for e in errors), errors
-    assert any("default_agg" in e for e in errors), "must list the valid keys"
+# Each mistake every validator used to accept silently, and what its error now names.
+@pytest.mark.parametrize(
+    ("old", "new", "named"),
+    [
+        # `agg:` instead of `default_agg:` was ignored; the error lists the valid keys.
+        ("default_agg: sum", "agg: sum", ["unknown key 'agg'", "default_agg"]),
+        # `modles:` produced only 'models must not be empty'.
+        ("\nmodels:", "\nmodles:", ["'modles'", "did you mean 'models'"]),
+        # `domain: new` was list()-ed into the value set ['n', 'e', 'w'].
+        ("domain: [new, repeat]", "domain: new", ["domain must be a list"]),
+        # `class: event` passed: the enum checks ran only for directory packages.
+        ("class: event_time", "class: event", ["unknown class 'event'", "event_time"]),
+        # A bad ratio denominator was a late compiler error ('Unknown metric recipe') with no
+        # location; it fails at parse naming the metric, the field and close matches.
+        (
+            "denominator: order_count",
+            "denominator: order_cnt",
+            ["metric 'aov_usd'", "denominator 'order_cnt'", "order_count"],
+        ),
+        # Dropping `kind:` from an entity_count measure said 'missing expr'.
+        (
+            "        kind: entity_count\n",
+            "",
+            ["measure 'order_count' has no 'kind:'", "entity_count"],
+        ),
+    ],
+    ids=["measure-key", "top-level-key", "scalar-domain", "time-class", "ratio-operand", "no-kind"],
+)
+def test_a_silent_mistake_fails_validation_naming_it(
+    starter_package: Path, old: str, new: str, named: list[str]
+) -> None:
+    errors = _errors(_mutated(starter_package, old, new))
+    assert any(all(text in error for text in named) for error in errors), errors
 
 
 @pytest.mark.parametrize(
@@ -201,28 +228,6 @@ def test_removed_relationship_rollup_forms_fail_loading(
     assert "rollup_safe" in str(exc.value)
 
 
-def test_unknown_top_level_key_with_close_match_is_rejected(starter_package: Path) -> None:
-    """`modles:` produced only 'models must not be empty'."""
-    path = _mutated(starter_package, "\nmodels:", "\nmodles:")
-    errors = _errors(path)
-    assert any("'modles'" in e and "did you mean 'models'" in e for e in errors), errors
-
-
-def test_scalar_domain_is_rejected(starter_package: Path) -> None:
-    """`domain: new` was list()-ed into the value set ['n', 'e', 'w']."""
-    path = _mutated(starter_package, "domain: [new, repeat]", "domain: new")
-    errors = _errors(path)
-    assert any("domain must be a list" in e for e in errors), errors
-
-
-def test_invalid_time_class_is_rejected_in_single_file_form(starter_package: Path) -> None:
-    """`class: event` passed because the enum checks only ran for
-    directory packages — single-file parity."""
-    path = _mutated(starter_package, "class: event_time", "class: event")
-    errors = _errors(path)
-    assert any("unknown class 'event'" in e and "event_time" in e for e in errors), errors
-
-
 @pytest.mark.parametrize(
     ("grain", "expr", "surface"),
     [
@@ -338,18 +343,6 @@ def test_removed_null_behavior_key_is_unknown(
     assert any("null_behavior" in e for e in _errors(path))
 
 
-def test_ratio_operand_typo_names_metric_and_field(starter_package: Path) -> None:
-    """A bad ratio denominator surfaced as a late compiler error
-    ('Unknown metric recipe') with no location; it must now fail at parse
-    naming the metric, the field, and close matches."""
-    path = _mutated(starter_package, "denominator: order_count", "denominator: order_cnt")
-    errors = _errors(path)
-    assert any(
-        "metric 'aov_usd'" in e and "denominator 'order_cnt'" in e and "order_count" in e
-        for e in errors
-    ), errors
-
-
 def test_metric_without_expression_names_kind_requirements(starter_package: Path) -> None:
     """A metric whose kind produces no expression said only 'Expression
     requires a kind' with no object context."""
@@ -363,16 +356,6 @@ def test_metric_without_expression_names_kind_requirements(starter_package: Path
     assert any("produced no expression" in e or "missing required field" in e for e in errors), (
         errors
     )
-
-
-def test_measure_without_kind_names_the_kinds(starter_package: Path) -> None:
-    """Dropping `kind:` from an entity_count measure said 'missing expr'
-    — the wrong diagnosis."""
-    path = _mutated(starter_package, "        kind: entity_count\n", "")
-    errors = _errors(path)
-    assert any(
-        "measure 'order_count' has no 'kind:'" in e and "entity_count" in e for e in errors
-    ), errors
 
 
 def test_clean_starter_still_validates(starter_package: Path) -> None:
