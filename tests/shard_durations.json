@@ -185,6 +185,7 @@
   "tests/semantic_rails/test_plan_answer_shape.py": 31.709,
   "tests/semantic_rails/test_plan_calendar_windows.py": 36.396,
   "tests/semantic_rails/test_plan_catalog_words.py": 29.791,
+  "tests/semantic_rails/test_plan_clock_spans.py": 0.5,
   "tests/semantic_rails/test_plan_conjoined_metrics.py": 13.924,
   "tests/semantic_rails/test_plan_declared_selection.py": 4.105,
   "tests/semantic_rails/test_plan_dimension_visibility.py": 104.51,

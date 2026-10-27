@@ -330,15 +330,18 @@ def _names_a_grouping(term: str, config: Any) -> bool:
     )
 
 
+# A temporal grouping term is one of these, or any run of the time words below.
+_TEMPORAL_TERMS = frozenset(
+    {"day", "week", "month", "quarter", "year", "delivered month", "ordered month"}
+)
+_TEMPORAL_WORDS = frozenset(
+    {"day", "week", "month", "quarter", "year", "time", "delivered", "ordered"}
+)
+
+
 def _is_temporal_grouping_term(term: str) -> bool:
     term_tokens = set(_tokens(term))
-    return bool(
-        term in {"day", "week", "month", "quarter", "year", "delivered month", "ordered month"}
-        or term_tokens
-        and term_tokens.issubset(
-            {"day", "week", "month", "quarter", "year", "time", "delivered", "ordered"}
-        )
-    )
+    return bool(term in _TEMPORAL_TERMS or term_tokens and term_tokens <= _TEMPORAL_WORDS)
 
 
 def _term_matches_value_domain(
