@@ -142,7 +142,12 @@ enforces it.
 Backend CI partitions whole test files into four deterministic shards. Pull requests
 run Python 3.12 only; merge groups and manual runs cover Python 3.11, 3.12, 3.13
 and 3.14. The merge queue is the complete compatibility gate: a failure on another
-Python version ejects the change before merging. Files are assigned longest first
+Python version ejects the change before merging. Its Python 3.14 shards also record line
+coverage of `semantic_rails/`, and the "All checks pass" job combines them and fails below 93%
+(93.50% when the floor was set; CLI subprocesses aren't traced). To measure it locally, run
+`uv run pytest tests/semantic_rails -n 4 --cov`. The lint job also records the
+compile corpus (`scripts/dev/compile_corpus.py`) twice, under different hash seeds and worker
+counts, and fails unless the two records are byte-identical with no compile crashes. Files are assigned longest first
 to the lightest shard, with paths and shard indices breaking ties.
 `tests/shard_durations.json` records summed
 per-test seconds for each file, and `test_ci_hygiene` fails when a file under
