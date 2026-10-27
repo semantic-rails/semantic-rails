@@ -98,10 +98,11 @@ jobs:
       - run: uv run python scripts/changelog_fragments.py check
       - env:
           # The merge queue (and a manual run) measures line coverage on the 3.14 shards, the
-          # fastest; all-checks combines the four shards' data and holds the floor.
-          PYTEST_ADDOPTS: ${{ github.event_name != 'pull_request' && matrix.python-version == '3.14' && '--cov --cov-report=' || '' }}
+          # fastest; all-checks combines the four shards' data and holds the floor. The options
+          # go on the command line, not PYTEST_ADDOPTS, which the tests' own pytest runs inherit.
+          COVERAGE_OPTIONS: ${{ github.event_name != 'pull_request' && matrix.python-version == '3.14' && '--cov --cov-report=' || '' }}
           COVERAGE_FILE: .coverage.shard-${{ matrix.shard }}
-        run: uv run pytest -q tests/semantic_rails -n auto --dist worksteal --validate-quarantine --junitxml=backend-results.xml
+        run: uv run pytest -q tests/semantic_rails -n auto --dist worksteal --validate-quarantine --junitxml=backend-results.xml $COVERAGE_OPTIONS
       - name: Verify DuckDB confinement tests ran without skips
         run: |
           uv run --no-sync python - <<'PY'
