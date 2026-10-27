@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 from abc import abstractmethod
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
@@ -272,6 +273,10 @@ def import_driver(module_name: str, *, extra: str, engine: str, connection_kind:
         ) from exc
 
 
+# Statements DuckDB labels SELECT that a capped subquery must not wrap.
+_METADATA_KEYWORDS = frozenset({b"DESCRIBE", b"DESC", b"SHOW", b"SUMMARIZE"})
+
+
 def materialized_duckdb_result(
     cursor: Any,
     sql: str,
@@ -298,10 +303,17 @@ def materialized_duckdb_result(
             pass
         else:
             is_select = len(statements) == 1 and statements[0].type == duckdb.StatementType.SELECT
-        if is_select and max_rows is not None:
-            # DuckDB tokens omit comments and locate delimiters by UTF-8 byte offset.
+        if is_select:
+            # Tokens locate delimiters by UTF-8 byte offset. DuckDB 2.0 also returns comments.
             encoded = sql.encode()
-            for token_start, _ in reversed(duckdb.tokenize(sql)):
+            starts = [
+                start for start, kind in duckdb.tokenize(sql) if kind != duckdb.token_type.comment
+            ]
+            # DuckDB 2.0 also parses DESCRIBE before DESCRIBE, SHOW or SUMMARIZE; 1.5 refused it.
+            leading = re.match(rb"[A-Za-z_]*", encoded[starts[0] :]) if starts else None
+            is_select = leading is not None and leading[0].upper() not in _METADATA_KEYWORDS
+        if is_select and max_rows is not None:
+            for token_start in reversed(starts):
                 if encoded[token_start : token_start + 1] != b";":
                     break
                 statement_sql = encoded[:token_start].decode()
@@ -309,9 +321,10 @@ def materialized_duckdb_result(
     relation = cursor.sql(statement_sql, params=values)
     if relation is None:
         return [], []
+    # Read names before limit(): DuckDB 2.0's limited relation deduplicates them.
+    description = relation.description
     if max_rows is not None and not is_select:
         relation = relation.limit(max_rows + 1)
-    description = relation.description
     fetched = relation.fetchall()
     if is_select:
         # Parameter-bound relations deduplicate names; DESCRIBE retains the
