@@ -1257,35 +1257,44 @@ Two transports serve the same tools. They share one JSON-RPC dispatcher
 Each tool result carries its payload twice: as `structuredContent`, and as compact JSON in
 `content[0].text` for hosts that forward only text. Resource reads return compact JSON text.
 
-The dispatcher negotiates `2025-11-25` (the default), `2025-03-26` or `2024-11-05` in
-`initialize`. It already matches several parts of the `2026-07-28` revision:
+The dispatcher negotiates `2025-11-25` (the default), `2025-06-18`, `2025-03-26` or
+`2024-11-05` in `initialize`. It doesn't support `2026-07-28` yet. It already matches several
+parts of that revision:
 
 - the Streamable HTTP endpoint keeps no sessions and sends no `Mcp-Session-Id`;
 - `tools/list` returns tools in a fixed order;
 - the workflow is in the server `instructions`;
-- tool schemas are plain JSON Schema.
+- tool schemas are plain JSON Schema;
+- no tool asks the client for more input, so no result is ever `"input_required"`.
 
 ### Planned: the `2026-07-28` revision
 
-Supporting `2026-07-28` alongside `2025-11-25` means gating the following on the protocol version
-each request declares, so older clients see no change:
+The query MCP server will serve both eras: a request whose `params._meta` carries
+`io.modelcontextprotocol/protocolVersion` gets `2026-07-28` behavior, and `initialize` keeps
+the older versions working unchanged. The Architect MCP stays on `2025-11-25` until the SDK
+upgrade below. The `2026-07-28` behavior is:
 
-1. **Stateless requests.** Read `io.modelcontextprotocol/protocolVersion` (and client
-   capabilities) from each request's `_meta` instead of requiring `initialize`, and answer an
-   unsupported version with `UnsupportedProtocolVersionError` (`-32022`). Identify the server in
-   each result's `_meta` (`io.modelcontextprotocol/serverInfo`).
-2. **`server/discover`**, which the revision requires: supported versions, capabilities and
-   server identity.
-3. **`resultType: "complete"`** on every result. The server never needs `"input_required"`
-   because no tool asks the client for more input.
-4. **Cache hints.** Add `ttlMs` and `cacheScope` to `tools/list`, `prompts/list`,
-   `resources/list`, `resources/read` and `resources/templates/list`. Resources depend on the
-   caller's grants, so they are `"private"` behind an authenticated transport.
-5. **Headers and errors.**
-   - Check the `Mcp-Method` and `Mcp-Name` request headers on Streamable HTTP POSTs.
-   - Decide whether an unknown resource keeps its structured error payload or becomes JSON-RPC
-     `-32602`.
-   - Stop answering `ping` and `logging/setLevel` for `2026-07-28` requests.
+1. **Per-request version.** Read the version from `_meta`, not from `initialize`. A version the
+   server doesn't support gets `UnsupportedProtocolVersionError`: code `-32022`, with
+   `data.supported` (every version above) and `data.requested`. On HTTP the status is `400`.
+2. **`server/discover`**, which the revision requires. It returns `supportedVersions`,
+   `capabilities`, `instructions`, and `_meta["io.modelcontextprotocol/serverInfo"]`.
+3. **Result fields.** Every result gets `resultType: "complete"` and
+   `_meta["io.modelcontextprotocol/serverInfo"]`.
+4. **Cache hints.** `ttlMs` and `cacheScope` go on `server/discover`, `tools/list`,
+   `prompts/list`, `resources/list` and `resources/read`. Resources depend on the caller's
+   grants, so they are `"private"`.
+5. **Removed methods.** For a `2026-07-28` request, `initialize`, `ping` and `logging/setLevel`
+   are unknown methods (`-32601`, and `404` on HTTP).
+6. **Streamable HTTP validation.**
+   - `MCP-Protocol-Version` must equal the `_meta` version, and `Mcp-Method` must equal
+     `method`.
+   - `Mcp-Name` must equal `params.name` (`tools/call`, `prompts/get`) or `params.uri`
+     (`resources/read`), after decoding the `=?base64?…?=` form.
+   - A missing or mismatched header gets `400` with `HeaderMismatchError` (`-32020`).
+7. **Unknown resource.** Today an unknown resource reads as a payload with `ok: false` and
+   `UNKNOWN_MCP_RESOURCE`. For a `2026-07-28` request it becomes JSON-RPC `-32602` (Invalid
+   Params), with the same issue in `data`. Older versions keep the payload.
 
 ### MCP Python SDK 2.x
 
