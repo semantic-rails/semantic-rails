@@ -129,7 +129,7 @@ class FakeConnection:
         return self
 
     def fetchone(self):
-        return ("",)
+        return ("", "")
 
     def fetchall(self):
         return []
@@ -225,7 +225,8 @@ def test_adapter_connects_with_token_and_defaults_namespace(
         "SELECT database_name, function_name, function_type FROM system.main.duckdb_functions()",
         "SELECT system.main.current_setting('disabled_optimizers')",
         "SET disabled_optimizers = ?",
-        "SELECT system.main.current_setting('lock_configuration')",
+        "SELECT system.main.current_setting('lock_configuration'), "
+        "system.main.current_setting('allowed_configs')",
         "SET enable_progress_bar = false",
         'CREATE DATABASE IF NOT EXISTS "sr_jaffle"',
         'USE "sr_jaffle"',

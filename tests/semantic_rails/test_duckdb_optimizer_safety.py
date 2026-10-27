@@ -61,7 +61,7 @@ def test_setup_preserves_existing_exclusions_and_cursors(existing):
 def test_setup_failure_closes_connection_and_never_returns_it(failure):
     connection = Mock()
     connection.fetchall.return_value = []
-    connection.fetchone.return_value = ("",)
+    connection.fetchone.return_value = ("", "")
     steps = ["catalog", "read", "set", "lock", "progress_bar"]
     connection.execute.side_effect = [connection] * steps.index(failure) + [
         RuntimeError("setting unavailable")

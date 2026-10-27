@@ -18,8 +18,10 @@ from typing import Any
 from ..errors import SemanticLayerError
 
 # The settings a locked configuration still lets a statement change: the
-# adapters run each query in its time role's zone.
-_UNLOCKED_SETTINGS = ("TimeZone",)
+# adapters run each query in its time role's zone, and every connection to a
+# shared instance turns off the progress bar (display only: it grants no data,
+# file or network access).
+_UNLOCKED_SETTINGS = ("TimeZone", "enable_progress_bar")
 
 _EXPECTED_SETTINGS = {
     "enable_external_access": False,

@@ -48,9 +48,11 @@ def test_adapter_settings_with_non_colliding_file_macro(tmp_path: Path, confined
                 "autoinstall_known_extensions": False,
                 "autoload_known_extensions": False,
                 "lock_configuration": True,
-                "allowed_configs": ["TimeZone"],
+                "allowed_configs": ["TimeZone", "enable_progress_bar"],
+                "enable_progress_bar": False,
             }.items():
-                assert setting(name) == expected
+                actual = setting(name)
+                assert (sorted(actual) if isinstance(actual, list) else actual) == expected
             directory = os.path.realpath(tmp_path)
             assert directory + os.sep in setting("allowed_directories")
             assert all(
