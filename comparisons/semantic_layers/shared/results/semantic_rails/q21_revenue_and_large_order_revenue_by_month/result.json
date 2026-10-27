@@ -67,8 +67,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 4.2,
-      "compile_ms": 1.3,
+      "cache_lookup_ms": 4.128,
+      "compile_ms": 1.281,
       "dialect": "duckdb",
       "physical_plan_nodes": 12
     },
@@ -1040,7 +1040,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 03:46:01.803321' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 03:46:01.803321' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"revenue_usd\",\n  base.m2 AS \"large_order_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 05:17:10.788402' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 05:17:10.788402' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"revenue_usd\",\n  base.m2 AS \"large_order_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1957,7 +1957,7 @@
                             "right": {
                               "expr": {
                                 "temporal": false,
-                                "value": "2026-10-27 03:46:01.803321"
+                                "value": "2026-10-27 05:17:10.788402"
                               },
                               "type_name": "TIMESTAMP"
                             }
@@ -2078,7 +2078,7 @@
                             "right": {
                               "expr": {
                                 "temporal": false,
-                                "value": "2026-10-27 03:46:01.803321"
+                                "value": "2026-10-27 05:17:10.788402"
                               },
                               "type_name": "TIMESTAMP"
                             }
@@ -2981,14 +2981,14 @@
       "temporal_role": "temporal_role.jaffle_order_time"
     }
   },
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 03:46:01.803321' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 03:46:01.803321' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"revenue_usd\",\n  base.m2 AS \"large_order_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.order_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.order_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_2__revenue_usd_order_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base\n),\nleaf_2__revenue_usd_order_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_order_id\",\n  base.t AS t,\n  base.m1 AS __predicate_value\nFROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base\n),\nleaf_2__qualified_orders_month_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_order_id\" AS \"dimension.jaffle_order_id\",\n  predicate_source.t AS t\nFROM leaf_2__revenue_usd_order_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 50\n),\nleaf_2 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m2,\n  COUNT(1) AS m2_rows\nFROM comparison_orders\nINNER JOIN leaf_2__qualified_orders_month_by_revenue_usd_1 ON comparison_orders.order_id = leaf_2__qualified_orders_month_by_revenue_usd_1.\"dimension.jaffle_order_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_2__qualified_orders_month_by_revenue_usd_1.t\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\ncombined_2 AS (\nSELECT\n  COALESCE(left_side.t, right_side.t) AS t,\n  left_side.m1 AS m1,\n  left_side.m1_rows AS m1_rows,\n  right_side.m2 AS m2,\n  right_side.m2_rows AS m2_rows\nFROM leaf_1 AS left_side\nFULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 05:17:10.788402' AS TIMESTAMP) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= CAST('2026-10-27 05:17:10.788402' AS TIMESTAMP) THEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END END) AS data_through\nFROM comparison_orders\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,\n  COALESCE(base.m2, CASE WHEN COUNT(base.m2) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) AND ((base.m2_rows IS NULL) OR base.m2_rows = 0) THEN 0 END) AS m2\nFROM combined_2 AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"revenue_usd\",\n  base.m2 AS \"large_order_revenue_usd\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
   "row_count": 12,
   "rows": [
     {
-      "large_order_revenue_usd": 2376.5000000000005,
+      "large_order_revenue_usd": 2376.5,
       "period": "2016-09-01",
       "period_partial": false,
-      "revenue_usd": 18053.280000000024
+      "revenue_usd": 18053.28000000002
     },
     {
       "large_order_revenue_usd": 2642.57,
@@ -3000,61 +3000,61 @@
       "large_order_revenue_usd": 2192.04,
       "period": "2016-11-01",
       "period_partial": false,
-      "revenue_usd": 27916.81999999998
+      "revenue_usd": 27916.82000000002
     },
     {
-      "large_order_revenue_usd": 3549.919999999999,
+      "large_order_revenue_usd": 3549.9199999999987,
       "period": "2016-12-01",
       "period_partial": false,
-      "revenue_usd": 35677.600000000035
+      "revenue_usd": 35677.60000000008
     },
     {
       "large_order_revenue_usd": 5175.899999999999,
       "period": "2017-01-01",
       "period_partial": false,
-      "revenue_usd": 45017.94999999979
+      "revenue_usd": 45017.94999999996
     },
     {
-      "large_order_revenue_usd": 4959.690000000002,
+      "large_order_revenue_usd": 4959.6900000000005,
       "period": "2017-02-01",
       "period_partial": false,
-      "revenue_usd": 43358.119999999806
+      "revenue_usd": 43358.11999999997
     },
     {
-      "large_order_revenue_usd": 6553.2400000000025,
+      "large_order_revenue_usd": 6553.240000000002,
       "period": "2017-03-01",
       "period_partial": false,
-      "revenue_usd": 73950.32000000037
+      "revenue_usd": 73950.32000000056
     },
     {
-      "large_order_revenue_usd": 9694.399999999996,
+      "large_order_revenue_usd": 9694.4,
       "period": "2017-04-01",
       "period_partial": false,
-      "revenue_usd": 83316.99000000142
+      "revenue_usd": 83316.99000000136
     },
     {
       "large_order_revenue_usd": 7801.520000000002,
       "period": "2017-05-01",
       "period_partial": false,
-      "revenue_usd": 96070.35000000287
+      "revenue_usd": 96070.35000000263
     },
     {
-      "large_order_revenue_usd": 10121.24,
+      "large_order_revenue_usd": 10121.240000000003,
       "period": "2017-06-01",
       "period_partial": false,
-      "revenue_usd": 98378.8700000028
+      "revenue_usd": 98378.8700000026
     },
     {
-      "large_order_revenue_usd": 12161.109999999993,
+      "large_order_revenue_usd": 12161.109999999995,
       "period": "2017-07-01",
       "period_partial": false,
-      "revenue_usd": 94857.19000000223
+      "revenue_usd": 94857.19000000258
     },
     {
-      "large_order_revenue_usd": 10629.82,
+      "large_order_revenue_usd": 10629.819999999994,
       "period": "2017-08-01",
       "period_partial": false,
-      "revenue_usd": 107371.5900000042
+      "revenue_usd": 107371.59000000372
     }
   ],
   "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
@@ -3878,7 +3878,7 @@
                           "right": {
                             "expr": {
                               "temporal": false,
-                              "value": "2026-10-27 03:46:01.803321"
+                              "value": "2026-10-27 05:17:10.788402"
                             },
                             "type_name": "TIMESTAMP"
                           }
@@ -3999,7 +3999,7 @@
                           "right": {
                             "expr": {
                               "temporal": false,
-                              "value": "2026-10-27 03:46:01.803321"
+                              "value": "2026-10-27 05:17:10.788402"
                             },
                             "type_name": "TIMESTAMP"
                           }
@@ -4453,7 +4453,7 @@
   },
   "window": {
     "data_through": "2017-08-31",
-    "now": "2026-10-27T03:46:01.803321Z",
+    "now": "2026-10-27T05:17:10.788402Z",
     "partial": false
   }
 }

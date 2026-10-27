@@ -2,9 +2,9 @@
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "distribution": "PyPI semantic-rails==0.3.2",
   "engine_release": "v0.3.2",
-  "generated_at": "2026-10-27T03:43:23+00:00",
+  "generated_at": "2026-10-27T05:17:12+00:00",
   "model_sha256": "00bac49988b1d21e9a3dfdeecb470a0c80b1adb1f9189246fc61e72d1a551a60",
-  "queries_sha256": "63f40d8dd710f995572f2c0d655e2374f58118a0b54036edf7fa4ff74532ad33",
+  "queries_sha256": "68db861da17b2eb705db1d50eeca76a2ab085590de4bd372eba3f8123b9bb0f4",
   "questions": [
     {
       "answer_key_matches": true,

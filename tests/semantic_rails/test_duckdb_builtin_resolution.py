@@ -21,6 +21,10 @@ from semantic_rails.db_parts.duckdb_setup import configure_duckdb_connection
 from semantic_rails.db_parts.ducklake import DuckLakeAdapter
 from semantic_rails.errors import SemanticLayerError
 
+# A subscript or field-access macro fails while binding: DuckDB 1.5 can't copy the bound
+# expression, and 2.0 doesn't resolve array_extract or struct_extract as scalar functions.
+SUBSCRIPT_MACRO_ERROR = "Cannot copy bound expression|is not a scalar function"
+
 
 @pytest.mark.parametrize("confined", [False, True], ids=["plain", "confined"])
 def test_adapter_settings_with_non_colliding_file_macro(tmp_path: Path, confined: bool) -> None:
@@ -48,9 +52,11 @@ def test_adapter_settings_with_non_colliding_file_macro(tmp_path: Path, confined
                 "autoinstall_known_extensions": False,
                 "autoload_known_extensions": False,
                 "lock_configuration": True,
-                "allowed_configs": ["TimeZone"],
+                "allowed_configs": ["TimeZone", "enable_progress_bar"],
+                "enable_progress_bar": False,
             }.items():
-                assert setting(name) == expected
+                actual = setting(name)
+                assert (sorted(actual) if isinstance(actual, list) else actual) == expected
             directory = os.path.realpath(tmp_path)
             assert directory + os.sep in setting("allowed_directories")
             assert all(
@@ -102,8 +108,7 @@ def test_introspection_ignores_file_macros(
         if table_macro:
             body = f"TABLE SELECT {body} AS sentinel"
         connection.execute(f'CREATE MACRO "{name}"({arguments}) AS {body}')
-        # Subscript macro lookup fails during binding in DuckDB 1.5.6.
-        error = "Cannot copy bound expression" if name == "array_extract" else "file_macro_executed"
+        error = SUBSCRIPT_MACRO_ERROR if name == "array_extract" else "file_macro_executed"
         with pytest.raises(duckdb.Error, match=error):
             connection.execute(probe).fetchall()
 
@@ -175,9 +180,7 @@ def test_connections_refuse_colliding_macros_before_setup(
         schema = "main" if name in {"list_value", "struct_pack"} else "authored"
         connection.execute(f'CREATE MACRO {schema}."{name}"({arguments}) AS {body}')
         connection.execute("SET schema = 'authored'")
-        error = (
-            "Cannot copy bound expression" if name == "struct_extract" else "file_macro_executed"
-        )
+        error = SUBSCRIPT_MACRO_ERROR if name == "struct_extract" else "file_macro_executed"
         with pytest.raises(duckdb.Error, match=error):
             connection.execute(probe).fetchall()
 

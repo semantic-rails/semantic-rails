@@ -422,7 +422,8 @@ def _pair(runtimes, package, action: str, object_id: str, *extra: SemanticPolicy
     """The governed runtime, the runtime over the absent package, and the hidden ids."""
     policy = visibility_policy(action, object_id)
     governed = runtimes(policy, *extra)
-    hidden = engine_hidden(governed.config, CALLER)
+    # The governed runtime's own configuration, without copying it out of the runtime.
+    hidden = engine_hidden(with_policies(package[1], policy, *extra), CALLER)
     assert object_id in hidden
     return governed, runtimes(*extra, hide=hidden), hidden
 

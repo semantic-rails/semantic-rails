@@ -71,6 +71,21 @@ keys use `(start, start + 7 days]`. On this data no order falls on either bounda
 14-day or 50-minute window (nearest: 13 minutes outside the 14-day end, 2 minutes either
 side of the 50-minute end), so the two conventions give the same answers.
 
+Each layer's window bounds, as this pack writes them (they don't change an answer on this
+data):
+
+- **q09 and q15:**
+  - Semantic Rails, MetricFlow (at minute grain), KtX and this pack's Snowflake Semantic Views
+    SQL count `[start, start + 7 days)`.
+  - Cube and Malloy write the key's `(start, start + 7 days]` into this pack's joins.
+- **q17 and q18:** Semantic Rails, through its conversion expression, and Malloy, through
+  the join each query declares, count the keys' `[start, start + N)`.
+- **Cube on q18** narrows its same-store join, which requires an order strictly after the
+  session start, inside its SQL API. So it counts `(start, start + 50 minutes)`.
+
+Semantic Rails' conversion window is always `[start, start + N)`, the duration convention. It
+has no option for other bounds.
+
 Two variants do not discriminate from their base question on this data, so a layer that
 returned the base metric unchanged would still match:
 

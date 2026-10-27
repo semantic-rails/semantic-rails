@@ -123,7 +123,12 @@ def test_window_error_names_the_units_and_shape(adapter, window):
 
     assert error["code"] == "CONVERSION_WINDOW_REQUIRED"
     assert error["details"]["path"] == "expression.window"
-    assert error["details"]["received_value"] == window
+    if isinstance(window, dict) and set(window) - {"unit", "value"}:
+        # An unknown key is named, not echoed back with the rest of the window.
+        assert error["details"]["unknown_window_keys"] == sorted(set(window) - {"unit", "value"})
+        assert "received_value" not in error["details"]
+    else:
+        assert error["details"]["received_value"] == window
     if isinstance(window, dict):
         shape = error["details"]["suggested_shape"]
     else:

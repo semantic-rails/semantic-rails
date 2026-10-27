@@ -22,6 +22,7 @@ from semantic_rails.embedding import DuckDBAdapter
 from semantic_rails.runtime import Runtime
 
 SETTING = "SELECT current_setting('disabled_optimizers')"
+PROGRESS_BAR = "SELECT current_setting('enable_progress_bar')"
 SEED = """
 CREATE TABLE amt(id INT, amount DECIMAL(15,2));
 INSERT INTO amt VALUES (1,10),(2,20),(3,1),(4,2);
@@ -52,14 +53,17 @@ def test_setup_preserves_existing_exclusions_and_cursors(existing):
         assert _disabled(connection) == expected
         with connection.cursor() as cursor:
             assert _disabled(cursor) == expected
+            assert cursor.execute(PROGRESS_BAR).fetchone() == (False,)
+        assert connection.execute(PROGRESS_BAR).fetchone() == (False,)
 
 
-@pytest.mark.parametrize("failure", ["catalog", "read", "set"])
+@pytest.mark.parametrize("failure", ["catalog", "read", "set", "lock", "progress_bar"])
 def test_setup_failure_closes_connection_and_never_returns_it(failure):
     connection = Mock()
     connection.fetchall.return_value = []
-    connection.fetchone.return_value = ("",)
-    connection.execute.side_effect = [connection] * ["catalog", "read", "set"].index(failure) + [
+    connection.fetchone.return_value = ("", "")
+    steps = ["catalog", "read", "set", "lock", "progress_bar"]
+    connection.execute.side_effect = [connection] * steps.index(failure) + [
         RuntimeError("setting unavailable")
     ]
     with pytest.raises(RuntimeError, match="setting unavailable"):
@@ -96,9 +100,27 @@ def test_local_connection_factories_disable_common_subplan(tmp_path, factory):
         if factory in {"embedding", "registry"}:
             assert adapter.query(MULTI_LEAF) == [{"a_total": Decimal(11), "b_total": Decimal(22)}]
         assert "common_subplan" in _disabled(connection)
+        assert connection.execute(PROGRESS_BAR).fetchone() == (False,)
         assert connection.execute(MULTI_LEAF).fetchone() == (Decimal(11), Decimal(22))
     finally:
         close()
+
+
+def test_a_slow_statement_draws_no_progress_bar_on_stdout(capfd):
+    # A plain DuckDB connection draws one on stdout: into a server's log stream, or an MCP
+    # stdio server's JSON-RPC stream.
+    slow = "SELECT count(*) FROM range(20000000) t(i) WHERE i % 7 = 3"
+    for setup in (None, configure_duckdb_connection):
+        with duckdb.connect() as connection:
+            # Draw from the first instant (setting the delay turns the bar back on, so first).
+            connection.execute("SET progress_bar_time = 0")
+            if setup is not None:
+                setup(connection)
+            capfd.readouterr()  # what the setup's own statements drew before turning it off
+            connection.execute(slow).fetchall()
+            connection.cursor().execute(slow).fetchall()
+        out = capfd.readouterr().out
+        assert ("100%" in out) is (setup is None), out
 
 
 def test_setting_does_not_change_shared_file_connection_config(tmp_path):

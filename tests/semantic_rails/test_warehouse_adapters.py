@@ -747,6 +747,31 @@ def test_snowflake_refuses_unknown_revocation_check_mode_before_connect(monkeypa
     connect.assert_not_called()
 
 
+def test_every_extra_caps_the_snowflake_connector_below_5():
+    """Connector 5.x drops the revocation settings checked below, so no extra admits it."""
+    import tomllib
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+    requirements = [
+        Requirement(line)
+        for lines in [project["dependencies"], *project["optional-dependencies"].values()]
+        for line in lines
+    ]
+    connector = [
+        r for r in requirements if canonicalize_name(r.name) == "snowflake-connector-python"
+    ]
+    assert len(connector) >= 2  # the snowflake and all extras
+    for requirement in connector:
+        assert requirement.specifier.contains("4.8.1")
+        assert not requirement.specifier.contains("5.0.0", prereleases=True)
+        assert not requirement.specifier.contains("5.0.0rc1", prereleases=True)
+
+
 def test_snowflake_connector_accepts_every_revocation_check_mode():
     pytest.importorskip("snowflake.connector")
     from snowflake.connector.connection import DEFAULT_CONFIGURATION

@@ -1149,7 +1149,10 @@ def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
     assert all(item["answer_key_matches"] for item in executed)
     count = f"{len(executed)} of {len(release['questions'])}"
     note = generator.semantic_rails_frozen_version_note()
-    assert f"unreleased engine commit {summary['semantic_rails_commit']}" in note
+    tree = summary["semantic_rails_tree"][:7]
+    engine = f"an unreleased engine ({summary['semantic_rails_version']}, engine tree {tree})"
+    assert f"Semantic Rails' current count uses {engine};" in note
+    assert summary["semantic_rails_commit"] not in note  # a branch commit may not survive a squash
     assert f"{release['engine_release']}, answers {count} on the same frozen model" in note
     assert "refuses to load" not in note
     for name in ("capability_matrix.json", "comparison_data.json"):
@@ -1159,7 +1162,8 @@ def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
     assert note in " ".join(readme.split())
     table = readme.split("## Frozen-Model Questions:", 1)[1]
     row = next(line for line in table.splitlines() if line.startswith("| Semantic Rails |"))
-    assert summary["semantic_rails_commit"] in row and "unreleased" in row
+    assert f"engine tree `{tree}`" in row and "unreleased" in row
+    assert summary["semantic_rails_commit"] not in row
     assert f"{release['engine_release']}: {count}" in row
 
 
