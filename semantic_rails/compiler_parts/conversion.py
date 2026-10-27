@@ -453,6 +453,7 @@ def _conversion_event_cte(
     query: NormalizedQuery,
     where_items: list[Any],
     keep_events: bool = False,
+    filter_dimensions: list[str] | None = None,
 ) -> SqlCte:
     """One side's events, with the match key, groupings and properties each one carries.
 
@@ -508,6 +509,9 @@ def _conversion_event_cte(
     allow_rewrite_dimension_ids = set(allow_rewrite_dimension_ids or set()) | set(
         operand_filter_dims
     )
+    # The query's own where on these events reads its dimensions here too.
+    filter_dimensions = list(filter_dimensions or [])
+    allow_rewrite_dimension_ids |= set(filter_dimensions)
     required_dimensions = list(
         dict.fromkeys(
             [
@@ -515,13 +519,21 @@ def _conversion_event_cte(
                 *property_dimensions,
                 *extra_dimensions,
                 *operand_filter_dims,
+                *filter_dimensions,
                 role.dimension,
             ]
         )
     )
     purposes = {dim_id: "conversion_dimension" for dim_id in [role.dimension, *extra_dimensions]}
     if keep_events:
+        # A base event's filters (the operand's own and the query's where) and constant
+        # properties keep their rows even in a metric filter's own query: a missing lookup reads
+        # NULL, which the filter reads as it reads a NULL in the row itself.
         purposes = {
+            **{
+                dim_id: "conversion_base_filter"
+                for dim_id in [*operand_filter_dims, *filter_dimensions]
+            },
             **{dim_id: "conversion_base_property" for dim_id in property_dimensions},
             **purposes,
         }
@@ -918,12 +930,15 @@ def _conversion_leaf_cte(
         )
         base_group_where.extend(_source_time_window(raw_expr, plan.time, config))
 
+    base_where_dims: list[str] = []
     for item in refuse_child_groups(query.where, "in a conversion metric"):
         where_target = (
             converted_group_where
             if str(item.field) in converted_side_group_dim_set
             else base_group_where
         )
+        if where_target is base_group_where:
+            base_where_dims.append(str(item.field))
         dim_expr, _ = _resolve_dimension_expr(str(item.field), config)
         where_target.append(
             dimension_filter(dim_expr, str(item.field), item.op, item.value, config)
@@ -964,6 +979,7 @@ def _conversion_leaf_cte(
         config=config,
         query=query,
         keep_events=True,
+        filter_dimensions=base_where_dims,
         # Each operand reads only rows its declared edge lets through (``_edge_cap``).
         where_items=[
             *base_group_where,

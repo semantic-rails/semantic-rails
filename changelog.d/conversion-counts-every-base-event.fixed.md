@@ -11,3 +11,8 @@
 - On ClickHouse, a conversion whose base events need a lookup (a grouping or constant
   property read through another table) is refused with `CONVERSION_NOT_SUPPORTED` instead of
   dropping those events.
+- A conversion rate's own base filter keeps an event whose looked-up column is missing in a
+  metric filter on the rate too (it reads NULL, as a NULL in the row does), so a rate filtered
+  on reads the same events as the rate shown. A query's `where` on a column the base events
+  look up (the customer's or store's attributes) joins that lookup; before, such a query failed
+  to execute.

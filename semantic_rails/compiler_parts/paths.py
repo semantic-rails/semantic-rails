@@ -663,7 +663,9 @@ _inner_lookups: ContextVar[bool] = ContextVar("inner_lookups", default=False)
 # A conversion's base events are its rate's denominator, so these reads keep their rows even
 # inside a metric filter's own query (``_inner_lookups``): a rate shown and a rate filtered on
 # must count the same events. Their missing rows read NULL and match nothing.
-_KEEPS_ROWS_PURPOSES = frozenset({"conversion_base_property", "conversion_base_match_entity"})
+_KEEPS_ROWS_PURPOSES = frozenset(
+    {"conversion_base_property", "conversion_base_match_entity", "conversion_base_filter"}
+)
 
 
 @contextmanager
