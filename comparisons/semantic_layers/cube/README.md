@@ -39,9 +39,12 @@ doesn't use Cube Store, so its `postinstall` (a second GitHub download) never ru
 install scripts in the lockfile (`es5-ext`, `fsevents`) aren't needed. This setup is for local
 runs only.
 
-`npm audit --audit-level=high` reports 0 high and 0 critical advisories. It reports 2 moderate
-(`uuid` under `gaxios`) and 5 low (`elliptic`, through `jwk-to-pem` in Cube's API gateway; npm
-has no fix). `npm-audit.json` records that report with the sha256 of the `package-lock.json`
+`npm audit --audit-level=high` reports 0 high and 0 critical advisories. It reports 5 low
+(`elliptic`, through `jwk-to-pem` in Cube's API gateway; npm has no fix). Three `overrides` in
+`package.json` lift transitive packages whose parents still ask for a vulnerable major:
+`@azure/msal-node` (under `@azure/identity`), `basic-ftp` (under `get-uri`) and `uuid` (under
+`gaxios`). They sit on Azure auth, PAC-proxy and Google client paths the DuckDB comparison
+doesn't run, and they leave Cube's own versions unchanged. `npm-audit.json` records that report with the sha256 of the `package-lock.json`
 it audited, and CI checks the install surface offline, failing if the lockfile changed since
 the audit. After changing the lockfile, re-record the audit (this runs `npm audit`):
 
