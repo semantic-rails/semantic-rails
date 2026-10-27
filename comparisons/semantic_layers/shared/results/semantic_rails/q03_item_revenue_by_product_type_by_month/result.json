@@ -35,8 +35,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.854,
-      "compile_ms": 0.487,
+      "cache_lookup_ms": 0.825,
+      "compile_ms": 0.5,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2073,7 +2073,7 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-27T03:46:01.046350Z",
+    "now": "2026-10-27T05:17:10.063682Z",
     "partial": false
   }
 }

@@ -2,7 +2,7 @@
   "select": [
     {
       "expression": "metric.jaffle.orders",
-      "as": "repeat_customer_orders"
+      "as": "orders_from_repeat_customers"
     }
   ],
   "group_by": [

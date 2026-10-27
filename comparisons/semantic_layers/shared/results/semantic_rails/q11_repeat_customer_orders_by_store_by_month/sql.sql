@@ -61,7 +61,7 @@ CROSS JOIN observed_1
 SELECT
   base.g1 AS "dimension.jaffle_store_name",
   base.t AS "period",
-  base.m1 AS "repeat_customer_orders"
+  base.m1 AS "orders_from_repeat_customers"
 FROM guarded_base AS base
 ORDER BY
   t ASC NULLS LAST,
