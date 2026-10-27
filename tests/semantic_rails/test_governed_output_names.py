@@ -117,6 +117,19 @@ def test_a_governed_object_or_a_name_of_its_own_still_answers(runtime, query) ->
     assert result["ok"], result.get("errors")
 
 
+def test_a_stock_measure_read_as_its_sum_answers_under_its_own_name(runtime) -> None:
+    """A stock read sums its members at the read day, so `sum` over a semi-additive measure is
+    its default read, not another calculation."""
+    stock = "measure.jaffle.inventory_on_hand_eop"
+    daily = {"time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"}}
+    for alias in ("inventory_on_hand_eop", stock):
+        query = {
+            "select": [{"expression": _aggregate(stock, aggregation="sum"), "as": alias}],
+            **daily,
+        }
+        assert runtime.validate(query)["ok"], (alias, runtime.validate(query).get("errors"))
+
+
 def test_another_refusal_is_reported_first(runtime) -> None:
     """A select that fails for another reason (here an unknown metric) is refused for that
     reason, not as an impersonation."""

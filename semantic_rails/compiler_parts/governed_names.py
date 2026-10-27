@@ -49,7 +49,8 @@ def _plain_measure(expr: Any, measures: dict[str, MeasureConfig]) -> str:
     measure = measures.get(expr.measure)
     if measure is None or extra:
         return ""
-    if expr.aggregation not in ("", measure.default_aggregation):
+    stock_sum = measure.measure_class == "semi_additive" and expr.aggregation == "sum"
+    if expr.aggregation not in ("", measure.default_aggregation) and not stock_sum:
         return ""
     return measure.id
 
