@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
@@ -677,8 +678,10 @@ def test_quarantine_validates_ids_outside_current_shard(monkeypatch, tmp_path, p
 def test_backend_matrix_and_push_policy():
     jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     backend = jobs["backend"]
-    assert backend["strategy"]["matrix"]["shard"] == [0, 1, 2, 3]
-    assert backend["env"] == {"SR_SHARD_COUNT": "4", "SR_SHARD_INDEX": "${{ matrix.shard }}"}
+    assert backend["env"] == {
+        "SR_SHARD_COUNT": "${{ github.event_name == 'pull_request' && '8' || '5' }}",
+        "SR_SHARD_INDEX": "${{ matrix.shard }}",
+    }
     assert "github.event_name != 'push'" in backend["if"]
     assert "github.event_name == 'merge_group'" in backend["if"]
     assert "needs.changes.outputs.backend == 'true'" in backend["if"]
@@ -698,23 +701,8 @@ def test_backend_matrix_and_push_policy():
     )
 
 
-@pytest.mark.parametrize(
-    "event, versions",
-    [
-        ("pull_request", ["3.12"]),
-        ("merge_group", ["3.11", "3.12", "3.13", "3.14"]),
-        ("workflow_dispatch", ["3.11", "3.12", "3.13", "3.14"]),
-    ],
-)
-def test_backend_matrix_covers_versions_for_each_event(event, versions):
-    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-    matrix = jobs["backend"]["strategy"]["matrix"]
-    expression = matrix["python-version"]
-    assert expression == (
-        "${{ fromJSON(github.event_name == 'pull_request' && '[\"3.12\"]' "
-        '|| \'["3.11", "3.12", "3.13", "3.14"]\') }}'
-    )
-    # Evaluate this constrained expression with Python's equivalent boolean operators.
+def _evaluate(expression: str, event: str):
+    # Evaluate a constrained Actions expression with Python's equivalent boolean operators.
     translated = (
         expression.removeprefix("${{ ")
         .removesuffix(" }}")
@@ -722,9 +710,29 @@ def test_backend_matrix_covers_versions_for_each_event(event, versions):
         .replace("&&", "and")
         .replace("||", "or")
     )
-    selected = eval(translated, {"__builtins__": {}, "fromJSON": json.loads})
-    assert selected == versions
-    assert len(selected) * len(matrix["shard"]) == (4 if event == "pull_request" else 16)
+    return eval(translated, {"__builtins__": {}, "fromJSON": json.loads})
+
+
+@pytest.mark.parametrize(
+    "event, versions, shards, jobs_count",
+    [
+        ("pull_request", ["3.12"], 8, 8),
+        # The oldest and newest supported Pythons and 3.12: 3.13 runs nightly and per release.
+        ("merge_group", ["3.11", "3.12", "3.14"], 5, 15),
+        ("workflow_dispatch", ["3.11", "3.12", "3.13", "3.14"], 5, 20),
+    ],
+)
+def test_backend_matrix_covers_versions_for_each_event(event, versions, shards, jobs_count):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    matrix = jobs["backend"]["strategy"]["matrix"]
+    assert _evaluate(matrix["python-version"], event) == versions
+    assert _evaluate(matrix["shard"], event) == list(range(shards))
+    assert _evaluate(jobs["backend"]["env"]["SR_SHARD_COUNT"], event) == str(shards)
+    assert len(versions) * shards == jobs_count
+    if event == "merge_group":
+        # With lint, security, docs and Postgres: within GitHub Free's 20 concurrent jobs.
+        others = [name for name in jobs if name not in {"changes", "backend", "all-checks"}]
+        assert jobs_count + len(others) <= 20
     assert jobs["all-checks"]["needs"] == [
         "changes",
         "backend",
@@ -733,6 +741,36 @@ def test_backend_matrix_covers_versions_for_each_event(event, versions):
         "docs",
         "postgres",
     ]
+
+
+def test_every_supported_python_passes_before_a_merge_or_a_release():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    prefix = "Programming Language :: Python :: 3."
+    supported = {
+        classifier.removeprefix("Programming Language :: Python :: ")
+        for classifier in project["project"]["classifiers"]
+        if classifier.startswith(prefix)
+    }
+    workflows = ROOT / ".github/workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text())["jobs"]
+    merged = set(_evaluate(ci["backend"]["strategy"]["matrix"]["python-version"], "merge_group"))
+    # The tag-push publish workflow is the release path: its suite gates the upload.
+    publish = yaml.safe_load((workflows / "publish.yml").read_text())["jobs"]
+    released = set(publish["suite"]["strategy"]["matrix"]["python-version"])
+    assert "suite" in publish["test"]["needs"]
+    assert supported == {"3.11", "3.12", "3.13", "3.14"}
+    assert merged | released == supported
+    assert supported - merged == {"3.13"}
+    # The manual release gate and its nightly run on main cover 3.13 as well.
+    readiness = yaml.safe_load((workflows / "release-readiness.yml").read_text())
+    trigger = readiness.get("on", readiness.get(True))
+    assert trigger["schedule"] == [{"cron": "41 5 * * *"}]
+    versions = readiness["jobs"]["suite"]["strategy"]["matrix"]["python-version"]
+    assert _evaluate(versions, "schedule") == ["3.13"]
+    assert _evaluate(versions, "workflow_dispatch") == ["3.12", "3.13"]
+    assert (
+        readiness["jobs"]["release-readiness"]["if"] == "github.event_name == 'workflow_dispatch'"
+    )
 
 
 @pytest.mark.parametrize("event", ["pull_request", "merge_group", "workflow_dispatch"])
@@ -798,6 +836,47 @@ def test_real_collections_have_complete_disjoint_shards(tmp_path):
         assert all(not partition & previous for previous in partitions)
         partitions.append(partition)
     assert len(set.union(*partitions)) == 24
+
+
+def test_a_shard_imports_only_the_files_it_owns(tmp_path):
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    log = tmp_path / "imported.log"
+    for index in range(6):
+        (tmp_path / f"test_{index}.py").write_text(
+            "import os\n"
+            "with open(os.environ['IMPORT_LOG'], 'a') as log:\n"
+            "    log.write(__name__.rsplit('.', 1)[-1] + '\\n')\n"
+            "def test_value(): pass\n"
+        )
+    shards = []
+    for index in range(3):
+        log.write_text("")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-c", str(config)]
+            + ["-p", "scripts.test_sharding", str(tmp_path)],
+            env={
+                **os.environ,
+                "PYTHONPATH": str(ROOT),
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                "IMPORT_LOG": str(log),
+                "SR_SHARD_COUNT": "3",
+                "SR_SHARD_INDEX": str(index),
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        collected = {
+            line.split("::")[0].rsplit("/", 1)[-1].removesuffix(".py")
+            for line in result.stdout.splitlines()
+            if "::test_value" in line
+        }
+        # Every file it imported is one it owns: no shard imports another shard's file.
+        assert sorted(log.read_text().split()) == sorted(collected)
+        shards.append(collected)
+    assert sorted(set().union(*shards)) == [f"test_{index}" for index in range(6)]
 
 
 def test_guard_repeats_only_files_in_its_shard(monkeypatch):

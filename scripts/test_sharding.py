@@ -46,7 +46,7 @@ def shard_owners(root: Path, count: int) -> dict[str, int]:
     return assign_files(test_files(root), durations, count)
 
 
-def in_shard(nodeid: str, root: Path = ROOT) -> bool:
+def _shard() -> tuple[int, int]:
     try:
         count = int(os.environ.get("SR_SHARD_COUNT", "1"))
         index = int(os.environ.get("SR_SHARD_INDEX", "0"))
@@ -54,18 +54,40 @@ def in_shard(nodeid: str, root: Path = ROOT) -> bool:
         raise pytest.UsageError("Shard count and index must be integers") from exc
     if count < 1 or not 0 <= index < count:
         raise pytest.UsageError("Require SR_SHARD_COUNT > 0 and 0 <= SR_SHARD_INDEX < count")
+    return count, index
+
+
+def in_shard(nodeid: str, root: Path = ROOT) -> bool:
+    """Whether this shard owns the test's file; one outside the inventory (a deleted file
+    named by a quarantine entry) belongs to shard zero, so exactly one shard reports it."""
+    count, index = _shard()
     if count == 1 or not nodeid:
         return True
     root = root.resolve()
     path = nodeid.split("::", 1)[0]
     if Path(path).is_absolute():
         path = Path(path).relative_to(root).as_posix()
-    return shard_owners(root, count)[path] == index
+    return shard_owners(root, count).get(path, 0) == index
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """Never import a test file another shard owns: every worker of every shard collected
+    the whole suite, about half a minute per backend job, to deselect most of it."""
+    count, index = _shard()
+    if count == 1 or not collection_path.name.startswith("test_"):
+        return None
+    root = config.rootpath.resolve()
+    try:
+        path = collection_path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return None
+    owner = shard_owners(root, count).get(path)
+    return True if owner is not None and owner != index else None
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
-    # Quarantine validates the complete collection before this wrapper partitions it.
+    # Quarantine validates this shard's entries before this wrapper partitions the items.
     yield
     in_shard("")  # Validate configuration even for an empty collection.
     deselected = [item for item in items if not in_shard(item.nodeid, config.rootpath)]

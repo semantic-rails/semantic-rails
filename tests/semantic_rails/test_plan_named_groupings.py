@@ -1302,16 +1302,31 @@ def _in_memory_rows(
     return [tuple(row[columns.index(item)] for item in [*dimensions, alias]) for row in rows]
 
 
-def _in_memory(runtime: Runtime, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
-    """Run SQL on in-memory copies of the order, customer and store tables."""
+# In-memory copies of the order, customer and store tables, made once per module (by seed
+# path) instead of once per comparison: the queries only read them.
+_SEED_COPIES: dict[str, duckdb.DuckDBPyConnection] = {}
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _seed_copies(jaffle: Runtime) -> Iterator[None]:
     with duckdb.connect(":memory:") as connection:
-        seed_path = str(runtime.db_path).replace("'", "''")
+        seed_path = str(jaffle.db_path).replace("'", "''")
         connection.execute(f"ATTACH '{seed_path}' AS seed (READ_ONLY)")
         for table in ["jaffle_order", "jaffle_customer", "jaffle_store"]:
             connection.execute(f"CREATE TABLE {table} AS SELECT * FROM seed.{table}")
-        cursor = connection.execute(sql)
-        return [column[0] for column in cursor.description], cursor.fetchall()
+        connection.execute("DETACH seed")
+        _SEED_COPIES[str(jaffle.db_path)] = connection
+        try:
+            yield
+        finally:
+            del _SEED_COPIES[str(jaffle.db_path)]
+
+
+def _in_memory(runtime: Runtime, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+    """Run SQL on in-memory copies of the order, customer and store tables."""
+
+    cursor = _SEED_COPIES[str(runtime.db_path)].execute(sql)
+    return [column[0] for column in cursor.description], cursor.fetchall()
 
 
 def test_repeated_description_of_one_grouping_stays_ready(

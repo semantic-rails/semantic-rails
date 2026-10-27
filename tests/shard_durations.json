@@ -186,6 +186,7 @@
   "tests/semantic_rails/test_plan_answer_shape.py": 31.709,
   "tests/semantic_rails/test_plan_calendar_windows.py": 36.396,
   "tests/semantic_rails/test_plan_catalog_words.py": 29.791,
+  "tests/semantic_rails/test_plan_clock_spans.py": 0.5,
   "tests/semantic_rails/test_plan_conjoined_metrics.py": 13.924,
   "tests/semantic_rails/test_plan_declared_selection.py": 4.105,
   "tests/semantic_rails/test_plan_dimension_visibility.py": 104.51,
@@ -332,6 +333,7 @@
   "tests/semantic_rails/test_window_filter_sources.py": 17.048,
   "tests/semantic_rails/test_window_inputs.py": 12.902,
   "tests/semantic_rails/test_window_total.py": 20.701,
+  "tests/semantic_rails/test_window_unknown_keys.py": 1.5,
   "tests/semantic_rails/test_withheld_rank.py": 17.308,
   "tests/semantic_rails/test_zero_through.py": 4.422
 }

@@ -10,6 +10,11 @@ from urllib.parse import urlsplit
 
 import pytest
 
+try:
+    from scripts.test_sharding import in_shard
+except ModuleNotFoundError:  # Direct script invocation.
+    from test_sharding import in_shard
+
 QUARANTINE = Path(__file__).resolve().parents[1] / "tests" / "quarantine.toml"
 
 
@@ -99,7 +104,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         collection_error(config, str(exc))
         return
     if config.getoption("--validate-quarantine"):
-        missing = entries.keys() - {item.nodeid for item in items}
+        # A shard collects only the files it owns: each checks the entries in those files,
+        # and together the shards check them all.
+        owned = {nodeid for nodeid in entries if in_shard(nodeid, config.rootpath)}
+        missing = owned - {item.nodeid for item in items}
         if missing:
             collection_error(
                 config, f"quarantine tests no longer exist: {', '.join(sorted(missing))}"

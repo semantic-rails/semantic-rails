@@ -494,7 +494,9 @@ Windowed kinds need `time.grain`:
 ```
 
 They read periods before the ones they return, so a `time.start` (or a `where` on a date) that
-would cut that lookback is refused; an `end` alone runs. See
+would cut that lookback is refused; an `end` alone runs. A `rolling` window takes only `unit` and
+`value`; any other key, such as `exclude_current`, is refused (`INVALID_EXPRESSION_AST`) instead of
+being ignored. See
 [Windows that read earlier periods](QUERY_CALL.md#windows-that-read-earlier-periods).
 
 ### Predicates
@@ -579,7 +581,9 @@ after the base event, not at the end of the 7th calendar day, and `month`, `quar
 windows add calendar months (January 31 plus one month is the last day of February). An event at
 the base instant counts and one exactly at the end does not, like the half-open `time` range. When
 the event times are dates, a 7-day window covers the base date and the 6 dates after it. These are
-MetricFlow's conversion bounds.
+MetricFlow's conversion bounds. The window takes only `unit` and `value`: there are no bound
+options, and any other key is refused (`CONVERSION_WINDOW_REQUIRED`, naming the key) instead of
+being ignored.
 
 Every base event counts in the rate's denominator. Base and converted events match on their
 own key column (`sessions.customer_id` = `orders.customer_id`), so a customer the customers
