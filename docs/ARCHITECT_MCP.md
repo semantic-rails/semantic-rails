@@ -202,7 +202,8 @@ never create, seed or change it.
   declared primary key; no row contradicts a declared one, so an empty table keeps it). Only a
   confirmed key is suggested; otherwise the draft is a
   [row-grain model](PACKAGE_AUTHORING.md#row-grain-models) (`primary_key: []`) with a
-  `<entity>_rows` count of its rows. A declared foreign key is
+  `<entity>_rows` count of its rows, and `suggest_one_per_key` says whether other tables can look
+  its rows up one per a key it repeats. A declared foreign key is
   authoritative. Otherwise a key-like column (`id`, or ending in `_id`, `_key`, `_code`, `_sk`)
   links to each other relation whose declared single-column primary key has the same name and a
   compatible type; values are not compared, so such a link is `medium`, or `low` when several
@@ -224,6 +225,39 @@ never create, seed or change it.
   suggestions return draft `upsert_model` arguments to review before calling `upsert_model`.
   Draft measure expressions use structured column references, so a physical column named like an
   arithmetic expression is read as that column.
+- `suggest_one_per_key`: for a table with no key of its own, whether it can be read one row per a
+  key it repeats ([one row per key](PACKAGE_AUTHORING.md#one-row-per-key)), from its data.
+  - **Candidates.** The column set passed as `key`, else the entity-named and key-like columns
+    (`id`, or ending in `_id`, `_key`, `_code`, `_sk`), each alone, then pairs of them. NULLs are
+    allowed; floats, containers and columns with fewer than two values are not.
+  - **Evidence.** Each candidate in `candidates` has `rows`, `null_key_rows`, `distinct_keys`,
+    `keys_with_several_rows`, `most_rows_per_key`, the other columns `fixed` per key (one
+    non-null value in every key) and those `varying`, each with the number of keys that hold two
+    or more values.
+  - **`status`.**
+    - `keyed`: one column is unique and never null on the whole relation; model the table keyed
+      with `suggest_model`. A composite key found that way is reported as `primary_key` and
+      doesn't stop a proposal, since no table can look a row up by one of its parts.
+    - `proposed`: the candidate with the most fixed columns (then the fewest NULL keys) where
+      the key repeats or is missing on some rows.
+    - `none`: no candidate fixes a column, with the `reason`.
+  - **The proposal** holds:
+    - the `key` and its `evidence`;
+    - `coverage` in words: rows with a key, keys with several rows, rows without a key (no lookup
+      reaches them; the row-grain model still counts them) and the columns that stay row grain;
+    - draft `upsert_model` arguments: `one_per_key: true`, the key, and the fixed columns as
+      dimensions and measures. A fixed column named like a package entity's key becomes its
+      parent in `entities`.
+    - with `project_path`, `link`: the `upsert_relationship` arguments that relate the row-grain
+      model over the same relation to the new entity.
+  - **Names.** The entity is named after the key column (`room_id` gives `room`), with
+    `_one_per_key` when the package already uses that name.
+  - **Large tables.** Above one million rows, candidates are compared on the profile's sample
+    and the proposal's evidence is read again from the whole relation, within the same 60-second
+    deadline.
+  - **Nothing is written.** Apply the drafts with `dry_run`, then `expected_revision`. Nothing
+    checks the data at query time: a column with two values within a key reads NULL on the
+    one-per-key model, which is why the draft leaves such columns off.
 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
 Tables and views backed by data stored in the DuckDB file work normally. A view that needs an
@@ -522,6 +556,7 @@ tool list's size.
 - `describe_table`
 - `profile_columns`
 - `suggest_model`
+- `suggest_one_per_key`
 - `suggest_models_from_dbt`
 - `import_dbt_project`
 

@@ -19,6 +19,7 @@
   "tests/semantic_rails/test_architect_key_inference.py": 9.534,
   "tests/semantic_rails/test_architect_mcp.py": 6.649,
   "tests/semantic_rails/test_architect_mcp_transport_security.py": 21.349,
+  "tests/semantic_rails/test_architect_one_per_key.py": 5.0,
   "tests/semantic_rails/test_architect_relationships.py": 7.738,
   "tests/semantic_rails/test_architect_remove.py": 16.254,
   "tests/semantic_rails/test_architect_replace.py": 1.458,
