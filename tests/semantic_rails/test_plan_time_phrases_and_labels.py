@@ -1223,8 +1223,13 @@ def test_a_lifetime_percentile_cohort_is_refused_not_warned(runtime: Runtime) ->
 # --- a window in the draft must agree with the question's date phrases -------------------
 
 
+# The server clock the relative-window cases read (frozen in the test, so the bounds below,
+# built at collection, can't go stale): noon, so the day is the same in nearby zones.
+WALL_CLOCK = datetime(2017, 8, 21, 12, tzinfo=UTC)
+
+
 def _last_days(days: int) -> dict[str, str]:
-    end = datetime.now(UTC).date()
+    end = WALL_CLOCK.date()
     return {"start": (end - timedelta(days=days)).isoformat(), "end": end.isoformat()}
 
 
@@ -1271,8 +1276,13 @@ def _last_days(days: int) -> dict[str, str]:
     ],
 )
 def test_a_window_agrees_with_the_date_phrases_only_at_the_phrases_start_and_end(
-    runtime: Runtime, text: str, time: dict[str, str], agrees: bool
+    runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    time: dict[str, str],
+    agrees: bool,
 ) -> None:
+    monkeypatch.setattr("semantic_rails.clock.current_time", lambda: WALL_CLOCK)
     query = _caller(time)
     assert (_caller_window_gaps(runtime, text, Call.from_call(query)) == []) is agrees
     # What disagrees consumes none of the phrase, so its numbers are left over.
