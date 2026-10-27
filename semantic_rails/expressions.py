@@ -1039,6 +1039,42 @@ _CONVERSION_WINDOW_SHAPE = {
     "unit": f"<{'|'.join(CONVERSION_WINDOW_UNITS)}>",
     "value": "<positive integer>",
 }
+_UNIT_VALUE = frozenset({"unit", "value"})
+
+
+def _refuse_unknown_window_keys(
+    kind: str,
+    window: Mapping[str, Any],
+    valid: frozenset[str],
+    *,
+    context: str,
+    note: str = "",
+    code: str = "INVALID_EXPRESSION_AST",
+    details: Mapping[str, Any] | None = None,
+) -> None:
+    """Refuse a window key the compiler doesn't read: it would answer the default silently.
+
+    ``exclude_current`` on a rolling window or ``include_end`` on a conversion window would
+    otherwise validate and return the default window's number, as if the request had been
+    understood.
+    """
+    unknown = sorted(str(key) for key in window if key not in valid)
+    if not unknown:
+        return
+    raise SemanticLayerError(
+        code,
+        f"{kind} 'window' has unsupported key(s) {unknown}; it accepts only "
+        f"{', '.join(sorted(valid))}." + (f" {note}" if note else ""),
+        details={
+            "expression_kind": kind,
+            "expression_position": context,
+            "path": "expression.window",
+            "unknown_window_keys": unknown,
+            "valid_window_keys": sorted(valid),
+            **(details or {}),
+        },
+    )
+
 
 # Every mode counts a base event as converted when any converted event of the same
 # entity falls in its window; the mode only picks which converted event is matched.
@@ -1634,6 +1670,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 },
             )
         window = dict(raw_window)
+        _refuse_unknown_window_keys("rolling", window, _UNIT_VALUE, context=context)
         unit = str(window.get("unit", "")).strip()
         try:
             window_value = int(window.get("value", 0) or 0)
@@ -1824,6 +1861,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         time_grain = str(expr.get("time_grain", "")).strip()
         time_alignment = str(expr.get("time_alignment", "")).strip()
         window = dict(expr.get("window", {}) or {})
+        _refuse_unknown_window_keys("metric_predicate", window, _UNIT_VALUE, context=context)
         window_unit = str(window.get("unit", "")).strip()
         window_value = int(window.get("value", 0) or 0)
         if not entity:
@@ -2022,6 +2060,9 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         if has_anchor and has_window:
             assert isinstance(raw_anchor, dict)  # narrowed by has_anchor check
             assert isinstance(raw_window, dict)  # narrowed by has_window check
+            _refuse_unknown_window_keys(
+                "scoped_aggregate", raw_window, _UNIT_VALUE | {"direction"}, context=context
+            )
             anchor_role = str(raw_anchor.get("temporal_role", "") or "").strip()
             if not anchor_role:
                 raise SemanticLayerError(
@@ -2168,6 +2209,19 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 },
             )
         window = dict(raw_window)
+        _refuse_unknown_window_keys(
+            "conversion",
+            window,
+            _UNIT_VALUE,
+            context=context,
+            note=(
+                "A converted event matches when it is at or after the base event and before "
+                "the base event plus the window."
+            ),
+            # The conversion window's own error family, so its recovery shape still applies.
+            code="CONVERSION_WINDOW_REQUIRED",
+            details={"suggested_shape": dict(_CONVERSION_WINDOW_SHAPE)},
+        )
         unit = str(window.get("unit", "")).strip()
         try:
             window_value = int(window.get("value", 0) or 0)
