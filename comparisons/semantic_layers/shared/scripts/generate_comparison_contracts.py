@@ -148,7 +148,7 @@ LAYER_META: dict[str, dict[str, Any]] = {
         "summary_path": RESULTS_ROOT / "semantic_rails" / "summary.json",
         "unsupported_path": None,
         "strengths": [
-            "Every question runs through the Semantic Rails runtime without helper views or handwritten SQL; q11 and q12 read precomputed customer lifetime columns from the source table.",
+            "Every question runs through the Semantic Rails runtime without helper views or handwritten SQL; q11 and q12 compute each customer's lifetime order count and spend from orders at query time.",
             "Temporal-valid joins, conversion metrics, authored metric predicates, and query-time metric filters stay first-class.",
         ],
         "weaknesses": [
@@ -270,12 +270,12 @@ LAYER_META: dict[str, dict[str, Any]] = {
                 "sales.orders_from_customers_with_10plus_orders_in_period",
             ),
             "q11_repeat_customer_orders_by_store_by_month": (
-                "comparisons/semantic_layers/semantic_rails/package/metrics/extensions/advanced_metrics.yml",
-                "sales.repeat_customer_orders",
+                "comparisons/semantic_layers/semantic_rails/queries/q11_repeat_customer_orders_by_store_by_month.json",
+                '"where": [',
             ),
             "q12_orders_by_month_with_lifetime_spend_500_filter": (
                 "comparisons/semantic_layers/semantic_rails/queries/q12_orders_by_month_with_lifetime_spend_500_filter.json",
-                '"kind": "metric_predicate"',
+                '"where": [',
             ),
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": (
                 "comparisons/semantic_layers/semantic_rails/queries/q13_daily_orders_from_customers_with_10plus_orders_in_month.json",
@@ -298,8 +298,8 @@ LAYER_META: dict[str, dict[str, Any]] = {
             "q08_revenue_by_customer_segment_as_of_order_time": "Temporal-valid customer history is modeled directly on the order-to-history edge.",
             "q09_session_to_order_conversion_7d": "The 7-day conversion window is expressed as a first-class conversion metric.",
             "q10_orders_from_customers_with_10plus_orders_in_month": "Expressed as an authored metric predicate over customer-month order counts.",
-            "q11_repeat_customer_orders_by_store_by_month": "Expressed as an authored metric predicate over the precomputed `lifetime_order_count` customer column.",
-            "q12_orders_by_month_with_lifetime_spend_500_filter": "Applied at query time through `metric_filters.expression` over the precomputed `lifetime_spend_cents` customer column.",
+            "q11_repeat_customer_orders_by_store_by_month": "A query-time customer predicate over all time computes each customer's order count from orders; the precomputed rollup isn't read.",
+            "q12_orders_by_month_with_lifetime_spend_500_filter": "A query-time customer predicate over all time computes each customer's revenue from orders; the precomputed rollup isn't read.",
             "q13_daily_orders_from_customers_with_10plus_orders_in_month": "The customer-month predicate is evaluated at month grain while the query returns day grain.",
             "q14_revenue_from_customers_with_10plus_orders_same_store_month": "The predicate inherits the outer store grouping through the entity graph.",
             "q15_same_store_session_to_order_conversion_7d": "Same-store matching is expressed as a first-class conversion property constraint.",

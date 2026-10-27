@@ -98,8 +98,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 5.723,
-      "compile_ms": 0.448,
+      "cache_lookup_ms": 1.158,
+      "compile_ms": 0.505,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -124,6 +124,7 @@
                   "id": "relationship.jaffle_order_lifecycle_customer_history",
                   "join_semantics": "",
                   "label": "Order lifecycle to Customer history",
+                  "link": false,
                   "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
@@ -234,6 +235,7 @@
               "id": "relationship.jaffle_order_lifecycle_customer_history",
               "join_semantics": "",
               "label": "Order lifecycle to Customer history",
+              "link": false,
               "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
               "rollup_safe_aggregations_reverse": [],
               "safety": "requires_rewrite",
@@ -383,6 +385,7 @@
                     "id": "relationship.jaffle_order_lifecycle_customer_history",
                     "join_semantics": "",
                     "label": "Order lifecycle to Customer history",
+                    "link": false,
                     "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
@@ -493,6 +496,7 @@
                 "id": "relationship.jaffle_order_lifecycle_customer_history",
                 "join_semantics": "",
                 "label": "Order lifecycle to Customer history",
+                "link": false,
                 "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                 "rollup_safe_aggregations_reverse": [],
                 "safety": "requires_rewrite",
@@ -588,6 +592,7 @@
                     "id": "relationship.jaffle_order_lifecycle_customer_history",
                     "join_semantics": "",
                     "label": "Order lifecycle to Customer history",
+                    "link": false,
                     "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
@@ -942,6 +947,7 @@
                     "id": "relationship.jaffle_order_lifecycle_customer_history",
                     "join_semantics": "",
                     "label": "Order lifecycle to Customer history",
+                    "link": false,
                     "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
@@ -1141,6 +1147,7 @@
                       "id": "relationship.jaffle_order_lifecycle_customer_history",
                       "join_semantics": "",
                       "label": "Order lifecycle to Customer history",
+                      "link": false,
                       "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "requires_rewrite",
@@ -1845,6 +1852,7 @@
                   "id": "relationship.jaffle_order_lifecycle_customer_history",
                   "join_semantics": "",
                   "label": "Order lifecycle to Customer history",
+                  "link": false,
                   "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
@@ -1955,6 +1963,7 @@
               "id": "relationship.jaffle_order_lifecycle_customer_history",
               "join_semantics": "",
               "label": "Order lifecycle to Customer history",
+              "link": false,
               "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
               "rollup_safe_aggregations_reverse": [],
               "safety": "requires_rewrite",
@@ -2050,6 +2059,7 @@
                   "id": "relationship.jaffle_order_lifecycle_customer_history",
                   "join_semantics": "",
                   "label": "Order lifecycle to Customer history",
+                  "link": false,
                   "name": "jaffle.OrderLifecycle_TO_jaffle.CustomerHistory",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
@@ -2500,7 +2510,7 @@
       ]
     }
   ],
-  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
   "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
@@ -2934,6 +2944,6 @@
     }
   ],
   "window": {
-    "now": "2026-10-14T20:11:47.620015Z"
+    "now": "2026-10-27T03:46:01.570699Z"
   }
 }
