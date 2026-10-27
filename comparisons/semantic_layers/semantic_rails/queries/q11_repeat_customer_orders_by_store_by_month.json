@@ -1,9 +1,25 @@
 {
   "select": [
-    "metric.jaffle.repeat_customer_orders"
+    {
+      "expression": "metric.jaffle.orders",
+      "as": "repeat_customer_orders"
+    }
   ],
   "group_by": [
     "dimension.jaffle_store_name"
+  ],
+  "where": [
+    {
+      "entity": "entity.jaffle_customer",
+      "having": [
+        {
+          "field": "measure.jaffle.order_count",
+          "op": "gt",
+          "value": 1
+        }
+      ],
+      "over": "all_time"
+    }
   ],
   "time": {
     "temporal_role": "temporal_role.jaffle_order_time",

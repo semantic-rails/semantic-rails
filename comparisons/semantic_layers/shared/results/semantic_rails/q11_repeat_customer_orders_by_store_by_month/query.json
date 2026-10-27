@@ -13,10 +13,26 @@
     }
   ],
   "select": [
-    "metric.jaffle.repeat_customer_orders"
+    {
+      "as": "repeat_customer_orders",
+      "expression": "metric.jaffle.orders"
+    }
   ],
   "time": {
     "grain": "month",
     "temporal_role": "temporal_role.jaffle_order_time"
-  }
+  },
+  "where": [
+    {
+      "entity": "entity.jaffle_customer",
+      "having": [
+        {
+          "field": "measure.jaffle.order_count",
+          "op": "gt",
+          "value": 1
+        }
+      ],
+      "over": "all_time"
+    }
+  ]
 }
