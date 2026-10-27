@@ -90,11 +90,11 @@ jobs:
           cache-dependency-glob: uv.lock
       - if: matrix.python-version != '3.12'
         run: uv sync --group dev --locked
-      - name: Install ADBC extras
+      - name: Install ADBC and Snowflake extras
         if: matrix.python-version == '3.12'
         run: |
-          uv sync --group dev --extra snowflake-adbc --extra postgres --locked
-          uv run --no-sync python -c "import pyarrow, adbc_driver_manager.dbapi, adbc_driver_postgresql.dbapi"
+          uv sync --group dev --extra snowflake --extra snowflake-adbc --extra postgres --locked
+          uv run --no-sync python -c "import pyarrow, adbc_driver_manager.dbapi, adbc_driver_postgresql.dbapi, snowflake.connector"
       - run: uv run python scripts/changelog_fragments.py check
       - run: uv run pytest -q tests/semantic_rails -n auto --dist worksteal --validate-quarantine --junitxml=backend-results.xml
       - name: Verify DuckDB confinement tests ran without skips

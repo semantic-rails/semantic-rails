@@ -741,16 +741,12 @@ def test_jaffle_reference_package_has_release_authoring_profile():
     assert [(w["code"], w["details"]["measure_id"]) for w in non_collision_warnings] == [
         ("STOCK_SNAPSHOT_KEY_MISSING_CLOCK", "measure.jaffle.lifetime_spend_usd")
     ]
-    # Its undecided join routes are reviewed in test_route_census.py.
-    (routes,) = [w for w in report["warnings"] if w["code"] == "ROUTES_UNDECIDED"]
-    assert routes["details"]["count"] == len(report["route_census"]["undecided"])
-    crossings = [w for w in report["warnings"] if w["code"] == "ROUTE_PASS_THROUGH"]
-    assert len(crossings) == len(report["route_census"]["pass_through"]) == 5
-    assert [w["object_ids"] for w in crossings] == [
-        [row["source_entity"], row["target_entity"]]
-        for row in report["route_census"]["pass_through"]
-    ]
-    assert all(w["severity"] == "warning" for w in crossings)
+    # Its undecided join routes and crossings are reviewed in test_route_census.py. None of its
+    # metrics, examples or tests walks one, so the census lists them and nothing warns.
+    census = report["route_census"]
+    assert (len(census["undecided"]), len(census["pass_through"])) == (18, 5)
+    assert not any(row["needed_by"] for row in [*census["undecided"], *census["pass_through"]])
+    assert not [w for w in report["warnings"] if w["code"].startswith("ROUTE")]
     collision_warnings = [
         w
         for w in report["warnings"]
@@ -839,6 +835,22 @@ _STANDARD_OPTIONS = {
             {"kind": "snowflake_native", "options": _NATIVE_ENV},
             "snowflake_native direct connection",
         ),
+        (
+            {
+                "kind": "snowflake_native",
+                "name": "prod_native",
+                "options": {"cert_revocation_check_mode": "Enabled"},
+            },
+            {"options": {"cert_revocation_check_mode": "Enabled"}},
+        ),
+        (
+            {
+                "kind": "snowflake_native",
+                "name": "prod_native",
+                "options": {"cert_revocation_check_mode": "strict"},
+            },
+            "'cert_revocation_check_mode' must be one of: advisory, enabled, disabled",
+        ),
         ({"kind": "snowflake_cli"}, "snowflake_cli packages must declare package.connection.name"),
         (
             {
@@ -855,6 +867,8 @@ _STANDARD_OPTIONS = {
         "native-secret-env",
         "native-direct",
         "native-without-auth",
+        "native-revocation-mode",
+        "native-unknown-revocation-mode",
         "cli-without-name",
         "cli-unsupported-option",
     ],

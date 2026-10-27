@@ -121,6 +121,17 @@ returns canonical credential keys without using process environment variables
 or files. If the provider retains revealed values, it may implement `clear()`;
 `adapter.close()` calls it best-effort and drops the provider reference.
 
+### Snowflake revocation mode is process-wide
+
+The Snowflake connector keeps its certificate revocation settings in process
+globals. Each new `snowflake_native` connection replaces them, and every later
+TLS handshake in the process, including result downloads and re-logins for
+other connections, uses the most recent connection's
+`cert_revocation_check_mode`. A host serving several packages or tenants from
+one process should give them all the same mode, or keep the option out of
+caller-controlled configuration. The default is `advisory` (see
+[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md#snowflake-certificate-revocation-checks)).
+
 New hosting requirements should first become generic, tested engine seams and
 then be added to this facade. Product-specific identity, tenancy, billing,
 deployment, and secret-storage code does not belong in the engine.

@@ -798,6 +798,10 @@ def _planned_row(
         ask = {}
     if ask and not validation["ok"]:
         return _blocked_row(merged_draft, pattern, ask, blocked, clarify=True)
+    if pattern != "catalog_fallback" and (route := _route_ask(runtime, validation)) is not None:
+        # The question's pieces connect by two or more routes: ask which one it means, after
+        # the draft's own question and never on a placeholder draft.
+        return _blocked_row(merged_draft, pattern, route, blocked, clarify=True)
     return {
         "status": "ok" if validation["ok"] else "low_confidence",
         "draft": merged_draft,
@@ -870,6 +874,63 @@ def _child_scope_ask(query: Call, validation: dict[str, Any]) -> dict[str, Any] 
             {"kind": "choose_child_scope", "message": "Send the call of the reading you mean."}
         ],
     }
+
+
+def _route_ask(runtime: Any, validation: dict[str, Any]) -> dict[str, Any] | None:
+    """The engine's route question (``AMBIGUOUS_PATH``) as plan's, when a route fork is all
+    that refuses the draft and some reading runs: which route the question means, in business
+    words, each option the draft with that route in its ``routes`` (this question only) and the
+    ``graph.path_preferences`` row that makes it the package default (``decision``). Only the
+    readings the engine answers are offered."""
+
+    errors = validation.get("errors") or []
+    if validation.get("ok") or len(errors) != 1 or errors[0].get("code") != "AMBIGUOUS_PATH":
+        return None
+    clarification = (errors[0].get("details") or {}).get("clarification") or {}
+    question = str(clarification.get("question") or "")
+    why: dict[str, Any] = {
+        "code": "AMBIGUOUS_PATH",
+        "details": {
+            "clarification": {"question": question},
+            "options": [
+                {
+                    "id": row["id"],
+                    "reads": row["meaning"],
+                    "call": row["query"],
+                    "decision": row["decision"],
+                }
+                for row in clarification.get("options") or []
+                if isinstance(row, dict) and "query" in row
+            ],
+        },
+        "recovery_hints": [
+            {
+                "kind": "choose_route",
+                "message": (
+                    "Ask which reading the question means and send that option's call: its "
+                    "route answers this question only. To answer every question this way, "
+                    "record the option's decision as a graph.path_preferences row."
+                ),
+            }
+        ],
+    }
+    offered = [option["reads"] for option in why["details"]["options"]]
+    why = _with_ready_options(runtime, why)
+    readings = [option["reads"] for option in why["details"]["options"]]
+    if not readings:
+        return None
+    message = (
+        f"{question.removesuffix('?')}: {', or '.join(readings)}? Each reading counts different "
+        "rows, and which one the question means is a business definition, so plan asks instead "
+        "of choosing."
+        if len(readings) > 1
+        else f"{question} Only one reading runs: {readings[0]}. Which reading the question means "
+        "is a business definition, so plan asks before using it."
+    )
+    if unrunnable := [reads for reads in offered if reads not in readings]:
+        message += f" This question can't be answered as {', or as '.join(unrunnable)}."
+        why["details"]["unrunnable"] = unrunnable
+    return {"code": why.pop("code"), "message": message, **why}
 
 
 def _with_ready_options(

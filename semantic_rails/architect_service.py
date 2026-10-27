@@ -574,8 +574,10 @@ DECIDE_ROUTES_ACTION = (
     "decision to record_route_decision to record the package default."
 )
 NEW_PROJECT_ROUTES_ACTION = (
-    "After relating entities, decide the undecided join routes that project_status lists in "
-    f"route_census.undecided. {DECIDE_ROUTES_ACTION}"
+    "After relating entities and adding examples, decide the join routes they need: "
+    "project_status lists them first in route_census.undecided, each naming what needs it in "
+    "needed_by. Leave the others: a question that needs one is asked which route it means. "
+    f"{DECIDE_ROUTES_ACTION}"
 )
 
 

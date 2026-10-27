@@ -6,7 +6,21 @@ from typing import Any
 from ..answer import MINIMAL_ROUTE_KEYS
 from ..ast import PERIOD_PARTIAL, is_child_group, time_output_alias
 from ..dialects import dialect_for_warehouse
-from ..expressions import collect_object_references, expr_to_dict
+from ..expressions import (
+    AggregateExpr,
+    ArithmeticExpr,
+    CallExpr,
+    CaseExpr,
+    ConditionalAggregateExpr,
+    LiteralExpr,
+    MeasureRefExpr,
+    MetricRecipeRefExpr,
+    OffsetWindowExpr,
+    ScopedAggregateExpr,
+    collect_object_references,
+    expr_to_dict,
+    parse_semantic_expression,
+)
 
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
 _VALID_SQL_PROFILES: tuple[str, ...] = ("audit", "compact", "debug", "off")
@@ -234,6 +248,66 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
             }
         )
     return columns
+
+
+_COUNTING = frozenset({"count", "count_distinct"})
+
+
+def _whole_literal(expr: Any) -> bool:
+    """Whether every value ``expr`` gives a row is a whole-number literal or NULL: ``1``, or a
+    CASE whose branches are (``CASE WHEN … THEN 1 ELSE 0 END``). Its sum counts rows."""
+    if isinstance(expr, LiteralExpr):
+        value = expr.value
+        return value is None or (isinstance(value, int) and not isinstance(value, bool))
+    if isinstance(expr, CaseExpr):
+        branches = [row.then for row in expr.whens] + [expr.else_expr or LiteralExpr(None)]
+        return all(isinstance(row, LiteralExpr) and _whole_literal(row) for row in branches)
+    return False
+
+
+def counted_outputs(config: Any, compiled: dict[str, Any]) -> set[str]:
+    """The select aliases the query makes counts: a count or distinct count, a sum of a
+    whole-number literal (a row count, ``expr: 1``), or a sum, difference, product, running
+    total, period-to-date or prior value of counts, directly or through a metric. The result
+    encodes them as integers (``result_rows``). The engine decides this from the query, never
+    from an authored ``value_type``: a sum of a stored column keeps the driver's type."""
+    measures = {row.id: row for row in config.measures}
+    recipes = {row.id: row for row in config.metric_recipes}
+
+    def counts(expr: Any) -> bool:
+        if isinstance(expr, MeasureRefExpr | AggregateExpr | ScopedAggregateExpr):
+            measure = measures.get(expr.measure)
+            aggregation = str(
+                expr.aggregation or getattr(measure, "default_aggregation", "")
+            ).lower()
+            return aggregation in _COUNTING or (
+                aggregation == "sum" and measure is not None and _whole_literal(measure.expr)
+            )
+        if isinstance(expr, ConditionalAggregateExpr):
+            return expr.aggregation.lower() in _COUNTING
+        if isinstance(expr, MetricRecipeRefExpr):
+            recipe = recipes.get(expr.metric_recipe)
+            return recipe is not None and counts(recipe.expression)
+        if isinstance(expr, ArithmeticExpr):
+            return (
+                expr.op in {"add", "subtract", "multiply"}
+                and counts(expr.left)
+                and counts(expr.right)
+            )
+        if isinstance(expr, OffsetWindowExpr):
+            return expr.aggregate in {"sum", "lag"} and counts(expr.input)
+        if isinstance(expr, CallExpr):
+            return expr.name.upper() == "COALESCE" and all(counts(arg) for arg in expr.args)
+        if isinstance(expr, LiteralExpr):
+            return isinstance(expr.value, int) and not isinstance(expr.value, bool)
+        return False
+
+    query = dict(compiled["explain"].normalized_query or {})
+    return {
+        str(item.get("as", "") or "")
+        for item in list(query.get("select", []) or [])
+        if counts(parse_semantic_expression(dict(item.get("expression") or {}), context="query"))
+    }
 
 
 def _sql_complexity(select: Any) -> dict[str, int]:

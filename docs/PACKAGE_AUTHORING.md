@@ -574,7 +574,10 @@ refuse with `RESULT_VALUE_UNSUPPORTED`; out-of-range nanosecond timestamps refus
 with `QUERY_EXECUTION_ERROR`.
 Out-of-range timestamps such as `9999-12-31` refuse; cast those columns to
 `TIMESTAMP_*(6)` or `DATE` in the model.
-With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decimal`.
+With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decimal`, except
+counts (a count, a row count such as `expr: 1`, and running totals of them), which come back as
+integers; a sum of a stored count column stays `decimal`
+([result values](QUERY_CALL.md#result-values)).
 Account and user may be literals (`account`, `user`) or env-indirected
 (`account_env`, `user_env`); the optional key passphrase may use
 `private_key_passphrase_env` or `private_key_passphrase_file`.
@@ -624,6 +627,23 @@ BigQuery sets a server job deadline to the read wait when no request limit is
 supplied and attempts cancellation if result waiting times out. Athena cancels
 an unfinished query before returning its polling timeout; its request limit
 remains best-effort, with the client polling margin and workgroup server limits.
+
+### Snowflake certificate revocation checks
+
+`snowflake_native` connections check Snowflake's TLS certificates against the
+certificate authority's revocation lists (CRLs). The default,
+`cert_revocation_check_mode: advisory`, refuses a revoked certificate but still
+connects when a revocation list cannot be fetched, so a revocation-server
+outage does not stop queries. Set `enabled` to refuse a connection whenever
+revocation cannot be confirmed, or `disabled` to turn the check off; any other
+value fails validation. Certificate and hostname validation apply in every
+mode. A named profile that sets `cert_revocation_check_mode` keeps it unless
+the package sets the option. Revocation lists are cached in memory, not on
+disk, so a read-only home directory does not affect connections. The
+connector applies the most recent connection's mode to the whole Python
+process; see [docs/EMBEDDING.md](EMBEDDING.md#snowflake-revocation-mode-is-process-wide)
+when one process serves several packages. `snowflake_cli` follows the Snow
+CLI's own configuration.
 
 ### Secrets
 
@@ -1216,6 +1236,7 @@ graph:
       temporal_validity:                        # <model relation name>.<column>
         valid_from: shop_customer_history.effective_from
         valid_to: shop_customer_history.effective_to
+        # as_of: end_of_day                     # read at the end of the row's day (default: time)
 ```
 
 A query that joins into the table holding the window needs a `time`, so each row reads the
@@ -1225,6 +1246,31 @@ count a row once per version. A hop out of that table (`customer_history → cus
 reads one version per row and needs no time. The validity predicate applies only when joining
 into the versioned table: an outgoing lookup keeps the existing version's dimensions even
 when the query clock is its `valid_to`, including a NULL end time on an open version.
+`as_of` says when each row reads its version, on every hop into the history through that
+relationship (any query, route or metric that enters the window by it). `time` (the default)
+reads the version valid at the row's time. `end_of_day` reads the version in force at the end
+of the row's day on the query's clock (the time role's `timezone`, the day `time.grain: day`
+buckets the row in): one that starts before the next midnight and hasn't ended by it. Use it when
+the history is written a moment after the row it describes, as billing writes a workspace's plan
+seconds after the workspace: read at the row's own time, no version exists yet, so every new
+workspace would read an empty Plan. The day's last version is the one read: a workspace that
+signs up on Pro and moves to Builder the same day reads Builder, and one whose only version ends
+that day reads none. Route readings and `NULL_PRESERVING_HISTORY` say "valid at the end of the
+day". An unknown key is refused, and so is `as_of` with neither `valid_from` nor `valid_to`.
+
+The end of the day is a wall-clock timestamp in the role's zone, compared with the validity
+columns as the row's own time is:
+
+- DuckDB, MotherDuck, DuckLake and Postgres: checked, for naive and zone-aware columns (the
+  query runs in the role's zone, as above).
+- Snowflake, Databricks, Athena and ClickHouse (not yet run on a live warehouse): the end of the
+  day is naive, so it compares as intended with naive validity columns stored in the row clock's
+  zone. A zone-aware validity column (Snowflake `TIMESTAMP_LTZ`/`TIMESTAMP_TZ`,
+  Databricks `TIMESTAMP`) is compared in the session's zone, which can move the end of the day
+  by the zones' offset: store naive timestamps and declare `column_timezone:`, as for bucketing.
+- BigQuery: the end of the day is a `DATETIME`, which BigQuery won't compare with a `TIMESTAMP`
+  validity column, so the query fails rather than answer. Use `DATETIME` validity columns there,
+  or `as_of: time`.
 A metric predicate is stricter: when the path from
 its input to its entity, context or filters crosses a time-valid relationship in either
 direction, it needs a time of its own (a contextual predicate takes the query's `time`).
@@ -2311,8 +2357,9 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
-- Entity pairs a question can need have two or more routes and no recorded
-  decision (`ROUTES_UNDECIDED`; see [the route census](#route-census-and-route-changes)).
+- Entity pairs the package's own metrics, examples or tests walk have two or more
+  routes and no recorded decision (`ROUTES_UNDECIDED`; see
+  [the route census](#route-census-and-route-changes)).
 
 ### Metrics a measure published implicitly
 
@@ -2660,6 +2707,7 @@ Four guard rails back this up:
 - **Route census** — parsing the package (`semantic-rails check`, `validate`)
   lists every entity pair a question can need that is still refused for want of
   a decision, role-playing keys included, and warns once with `ROUTES_UNDECIDED`
+  about those the package's own metrics, examples and tests walk
   ([below](#route-census-and-route-changes)).
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. a customer's region recorded as
@@ -2680,29 +2728,39 @@ guard comparisons resolve every pair using package decisions, independently
 of any active query route overrides.
 
 **Census.** The parse report (`semantic-rails check`, `validate`, and
-Architect's `project_status`) carries `route_census`:
+Architect's `project_status`) carries `route_census`. A large warehouse has
+thousands of entity pairs with two or more routes, and most of them no question
+ever asks about, so the census also says which ones the package's own queries
+walk: each metric alone (one that reads periods with a time block), and each
+example's and test's query (a test that expects a refusal walks none). Each is
+compiled, never run; a query refused at a route fork walks that fork, then the
+rest of the query with the fork's first route. Only those pairs warn.
 
-- `undecided`: `[{source_entity, target_entity, details}]`, the pairs refused
+- `undecided`: `[{source_entity, target_entity, needed_by, details}]`, the pairs refused
   with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
   meaning and `details.clarification.options[*].decision`, the row that records
-  it). One `ROUTES_UNDECIDED` warning gives
-  their `count` and `pairs`, and `first_pair_rows`, the rows that would decide
-  the first pair. Record the route each pair means as a
-  `graph.path_preferences` row before a question needs it: write it in
-  `graph.yml` (`semantic-rails project validate` prints the first pair's rows
-  to choose from) or with Architect's `record_route_decision`. The warning is
-  advisory and never blocks a promotion. Leaving a pair undecided is a valid end state: the
-  engine asks which route a question means when one needs it. Don't record a meaning the
-  business doesn't hold.
+  it) and `needed_by` the ids of the queries that walk the pair
+  (`metric.<id>`, `example.<id>`, `test.<id>`); pairs some query needs come first. One
+  `ROUTES_UNDECIDED` warning gives the needed pairs' `count` and `pairs` (with
+  `needed_by`), `first_pair_rows`, the rows that would decide the first one, and
+  `unwalked`, how many other pairs are undecided. Record the route each needed pair means
+  as a `graph.path_preferences` row: write it in `graph.yml` (`semantic-rails project
+  validate` prints the first pair's rows to choose from) or with Architect's
+  `record_route_decision`. The warning is advisory and never blocks a promotion. A pair no
+  query walks needs nothing now and never warns: a question that needs one is asked which
+  route it means (`plan` returns that question with a ready call per route), never
+  answered by a guess. Leaving a pair undecided is a valid end state. Don't record a
+  meaning the business doesn't hold.
 - `assumed`: `[{source_entity, target_entity, relationship_path, basis}]`, the
   pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
   another.
-- `pass_through`: `[{source_entity, target_entity, message, details}]`, resolved
-  only or inherited routes crossing undeclared child rows. The parse report and
-  `project_status` carry each as a `ROUTE_PASS_THROUGH` warning on the two entities,
-  with the same meaning, basis and fixes as an answer. These pairs are already
-  resolved and do not need a route decision.
+- `pass_through`: `[{source_entity, target_entity, needed_by, message, details}]`,
+  resolved only or inherited routes crossing undeclared child rows. The parse report and
+  `project_status` carry each one a query of the package walks as a `ROUTE_PASS_THROUGH`
+  warning on the two entities, with the same meaning, basis and fixes as an answer; any
+  other is disclosed by the answer that reads it. These pairs are already resolved and do
+  not need a route decision.
 
 **Route changes.** A new relationship can give a pair a second route, so a
 question that answered before is refused, or now takes the start's own key.

@@ -665,10 +665,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     allowed_directions=list(
                         join_spec.get("traversal", ["forward", "reverse"]) or ["forward", "reverse"]
                     ),
-                    temporal_validity={
-                        str(k): str(v)
-                        for k, v in dict(join_spec.get("temporal_validity", {}) or {}).items()
-                    },
+                    temporal_validity=_temporal_validity(join_spec, rel_id, path),
                     target_key_type=str(join_spec.get("target_key_type", "primary") or "primary"),
                     join_semantics=str(join_spec.get("join_semantics", "")),
                     rollup_safe_aggregations_reverse=_ensure_list(
@@ -1338,6 +1335,40 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     _validate_policy_scopes(config, path=path)
     validate_expression_calls(config, dialect_for_warehouse(config.package.warehouse))
     return config
+
+
+_VALIDITY_KEYS = ("valid_from", "valid_to", "as_of")
+_VALIDITY_AS_OF = ("time", "end_of_day")
+
+
+def _temporal_validity(join_spec: dict[str, Any], rel_id: str, path: str) -> dict[str, str]:
+    """A relationship's validity window: its ``valid_from`` and ``valid_to`` columns, and
+    ``as_of``, the moment each row reads a version at: its own ``time`` (the default), or the
+    ``end_of_day`` of its day on the query's clock."""
+    window = {
+        str(key): str(value)
+        for key, value in dict(join_spec.get("temporal_validity", {}) or {}).items()
+    }
+    unknown = sorted(set(window) - set(_VALIDITY_KEYS))
+    as_of = window.get("as_of", "time")
+    problem = (
+        f"has unknown key '{unknown[0]}' (it takes {', '.join(_VALIDITY_KEYS)})"
+        if unknown
+        else f"as_of must be 'time' or 'end_of_day', not '{as_of}'"
+        if as_of not in _VALIDITY_AS_OF
+        else "has as_of but no valid_from or valid_to: as_of says when a row reads a version, "
+        "and the window's columns say where each version starts and ends"
+        if "as_of" in window
+        and not any(window.get(key, "").strip() for key in ("valid_from", "valid_to"))
+        else ""
+    )
+    if problem:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{path}: {rel_id} temporal_validity {problem}",
+            details={"relationship": rel_id, "path": "temporal_validity"},
+        )
+    return window
 
 
 def _load_fields(

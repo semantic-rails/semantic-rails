@@ -94,6 +94,81 @@ def test_runtime_preserves_container_integers(
         runtime.close()
 
 
+ORDERS = "measure.jaffle.order_count"
+COUNTS = {
+    "count": ORDERS,
+    "count metric": "metric.sales.repeat_customer_orders",
+    "running count": {"kind": "cumulative", "input": ORDERS},
+    "difference of counts": {
+        "kind": "arithmetic",
+        "op": "subtract",
+        "left": ORDERS,
+        "right": "measure.jaffle.large_order_count",
+    },
+    "prior count": {
+        "kind": "prior_period",
+        "input": ORDERS,
+        "offset": {"unit": "month", "value": 1},
+    },
+}
+
+
+@pytest.mark.parametrize("expression", COUNTS.values(), ids=COUNTS.keys())
+@pytest.mark.parametrize("driver_value", [Decimal("6"), Decimal("6.000")])
+def test_a_count_a_driver_widens_to_decimal_is_an_integer(
+    runtime_factory, monkeypatch, expression, driver_value
+) -> None:
+    """Postgres sums bigint counts as NUMERIC (an aggregate table's counts, a running total),
+    and Snowflake's high-precision Arrow results type every NUMBER(18,0) count as a decimal.
+    A count is a whole number either way, so it comes back as one, not as decimal text."""
+    rows = [
+        {"period": date(2026, 9, 1), "orders": driver_value},
+        {"period": date(2026, 10, 1), "orders": None},
+    ]
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: rows)
+    query = {
+        "select": [{"expression": expression, "as": "orders"}],
+        "time": {
+            "temporal_role": "temporal_role.jaffle_order_time",
+            "grain": "month",
+            "end": "2026-11-01",
+        },
+    }
+    try:
+        result = runtime.query(query, now="2026-11-01T00:00:00Z", **MINIMAL)
+        assert [row["orders"] for row in result["rows"]] == [6, None]
+        assert result["column_types"]["orders"] == {"type": "integer"}
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("expression", "driver_value", "expected"),
+    [
+        ("measure.jaffle.revenue_usd", Decimal("6.000"), "6"),
+        ("metric.sales.aov_usd", Decimal("6"), "6"),
+        (ORDERS, Decimal("6.5"), "6.5"),
+    ],
+    ids=["sum", "ratio", "count with a fraction"],
+)
+def test_other_decimals_keep_their_exact_text(
+    runtime_factory, monkeypatch, expression, driver_value, expected
+) -> None:
+    """Only a count becomes an integer: a sum or ratio keeps its decimal text, and a count
+    the warehouse returned with a fraction is kept exactly rather than rounded."""
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(
+        "semantic_rails.runtime._adapter_query", lambda *args, **kwargs: [{"value": driver_value}]
+    )
+    try:
+        result = runtime.query({"select": [{"expression": expression, "as": "value"}]}, **MINIMAL)
+        assert result["rows"] == [{"value": expected}]
+        assert result["column_types"] == {"value": {"type": "decimal"}}
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     "value",
     [

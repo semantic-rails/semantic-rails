@@ -210,12 +210,12 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         rows="steps",
     ),
 }
-# A typed mapping's keys the engine reads: the export hint (as the boolean the engine tests)
-# and a historical join's physical columns.
+# A typed mapping's keys the engine reads: the export hint (as the boolean the engine tests),
+# and a historical join's physical columns and the moment it reads a version at.
 TYPED_KEYS: dict[str, dict[str, Callable[[Any], Any]]] = {
     "meta": {"mnpi": bool},
     "operational": {"mnpi": bool},
-    "temporal_validity": {"valid_from": str, "valid_to": str},
+    "temporal_validity": {"valid_from": str, "valid_to": str, "as_of": str},
 }
 # A policy's own words, replaced by its action's engine text when they may name a hidden object.
 POLICY_TEXT = ("rule", "rationale", "description")
