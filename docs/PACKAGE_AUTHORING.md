@@ -2421,7 +2421,14 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
   of them is not in the set;
 - a distribution's per-entity values (its `over`): a row whose lookup of the entity finds
   no match belongs to no entity, never to a NULL entity of its own;
-- conversions (their match keys and properties);
+- a conversion's converted events (their lookups and properties) and the dimensions a
+  query's metric filter on the conversion is matched on. A conversion's base events are its
+  rate's denominator, so they keep their rows, in a metric filter's own query too: an event
+  with no match key or no constant-property row counts and converts nothing. Both sides
+  match on the events' own key column (for example `sessions.customer_id` =
+  `orders.customer_id`), so a customer the customers table doesn't hold yet still converts.
+  On a dialect without outer lookup joins (ClickHouse), a conversion whose base events need
+  a lookup is refused with `CONVERSION_NOT_SUPPORTED`;
 - a dimension a rollup of the measure's model holds (below). That rule covers every
   dimension any rollup of the model holds, even at a grain the rollup can never answer,
   so those rows are dropped for that dimension however the query is grouped. A rollup of

@@ -5,7 +5,7 @@ operand filters each side reads, and the leaf CTEs that count the matches.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from ..ast import (
@@ -26,6 +26,7 @@ from ..expressions import (
     SemanticExpr,
     expr_to_dict,
 )
+from ..fanout import record_route_choice
 from ..ir import (
     BoundMeasure,
     LogicalPlan,
@@ -365,6 +366,52 @@ def _conversion_entity_key_fields(
     ]
 
 
+def _match_key_route(
+    source_entity: str,
+    match_entity: str,
+    selection: PathSelection | None,
+    config: PackageConfig,
+) -> tuple[PathSelection | None, list[tuple[str, SqlIdentifier]]]:
+    """Where an event reads its match key: the path to join, and the key columns.
+
+    The key is the events' own foreign key into the match entity (``sessions.customer_id``),
+    read from the row before the last hop, so an id the entity's table doesn't hold (a
+    late-arriving customer) still matches, as it does in plain SQL. Only the hops before it are
+    joined. When the last hop isn't a foreign key onto the entity's key (it is walked in
+    reverse, or targets another column), the key is read from the entity's own table.
+    """
+    entities = _entity_index(config)
+    entity = entities[match_entity]
+    if source_entity == match_entity or selection is None or not selection.chosen_path:
+        return None, _conversion_entity_key_fields(match_entity, config)
+    relationships = {rel.id: rel for rel in config.relationships}
+    current = source_entity
+    for rel_id in selection.chosen_path[:-1]:
+        rel = relationships[rel_id]
+        current = rel.target_entity if current == rel.source_entity else rel.source_entity
+    last = relationships[selection.chosen_path[-1]]
+    sources = list(last.source_columns or [last.source_column])
+    targets = list(last.target_columns or [last.target_column])
+    if (
+        last.source_entity != current
+        or last.target_entity != match_entity
+        or last.temporal_validity
+        or sorted(targets) != sorted(entity.key)
+    ):
+        return selection, _conversion_entity_key_fields(match_entity, config)
+    by_target = dict(zip(targets, sources, strict=True))
+    fields = [
+        (f"__match_key_{index + 1}", _column_ref(entities[current].table, by_target[column]))
+        for index, column in enumerate(entity.key)
+    ]
+    rest = selection.chosen_path[:-1]
+    if not rest:
+        return None, fields
+    return replace(
+        selection, target_entity=current, chosen_path=rest, candidate_paths=[rest]
+    ), fields
+
+
 def _looked_up_property_keys(
     property_dimensions: list[str], source_entity: str, config: PackageConfig
 ) -> dict[int, Any]:
@@ -408,15 +455,21 @@ def _conversion_event_cte(
 ) -> SqlCte:
     """One side's events, with the match key, groupings and properties each one carries.
 
+    Both sides match on the events' own key column where they have one (``_match_key_route``),
+    so a missing or late-arriving customer is never a join that drops the event.
+
     ``keep_events`` (the base side) keeps every event whose lookups are missing: the base events
     are the rate's denominator, so an anonymous session (no customer) is a session that didn't
     convert, not one that never happened. Its lookups join LEFT and read NULL, and a NULL match
-    key matches nothing. A constant property read through a lookup also carries whether that
-    lookup found a row, so a missing lookup never pairs as "the same" NULL property. Two reads
-    stay INNER: its time (an event with no time has no period) and the dimensions a query's
-    metric filter is matched on (``extra_dimensions``: an event outside the filter's set is not
-    in the rate at all). A converted event needs its match key and lookups to match anything,
-    so the converted side's lookups all stay INNER.
+    key matches nothing. Its match-key route and its constant properties keep their rows even in
+    a metric filter's own query, so a rate shown and a rate filtered on read the same events.
+    Two reads stay INNER: its time (an event with no time has no period) and the dimensions a
+    query's metric filter is matched on (``extra_dimensions``: an event outside the filter's set
+    is not in the rate at all). A converted event needs its match key and lookups to match
+    anything, so the converted side's lookups stay INNER (a date-ranged history lookup stays LEFT
+    everywhere, which the found markers cover). Every constant property read through a lookup
+    carries whether that lookup found a row, on both sides, so a missing lookup never pairs as
+    "the same" NULL property.
     """
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
@@ -465,45 +518,67 @@ def _conversion_event_cte(
             ]
         )
     )
+    purposes = {dim_id: "conversion_dimension" for dim_id in [role.dimension, *extra_dimensions]}
+    if keep_events:
+        purposes = {
+            **{dim_id: "conversion_base_property" for dim_id in property_dimensions},
+            **purposes,
+        }
+    match_selection = (
+        None
+        if match_entity == source_entity
+        else _path_selection(
+            config=config,
+            query=query,
+            start_entity=source_entity,
+            target_entity=match_entity,
+            purpose="conversion_base_match_entity" if keep_events else "conversion_match_entity",
+        )
+    )
+    match_route, match_key_fields = _match_key_route(
+        source_entity, match_entity, match_selection, config
+    )
+    if match_selection is not None and match_route is not match_selection:
+        # The key is read before the last hop, but the route to the match entity is still the
+        # one the question walks: the answer discloses it, and a route decision for it applies.
+        record_route_choice(source_entity, match_entity, match_selection.chosen_path)
+    selections = _unique_path_selections(
+        [
+            *_conversion_dimension_paths(
+                source_entity=source_entity,
+                target_dimension_ids=required_dimensions,
+                config=config,
+                query=query,
+                purpose="conversion_base_dimension" if keep_events else "conversion_dimension",
+                allow_rewrite_dimension_ids=allow_rewrite_dimension_ids,
+                purpose_by_dimension=purposes,
+            ),
+            *([match_route] if match_route is not None else []),
+        ]
+    )
+    if keep_events and not dialect_for_warehouse(config.package.warehouse).outer_lookup_joins:
+        kept = [
+            row
+            for row in selections
+            if row.purpose.startswith("conversion_base_") and row.chosen_path
+        ]
+        if kept:
+            raise SemanticLayerError(
+                "CONVERSION_NOT_SUPPORTED",
+                (
+                    f"A conversion rate on {config.package.warehouse} can't read its base events' "
+                    f"'{kept[0].target_entity}' through a lookup: an outer join there reads '' or 0 "
+                    "for a missing row, so an event without one would drop out of the rate or pair "
+                    "as if it had one. Group and match on columns the base events' own table holds."
+                ),
+                details={
+                    "warehouse": config.package.warehouse,
+                    "lookup_entities": sorted({row.target_entity for row in kept}),
+                },
+            )
     joins = _joins_for_paths(
         source_entity,
-        _unique_path_selections(
-            [
-                *_conversion_dimension_paths(
-                    source_entity=source_entity,
-                    target_dimension_ids=required_dimensions,
-                    config=config,
-                    query=query,
-                    purpose="conversion_base_dimension" if keep_events else "conversion_dimension",
-                    allow_rewrite_dimension_ids=allow_rewrite_dimension_ids,
-                    purpose_by_dimension={
-                        dim_id: "conversion_dimension"
-                        for dim_id in [role.dimension, *extra_dimensions]
-                    },
-                ),
-                *(
-                    []
-                    if match_entity == source_entity
-                    else [
-                        sel
-                        for sel in [
-                            _path_selection(
-                                config=config,
-                                query=query,
-                                start_entity=source_entity,
-                                target_entity=match_entity,
-                                purpose=(
-                                    "conversion_base_match_entity"
-                                    if keep_events
-                                    else "conversion_match_entity"
-                                ),
-                            )
-                        ]
-                        if sel is not None
-                    ]
-                ),
-            ]
-        ),
+        selections,
         config,
         measure_entity=None,
         time_spec=(
@@ -530,7 +605,7 @@ def _conversion_event_cte(
         SqlField(_count_key_expr(source_table, list(event_entity.key)), event_key_alias)
     )
     selected_aliases.add(event_key_alias)
-    for alias, expr in _conversion_entity_key_fields(match_entity, config):
+    for alias, expr in match_key_fields:
         if alias not in selected_aliases:
             select_fields.append(SqlField(expr, alias))
             selected_aliases.add(alias)
@@ -538,13 +613,10 @@ def _conversion_event_cte(
         dim_expr, _ = _resolve_dimension_expr(dim_id, config)
         select_fields.append(SqlField(dim_expr, f"__property_{index + 1}"))
         selected_aliases.add(f"__property_{index + 1}")
-    if keep_events:
-        for index, key in _looked_up_property_keys(
-            property_dimensions, source_entity, config
-        ).items():
-            found = SqlCase([SqlCaseWhen(SqlIsNull(key), SqlLiteral(0))], else_expr=SqlLiteral(1))
-            select_fields.append(SqlField(found, _property_found_alias(index)))
-            selected_aliases.add(_property_found_alias(index))
+    for index, key in _looked_up_property_keys(property_dimensions, source_entity, config).items():
+        found = SqlCase([SqlCaseWhen(SqlIsNull(key), SqlLiteral(0))], else_expr=SqlLiteral(1))
+        select_fields.append(SqlField(found, _property_found_alias(index)))
+        selected_aliases.add(_property_found_alias(index))
     for dim_id in extra_dimensions:
         dim_expr, alias = _resolve_dimension_expr(dim_id, config)
         if alias not in selected_aliases:
@@ -944,9 +1016,10 @@ def _conversion_leaf_cte(
         )
 
     # Same entity key and same constant properties on both sides, inside the window. The key
-    # compares with plain equality, so a base event with no key (an anonymous session) matches
-    # nothing. A property compares null-safely (a NULL city is the same as a NULL city), but a
-    # base event whose property lookup found no row has no property, so it pairs with nothing.
+    # compares with plain equality, so an event with no key (an anonymous session) matches
+    # nothing. A property compares null-safely (a NULL city is the same as a NULL city), but an
+    # event on either side whose property lookup found no row has no property, so it pairs with
+    # nothing.
     join_condition: Any = _conversion_window_condition(expr, dialect)
     for key_alias, _ in _conversion_entity_key_fields(match_entity, config):
         join_condition = SqlBinary(
@@ -968,16 +1041,17 @@ def _conversion_leaf_cte(
                 SqlIdentifier(parts=["converted_events", property_alias]),
             ),
         )
-    for index_prop in _looked_up_property_keys(property_dims, base_source["root_entity"], config):
-        join_condition = SqlBinary(
-            join_condition,
-            "AND",
-            SqlBinary(
-                SqlIdentifier(parts=["base_events", _property_found_alias(index_prop)]),
-                "=",
-                SqlLiteral(1),
-            ),
-        )
+    for side, source in (("base_events", base_source), ("converted_events", converted_source)):
+        for index_prop in _looked_up_property_keys(property_dims, source["root_entity"], config):
+            join_condition = SqlBinary(
+                join_condition,
+                "AND",
+                SqlBinary(
+                    SqlIdentifier(parts=[side, _property_found_alias(index_prop)]),
+                    "=",
+                    SqlLiteral(1),
+                ),
+            )
     order_terms = [
         SqlOrderTerm(
             expr=SqlIdentifier(parts=["converted_events", "__converted_event_time"]),

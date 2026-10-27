@@ -443,13 +443,13 @@ def test_filters_on_a_looked_up_column_follow_the_null_rules(
     assert got == reference[None]
 
 
-# Check-ins that lead to a boarding by the same person within a day. Every check-in counts in
-# the rate. Check-ins 2 (no person) and 6 (a person with no record) have no person to match on,
-# so they count and don't convert; 1, 5, 7 and 8 convert, 3 and 4 don't.
+# Check-ins that lead to a boarding by the same person within a day, matched on the events' own
+# person_id. Every check-in counts in the rate. Check-in 2 (no person) matches nothing; check-in
+# 6 and boarding 8 share P9, whom the people table doesn't hold (a late-arriving person), and
+# pair as they do in plain SQL. 1, 5, 6, 7 and 8 convert; 2, 3 and 4 don't.
 CONVERSION_SQL = """
 SELECT {group}, AVG(CASE WHEN EXISTS (
   SELECT 1 FROM boardings AS b WHERE b.person_id = c.person_id
-  AND b.person_id IN (SELECT person_id FROM people)
   AND b.boarded_at >= c.checked_in_at AND b.boarded_at < c.checked_in_at + INTERVAL 1 DAY
   {same_city}
 ) THEN 1.0 ELSE 0.0 END)
@@ -469,21 +469,22 @@ def _conversion_sql(*, group: str = "NULL", same_city: str = "", where: str = ""
     return CONVERSION_SQL.format(group=group, same_city=same_city, where=where)
 
 
-def test_conversion_does_not_pair_events_that_have_no_match_entity(runtime, gold):
-    """An event whose person lookup found no row has no person to pair on, so it must not pair
-    with another such event (check-in 2 with boarding 7, 6 with 8). A check-in is still a
-    check-in: 2 and 6 count in the rate as check-ins that didn't convert."""
+def test_conversion_pairs_on_the_events_own_key(runtime, gold):
+    """Events pair on their own person_id. An event with no person pairs with nothing, not with
+    another event without one (check-in 2 with boarding 7). Check-in 6 and boarding 8 share P9,
+    whom the people table doesn't hold, and pair: a late-arriving person still converts. Every
+    check-in counts in the rate."""
     (row,) = _conversion_rate(runtime)
-    assert row["rate"] == pytest.approx(4 / 8)
+    assert row["rate"] == pytest.approx(5 / 8)
     assert row["rate"] == pytest.approx(gold(_conversion_sql())[None])
 
     by_employee = _conversion_rate(runtime, group_by=[EMPLOYEE])
     rates = {row[EMPLOYEE]: row["rate"] for row in by_employee}
-    # 1, 7, 8 of 1, 3, 7, 8; 5 of 4, 5; none of 2, 6 (no person record: the NULL group).
+    # 1, 7, 8 of 1, 3, 7, 8; 5 of 4, 5; 6 of 2, 6 (no person record: the NULL group).
     assert rates == {
         False: pytest.approx(0.75),
         True: pytest.approx(0.5),
-        None: pytest.approx(0.0),
+        None: pytest.approx(0.5),
     }
     assert rates == pytest.approx(gold(_conversion_sql(group=SQL_CHECKIN_EMPLOYEE)))
 
@@ -525,9 +526,9 @@ def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, 
 
     busy = "SELECT leg_id FROM boardings GROUP BY leg_id HAVING COUNT(*) >= 2"
     reference = gold(_conversion_sql(where=f"AND c.leg_id IN ({busy})"))[None]
-    # Check-ins 1, 2, 5, 6 and 8 are on busy legs; 1, 5 and 8 convert, and 2 and 6 have no
-    # person to match. 3 and 4 aren't in the rate at all.
-    assert row["rate"] == pytest.approx(3 / 5)
+    # Check-ins 1, 2, 5, 6 and 8 are on busy legs; 1, 5, 6 and 8 convert, and 2 has no person
+    # to match. 3 and 4 aren't in the rate at all.
+    assert row["rate"] == pytest.approx(4 / 5)
     assert reference == pytest.approx(row["rate"])
 
 
@@ -737,11 +738,11 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(runtime):
 @pytest.mark.parametrize(
     ("query", "left_joins"),
     [
-        # A conversion's base events keep their person lookup (they are the denominator); the
-        # leg its metric filter is matched on, and the converted events' lookups, stay inner.
+        # A conversion matches on the events' own person_id, so neither side joins people; the
+        # leg its metric filter is matched on stays inner.
         (
             _conversion_query(metric_filters=[_metric_filter("leg", "entity_only", ">=", 2)]),
-            ["people"],
+            [],
         ),
         (_monthly_query(_on_busy("boarding_count", 1)), []),
         # The set's own query groups by the airport, read through the leg: a nested query.

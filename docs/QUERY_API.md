@@ -581,11 +581,16 @@ the base instant counts and one exactly at the end does not, like the half-open 
 the event times are dates, a 7-day window covers the base date and the 6 dates after it. These are
 MetricFlow's conversion bounds.
 
-Every base event counts in the rate's denominator. One with no match key (an anonymous session,
-or a customer the customers table doesn't hold) counts and never converts, and so does one whose
-constant-property lookup finds no row. A NULL key never matches another NULL key. A constant
-property whose lookup found a row compares null-safely: two events with no city have the same
-city. The base events a query's metric filter excludes aren't in the rate at all.
+Every base event counts in the rate's denominator. Base and converted events match on their
+own key column (`sessions.customer_id` = `orders.customer_id`), so a customer the customers
+table doesn't hold yet still converts. One with no key (an anonymous session) counts and never
+converts: a NULL key never matches another NULL key. So does one whose constant-property lookup
+finds no row, on either side. A constant property whose lookup found a row compares
+null-safely: two events with no city have the same city. A rate filtered on (a metric filter on
+the conversion) counts the same events as the rate shown. The base events a query's metric
+filter excludes aren't in the rate at all. On ClickHouse, whose outer joins read `''` or `0`
+for a missing row, a conversion whose base events need a lookup (a grouping or constant
+property read through another table) is refused with `CONVERSION_NOT_SUPPORTED`.
 
 Current limit:
 
