@@ -19,8 +19,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.62,
-      "compile_ms": 0.353,
+      "cache_lookup_ms": 0.663,
+      "compile_ms": 0.433,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -1039,7 +1039,7 @@
     }
   },
   "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_lifecycle.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_order_lifecycle\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_order_lifecycle.delivered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"delivered_revenue\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
-  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
   "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
@@ -1333,6 +1333,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-14T20:11:47.317962Z"
+    "now": "2026-10-27T03:46:01.212740Z"
   }
 }

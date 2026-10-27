@@ -112,8 +112,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.909,
-      "compile_ms": 0.443,
+      "cache_lookup_ms": 1.061,
+      "compile_ms": 0.568,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -138,6 +138,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -245,6 +246,7 @@
               "id": "relationship.orders_store",
               "join_semantics": "",
               "label": "Order to Store",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.Store",
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
@@ -391,6 +393,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -498,6 +501,7 @@
                 "id": "relationship.orders_store",
                 "join_semantics": "",
                 "label": "Order to Store",
+                "link": false,
                 "name": "jaffle.Order_TO_jaffle.Store",
                 "rollup_safe_aggregations_reverse": [],
                 "safety": "safe",
@@ -590,6 +594,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -933,6 +938,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -1129,6 +1135,7 @@
                       "id": "relationship.orders_store",
                       "join_semantics": "",
                       "label": "Order to Store",
+                      "link": false,
                       "name": "jaffle.Order_TO_jaffle.Store",
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
@@ -1774,6 +1781,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1881,6 +1889,7 @@
               "id": "relationship.orders_store",
               "join_semantics": "",
               "label": "Order to Store",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.Store",
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
@@ -1973,6 +1982,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -2494,112 +2504,112 @@
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-08-01",
       "period_partial": false,
-      "revenue_usd": 59714.46999999904
+      "revenue_usd": 59714.46999999916
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-05-01",
       "period_partial": false,
-      "revenue_usd": 54589.119999999944
+      "revenue_usd": 54589.11999999989
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-06-01",
       "period_partial": false,
-      "revenue_usd": 50398.65999999976
+      "revenue_usd": 50398.659999999814
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-07-01",
       "period_partial": false,
-      "revenue_usd": 49970.74999999959
+      "revenue_usd": 49970.74999999979
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-03-01",
       "period_partial": false,
-      "revenue_usd": 49092.329999999885
+      "revenue_usd": 49092.329999999856
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-06-01",
       "period_partial": false,
-      "revenue_usd": 47980.209999999555
+      "revenue_usd": 47980.209999999875
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-04-01",
       "period_partial": false,
-      "revenue_usd": 47896.78999999996
+      "revenue_usd": 47896.78999999986
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-08-01",
       "period_partial": false,
-      "revenue_usd": 47657.12000000002
+      "revenue_usd": 47657.120000000024
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-01-01",
       "period_partial": false,
-      "revenue_usd": 45017.9499999999
+      "revenue_usd": 45017.94999999979
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-07-01",
       "period_partial": false,
-      "revenue_usd": 44886.44000000007
+      "revenue_usd": 44886.44000000003
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-02-01",
       "period_partial": false,
-      "revenue_usd": 43358.11999999996
+      "revenue_usd": 43358.119999999806
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-05-01",
       "period_partial": false,
-      "revenue_usd": 41481.229999999974
+      "revenue_usd": 41481.230000000134
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2016-12-01",
       "period_partial": false,
-      "revenue_usd": 35677.600000000006
+      "revenue_usd": 35677.600000000035
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-04-01",
       "period_partial": false,
-      "revenue_usd": 35420.20000000031
+      "revenue_usd": 35420.20000000026
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2016-11-01",
       "period_partial": false,
-      "revenue_usd": 27916.81999999999
+      "revenue_usd": 27916.81999999998
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-03-01",
       "period_partial": false,
-      "revenue_usd": 24857.99000000027
+      "revenue_usd": 24857.99000000026
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2016-10-01",
       "period_partial": false,
-      "revenue_usd": 21923.949999999986
+      "revenue_usd": 21923.950000000023
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2016-09-01",
       "period_partial": false,
-      "revenue_usd": 18053.280000000017
+      "revenue_usd": 18053.280000000024
     }
   ],
-  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
   "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
@@ -2959,7 +2969,7 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-14T20:11:47.141714Z",
+    "now": "2026-10-27T03:46:01.022951Z",
     "partial": false
   }
 }

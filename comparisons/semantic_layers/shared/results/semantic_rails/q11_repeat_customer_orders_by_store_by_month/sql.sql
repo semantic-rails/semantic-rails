@@ -1,28 +1,27 @@
-WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (
+WITH leaf_1__order_count_customer_source_1__leaf_1 AS (
 SELECT
-  comparison_customers.customer_id AS g1,
-  SUM(comparison_customers.lifetime_order_count) AS m1,
-  COUNT(1) AS m1_rows
-FROM comparison_customers
+  comparison_orders.customer_id AS g1,
+  COUNT(DISTINCT comparison_orders.order_id) AS m1
+FROM comparison_orders
 GROUP BY
-  comparison_customers.customer_id
+  comparison_orders.customer_id
 ),
-leaf_1__lifetime_order_count_customer_source_1__guarded_base AS (
+leaf_1__order_count_customer_source_1__guarded_base AS (
 SELECT
   base.g1 AS g1,
-  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
-FROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base
+  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1__order_count_customer_source_1__leaf_1 AS base
 ),
-leaf_1__lifetime_order_count_customer_source_1 AS (
+leaf_1__order_count_customer_source_1 AS (
 SELECT
   base.g1 AS "dimension.jaffle_customer_id",
   base.m1 AS __predicate_value
-FROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base
+FROM leaf_1__order_count_customer_source_1__guarded_base AS base
 ),
-leaf_1__qualified_customers_by_lifetime_order_count_1 AS (
+leaf_1__qualified_customers_by_order_count_1 AS (
 SELECT DISTINCT
   predicate_source."dimension.jaffle_customer_id" AS "dimension.jaffle_customer_id"
-FROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source
+FROM leaf_1__order_count_customer_source_1 AS predicate_source
 WHERE
   predicate_source.__predicate_value > 1
 ),
@@ -33,17 +32,31 @@ SELECT
   COUNT(DISTINCT comparison_orders.order_id) AS m1
 FROM comparison_orders
 LEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
-INNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1."dimension.jaffle_customer_id"
+INNER JOIN leaf_1__qualified_customers_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_order_count_1."dimension.jaffle_customer_id"
 GROUP BY
   comparison_stores.store_name,
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
+),
+observed_1_rows AS (
+SELECT
+  1 AS seen
+FROM comparison_orders
+WHERE
+  comparison_orders.order_id IS NOT NULL
+LIMIT 1
+),
+observed_1 AS (
+SELECT
+  COUNT(observed_1_rows.seen) AS seen
+FROM observed_1_rows
 ),
 guarded_base AS (
 SELECT
   base.g1 AS g1,
   base.t AS t,
-  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1
 FROM leaf_1 AS base
+CROSS JOIN observed_1
 )
 SELECT
   base.g1 AS "dimension.jaffle_store_name",
