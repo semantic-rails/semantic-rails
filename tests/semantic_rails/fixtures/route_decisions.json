@@ -31,10 +31,6 @@
       ],
       [
         "entity.jaffle_order_lifecycle",
-        "entity.jaffle_customer_history"
-      ],
-      [
-        "entity.jaffle_order_lifecycle",
         "entity.jaffle_item"
       ],
       [
@@ -52,10 +48,6 @@
       [
         "entity.jaffle_order_lifecycle",
         "entity.jaffle_time"
-      ],
-      [
-        "entity.jaffle_storefront_session",
-        "entity.jaffle_customer_history"
       ],
       [
         "entity.jaffle_storefront_session",
@@ -146,13 +138,24 @@
         "entity.jaffle_product",
         "entity.jaffle_store"
       ]
+    ],
+    "default": [
+      [
+        "entity.jaffle_order_lifecycle",
+        "entity.jaffle_customer_history"
+      ],
+      [
+        "entity.jaffle_storefront_session",
+        "entity.jaffle_customer_history"
+      ]
     ]
   },
   "configs/semantic_rails/tpch_sf1_showcase": {
     "refused": [],
     "excluded_by_decision": [],
     "direct_key": [],
-    "inherited": []
+    "inherited": [],
+    "default": []
   },
   "comparisons/semantic_layers/semantic_rails/package": {
     "refused": [
@@ -198,10 +201,6 @@
       ],
       [
         "entity.jaffle_item",
-        "entity.jaffle_customer_history"
-      ],
-      [
-        "entity.jaffle_item",
         "entity.jaffle_order_lifecycle"
       ],
       [
@@ -243,10 +242,6 @@
       [
         "entity.jaffle_store",
         "entity.jaffle_storefront_session"
-      ],
-      [
-        "entity.jaffle_storefront_session",
-        "entity.jaffle_customer_history"
       ],
       [
         "entity.jaffle_storefront_session",
@@ -313,18 +308,30 @@
         "entity.jaffle_store",
         "entity.jaffle_item"
       ]
+    ],
+    "default": [
+      [
+        "entity.jaffle_item",
+        "entity.jaffle_customer_history"
+      ],
+      [
+        "entity.jaffle_storefront_session",
+        "entity.jaffle_customer_history"
+      ]
     ]
   },
   "tests/integration/correctness/shop": {
     "refused": [],
     "excluded_by_decision": [],
     "direct_key": [],
-    "inherited": []
+    "inherited": [],
+    "default": []
   },
   "configs/examples/semantic_rails_package_starter.yml": {
     "refused": [],
     "excluded_by_decision": [],
     "direct_key": [],
-    "inherited": []
+    "inherited": [],
+    "default": []
   }
 }

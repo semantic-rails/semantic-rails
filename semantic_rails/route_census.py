@@ -7,8 +7,9 @@ included), and each other reachable entity as the target (child groups need no d
 on the child itself).
 
 * :func:`route_census` lists the pairs the resolver refuses until a decision is recorded
-  (``undecided``), multi-route pairs answered by the start's own key (``assumed``), and
-  resolved routes crossing undeclared child rows (``pass_through``). Each undecided and
+  (``undecided``), multi-route pairs answered by the start's own key (``assumed``) or by a
+  lookup default (``defaults``), and resolved routes crossing undeclared child rows
+  (``pass_through``). Each undecided and
   pass-through pair names the package's own queries that walk it (:func:`walked_pairs`): only
   those pairs need anything now, and every other one is asked when a question needs it.
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
@@ -70,6 +71,7 @@ class RouteOutcome:
     routes: tuple[tuple[str, ...], ...] = ()
     basis: str = ""
     refused: str = ""
+    by: str = ""
     details: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def shape(self) -> dict[str, Any]:
@@ -104,7 +106,10 @@ def resolve_pairs(config: PackageConfig, pairs: Iterable[Pair]) -> dict[Pair, Ro
             outcomes[(start, target)] = RouteOutcome(refused=exc.code, details=exc.details)
         else:
             outcomes[(start, target)] = RouteOutcome(
-                path=resolution.routes[0], routes=resolution.routes, basis=resolution.basis
+                path=resolution.routes[0],
+                routes=resolution.routes,
+                basis=resolution.basis,
+                by=resolution.by,
             )
     return outcomes
 
@@ -227,7 +232,9 @@ def route_census(
     ``undecided``: pairs refused with ``AMBIGUOUS_PATH``, each with the refusal's ``details``
     as raised (its routes, their meanings and the row that records each). ``assumed``: pairs
     answered by the start's own key, with two or more routes, for the author to confirm.
-    ``pass_through``: resolved only or inherited routes crossing undeclared child rows,
+    ``defaults``: pairs answered by a lookup default (``fanout.resolve_path`` rung 5), each with
+    the rung that chose it (``by``), its ``meaning`` and its other routes: the questions that
+    answer now where an engine without the default refused them. ``pass_through``: resolved only or inherited routes crossing undeclared child rows,
     with the same disclosure as an answer; these are not pairs awaiting a decision.
 
     Each undecided and pass-through pair lists in ``needed_by`` the ``queries`` that walk it
@@ -238,6 +245,7 @@ def route_census(
     """
     undecided: list[dict[str, Any]] = []
     assumed: list[dict[str, Any]] = []
+    defaults: list[dict[str, Any]] = []
     pass_through: list[dict[str, Any]] = []
     for (start, target), outcome in resolve_pairs(config, census_pairs(config)).items():
         ends = {"source_entity": start, "target_entity": target}
@@ -245,6 +253,16 @@ def route_census(
             undecided.append({**ends, "details": outcome.details})
         elif outcome.basis == "colocated_key" and len(outcome.routes) >= 2:
             assumed.append({**ends, "relationship_path": [*outcome.path], "basis": outcome.basis})
+        elif outcome.basis == "default":
+            defaults.append(
+                {
+                    **ends,
+                    "relationship_path": [*outcome.path],
+                    "by": outcome.by,
+                    "meaning": route_reading(config, start, outcome.path),
+                    "other_routes": [[*path] for path in outcome.routes[1:]],
+                }
+            )
         elif outcome.basis in {"only_route", "inherited"}:
             disclosure = pass_through_disclosure(
                 config, start, target, outcome.path, route_basis=outcome.basis
@@ -255,7 +273,12 @@ def route_census(
     for row in [*undecided, *pass_through]:
         row["needed_by"] = list(walked.get((row["source_entity"], row["target_entity"]), []))
     undecided.sort(key=lambda row: not row["needed_by"])
-    return {"undecided": undecided, "assumed": assumed, "pass_through": pass_through}
+    return {
+        "undecided": undecided,
+        "assumed": assumed,
+        "defaults": defaults,
+        "pass_through": pass_through,
+    }
 
 
 @dataclass(frozen=True)

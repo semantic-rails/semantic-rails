@@ -92,6 +92,8 @@ def reachable_entities(config: PackageConfig, entity_id: str) -> list[dict[str, 
         note = route_note(config, entity_id, target, route)
         if note is not None and note.basis in {"decided", "inherited"}:
             row["recorded"] = True
+        elif note is not None and note.basis == "default":
+            row["default"] = note.by
         rows.append(row)
     return rows
 

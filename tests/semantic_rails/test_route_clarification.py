@@ -341,26 +341,6 @@ SHAPES: dict[str, tuple[dict[str, Any], list[str], tuple[str, str], dict[str, An
             "owner_district": ("the District of the Account's Owner", OWNER_ROUTE, BY_OWNER),
         },
     ),
-    "shorter_fan_out": (
-        ACCOUNTS_BY_TIER,
-        ["dimension.bank_membership_tier", "v"],
-        (ACCOUNT, MEMBERSHIP),
-        {
-            "account_membership": (
-                "any of the Account's Memberships",
-                ["relationship.memberships_account"],
-                "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a "
-                "JOIN memberships m USING (account_id) GROUP BY 1",
-            ),
-            "owner_membership": (
-                "the Membership of the Account's Owner",
-                ["relationship.accounts_owner", "relationship.owners_primary_membership"],
-                "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a "
-                "JOIN owners o USING (owner_id) "
-                "JOIN memberships m ON m.membership_id = o.primary_membership_id GROUP BY 1",
-            ),
-        },
-    ),
     "two_keys_to_one_entity": (
         SEATS_BY_CITY,
         ["dimension.bank_airport_city", "v"],
@@ -402,6 +382,29 @@ SHAPES: dict[str, tuple[dict[str, Any], list[str], tuple[str, str], dict[str, An
         },
     ),
 }
+
+# Accounts by membership tier: the owner's membership (one row per account: a lookup) or any
+# of the account's memberships (many). Not a question: the lookup answers by default.
+LOOKUP_OVER_FAN_OUT = (
+    ACCOUNTS_BY_TIER,
+    ["dimension.bank_membership_tier", "v"],
+    (ACCOUNT, MEMBERSHIP),
+    {
+        "account_membership": (
+            "any of the Account's Memberships",
+            ["relationship.memberships_account"],
+            "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a "
+            "JOIN memberships m USING (account_id) GROUP BY 1",
+        ),
+        "owner_membership": (
+            "the Membership of the Account's Owner",
+            ["relationship.accounts_owner", "relationship.owners_primary_membership"],
+            "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a "
+            "JOIN owners o USING (owner_id) "
+            "JOIN memberships m ON m.membership_id = o.primary_membership_id GROUP BY 1",
+        ),
+    },
+)
 
 
 def test_the_diamond_asks_in_business_words(tmp_path):
@@ -478,6 +481,35 @@ def test_every_option_answers_with_its_route_per_query_or_in_the_package(tmp_pat
         assert _rows(in_package, columns) == _gold(gold)
         assert _chosen_by_query(in_package) == []
     assert len(golds) == len(options)  # the routes disagree
+
+
+def test_a_lookup_answers_over_a_shorter_fan_out_and_the_fan_out_is_one_switch_away(tmp_path):
+    """Accounts by membership tier: the owner's membership is one row per account, the
+    account's own memberships are many. The lookup answers by default (a lookup beats an "any
+    of" reading), and the answer says which reading it took at every verbosity. The fan-out
+    reading is one switch away and never runs unasked: sent as the call's routes it answers
+    its own numbers, and recorded in the package it becomes the package's answer."""
+    query, columns, (start, target), options = LOOKUP_OVER_FAN_OUT
+    lookup_meaning, lookup_route, lookup_gold = options["owner_membership"]
+    _, fan_route, fan_gold = options["account_membership"]
+    assert _gold(lookup_gold) != _gold(fan_gold)
+    runtime = Runtime.from_path(str(_write_package(tmp_path / "default")))
+    switch = {"from": start, "to": target, "via": fan_route}
+    for verbosity in ("minimal", "compact"):
+        out = runtime.query(query, verbosity=verbosity)
+        assert _rows(out, columns) == _gold(lookup_gold)
+        (route,) = out["routes"]
+        assert (route["from"], route["to"], route["via"]) == (start, target, lookup_route)
+        assert (route["meaning"], route["other_routes"]) == (lookup_meaning, [switch])
+    assert (route["basis"], route["by"]) == ("default", "lookup")
+    fan_row = {"source_entity": start, "target_entity": target, "relationship_path": fan_route}
+    assert route["alternatives"] == [fan_row]
+    switched = runtime.query({**query, "routes": [switch]})
+    assert _rows(switched, columns) == _gold(fan_gold)
+    (chosen,) = _chosen_by_query(switched)
+    assert chosen["replaced"] == "default"
+    recorded = Runtime.from_path(str(_write_package(tmp_path / "recorded", decisions=[fan_row])))
+    assert _rows(recorded.query(query), columns) == _gold(fan_gold)
 
 
 def test_plan_asks_which_route_a_question_means_with_a_call_per_reading(tmp_path):

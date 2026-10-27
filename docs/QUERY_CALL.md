@@ -774,8 +774,10 @@ then the `group_by` columns, ascending, with a NULL group placed by the warehous
 ## `routes`
 
 When two join routes between two entities would answer differently, the package's
-`graph.path_preferences` decide, or the entity's own key does; otherwise validation refuses with
-`AMBIGUOUS_PATH` and asks which route the question means. Each option in
+`graph.path_preferences` decide, or the entity's own key does, or, when exactly one route is a
+lookup (one row at every hop), that lookup does, naming itself and the other routes in the
+answer's `routes`; otherwise validation refuses with `AMBIGUOUS_PATH` and asks which route the
+question means. A call's `routes` entry overrides a default as it overrides any other rung. Each option in
 `details.clarification.options` carries a ready-to-send `query`: the same call with that
 option's route in `routes`.
 

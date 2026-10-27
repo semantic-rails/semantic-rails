@@ -132,6 +132,9 @@ DIAMOND = (
 )
 # Count distinct across a one-to-many hop needs the author's say-so.
 _ROLLUP_SAFE_REVERSE = {"accounts_branch_region", "memberships_account"}
+# Two direct keys to the region (branch and billing) and the owner's home: no route is chosen,
+# and no lookup default either (the account has no one own key to the region).
+TWO_KEYS = (*DIAMOND, "accounts_billing_region")
 
 
 def _pin(start: str, target: str, path: list[str]) -> dict[str, Any]:
@@ -580,7 +583,7 @@ def test_route_search_expands_only_prefixes_that_can_still_reach_the_target():
     ("relationships", "query", "columns", "start", "target", "golds"),
     [
         pytest.param(
-            DIAMOND,
+            TWO_KEYS,
             _query(AMOUNT, group_by=[REGION_NAME]),
             [REGION_NAME, "v"],
             INVOICE,
@@ -652,17 +655,14 @@ def test_the_refusal_reads_the_routes_by_their_labels(tmp_path):
         tmp_path,
         labels={"owners_home_region": "Home region", "accounts_branch_region": "Branch region"},
     )
-    err = _refusal(pkg, _query(AMOUNT, group_by=[REGION_NAME]))
+    err = _refusal(pkg, _query(REGION_COUNT, group_by=[ACCOUNT_KIND]))
     clarification = err.details["clarification"]
-    assert clarification["question"] == "Which Region does the question mean for an Invoice?"
+    assert clarification["question"] == "Which Account does the question mean for a Region?"
     # One relationship per entity pair: each hop is named by the entity it reaches.
     assert [(option["id"], option["meaning"]) for option in clarification["options"]] == [
-        ("account_region", "the Region of the Invoice's Account"),
-        ("account_owner_region", "the Region of the Owner of the Invoice's Account"),
-        (
-            "account_membership_owner_region",
-            "the Region of any of the Owners of any of the Memberships of the Invoice's Account",
-        ),
+        ("branch_region", "any of the Region's Accounts"),
+        ("owner_account", "any of the Accounts of any of the Region's Owners"),
+        ("owner_membership_account", "the Account of the Membership of any of the Region's Owners"),
     ]
     # Parallel roles are told apart by their own label, else by their foreign-key columns.
     err = _refusal(
@@ -682,45 +682,54 @@ def test_the_refusal_reads_the_routes_by_their_labels(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("before", "added", "query", "columns", "gold"),
+    ("before", "added", "query", "columns", "note"),
     [
         pytest.param(
             ("invoices_account", "accounts_branch_region"),
-            ("accounts_owner", "owners_home_region"),
+            ("accounts_billing_region",),
             _query(AMOUNT, group_by=[REGION_NAME]),
             [REGION_NAME, "v"],
             None,
             id="one-route-pair-refuses",
         ),
         pytest.param(
+            ("invoices_account", "accounts_branch_region"),
+            ("accounts_owner", "owners_home_region"),
+            _query(AMOUNT, group_by=[REGION_NAME]),
+            [REGION_NAME, "v"],
+            ((INVOICE, REGION), ("default", INVOICE_BRANCH)),
+            id="one-route-pair-keeps-its-own-key",
+        ),
+        pytest.param(
             ("accounts_branch_region",),
             ("accounts_owner", "owners_home_region"),
             _query(BALANCE, group_by=[REGION_NAME]),
             [REGION_NAME, "v"],
-            BY_BRANCH,
+            ((ACCOUNT, REGION), ("own_key", BRANCH)),
             id="direct-key-pair-discloses",
         ),
     ],
 )
 def test_adding_a_route_never_changes_an_answer_silently(
-    tmp_path, before, added, query, columns, gold
+    tmp_path, before, added, query, columns, note
 ):
-    """A pair with one route answers by it. Give it a longer route: a pair with no direct key
-    is refused from then on, and a pair whose one route is its own key keeps the answer and
-    now notes that its own key was chosen."""
+    """A pair with one route answers by it. Give it another route: a pair with no one own key
+    along its routes is refused from then on (the account now has two keys to the region); a
+    pair whose old route follows the entities' own keys keeps its answer and now notes it,
+    as the start's own key (``own_key``) or a waypoint's (a lookup ``default``)."""
     out = Runtime.from_path(str(_write_package(tmp_path / "before", relationships=before))).query(
         query
     )
     assert _route_notes(out) == {}
+    gold = AMOUNT_BY_BRANCH if note is None or note[0][0] == INVOICE else BY_BRANCH
+    assert _rows(out, columns) == _gold(gold)
     after = _write_package(tmp_path / "after", relationships=(*before, *added))
-    if gold is None:
-        assert _rows(out, columns) == _gold(AMOUNT_BY_BRANCH)
+    if note is None:
         _refusal(after, query)
         return
-    assert _rows(out, columns) == _gold(gold)
     out = Runtime.from_path(str(after)).query(query)
     assert _rows(out, columns) == _gold(gold)
-    assert _route_notes(out) == {(ACCOUNT, REGION): ("own_key", BRANCH)}
+    assert _route_notes(out) == dict([note])
 
 
 # Regions holding at least 500 in balance, over every account of the region.
@@ -779,10 +788,6 @@ def _entry_gold(entry: str, route: str) -> str:
     }[entry]
 
 
-# Two direct keys to the region (branch and billing) and the owner's home: no route is chosen.
-TWO_KEYS = (*DIAMOND, "accounts_billing_region")
-
-
 def test_the_direct_key_read_and_discovery_follow_the_resolver(tmp_path):
     refused = load_package_config(str(_write_package(tmp_path / "refused", relationships=TWO_KEYS)))
     assert _direct_entity_key_source_expr(ACCOUNT, REGION, "region_id", refused) is None
@@ -800,7 +805,7 @@ def test_the_direct_key_read_and_discovery_follow_the_resolver(tmp_path):
 
 
 def test_a_refusal_is_cached_and_its_recovery_hint_carries_the_rows(tmp_path, monkeypatch):
-    config = load_package_config(str(_write_package(tmp_path)))
+    config = load_package_config(str(_write_package(tmp_path, relationships=TWO_KEYS)))
     with pytest.raises(SemanticLayerError) as first:
         resolve_path(config, start=INVOICE, target=REGION)
 
@@ -824,7 +829,7 @@ def test_a_refusal_is_cached_and_its_recovery_hint_carries_the_rows(tmp_path, mo
 @pytest.mark.parametrize(
     ("relationships", "start", "target", "code"),
     [
-        pytest.param(DIAMOND, INVOICE, REGION, "AMBIGUOUS_PATH", id="ambiguous"),
+        pytest.param(TWO_KEYS, INVOICE, REGION, "AMBIGUOUS_PATH", id="ambiguous"),
         pytest.param(("accounts_branch_region",), ACCOUNT, INVOICE, "PATH_NOT_FOUND", id="no-path"),
     ],
 )
@@ -882,14 +887,15 @@ ROUTE_DECISIONS = Path(__file__).parent / "fixtures" / "route_decisions.json"
 
 def _route_decisions(package: str) -> dict[str, list[list[str]]]:
     """Every entity pair that is refused (no row, or every route excluded by rows), every pair
-    answered by its direct key over another route, and every pair answered by rows recorded
-    for pairs its routes walk through."""
+    answered by its direct key over another route, every pair answered by rows recorded for
+    pairs its routes walk through, and every pair answered by a lookup default."""
     config = load_package_config(str(ROOT / package))
     found: dict[str, list[list[str]]] = {
         "refused": [],
         "excluded_by_decision": [],
         "direct_key": [],
         "inherited": [],
+        "default": [],
     }
     for start in config.entities:
         for target in config.entities:
@@ -908,6 +914,8 @@ def _route_decisions(package: str) -> dict[str, list[list[str]]]:
                 found["direct_key"].append(pair)
             elif resolution.basis == "inherited":
                 found["inherited"].append(pair)
+            elif resolution.basis == "default":
+                found["default"].append(pair)
     return {key: sorted(pairs) for key, pairs in found.items()}
 
 

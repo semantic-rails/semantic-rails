@@ -2504,8 +2504,9 @@ classic case: `order.ship_city_id` vs `order.customer → customer.city_id`),
 the routes have different *meanings*, and which one a question means is a
 business definition. The engine never guesses: the decision is recorded once
 in the package, then every query uses it, and adding a route never silently
-changes an existing answer. A route is chosen only by a recorded decision or
-the start entity's own key. For each start entity and target entity, over
+changes an existing answer. A route is chosen only by a recorded decision, the
+start entity's own key, or, where no other rung decides, the one lookup among
+the routes (rule 5). For each start entity and target entity, over
 every route within the hop ceiling, in this order (a call's own
 [`routes`](QUERY_CALL.md#routes) entry for exactly the
 pair comes first, for that call only):
@@ -2528,15 +2529,34 @@ pair comes first, for that call only):
    loan, a card or a transaction reached through its account, and the region
    beyond the district.
 4. **Only route.** Exactly one route remains: it is used.
-5. Two or more remain: the query is refused with `AMBIGUOUS_PATH`, naming the
+5. **Lookup default.** Two or more remain, and exactly one of them is a lookup:
+   every hop reaches one row (a many-to-one or one-to-one hop, or a hop into a
+   validity window, "the … valid at the time"). It is used: a section's
+   instructor, not any of its enrolled students. With two or more lookups,
+   each entity's own key acts as a recorded row (rule 3): a route that walks an
+   entity to another by another part than the first entity's one to-one
+   relationship to it is dropped, and when exactly one lookup is left it is
+   used (a seat's building is its room's building, not its room's floor's).
+   Two keys to one entity (an origin and a destination) are no own key. A
+   route reading "any of" rows is never chosen here, and this rule only
+   answers pairs rules 1-4 refuse, so it never moves an answer. Every answer
+   it gives discloses the reading (`routes[*].basis: default`, `by: lookup` or
+   `own_keys`, and `meaning`) and the routes it was chosen over
+   (`other_routes`, ready to send as the call's `routes`; never executed).
+   Whether a hop reaches one row comes from the package (cardinality and
+   validity windows), never from the query's time window.
+6. Two or more remain: the query is refused with `AMBIGUOUS_PATH`, naming the
    remaining routes, whatever their lengths (equal or not) and whether they fan
    out.
-6. The rows dropped every route: the query is refused with `PATH_NOT_FOUND`
+7. The rows dropped every route: the query is refused with `PATH_NOT_FOUND`
    and `details.reason: excluded_by_decision`, naming the rows in
    `details.rows` (raise `max_hops` if a longer route follows them, or change
    the rows).
 
-Hop count and weights never decide. Every path choice goes through this rule:
+A lookup default is not a recorded decision: under a row filter, a model whose
+route to the filtered model is a default among routes that could carry the
+filter is refused, as it is while the pair is undecided. Record the route to
+answer it under the filter. Hop count and weights never decide. Every path choice goes through this rule:
 grouping, filters, a measure's own filter, metric predicates, time roles,
 conversions, the direct read of a foreign key, an entity filter's `EXISTS`, the
 distinct count read from a child's rows, and discovery, grain recovery,
@@ -2755,6 +2775,10 @@ rest of the query with the fork's first route. Only those pairs warn.
   pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
   another.
+- `defaults`: `[{source_entity, target_entity, relationship_path, by, meaning,
+  other_routes}]`, the pairs with two or more routes answered by a lookup
+  default (rule 5): the questions an engine without the default refused. Each
+  answers as its `meaning` says; record another route to change it.
 - `pass_through`: `[{source_entity, target_entity, needed_by, message, details}]`,
   resolved only or inherited routes crossing undeclared child rows. The parse report and
   `project_status` carry each one a query of the package walks as a `ROUTE_PASS_THROUGH`
@@ -2763,7 +2787,9 @@ rest of the query with the fork's first route. Only those pairs warn.
   not need a route decision.
 
 **Route changes.** A new relationship can give a pair a second route, so a
-question that answered before is refused, or now takes the start's own key.
+question that answered before is refused, or now takes the start's own key. A
+pair answered by a lookup default is an answer like any other: a change that
+moves it is a route change.
 `impact-report` (Architect's `impact_project`) resolves every census pair of
 either package, between entities both declare, and lists each one the change
 resolves differently under `route_changes`:
