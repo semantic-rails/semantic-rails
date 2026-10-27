@@ -78,10 +78,10 @@ data):
   - Semantic Rails, MetricFlow (at minute grain), KtX and this pack's Snowflake Semantic Views
     SQL count `[start, start + 7 days)`.
   - Cube and Malloy write the key's `(start, start + 7 days]` into this pack's joins.
-- **q17 and q18:** every layer that answers counts the keys' `[start, start + N)`:
-  - Semantic Rails, through its conversion expression;
-  - Malloy, through the join each query declares;
-  - Cube on q18, through its SQL API.
+- **q17 and q18:** Semantic Rails, through its conversion expression, and Malloy, through
+  the join each query declares, count the keys' `[start, start + N)`.
+- **Cube on q18** narrows its same-store join, which requires an order strictly after the
+  session start, inside its SQL API. So it counts `(start, start + 50 minutes)`.
 
 Semantic Rails' conversion window is always `[start, start + N)`, the duration convention. It
 has no option for other bounds.

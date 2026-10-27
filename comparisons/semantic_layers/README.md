@@ -149,7 +149,8 @@ query time, the form q24 already used. The engine could express this before the 
 earlier label reflected this pack's model, not the engine. The model is unchanged, and both
 answers still match the answer key. q11's column is `orders_from_repeat_customers`:
 `repeat_customer_orders` is the name of the model's metric on the precomputed column, which this
-answer doesn't read, and the engine refuses a governed metric's name on another calculation.
+answer doesn't read, and the engine will refuse a governed metric's name on another
+calculation from [#475](https://github.com/semantic-rails/semantic-rails/pull/475).
 
 ## Frozen-Model Questions: q17-q24
 
