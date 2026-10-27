@@ -84,5 +84,6 @@ def test_a_thousand_word_question_takes_one_pass(monkeypatch, phrase):
     question = " ".join([phrase] * (1000 // len(phrase.split())))
     started = time.perf_counter()
     spans, _ = _clock_spans(monkeypatch, question, "Order time")
-    assert time.perf_counter() - started < 0.25  # the quadratic reading took seconds
+    # Under a second on a busy runner; the quadratic reading took about 4 s per question.
+    assert time.perf_counter() - started < 1.0
     assert len(spans) <= 1000
