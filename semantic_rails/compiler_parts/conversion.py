@@ -64,6 +64,7 @@ from .dependencies import (
     cut_owners,
     leaf_objects,
     recipe_objects,
+    record_bound_object,
     record_temporal_role,
 )
 from .indexes import (
@@ -540,7 +541,11 @@ def _conversion_event_cte(
     )
     if match_selection is not None and match_route is not match_selection:
         # The key is read before the last hop, but the route to the match entity is still the
-        # one the question walks: the answer discloses it, and a route decision for it applies.
+        # one the question walks: the answer discloses it, a route decision for it applies, and
+        # its relationships are read (a caller who can't see one can't match through it).
+        relationships = {rel.id: rel for rel in config.relationships}
+        for rel_id in match_selection.chosen_path:
+            record_bound_object(relationships[rel_id], config)
         record_route_choice(source_entity, match_entity, match_selection.chosen_path)
     selections = _unique_path_selections(
         [
