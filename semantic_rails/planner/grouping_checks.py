@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from functools import lru_cache
 from typing import Any
 
 from .. import operators
@@ -189,6 +190,13 @@ _LEVEL_WORD_RE = re.compile(r"\b(?:levels?|grains?)\b")
 _LONGEST_TEMPORAL_TERM = max(len(term.split()) for term in _TEMPORAL_TERMS)
 
 
+@lru_cache(maxsize=8192)
+def _name_pattern(pattern: str) -> re.Pattern[str]:
+    """A declared name's compiled pattern. A package has more name patterns than ``re``
+    caches (512), so without this every plan compiled each of them again."""
+    return re.compile(pattern)
+
+
 def _declared_name_spans(
     config: Any, lowered: str, *, underscores: bool = False
 ) -> dict[tuple[int, int], list[Any]]:
@@ -224,7 +232,7 @@ def _declared_name_spans(
                         for body in (re.escape(spelling), r"[\s_]+".join(map(re.escape, words)))
                     }
                 for pattern in patterns:
-                    for match in re.finditer(pattern, lowered):
+                    for match in _name_pattern(pattern).finditer(lowered):
                         found.setdefault(match.span(), []).append((kind, row))
     return {
         (low, high): named
