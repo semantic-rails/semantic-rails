@@ -27,8 +27,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.191,
-      "compile_ms": 0.848,
+      "cache_lookup_ms": 1.194,
+      "compile_ms": 0.845,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -148,8 +148,10 @@
             "expression": {
               "entity": "entity.jaffle_customer",
               "input": {
-                "kind": "metric",
-                "metric": "metric.jaffle.lifetime_spend"
+                "aggregation": "",
+                "kind": "measure",
+                "measure": "measure.jaffle.revenue_usd",
+                "temporal_role": ""
               },
               "kind": "metric_predicate",
               "op": "gte",
@@ -277,8 +279,10 @@
           "expression": {
             "entity": "entity.jaffle_customer",
             "input": {
-              "kind": "metric",
-              "metric": "metric.jaffle.lifetime_spend"
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd",
+              "temporal_role": ""
             },
             "kind": "metric_predicate",
             "op": "gte",
@@ -350,7 +354,7 @@
           "has_start": false,
           "has_time_filter": false,
           "pushed_to_scan": false,
-          "relation": "comparison_customers",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "time_filter": {}
         },
@@ -391,14 +395,14 @@
           "large_relation_hint": false,
           "measures": [
             {
-              "aggregation": "last_value",
-              "measure_id": "measure.jaffle.lifetime_spend_usd"
+              "aggregation": "sum",
+              "measure_id": "measure.jaffle.revenue_usd"
             }
           ],
-          "relation": "comparison_customers",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "selected_relation_type": "raw",
-          "source_entity": "entity.jaffle_customer",
+          "source_entity": "entity.jaffle_order",
           "time_filter_has_end": false,
           "time_filter_has_start": false
         },
@@ -507,18 +511,18 @@
             "conversion_roles": [],
             "measures": [
               {
-                "aggregation": "last_value",
-                "measure_id": "measure.jaffle.lifetime_spend_usd"
+                "aggregation": "sum",
+                "measure_id": "measure.jaffle.revenue_usd"
               }
             ],
-            "metric_recipes": [
-              "metric.jaffle.lifetime_spend"
-            ],
+            "metric_recipes": [],
             "predicate": {
               "entity": "entity.jaffle_customer",
               "input": {
-                "kind": "metric",
-                "metric": "metric.jaffle.lifetime_spend"
+                "aggregation": "",
+                "kind": "measure",
+                "measure": "measure.jaffle.revenue_usd",
+                "temporal_role": ""
               },
               "kind": "metric_predicate",
               "op": "gte",
@@ -526,18 +530,20 @@
               "value": 500
             },
             "predicate_input": {
-              "kind": "metric",
-              "metric": "metric.jaffle.lifetime_spend"
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd",
+              "temporal_role": ""
             },
-            "relation": "comparison_customers",
-            "selected_relation": "comparison_customers",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
-            "source_entity": "entity.jaffle_customer"
+            "source_entity": "entity.jaffle_order"
           },
           "id": "leaf_1_predicate_1_scan_1",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan predicate source comparison_customers"
+          "label": "Scan predicate source comparison_orders"
         },
         {
           "details": {
@@ -582,8 +588,10 @@
               {
                 "entity": "entity.jaffle_customer",
                 "input": {
-                  "kind": "metric",
-                  "metric": "metric.jaffle.lifetime_spend"
+                  "aggregation": "",
+                  "kind": "measure",
+                  "measure": "measure.jaffle.revenue_usd",
+                  "temporal_role": ""
                 },
                 "kind": "metric_predicate",
                 "op": "gte",
@@ -672,7 +680,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  comparison_customers.customer_id AS __snapshot_key_1,\n  comparison_customers.lifetime_spend_cents / 100.0 AS __snapshot_value,\n  comparison_customers.first_order_at AS __snapshot_order\nFROM comparison_customers\nWHERE\n  comparison_customers.first_order_at IS NOT NULL\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  MAX(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_value AS __snapshot_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nINNER JOIN leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete ON leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_key_1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order = leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_order\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1 AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows.g1 AS g1,\n  SUM(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows.__snapshot_value) AS m1\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows.g1\n),\nleaf_1__lifetime_spend_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_spend_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_spend_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
+    "rendered_sql": "WITH leaf_1__revenue_usd_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__revenue_usd_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__revenue_usd_customer_source_1__leaf_1 AS base\n),\nleaf_1__revenue_usd_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__revenue_usd_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__revenue_usd_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_revenue_usd_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_revenue_usd_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -731,243 +739,23 @@
           "query": {
             "ctes": [
               {
-                "name": "leaf_1__lifetime_spend_customer_source_1",
+                "name": "leaf_1__revenue_usd_customer_source_1",
                 "query": {
                   "ctes": [
                     {
-                      "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1",
+                      "name": "leaf_1__revenue_usd_customer_source_1__leaf_1",
                       "query": {
-                        "ctes": [
-                          {
-                            "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                            "query": {
-                              "ctes": [],
-                              "distinct": false,
-                              "from_table": {
-                                "alias": "",
-                                "name": "comparison_customers"
-                              },
-                              "group_by": [],
-                              "having": [],
-                              "joins": [],
-                              "limit": null,
-                              "observation_scan": false,
-                              "order_by": [],
-                              "qualify": [],
-                              "select": [
-                                {
-                                  "alias": "g1",
-                                  "expression": {
-                                    "parts": [
-                                      "comparison_customers",
-                                      "customer_id"
-                                    ]
-                                  }
-                                },
-                                {
-                                  "alias": "__snapshot_key_1",
-                                  "expression": {
-                                    "parts": [
-                                      "comparison_customers",
-                                      "customer_id"
-                                    ]
-                                  }
-                                },
-                                {
-                                  "alias": "__snapshot_value",
-                                  "expression": {
-                                    "left": {
-                                      "parts": [
-                                        "comparison_customers",
-                                        "lifetime_spend_cents"
-                                      ]
-                                    },
-                                    "op": "/",
-                                    "right": {
-                                      "temporal": false,
-                                      "value": 100.0
-                                    }
-                                  }
-                                },
-                                {
-                                  "alias": "__snapshot_order",
-                                  "expression": {
-                                    "parts": [
-                                      "comparison_customers",
-                                      "first_order_at"
-                                    ]
-                                  }
-                                }
-                              ],
-                              "where": [
-                                {
-                                  "left": {
-                                    "parts": [
-                                      "comparison_customers",
-                                      "first_order_at"
-                                    ]
-                                  },
-                                  "op": "IS NOT",
-                                  "right": {
-                                    "temporal": false,
-                                    "value": null
-                                  }
-                                }
-                              ]
-                            }
-                          },
-                          {
-                            "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
-                            "query": {
-                              "ctes": [],
-                              "distinct": false,
-                              "from_table": {
-                                "alias": "",
-                                "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base"
-                              },
-                              "group_by": [
-                                {
-                                  "parts": [
-                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                    "__snapshot_key_1"
-                                  ]
-                                }
-                              ],
-                              "having": [],
-                              "joins": [],
-                              "limit": null,
-                              "observation_scan": false,
-                              "order_by": [],
-                              "qualify": [],
-                              "select": [
-                                {
-                                  "alias": "__snapshot_key_1",
-                                  "expression": {
-                                    "parts": [
-                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                      "__snapshot_key_1"
-                                    ]
-                                  }
-                                },
-                                {
-                                  "alias": "__snapshot_order",
-                                  "expression": {
-                                    "args": [
-                                      {
-                                        "parts": [
-                                          "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                          "__snapshot_order"
-                                        ]
-                                      }
-                                    ],
-                                    "distinct": false,
-                                    "name": "MAX"
-                                  }
-                                }
-                              ],
-                              "where": []
-                            }
-                          },
-                          {
-                            "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
-                            "query": {
-                              "ctes": [],
-                              "distinct": false,
-                              "from_table": {
-                                "alias": "",
-                                "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base"
-                              },
-                              "group_by": [],
-                              "having": [],
-                              "joins": [
-                                {
-                                  "join_type": "INNER",
-                                  "on": {
-                                    "left": {
-                                      "left": {
-                                        "parts": [
-                                          "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                          "__snapshot_key_1"
-                                        ]
-                                      },
-                                      "op": "IS NOT DISTINCT FROM",
-                                      "right": {
-                                        "parts": [
-                                          "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
-                                          "__snapshot_key_1"
-                                        ]
-                                      }
-                                    },
-                                    "op": "AND",
-                                    "right": {
-                                      "left": {
-                                        "parts": [
-                                          "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                          "__snapshot_order"
-                                        ]
-                                      },
-                                      "op": "=",
-                                      "right": {
-                                        "parts": [
-                                          "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
-                                          "__snapshot_order"
-                                        ]
-                                      }
-                                    }
-                                  },
-                                  "table": {
-                                    "alias": "",
-                                    "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete"
-                                  }
-                                }
-                              ],
-                              "limit": null,
-                              "observation_scan": false,
-                              "order_by": [],
-                              "qualify": [],
-                              "select": [
-                                {
-                                  "alias": "g1",
-                                  "expression": {
-                                    "parts": [
-                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                      "g1"
-                                    ]
-                                  }
-                                },
-                                {
-                                  "alias": "__snapshot_key_1",
-                                  "expression": {
-                                    "parts": [
-                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                      "__snapshot_key_1"
-                                    ]
-                                  }
-                                },
-                                {
-                                  "alias": "__snapshot_value",
-                                  "expression": {
-                                    "parts": [
-                                      "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                      "__snapshot_value"
-                                    ]
-                                  }
-                                }
-                              ],
-                              "where": []
-                            }
-                          }
-                        ],
+                        "ctes": [],
                         "distinct": false,
                         "from_table": {
                           "alias": "",
-                          "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows"
+                          "name": "comparison_orders"
                         },
                         "group_by": [
                           {
                             "parts": [
-                              "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
-                              "g1"
+                              "comparison_orders",
+                              "customer_id"
                             ]
                           }
                         ],
@@ -982,7 +770,72 @@
                             "alias": "g1",
                             "expression": {
                               "parts": [
-                                "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
+                                "comparison_orders",
+                                "customer_id"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "m1",
+                            "expression": {
+                              "args": [
+                                {
+                                  "left": {
+                                    "parts": [
+                                      "comparison_orders",
+                                      "order_total_cents"
+                                    ]
+                                  },
+                                  "op": "/",
+                                  "right": {
+                                    "temporal": false,
+                                    "value": 100.0
+                                  }
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "SUM"
+                            }
+                          },
+                          {
+                            "alias": "m1_rows",
+                            "expression": {
+                              "args": [
+                                {
+                                  "temporal": false,
+                                  "value": 1
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "COUNT"
+                            }
+                          }
+                        ],
+                        "where": []
+                      }
+                    },
+                    {
+                      "name": "leaf_1__revenue_usd_customer_source_1__guarded_base",
+                      "query": {
+                        "ctes": [],
+                        "distinct": false,
+                        "from_table": {
+                          "alias": "base",
+                          "name": "leaf_1__revenue_usd_customer_source_1__leaf_1"
+                        },
+                        "group_by": [],
+                        "having": [],
+                        "joins": [],
+                        "limit": null,
+                        "observation_scan": false,
+                        "order_by": [],
+                        "qualify": [],
+                        "select": [
+                          {
+                            "alias": "g1",
+                            "expression": {
+                              "parts": [
+                                "base",
                                 "g1"
                               ]
                             }
@@ -993,13 +846,75 @@
                               "args": [
                                 {
                                   "parts": [
-                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
-                                    "__snapshot_value"
+                                    "base",
+                                    "m1"
+                                  ]
+                                },
+                                {
+                                  "else_expr": null,
+                                  "whens": [
+                                    {
+                                      "condition": {
+                                        "left": {
+                                          "left": {
+                                            "frame": "",
+                                            "function": {
+                                              "args": [
+                                                {
+                                                  "parts": [
+                                                    "base",
+                                                    "m1"
+                                                  ]
+                                                }
+                                              ],
+                                              "distinct": false,
+                                              "name": "COUNT"
+                                            },
+                                            "order_by": [],
+                                            "partition_by": []
+                                          },
+                                          "op": ">",
+                                          "right": {
+                                            "temporal": false,
+                                            "value": 0
+                                          }
+                                        },
+                                        "op": "AND",
+                                        "right": {
+                                          "left": {
+                                            "expr": {
+                                              "parts": [
+                                                "base",
+                                                "m1_rows"
+                                              ]
+                                            }
+                                          },
+                                          "op": "OR",
+                                          "right": {
+                                            "left": {
+                                              "parts": [
+                                                "base",
+                                                "m1_rows"
+                                              ]
+                                            },
+                                            "op": "=",
+                                            "right": {
+                                              "temporal": false,
+                                              "value": 0
+                                            }
+                                          }
+                                        }
+                                      },
+                                      "result": {
+                                        "temporal": false,
+                                        "value": 0
+                                      }
+                                    }
                                   ]
                                 }
                               ],
                               "distinct": false,
-                              "name": "SUM"
+                              "name": "COALESCE"
                             }
                           }
                         ],
@@ -1010,7 +925,7 @@
                   "distinct": false,
                   "from_table": {
                     "alias": "base",
-                    "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1"
+                    "name": "leaf_1__revenue_usd_customer_source_1__guarded_base"
                   },
                   "group_by": [],
                   "having": [],
@@ -1043,13 +958,13 @@
                 }
               },
               {
-                "name": "leaf_1__qualified_customers_by_lifetime_spend_1",
+                "name": "leaf_1__qualified_customers_by_revenue_usd_1",
                 "query": {
                   "ctes": [],
                   "distinct": true,
                   "from_table": {
                     "alias": "predicate_source",
-                    "name": "leaf_1__lifetime_spend_customer_source_1"
+                    "name": "leaf_1__revenue_usd_customer_source_1"
                   },
                   "group_by": [],
                   "having": [],
@@ -1127,14 +1042,14 @@
                   "op": "=",
                   "right": {
                     "parts": [
-                      "leaf_1__qualified_customers_by_lifetime_spend_1",
+                      "leaf_1__qualified_customers_by_revenue_usd_1",
                       "dimension.jaffle_customer_id"
                     ]
                   }
                 },
                 "table": {
                   "alias": "",
-                  "name": "leaf_1__qualified_customers_by_lifetime_spend_1"
+                  "name": "leaf_1__qualified_customers_by_revenue_usd_1"
                 }
               }
             ],
@@ -1506,8 +1421,10 @@
           "expression": {
             "entity": "entity.jaffle_customer",
             "input": {
-              "kind": "metric",
-              "metric": "metric.jaffle.lifetime_spend"
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.revenue_usd",
+              "temporal_role": ""
             },
             "kind": "metric_predicate",
             "op": "gte",
@@ -1648,7 +1565,7 @@
         "entity": "entity.jaffle_customer",
         "having": [
           {
-            "field": "metric.jaffle.lifetime_spend",
+            "field": "measure.jaffle.revenue_usd",
             "op": "gte",
             "value": 500
           }
@@ -1722,7 +1639,7 @@
         "entity": "entity.jaffle_customer",
         "having": [
           {
-            "field": "metric.jaffle.lifetime_spend",
+            "field": "measure.jaffle.revenue_usd",
             "op": "gte",
             "value": 500
           }
@@ -1731,7 +1648,7 @@
       }
     ]
   },
-  "rendered_sql": "WITH leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  comparison_customers.customer_id AS __snapshot_key_1,\n  comparison_customers.lifetime_spend_cents / 100.0 AS __snapshot_value,\n  comparison_customers.first_order_at AS __snapshot_order\nFROM comparison_customers\nWHERE\n  comparison_customers.first_order_at IS NOT NULL\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  MAX(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order) AS __snapshot_order\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.g1 AS g1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 AS __snapshot_key_1,\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_value AS __snapshot_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base\nINNER JOIN leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete ON leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_key_1 IS NOT DISTINCT FROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_key_1 AND leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base.__snapshot_order = leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete.__snapshot_order\n),\nleaf_1__lifetime_spend_customer_source_1__leaf_1 AS (\nSELECT\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows.g1 AS g1,\n  SUM(leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows.__snapshot_value) AS m1\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows\nGROUP BY\n  leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows.g1\n),\nleaf_1__lifetime_spend_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_spend_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_spend_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_spend_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
+  "rendered_sql": "WITH leaf_1__revenue_usd_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__revenue_usd_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__revenue_usd_customer_source_1__leaf_1 AS base\n),\nleaf_1__revenue_usd_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__revenue_usd_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_revenue_usd_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__revenue_usd_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value >= 500\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_by_revenue_usd_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_revenue_usd_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.t AS \"period\",\n  base.m1 AS \"filtered_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST",
   "routes": [
     {
       "basis": "own_key",
@@ -1923,243 +1840,23 @@
         "query": {
           "ctes": [
             {
-              "name": "leaf_1__lifetime_spend_customer_source_1",
+              "name": "leaf_1__revenue_usd_customer_source_1",
               "query": {
                 "ctes": [
                   {
-                    "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1",
+                    "name": "leaf_1__revenue_usd_customer_source_1__leaf_1",
                     "query": {
-                      "ctes": [
-                        {
-                          "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                          "query": {
-                            "ctes": [],
-                            "distinct": false,
-                            "from_table": {
-                              "alias": "",
-                              "name": "comparison_customers"
-                            },
-                            "group_by": [],
-                            "having": [],
-                            "joins": [],
-                            "limit": null,
-                            "observation_scan": false,
-                            "order_by": [],
-                            "qualify": [],
-                            "select": [
-                              {
-                                "alias": "g1",
-                                "expression": {
-                                  "parts": [
-                                    "comparison_customers",
-                                    "customer_id"
-                                  ]
-                                }
-                              },
-                              {
-                                "alias": "__snapshot_key_1",
-                                "expression": {
-                                  "parts": [
-                                    "comparison_customers",
-                                    "customer_id"
-                                  ]
-                                }
-                              },
-                              {
-                                "alias": "__snapshot_value",
-                                "expression": {
-                                  "left": {
-                                    "parts": [
-                                      "comparison_customers",
-                                      "lifetime_spend_cents"
-                                    ]
-                                  },
-                                  "op": "/",
-                                  "right": {
-                                    "temporal": false,
-                                    "value": 100.0
-                                  }
-                                }
-                              },
-                              {
-                                "alias": "__snapshot_order",
-                                "expression": {
-                                  "parts": [
-                                    "comparison_customers",
-                                    "first_order_at"
-                                  ]
-                                }
-                              }
-                            ],
-                            "where": [
-                              {
-                                "left": {
-                                  "parts": [
-                                    "comparison_customers",
-                                    "first_order_at"
-                                  ]
-                                },
-                                "op": "IS NOT",
-                                "right": {
-                                  "temporal": false,
-                                  "value": null
-                                }
-                              }
-                            ]
-                          }
-                        },
-                        {
-                          "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
-                          "query": {
-                            "ctes": [],
-                            "distinct": false,
-                            "from_table": {
-                              "alias": "",
-                              "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base"
-                            },
-                            "group_by": [
-                              {
-                                "parts": [
-                                  "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                  "__snapshot_key_1"
-                                ]
-                              }
-                            ],
-                            "having": [],
-                            "joins": [],
-                            "limit": null,
-                            "observation_scan": false,
-                            "order_by": [],
-                            "qualify": [],
-                            "select": [
-                              {
-                                "alias": "__snapshot_key_1",
-                                "expression": {
-                                  "parts": [
-                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                    "__snapshot_key_1"
-                                  ]
-                                }
-                              },
-                              {
-                                "alias": "__snapshot_order",
-                                "expression": {
-                                  "args": [
-                                    {
-                                      "parts": [
-                                        "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                        "__snapshot_order"
-                                      ]
-                                    }
-                                  ],
-                                  "distinct": false,
-                                  "name": "MAX"
-                                }
-                              }
-                            ],
-                            "where": []
-                          }
-                        },
-                        {
-                          "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
-                          "query": {
-                            "ctes": [],
-                            "distinct": false,
-                            "from_table": {
-                              "alias": "",
-                              "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base"
-                            },
-                            "group_by": [],
-                            "having": [],
-                            "joins": [
-                              {
-                                "join_type": "INNER",
-                                "on": {
-                                  "left": {
-                                    "left": {
-                                      "parts": [
-                                        "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                        "__snapshot_key_1"
-                                      ]
-                                    },
-                                    "op": "IS NOT DISTINCT FROM",
-                                    "right": {
-                                      "parts": [
-                                        "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
-                                        "__snapshot_key_1"
-                                      ]
-                                    }
-                                  },
-                                  "op": "AND",
-                                  "right": {
-                                    "left": {
-                                      "parts": [
-                                        "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                        "__snapshot_order"
-                                      ]
-                                    },
-                                    "op": "=",
-                                    "right": {
-                                      "parts": [
-                                        "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete",
-                                        "__snapshot_order"
-                                      ]
-                                    }
-                                  }
-                                },
-                                "table": {
-                                  "alias": "",
-                                  "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_complete"
-                                }
-                              }
-                            ],
-                            "limit": null,
-                            "observation_scan": false,
-                            "order_by": [],
-                            "qualify": [],
-                            "select": [
-                              {
-                                "alias": "g1",
-                                "expression": {
-                                  "parts": [
-                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                    "g1"
-                                  ]
-                                }
-                              },
-                              {
-                                "alias": "__snapshot_key_1",
-                                "expression": {
-                                  "parts": [
-                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                    "__snapshot_key_1"
-                                  ]
-                                }
-                              },
-                              {
-                                "alias": "__snapshot_value",
-                                "expression": {
-                                  "parts": [
-                                    "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_base",
-                                    "__snapshot_value"
-                                  ]
-                                }
-                              }
-                            ],
-                            "where": []
-                          }
-                        }
-                      ],
+                      "ctes": [],
                       "distinct": false,
                       "from_table": {
                         "alias": "",
-                        "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows"
+                        "name": "comparison_orders"
                       },
                       "group_by": [
                         {
                           "parts": [
-                            "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
-                            "g1"
+                            "comparison_orders",
+                            "customer_id"
                           ]
                         }
                       ],
@@ -2174,7 +1871,72 @@
                           "alias": "g1",
                           "expression": {
                             "parts": [
-                              "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
+                              "comparison_orders",
+                              "customer_id"
+                            ]
+                          }
+                        },
+                        {
+                          "alias": "m1",
+                          "expression": {
+                            "args": [
+                              {
+                                "left": {
+                                  "parts": [
+                                    "comparison_orders",
+                                    "order_total_cents"
+                                  ]
+                                },
+                                "op": "/",
+                                "right": {
+                                  "temporal": false,
+                                  "value": 100.0
+                                }
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "SUM"
+                          }
+                        },
+                        {
+                          "alias": "m1_rows",
+                          "expression": {
+                            "args": [
+                              {
+                                "temporal": false,
+                                "value": 1
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "COUNT"
+                          }
+                        }
+                      ],
+                      "where": []
+                    }
+                  },
+                  {
+                    "name": "leaf_1__revenue_usd_customer_source_1__guarded_base",
+                    "query": {
+                      "ctes": [],
+                      "distinct": false,
+                      "from_table": {
+                        "alias": "base",
+                        "name": "leaf_1__revenue_usd_customer_source_1__leaf_1"
+                      },
+                      "group_by": [],
+                      "having": [],
+                      "joins": [],
+                      "limit": null,
+                      "observation_scan": false,
+                      "order_by": [],
+                      "qualify": [],
+                      "select": [
+                        {
+                          "alias": "g1",
+                          "expression": {
+                            "parts": [
+                              "base",
                               "g1"
                             ]
                           }
@@ -2185,13 +1947,75 @@
                             "args": [
                               {
                                 "parts": [
-                                  "leaf_1__lifetime_spend_customer_source_1__leaf_1__snapshot_rows",
-                                  "__snapshot_value"
+                                  "base",
+                                  "m1"
+                                ]
+                              },
+                              {
+                                "else_expr": null,
+                                "whens": [
+                                  {
+                                    "condition": {
+                                      "left": {
+                                        "left": {
+                                          "frame": "",
+                                          "function": {
+                                            "args": [
+                                              {
+                                                "parts": [
+                                                  "base",
+                                                  "m1"
+                                                ]
+                                              }
+                                            ],
+                                            "distinct": false,
+                                            "name": "COUNT"
+                                          },
+                                          "order_by": [],
+                                          "partition_by": []
+                                        },
+                                        "op": ">",
+                                        "right": {
+                                          "temporal": false,
+                                          "value": 0
+                                        }
+                                      },
+                                      "op": "AND",
+                                      "right": {
+                                        "left": {
+                                          "expr": {
+                                            "parts": [
+                                              "base",
+                                              "m1_rows"
+                                            ]
+                                          }
+                                        },
+                                        "op": "OR",
+                                        "right": {
+                                          "left": {
+                                            "parts": [
+                                              "base",
+                                              "m1_rows"
+                                            ]
+                                          },
+                                          "op": "=",
+                                          "right": {
+                                            "temporal": false,
+                                            "value": 0
+                                          }
+                                        }
+                                      }
+                                    },
+                                    "result": {
+                                      "temporal": false,
+                                      "value": 0
+                                    }
+                                  }
                                 ]
                               }
                             ],
                             "distinct": false,
-                            "name": "SUM"
+                            "name": "COALESCE"
                           }
                         }
                       ],
@@ -2202,7 +2026,7 @@
                 "distinct": false,
                 "from_table": {
                   "alias": "base",
-                  "name": "leaf_1__lifetime_spend_customer_source_1__leaf_1"
+                  "name": "leaf_1__revenue_usd_customer_source_1__guarded_base"
                 },
                 "group_by": [],
                 "having": [],
@@ -2235,13 +2059,13 @@
               }
             },
             {
-              "name": "leaf_1__qualified_customers_by_lifetime_spend_1",
+              "name": "leaf_1__qualified_customers_by_revenue_usd_1",
               "query": {
                 "ctes": [],
                 "distinct": true,
                 "from_table": {
                   "alias": "predicate_source",
-                  "name": "leaf_1__lifetime_spend_customer_source_1"
+                  "name": "leaf_1__revenue_usd_customer_source_1"
                 },
                 "group_by": [],
                 "having": [],
@@ -2319,14 +2143,14 @@
                 "op": "=",
                 "right": {
                   "parts": [
-                    "leaf_1__qualified_customers_by_lifetime_spend_1",
+                    "leaf_1__qualified_customers_by_revenue_usd_1",
                     "dimension.jaffle_customer_id"
                   ]
                 }
               },
               "table": {
                 "alias": "",
-                "name": "leaf_1__qualified_customers_by_lifetime_spend_1"
+                "name": "leaf_1__qualified_customers_by_revenue_usd_1"
               }
             }
           ],
@@ -2649,28 +2473,7 @@
     "snapshot_row_selection": "aggregate_join",
     "timestamp_type": "TIMESTAMP"
   },
-  "warnings": [
-    {
-      "code": "STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
-      "details": {
-        "clock_class": "event_time",
-        "clock_column": "first_order_at",
-        "fix": "Key the entity by the series columns plus its snapshot time, e.g. key: [store_id, date_day].",
-        "measure_id": "measure.jaffle.lifetime_spend_usd",
-        "row_key": [
-          "customer_id"
-        ],
-        "temporal_role": "temporal_role.jaffle_customer_first_order_at"
-      },
-      "message": "Stock measure 'measure.jaffle.lifetime_spend_usd' is keyed by ['customer_id'], which doesn't contain its event_time clock 'first_order_at', so each row counts as its own series and each result adds up every row in it. That's right only if the table holds one row per series (current state); if it keeps snapshots, they were summed. Key the entity by the series columns plus its snapshot time, e.g. key: [store_id, date_day]. With that clock declared class: as_of_time, a key without it is refused instead.",
-      "object_ids": [
-        "measure.jaffle.lifetime_spend_usd"
-      ],
-      "severity": "warning",
-      "stage": "planning"
-    }
-  ],
   "window": {
-    "now": "2026-10-27T03:40:56.627445Z"
+    "now": "2026-10-27T03:46:01.390533Z"
   }
 }

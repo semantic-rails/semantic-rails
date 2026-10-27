@@ -1,4 +1,12 @@
 {
+  "assumptions": [
+    {
+      "code": "ENTITY_FILTER_OVER",
+      "entity": "entity.jaffle_customer",
+      "message": "Each entity.jaffle_customer's aggregate was taken over all of its rows, ignoring the query window.",
+      "over": "all_time"
+    }
+  ],
   "clock": "temporal_role.jaffle_order_time",
   "dialect": "duckdb",
   "explain": {
@@ -11,7 +19,7 @@
           "alias": "repeat_customer_orders",
           "expression": {
             "kind": "metric",
-            "metric": "metric.jaffle.repeat_customer_orders"
+            "metric": "metric.jaffle.orders"
           }
         }
       ],
@@ -98,8 +106,8 @@
     },
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 1.199,
-      "compile_ms": 0.701,
+      "cache_lookup_ms": 1.512,
+      "compile_ms": 0.924,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -290,23 +298,8 @@
         {
           "aggregation": "count_distinct",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
-          "filter_spec": {
-            "all": [
-              {
-                "expression": {
-                  "entity": "entity.jaffle_customer",
-                  "input": {
-                    "measure": "measure.jaffle.lifetime_order_count"
-                  },
-                  "kind": "metric_predicate",
-                  "op": ">",
-                  "scope_mode": "entity_only",
-                  "value": 1
-                }
-              }
-            ]
-          },
+          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "filter_spec": {},
           "measure_id": "measure.jaffle.order_count",
           "temporal_role": "temporal_role.jaffle_order_time",
           "window_spec": {}
@@ -565,23 +558,8 @@
           "bound_measure": {
             "aggregation": "count_distinct",
             "aggregation_params": {},
-            "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
-            "filter_spec": {
-              "all": [
-                {
-                  "expression": {
-                    "entity": "entity.jaffle_customer",
-                    "input": {
-                      "measure": "measure.jaffle.lifetime_order_count"
-                    },
-                    "kind": "metric_predicate",
-                    "op": ">",
-                    "scope_mode": "entity_only",
-                    "value": 1
-                  }
-                }
-              ]
-            },
+            "alias": "leaf__measure_jaffle_order_count__count_distinct",
+            "filter_spec": {},
             "measure_id": "measure.jaffle.order_count",
             "temporal_role": "temporal_role.jaffle_order_time",
             "window_spec": {}
@@ -711,7 +689,7 @@
       "post_aggregation_exprs": {
         "repeat_customer_orders": {
           "kind": "metric",
-          "metric": "metric.jaffle.repeat_customer_orders"
+          "metric": "metric.jaffle.orders"
         }
       },
       "query": {
@@ -720,7 +698,25 @@
           "dimension.jaffle_store_name"
         ],
         "limit": null,
-        "metric_filters": [],
+        "metric_filters": [
+          {
+            "expression": {
+              "entity": "entity.jaffle_customer",
+              "input": {
+                "aggregation": "",
+                "kind": "measure",
+                "measure": "measure.jaffle.order_count",
+                "temporal_role": ""
+              },
+              "kind": "metric_predicate",
+              "op": "gt",
+              "scope_mode": "entity_only",
+              "value": 1
+            },
+            "op": "is",
+            "value": true
+          }
+        ],
         "order_by": [
           {
             "direction": "ASC",
@@ -736,7 +732,7 @@
             "as": "repeat_customer_orders",
             "expression": {
               "kind": "metric",
-              "metric": "metric.jaffle.repeat_customer_orders"
+              "metric": "metric.jaffle.orders"
             }
           }
         ],
@@ -764,7 +760,7 @@
             "alias": "repeat_customer_orders",
             "expression": {
               "kind": "metric",
-              "metric": "metric.jaffle.repeat_customer_orders"
+              "metric": "metric.jaffle.orders"
             }
           }
         ],
@@ -784,22 +780,7 @@
             "details": {
               "aggregation": "count_distinct",
               "entity": "entity.jaffle_order",
-              "filter": {
-                "all": [
-                  {
-                    "expression": {
-                      "entity": "entity.jaffle_customer",
-                      "input": {
-                        "measure": "measure.jaffle.lifetime_order_count"
-                      },
-                      "kind": "metric_predicate",
-                      "op": ">",
-                      "scope_mode": "entity_only",
-                      "value": 1
-                    }
-                  }
-                ]
-              },
+              "filter": {},
               "measure": "measure.jaffle.order_count",
               "temporal_roles": [
                 "temporal_role.jaffle_order_time"
@@ -808,18 +789,18 @@
             "id": "source_leaf_1",
             "inputs": [],
             "kind": "SourceLeaf",
-            "label": "metric.jaffle.repeat_customer_orders"
+            "label": "metric.jaffle.orders"
           },
           {
             "details": {
-              "metric": "metric.jaffle.repeat_customer_orders"
+              "metric": "metric.jaffle.orders"
             },
             "id": "metric_ref_2",
             "inputs": [
               "source_leaf_1"
             ],
             "kind": "MetricRef",
-            "label": "metric.jaffle.repeat_customer_orders"
+            "label": "metric.jaffle.orders"
           },
           {
             "details": {
@@ -860,7 +841,25 @@
         "dimension.jaffle_store_name"
       ],
       "limit": null,
-      "metric_filters": [],
+      "metric_filters": [
+        {
+          "expression": {
+            "entity": "entity.jaffle_customer",
+            "input": {
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.order_count",
+              "temporal_role": ""
+            },
+            "kind": "metric_predicate",
+            "op": "gt",
+            "scope_mode": "entity_only",
+            "value": 1
+          },
+          "op": "is",
+          "value": true
+        }
+      ],
       "order_by": [
         {
           "direction": "ASC",
@@ -876,7 +875,7 @@
           "as": "repeat_customer_orders",
           "expression": {
             "kind": "metric",
-            "metric": "metric.jaffle.repeat_customer_orders"
+            "metric": "metric.jaffle.orders"
           }
         }
       ],
@@ -926,8 +925,17 @@
           "has_start": false,
           "has_time_filter": false,
           "pushed_to_scan": false,
-          "relation": "comparison_customers",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
+          "time_filter": {}
+        },
+        {
+          "has_end": false,
+          "has_start": false,
+          "has_time_filter": false,
+          "pushed_to_scan": true,
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_3",
           "time_filter": {}
         }
       ],
@@ -940,7 +948,7 @@
           "measures": [
             {
               "aggregation": "count_distinct",
-              "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
+              "alias": "leaf__measure_jaffle_order_count__count_distinct",
               "measure_id": "measure.jaffle.order_count"
             }
           ],
@@ -958,14 +966,27 @@
           "large_relation_hint": false,
           "measures": [
             {
-              "aggregation": "sum",
-              "measure_id": "measure.jaffle.lifetime_order_count"
+              "aggregation": "count_distinct",
+              "measure_id": "measure.jaffle.order_count"
             }
           ],
-          "relation": "comparison_customers",
+          "relation": "comparison_orders",
           "scan_id": "leaf_1_predicate_1_scan_1",
           "selected_relation_type": "raw",
-          "source_entity": "entity.jaffle_customer",
+          "source_entity": "entity.jaffle_order",
+          "time_filter_has_end": false,
+          "time_filter_has_start": false
+        },
+        {
+          "estimated_rows": "unknown_compile_only",
+          "has_source_filter": true,
+          "has_time_filter": false,
+          "large_relation_hint": false,
+          "measures": [],
+          "relation": "comparison_orders",
+          "scan_id": "scope_scan_3",
+          "selected_relation_type": "raw",
+          "source_entity": "entity.jaffle_order",
           "time_filter_has_end": false,
           "time_filter_has_start": false
         }
@@ -1139,7 +1160,7 @@
             "measures": [
               {
                 "aggregation": "count_distinct",
-                "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct",
                 "measure_id": "measure.jaffle.order_count"
               }
             ],
@@ -1316,8 +1337,8 @@
             "conversion_roles": [],
             "measures": [
               {
-                "aggregation": "sum",
-                "measure_id": "measure.jaffle.lifetime_order_count"
+                "aggregation": "count_distinct",
+                "measure_id": "measure.jaffle.order_count"
               }
             ],
             "metric_recipes": [],
@@ -1326,29 +1347,29 @@
               "input": {
                 "aggregation": "",
                 "kind": "measure",
-                "measure": "measure.jaffle.lifetime_order_count",
+                "measure": "measure.jaffle.order_count",
                 "temporal_role": ""
               },
               "kind": "metric_predicate",
-              "op": ">",
+              "op": "gt",
               "scope_mode": "entity_only",
               "value": 1
             },
             "predicate_input": {
               "aggregation": "",
               "kind": "measure",
-              "measure": "measure.jaffle.lifetime_order_count",
+              "measure": "measure.jaffle.order_count",
               "temporal_role": ""
             },
-            "relation": "comparison_customers",
-            "selected_relation": "comparison_customers",
+            "relation": "comparison_orders",
+            "selected_relation": "comparison_orders",
             "selected_relation_type": "raw",
-            "source_entity": "entity.jaffle_customer"
+            "source_entity": "entity.jaffle_order"
           },
           "id": "leaf_1_predicate_1_scan_1",
           "inputs": [],
           "kind": "Scan",
-          "label": "Scan predicate source comparison_customers"
+          "label": "Scan predicate source comparison_orders"
         },
         {
           "details": {
@@ -1370,7 +1391,7 @@
             "keys": [
               "dimension.jaffle_customer_id"
             ],
-            "op": ">",
+            "op": "gt",
             "scope_mode": "entity_only",
             "source_scan_count": 1,
             "value": 1
@@ -1395,11 +1416,11 @@
                 "input": {
                   "aggregation": "",
                   "kind": "measure",
-                  "measure": "measure.jaffle.lifetime_order_count",
+                  "measure": "measure.jaffle.order_count",
                   "temporal_role": ""
                 },
                 "kind": "metric_predicate",
-                "op": ">",
+                "op": "gt",
                 "scope_mode": "entity_only",
                 "value": 1
               }
@@ -1429,7 +1450,7 @@
             "measures": [
               {
                 "aggregation": "count_distinct",
-                "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
+                "alias": "leaf__measure_jaffle_order_count__count_distinct",
                 "measure_id": "measure.jaffle.order_count"
               }
             ]
@@ -1482,12 +1503,12 @@
         }
       ],
       "outputs": {
-        "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc": "leaf_1",
+        "leaf__measure_jaffle_order_count__count_distinct": "leaf_1",
         "repeat_customer_orders": "final_project"
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"repeat_customer_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
+    "rendered_sql": "WITH leaf_1__order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"repeat_customer_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1498,22 +1519,7 @@
           "details": {
             "aggregation": "count_distinct",
             "entity": "entity.jaffle_order",
-            "filter": {
-              "all": [
-                {
-                  "expression": {
-                    "entity": "entity.jaffle_customer",
-                    "input": {
-                      "measure": "measure.jaffle.lifetime_order_count"
-                    },
-                    "kind": "metric_predicate",
-                    "op": ">",
-                    "scope_mode": "entity_only",
-                    "value": 1
-                  }
-                }
-              ]
-            },
+            "filter": {},
             "measure": "measure.jaffle.order_count",
             "temporal_roles": [
               "temporal_role.jaffle_order_time"
@@ -1522,18 +1528,18 @@
           "id": "source_leaf_1",
           "inputs": [],
           "kind": "SourceLeaf",
-          "label": "metric.jaffle.repeat_customer_orders"
+          "label": "metric.jaffle.orders"
         },
         {
           "details": {
-            "metric": "metric.jaffle.repeat_customer_orders"
+            "metric": "metric.jaffle.orders"
           },
           "id": "metric_ref_2",
           "inputs": [
             "source_leaf_1"
           ],
           "kind": "MetricRef",
-          "label": "metric.jaffle.repeat_customer_orders"
+          "label": "metric.jaffle.orders"
         },
         {
           "details": {
@@ -1561,22 +1567,22 @@
           "query": {
             "ctes": [
               {
-                "name": "leaf_1__lifetime_order_count_customer_source_1",
+                "name": "leaf_1__order_count_customer_source_1",
                 "query": {
                   "ctes": [
                     {
-                      "name": "leaf_1__lifetime_order_count_customer_source_1__leaf_1",
+                      "name": "leaf_1__order_count_customer_source_1__leaf_1",
                       "query": {
                         "ctes": [],
                         "distinct": false,
                         "from_table": {
                           "alias": "",
-                          "name": "comparison_customers"
+                          "name": "comparison_orders"
                         },
                         "group_by": [
                           {
                             "parts": [
-                              "comparison_customers",
+                              "comparison_orders",
                               "customer_id"
                             ]
                           }
@@ -1592,7 +1598,7 @@
                             "alias": "g1",
                             "expression": {
                               "parts": [
-                                "comparison_customers",
+                                "comparison_orders",
                                 "customer_id"
                               ]
                             }
@@ -1603,25 +1609,12 @@
                               "args": [
                                 {
                                   "parts": [
-                                    "comparison_customers",
-                                    "lifetime_order_count"
+                                    "comparison_orders",
+                                    "order_id"
                                   ]
                                 }
                               ],
-                              "distinct": false,
-                              "name": "SUM"
-                            }
-                          },
-                          {
-                            "alias": "m1_rows",
-                            "expression": {
-                              "args": [
-                                {
-                                  "temporal": false,
-                                  "value": 1
-                                }
-                              ],
-                              "distinct": false,
+                              "distinct": true,
                               "name": "COUNT"
                             }
                           }
@@ -1630,13 +1623,13 @@
                       }
                     },
                     {
-                      "name": "leaf_1__lifetime_order_count_customer_source_1__guarded_base",
+                      "name": "leaf_1__order_count_customer_source_1__guarded_base",
                       "query": {
                         "ctes": [],
                         "distinct": false,
                         "from_table": {
                           "alias": "base",
-                          "name": "leaf_1__lifetime_order_count_customer_source_1__leaf_1"
+                          "name": "leaf_1__order_count_customer_source_1__leaf_1"
                         },
                         "group_by": [],
                         "having": [],
@@ -1658,78 +1651,51 @@
                           {
                             "alias": "m1",
                             "expression": {
-                              "args": [
+                              "else_expr": null,
+                              "whens": [
                                 {
-                                  "parts": [
-                                    "base",
-                                    "m1"
-                                  ]
-                                },
-                                {
-                                  "else_expr": null,
-                                  "whens": [
-                                    {
-                                      "condition": {
-                                        "left": {
-                                          "left": {
-                                            "frame": "",
-                                            "function": {
-                                              "args": [
-                                                {
-                                                  "parts": [
-                                                    "base",
-                                                    "m1"
-                                                  ]
-                                                }
-                                              ],
-                                              "distinct": false,
-                                              "name": "COUNT"
-                                            },
-                                            "order_by": [],
-                                            "partition_by": []
-                                          },
-                                          "op": ">",
-                                          "right": {
-                                            "temporal": false,
-                                            "value": 0
+                                  "condition": {
+                                    "left": {
+                                      "frame": "",
+                                      "function": {
+                                        "args": [
+                                          {
+                                            "parts": [
+                                              "base",
+                                              "m1"
+                                            ]
                                           }
-                                        },
-                                        "op": "AND",
-                                        "right": {
-                                          "left": {
-                                            "expr": {
-                                              "parts": [
-                                                "base",
-                                                "m1_rows"
-                                              ]
-                                            }
-                                          },
-                                          "op": "OR",
-                                          "right": {
-                                            "left": {
-                                              "parts": [
-                                                "base",
-                                                "m1_rows"
-                                              ]
-                                            },
-                                            "op": "=",
-                                            "right": {
-                                              "temporal": false,
-                                              "value": 0
-                                            }
-                                          }
-                                        }
+                                        ],
+                                        "distinct": false,
+                                        "name": "MAX"
                                       },
-                                      "result": {
+                                      "order_by": [],
+                                      "partition_by": []
+                                    },
+                                    "op": ">",
+                                    "right": {
+                                      "temporal": false,
+                                      "value": 0
+                                    }
+                                  },
+                                  "result": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "base",
+                                          "m1"
+                                        ]
+                                      },
+                                      {
                                         "temporal": false,
                                         "value": 0
                                       }
-                                    }
-                                  ]
+                                    ],
+                                    "distinct": false,
+                                    "name": "COALESCE"
+                                  }
                                 }
-                              ],
-                              "distinct": false,
-                              "name": "COALESCE"
+                              ]
                             }
                           }
                         ],
@@ -1740,7 +1706,7 @@
                   "distinct": false,
                   "from_table": {
                     "alias": "base",
-                    "name": "leaf_1__lifetime_order_count_customer_source_1__guarded_base"
+                    "name": "leaf_1__order_count_customer_source_1__guarded_base"
                   },
                   "group_by": [],
                   "having": [],
@@ -1773,13 +1739,13 @@
                 }
               },
               {
-                "name": "leaf_1__qualified_customers_by_lifetime_order_count_1",
+                "name": "leaf_1__qualified_customers_by_order_count_1",
                 "query": {
                   "ctes": [],
                   "distinct": true,
                   "from_table": {
                     "alias": "predicate_source",
-                    "name": "leaf_1__lifetime_order_count_customer_source_1"
+                    "name": "leaf_1__order_count_customer_source_1"
                   },
                   "group_by": [],
                   "having": [],
@@ -1885,14 +1851,14 @@
                   "op": "=",
                   "right": {
                     "parts": [
-                      "leaf_1__qualified_customers_by_lifetime_order_count_1",
+                      "leaf_1__qualified_customers_by_order_count_1",
                       "dimension.jaffle_customer_id"
                     ]
                   }
                 },
                 "table": {
                   "alias": "",
-                  "name": "leaf_1__qualified_customers_by_lifetime_order_count_1"
+                  "name": "leaf_1__qualified_customers_by_order_count_1"
                 }
               }
             ],
@@ -1952,6 +1918,84 @@
           }
         },
         {
+          "name": "observed_1_rows",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "comparison_orders"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": 1,
+            "observation_scan": true,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "seen",
+                "expression": {
+                  "temporal": false,
+                  "value": 1
+                }
+              }
+            ],
+            "where": [
+              {
+                "left": {
+                  "parts": [
+                    "comparison_orders",
+                    "order_id"
+                  ]
+                },
+                "op": "IS NOT",
+                "right": {
+                  "temporal": false,
+                  "value": null
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "observed_1",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "",
+              "name": "observed_1_rows"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": false,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "seen",
+                "expression": {
+                  "args": [
+                    {
+                      "parts": [
+                        "observed_1_rows",
+                        "seen"
+                      ]
+                    }
+                  ],
+                  "distinct": false,
+                  "name": "COUNT"
+                }
+              }
+            ],
+            "where": []
+          }
+        },
+        {
           "name": "guarded_base",
           "query": {
             "ctes": [],
@@ -1962,7 +2006,16 @@
             },
             "group_by": [],
             "having": [],
-            "joins": [],
+            "joins": [
+              {
+                "join_type": "CROSS",
+                "on": null,
+                "table": {
+                  "alias": "",
+                  "name": "observed_1"
+                }
+              }
+            ],
             "limit": null,
             "observation_scan": false,
             "order_by": [],
@@ -1994,26 +2047,42 @@
                     {
                       "condition": {
                         "left": {
-                          "frame": "",
-                          "function": {
-                            "args": [
-                              {
-                                "parts": [
-                                  "base",
-                                  "m1"
-                                ]
-                              }
-                            ],
-                            "distinct": false,
-                            "name": "MAX"
+                          "left": {
+                            "frame": "",
+                            "function": {
+                              "args": [
+                                {
+                                  "parts": [
+                                    "base",
+                                    "m1"
+                                  ]
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "MAX"
+                            },
+                            "order_by": [],
+                            "partition_by": []
                           },
-                          "order_by": [],
-                          "partition_by": []
+                          "op": ">",
+                          "right": {
+                            "temporal": false,
+                            "value": 0
+                          }
                         },
-                        "op": ">",
+                        "op": "OR",
                         "right": {
-                          "temporal": false,
-                          "value": 0
+                          "left": {
+                            "parts": [
+                              "observed_1",
+                              "seen"
+                            ]
+                          },
+                          "op": ">",
+                          "right": {
+                            "temporal": false,
+                            "value": 0
+                          }
                         }
                       },
                       "result": {
@@ -2109,23 +2178,8 @@
       {
         "aggregation": "count_distinct",
         "aggregation_params": {},
-        "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
-        "filter_spec": {
-          "all": [
-            {
-              "expression": {
-                "entity": "entity.jaffle_customer",
-                "input": {
-                  "measure": "measure.jaffle.lifetime_order_count"
-                },
-                "kind": "metric_predicate",
-                "op": ">",
-                "scope_mode": "entity_only",
-                "value": 1
-              }
-            }
-          ]
-        },
+        "alias": "leaf__measure_jaffle_order_count__count_distinct",
+        "filter_spec": {},
         "measure_id": "measure.jaffle.order_count",
         "temporal_role": "temporal_role.jaffle_order_time",
         "window_spec": {}
@@ -2384,23 +2438,8 @@
         "bound_measure": {
           "aggregation": "count_distinct",
           "aggregation_params": {},
-          "alias": "leaf__measure_jaffle_order_count__count_distinct__b6fca8ca7fdc",
-          "filter_spec": {
-            "all": [
-              {
-                "expression": {
-                  "entity": "entity.jaffle_customer",
-                  "input": {
-                    "measure": "measure.jaffle.lifetime_order_count"
-                  },
-                  "kind": "metric_predicate",
-                  "op": ">",
-                  "scope_mode": "entity_only",
-                  "value": 1
-                }
-              }
-            ]
-          },
+          "alias": "leaf__measure_jaffle_order_count__count_distinct",
+          "filter_spec": {},
           "measure_id": "measure.jaffle.order_count",
           "temporal_role": "temporal_role.jaffle_order_time",
           "window_spec": {}
@@ -2530,7 +2569,7 @@
     "post_aggregation_exprs": {
       "repeat_customer_orders": {
         "kind": "metric",
-        "metric": "metric.jaffle.repeat_customer_orders"
+        "metric": "metric.jaffle.orders"
       }
     },
     "query": {
@@ -2539,7 +2578,25 @@
         "dimension.jaffle_store_name"
       ],
       "limit": null,
-      "metric_filters": [],
+      "metric_filters": [
+        {
+          "expression": {
+            "entity": "entity.jaffle_customer",
+            "input": {
+              "aggregation": "",
+              "kind": "measure",
+              "measure": "measure.jaffle.order_count",
+              "temporal_role": ""
+            },
+            "kind": "metric_predicate",
+            "op": "gt",
+            "scope_mode": "entity_only",
+            "value": 1
+          },
+          "op": "is",
+          "value": true
+        }
+      ],
       "order_by": [
         {
           "direction": "ASC",
@@ -2555,7 +2612,7 @@
           "as": "repeat_customer_orders",
           "expression": {
             "kind": "metric",
-            "metric": "metric.jaffle.repeat_customer_orders"
+            "metric": "metric.jaffle.orders"
           }
         }
       ],
@@ -2583,7 +2640,7 @@
           "alias": "repeat_customer_orders",
           "expression": {
             "kind": "metric",
-            "metric": "metric.jaffle.repeat_customer_orders"
+            "metric": "metric.jaffle.orders"
           }
         }
       ],
@@ -2603,22 +2660,7 @@
           "details": {
             "aggregation": "count_distinct",
             "entity": "entity.jaffle_order",
-            "filter": {
-              "all": [
-                {
-                  "expression": {
-                    "entity": "entity.jaffle_customer",
-                    "input": {
-                      "measure": "measure.jaffle.lifetime_order_count"
-                    },
-                    "kind": "metric_predicate",
-                    "op": ">",
-                    "scope_mode": "entity_only",
-                    "value": 1
-                  }
-                }
-              ]
-            },
+            "filter": {},
             "measure": "measure.jaffle.order_count",
             "temporal_roles": [
               "temporal_role.jaffle_order_time"
@@ -2627,18 +2669,18 @@
           "id": "source_leaf_1",
           "inputs": [],
           "kind": "SourceLeaf",
-          "label": "metric.jaffle.repeat_customer_orders"
+          "label": "metric.jaffle.orders"
         },
         {
           "details": {
-            "metric": "metric.jaffle.repeat_customer_orders"
+            "metric": "metric.jaffle.orders"
           },
           "id": "metric_ref_2",
           "inputs": [
             "source_leaf_1"
           ],
           "kind": "MetricRef",
-          "label": "metric.jaffle.repeat_customer_orders"
+          "label": "metric.jaffle.orders"
         },
         {
           "details": {
@@ -2688,12 +2730,28 @@
       }
     ],
     "select": [
-      "metric.jaffle.repeat_customer_orders"
+      {
+        "as": "repeat_customer_orders",
+        "expression": "metric.jaffle.orders"
+      }
     ],
     "time": {
       "grain": "month",
       "temporal_role": "temporal_role.jaffle_order_time"
-    }
+    },
+    "where": [
+      {
+        "entity": "entity.jaffle_customer",
+        "having": [
+          {
+            "field": "measure.jaffle.order_count",
+            "op": "gt",
+            "value": 1
+          }
+        ],
+        "over": "all_time"
+      }
+    ]
   },
   "observation_scope": "dataset",
   "ok": true,
@@ -2721,9 +2779,9 @@
       "type": "boolean"
     },
     {
-      "display_label": "Repeat customer orders",
+      "display_label": "Orders",
       "field": "repeat_customer_orders",
-      "semantic_id": "metric.jaffle.repeat_customer_orders",
+      "semantic_id": "metric.jaffle.orders",
       "sql_alias": "repeat_customer_orders",
       "type": "count"
     }
@@ -2780,12 +2838,28 @@
       }
     ],
     "select": [
-      "metric.jaffle.repeat_customer_orders"
+      {
+        "as": "repeat_customer_orders",
+        "expression": "metric.jaffle.orders"
+      }
     ],
     "time": {
       "grain": "month",
       "temporal_role": "temporal_role.jaffle_order_time"
-    }
+    },
+    "where": [
+      {
+        "entity": "entity.jaffle_customer",
+        "having": [
+          {
+            "field": "measure.jaffle.order_count",
+            "op": "gt",
+            "value": 1
+          }
+        ],
+        "over": "all_time"
+      }
+    ]
   },
   "routes": [
     {
@@ -3154,7 +3228,7 @@
   ],
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 6.929,
+  "timing_ms": 8.395,
   "trace": {
     "fallback": {
       "reason": "",
@@ -3168,9 +3242,15 @@
       "target": [],
       "time": {}
     },
-    "markdown": "### Semantic Trace\n- Target: metric.jaffle.repeat_customer_orders\n- Grouping: dimension.jaffle_store_name\n- Filters: 0\n- Relationship paths: 1\n- SQL: available",
+    "markdown": "### Semantic Trace\n- Target: metric.jaffle.orders\n- Grouping: dimension.jaffle_store_name\n- Filters: 1\n- Relationship paths: 1\n- SQL: available",
     "selected": {
-      "filters": [],
+      "filters": [
+        {
+          "field": "metric_filter",
+          "op": "is",
+          "value": true
+        }
+      ],
       "group_by": [
         "dimension.jaffle_store_name"
       ],
@@ -3186,7 +3266,7 @@
       "root_entity": "entity.jaffle_order",
       "sql_available": true,
       "subjects": [
-        "metric.jaffle.repeat_customer_orders"
+        "metric.jaffle.orders"
       ]
     }
   },
@@ -3203,6 +3283,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-27T03:40:56.567915Z"
+    "now": "2026-10-27T03:46:01.331684Z"
   }
 }

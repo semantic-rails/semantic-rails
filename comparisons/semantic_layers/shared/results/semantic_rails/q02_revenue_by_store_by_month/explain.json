@@ -98,8 +98,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.964,
-      "compile_ms": 0.562,
+      "cache_lookup_ms": 0.984,
+      "compile_ms": 0.568,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2843,6 +2843,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-27T03:40:56.292270Z"
+    "now": "2026-10-27T03:46:01.017834Z"
   }
 }
