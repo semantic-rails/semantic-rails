@@ -27,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+import pytest
+
 from semantic_rails.compiler import bind_metadata_objects, bind_query
 from semantic_rails.compiler_parts.bind import select_measure_reads
 from semantic_rails.config import load_package_config
@@ -35,7 +37,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr
 from semantic_rails.fanout import package_route
 from semantic_rails.http_core import SemanticHTTPService
-from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.mcp import _MAX_RESULT_CHARS_ENV, SemanticLayerMCPAdapter
 from semantic_rails.query_call import read_call
 from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
@@ -283,9 +285,19 @@ TARGETS = [
         _with_default_metric(load_package_config("configs/semantic_rails/jaffle_shop"))
     )
 ]
+# test_visible_view_sweep_<k>.py checks TARGETS[k::SLICES]: one file per slice, so the
+# shards (which own whole files) can spread the sweep.
+SLICES = 6
 
 
 def assert_hidden_responses(package, target):
+    # Compare whole payloads, never a budget refusal's size: that size counts timings.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv(_MAX_RESULT_CHARS_ENV, "100000000")
+        _assert_hidden_responses(package, target)
+
+
+def _assert_hidden_responses(package, target):
     from semantic_rails.visible_view import hidden_object_ids
 
     root, config = package

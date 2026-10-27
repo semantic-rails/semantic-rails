@@ -48,8 +48,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.935,
-      "compile_ms": 0.49,
+      "cache_lookup_ms": 1.037,
+      "compile_ms": 0.535,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -74,6 +74,7 @@
                   "id": "relationship.order_items_order",
                   "join_semantics": "",
                   "label": "Item to Order",
+                  "link": false,
                   "name": "jaffle.Item_TO_jaffle.Order",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -183,6 +184,7 @@
                     "id": "relationship.order_items_order",
                     "join_semantics": "",
                     "label": "Item to Order",
+                    "link": false,
                     "name": "jaffle.Item_TO_jaffle.Order",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -288,6 +290,7 @@
                     "id": "relationship.order_items_order",
                     "join_semantics": "",
                     "label": "Item to Order",
+                    "link": false,
                     "name": "jaffle.Item_TO_jaffle.Order",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -366,6 +369,7 @@
                     "id": "relationship.order_items_order",
                     "join_semantics": "",
                     "label": "Item to Order",
+                    "link": false,
                     "name": "jaffle.Item_TO_jaffle.Order",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -720,6 +724,7 @@
                     "id": "relationship.order_items_order",
                     "join_semantics": "",
                     "label": "Item to Order",
+                    "link": false,
                     "name": "jaffle.Item_TO_jaffle.Order",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -868,6 +873,7 @@
                       "id": "relationship.order_items_order",
                       "join_semantics": "",
                       "label": "Item to Order",
+                      "link": false,
                       "name": "jaffle.Item_TO_jaffle.Order",
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
@@ -1375,6 +1381,7 @@
                   "id": "relationship.order_items_order",
                   "join_semantics": "",
                   "label": "Item to Order",
+                  "link": false,
                   "name": "jaffle.Item_TO_jaffle.Order",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1480,6 +1487,7 @@
                   "id": "relationship.order_items_order",
                   "join_semantics": "",
                   "label": "Item to Order",
+                  "link": false,
                   "name": "jaffle.Item_TO_jaffle.Order",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1558,6 +1566,7 @@
                   "id": "relationship.order_items_order",
                   "join_semantics": "",
                   "label": "Item to Order",
+                  "link": false,
                   "name": "jaffle.Item_TO_jaffle.Order",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1902,7 +1911,7 @@
     }
   },
   "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_order_items.product_type AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  AVG(comparison_order_items.item_revenue_cents / 100.0) AS m1,\n  COUNT(1) AS \"m1_rows\",\n  MAX(comparison_order_items.item_revenue_cents / 100.0) AS m2,\n  COUNT(1) AS \"m2_rows\"\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nGROUP BY\n  comparison_order_items.product_type,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_item_product_type\",\n  base.t AS \"period\",\n  base.m1 AS \"avg_item_revenue_usd\",\n  base.m2 AS \"max_item_revenue_usd\",\n  base.\"m1_rows\" AS \"m1_rows\",\n  base.\"m2_rows\" AS \"m2_rows\"\nFROM leaf_1 AS base\nORDER BY\n  t ASC NULLS LAST",
-  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
   "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
@@ -2200,6 +2209,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-14T20:11:47.898949Z"
+    "now": "2026-10-27T03:46:01.869221Z"
   }
 }

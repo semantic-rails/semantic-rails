@@ -995,7 +995,7 @@ def test_published_and_generated_contracts_take_rubric_labels_and_count_current_
 
 def test_q11_and_q12_are_precomputed_exactly_where_a_layer_reads_the_rollup_column() -> None:
     labels = _labels()
-    reading = {"semantic_rails", "snowflake_semantic_views", "ktx"}
+    reading = {"snowflake_semantic_views", "ktx"}
     for layer in LAYERS:
         for qid, column in (
             ("q11_repeat_customer_orders_by_store_by_month", "lifetime_order_count"),
@@ -1141,29 +1141,26 @@ def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
     frozen = rubric.load_frozen_models()["semantic_rails"]
     assert release["model_sha256"] == frozen["sha256"]
     assert release["queries_sha256"] == rubric.model_digest(["semantic_rails/queries"])
-    # The latest release refuses to load this package version: it answered nothing, so the
-    # note names the refusal and claims no count.
-    error = release["load_error"]
-    assert release["questions"] == []
+    # The latest release loads this package version and answers every variant; each answer it
+    # executed matches the answer key, and the note gives its count.
+    assert "load_error" not in release
+    assert [item["question_id"] for item in release["questions"]] == _variants()
+    executed = [item for item in release["questions"] if item["status"] == "executed"]
+    assert all(item["answer_key_matches"] for item in executed)
+    count = f"{len(executed)} of {len(release['questions'])}"
     note = generator.semantic_rails_frozen_version_note()
     assert f"unreleased engine commit {summary['semantic_rails_commit']}" in note
-    detail = error["message"].split("; ", 1)[0].split(": ", 1)[1]
-    assert (
-        f"{release['engine_release']}, refuses to load this package version "
-        f"({error['code']}: {detail}), so it has no frozen-model count" in note
-    )
-    assert not re.search(r"answers \d+ of", note)
+    assert f"{release['engine_release']}, answers {count} on the same frozen model" in note
+    assert "refuses to load" not in note
     for name in ("capability_matrix.json", "comparison_data.json"):
         contract = _json(SCRIPTS.parent / name)
         assert note in contract.get("claims", contract.get("headline_findings"))[0]
     readme = (SCRIPTS.parents[1] / "README.md").read_text("utf-8")
     assert note in " ".join(readme.split())
-    assert not re.search(rf"{release['engine_release']},? answers \d+ of", readme)
     table = readme.split("## Frozen-Model Questions:", 1)[1]
     row = next(line for line in table.splitlines() if line.startswith("| Semantic Rails |"))
     assert summary["semantic_rails_commit"] in row and "unreleased" in row
-    assert f"{release['engine_release']}: refuses to load this package version" in row
-    assert not re.search(rf"{release['engine_release']}: \d+ of", row)
+    assert f"{release['engine_release']}: {count}" in row
 
 
 def _patch_release(monkeypatch: pytest.MonkeyPatch, change: Any) -> None:
@@ -1197,8 +1194,32 @@ def test_release_capture_with_answers_keeps_its_count(monkeypatch) -> None:
 
     _patch_release(monkeypatch, answering)
     note = generator.semantic_rails_frozen_version_note()
-    assert "v0.3.1, answers 6 of 8 on the same frozen model (it refuses q19 and q20)." in note
+    release = _json(SCRIPTS.parent / "results/semantic_rails/latest_release_frozen_model.json")
+    assert (
+        f"{release['engine_release']}, answers 6 of 8 on the same frozen model "
+        "(it refuses q19 and q20)." in note
+    )
     assert "refuses to load" not in note
+
+
+def test_release_capture_that_refuses_the_package_claims_no_count(monkeypatch) -> None:
+    error = {
+        "code": "INVALID_CONFIG",
+        "message": "semantic_rails/package: duplicate metric id 'metric.jaffle.revenue_usd' "
+        "in jaffle.revenue_usd and metric 'revenue_usd'; metric ids must be unique",
+    }
+
+    def refusing(payload):
+        payload.update(engine_release="v0.3.1", load_error=error, questions=[])
+
+    _patch_release(monkeypatch, refusing)
+    note = generator.semantic_rails_frozen_version_note()
+    assert (
+        "v0.3.1, refuses to load this package version (INVALID_CONFIG: duplicate metric id "
+        "'metric.jaffle.revenue_usd' in jaffle.revenue_usd and metric 'revenue_usd'), so it has "
+        "no frozen-model count" in note
+    )
+    assert not re.search(r"answers \d+ of", note)
 
 
 def test_release_count_requires_the_same_dataset(monkeypatch) -> None:
