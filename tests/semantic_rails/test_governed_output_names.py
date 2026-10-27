@@ -142,3 +142,58 @@ def test_a_refused_select_returns_no_number(runtime) -> None:
     with pytest.raises(SemanticLayerError) as refused:
         runtime.query(_select(_aggregate(ORDERS), "revenue_usd"))
     assert refused.value.code == "OUTPUT_NAME_GOVERNED"
+
+
+@pytest.mark.parametrize(
+    ("hidden", "alias"),
+    [
+        # A governed measure, and a governed metric, the support caller can't see.
+        ("measure.jaffle.median_item_revenue_usd", "median_item_revenue_usd"),
+        ("metric.sales.aov_usd", "aov_usd"),
+    ],
+    ids=["hidden-measure", "hidden-metric"],
+)
+def test_a_hidden_object_s_name_answers_as_if_it_were_absent(tmp_path, hidden, alias) -> None:
+    """The refusal reads the names the caller can see: a name only a hidden object holds is no
+    governed name for that caller, and its answer is the absent package's, so the refusal never
+    reveals that a hidden object exists."""
+    from semantic_rails.config import load_package_config
+    from semantic_rails.visible_view import hidden_object_ids
+    from tests.semantic_rails.conftest import copy_package_config
+    from tests.semantic_rails.hidden_absent import (
+        CALLER,
+        absent,
+        envelope,
+        visibility_policy,
+        with_policies,
+    )
+    from tests.semantic_rails.visible_view_sweep import _public, mcp_as
+
+    root = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    config = load_package_config(str(root))
+    governed = with_policies(config, visibility_policy("hidden", hidden))
+    hidden_ids = set(hidden_object_ids(governed, roles=["support"]))
+    assert hidden in hidden_ids
+    query = _select(_aggregate(ITEM_REVENUE, aggregation="max"), alias)
+    arguments = {"mode": "validate", "query": query}
+    seen = Runtime.from_config(governed, source_path=str(root))
+    missing = Runtime.from_config(absent(config, hidden_ids), source_path=str(root))
+    try:
+        response = mcp_as(seen, "execute", arguments, CALLER)
+        assert "OUTPUT_NAME_GOVERNED" not in str(response)
+        expected = mcp_as(missing, "execute", arguments, CALLER)
+        for answer in (response, expected):  # the request instant, not part of the answer
+            answer.get("window", {}).pop("now", None)
+        assert _public(envelope(response)) == _public(envelope(expected))
+    finally:
+        seen.close()
+        missing.close()
+    # A caller who can see the object is refused as before.
+    visible = Runtime.from_config(config, source_path=str(root))
+    try:
+        assert (
+            mcp_as(visible, "execute", arguments, CALLER)["errors"][0]["code"]
+            == "OUTPUT_NAME_GOVERNED"
+        )
+    finally:
+        visible.close()

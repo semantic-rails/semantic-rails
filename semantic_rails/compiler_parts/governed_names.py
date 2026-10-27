@@ -7,6 +7,10 @@ measure as `revenue_usd`. Such a select is refused with the governed object it i
 a name to use instead. Selecting the governed object itself under its own name is unchanged,
 whether by reference, as the recipe the planner inlines, as a measure's own default aggregate,
 or rounded (`ROUND` changes precision, not what is counted).
+
+The names are the caller's: planning reads the package as the caller sees it, so a name only a
+hidden metric or measure holds is no governed name for that caller, and the refusal never
+reveals that the hidden object exists.
 """
 
 from __future__ import annotations
