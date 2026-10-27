@@ -43,6 +43,7 @@ from ..sql_ast import (
     SqlCte,
     SqlField,
     SqlIdentifier,
+    SqlIsNull,
     SqlJoin,
     SqlLiteral,
     SqlOrderTerm,
@@ -301,8 +302,10 @@ def _conversion_dimension_paths(
     query: NormalizedQuery,
     purpose: str,
     allow_rewrite_dimension_ids: set[str] | None = None,
+    purpose_by_dimension: dict[str, str] | None = None,
 ) -> list[PathSelection]:
     dimensions = _dimension_index(config)
+    purposes = dict(purpose_by_dimension or {})
     allow_rewrite = set(allow_rewrite_dimension_ids or set())
     selections: list[PathSelection] = []
     for dim_id in target_dimension_ids:
@@ -322,7 +325,7 @@ def _conversion_dimension_paths(
             query=query,
             start_entity=source_entity,
             target_entity=dim.entity,
-            purpose=purpose,
+            purpose=purposes.get(dim_id, purpose),
         )
         if selection is not None:
             status = selection.analysis.get("status")
@@ -362,6 +365,27 @@ def _conversion_entity_key_fields(
     ]
 
 
+def _looked_up_property_keys(
+    property_dimensions: list[str], source_entity: str, config: PackageConfig
+) -> dict[int, Any]:
+    """Each constant property the events read through a lookup, by position: the looked-up
+    entity's key, which is NULL exactly when the lookup found no row (a property on the events'
+    own rows has no lookup to miss)."""
+    entities = _entity_index(config)
+    dimensions = _dimension_index(config)
+    source_table = entities[source_entity].table
+    keys: dict[int, Any] = {}
+    for index, dim_id in enumerate(property_dimensions):
+        entity = entities[dimensions[dim_id].entity]
+        if entity.table != source_table:
+            keys[index] = _column_ref(entity.table, entity.key[0])
+    return keys
+
+
+def _property_found_alias(index: int) -> str:
+    return f"__property_{index + 1}_found"
+
+
 def _conversion_event_cte(
     *,
     cte_name: str,
@@ -380,7 +404,20 @@ def _conversion_event_cte(
     config: PackageConfig,
     query: NormalizedQuery,
     where_items: list[Any],
+    keep_events: bool = False,
 ) -> SqlCte:
+    """One side's events, with the match key, groupings and properties each one carries.
+
+    ``keep_events`` (the base side) keeps every event whose lookups are missing: the base events
+    are the rate's denominator, so an anonymous session (no customer) is a session that didn't
+    convert, not one that never happened. Its lookups join LEFT and read NULL, and a NULL match
+    key matches nothing. A constant property read through a lookup also carries whether that
+    lookup found a row, so a missing lookup never pairs as "the same" NULL property. Two reads
+    stay INNER: its time (an event with no time has no period) and the dimensions a query's
+    metric filter is matched on (``extra_dimensions``: an event outside the filter's set is not
+    in the rate at all). A converted event needs its match key and lookups to match anything,
+    so the converted side's lookups all stay INNER.
+    """
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -437,8 +474,12 @@ def _conversion_event_cte(
                     target_dimension_ids=required_dimensions,
                     config=config,
                     query=query,
-                    purpose="conversion_dimension",
+                    purpose="conversion_base_dimension" if keep_events else "conversion_dimension",
                     allow_rewrite_dimension_ids=allow_rewrite_dimension_ids,
+                    purpose_by_dimension={
+                        dim_id: "conversion_dimension"
+                        for dim_id in [role.dimension, *extra_dimensions]
+                    },
                 ),
                 *(
                     []
@@ -451,7 +492,11 @@ def _conversion_event_cte(
                                 query=query,
                                 start_entity=source_entity,
                                 target_entity=match_entity,
-                                purpose="conversion_match_entity",
+                                purpose=(
+                                    "conversion_base_match_entity"
+                                    if keep_events
+                                    else "conversion_match_entity"
+                                ),
                             )
                         ]
                         if sel is not None
@@ -493,6 +538,13 @@ def _conversion_event_cte(
         dim_expr, _ = _resolve_dimension_expr(dim_id, config)
         select_fields.append(SqlField(dim_expr, f"__property_{index + 1}"))
         selected_aliases.add(f"__property_{index + 1}")
+    if keep_events:
+        for index, key in _looked_up_property_keys(
+            property_dimensions, source_entity, config
+        ).items():
+            found = SqlCase([SqlCaseWhen(SqlIsNull(key), SqlLiteral(0))], else_expr=SqlLiteral(1))
+            select_fields.append(SqlField(found, _property_found_alias(index)))
+            selected_aliases.add(_property_found_alias(index))
     for dim_id in extra_dimensions:
         dim_expr, alias = _resolve_dimension_expr(dim_id, config)
         if alias not in selected_aliases:
@@ -834,6 +886,7 @@ def _conversion_leaf_cte(
         operand_filters=list(base_source.get("filters") or []),
         config=config,
         query=query,
+        keep_events=True,
         # Each operand reads only rows its declared edge lets through (``_edge_cap``).
         where_items=[
             *base_group_where,
@@ -890,18 +943,39 @@ def _conversion_leaf_cte(
             )
         )
 
-    # Same entity key and same constant properties on both sides, inside the window.
+    # Same entity key and same constant properties on both sides, inside the window. The key
+    # compares with plain equality, so a base event with no key (an anonymous session) matches
+    # nothing. A property compares null-safely (a NULL city is the same as a NULL city), but a
+    # base event whose property lookup found no row has no property, so it pairs with nothing.
     join_condition: Any = _conversion_window_condition(expr, dialect)
-    for key_alias in [
-        *(key_alias for key_alias, _ in _conversion_entity_key_fields(match_entity, config)),
-        *(f"__property_{index_prop + 1}" for index_prop in range(len(property_dims))),
-    ]:
+    for key_alias, _ in _conversion_entity_key_fields(match_entity, config):
+        join_condition = SqlBinary(
+            join_condition,
+            "AND",
+            SqlBinary(
+                SqlIdentifier(parts=["base_events", key_alias]),
+                "=",
+                SqlIdentifier(parts=["converted_events", key_alias]),
+            ),
+        )
+    for index_prop in range(len(property_dims)):
+        property_alias = f"__property_{index_prop + 1}"
         join_condition = SqlBinary(
             join_condition,
             "AND",
             dialect.null_safe_eq(
-                SqlIdentifier(parts=["base_events", key_alias]),
-                SqlIdentifier(parts=["converted_events", key_alias]),
+                SqlIdentifier(parts=["base_events", property_alias]),
+                SqlIdentifier(parts=["converted_events", property_alias]),
+            ),
+        )
+    for index_prop in _looked_up_property_keys(property_dims, base_source["root_entity"], config):
+        join_condition = SqlBinary(
+            join_condition,
+            "AND",
+            SqlBinary(
+                SqlIdentifier(parts=["base_events", _property_found_alias(index_prop)]),
+                "=",
+                SqlLiteral(1),
             ),
         )
     order_terms = [

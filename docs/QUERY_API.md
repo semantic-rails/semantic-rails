@@ -581,6 +581,12 @@ the base instant counts and one exactly at the end does not, like the half-open 
 the event times are dates, a 7-day window covers the base date and the 6 dates after it. These are
 MetricFlow's conversion bounds.
 
+Every base event counts in the rate's denominator. One with no match key (an anonymous session,
+or a customer the customers table doesn't hold) counts and never converts, and so does one whose
+constant-property lookup finds no row. A NULL key never matches another NULL key. A constant
+property whose lookup found a row compares null-safely: two events with no city have the same
+city. The base events a query's metric filter excludes aren't in the rate at all.
+
 Current limit:
 
 - enriched conversion expressions are executable for the supported event-count model

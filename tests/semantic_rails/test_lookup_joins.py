@@ -8,8 +8,10 @@ it, and every other comparison drops it unless it asks for a missing value.
 ``test_lookups_keep_rows.py`` checks every query shape.
 
 A few reads keep the inner join they always had (see the last section): a time role, a metric
-filter's own query and its route to its entity, a conversion, and a dimension a rollup holds.
-A metric filter's set is matched on its context entities, so a row with none is not in it.
+filter's own query and its route to its entity, a conversion's converted events, and a
+dimension a rollup holds. A metric filter's set is matched on its context entities, so a row
+with none is not in it. A conversion's base events are its rate's denominator, so they keep
+their rows: one with no match key counts and converts nothing.
 
 Fixture: boardings of flight legs, with a crew roster keyed by (leg, person). Boarding 7 has
 no person, boarding 8 a person with no record (P9), boarding 11 a leg with no record (L9),
@@ -441,16 +443,17 @@ def test_filters_on_a_looked_up_column_follow_the_null_rules(
     assert got == reference[None]
 
 
-# Check-ins that lead to a boarding by the same person within a day. Check-ins 2 (no person)
-# and 6 (a person with no record) have no person to match on, so they take no part; 1, 5, 7
-# and 8 convert, 3 and 4 don't.
+# Check-ins that lead to a boarding by the same person within a day. Every check-in counts in
+# the rate. Check-ins 2 (no person) and 6 (a person with no record) have no person to match on,
+# so they count and don't convert; 1, 5, 7 and 8 convert, 3 and 4 don't.
 CONVERSION_SQL = """
 SELECT {group}, AVG(CASE WHEN EXISTS (
   SELECT 1 FROM boardings AS b WHERE b.person_id = c.person_id
+  AND b.person_id IN (SELECT person_id FROM people)
   AND b.boarded_at >= c.checked_in_at AND b.boarded_at < c.checked_in_at + INTERVAL 1 DAY
   {same_city}
 ) THEN 1.0 ELSE 0.0 END)
-FROM checkins AS c WHERE c.person_id IN (SELECT person_id FROM people) {where}
+FROM checkins AS c WHERE TRUE {where}
 GROUP BY 1
 """
 SQL_CHECKIN_EMPLOYEE = "(SELECT p.is_employee FROM people AS p WHERE p.person_id = c.person_id)"
@@ -467,39 +470,45 @@ def _conversion_sql(*, group: str = "NULL", same_city: str = "", where: str = ""
 
 
 def test_conversion_does_not_pair_events_that_have_no_match_entity(runtime, gold):
-    """Events pair on the person key with null-safe equality, so an event whose person lookup
-    found no row must not pair with another such event (check-in 2 with boarding 7, 6 with 8)."""
+    """An event whose person lookup found no row has no person to pair on, so it must not pair
+    with another such event (check-in 2 with boarding 7, 6 with 8). A check-in is still a
+    check-in: 2 and 6 count in the rate as check-ins that didn't convert."""
     (row,) = _conversion_rate(runtime)
-    assert row["rate"] == pytest.approx(4 / 6)
+    assert row["rate"] == pytest.approx(4 / 8)
     assert row["rate"] == pytest.approx(gold(_conversion_sql())[None])
 
     by_employee = _conversion_rate(runtime, group_by=[EMPLOYEE])
     rates = {row[EMPLOYEE]: row["rate"] for row in by_employee}
-    assert rates == {False: pytest.approx(0.75), True: pytest.approx(0.5)}  # 1, 7, 8 of 1, 3, 7, 8
+    # 1, 7, 8 of 1, 3, 7, 8; 5 of 4, 5; none of 2, 6 (no person record: the NULL group).
+    assert rates == {
+        False: pytest.approx(0.75),
+        True: pytest.approx(0.5),
+        None: pytest.approx(0.0),
+    }
     assert rates == pytest.approx(gold(_conversion_sql(group=SQL_CHECKIN_EMPLOYEE)))
 
 
 def test_conversion_pairs_on_a_matched_lookup_whose_property_is_null(null_city_runtime, gold):
     """Events also pair on constant properties, here the airport city read through the leg.
     Check-in 7 and boarding 11 (leg L9) and check-in 5 and boarding 9 (an airport with no
-    record) have no city, so they must not pair as having "the same city": they take no part.
-    Where the lookup matched but the property is NULL, as it is on the event's own entity,
-    check-in 9 pairs with boarding 14 (both at an airport with no city) and not with boarding
-    15 (Chicago)."""
+    record) have no city, so they must not pair as having "the same city": those check-ins
+    count and don't convert. Where the lookup matched but the property is NULL, as it is on the
+    event's own entity, check-in 9 pairs with boarding 14 (both at an airport with no city) and
+    not with boarding 15 (Chicago)."""
     # A leg whose airport row exists: its city, NULL or not, is a match.
     matched = "SELECT l.leg_id FROM legs AS l JOIN airports AS a ON a.airport_code = l.airport_code"
     reference = gold(
         _conversion_sql(
-            same_city=f"AND b.leg_id IN ({matched})"
+            same_city=f"AND c.leg_id IN ({matched}) AND b.leg_id IN ({matched})"
             f" AND {SQL_CITY} IS NOT DISTINCT FROM {SQL_CHECKIN_CITY}",
-            where=f"AND c.leg_id IN ({matched})",
         ),
         NULL_CITY_SEED,
     )
 
     (row,) = _conversion_rate(null_city_runtime, (CITY,))
 
-    assert row["rate"] == pytest.approx(0.75)  # check-ins 1, 8 and 9 convert, 10 doesn't
+    # Check-ins 1, 8 and 9 convert; 2-7 and 10 don't, and every one of the 10 counts.
+    assert row["rate"] == pytest.approx(0.3)
     assert reference[None] == pytest.approx(row["rate"])
 
 
@@ -516,7 +525,9 @@ def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, 
 
     busy = "SELECT leg_id FROM boardings GROUP BY leg_id HAVING COUNT(*) >= 2"
     reference = gold(_conversion_sql(where=f"AND c.leg_id IN ({busy})"))[None]
-    assert row["rate"] == pytest.approx(1.0)  # check-ins 1, 5 and 8 qualify, and convert
+    # Check-ins 1, 2, 5, 6 and 8 are on busy legs; 1, 5 and 8 convert, and 2 and 6 have no
+    # person to match. 3 and 4 aren't in the rate at all.
+    assert row["rate"] == pytest.approx(3 / 5)
     assert reference == pytest.approx(row["rate"])
 
 
@@ -726,7 +737,12 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(runtime):
 @pytest.mark.parametrize(
     ("query", "left_joins"),
     [
-        (_conversion_query(metric_filters=[_metric_filter("leg", "entity_only", ">=", 2)]), []),
+        # A conversion's base events keep their person lookup (they are the denominator); the
+        # leg its metric filter is matched on, and the converted events' lookups, stay inner.
+        (
+            _conversion_query(metric_filters=[_metric_filter("leg", "entity_only", ">=", 2)]),
+            ["people"],
+        ),
         (_monthly_query(_on_busy("boarding_count", 1)), []),
         # The set's own query groups by the airport, read through the leg: a nested query.
         (_monthly_query(_on_busy("boarding_count", 1, entity="airport")), []),
