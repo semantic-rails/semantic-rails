@@ -29,7 +29,7 @@ The [result-value contract](QUERY_CALL.md#result-values) defines JSON rows and `
 The engine is the sole producer of the framework-neutral `semantic` section:
 
 ```python
-from semantic_rails.contracts import export_semantic_contract
+from semantic_rails.embedding import export_semantic_contract
 
 contract = export_semantic_contract("./my_semantic_project")
 ```

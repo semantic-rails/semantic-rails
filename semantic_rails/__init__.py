@@ -1,11 +1,11 @@
 """Semantic Rails — governed semantic-layer runtime.
 
-The public surface lives in :mod:`semantic_rails.runtime` (programmatic
-use), :mod:`semantic_rails.cli` (CLI commands), :mod:`semantic_rails.api`
-(threaded HTTP server), :mod:`semantic_rails.asgi` (ASGI app), and
-:mod:`semantic_rails.mcp` (MCP adapter). This package deliberately keeps
-``__all__`` empty so consumers import from the explicit submodules and
-nothing leaks by accident.
+Python hosts import from :mod:`semantic_rails.embedding`, the engine's one public Python
+surface; from 0.4.0 it follows Semantic Versioning (docs/EMBEDDING.md, "Stability"). The
+``semantic-rails`` CLI, the ``/api/v1`` HTTP API (``semantic_rails.asgi:app`` or
+``semantic-rails serve``) and the MCP servers are the other public interfaces, versioned by
+the JSON contracts in docs/CONTRACTS.md. Every other module is internal and can change in any
+release. This package keeps ``__all__`` empty so nothing leaks by accident.
 """
 
 from importlib.metadata import PackageNotFoundError, version
