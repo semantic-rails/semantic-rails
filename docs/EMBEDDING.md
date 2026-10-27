@@ -288,7 +288,7 @@ starts with 0, the minor number does the major's job:
 - New names, and new parameters with defaults, can come in any release.
 
 The promise applies from 0.4.0 forward. Releases before 0.4.0 can still change the facade in one
-step, and no compatibility shims are added for those changes. `test_embedding_consumer_contract.py`
+step, and no compatibility shims are added for those changes. `tests/semantic_rails/test_ratchets.py`
 pins the exported names, so adding or removing one is always a deliberate edit.
 
 ## Changing the facade

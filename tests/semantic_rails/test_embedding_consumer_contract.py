@@ -33,80 +33,6 @@ from scripts.embedding_consumer_contract import (
 USES = USES_FILE.read_text(encoding="utf-8").removeprefix(HEADER).splitlines()
 EMBEDDING_DOC = REPO_ROOT / "docs" / "EMBEDDING.md"
 
-# The facade's names, pinned. From 0.4.0 the facade follows Semantic Versioning (docs/EMBEDDING.md,
-# "Stability"), so a name joins or leaves it only by an edit here, never as a side effect.
-FACADE_NAMES = [
-    "ABSENT_PROJECT_REVISION",
-    "API_VERSION",
-    "ATHENA_CONNECTION_OPTIONS",
-    "ArchitectMutation",
-    "ArchitectProject",
-    "AuditSink",
-    "BIGQUERY_CONNECTION_OPTIONS",
-    "CLICKHOUSE_CONNECTION_OPTIONS",
-    "CachedCompilation",
-    "CompiledSqlCache",
-    "ConnectionCredentialProvider",
-    "DATABRICKS_CONNECTION_OPTIONS",
-    "DUCKLAKE_CONNECTION_OPTIONS",
-    "Database",
-    "DuckDBAdapter",
-    "HeaderPolicyContextResolver",
-    "LoadedPackageSnapshot",
-    "LruCompiledSqlCache",
-    "MCPAdapter",
-    "MCPHTTPResponse",
-    "MCP_PROTOCOL_VERSION",
-    "MOTHERDUCK_CONNECTION_OPTIONS",
-    "POSTGRES_CONNECTION_OPTIONS",
-    "PUBLIC_V1_ROUTES",
-    "PackageReference",
-    "PolicyContextResolver",
-    "PreparedQuery",
-    "RequestContext",
-    "Runtime",
-    "SNOWFLAKE_ADBC_CONNECTION_OPTIONS",
-    "SNOWFLAKE_CLI_CONNECTION_OPTIONS",
-    "SNOWFLAKE_NATIVE_CONNECTION_OPTIONS",
-    "SemanticHTTPService",
-    "SemanticLayerError",
-    "SemanticLayerMCPAdapter",
-    "SnowflakeCliAdapter",
-    "SnowflakeNativeAdapter",
-    "StderrAuditSink",
-    "TrustedAttributes",
-    "WarehouseAdapter",
-    "WarehouseConnectorSpec",
-    "audit_logging_enabled",
-    "context_from_headers",
-    "context_from_policy_context",
-    "create_duckdb_adapter",
-    "create_warehouse_adapter",
-    "dialect_for_warehouse",
-    "diff_semantic_contract",
-    "emit_audit_event",
-    "export_semantic_contract",
-    "get_audit_sink",
-    "get_policy_context_resolver",
-    "handle_jsonrpc_message",
-    "handle_streamable_http_request",
-    "impact_report",
-    "load_package_snapshot",
-    "normalize_connection_options",
-    "parse_config_report",
-    "project_revision",
-    "request_context_payload",
-    "resolve_package_reference",
-    "run_examples_report",
-    "run_package_tests_report",
-    "set_audit_sink",
-    "set_policy_context_resolver",
-    "supported_warehouses",
-    "validate_config_report",
-    "validate_runtime_package",
-    "warehouse_connector",
-]
-
 
 @pytest.fixture(autouse=True)
 def recorded_uses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -499,14 +425,4 @@ def test_every_export_imports_and_matches_the_documented_reference() -> None:
     expected = [_reference(name) for name in sorted(embedding.__all__)]
     assert documented == expected, "update docs/EMBEDDING.md's facade reference to:\n" + "\n".join(
         expected
-    )
-
-
-def test_facade_exports_exactly_the_pinned_names() -> None:
-    exported, pinned = set(embedding.__all__), set(FACADE_NAMES)
-    assert exported == pinned, (
-        f"added: {sorted(exported - pinned)}; removed: {sorted(pinned - exported)}. "
-        "An addition can ship in any release: pin it in FACADE_NAMES. From 0.4.0, a removal or "
-        "rename is a breaking change: deprecate it first and remove it in a new minor release "
-        '(docs/EMBEDDING.md, "Stability").'
     )

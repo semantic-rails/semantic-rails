@@ -101,7 +101,8 @@ PINS: dict[str, dict[str, int]] = {
     },
 }
 
-# What the hosted embedder may import; a new name is a deliberate contract change.
+# The facade's names, pinned. From 0.4.0 the facade follows Semantic Versioning (docs/EMBEDDING.md,
+# "Stability"), so a name joins or leaves it only by an edit here, never as a side effect.
 FACADE = frozenset(
     {
         "ABSENT_PROJECT_REVISION",
@@ -153,6 +154,7 @@ FACADE = frozenset(
         "dialect_for_warehouse",
         "diff_semantic_contract",
         "emit_audit_event",
+        "export_semantic_contract",
         "get_audit_sink",
         "get_policy_context_resolver",
         "handle_jsonrpc_message",
@@ -265,5 +267,10 @@ def test_ratchet_never_grows(name):
     assert grown == {}, f"{name} grew; use the owning module instead: {grown}"
 
 
-def test_the_embedding_facade_does_not_widen():
-    assert set(embedding.__all__) - FACADE == set()
+def test_the_embedding_facade_exports_exactly_the_pinned_names():
+    exported = set(embedding.__all__)
+    assert exported == FACADE, (
+        f"added: {sorted(exported - FACADE)}; removed: {sorted(FACADE - exported)}. "
+        "An addition can ship in any release: pin it in FACADE. From 0.4.0, a removal or rename "
+        'is a breaking change: deprecate it first and remove it in a new minor release (docs/EMBEDDING.md, "Stability").'
+    )
