@@ -139,10 +139,12 @@ Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
 `join`/`wait` take a timeout; `tests/semantic_rails/test_bounded_waits.py`
 enforces it.
 
-Backend CI partitions whole test files into four deterministic shards. Pull requests
-run Python 3.12 only; merge groups and manual runs cover Python 3.11, 3.12, 3.13
-and 3.14. The merge queue is the complete compatibility gate: a failure on another
-Python version ejects the change before merging. Files are assigned longest first
+Backend CI partitions whole test files into deterministic shards: eight on pull
+requests, which run Python 3.12 only, and five per version elsewhere. Merge groups
+cover the oldest and newest supported Pythons, 3.11 and 3.14, plus 3.12; a failure
+on any of them ejects the change before merging. Python 3.13 runs nightly on main
+and in every release gate (`release-readiness.yml`), and manual CI runs cover all
+four versions. Files are assigned longest first
 to the lightest shard, with paths and shard indices breaking ties.
 `tests/shard_durations.json` records summed
 per-test seconds for each file, and `test_ci_hygiene` fails when a file under

@@ -677,8 +677,10 @@ def test_quarantine_validates_ids_outside_current_shard(monkeypatch, tmp_path, p
 def test_backend_matrix_and_push_policy():
     jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     backend = jobs["backend"]
-    assert backend["strategy"]["matrix"]["shard"] == [0, 1, 2, 3]
-    assert backend["env"] == {"SR_SHARD_COUNT": "4", "SR_SHARD_INDEX": "${{ matrix.shard }}"}
+    assert backend["env"] == {
+        "SR_SHARD_COUNT": "${{ github.event_name == 'pull_request' && '8' || '5' }}",
+        "SR_SHARD_INDEX": "${{ matrix.shard }}",
+    }
     assert "github.event_name != 'push'" in backend["if"]
     assert "github.event_name == 'merge_group'" in backend["if"]
     assert "needs.changes.outputs.backend == 'true'" in backend["if"]
@@ -698,23 +700,8 @@ def test_backend_matrix_and_push_policy():
     )
 
 
-@pytest.mark.parametrize(
-    "event, versions",
-    [
-        ("pull_request", ["3.12"]),
-        ("merge_group", ["3.11", "3.12", "3.13", "3.14"]),
-        ("workflow_dispatch", ["3.11", "3.12", "3.13", "3.14"]),
-    ],
-)
-def test_backend_matrix_covers_versions_for_each_event(event, versions):
-    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
-    matrix = jobs["backend"]["strategy"]["matrix"]
-    expression = matrix["python-version"]
-    assert expression == (
-        "${{ fromJSON(github.event_name == 'pull_request' && '[\"3.12\"]' "
-        '|| \'["3.11", "3.12", "3.13", "3.14"]\') }}'
-    )
-    # Evaluate this constrained expression with Python's equivalent boolean operators.
+def _evaluate(expression: str, event: str):
+    # Evaluate a constrained Actions expression with Python's equivalent boolean operators.
     translated = (
         expression.removeprefix("${{ ")
         .removesuffix(" }}")
@@ -722,9 +709,29 @@ def test_backend_matrix_covers_versions_for_each_event(event, versions):
         .replace("&&", "and")
         .replace("||", "or")
     )
-    selected = eval(translated, {"__builtins__": {}, "fromJSON": json.loads})
-    assert selected == versions
-    assert len(selected) * len(matrix["shard"]) == (4 if event == "pull_request" else 16)
+    return eval(translated, {"__builtins__": {}, "fromJSON": json.loads})
+
+
+@pytest.mark.parametrize(
+    "event, versions, shards, jobs_count",
+    [
+        ("pull_request", ["3.12"], 8, 8),
+        # The oldest and newest supported Pythons and 3.12: 3.13 runs nightly and per release.
+        ("merge_group", ["3.11", "3.12", "3.14"], 5, 15),
+        ("workflow_dispatch", ["3.11", "3.12", "3.13", "3.14"], 5, 20),
+    ],
+)
+def test_backend_matrix_covers_versions_for_each_event(event, versions, shards, jobs_count):
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    matrix = jobs["backend"]["strategy"]["matrix"]
+    assert _evaluate(matrix["python-version"], event) == versions
+    assert _evaluate(matrix["shard"], event) == list(range(shards))
+    assert _evaluate(jobs["backend"]["env"]["SR_SHARD_COUNT"], event) == str(shards)
+    assert len(versions) * shards == jobs_count
+    if event == "merge_group":
+        # With lint, security, docs and Postgres: within GitHub Free's 20 concurrent jobs.
+        others = [name for name in jobs if name not in {"changes", "backend", "all-checks"}]
+        assert jobs_count + len(others) <= 20
     assert jobs["all-checks"]["needs"] == [
         "changes",
         "backend",
