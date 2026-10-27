@@ -221,10 +221,12 @@ def test_adapter_connects_with_token_and_defaults_namespace(
     assert captured["config"] == {"motherduck_token": "tok-value"}
     # Lazy database creation + namespace defaulting so unqualified
     # table names (jaffle_order, …) resolve.
-    assert captured["log"][:7] == [
+    assert captured["log"][:9] == [
         "SELECT database_name, function_name, function_type FROM system.main.duckdb_functions()",
         "SELECT system.main.current_setting('disabled_optimizers')",
         "SET disabled_optimizers = ?",
+        "SELECT system.main.current_setting('lock_configuration')",
+        "SET enable_progress_bar = false",
         'CREATE DATABASE IF NOT EXISTS "sr_jaffle"',
         'USE "sr_jaffle"',
         'CREATE SCHEMA IF NOT EXISTS "analytics"',
