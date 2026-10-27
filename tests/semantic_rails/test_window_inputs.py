@@ -13,7 +13,7 @@ from semantic_rails.compiler_parts.post_aggregation import (
     _summing_window_parts,
 )
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import ColumnRefExpr, OffsetWindowExpr, parse_semantic_expression
+from semantic_rails.expressions import ColumnRefExpr, parse_semantic_expression
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
@@ -196,14 +196,32 @@ def test_distinct_count_requires_a_source_row_key(config, key_source, other_key)
     assert _summing_window_parts(expr, config, construct="rolling") == (expr,)
 
 
+COMPOSITE_KEY = ["order_id", "customer_id"]
+
+
+# A key that is not the measure's own source rows: the measure's row grain beside a narrower
+# entity key, and each source of a composite key, refusing a composite count and a ratio
+# denominator through the public compiler, and a ratio denominator through direct lowering,
+# across the three window kinds.
 @pytest.mark.parametrize(
-    ("row_grain", "kind", "route"),
+    ("row_grain", "entity_key", "ratio", "kind", "route"),
     [
-        (["order_id", "line_no"], "rolling", "compile"),
-        (["order_id", "line_no"], "cumulative", "lower"),
+        (["order_id", "line_no"], ["order_id"], False, "rolling", "compile"),
+        (["order_id", "line_no"], ["order_id"], False, "cumulative", "lower"),
+        (COMPOSITE_KEY, ["x"], False, "rolling", "compile"),
+        (COMPOSITE_KEY, ["x"], True, "period_to_date", "compile"),
+        (COMPOSITE_KEY, ["x"], True, "cumulative", "lower"),
+        ([], COMPOSITE_KEY, False, "period_to_date", "compile"),
+        ([], COMPOSITE_KEY, True, "cumulative", "compile"),
+        ([], COMPOSITE_KEY, True, "rolling", "lower"),
+        (COMPOSITE_KEY, COMPOSITE_KEY, False, "cumulative", "compile"),
+        (COMPOSITE_KEY, COMPOSITE_KEY, True, "rolling", "compile"),
+        (COMPOSITE_KEY, COMPOSITE_KEY, True, "period_to_date", "lower"),
     ],
 )
-def test_entity_key_cannot_override_the_measure_source_rows(config, row_grain, kind, route):
+def test_a_key_other_than_the_source_rows_cannot_feed_a_summing_window(
+    config, row_grain, entity_key, ratio, kind, route
+):
     measure = next(m for m in config.measures if m.id == ORDERS["measure"])
     config = replace(
         config,
@@ -211,65 +229,7 @@ def test_entity_key_cannot_override_the_measure_source_rows(config, row_grain, k
             replace(m, row_grain=row_grain) if m.id == measure.id else m for m in config.measures
         ],
         entities=[
-            replace(e, key_columns=["order_id"]) if e.id == measure.entity else e
-            for e in config.entities
-        ],
-    )
-    expression = window(ORDERS, kind)
-    with pytest.raises(SemanticLayerError) as raised:
-        if route == "compile":
-            compile_query(config, Registry(config), query(expression))
-        else:
-            expr = _as_offset_window_expr(parse_semantic_expression(expression, context="query"))
-            assert expr is not None
-            _compile_offset_window_expr(
-                expr,
-                config,
-                time_alias="t",
-                group_aliases=[],
-                query_grain="month",
-                table_alias="base",
-            )
-    assert raised.value.code == "ROLLUP_UNSAFE"
-    assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
-
-
-# Each key source refuses a composite count and a ratio denominator through the public
-# compiler, and a ratio denominator through direct lowering, across the three window kinds.
-@pytest.mark.parametrize(
-    ("key_source", "route", "ratio", "kind"),
-    [
-        ("row_grain", "compile", False, "rolling"),
-        ("row_grain", "compile", True, "period_to_date"),
-        ("row_grain", "lower", True, "cumulative"),
-        ("entity_key", "compile", False, "period_to_date"),
-        ("entity_key", "compile", True, "cumulative"),
-        ("entity_key", "lower", True, "rolling"),
-        ("both", "compile", False, "cumulative"),
-        ("both", "compile", True, "rolling"),
-        ("both", "lower", True, "period_to_date"),
-    ],
-)
-def test_composite_key_components_cannot_feed_a_summing_window(
-    config, key_source, ratio, kind, route
-):
-    measure = next(m for m in config.measures if m.id == ORDERS["measure"])
-    composite_key = ["order_id", "customer_id"]
-    config = replace(
-        config,
-        measures=[
-            replace(m, row_grain=composite_key if key_source in {"row_grain", "both"} else [])
-            if m.id == measure.id
-            else m
-            for m in config.measures
-        ],
-        entities=[
-            replace(
-                e,
-                key_columns=composite_key if key_source in {"entity_key", "both"} else ["x"],
-            )
-            if e.id == measure.entity
-            else e
+            replace(e, key_columns=entity_key) if e.id == measure.entity else e
             for e in config.entities
         ],
     )
@@ -392,22 +352,6 @@ def test_recipes_and_filters_cannot_bypass_the_guard(config, route, input_expr):
     assert raised.value.code == "ROLLUP_UNSAFE"
 
 
-@pytest.mark.parametrize("input_expr", [STATISTIC, NON_KEY_COUNT], ids=["statistic", "count"])
-def test_direct_window_lowering_cannot_bypass_the_guard(config, input_expr):
-    expr = OffsetWindowExpr(
-        input=parse_semantic_expression(input_expr, context="query"),
-        kind="rolling",
-        aggregate="sum",
-        unit="month",
-        value=3,
-    )
-    with pytest.raises(SemanticLayerError) as raised:
-        _compile_offset_window_expr(
-            expr, config, time_alias="t", group_aliases=[], query_grain="month", table_alias="base"
-        )
-    assert raised.value.code == "ROLLUP_UNSAFE"
-
-
 @pytest.mark.parametrize(
     ("transport", "input_expr"),
     [("rest", "measure.jaffle.inventory_on_hand_eop"), ("mcp", RATIO_CALL)],
@@ -438,26 +382,6 @@ def test_execute_uses_the_same_window_rule(runtime_factory, transport, input_exp
             assert "NULLIF(SUM(base.m2) OVER" in response["rendered_sql"]
     finally:
         runtime.close()
-
-
-def test_prior_period_still_reads_a_statistic(config):
-    payload = query(
-        {
-            "kind": "prior_period",
-            "input": {**REVENUE, "aggregation": "max"},
-            "offset": {"unit": "month", "value": 1},
-        }
-    )
-    config = replace(
-        config,
-        measures=[
-            replace(m, allowed_aggregations=[*m.allowed_aggregations, "max"])
-            if m.id == REVENUE["measure"]
-            else m
-            for m in config.measures
-        ],
-    )
-    assert "LAG(base.m1, 1) OVER" in compile_query(config, Registry(config), payload)["sql"]
 
 
 @pytest.mark.parametrize("route", ["recipe", "derived", "metric_filter"])

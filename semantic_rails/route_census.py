@@ -8,7 +8,9 @@ on the child itself).
 
 * :func:`route_census` lists the pairs the resolver refuses until a decision is recorded
   (``undecided``), multi-route pairs answered by the start's own key (``assumed``), and
-  resolved routes crossing undeclared child rows (``pass_through``).
+  resolved routes crossing undeclared child rows (``pass_through``). Each undecided and
+  pass-through pair names the package's own queries that walk it (:func:`walked_pairs`): only
+  those pairs need anything now, and every other one is asked when a question needs it.
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
   package.
 * :func:`unkept_route_changes` lists answered pairs a change moves without an explicit
@@ -17,23 +19,46 @@ on the child itself).
 
 from __future__ import annotations
 
-from collections import deque
+import hashlib
+import json
+from collections import OrderedDict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
+from threading import Lock
 from typing import Any
 
+# Through the compiler, which registers the nested compiles a binding runs.
+from .compiler import bind_query, read_routes
 from .compiler_parts.indexes import get_package_analysis
+from .compiler_parts.paths import dimensions_over_column, text_dimension
+from .compiler_parts.plan_checks import _object_default_query_temporal_role
+from .config import package_root_for_source
 from .errors import SemanticLayerError
 from .fanout import (
     entity_label,
     package_hop_limit,
     package_route,
     pass_through_disclosure,
+    route_pin,
     route_reading,
 )
+from .query_call import read_call, route_entry
+from .registry import Registry
 from .schema import PackageConfig
+from .yaml_loader import load_named_entries
 
 Pair = tuple[str, str]
+# A query the package asks: the id of what asks it, its calls (the first one that binds past
+# every refusal but a route's is walked) and its ``now``.
+PackageQuery = tuple[str, list[dict[str, Any]], Any]
+# A metric that reads periods compiles only with a time block: one of these grains.
+_GRAINS = ("day", "month", "quarter", "year")
+# The walks of the last few packages, by source fingerprint and queries: an Architect write
+# parses the same package more than once.
+_WALKS: OrderedDict[str, dict[Pair, list[str]]] = OrderedDict()
+_WALKS_LOCK = Lock()
+_WALKS_KEPT = 8
 
 
 @dataclass(frozen=True)
@@ -84,7 +109,119 @@ def resolve_pairs(config: PackageConfig, pairs: Iterable[Pair]) -> dict[Pair, Ro
     return outcomes
 
 
-def route_census(config: PackageConfig) -> dict[str, list[dict[str, Any]]]:
+def package_queries(config: PackageConfig, source_path: str | None = None) -> list[PackageQuery]:
+    """The queries the package's own objects ask: each metric alone (one that reads periods by
+    each grain in turn), and each example's and test's query in the package's ``examples/`` and
+    ``tests/`` beside ``source_path``. A test that expects a refusal needs no route."""
+    queries: list[PackageQuery] = []
+    for recipe in config.metric_recipes:
+        timed = [{"select": [recipe.id], "time": {"grain": grain}} for grain in _GRAINS]
+        queries.append((recipe.id, [{"select": [recipe.id]}, *timed], None))
+    if not source_path:
+        return queries
+    root = Path(package_root_for_source(source_path))
+    for plural, singular in (("examples", "example"), ("tests", "test")):
+        for entry_id, spec in load_named_entries(
+            root / plural, plural_key=plural, singular_key=singular, defaults=("now",)
+        ):
+            if spec.get("kind") == "validate_fails_with_code":
+                continue
+            queries.extend(
+                (f"{singular}.{entry_id}", [spec[key]], spec.get("now"))
+                for key in ("query", "metric_query", "expected_query")
+                if isinstance(spec.get(key), dict) and spec[key]
+            )
+    return queries
+
+
+def walked_pairs(config: PackageConfig, queries: Iterable[PackageQuery]) -> dict[Pair, list[str]]:
+    """Each entity pair the queries walk, with the ids of the queries that walk it.
+
+    Each call is bound as a compile binds it, never run. A pair it is refused on as
+    ``AMBIGUOUS_PATH`` is walked; the call is then bound again with that pair's first route in
+    its own ``routes``, so the pairs past the fork are walked too. When a call is refused for
+    another reason, the forks it met still count and its query's next call is tried.
+    """
+    registry = Registry(config)
+    walked: dict[Pair, list[str]] = {}
+
+    def clock(object_id: str) -> str:
+        try:
+            return _object_default_query_temporal_role(config, object_id)
+        except SemanticLayerError:
+            return ""
+
+    def note(pair: Pair, query_id: str) -> None:
+        if query_id not in walked.setdefault(pair, []):
+            walked[pair].append(query_id)
+
+    def walk(query_id: str, call: dict[str, Any], now: Any) -> bool:
+        """Walk ``call``; whether it bound past every refusal but a route's."""
+        while True:
+            try:
+                payload, _ = read_call(
+                    call,
+                    config=config,
+                    now=now,
+                    default_clock=clock,
+                    text_dimension=text_dimension,
+                    column_dimensions=dimensions_over_column,
+                )
+                bound = bind_query(config, registry, payload)
+                # The plan's own paths (a group_by's, a measure's) and those lowering read.
+                choices = read_routes(bound.plan, bound.route_choices)
+            except (TypeError, ValueError):
+                # The expression parser raises these for some malformed values; the
+                # examples and tests report their own failures.
+                return False
+            except SemanticLayerError as exc:
+                if exc.code != "AMBIGUOUS_PATH":
+                    return False
+                pair = (str(exc.details.get("start") or ""), str(exc.details.get("target") or ""))
+                if not all(pair):
+                    return True
+                note(pair, query_id)
+                options = (exc.details.get("clarification") or {}).get("options") or []
+                routes = [row["relationship_path"] for row in options]
+                routes = routes or list(exc.details.get("candidates") or [])
+                taken = list(call.get("routes") or [])
+                if not routes or any((row["from"], row["to"]) == pair for row in taken):
+                    return True
+                call = {**call, "routes": [*taken, route_entry(route_pin(*pair, routes[0]))]}
+                continue
+            for start, target, _route in choices:
+                note((start, target), query_id)
+            return True
+
+    for query_id, calls, now in queries:
+        for call in calls:
+            if walk(query_id, call, now):
+                break
+    return walked
+
+
+def _walks(
+    config: PackageConfig, queries: list[PackageQuery], package: str
+) -> dict[Pair, list[str]]:
+    """``walked_pairs``, reused for the same ``package`` (its source fingerprint) and queries."""
+    if not package:
+        return walked_pairs(config, queries)
+    key = hashlib.sha256(json.dumps([package, queries], default=str).encode()).hexdigest()
+    with _WALKS_LOCK:
+        if (walked := _WALKS.get(key)) is not None:
+            _WALKS.move_to_end(key)
+            return walked
+    walked = walked_pairs(config, queries)
+    with _WALKS_LOCK:
+        _WALKS[key] = walked
+        while len(_WALKS) > _WALKS_KEPT:
+            _WALKS.popitem(last=False)
+    return walked
+
+
+def route_census(
+    config: PackageConfig, *, queries: Iterable[PackageQuery] = (), package: str = ""
+) -> dict[str, list[dict[str, Any]]]:
     """The census pairs that need a business decision or a crossing disclosure.
 
     ``undecided``: pairs refused with ``AMBIGUOUS_PATH``, each with the refusal's ``details``
@@ -92,6 +229,12 @@ def route_census(config: PackageConfig) -> dict[str, list[dict[str, Any]]]:
     answered by the start's own key, with two or more routes, for the author to confirm.
     ``pass_through``: resolved only or inherited routes crossing undeclared child rows,
     with the same disclosure as an answer; these are not pairs awaiting a decision.
+
+    Each undecided and pass-through pair lists in ``needed_by`` the ``queries`` that walk it
+    (``walked_pairs``): the package's own (``package_queries``) or a caller's, such as the
+    questions people asked. Undecided pairs some query needs come first. ``package``, the
+    package's source fingerprint, reuses the walks of an earlier census of the same package and
+    queries.
     """
     undecided: list[dict[str, Any]] = []
     assumed: list[dict[str, Any]] = []
@@ -108,6 +251,10 @@ def route_census(config: PackageConfig) -> dict[str, list[dict[str, Any]]]:
             )
             if disclosure:
                 pass_through.append({**ends, "message": disclosure[0], "details": disclosure[1]})
+    walked = _walks(config, list(queries), package) if undecided or pass_through else {}
+    for row in [*undecided, *pass_through]:
+        row["needed_by"] = list(walked.get((row["source_entity"], row["target_entity"]), []))
+    undecided.sort(key=lambda row: not row["needed_by"])
     return {"undecided": undecided, "assumed": assumed, "pass_through": pass_through}
 
 

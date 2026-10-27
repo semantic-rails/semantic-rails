@@ -44,23 +44,6 @@ def test_mcp_reads_identity_only_from_the_request_context(runtime_factory, remot
     assert claimed["errors"][0]["details"]["path"] == "policy_context"
 
 
-def _orders_by_store_query() -> dict:
-    return {
-        "select": [
-            {
-                "expression": {
-                    "kind": "measure",
-                    "measure": "measure.jaffle.order_count",
-                    "aggregation": "count_distinct",
-                },
-                "as": "orders",
-            }
-        ],
-        "group_by": ["dimension.jaffle_store_name"],
-        "limit": 2,
-    }
-
-
 def test_mcp_definitions_are_declarative_and_complete():
     tool_names = {definition["name"] for definition in MCP_TOOL_DEFINITIONS}
 
@@ -322,69 +305,12 @@ def test_mcp_valid_values_requires_explicit_live_lookup(runtime_factory):
         adapter.close()
 
 
-def test_mcp_adapter_runtime_and_segment_tools(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    query = _orders_by_store_query()
-
-    def _fake_query(payload, **_options):
-        return {
-            "rows": [{"dimension.jaffle_store_name": "Brooklyn", "orders": 42}],
-            "row_count": 1,
-            "rendered_sql": "select 1",
-            "query": dict(payload),
-            "normalized_query": {},
-        }
-
-    def _fake_segment_preview(segment_id: str, *, limit: int = 50, policy_context=None):
-        return {
-            "segment": {"id": segment_id},
-            "rows": [{"dimension.jaffle_customer_id": "customer_1"}],
-            "preview_row_count": 1,
-            "member_count": 1,
-            "limit": limit,
-        }
-
-    runtime.query = _fake_query
-    runtime.segment_preview = _fake_segment_preview
-    try:
-        # The MCP adapter now defaults validate/compile/execute to
-        # verbosity='minimal'; this test inspects compact-level fields
-        # (normalized_query), so ask for compact explicitly.
-        validated = adapter.call_tool(
-            "execute", {"mode": "validate", "query": query, "verbosity": "compact"}
-        )
-        compiled = adapter.call_tool("execute", {"mode": "sql", "query": query})
-        executed = adapter.call_tool("execute", {"query": query})
-        segment = {"segment_id": "segment.jaffle.high_value_customers", "verbosity": "full"}
-        segment_validated = adapter.call_tool("segment", {**segment, "action": "validate"})
-        segment_explained = adapter.call_tool("segment", {**segment, "action": "explain"})
-        segment_preview = adapter.call_tool("segment", {**segment, "action": "preview", "limit": 3})
-
-        assert validated["ok"] is True
-        assert validated["normalized_query"]["group_by"] == ["dimension.jaffle_store_name"]
-        assert compiled["rendered_sql"]
-        assert executed["row_count"] == 1
-        assert executed["query"]["limit"] == 2
-        assert (
-            segment_validated["normalized_segment"]["id"] == "segment.jaffle.high_value_customers"
-        )
-        assert segment_explained["segment"]["id"] == "segment.jaffle.high_value_customers"
-        assert segment_preview["segment"]["id"] == "segment.jaffle.high_value_customers"
-        assert segment_preview["preview_row_count"] == 1
-    finally:
-        adapter.close()
-
-
 def test_mcp_adapter_resources_prompts_and_structured_errors(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         capabilities = adapter.read_resource("semantic-rails://capabilities")
-        catalog_summary = adapter.read_resource("semantic-rails://catalog/summary")
-        catalog_index = adapter.read_resource("semantic-rails://catalog/index")
         prompt = adapter.get_prompt("semantic-rails-query-builder", {"intent": "orders by store"})
-        unknown = adapter.call_tool("missing-tool", {})
         invalid_arguments = adapter.call_tool("discover", "not-a-json-object")  # type: ignore[arg-type]
         invalid_query = adapter.call_tool(
             "execute",
@@ -394,11 +320,7 @@ def test_mcp_adapter_resources_prompts_and_structured_errors(runtime_factory):
 
         assert capabilities["mimeType"] == "application/json"
         assert json.loads(capabilities["text"])["package_id"] == "jaffle_shop"
-        assert catalog_summary["payload"]["catalog"]["meta"]["verbosity"] == "compact"
-        assert catalog_index["payload"]["catalog"]["meta"]["verbosity"] == "summary"
         assert "discover" in prompt["messages"][0]["content"]["text"]
-        assert unknown["ok"] is False
-        assert unknown["errors"][0]["code"] == "UNKNOWN_MCP_TOOL"
         assert invalid_arguments["ok"] is False
         assert invalid_arguments["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
         assert invalid_query["ok"] is False

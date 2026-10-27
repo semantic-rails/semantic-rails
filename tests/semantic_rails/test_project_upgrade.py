@@ -353,19 +353,41 @@ def test_unflagged_same_meaning_rule_is_proven_after_the_baseline(tmp_path):
     assert _contents(project) == files
 
 
-@pytest.mark.parametrize("surface", ["cli", "architect"])
-def test_rule_cannot_certify_an_unrelated_query_failure(tmp_path, monkeypatch, capsys, surface):
-    _with_rules(monkeypatch, (*RULES, QUERY_VERSION))
+def _default_version(files):
+    for file, path, query in files.queries():
+        if query.get("version") == 1:
+            edit = Edit(file, "delete", (*path, "version"))
+            yield Finding("default-version", file, 1, path, "1 is the default", (edit,))
+
+
+DEFAULT_VERSION = Rule(
+    "default-version", "9.9", "same_meaning", "Delete version: 1", _default_version
+)
+
+
+# A rule whose only hit is an example that fails for another reason, and a rule whose hits
+# are that example and a test that passes: neither can be proven by the queries it touches.
+@pytest.mark.parametrize(
+    ("rules", "version", "surface"),
+    [((*RULES, QUERY_VERSION), "2", "cli"), ((DEFAULT_VERSION,), "1", "architect")],
+    ids=["failing-example-only", "mixed-hits"],
+)
+def test_rule_cannot_certify_an_unrelated_query_failure(
+    tmp_path, monkeypatch, capsys, rules, version, surface
+):
+    _with_rules(monkeypatch, rules)
     files = {
         **UPGRADED,
         "examples/core.yml": UPGRADED["examples/core.yml"]
-        .replace("version: 1", "version: 2")
+        .replace("version: 1", f"version: {version}")
         .replace("metric.shop.amount_per_event", "metric.shop.missing"),
     }
     project = _package(tmp_path, files)
     preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
     assert preview["status"] == "preview"
     assert preview["rules"][0]["tier"] == preview["proof"]["tier"] == "unverified"
+    if version == "1":  # The rule also hits the test, which passes.
+        assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (0, 1)
 
     if surface == "cli":
         code, text = _cli(
@@ -386,7 +408,7 @@ def test_rule_cannot_certify_an_unrelated_query_failure(tmp_path, monkeypatch, c
     details = report["error"]["details"]
     assert (details["conflict_kind"], details["rule"]) == (
         "upgrade_not_equivalent",
-        "query-version",
+        rules[-1].id,
     )
     assert _contents(project) == files
 
@@ -1104,13 +1126,6 @@ def test_upgrade_refuses_a_linked_directory_that_may_hold_package_input(tmp_path
     assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
 
 
-def _default_version(files):
-    for file, path, query in files.queries():
-        if query.get("version") == 1:
-            edit = Edit(file, "delete", (*path, "version"))
-            yield Finding("default-version", file, 1, path, "1 is the default", (edit,))
-
-
 @pytest.mark.parametrize(
     ("surface", "version", "retired_key", "legacy_line"),
     [
@@ -1159,47 +1174,6 @@ def test_query_rewrites_are_isolated_after_all_retired_forms(
         runtime.close()
 
 
-@pytest.mark.parametrize("surface", ["cli", "architect"])
-def test_mixed_query_hits_cannot_prove_a_rule_with_an_unrelated_failure(
-    tmp_path, monkeypatch, capsys, surface
-):
-    files = {
-        **UPGRADED,
-        "examples/core.yml": UPGRADED["examples/core.yml"].replace(
-            "metric.shop.amount_per_event", "metric.shop.missing"
-        ),
-    }
-    project = _package(tmp_path, files)
-    rule = Rule("default-version", "9.9", "same_meaning", "Delete version: 1", _default_version)
-    _with_rules(monkeypatch, (rule,))
-    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
-    assert preview["status"] == "preview"
-    assert preview["rules"][0]["tier"] == preview["proof"]["tier"] == "unverified"
-    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (0, 1)
-    if surface == "cli":
-        code, text = _cli(
-            monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
-        )
-        assert code == 1, text
-        report = json.loads(text)
-    else:
-        report = _architect(
-            tmp_path,
-            "upgrade_project",
-            project_path=str(project),
-            dry_run=False,
-            expected_revision=preview["revision"],
-            idempotency_key="mixed-query-hits",
-        )
-    assert report["error"]["code"] == "CONFIG_CONFLICT"
-    details = report["error"]["details"]
-    assert (details["conflict_kind"], details["rule"]) == (
-        "upgrade_not_equivalent",
-        "default-version",
-    )
-    assert _contents(project) == files
-
-
 def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
     project = tmp_path / "jaffle_shop"
     shutil.copytree(
@@ -1211,14 +1185,22 @@ def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
         "examples:\n  broken:\n    query:\n      version: 1\n"
         "      select: [{expression: metric.jaffle.missing, as: missing}]\n"
     )
-    rule = Rule("default-version", "9.9", "same_meaning", "Delete version: 1", _default_version)
-
-    report = service.upgrade_project(project, workspace_root=tmp_path, rules=(rule,))
+    (project / "examples/routes.yml").write_text(
+        "examples:\n  delivered_by_type:\n    query:\n"
+        "      select: [measure.jaffle.delivered_orders]\n"
+        "      group_by: [dimension.jaffle_item_product_type]\n"
+    )
+    report = service.upgrade_project(project, workspace_root=tmp_path, rules=(DEFAULT_VERSION,))
 
     assert (report["status"], report["proof"]["tier"]) == ("preview", "unverified")
     assert report["proof"]["examples"] > 10 and report["proof"]["tests"] > 10
-    routes, broken = report["next_actions"]
-    assert re.match(r"Decide the join route of \d+ entity pairs \(entity\.jaffle_", routes)
+    # Only the pair an example walks needs a decision, not the package's other forks.
+    routes, broken, refused = report["next_actions"]
+    assert routes.startswith(
+        "Decide the join route of 1 entity pair the package's metrics, examples or tests need "
+        "(entity.jaffle_order_lifecycle -> entity.jaffle_item;"
+    )
+    assert refused.startswith("Example examples/routes.yml:examples.delivered_by_type.query ")
     assert broken == (
         "Example examples/broken.yml:examples.broken.query does not compile (OBJECT_NOT_FOUND): "
         "Unknown metric recipe 'metric.jaffle.missing'"

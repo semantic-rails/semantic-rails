@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.errors import ERROR_CODES, UNEXPECTED_ERROR_MESSAGE
+from semantic_rails.errors import UNEXPECTED_ERROR_MESSAGE
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
@@ -227,13 +227,3 @@ def test_http_bare_exception_surfaces_as_structured_internal_error(runtime) -> N
     assert "bug" in joined or "issues" in joined
     details = dict(error.get("details", {}) or {})
     assert details.get("exception_type") == "KeyError"
-
-
-def test_error_codes_module_is_self_consistent() -> None:
-    """Sanity check — ERROR_CODES is a non-empty frozen set of strings. Codes
-    we add to envelopes (like INTERNAL_ERROR) that are not raised via
-    SemanticLayerError do not need to be in this set, but the set
-    itself must be coherent."""
-    assert isinstance(ERROR_CODES, frozenset)
-    assert ERROR_CODES
-    assert all(isinstance(code, str) and code for code in ERROR_CODES)

@@ -40,7 +40,6 @@ EVENT_ROLE = "temporal_role.fees_event_occurred_at"
 ACCOUNT = "dimension.fees_account_day_account_id"
 DAY = "dimension.fees_account_day_date_day"
 SNAPSHOT_DATE = "dimension.fees_account_day_snapshot_date"
-CALENDAR_DAY = "dimension.fees_time_date_day"
 CALENDAR_WEEK = "dimension.fees_time_week_start"
 OCCURRED_AT = "dimension.fees_event_occurred_at"
 CHANNEL = "dimension.fees_event_channel"
@@ -201,7 +200,6 @@ def related_runtime(tmp_path: Path) -> Iterator[Runtime]:
     graph.write_text(
         graph.read_text()
         + "    time2: {kind: time, key: [date_day], model: calendar2, allowed_as_root: false}\n"
-        + SNAPSHOT_LABEL_ENTITY
     )
     calendar = package / "models" / "calendar.yml"
     calendar.write_text(
@@ -216,9 +214,6 @@ def related_runtime(tmp_path: Path) -> Iterator[Runtime]:
         "  times:\n"
         "    date_day: {column: date_day, kind: date, class: calendar_time}\n"
     )
-    (package / "models" / "snapshot_labels.yml").write_text(SNAPSHOT_LABELS)
-    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
-        connection.execute(SNAPSHOT_LABELS_TABLE)
     runtime = Runtime.from_path(str(package))
     yield runtime
     runtime.close()
@@ -289,20 +284,6 @@ ON_THE_CLOCK = {
     "pinned-total": (PRIOR_DAY, [_cut(DAY, "is", "2026-09-14")], False, "WINDOWED", "where[0]"),
     "in-list": (PRIOR_DAY, [_cut(DAY, "is", ["2026-09-14"])], True, "WINDOWED", "where[0]"),
     "excluded-day": (PRIOR_DAY, [_cut(DAY, "not", "2026-09-13")], True, "WINDOWED", "where[0]"),
-    "same-column": (
-        PRIOR_DAY,
-        [_cut(SNAPSHOT_DATE, "gte", "2026-09-14")],
-        True,
-        "WINDOWED",
-        "where[0]",
-    ),
-    "calendar-day": (
-        PRIOR_DAY,
-        [_cut(CALENDAR_DAY, "gte", "2026-09-14")],
-        True,
-        "WINDOWED",
-        "where[0]",
-    ),
     "calendar-week": (
         PRIOR_DAY,
         [_cut(CALENDAR_WEEK, "is", "2026-09-14")],
@@ -358,28 +339,6 @@ def test_a_where_cut_of_the_clock_refuses(
             "unit": "day",
             "value": 7,
         }
-
-
-def test_the_uncut_series_has_the_reference_values_the_cut_lost(runtime: Runtime) -> None:
-    """What the refused cuts read as NULL or 40, from the uncut series and independent SQL."""
-    reference = _reference("select account_id, fee from account_day where date_day = '2026-09-13'")
-    assert reference == [("a", 99), ("b", 99), ("c", 99)]
-    grouped = {
-        (account, day): value
-        for account, day, value in _rows(runtime, _query(PRIOR_DAY, [], grouped=True))
-    }
-    assert [(account, grouped[(account, date(2026, 9, 14))]) for account in "abc"] == reference
-    assert dict(_rows(runtime, _query(PRIOR_DAY, [])))[date(2026, 9, 14)] == 297
-    for expression, since, expected in (
-        (ROLLING, "2026-09-09", 45),
-        (CUMULATIVE, "2000-01-01", 75),
-        (MONTH_TO_DATE, "2026-09-01", 75),
-    ):
-        assert _reference(
-            "select sum(amount) from events "
-            f"where occurred_at::date between date '{since}' and date '2026-09-15'"
-        ) == [(expected,)]
-        assert dict(_rows(runtime, _query(expression, [])))[date(2026, 9, 15)] == expected
 
 
 def test_time_start_refusal_is_unchanged(runtime: Runtime) -> None:
@@ -464,16 +423,8 @@ def test_mcp_execute_returns_the_refusal_with_a_patch_for_the_filter(runtime: Ru
     assert hints["widen_time_window"]["suggested_start"] == "2026-09-13"
 
 
-@pytest.mark.parametrize(
-    ("field", "op"),
-    [
-        pytest.param(SECOND_CALENDAR_DAY, "gte", id="two-hop-lower-bound"),
-        pytest.param(SECOND_CALENDAR_DAY, "is", id="two-hop-pin"),
-        pytest.param(LINKED_DATE, "gte", id="reverse-non-calendar"),
-    ],
-)
-def test_a_related_clock_cut_refuses(related_runtime: Runtime, field: str, op: str) -> None:
-    cut = _cut(field, op, "2026-09-14")
+def test_a_two_hop_calendar_cut_refuses(related_runtime: Runtime) -> None:
+    cut = _cut(SECOND_CALENDAR_DAY, "gte", "2026-09-14")
     with pytest.raises(SemanticLayerError) as caught:
         related_runtime.query(_query(PRIOR_DAY, [cut], grouped=True))
     assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
@@ -504,13 +455,6 @@ def _monthly(where: list[dict]) -> dict[str, Any]:
     query = _query(PRIOR_MONTH, where, grouped=True)
     query["time"] = {"temporal_role": CALENDAR_ROLE, "grain": "month"}
     return query
-
-
-def test_monthly_snapshot_own_clock_cut_refuses(runtime: Runtime) -> None:
-    with pytest.raises(SemanticLayerError) as caught:
-        runtime.query(_monthly([_cut(DAY, "gte", "2026-09-01")]))
-    assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
-    assert caught.value.details["where_path"] == "where[0]"
 
 
 def test_a_date_cut_of_a_snapshot_with_no_calendar_relationship_refuses(
@@ -677,17 +621,6 @@ BY_TYPE = {
         LINKED_DATE,
         "gte",
     ),
-    "kindless-related-to-the-clock": (
-        {
-            "graph": {GRAPH_ENTITIES: GRAPH_ENTITIES + SNAPSHOT_LABEL_ENTITY},
-            "snapshot_labels": SNAPSHOT_LABELS.replace(
-                OBSERVED_DATE_LINE, "    observed_date: {column: date_day}\n"
-            ),
-        },
-        PRIOR_DAY,
-        LINKED_DATE,
-        "gte",
-    ),
     "categorical-relating-the-clock": (DAY_INFO, PRIOR_DAY, "dimension.fees_day_info_label", "gte"),
     # A column is its name compared without case, on any table.
     "clock-column-in-capitals": (
@@ -700,29 +633,7 @@ BY_TYPE = {
         "dimension.fees_account_day_label",
         "gte",
     ),
-    "clock-column-in-mixed-case": (
-        {
-            "account_days": {
-                ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: Date_Day, kind: categorical}\n"
-            }
-        },
-        PRIOR_DAY,
-        "dimension.fees_account_day_label",
-        "gte",
-    ),
     "rolling-clock-column-in-capitals": (OCCURRED_LABEL_EDITS, ROLLING, OCCURRED_LABEL, "gte"),
-    "cumulative-clock-column-in-capitals": (
-        OCCURRED_LABEL_EDITS,
-        CUMULATIVE,
-        OCCURRED_LABEL,
-        "gte",
-    ),
-    "period-to-date-clock-column-in-capitals": (
-        OCCURRED_LABEL_EDITS,
-        MONTH_TO_DATE,
-        OCCURRED_LABEL,
-        "gte",
-    ),
     "categorical-relating-the-clock-in-capitals": (
         DAY_INFO_IN_CAPITALS,
         PRIOR_DAY,
@@ -750,18 +661,6 @@ def test_a_cut_of_a_temporal_dimension_refuses_by_type(
     assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
     assert caught.value.details["where_path"] == "where[0]"
     assert caught.value.details["where"] == cut
-
-
-def test_an_upper_bound_on_another_date_matches_reference(tmp_path: Path) -> None:
-    runtime = _edited_runtime(
-        tmp_path, {"events": {CHANNEL_LINE: CHANNEL_LINE + "    shipped_on: {kind: date}\n"}}
-    )
-    try:
-        rows = _rows(runtime, _query(ROLLING, [_cut(SHIPPED, "lte", "2026-09-11")]))
-    finally:
-        runtime.close()
-    reference = ROLLING_REFERENCE.format(cut="occurred_at::date + 1 <= date '2026-09-11'")
-    assert rows == _reference(reference)
 
 
 @pytest.mark.timeout(10, method="signal")

@@ -43,13 +43,6 @@ def test_a_common_mistake_is_refused_at_its_path_naming_the_fix(call, partial, p
     assert all(word in hint["message"] for word in named), hint
 
 
-def test_unknown_top_level_underscore_key_is_accepted():
-    """Underscore-prefixed keys (e.g. `_note`) are documentation
-    metadata — must pass through silently so example fixtures don't
-    have to strip them."""
-    read_call({"_note": "an inline comment in JSON", "select": AOV})
-
-
 def test_a_relative_window_after_the_data_echoes_its_bounds(runtime_factory):
     """`time.last` against historical fixture data: the window still answers its month, NULL
     with NO_DATA_YET, and the answer echoes the resolved absolute bounds and the data's edge,

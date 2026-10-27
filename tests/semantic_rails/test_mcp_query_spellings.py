@@ -220,15 +220,6 @@ def test_invalid_encoded_query_refuses(adapter, query):
     assert actual["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
 
 
-def test_a_call_sent_as_execute_arguments_is_refused(adapter):
-    actual = adapter.call_tool("execute", {**QUERY, "mode": "validate"})
-    assert not actual["ok"], actual
-    issue = actual["errors"][0]
-    assert issue["code"] == "INVALID_QUERY"
-    assert issue["details"]["path"] == "select"
-    assert adapter.call_tool("execute", {"query": QUERY, "mode": "validate"})["ok"]
-
-
 @pytest.mark.parametrize("remote", [False, True])
 def test_an_encoded_identity_claim_is_refused(adapter, remote):
     claim = {"environment": "caller", "roles": ["admin"]}

@@ -6,9 +6,8 @@ trial-and-erroring against the runtime. Each file must:
 
 1. Validate against the published JSON Schema
    (``schemas/query.v2.json``).
-2. Pass ``Runtime.validate()`` with ``ok: true`` against the active
-   jaffle_shop package.
-3. Compile to non-empty ``rendered_sql``.
+2. Compile to non-empty ``rendered_sql`` against the active jaffle_shop
+   package (compiling runs every check ``Runtime.validate()`` runs).
 
 If a future change makes any committed example fail any of these
 checks, the test breaks before the docs go stale.
@@ -89,24 +88,6 @@ def _ir_contract_only(ir: dict[str, Any]) -> bool:
     example can advertise the contract immediately.
     """
     return str(ir.get("_status", "")).strip() == "ir_contract_only"
-
-
-@pytest.mark.parametrize(("name", "ir"), EXAMPLES, ids=EXAMPLE_IDS)
-def test_example_validates_against_runtime(runtime: Runtime, name: str, ir: dict[str, Any]) -> None:
-    report = runtime.validate(ir)
-    if _ir_contract_only(ir):
-        # IR-contract-only examples surface a structured error envelope
-        # (e.g. INVALID_ANCHOR_ROLE with ``feature_status: ir_contract_only``).
-        # That is the right behaviour today — assert the envelope shape
-        # so the example stays honest as the feature matures.
-        errors = report.get("errors") or []
-        assert errors, (
-            f"examples/{name} marked _status=ir_contract_only but validate returned ok=True"
-        )
-        return
-    assert report.get("ok") is True, (
-        f"examples/{name} failed runtime validate: errors={report.get('errors')!r}"
-    )
 
 
 @pytest.mark.parametrize(("name", "ir"), EXAMPLES, ids=EXAMPLE_IDS)

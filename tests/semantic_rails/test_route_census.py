@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from semantic_rails.fanout import query_route_decisions, resolve_path
 from semantic_rails.package_tools import impact_report, promote_package_report
 from semantic_rails.route_census import census_pairs, route_census
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.test_role_paths import (
     CODE,
     DESTINATION,
@@ -271,8 +273,24 @@ def _mcp(server, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(server.call_tool(name, arguments))[1]
 
 
+SIGNUPS_BY_STORE_REGION = {
+    "select": ["measure.shop.signup_count"],
+    "group_by": ["dimension.shop_store_region"],
+}
+
+
+def _with_examples(pkg: Path, root: Path, **examples: dict[str, Any]) -> Path:
+    """A copy of ``pkg`` under ``root`` whose examples are ``examples``' queries."""
+    copy = root / pkg.name
+    shutil.copytree(pkg, copy, ignore=shutil.ignore_patterns("*.duckdb"))
+    (copy / "examples").mkdir(exist_ok=True)
+    body = {name: {"query": query} for name, query in examples.items()}
+    (copy / "examples" / "walks.yml").write_text(yaml.safe_dump({"examples": body}))
+    return copy
+
+
 @pytest.mark.parametrize("surface", ["census", "parse", "project_status"])
-def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_path, surface):
+def test_resolved_crossings_are_object_warnings_only_where_a_query_walks_them(tmp_path, surface):
     pkg = ROOT / "tests/integration/correctness/shop"
     config = load_package_config(str(pkg))
     census = route_census(config)
@@ -287,37 +305,176 @@ def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_pat
     for crossing in census["pass_through"]:
         assert crossing["details"]["route_basis"] == "only_route"
         assert [row["entity"] for row in crossing["details"]["through"]] == ["entity.shop_order"]
+        assert crossing["needed_by"] == []
     if surface == "census":
         return
+    # No metric, example or test of the package walks a crossing (the answers ledger's
+    # tests included): each is disclosed by the answer that reads it, never as a warning.
+    report, _ = parse_config_report(PackageReference(source_path=str(pkg)))
+    assert report["route_census"] == census
+    assert not [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
+    # An example that reads the store of a customer's orders walks one.
+    copy = _with_examples(pkg, tmp_path, signups_by_store_region=SIGNUPS_BY_STORE_REGION)
     if surface == "parse":
-        report, _ = parse_config_report(PackageReference(source_path=str(pkg)))
-        assert report["route_census"] == census
+        report, _ = parse_config_report(PackageReference(source_path=str(copy)))
+        walked = report["route_census"]
     else:
-        import shutil
-
-        copy = tmp_path / "shop"
-        shutil.copytree(pkg, copy)
         server = create_architect_mcp_server(workspace_root=tmp_path)
         status = _mcp(server, "project_status", {"project_path": str(copy), "full_report": True})
-        assert status["route_census"] == census
+        walked = status["route_census"]
         assert not any(action.startswith("Decide") for action in status["next_actions"])
         report = status["parse"]
     assert report["ok"]
-    warnings = [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
-    for warning, crossing in zip(warnings, census["pass_through"], strict=True):
-        assert warning["severity"] == "warning"
-        assert warning["object_ids"] == [crossing["source_entity"], crossing["target_entity"]]
-        assert warning["details"] == crossing["details"]
-        assert warning["message"] == crossing["message"]
+    (crossing,) = [row for row in walked["pass_through"] if row["needed_by"]]
+    assert (crossing["source_entity"], crossing["target_entity"]) == (
+        "entity.shop_customer",
+        "entity.shop_store",
+    )
+    assert crossing["needed_by"] == ["example.signups_by_store_region"]
+    (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
+    assert warning["severity"] == "warning"
+    assert warning["object_ids"] == [crossing["source_entity"], crossing["target_entity"]]
+    assert warning["details"] == crossing["details"]
+    assert warning["message"] == crossing["message"]
 
 
-def test_status_setup_and_promotion_point_at_the_undecided_pairs(tmp_path):
+AMOUNT_BY_REGION = _query(AMOUNT, group_by=[REGION_NAME])
+
+
+def test_only_the_pairs_a_query_of_the_package_walks_are_warned_about(tmp_path):
+    """Thirteen pairs have two routes and no row; none needs anything until a query walks it.
+    An example that asks for invoice amounts by region walks one, and only that one is warned
+    about, with the example that needs it and the rows that would decide it."""
+    pkg = _write_package(tmp_path / "bank")
+    report, _ = parse_config_report(PackageReference(source_path=str(pkg)))
+    assert _pairs(report["route_census"]["undecided"]) == DIAMOND_UNDECIDED
+    assert all(row["needed_by"] == [] for row in report["route_census"]["undecided"])
+    assert "ROUTES_UNDECIDED" not in {row["code"] for row in report["warnings"]}
+
+    copy = _with_examples(pkg, tmp_path / "walked", amount_by_region=AMOUNT_BY_REGION)
+    report, _ = parse_config_report(PackageReference(source_path=str(copy)))
+    undecided = report["route_census"]["undecided"]
+    # The pair the example needs comes first; every other pair is still listed.
+    assert sorted(_pairs(undecided)) == sorted(DIAMOND_UNDECIDED)
+    assert (_pairs(undecided)[0], undecided[0]["needed_by"]) == (
+        (INVOICE, REGION),
+        ["example.amount_by_region"],
+    )
+    assert all(row["needed_by"] == [] for row in undecided[1:])
+    (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTES_UNDECIDED"]
+    rows = warning["details"].pop("first_pair_rows")
+    assert warning["details"] == {
+        "count": 1,
+        "pairs": [
+            {
+                "source_entity": INVOICE,
+                "target_entity": REGION,
+                "needed_by": ["example.amount_by_region"],
+            }
+        ],
+        "unwalked": 12,
+    }
+    assert sorted(row["relationship_path"] for row in rows) == sorted(
+        option["relationship_path"]
+        for option in undecided[0]["details"]["clarification"]["options"]
+    )
+    assert "for example.amount_by_region" in warning["message"]
+    assert "The 12 other undecided pairs need nothing now" in warning["message"]
+
+
+def test_a_query_past_a_fork_is_walked_to_its_end(tmp_path):
+    """A query refused at one fork still needs the routes past it: the census takes the fork's
+    first route for that query alone and keeps walking, so both forks are needed."""
+    config = load_package_config(str(_write_package(tmp_path)))
+    both = _query(
+        AMOUNT,
+        group_by=[REGION_NAME],
+        where=[{"field": OWNER_NAME, "op": "is", "value": "Ann"}],
+    )
+    walked = census_module.walked_pairs(config, [("example.both", [both], None)])
+    assert walked[(INVOICE, REGION)] == walked[(INVOICE, OWNER)] == ["example.both"]
+    # A metric that reads periods is walked with a time block; a test that expects a refusal
+    # is not walked at all.
+    queries = census_module.package_queries(config)
+    assert {query_id for query_id, _calls, _now in queries} == {
+        recipe.id for recipe in config.metric_recipes
+    }
+    assert [call.get("time") for call in queries[0][1]] == [
+        None,
+        *({"grain": grain} for grain in ("day", "month", "quarter", "year")),
+    ]
+
+
+def test_a_route_the_plan_reads_is_walked(tmp_path):
+    """A group_by's own route is read from the plan, not only from what lowering records.
+    Without the row that decides a customer's products, their one route goes through the
+    customer's orders and their items: the examples and tests that count customers by product
+    type need that crossing, and it is the one the parse report warns about for them."""
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    graph = package / "graph.yml"
+    document = yaml.safe_load(graph.read_text(encoding="utf-8"))
+    rows = document["graph"]["path_preferences"]
+    document["graph"]["path_preferences"] = [
+        row
+        for row in rows
+        if (row["source_entity"], row["target_entity"]) != ("customer", "product")
+    ]
+    graph.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    report, _ = parse_config_report(PackageReference(source_path=str(package)))
+    crossings = {
+        (row["source_entity"], row["target_entity"]): row["needed_by"]
+        for row in report["route_census"]["pass_through"]
+    }
+    assert crossings[("entity.jaffle_customer", "entity.jaffle_product")] == [
+        "example.customers_who_bought_product_type",
+        "example.repeat_customers_who_bought_product_type",
+        "test.entity_hop_customers_by_product_type_executes",
+        "test.entity_hop_customers_by_product_type_with_customer_filter_executes",
+    ]
+    warned = [
+        tuple(row["object_ids"])
+        for row in report["warnings"]
+        if row["code"] == "ROUTE_PASS_THROUGH"
+    ]
+    assert ("entity.jaffle_customer", "entity.jaffle_product") in warned
+    assert sorted(warned) == sorted(pair for pair, needed in crossings.items() if needed)
+
+
+def test_a_second_parse_of_the_same_package_reuses_its_walks(tmp_path, monkeypatch):
+    """An Architect write parses a package more than once: its queries are walked once per
+    package source and queries, and again after either changes."""
+    copy = _with_examples(_write_package(tmp_path / "bank"), tmp_path / "walked")
+    walks: list[int] = []
+    walk = census_module.walked_pairs
+
+    def counted(config, queries):
+        walks.append(len(queries))
+        return walk(config, queries)
+
+    monkeypatch.setattr(census_module, "walked_pairs", counted)
+    monkeypatch.setattr(census_module, "_WALKS", type(census_module._WALKS)())
+    ref = PackageReference(source_path=str(copy))
+    first, _ = parse_config_report(ref)
+    again, _ = parse_config_report(ref)
+    assert len(walks) == 1 and again["route_census"] == first["route_census"]
+    examples = copy / "examples" / "walks.yml"
+    examples.write_text(yaml.safe_dump({"examples": {"amount": {"query": AMOUNT_BY_REGION}}}))
+    edited, _ = parse_config_report(ref)
+    assert len(walks) == 2
+    assert edited["route_census"]["undecided"][0]["needed_by"] == ["example.amount"]
+
+
+def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     pkg = _write_package(tmp_path)
     server = create_architect_mcp_server(workspace_root=tmp_path)
     status = _mcp(server, "project_status", {"project_path": str(pkg), "full_report": True})
     assert _pairs(status["route_census"]["undecided"]) == DIAMOND_UNDECIDED
     assert "route_census" not in status["parse"]
-    assert status["next_actions"][0].startswith("Decide the 13 undecided join routes")
+    # No metric, example or test walks an undecided pair: nothing to decide now.
+    assert not any(action.startswith("Decide") for action in status["next_actions"])
+    summary = _mcp(server, "project_status", {"project_path": str(pkg)})["route_census"]
+    assert summary["counts"]["undecided"] == 13
+    assert summary["counts"]["undecided_needed"] == 0
     for result in (
         _mcp(server, "setup_project_dialog", {"package_id": "fresh"}),
         _mcp(
@@ -328,8 +485,19 @@ def test_status_setup_and_promotion_point_at_the_undecided_pairs(tmp_path):
     ):
         assert any("route_census.undecided" in action for action in result["next_actions"])
     promotion = promote_package_report(PackageReference(source_path=str(pkg)), environment="dev")
+    assert promotion["advisories"] == []
+
+    copy = _with_examples(pkg, tmp_path / "walked", amount_by_region=AMOUNT_BY_REGION)
+    server = create_architect_mcp_server(workspace_root=tmp_path / "walked")
+    status = _mcp(server, "project_status", {"project_path": str(copy)})
+    assert status["next_actions"][0].startswith(
+        "Decide the 1 join route the package's own metrics, examples or tests need"
+    )
+    assert status["route_census"]["counts"]["undecided_needed"] == 1
+    assert status["route_census"]["undecided"][0]["needed_by"] == ["example.amount_by_region"]
+    promotion = promote_package_report(PackageReference(source_path=str(copy)), environment="dev")
     (advisory,) = promotion["advisories"]
-    assert (advisory["code"], advisory["details"]["count"]) == ("ROUTES_UNDECIDED", 13)
+    assert (advisory["code"], advisory["details"]["count"]) == ("ROUTES_UNDECIDED", 1)
     assert "ROUTES_UNDECIDED" not in json.dumps(promotion["blockers"])
 
 
@@ -495,20 +663,6 @@ def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     assert report["route_changes"] == []
     assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
     assert _gold(AMOUNT_BY_BRANCH) != _gold(AMOUNT_BY_ISSUED)
-
-
-def test_a_preview_refuses_unrecorded_decisions_without_generating_rows(tmp_path):
-    project = _architect(tmp_path)
-    revision = project.revision()
-    before = _files_and_receipts(project)
-    with pytest.raises(SemanticLayerError) as raised:
-        project.upsert_relationship(
-            from_entity="owner", to_entity="region", columns=["home_region_id"], dry_run=True
-        )
-    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert _pairs(raised.value.details["route_changes"]) == MOVED
-    assert project.revision() == revision
-    assert _files_and_receipts(project) == before
 
 
 @pytest.mark.parametrize(
@@ -986,8 +1140,8 @@ def _files_and_receipts(project):
     }
 
 
-@pytest.mark.parametrize("decide", [False, True])
-def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path, decide):
+def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path):
+    """With the pair's row the swap is written; without it, it is refused (the batch test below)."""
     project = ArchitectProject(
         _write_package(
             tmp_path,
@@ -1003,25 +1157,15 @@ def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path, decide):
         "as": "relationship.accounts_billing_region",
         "via": ["billing_region_id"],
     }
-    if decide:
-        graph["graph"]["path_preferences"] = [
-            _pin(ACCOUNT, REGION, ["relationship.accounts_billing_region"]),
-        ]
-    revision, before = project.revision(), _files_and_receipts(project)
-    content = yaml.safe_dump(graph)
-    if decide:
-        report = project.write_files([{"path": "graph.yml", "content": content}]).report
-        assert report["ok"] is True
-        assert report["route_decisions_added"] == []
-        assert _pairs(report["route_changes"]) == [(ACCOUNT, REGION)]
-        assert project.revision() != revision
-    else:
-        with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
-            project.write_files([{"path": "graph.yml", "content": content}])
-        assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-        assert _pairs(raised.value.details["route_changes"]) == [(ACCOUNT, REGION)]
-        assert project.revision() == revision
-        assert _files_and_receipts(project) == before
+    graph["graph"]["path_preferences"] = [
+        _pin(ACCOUNT, REGION, ["relationship.accounts_billing_region"]),
+    ]
+    revision = project.revision()
+    report = project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph)}]).report
+    assert report["ok"] is True
+    assert report["route_decisions_added"] == []
+    assert _pairs(report["route_changes"]) == [(ACCOUNT, REGION)]
+    assert project.revision() != revision
 
 
 def test_a_removal_reports_a_refused_pair_becoming_the_only_route(tmp_path):
@@ -1414,7 +1558,7 @@ def test_batch_route_swap_refuses_every_file_without_recorded_decision(tmp_path,
     }
     revision, before = project.revision(), _files_and_receipts(project)
 
-    with pytest.raises(SemanticLayerError) as raised:
+    with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
         project.write_files(
             [
                 {"path": "graph.yml", "content": yaml.safe_dump(graph)},

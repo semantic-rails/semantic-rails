@@ -310,7 +310,6 @@ def _metric(name: str, kind: str, expression: Any) -> dict[str, Any]:
 def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
     january = {"all": [{"field": PERIOD, "op": "is", "value": "2026-01"}]}
     metrics = {
-        **_metric("euro_share", "derived", SUM_EUR),
         **_metric("filtered_amount", "aggregate", {**_measure("amount", "sum"), "filter": january}),
     }
     return _write_package(tmp_path_factory.mktemp("aggif"), metrics={"metrics": metrics})
@@ -724,15 +723,6 @@ def test_inside_a_metric_predicate_it_computes_gold_or_refuses(runtime, gold):
     with pytest.raises(SemanticLayerError) as raised:
         _ask(runtime, _measure("amount"), metric_filters=[_predicate(many_side)])
     assert raised.value.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
-
-
-def test_inside_a_metric_recipe_it_is_refused(runtime):
-    with pytest.raises(SemanticLayerError) as raised:
-        _ask(runtime, "metric.shop.euro_share")
-
-    # The refusal carries no details: the expression kind it names is the only pointer.
-    assert raised.value.code == "INVALID_QUERY"
-    assert "aggregate_if" in str(raised.value)
 
 
 def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(package, gold):

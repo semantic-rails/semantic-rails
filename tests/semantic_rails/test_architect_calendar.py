@@ -162,32 +162,6 @@ def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
     assert implicit_rows == rows
 
 
-def test_date_dimensions_on_a_regular_entity_are_rolled_back(workspace: Path) -> None:
-    before = project_revision(workspace / "shop")
-
-    mutation = _project(workspace).upsert_model(**_calendar(calendar=None))
-
-    assert mutation.report["ok"] is False
-    assert "non-time entity" in str(mutation.report)
-    assert project_revision(workspace / "shop") == before
-
-
-def test_dry_run_apply_and_undo(workspace: Path) -> None:
-    project = _project(workspace)
-    before = project_revision(workspace / "shop")
-
-    preview = project.upsert_model(**_calendar(), dry_run=True)
-    assert preview.report["ok"] is True, preview.report
-    assert project_revision(workspace / "shop") == before
-
-    applied = project.upsert_model(**_calendar())
-    assert applied.report["ok"] is True, applied.report
-    assert applied.report["revision"] == preview.report["proposed_revision"]
-
-    assert applied.undo()["ok"] is True
-    assert project_revision(workspace / "shop") == before
-
-
 def _fiscal_calendar(**extra: Any) -> dict[str, Any]:
     return _calendar(
         model_id="fiscal_calendar",

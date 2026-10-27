@@ -20,7 +20,13 @@ from ..compiler_parts.paths import _leaf_time_role
 from ..diagnostics import rewrite_warning_payload, semantic_issue
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
-from ..fanout import entity_label, package_route, pass_through_disclosure, route_hops
+from ..fanout import (
+    entity_label,
+    package_route,
+    pass_through_disclosure,
+    reads_end_of_day,
+    route_hops,
+)
 from ..sql_ast import filter_rejects_null
 from ..temporal_support import _date_key, _range_intersects
 from .disclosures import mixed_time_role_warnings
@@ -67,6 +73,15 @@ def _pass_through_notes(config, compiled) -> list[dict[str, Any]]:
     return notes
 
 
+def _validity_moments(config, relationship: str) -> tuple[str, str]:
+    """When a hop into the relationship's validity window reads a version, said of each row
+    and of the rows: their time, or the end of their day (``as_of: end_of_day``)."""
+    rel = get_package_analysis(config).relationships[relationship]
+    if reads_end_of_day(rel):
+        return "the end of each row's day", "the end of their day"
+    return "each row's time", "their time"
+
+
 def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
     """NULL_PRESERVING_HISTORY per dimension grouped or filtered by through a hop into a
     validity window (``fanout.hop_reach``), naming the hop; a hop out of a history gets none."""
@@ -86,8 +101,9 @@ def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
         if dim is None or not hops:
             continue
         label, version = dim.label or dim.name, entity_label(config, hops[0][1])
-        grouped = f"{label}: the {version} valid at each row's time; rows with none read an empty"
-        filtered = f"{label} filter: rows with no {version} valid at their time are left out by"
+        each, their = _validity_moments(config, hops[0][0])
+        grouped = f"{label}: the {version} valid at {each}; rows with none read an empty"
+        filtered = f"{label} filter: rows with no {version} valid at {their} are left out by"
         details = {"use": use, "dimension": dim_id, "entity": hops[0][1]}
         details["relationships"] = [hop[0] for hop in hops]
         warnings.append(
@@ -155,7 +171,8 @@ def _history_result_warnings(config, compiled, rows, warnings, *, truncated=Fals
             share = f"{lead['null_value']} of {lead['total']} {name} "
             share += f"({round(100 * lead['null_value'] / lead['total'])}%) are"
         label, version = dim.label or dim.name, entity_label(config, details["entity"])
-        message = f"{share} in the empty {label} group: no {version} was valid at their time, "
+        their = _validity_moments(config, details["relationships"][0])[1]
+        message = f"{share} in the empty {label} group: no {version} was valid at {their}, "
         details = details | {"null_rows": len(empty), "rows": len(rows)}
         if totals:
             details["measures"] = totals

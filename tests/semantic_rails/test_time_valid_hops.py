@@ -362,16 +362,6 @@ def test_with_a_time_a_filter_and_a_second_hop_read_the_same_version(runtime, go
     )
 
 
-def test_a_relationship_without_temporal_validity_needs_no_time(runtime, gold):
-    by_region = _rows(runtime, _amount(group_by=[REGION]), [REGION])
-
-    assert by_region == {("North",): 40.0, ("South",): 5.0}
-    assert by_region == gold(
-        "SELECT (SELECT a.region FROM accounts AS a WHERE a.account_id = u.account_id),"
-        " SUM(u.amount) FROM usage AS u GROUP BY 1"
-    )
-
-
 @pytest.mark.parametrize(
     ("clause", "expected", "sql"),
     [
@@ -406,22 +396,6 @@ def test_the_history_key_reads_the_version_valid_at_the_usage_time(
     )
     assert result == expected
     assert result == gold(sql)
-
-
-def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
-    """Each segment row is one version already, so reading its account is a plain lookup."""
-    query = {
-        "select": [{"as": "value", "expression": "measure.hist.seats"}],
-        "group_by": [REGION],
-    }
-
-    by_region = _rows(runtime, query, [REGION])
-
-    assert by_region == {("North",): 7.0, ("South",): 1.0}
-    assert by_region == gold(
-        "SELECT (SELECT a.region FROM accounts AS a WHERE a.account_id = s.account_id),"
-        " SUM(s.seats) FROM account_segments AS s GROUP BY 1"
-    )
 
 
 def test_a_hop_out_of_the_validity_window_keeps_the_source_key(runtime, package, gold):

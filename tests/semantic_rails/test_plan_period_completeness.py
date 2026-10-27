@@ -392,11 +392,6 @@ def test_every_clock_the_draft_reads_must_have_ended(
     """Orders on a New York clock, sessions on UTC: at 02:00Z on July 1, New York's June has two
     hours to go, so a comparison of order counts bucketed there is held."""
 
-    path = copy_package_config(tmp_path_factory.mktemp("zoned"), "jaffle_shop", preseed_db=True)
-    orders = path / "models" / "core" / "orders.yml"
-    doc = safe_load(orders.read_bytes())
-    doc["model"]["times"]["ordered_at"].update(timezone="America/New_York", column_timezone="UTC")
-    orders.write_text(yaml.safe_dump(doc, sort_keys=False), "utf-8")
     prior = {"kind": "prior_period", "input": "measure.jaffle.order_count", "offset": {"unit": "month", "value": 1}}  # fmt: skip
     call = {
         "select": [
@@ -410,7 +405,7 @@ def test_every_clock_the_draft_reads_must_have_ended(
             "end": "2018-07-01",
         },
     }
-    with closing(opened(Runtime.from_path(str(path)))) as runtime:
+    with closing(_zoned_jaffle(tmp_path_factory)) as runtime:
         payload = _plan_example(runtime, call, "2018-07-01T02:00:00Z")
     assert payload["best"]["validation_ok"] is True
     _assert_held(payload)

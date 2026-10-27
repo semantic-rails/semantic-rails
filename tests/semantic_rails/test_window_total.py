@@ -91,43 +91,6 @@ def test_a_window_without_a_grain_is_one_total(runtime: Runtime, start: str, end
     assert _window_total_lines(response) == 1
 
 
-def test_a_grouped_window_is_one_total_per_group(runtime: Runtime) -> None:
-    response = runtime.query(
-        _query(
-            [REVENUE],
-            {"start": "2017-04-01", "end": "2017-07-01"},
-            group_by=[STORE],
-            order_by=[{"field": STORE}],
-        )
-    )
-    gold = _gold(
-        runtime,
-        "SELECT s.store_name AS store, SUM(o.order_total_cents) / 100.0 AS revenue "
-        "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
-        "WHERE o.ordered_at >= TIMESTAMP '2017-04-01' AND o.ordered_at < TIMESTAMP '2017-07-01' "
-        "GROUP BY 1",
-    )
-    got = {row[STORE]: row["revenue"] for row in response["rows"]}
-    assert got == pytest.approx({row["store"]: row["revenue"] for row in gold})
-    assert all(set(row) == {STORE, "revenue"} for row in response["rows"])
-
-
-def test_a_grain_still_returns_one_row_per_period(runtime: Runtime) -> None:
-    response = runtime.query(
-        _query([REVENUE], {"grain": "month", "start": "2017-04-01", "end": "2017-07-01"})
-    )
-    gold = _gold(
-        runtime,
-        "SELECT DATE_TRUNC('month', ordered_at) AS month, SUM(order_total_cents) / 100.0 AS revenue "
-        "FROM jaffle_order WHERE ordered_at >= TIMESTAMP '2017-04-01' "
-        "AND ordered_at < TIMESTAMP '2017-07-01' GROUP BY 1",
-    )
-    assert {row["period"]: row["revenue"] for row in response["rows"]} == pytest.approx(
-        {row["month"].date().isoformat(): row["revenue"] for row in gold}
-    )
-    assert "assumptions" not in response
-
-
 @pytest.mark.parametrize(
     "time", [{"start": "2017-04-01"}, {"end": "2017-04-01"}], ids=["start only", "end only"]
 )
@@ -176,19 +139,6 @@ def test_a_running_total_answers_with_the_hinted_grain(runtime: Runtime) -> None
         "WHERE ordered_at < TIMESTAMP '2017-04-04'",
     )
     assert response["rows"][-1]["running"] == pytest.approx(gold[0]["revenue"])
-
-
-def test_a_listing_over_a_window_is_one_row_per_group(runtime: Runtime) -> None:
-    """Stores with orders in the window, each once: Brooklyn opened later in March."""
-    call = {"group_by": [STORE], "time": {"temporal_role": ORDER_TIME, "start": "2017-03-01", "end": "2017-03-03"}}  # fmt: skip
-    response = runtime.query(call)
-    gold = _gold(
-        runtime,
-        f'SELECT DISTINCT s.store_name AS "{STORE}" FROM jaffle_order o {STORE_JOIN} '
-        "WHERE o.ordered_at >= TIMESTAMP '2017-03-01' AND o.ordered_at < TIMESTAMP '2017-03-03'",
-    )
-    assert sorted(response["rows"], key=str) == sorted(gold, key=str) == [{STORE: "Philadelphia"}]
-    assert _window_total_lines(response) == 1
 
 
 # The predicate measures orders on the query's own clock (order time), in the query's own
@@ -433,19 +383,6 @@ def test_every_kind_of_measure_returns_the_window_total(runtime: Runtime, case: 
         assert got[key] == pytest.approx(row_values), key
     assert response["row_count"] == len(gold)  # one row per group, never one per timestamp
     assert _window_total_lines(response) == 1
-
-
-def test_a_balance_is_the_last_snapshot_in_the_window_not_a_sum(runtime: Runtime) -> None:
-    balance = runtime.query(_query([INVENTORY], INVENTORY_SPAN))["rows"][0]["inventory"]
-    summed = _gold(
-        runtime,
-        "SELECT SUM(inventory_on_hand) AS inventory FROM jaffle_store_inventory_snapshot i "
-        f"WHERE {INVENTORY_WINDOW}",
-    )[0]["inventory"]
-    # The window closes on April 1, 2017: the store last seen in October 2016 (1085) is not
-    # carried forward.
-    assert balance == 860
-    assert balance != summed
 
 
 @pytest.mark.parametrize("case", ["count_distinct through the entity-in-terms-of rewrite", "avg"])

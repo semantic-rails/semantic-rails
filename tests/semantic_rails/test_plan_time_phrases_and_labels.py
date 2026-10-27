@@ -15,7 +15,6 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
-import duckdb
 import pytest
 
 from semantic_rails.planner import plan_payload
@@ -727,15 +726,6 @@ def test_a_numeral_that_is_not_one_number_is_never_a_crash(runtime: Runtime, tok
             assert isinstance(unconsumed_terms(runtime, text, query), list)
 
 
-def test_a_customer_ranking_keeps_its_window_and_ordinary_customer_key(runtime: Runtime) -> None:
-    payload = _plan(runtime, "top 10 customers by revenue in Q1 2017")
-    assert payload["status"] == "ok", payload.get("why")
-    assert payload["next"]["ready_for"] == ["execute"]
-    assert payload["best"]["query"]["group_by"] == ["dimension.jaffle_customer_id"]
-    time = payload["best"]["query"]["time"]
-    assert (time["start"], time["end"]) == ("2017-01-01", "2017-04-01")
-
-
 @pytest.mark.parametrize(
     ("text", "time", "status", "code"),
     [
@@ -892,32 +882,6 @@ def test_plan_names_the_two_windows_that_differ(runtime: Runtime) -> None:
 
 
 # --- window forms -----------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("text", "bounds"),
-    [
-        ("revenue in the first half of 2017", {"start": "2017-01-01", "end": "2017-07-01"}),
-        ("revenue in the second half of 2017", {"start": "2017-07-01", "end": "2018-01-01"}),
-        ("revenue for first half 2017", {"start": "2017-01-01", "end": "2017-07-01"}),
-        ("revenue from March 1 to March 31, 2017", MARCH_2017),
-        ("revenue from March 1 to 31, 2017", MARCH_2017),
-        ("revenue Mar 1 - Mar 31 2017", MARCH_2017),
-        ("revenue Mar 1 - 31 2017", MARCH_2017),
-        ("revenue between 2017-03-01 and 2017-03-31", MARCH_2017),
-        ("revenue 2017-03-01 to 2017-03-31", MARCH_2017),
-        ("revenue from 2017-03-01 through 2017-03-31", MARCH_2017),
-        ("revenue in calendar year 2017", YEAR_2017),
-        ("revenue for the calendar year 2017", YEAR_2017),
-        ("revenue in year 2017", YEAR_2017),
-        ("revenue for year 2017", YEAR_2017),
-        ("year 2017 revenue", YEAR_2017),
-        ("calendar year 2017 revenue by store", YEAR_2017),
-    ],
-)
-def test_more_window_forms_resolve(text: str, bounds: dict[str, str]) -> None:
-    assert _time_bounds_from_text(text) == bounds
-    assert _unresolved_time_phrases(text) == []
 
 
 @pytest.mark.parametrize(
@@ -1090,33 +1054,6 @@ def test_a_second_measure_is_never_dropped_silently(
     assert named & set((missing,) if isinstance(missing, str) else missing), gaps
 
 
-def test_conjoined_store_grouping_answers_with_the_keyed_store(runtime: Runtime) -> None:
-    # "store" names the Store entity: both subjects group by its key and its name.
-    payload = plan_payload(runtime, intent="revenue and orders by store", detail="query")
-    assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query"]
-    assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
-    rows = runtime.query(query)["rows"]
-    with duckdb.connect(runtime.db_path, read_only=True) as connection:
-        reference = connection.execute(
-            "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0), "
-            "COUNT(DISTINCT o.order_id) FROM jaffle_order o JOIN jaffle_store s "
-            "USING (store_id) GROUP BY 1, 2 ORDER BY 1"
-        ).fetchall()
-    actual = [
-        (
-            row["dimension.jaffle_store_id"],
-            row["dimension.jaffle_store_name"],
-            round(float(row["revenue_usd"]), 2),
-            row["order_count"],
-        )
-        for row in rows
-    ]
-    assert actual == [
-        (key, name, round(float(revenue), 2), count) for key, name, revenue, count in reference
-    ]
-
-
 # --- unmatched terms ---------------------------------------------------------------
 
 
@@ -1208,23 +1145,16 @@ def test_a_single_comparison_word_asks_how_to_read_the_comparison(runtime: Runti
     assert "execute" not in (payload.get("next") or {}).get("ready_for", [])
 
 
-def test_a_lifetime_percentile_cohort_is_refused_not_warned(runtime: Runtime) -> None:
-    """A percentile cohort cut by a lifetime balance is held, not ok: the balance is read
-    through a predicate on no stated day."""
-    payload = plan_payload(
-        runtime, intent="revenue from top decile of customers by lifetime spend", detail="query"
-    )
-    _held(payload, "PLAN_INTENT_COVERAGE_GAP")
-    assert [gap["kind"] for gap in payload["why"]["details"]["gaps"]] == ["stock_as_of_unrealized"]
-    # A top decile is a share of customers, not a ranking: the draft carries no limit.
-    assert "limit" not in payload["best"]["query"]
-
-
 # --- a window in the draft must agree with the question's date phrases -------------------
 
 
+# The server clock the relative-window cases read (frozen in the test, so the bounds below,
+# built at collection, can't go stale): noon, so the day is the same in nearby zones.
+WALL_CLOCK = datetime(2017, 8, 21, 12, tzinfo=UTC)
+
+
 def _last_days(days: int) -> dict[str, str]:
-    end = datetime.now(UTC).date()
+    end = WALL_CLOCK.date()
     return {"start": (end - timedelta(days=days)).isoformat(), "end": end.isoformat()}
 
 
@@ -1271,8 +1201,13 @@ def _last_days(days: int) -> dict[str, str]:
     ],
 )
 def test_a_window_agrees_with_the_date_phrases_only_at_the_phrases_start_and_end(
-    runtime: Runtime, text: str, time: dict[str, str], agrees: bool
+    runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    time: dict[str, str],
+    agrees: bool,
 ) -> None:
+    monkeypatch.setattr("semantic_rails.clock.current_time", lambda: WALL_CLOCK)
     query = _caller(time)
     assert (_caller_window_gaps(runtime, text, Call.from_call(query)) == []) is agrees
     # What disagrees consumes none of the phrase, so its numbers are left over.

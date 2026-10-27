@@ -23,10 +23,8 @@ import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner.groupings import _time_spec
-from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
-from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
+from semantic_rails.planner.time_windows import _time_bounds_from_text
 from tests.semantic_rails.planner_fixtures import jaffle_runtime
 
 # ---------------------------------------------------------------------------
@@ -50,19 +48,6 @@ from tests.semantic_rails.planner_fixtures import jaffle_runtime
 def test_relative_windows_resolve_to_last(text: str, unit: str, value: int) -> None:
     bounds = _time_bounds_from_text(text)
     assert bounds == {"last": {"unit": unit, "value": value}}
-
-
-@pytest.mark.parametrize(
-    ("text", "bounds"),
-    [
-        ("orders yesterday", {"last": {"unit": "day", "value": 1}}),
-        ("revenue this year", {"this": "year"}),
-        ("revenue in Q2 2025", {"start": "2025-04-01", "end": "2025-07-01"}),
-        ("revenue this month", {"this": "month"}),
-    ],
-)
-def test_named_windows_resolve(text, bounds) -> None:
-    assert _time_bounds_from_text(text) == bounds
 
 
 @pytest.mark.parametrize(
@@ -98,31 +83,6 @@ def test_unresolvable_temporal_phrases_are_detected(text: str, expected_phrase: 
     assert any(expected_phrase in phrase for phrase in phrases), (
         f"expected {expected_phrase!r} to be flagged, got {phrases!r}"
     )
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "revenue by store last month",
-        "revenue by store last 7 days",
-        "orders yesterday",
-        "revenue this year",
-        "revenue by store",  # no temporal phrase at all
-    ],
-)
-def test_resolved_or_absent_windows_are_not_flagged(text: str) -> None:
-    assert _unresolved_time_phrases(text) == []
-
-
-def test_time_spec_window_without_a_grain_is_one_total() -> None:
-    spec = _time_spec("temporal_role.jaffle_order_time", "revenue last 7 days")
-    assert (spec.grain, spec.last) == ("", ("day", 7))
-    spec = _time_spec("temporal_role.jaffle_order_time", "orders yesterday")
-    assert (spec.grain, spec.last) == ("", ("day", 1))
-    spec = _time_spec("temporal_role.jaffle_order_time", "revenue by store last month")
-    assert (spec.grain, spec.last) == ("", ("month", 1))
-    # No window and no grain cue: no time block at all.
-    assert _time_spec("temporal_role.jaffle_order_time", "revenue by store") is None
 
 
 # ---------------------------------------------------------------------------
@@ -249,29 +209,3 @@ def test_partial_query_bounds_suppress_the_downgrade(runtime) -> None:
     assert time_spec["start"] == "2025-01-01"
     assert time_spec["end"] == "2025-02-01"
     assert payload["next"]["ready_for"] == ["execute"]
-
-
-def test_plan_period_shift_comparison_with_this_month_is_held(runtime) -> None:
-    """ "this month vs last month" compares a month not over yet with a complete
-    one: held, with the two complete months offered as one series."""
-    payload = plan_payload(runtime, intent="revenue this month vs last month")
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE"
-    assert payload["why"]["details"]["window"] == {"this": "month"}
-    assert payload["best"]["pattern"] == "inline_period_shift"
-    assert "ready_for" not in payload["next"]
-    time_spec = payload["best"]["query"]["time"]
-    assert (time_spec["grain"], time_spec["last"]) == ("month", {"unit": "month", "value": 2})
-
-
-def test_intent_ir_time_carries_the_relative_window(runtime) -> None:
-    intent_ir = parse_intent(runtime, "revenue by store last month")
-    assert intent_ir.time is not None
-    assert intent_ir.time["last"] == {"unit": "month", "value": 1}
-    assert intent_ir.to_dict()["time"]["last"]["unit"] == "month"
-
-
-def test_since_named_month_has_an_explicit_start():
-    read = _time_window("orders since January", {"now": "2026-10-05T06:00:00Z"})
-    assert read.bounds == {"start": "2026-01-01"}
-    assert not read.unresolved

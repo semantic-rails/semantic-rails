@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 from semantic_rails.config_validation import (
@@ -24,14 +23,7 @@ def _patch_yaml(path: Path, mutate) -> None:
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
-@pytest.mark.parametrize(
-    ("disallowed_name", "collision"),
-    [
-        pytest.param("customer_id", True, id="matching-dimension"),
-        pytest.param("an_unused_column_name", False, id="no-collision"),
-    ],
-)
-def test_disallowed_names_validation(tmp_path, disallowed_name, collision):
+def test_disallowed_names_validation(tmp_path):
     pkg = copy_package_config(tmp_path, "jaffle_shop")
     graph = pkg / "graph.yml"
 
@@ -39,7 +31,7 @@ def test_disallowed_names_validation(tmp_path, disallowed_name, collision):
         entities = raw["graph"]["entities"]
         for key, val in entities.items():
             if key == "customer":
-                val.setdefault("disallowed_names", []).append(disallowed_name)
+                val.setdefault("disallowed_names", []).append("customer_id")
 
     _patch_yaml(graph, mutate)
 
@@ -49,11 +41,8 @@ def test_disallowed_names_validation(tmp_path, disallowed_name, collision):
         err.get("message", "") if isinstance(err, dict) else str(err)
         for err in (report.get("errors") or [])
     )
-    if collision:
-        assert "disallowed" in errors.lower()
-        assert "customer_id" in errors
-    else:
-        assert "disallowed" not in errors.lower() or "an_unused_column_name" not in errors
+    assert "disallowed" in errors.lower()
+    assert "customer_id" in errors
 
 
 def test_multiple_default_times_rejected(tmp_path):

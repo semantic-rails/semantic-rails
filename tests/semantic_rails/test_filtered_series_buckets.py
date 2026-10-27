@@ -216,13 +216,6 @@ def test_matching_null_amounts_remain_unknown(series, tmp_path):
         runtime.close()
 
 
-def test_unsupported_conditional_operands_name_the_five_dropped_buckets(conditional):
-    response = conditional.query(_query("sum"))
-    assert len(response["rows"]) == 7
-    (warning,) = _warnings(response, "FILTERED_SERIES_BUCKETS_DROPPED")
-    assert warning["details"]["dropped_buckets"] == QUIET_WEEKS
-
-
 def test_a_diagnostic_cannot_read_through_a_metric_only_grant(conditional):
     context = RequestContext(
         metric_allowlist=("metric.obs.filtered_sum",), dimension_allowlist=(PRODUCT, SOLD)

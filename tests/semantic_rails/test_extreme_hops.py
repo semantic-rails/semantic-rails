@@ -138,7 +138,6 @@ def _write_geo_package(
     ship_city: bool = False,
     rollup_safe_reverse: bool = False,
     path_preferences: list[dict] | None = None,
-    pref_key: str = "preferred_paths",
     max_hops: int | None = None,
 ) -> Path:
     pkg = root / "geo_chain"
@@ -187,7 +186,7 @@ def _write_geo_package(
             {
                 "source_entity": pref["source"],
                 "target_entity": pref["target"],
-                pref_key: [pref["path"]] if pref_key == "preferred_paths" else pref["path"],
+                "preferred_paths": [pref["path"]],
             }
             for pref in path_preferences
         ]
@@ -281,39 +280,6 @@ SHIP_ROUTE_TO_REGION = [
     "relationship.orders_ship_city",
     "relationship.cities_region",
 ]
-
-
-def test_shortcut_relationship_makes_the_route_ambiguous(tmp_path):
-    """A role-playing shortcut gives region two routes of different lengths, the ship-to
-    region and the home region. Hop count doesn't choose between them: the query is refused,
-    naming each route with its pin."""
-    err = _refused(tmp_path, "revenue_usd", "region_name", ship_city=True)
-
-    assert err.code == "AMBIGUOUS_PATH"
-    options = err.details["clarification"]["options"]
-    assert [option["relationship_path"] for option in options] == [
-        SHIP_ROUTE_TO_REGION,
-        CUSTOMER_ROUTE_TO_REGION,
-    ]
-    assert all(
-        option["decision"]["relationship_path"] == option["relationship_path"] for option in options
-    )
-    assert "path_preferences" in err.details["hint"]
-
-
-def test_a_path_preference_pins_the_declared_route(tmp_path):
-    """With the diamond present, a path_preferences pin (here spelled relationship_path) must
-    force the longer customer-home route — proven by the numbers, not the plan."""
-    pin = {"source": "line_item", "target": "region", "path": CUSTOMER_ROUTE_TO_REGION}
-    out = _ask(
-        tmp_path,
-        "revenue_usd",
-        "region_name",
-        ship_city=True,
-        path_preferences=[pin],
-        pref_key="relationship_path",
-    )
-    assert out["values"] == REVENUE_BY_REGION_HOME
 
 
 def test_conflicting_routes_to_one_table_are_refused_not_silently_wrong(tmp_path):

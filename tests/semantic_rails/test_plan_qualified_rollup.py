@@ -27,24 +27,6 @@ def _reference(runtime, sql: str) -> list[tuple]:
         return connection.execute(sql).fetchall()
 
 
-def test_predicate_metric_resolves_to_customer_count_not_aov(runtime) -> None:
-    """'with at least N distinct customers' once resolved its predicate to
-    ``metric.sales.aov_usd``: it resolves to a customer-count measure or metric, never AOV."""
-    payload = plan_candidate_envelope(
-        runtime, intent="top stores by order count with at least 4 distinct customers", limit=5
-    )
-    assert payload["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-    predicate_metrics = list(payload["interpreted_intent"].get("predicate_metrics", []) or [])
-    assert predicate_metrics, "without a predicate the qualification is unrealizable"
-    assert "metric.sales.aov_usd" not in predicate_metrics
-    allowed = {
-        "measure.jaffle.ordering_customer_count",
-        "measure.jaffle.customer_count",
-        "metric.sales.customer_count",
-    }
-    assert set(predicate_metrics) & allowed, predicate_metrics
-
-
 @pytest.mark.parametrize(
     ("target", "alias", "aggregate"),
     [

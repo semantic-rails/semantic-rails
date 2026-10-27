@@ -813,6 +813,7 @@ def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime
     # filter over the period, beside the store grouping, ready to run.
     [candidate] = contextual["candidates"][:1]
     contextual_query = candidate["candidate_ir"]
+    assert contextual["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
     assert candidate["validation"]["ok"] is True
     assert contextual_query["where"] == [
         {
@@ -944,21 +945,9 @@ def test_plan_supports_guided_query_building(runtime):
         limit=2,
         verbosity="full",
     )
-    contextual = plan_candidate_envelope(
-        runtime,
-        intent="monthly order volume for customers that made more than 10 purchases in that month",
-        limit=2,
-        verbosity="full",
-    )
     revenue_qualified = plan_candidate_envelope(
         runtime,
         intent="monthly revenue from customers with at least 10 orders by store",
-        limit=2,
-        verbosity="full",
-    )
-    daily_qualified = plan_candidate_envelope(
-        runtime,
-        intent="daily order volume from customers with at least 10 orders in that month",
         limit=2,
         verbosity="full",
     )
@@ -969,17 +958,6 @@ def test_plan_supports_guided_query_building(runtime):
     assert planned["candidates"][0]["validation"]["ok"] is True
     assert planned["candidates"][0]["resolved"]
     assert "assumptions" in planned["candidates"][0]
-    # Each month's orders from customers with more than 10 purchases that month.
-    [candidate] = contextual["candidates"][:1]
-    assert contextual["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-    assert candidate["validation"]["ok"] is True
-    assert candidate["candidate_ir"]["where"] == [
-        {
-            "entity": "entity.jaffle_customer",
-            "having": [{"field": "measure.jaffle.order_count", "op": "gt", "value": 10}],
-            "over": "period",
-        }
-    ]
     # "With at least 10 orders" beside "monthly" doesn't say over which rows: plan asks.
     held_candidate(revenue_qualified, "ENTITY_FILTER_PERIOD_UNSTATED")
     revenue_query = revenue_qualified["blocked"][0]["candidate_ir"]
@@ -992,9 +970,6 @@ def test_plan_supports_guided_query_building(runtime):
         "dimension.jaffle_store_id",
         "dimension.jaffle_store_name",
     ]
-    # A month's qualification inside each day is held.
-    assert not daily_qualified["candidates"]
-    assert daily_qualified["blocked"]
     assert conversion["candidates"]
     assert conversion["candidates"][0]["validation"]["ok"] is True
 
@@ -1049,36 +1024,23 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
         runtime.close()
 
 
-def test_plan_avoids_irrelevant_value_filters(runtime):
-    runtime._package_examples = []  # Exercise generic value-filter inference.
-    top_stores = plan_candidate_envelope(
-        runtime, intent="top stores by revenue", limit=2, verbosity="full"
-    )
-    new_customer_trend = plan_candidate_envelope(
-        runtime,
-        intent="new customer orders over time",
-        limit=2,
-        verbosity="full",
-    )
-
-    assert top_stores["candidates"]
-    assert "where" not in top_stores["candidates"][0]["candidate_ir"]
-    assert new_customer_trend["candidates"]
-    assert "where" not in new_customer_trend["candidates"][0]["candidate_ir"]
-
-
 def test_plan_does_not_invent_generic_dimension_value_filters(runtime):
     runtime._package_examples = []  # Exercise generic value-filter inference.
     planned = plan_candidate_envelope(
         runtime, intent="top stores by revenue", limit=2, verbosity="full"
     )
+    new_customer_trend = plan_candidate_envelope(
+        runtime, intent="new customer orders over time", limit=2, verbosity="full"
+    )
     assert planned["candidates"]
     candidate_query = planned["candidates"][0]["candidate_ir"]
-    assert "where" not in candidate_query or candidate_query["where"] == []
+    assert "where" not in candidate_query
     assert candidate_query["group_by"] == [
         "dimension.jaffle_store_id",
         "dimension.jaffle_store_name",
     ]
+    assert new_customer_trend["candidates"]
+    assert "where" not in new_customer_trend["candidates"][0]["candidate_ir"]
 
 
 def test_plan_supports_comparison_candidates_and_legal_alternatives(runtime):

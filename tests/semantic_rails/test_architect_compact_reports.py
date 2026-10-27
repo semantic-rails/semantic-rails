@@ -105,12 +105,16 @@ def test_status_and_validate_summarize_the_census_warnings_and_passing_checks(
     undecided = full["route_census"]["undecided"]
     assert len(undecided) > FIRST_UNDECIDED
     census = compact["route_census"]
-    assert census["counts"] == {name: len(rows) for name, rows in full["route_census"].items()}
+    assert census["counts"] == {
+        **{name: len(rows) for name, rows in full["route_census"].items()},
+        # No metric, example or test of the package walks one, so none warns.
+        "undecided_needed": 0,
+    }
     # The first pairs come whole, with the clarification options whose decisions record them.
     assert census["undecided"] == undecided[:FIRST_UNDECIDED]
     assert set(census) == {"counts", "undecided"}
     assert compact["revision"] == full["revision"]
-    assert compact["parse"]["warning_counts"]["ROUTES_UNDECIDED"] == 1
+    assert "ROUTES_UNDECIDED" not in compact["parse"]["warning_counts"]
     assert len(compact["parse"]["warnings"]) <= FIRST_WARNINGS
     assert _size(compact) < 20_000 < _size(full)
 
@@ -144,31 +148,6 @@ def test_the_first_warnings_show_every_code_before_repeating_one() -> None:
     ]
     assert summary["warning_counts"] == {"MANY": 15, "LATE": 1, "RARE": 1}
     assert summary["warnings_omitted"] == 7
-
-
-def test_a_stale_write_keeps_its_retry_details(tmp_path: Path) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    created = _call(
-        server,
-        "create_project",
-        {"package_id": "growth", "expected_revision": "absent", "idempotency_key": "create"},
-    )
-    metric = {
-        "project_path": created["project_path"],
-        "spec": {
-            "kind": "aggregate",
-            "measure": "event_count",
-            "value_type": "count",
-            "description": "Events.",
-        },
-        "expected_revision": created["revision"],
-    }
-    first = _call(server, "upsert_metric", {**metric, "metric_key": "a", "idempotency_key": "a"})
-    stale = _call(server, "upsert_metric", {**metric, "metric_key": "b", "idempotency_key": "b"})
-
-    assert first["ok"] is True
-    assert stale["error"]["code"] == "CONFIG_CONFLICT"
-    assert repr(first["revision"]) in stale["error"]["details"]["retry"]
 
 
 def test_status_lists_package_files_not_internal_state(tmp_path: Path) -> None:

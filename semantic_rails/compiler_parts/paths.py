@@ -500,6 +500,46 @@ def _time_anchor_expr(
     return _column_ref(entities[dim.entity].table, dim.column)
 
 
+def _role_conversion(role: Any) -> tuple[str, str] | None:
+    """The role's ``(column_timezone, timezone)`` when they differ, else ``None``."""
+    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
+    target_tz = str(getattr(role, "timezone", "") or "").strip()
+    if not column_tz or not target_tz or column_tz == target_tz:
+        return None
+    return column_tz, target_tz
+
+
+def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
+    """Wrap a temporal role's raw column expression with a timezone conversion
+    when the role's ``column_timezone`` is set and differs from ``timezone``.
+
+    The wrap is applied to ``raw_expr`` before any ``date_trunc`` and before
+    use in WHERE filter comparisons, so truncation and filtering happen in
+    the target zone. A DATE clock enters through the dialect's
+    ``naive_date_clock``. A path that reads a role's raw column without this
+    wrap calls ``_refuse_converted_role`` first.
+    """
+    zones = _role_conversion(role)
+    if zones is None:
+        return raw_expr
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if _dimension_index(config)[role.dimension].data_type == "date":
+        raw_expr = dialect.naive_date_clock(raw_expr)
+    return dialect.convert_timezone(*zones, raw_expr)
+
+
+def _day_end_anchor(time_spec: dict[str, Any], config: PackageConfig) -> Any:
+    """The end of each row's day on the query's clock: the next midnight after the day the row's
+    time falls in, as ``time.grain: day`` buckets it (in the role's ``timezone``), back in the
+    column's own zone so it compares with the validity columns as the row's time does."""
+    role = _temporal_role_index(config)[str(time_spec["temporal_role"])]
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    local = _apply_role_timezone(_time_anchor_expr(time_spec, config), role, config)
+    edge = dialect.date_add("day", SqlLiteral(1), dialect.date_trunc("day", local))
+    zones = _role_conversion(role)
+    return dialect.convert_timezone(zones[1], zones[0], edge) if zones else edge
+
+
 def _join_on_for_relationship(
     rel: RelationshipConfig,
     current_entity: str,
@@ -552,10 +592,15 @@ def _join_on_for_relationship(
     if time_anchor is not None and enters_window:
         valid_from = str(rel.temporal_validity.get("valid_from", "")).strip()
         valid_to = str(rel.temporal_validity.get("valid_to", "")).strip()
+        # The version valid at the row's time, or at the last instant of its day: one that
+        # starts before the next midnight and hasn't ended by it.
+        start, end = "<=", ">"
+        if rel.temporal_validity.get("as_of") == "end_of_day":
+            time_anchor, start, end = _day_end_anchor(dict(time_spec or {}), config), "<", ">="
         if valid_from:
             table, column = _split_column_ref(valid_from)
             condition = SqlBinary(
-                condition, "AND", SqlBinary(_column_ref(table, column), "<=", time_anchor)
+                condition, "AND", SqlBinary(_column_ref(table, column), start, time_anchor)
             )
         if valid_to:
             table, column = _split_column_ref(valid_to)
@@ -564,7 +609,7 @@ def _join_on_for_relationship(
                 condition,
                 "AND",
                 SqlBinary(
-                    SqlBinary(valid_to_expr, ">", time_anchor), "OR", SqlIsNull(valid_to_expr)
+                    SqlBinary(valid_to_expr, end, time_anchor), "OR", SqlIsNull(valid_to_expr)
                 ),
             )
     return condition, right_table, next_entity

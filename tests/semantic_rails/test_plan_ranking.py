@@ -132,15 +132,3 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
                     f"revenue_usd for {intent!r}; got compound at rank "
                     f"{revenue_family_ranks[compound]}, canonical at rank {revenue_rank}"
                 )
-
-    # Sanity: a real qualifier in the intent should still surface the
-    # qualified measure as a top-3 candidate.
-    drink_payload = plan_candidate_envelope(runtime, intent="drink revenue by store", limit=5)
-    drink_resolved_ids: set[str] = set()
-    for cand in drink_payload.get("candidates", [])[:3]:
-        for row in cand.get("resolved", []) or []:
-            drink_resolved_ids.add(str(row.get("id", "") or ""))
-    assert "measure.jaffle.drink_revenue_usd" in drink_resolved_ids, (
-        f"drink_revenue_usd should appear in top-3 candidates when 'drink' "
-        f"is in the intent; got {drink_resolved_ids}"
-    )

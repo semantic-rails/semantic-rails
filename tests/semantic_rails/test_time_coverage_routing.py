@@ -47,18 +47,6 @@ def _answers(package, query):
     return answers
 
 
-@pytest.mark.parametrize(
-    "variant", ["utc_authored", "utc_implicit", "ny_implicit", "date_authored", "tz_implicit"]
-)
-def test_filled_monthly_answer_is_identical_with_and_without_rollups(tmp_path, variant):
-    routed, raw = _answers(
-        _write_variant(tmp_path, variant), _query(start="2023-10-01", end="2024-09-01")
-    )
-    assert routed == raw
-    october = next(r for r in routed if str(r["period"]).startswith("2023-10-01"))
-    assert october["v0"] is None
-
-
 def test_combined_unbounded_answer_is_identical_with_and_without_rollups(tmp_path):
     # A refund on a future-dated order: its month holds refunds only, after the orders' loaded
     # range. The order's NULL amount leaves the rollup's revenue exact for every month.

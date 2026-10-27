@@ -17,6 +17,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
+import yaml
 
 from semantic_rails.compiler_parts.paths import (
     _direct_dimension_source_expr,
@@ -488,29 +489,31 @@ def _undecided(tmp_path, **kwargs) -> dict[tuple[str, str], list[list[str]]]:
 
 def test_roles_that_share_an_entity_pair_are_undecided_census_pairs(tmp_path):
     """Each case the former roles warning reported is a census entry, in both directions, and
-    the parse report warns once for every undecided pair."""
+    the parse report warns once for the undecided pairs the package's own queries walk."""
     both = [[DESTINATION], [ORIGIN]]
     assert _undecided(tmp_path) == {(LEG, AIRPORT): both, (AIRPORT, LEG): both}
-    report, _ = parse_config_report(PackageReference(source_path=str(tmp_path / "air")))
+    ref = PackageReference(source_path=str(tmp_path / "air"))
+    report, _ = parse_config_report(ref)
     codes = [warning["code"] for warning in report["warnings"]]
     assert "RELATIONSHIP_ROLES_UNPINNED" not in codes
+    # No query of the package reads an airport from a leg yet: nothing to decide now.
+    assert "ROUTES_UNDECIDED" not in codes
+    examples = tmp_path / "air" / "examples"
+    examples.mkdir()
+    query = _seats_query(group_by=[CITY])
+    (examples / "core.yml").write_text(yaml.safe_dump({"examples": {"seats": {"query": query}}}))
+    report, _ = parse_config_report(ref)
     (warning,) = [w for w in report["warnings"] if w["code"] == "ROUTES_UNDECIDED"]
     rows = warning["details"].pop("first_pair_rows")
     assert warning["details"] == {
-        "count": 2,
-        "pairs": [
-            {"source_entity": AIRPORT, "target_entity": LEG},
-            {"source_entity": LEG, "target_entity": AIRPORT},
-        ],
+        "count": 1,
+        "pairs": [{"source_entity": LEG, "target_entity": AIRPORT, "needed_by": ["example.seats"]}],
+        "unwalked": 1,
     }
-    # The rows that would decide the first pair: one for each role.
+    # The rows that would decide the pair: one for each role.
     assert sorted(row["relationship_path"] for row in rows) == both
-    assert {(row["source_entity"], row["target_entity"]) for row in rows} == {(AIRPORT, LEG)}
+    assert {(row["source_entity"], row["target_entity"]) for row in rows} == {(LEG, AIRPORT)}
     assert "graph.path_preferences" in warning["message"]
-
-
-def test_a_single_role_is_no_census_entry(tmp_path):
-    assert _undecided(tmp_path, explicit=("destination",)) == {}
 
 
 def test_a_pair_pin_settles_its_own_direction_and_the_reverse(tmp_path):

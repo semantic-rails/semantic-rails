@@ -433,6 +433,9 @@ def _check(hidden_response, absent_response, config, hidden, request) -> None:
     assert "POLICY_DENIED" not in json.dumps(hidden_response) or "item_count" in json.dumps(request)
 
 
+HTTP_TWINS = {"http /validate", "http /compile", "http /query", "http /plan", "http /discover"}
+
+
 def _query_cases() -> list[Any]:
     config = load_package_config("configs/semantic_rails/jaffle_shop")
     config = replace(
@@ -453,6 +456,11 @@ def _query_cases() -> list[Any]:
             # id, padded and alias spellings cover it (label and name: the named repros).
             seeded = surface.split()[1] in {"plan", "discover", "/plan", "/discover"}
             if (seeded or surface.endswith("/build-options")) and spelling in {"name", "label"}:
+                continue
+            # These routes run the operation an MCP tool or mode above runs on every variant;
+            # each takes every position once, and every spelling and multiplicity on two of them.
+            twin = surface in HTTP_TWINS and position not in {"group_by", "select.metric"}
+            if twin and (spelling != "id" or multiplicity != "once"):
                 continue
             cases.append(
                 pytest.param(

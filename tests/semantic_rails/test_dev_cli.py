@@ -258,6 +258,7 @@ def test_mcp_doctor_lists_six_tools_with_segments_and_names_a_missing_one(
     assert payload["ok"], payload
     assert payload["mcp"]["tool_count"] == 6
     assert payload["mcp"]["required_tools_present"] is True
+    assert payload["mcp"]["interface"] == "v2"
 
     tools = mcp_module.TOOL_DEFINITIONS
     for missing in ("discover", "inspect", "valid-values", "plan", "execute", "segment"):

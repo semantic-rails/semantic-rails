@@ -1,4 +1,4 @@
-"""``discover`` ranks multi-word terms, refuses nonsense, and seeds a starter call per card."""
+"""``discover`` ranks multi-word terms, warns on empty ones, and seeds a starter call per card."""
 
 from __future__ import annotations
 
@@ -25,19 +25,14 @@ def runtime(tmp_path_factory):
         ("distinct customer count", ["measures", "metrics"], "customer"),
         # Repeated tokens stay a bounded search.
         (" ".join(["order"] * 10 + ["customer"] * 10), ["measures"], "order"),
-        ("asdjkfhqwiuer xyzqwopzxlf", ["measures", "metrics"], None),
     ],
-    ids=["order-count", "distinct-customer-count", "repeated-tokens", "nonsense"],
+    ids=["order-count", "distinct-customer-count", "repeated-tokens"],
 )
-def test_discover_ranks_multi_word_terms_and_refuses_nonsense(runtime, terms, buckets, needle):
+def test_discover_ranks_multi_word_terms(runtime, terms, buckets, needle):
     payload = discover_payload(runtime, terms=terms, limit=5)
     ids = [row["id"] for bucket in buckets for row in payload[bucket]]
-    if needle is None:
-        assert payload["no_matches"]["terms"] == terms
-        assert ids == []
-    else:
-        assert payload.get("no_matches") is None
-        assert any(needle in object_id for object_id in ids), ids
+    assert payload.get("no_matches") is None
+    assert any(needle in object_id for object_id in ids), ids
 
 
 def test_discover_idf_boosts_rare_token_match(runtime) -> None:

@@ -5,8 +5,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from semantic_rails.compiler import compile_query, plan_query
-from semantic_rails.compiler_parts.sql_lowering import _distinct_value_select
+from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
@@ -58,16 +57,6 @@ def test_metric_predicate_without_leaf_refuses(package_config_factory, request, 
     assert exc.value.details["path"] == "where"
     assert "add a select" in str(exc.value)
     assert "remove the entity filter" in str(exc.value)
-
-
-def test_direct_distinct_lowering_cannot_bypass_predicate_guard(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    plan = plan_query(
-        config, Registry(config), {"group_by": [STORE], "metric_filters": [_customer_filter()]}
-    )
-    with pytest.raises(SemanticLayerError) as exc:
-        _distinct_value_select(plan, config)
-    assert exc.value.code == "PREDICATE_NOT_SUPPORTED"
 
 
 @pytest.fixture()

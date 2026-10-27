@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-14T20:14:30+00:00",
+  "generated_at": "2026-10-27T03:46:02+00:00",
   "labels": {
     "cube": {
       "q01_orders_by_month": {
@@ -515,16 +515,12 @@
         "label": "native"
       },
       "q11_repeat_customer_orders_by_store_by_month": {
-        "evidence": [
-          "reads lifetime_order_count"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q12_orders_by_month_with_lifetime_spend_500_filter": {
-        "evidence": [
-          "reads lifetime_spend_cents"
-        ],
-        "label": "precomputed"
+        "evidence": [],
+        "label": "native"
       },
       "q13_daily_orders_from_customers_with_10plus_orders_in_month": {
         "evidence": [],

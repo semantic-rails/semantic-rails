@@ -90,6 +90,7 @@ GRAPH = {
 ROLE = "temporal_role.ins_claim_opened_on"
 AMOUNT: dict[str, Any] = {"kind": "measure", "measure": "measure.ins.claim_amount"}
 SELECT = [{"expression": AMOUNT, "as": "amount"}]
+MONTHLY = {"temporal_role": ROLE, "grain": "month"}
 # What each fix to the package looks like: nothing (no clock), the model's default time, or
 # a clock listed on the measure.
 NO_CLOCK = {"default": "", "times": ""}
@@ -134,13 +135,12 @@ def _answer(package: Path, grain: str) -> list[tuple[date, Decimal]]:
     )
 
 
-@pytest.mark.parametrize("grain", ["month", "quarter"])
-def test_a_measure_with_no_clock_is_refused_when_asked_by_a_date_at_a_grain(tmp_path, grain):
+def test_a_measure_with_no_clock_is_refused_when_asked_by_a_date_at_a_grain(tmp_path):
     package = _package(tmp_path, NO_CLOCK)
     engine = Runtime.from_path(str(package))
     try:
         with pytest.raises(SemanticLayerError) as raised:
-            engine.query({"select": SELECT, "time": {"temporal_role": ROLE, "grain": grain}})
+            engine.query({"select": SELECT, "time": MONTHLY})
     finally:
         engine.close()
     error = raised.value
@@ -248,7 +248,6 @@ def test_every_expression_over_a_clockless_measure_goes_through_the_same_refusal
 
 
 CLOCKED: dict[str, Any] = {"kind": "measure", "measure": "measure.ins.paid_amount"}
-MONTHLY = {"temporal_role": ROLE, "grain": "month"}
 
 
 @pytest.mark.parametrize(

@@ -115,15 +115,25 @@ def test_boolean_words_execute_through_runtime_like_their_aliases(runtime_factor
         runtime.close()
 
 
-def test_missing_lowers_to_null_tests():
-    assert render_expr(build_filter_condition(_COL, "missing", True)) == "(t.c IS NULL)"
-    assert render_expr(build_filter_condition(_COL, "missing", False)) == "t.c IS NOT NULL"
-
-
-def test_engine_built_null_comparisons_are_null_tests():
-    """The engine's own probes compare with null; a call never can (see the reader below)."""
-    assert render_expr(build_filter_condition(_COL, "is", None)) == "(t.c IS NULL)"
-    assert render_expr(build_filter_condition(_COL, "not", None)) == "t.c IS NOT NULL"
+@pytest.mark.parametrize(
+    ("op", "value", "sql"),
+    [
+        ("missing", True, "(t.c IS NULL)"),
+        ("missing", False, "t.c IS NOT NULL"),
+        # The engine's own probes compare with null; a call never can (see the reader below).
+        ("is", None, "(t.c IS NULL)"),
+        ("not", None, "t.c IS NOT NULL"),
+        # A scalar and a one-value list are one equality.
+        ("is", "Philadelphia", "t.c = 'Philadelphia'"),
+        ("is", ["Philadelphia"], "t.c = 'Philadelphia'"),
+        ("is", ["a", "b"], "(t.c IN ('a', 'b'))"),
+        # `not` keeps the unknowns.
+        ("not", "a", "(t.c <> 'a') OR (t.c IS NULL)"),
+        ("not", ["a", "b"], "(t.c NOT IN ('a', 'b')) OR (t.c IS NULL)"),
+    ],
+)
+def test_each_word_lowers_to_its_sql(op, value, sql):
+    assert render_expr(build_filter_condition(_COL, op, value)) == sql
 
 
 @pytest.mark.parametrize("op", ["gt", "gte", "lt", "lte", "contains"])
@@ -134,20 +144,6 @@ def test_a_null_value_is_refused_with_the_missing_word(op):
     (hint,) = exc.value.details["recovery_hints"]
     assert hint["code"] == "USE_FILTER_VALUE_SHAPE"
     assert '"missing"' in hint["message"]
-
-
-def test_is_with_a_scalar_or_one_value_list_is_one_equality():
-    for value in ("Philadelphia", ["Philadelphia"]):
-        assert render_expr(build_filter_condition(_COL, "is", value)) == "t.c = 'Philadelphia'"
-
-
-def test_membership_lists_and_the_kept_unknowns_of_not():
-    assert render_expr(build_filter_condition(_COL, "is", ["a", "b"])) == "(t.c IN ('a', 'b'))"
-    assert render_expr(build_filter_condition(_COL, "not", "a")) == "(t.c <> 'a') OR (t.c IS NULL)"
-    assert (
-        render_expr(build_filter_condition(_COL, "not", ["a", "b"]))
-        == "(t.c NOT IN ('a', 'b')) OR (t.c IS NULL)"
-    )
 
 
 def test_engine_built_empty_memberships_compile_to_constants():

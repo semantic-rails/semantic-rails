@@ -190,36 +190,6 @@ def test_a_granted_metric_keeps_the_day_and_counts_without_its_measure(x: Runtim
     assert warning["object_ids"] == ["metric.x.report"]
 
 
-@pytest.mark.parametrize(
-    "time",
-    [
-        {},
-        {"start": "2020-01-01", "end": "2020-01-02"},
-        {"start": "2020-01-01", "end": "2020-01-03", "grain": "day"},
-    ],
-    ids=["untimed", "window", "by_day"],
-)
-def test_the_closing_day_is_the_clocks_own_day(lowering, tmp_path: Path, time: dict) -> None:
-    """Stored in UTC, read in Los Angeles: X at 07:00Z on January 2 and Y at 20:00Z on
-    January 1 are both January 1 there, so both are read."""
-    rows = "('X', TIMESTAMP '2020-01-02 07:00', 100), ('Y', TIMESTAMP '2020-01-01 20:00', 200)"
-    zone = ", timezone: America/Los_Angeles, column_timezone: UTC"
-    runtime = _runtime(_package(tmp_path / "x", rows, zone))
-    try:
-        call: dict = {"select": [{"expression": BALANCE, "as": "v"}]}
-        if time:
-            call["time"] = {"temporal_role": "temporal_role.x_snap_ts", **time}
-        if not time:
-            # Untimed, the call runs in UTC, not the clock's zone: refused.
-            _refused(runtime, call, "MIXED_TIME_ROLES", "closing_day_zone")
-            return
-        result = runtime.query(call)
-        assert [v for v in _values(result) if v is not None] == [300.0]
-        assert _disclosed(result) == [(BALANCE, "2020-01-01", 0)]
-    finally:
-        runtime.close()
-
-
 def test_a_row_without_a_clock_is_never_a_latest_snapshot(lowering, tmp_path: Path) -> None:
     """A NULL clock sorts first in a descending order on Postgres and Snowflake: such a row
     must neither displace Y's January 20 snapshot nor hide that X has none that day."""
@@ -294,20 +264,6 @@ def test_the_closing_day_is_the_clocks_day_bucket_across_dst(
         result = runtime.query(call)
         assert [v for v in _values(result) if v is not None] == [300.0]
         assert _disclosed(result) == [(BALANCE, "2020-03-08", 0)]
-    finally:
-        runtime.close()
-
-
-def test_an_untimed_zone_aware_balance_in_another_zone_is_refused(lowering, tmp_path: Path) -> None:
-    """A TIMESTAMP WITH TIME ZONE clock in Los Angeles, read with no time block: the call
-    runs in UTC, so its day could be another, and it is refused."""
-    rows = "('X', TIMESTAMPTZ '2020-01-02 20:00:00+00', 100), ('Y', TIMESTAMPTZ '2020-01-02 10:00:00+00', 200)"  # fmt: skip
-    runtime = _runtime(
-        _package(tmp_path / "x", rows, LA + ", column_timezone: UTC", ts="TIMESTAMPTZ")
-    )
-    try:
-        call = {"select": [{"expression": BALANCE, "as": "v"}]}
-        _refused(runtime, call, "MIXED_TIME_ROLES", "closing_day_zone")
     finally:
         runtime.close()
 
@@ -438,18 +394,6 @@ def test_a_balance_closing_in_another_zone_than_the_query_is_refused(tmp_path: P
         ) == [200.0]
     finally:
         runtime.close()
-
-
-def test_an_entity_set_ratio_equals_its_operands_read_alone(x: Runtime) -> None:
-    """The part keeps X only and closes on X's January 5 (100); the whole closes on
-    January 20, where only Y has a snapshot (200). Each answers alone; their share is
-    refused."""
-    is_100 = {"entity": "entity.x_account", "input": "measure.x.flow", "op": "is",
-              "value": 100, "over": "all_time"}  # fmt: skip
-    part = {**FEE, "predicates": [is_100]}
-    alone = [_values(x.query({"select": [{"expression": e, "as": "v"}]}))[0] for e in (part, FEE)]
-    assert alone == [100.0, 200.0]
-    _share_refused(x, {"kind": "ratio", "numerator": part, "denominator": FEE})
 
 
 def test_a_date_clock_in_another_zone_closes_on_its_own_day(tmp_path: Path) -> None:

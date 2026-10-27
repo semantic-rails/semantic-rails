@@ -122,11 +122,10 @@ def _path_has_temporal_validity(config: PackageConfig, path: Iterable[str]) -> b
 
 
 def _history_coverage_note(*, dimension: bool = False) -> str:
+    # When a row reads its version is the relationship's as_of: its time, or its day's end.
     if dimension:
-        return (
-            "NULL means no valid history row existed at the query time anchor for this dimension."
-        )
-    return "History-backed breakdowns preserve NULL when no valid history row exists at the query time anchor."
+        return "NULL means no history row was valid when the row read it, for this dimension."
+    return "History-backed breakdowns preserve NULL when no history row was valid when read."
 
 
 def _dimension_history_coverage(

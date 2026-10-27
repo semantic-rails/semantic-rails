@@ -142,6 +142,7 @@ from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
     apply_response_verbosity,
     compile_response_metadata,
+    counted_outputs,
     output_columns,
     resolve_sql_profile,
     resolve_verbosity,
@@ -2047,7 +2048,12 @@ class Runtime:
         )
         out: dict[str, Any] = {
             "ok": True,
-            **result_rows(rows, output_columns=output_columns(self._config, compiled), zone=zone),
+            **result_rows(
+                rows,
+                output_columns=output_columns(self._config, compiled),
+                zone=zone,
+                counts=counted_outputs(self._config, compiled),
+            ),
             "row_count": len(rows),
             "truncated": bool(getattr(rows, "truncated", False)),
             "rendered_sql": compiled["sql"],
@@ -2503,6 +2509,7 @@ class Runtime:
                 visible_rows,
                 output_columns=output_columns(self._config, preview_compiled),
                 zone=_time_zone(self._config, preview_compiled),
+                counts=counted_outputs(self._config, preview_compiled),
             ),
             "preview_row_count": len(visible_rows),
             "member_count": member_count,

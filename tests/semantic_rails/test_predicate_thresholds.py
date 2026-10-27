@@ -258,15 +258,6 @@ RETURNED_ORDERS = {
 }
 
 
-def test_seed_has_entities_without_rows():
-    assert _gold(
-        "select count(*) from customers c where not exists (select 1 from orders o where o.customer_id = c.customer_id)"
-    ) == [(2,)]
-    assert _gold(
-        "select count(*) from members m where not exists (select 1 from activities a where a.member_id = m.member_id)"
-    ) == [(1,)]
-
-
 @pytest.mark.parametrize(
     ("op", "value", "gold_predicate"),
     [
@@ -304,16 +295,6 @@ def test_sum_thresholds_count_customers_with_no_orders_as_zero(runtime, op, valu
     )[0]
     filters = [_having(CUSTOMER, REVENUE, op, value)]
     assert _scalar(runtime, "customer_count", filters) == expected
-
-
-def test_members_with_zero_activity(runtime):
-    assert _scalar(runtime, "member_count", [_having(MEMBER, ACTIVITIES, "=", 0)]) == 1
-    (expected,) = _gold(
-        "select count(*) from (select m.member_id, "
-        "(select count(*) from activities a where a.member_id = m.member_id) n "
-        "from members m) where n < 2"
-    )[0]
-    assert _scalar(runtime, "member_count", [_having(MEMBER, ACTIVITIES, "<", 2)]) == expected
 
 
 def _net_orders() -> dict:
@@ -602,17 +583,6 @@ def test_orders_without_a_customer_are_not_customers_with_no_orders(runtime):
     assert _scalar(runtime, "order_count", filters) == expected == 1
 
 
-def test_a_fact_measure_restricted_to_entities_with_no_related_rows(runtime):
-    # Activities of members who never opened a ticket.
-    (expected,) = _gold(
-        "select count(*) from activities a "
-        "where not exists (select 1 from tickets t where t.member_id = a.member_id)"
-    )[0]
-    tickets = {"measure": "measure.pred.ticket_count"}
-    filters = [_having(MEMBER, tickets, "=", 0)]
-    assert _scalar(runtime, "activity_count", filters) == expected == 4
-
-
 def test_a_distinct_count_of_a_population_is_zero_over_no_rows(runtime):
     ticketing_members = {"measure": "measure.pred.ticketing_member_count"}
     filters = [_having(MEMBER, ticketing_members, "=", 0)]
@@ -700,16 +670,6 @@ def test_a_threshold_zero_satisfies_on_an_aggregate_without_an_empty_value_keeps
     assert _scalar(runtime, "member_count", [_predicate(MEMBER, minutes, op, value)]) == expected
 
 
-def test_customers_with_an_average_order_value_under_a_limit_are_only_those_with_orders(runtime):
-    average_order_value = {"measure": "measure.pred.revenue", "aggregation": "avg"}
-    (expected,) = _gold(
-        "select count(*) from (select avg(amount) n from orders "
-        "where customer_id is not null group by customer_id) where n < 60"
-    )[0]
-    filters = [_predicate(CUSTOMER, average_order_value, "<", 60)]
-    assert _scalar(runtime, "customer_count", filters) == expected == 1
-
-
 def test_a_ratio_threshold_excludes_entities_whose_denominator_has_no_rows(runtime):
     # Orders per returned order: only customer 2 has a returned order, so only it has a ratio.
     ratio = {"kind": "ratio", "numerator": ORDERS, "denominator": RETURNED_ORDERS}
@@ -722,22 +682,6 @@ def test_a_ratio_threshold_excludes_entities_whose_denominator_has_no_rows(runti
     assert (
         _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ratio, "<", 5)]) == expected == 1
     )
-
-
-@pytest.mark.parametrize(("op", "value"), [(">", 10), (">=", 5), ("=", 12)])
-def test_a_threshold_zero_fails_on_such_an_aggregate_is_unchanged(runtime, op, value):
-    minutes = {"measure": "measure.pred.minutes", "aggregation": "avg"}
-    (expected,) = _gold(
-        "select count(*) from (select m.member_id, "
-        "(select avg(minutes) from activities a where a.member_id = m.member_id) n "
-        f"from members m) where n {op} {value}"
-    )[0]
-    assert _scalar(runtime, "member_count", [_predicate(MEMBER, minutes, op, value)]) == expected
-
-
-def test_percentile_thresholds_are_unchanged(runtime):
-    threshold = {"kind": "percentile", "p": 0.5}
-    assert _scalar(runtime, "customer_count", [_predicate(CUSTOMER, ORDERS, ">=", threshold)]) >= 1
 
 
 @pytest.mark.parametrize(

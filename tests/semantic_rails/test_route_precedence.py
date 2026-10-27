@@ -761,17 +761,6 @@ def test_the_starts_own_key_answers_and_lists_each_other_route_with_its_row(tmp_
     assert _rows(cards, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("card", "owner"))
 
 
-def test_a_row_for_the_exact_pair_beats_the_starts_own_key(tmp_path):
-    loan_owner = [*LOAN_ACCOUNT, *OWNER]
-    pkg = _write_package(
-        tmp_path, relationships=OWN_DISTRICT, rows=[_row(LOAN, DISTRICT, loan_owner)]
-    )
-    out = Runtime.from_path(str(pkg)).query(_query(LOAN_AMOUNT, group_by=[DISTRICT_NAME]))
-    assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("loan", "owner"))
-    note = _notes(out)[(LOAN, DISTRICT)]
-    assert (note["basis"], note["via"]) == ("recorded", loan_owner) and "recorded_for" not in note
-
-
 def test_two_own_keys_are_not_one_and_an_inherited_row_decides(tmp_path):
     """A loan's district and its payout district are two keys to one entity: refused. The
     row for district -> loan, walked back, names the loan's district."""

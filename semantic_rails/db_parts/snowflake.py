@@ -358,6 +358,10 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
             )
             kwargs["network_timeout"] = read_timeout
             kwargs["socket_timeout"] = read_timeout
+        if "cert_revocation_check_mode" in self.options or not (
+            named_profile and _profile_sets_revocation_mode(self.connection_name)
+        ):
+            kwargs.update(_revocation_check_kwargs(self.options))
         kwargs.setdefault("application", "semantic-rails")
         return kwargs
 
@@ -498,6 +502,31 @@ def _normalize_snowflake_native_options(options: dict[str, Any]) -> dict[str, st
                 f"Snowflake native package.connection option '{key}' is not allowed; use env/file indirection instead",
             )
     return normalized
+
+
+# Connector 4.8 leaves certificate revocation checks off unless the caller opts
+# in. CRL checking is the connector's successor to OCSP; in advisory mode only a
+# revoked certificate fails the connection, so an unreachable CRL server never
+# stops queries. The connector applies the latest connection's mode to the whole
+# process, so every connection sends one. Its on-disk CRL cache lives under the
+# home directory and an unwritable one fails the connection even in advisory
+# mode, so CRLs stay in the connector's in-process cache. Option values are
+# checked against SNOWFLAKE_CERT_REVOCATION_CHECK_MODES when the package loads.
+def _revocation_check_kwargs(options: dict[str, str]) -> dict[str, Any]:
+    mode = options.get("cert_revocation_check_mode", "advisory")
+    return {"cert_revocation_check_mode": mode.upper(), "enable_crl_file_cache": False}
+
+
+def _profile_sets_revocation_mode(connection_name: str) -> bool:
+    """Whether the named connector profile chooses its own revocation mode."""
+    try:
+        from snowflake.connector.config_manager import CONFIG_MANAGER
+
+        profile = CONFIG_MANAGER["connections"].get(connection_name) or {}
+        return "cert_revocation_check_mode" in profile
+    except Exception:
+        # Unreadable or missing profiles fail later in connect(); default on until then.
+        return False
 
 
 def _secret_value(

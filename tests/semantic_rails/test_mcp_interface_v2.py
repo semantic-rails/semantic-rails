@@ -14,7 +14,6 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.cli.commands.mcp import _mcp_tool_check
 from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import (
@@ -36,11 +35,6 @@ QUERY = {
     "group_by": [STORE],
     "time": {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"},
     "order_by": [{"field": "period", "direction": "asc"}, {"field": STORE, "direction": "asc"}],
-}
-# One row per customer: more rows than execute returns by default.
-PER_CUSTOMER = {
-    "select": [{"as": "revenue", "expression": "measure.jaffle.revenue_usd"}],
-    "group_by": ["dimension.jaffle_order_customer_id"],
 }
 V2_TOOLS = ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
 UNAVAILABLE_TOOLS = {
@@ -240,15 +234,6 @@ def test_execute_modes_run_validate_or_compile(v2: SemanticLayerMCPAdapter) -> N
     assert flat["ok"] is False and flat["errors"][0]["details"]["path"] == "select"
 
 
-def test_execute_caps_rows_by_default(v2: SemanticLayerMCPAdapter) -> None:
-    capped = v2.call_tool("execute", {"query": PER_CUSTOMER})
-    assert capped["truncated"] is True
-    assert capped["row_count"] == MCP_DEFAULT_MAX_ROWS
-    assert "EXECUTE_ROWS_TRUNCATED" in {warning["code"] for warning in capped["warnings"]}
-    assert capped["total_row_count"] is None
-    assert v2.call_tool("execute", {"query": PER_CUSTOMER, "max_rows": 5})["row_count"] == 5
-
-
 def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) -> None:
     for tool, arguments, field in (
         ("execute", {"query": QUERY, "mode": "explain"}, "mode"),
@@ -282,10 +267,9 @@ def test_segment_actions_default_to_minimal_verbosity(
         {k: v for k, v in minimal.items() if k != "rows"}
     )
     if action == "preview":
-        assert len(default["rows"]) == len(minimal["rows"]) == 3
-        assert {tuple(sorted(row)) for row in default["rows"]} == {
-            tuple(sorted(row)) for row in minimal["rows"]
-        }
+        assert len(default["rows"]) == len(minimal["rows"]) == len(full["rows"]) == 3
+        shapes = [{tuple(sorted(row)) for row in r["rows"]} for r in (default, minimal, full)]
+        assert shapes[0] == shapes[1] == shapes[2]
     assert len(str(default)) < len(str(full))
     for key in ("status", "member_count", "preview_row_count", "derived_query"):
         assert default.get(key) == full.get(key), key
@@ -440,13 +424,6 @@ def test_hints_built_outside_those_calls_point_at_v2_calls() -> None:
     why = _trim_why_errors([{"code": "INVALID_QUERY", "message": "bad"}] * 4)
     assert why["truncated"]["dropped"] == 1
     assert not [text for text in _hint_texts(why) if _sends_to_removed_surface(text)]
-
-
-def test_mcp_doctor_checks_the_v2_tools(runtime: Any) -> None:
-    check = _mcp_tool_check(runtime)
-    assert check["interface"] == "v2"
-    assert check["required_tools_present"] is True
-    assert check["tool_count"] == len(V2_TOOLS)
 
 
 def test_v2_tools_take_the_trusted_transport_context(

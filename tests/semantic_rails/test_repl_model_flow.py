@@ -244,20 +244,6 @@ def test_a_table_it_cannot_read_falls_back_to_the_typed_flow(
     assert "Warehouse table or relation (for example raw_orders)" in script.asked
 
 
-def test_type_a_table_name_uses_the_typed_flow(shop: Path) -> None:
-    script, _ = _author(
-        shop,
-        {
-            "Table to model": "Type a table name instead",
-            "Model key": "orders",
-            "Warehouse table": "main_marts.fct_orders",
-            "Create this model?": False,
-        },
-    )
-
-    assert "Warehouse table or relation (for example raw_orders)" in script.asked
-
-
 def test_a_seed_file_added_after_the_build_is_flagged_and_its_table_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

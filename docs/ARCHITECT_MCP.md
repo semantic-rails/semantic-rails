@@ -392,11 +392,15 @@ Which route between two entities a question means is a business definition (see
   `route_census` once, outside `parse`: `undecided` lists the
   entity pairs a question can need that are refused until a `graph.path_preferences` row records
   their route, each with the `AMBIGUOUS_PATH` refusal's `details.clarification.options`
-  (pass an option's `decision` to `record_route_decision`); `assumed` lists the multi-route pairs
-  answered by the start entity's own key, to confirm. While pairs are undecided, `next_actions`
-  starts with deciding them. `create_project` and `setup_project_dialog` say to decide them once
-  entities are related.
-- `promotion_check` lists them under `advisories` (`ROUTES_UNDECIDED`), never as a blocker.
+  (pass an option's `decision` to `record_route_decision`) and `needed_by`, the package's own
+  metrics, examples and tests that walk it (those pairs come first; the summary's
+  `counts.undecided_needed` counts them); `assumed` lists the multi-route pairs
+  answered by the start entity's own key, to confirm. While a metric, example or test needs an
+  undecided pair, `next_actions` starts with deciding those pairs; the others need nothing until
+  a question asks about one. `create_project` and `setup_project_dialog` say to decide the ones
+  the examples need once entities are related.
+- `promotion_check` lists the needed ones under `advisories` (`ROUTES_UNDECIDED`), never as a
+  blocker.
 - Before writing, the transaction compares the package with the change applied. A change that
   would refuse an answered pair whose route still exists, or answer it by another route, refuses
   with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use

@@ -76,18 +76,3 @@ def test_a_grain_the_role_does_not_support_is_refused_with_its_grains(runtime: R
     assert error["details"]["path"] == "time.grain"
     assert error["details"]["received"] == "week"
     assert error["details"]["supported_grains"] == ["month", "quarter", "year"]
-
-
-def test_a_window_without_a_grain_passes_the_grain_check(runtime: Runtime) -> None:
-    """A window without a grain is one total."""
-    report = runtime.validate(
-        {
-            "select": REVENUE,
-            "time": {"temporal_role": ORDER_TIME, "start": "2016-09-01", "end": "2016-10-01"},
-        }
-    )
-    assert not [
-        error
-        for error in report.get("errors") or []
-        if (error.get("details") or {}).get("path") == "time.grain"
-    ]

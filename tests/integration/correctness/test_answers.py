@@ -375,3 +375,46 @@ def test_row_comparison(left, right, ordered, equal):
     a = result_values.result_rows([{"revenue": value} for value in left])
     b = result_values.result_rows([{"revenue": value} for value in right])
     assert (comparable(a, ordered=ordered) == comparable(b, ordered=ordered)) == equal
+
+
+# Counts on every warehouse: a count, a sum of a row-count literal (`expr: 1`) and a running
+# total of one. Postgres sums bigint as NUMERIC, and Snowflake's high-precision Arrow results
+# type every NUMBER as a decimal; ``widen`` turns each driver integer into a Decimal as they do.
+COUNT_CASES = [
+    "shop/row-grain-cumulative-rows",
+    "shop/link-headcount-keeps-orphans-in-the-null-group",
+    "shop/link-room-total-counts-unique-rooms",
+    "shop/row-grain-bridge-rows-by-parent-column",
+]
+
+
+@pytest.mark.parametrize("widen", [False, True], ids=["driver", "widened"])
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+@pytest.mark.parametrize("case_id", COUNT_CASES)
+def test_counts_come_back_as_integers(request, monkeypatch, backend, case_id, widen):
+    spec = for_backend(dict(ENTRIES)[case_id], backend)
+    runtime = request.getfixturevalue(f"{backend}_backend").runtimes[
+        spec.get("variant", "utc_authored")
+    ]
+    if widen:
+        from semantic_rails import runtime as runtime_module
+
+        read = runtime_module._adapter_query
+
+        def widened(*args, **kwargs):
+            rows = read(*args, **kwargs)
+            for row in rows:
+                for key, value in row.items():
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        row[key] = Decimal(value)
+            return rows
+
+        monkeypatch.setattr(runtime_module, "_adapter_query", widened)
+    out = runtime.query(spec["query"], **call_arguments(spec))
+    numbers = {
+        column: kind["type"]
+        for column, kind in out["column_types"].items()
+        if kind["type"] in {"integer", "float", "decimal"}
+    }
+    assert numbers and set(numbers.values()) == {"integer"}, numbers
+    assert comparable(out) == comparable(encode(runtime, spec))

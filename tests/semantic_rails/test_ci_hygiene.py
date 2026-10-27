@@ -420,6 +420,24 @@ def test_guard_fails_a_test_over_its_own_limit_before_the_budget_ends(
     assert "test_quick" not in output.split("intermittent")[-1]
 
 
+class _BudgetEndsAtTheFirstFailure(subprocess.Popen):
+    """A repetition whose time budget runs out once the guard's failure log names a test."""
+
+    def wait(self, timeout=None):
+        if timeout is None:  # the guard reaping the group it killed
+            return super().wait(timeout=60)
+        log = next(Path(arg.split("=", 1)[1]) for arg in self.args if "--flake-failures=" in arg)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if log.exists() and log.read_text(encoding="utf-8").strip():
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            try:
+                return super().wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                continue
+        raise subprocess.TimeoutExpired(self.args, timeout)
+
+
 @pytest.mark.parametrize("timeout_method", ["thread", "signal"])
 @pytest.mark.parametrize(
     "failing_test, limit",
@@ -433,6 +451,8 @@ def test_guard_fails_a_repetition_whose_failure_comes_before_the_budget_ends(
     monkeypatch, tmp_path, capsys, timeout_method, failing_test, limit
 ):
     # Real pytest: a slow test still running when the budget ends must not hide an earlier failure.
+    # The 15 s budget ends early, as soon as the failure is logged, rather than waiting it out.
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", _BudgetEndsAtTheFirstFailure)
     write_guard_project(monkeypatch, tmp_path, timeout_method)
     write_file(
         tmp_path,

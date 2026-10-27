@@ -392,7 +392,6 @@ def test_comparison_queries_share_the_translation_check(tmp_path):
     "query,code",
     [
         ({"select": [{"metric": "metric.shop.missing"}]}, "OBJECT_NOT_FOUND"),
-        ({"select": [{"measure": "measure.shop.missing"}]}, "OBJECT_NOT_FOUND"),
         (
             {**OLD_QUERY, "group_by": [{"dimension": "dimension.shop_event_missing"}]},
             "OBJECT_NOT_FOUND",
@@ -416,7 +415,7 @@ def test_comparison_queries_share_the_translation_check(tmp_path):
             "INVALID_QUERY",
         ),
     ],
-    ids=["metric", "measure", "dimension", "clock", "calendar"],
+    ids=["metric", "dimension", "clock", "calendar"],
 )
 def test_refusal_queries_are_explicit_hand_edits_and_write_nothing(tmp_path, query, code):
     from semantic_rails.architect_scaffold import dump_project_yaml

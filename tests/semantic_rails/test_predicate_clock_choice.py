@@ -21,11 +21,9 @@ from semantic_rails.compiler_parts import predicate_sets
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import AggregateExpr, parse_semantic_expression
-from semantic_rails.query_call import read_call
 from semantic_rails.request_context import RequestContext
 from semantic_rails.resource_access import ResourceAccess
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config
 
 ORDERED = "temporal_role.clocks_order_ordered_at"
 SHIPPED = "temporal_role.clocks_order_shipped_at"
@@ -35,58 +33,6 @@ ALIGNED_ENTRYPOINTS = pytest.mark.parametrize(
     ("alignment", "entrypoint"),
     [("query_window", compile_query), ("rolling_window_in_period", _compile_query_sql_ast)],
 )
-
-
-def test_conversion_predicate_window_filters_only_base_events_matches_reference(tmp_path):
-    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
-    config = load_package_config(str(package))
-    example = yaml.safe_load((package / "examples/advanced.yml").read_text())["examples"][
-        "signup_to_send_28d_for_high_order_rate_stores"
-    ]
-    with duckdb.connect(str(package / "jaffle_shop.duckdb"), read_only=True) as conn:
-        expected = conn.execute(
-            """
-            WITH sessions AS (
-                SELECT x.*, date_trunc('month', x.started_at) AS month, st.store_name
-                FROM jaffle_storefront_session x JOIN jaffle_store st USING (store_id)
-            ), predicate_rates AS (
-                SELECT store_name, month,
-                    COUNT(*) FILTER (WHERE EXISTS (
-                        SELECT 1 FROM jaffle_order o JOIN jaffle_store os USING (store_id)
-                        WHERE o.customer_id = s.customer_id
-                          AND o.ordered_at >= s.started_at
-                          AND o.ordered_at < s.started_at + INTERVAL 7 DAY
-                          AND os.store_name = s.store_name
-                    ))::DOUBLE / COUNT(*) AS rate
-                FROM sessions s GROUP BY 1, 2
-            ), output_rates AS (
-                SELECT store_name, month,
-                    COUNT(*) FILTER (WHERE EXISTS (
-                        SELECT 1 FROM jaffle_order o
-                        WHERE o.customer_id = s.customer_id
-                          AND o.ordered_at >= s.started_at
-                          AND o.ordered_at < s.started_at + INTERVAL 28 DAY
-                    ))::DOUBLE / COUNT(*) AS rate
-                FROM sessions s GROUP BY 1, 2
-            )
-            SELECT r.month, r.store_name, r.rate
-            FROM output_rates r JOIN predicate_rates p USING (store_name, month)
-            WHERE p.rate > 0.9 ORDER BY 1, 2
-            """
-        ).fetchall()
-        assert expected == [(datetime(2016, 9, 1), "Philadelphia", 1.0)]
-        query, _notes = read_call(example["query"], config=config)
-        result = conn.execute(compile_query(config, None, query)["sql"])
-        columns = [column[0] for column in result.description]
-        rows = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
-        assert [
-            (
-                row["period"],
-                row["dimension.jaffle_store_name"],
-                row["signup_to_send_28d"],
-            )
-            for row in rows
-        ] == expected
 
 
 def _orders_on(role):
@@ -329,65 +275,45 @@ MIXED_CASES = [
     pytest.param(
         "mixed_ratio", 1, "{ordered} / NULLIF({shipped}, 0)", [], "query_window", id="ratio"
     ),
+    # A contextual predicate tested in the query's own period.
+    pytest.param(
+        "mixed_sum", 2, "{ordered} + {shipped}", [], "same_query_period", id="contextual-sum"
+    ),
 ]
 
 
+# Inputs that leave the window two clocks and name neither: the measure itself, a measure
+# whose authored default is one of them, and a metric whose own source no override reaches.
+AMBIGUOUS_INPUTS = {
+    "measure": {"measure": "measure.clocks.orders"},
+    "measure-default": {"measure": "measure.clocks.authored_default_orders"},
+    "metric-override": {"metric": "metric.clocks.unpinned_orders"},
+}
+
+
+@pytest.mark.parametrize("input_", AMBIGUOUS_INPUTS)
 @ALIGNED_ENTRYPOINTS
-def test_ambiguous_window_clock_refuses_with_candidates(warehouse, alignment, entrypoint):
+def test_ambiguous_window_clock_refuses_with_candidates(warehouse, alignment, entrypoint, input_):
     config, conn = warehouse
-    ordered = _reference(conn, "ordered_at")
-    shipped = _reference(conn, "shipped_at")
-    assert [row[0] for row in ordered] == [1]
-    assert [row[0] for row in shipped] == [2]
+    assert [row[0] for row in _reference(conn, "ordered_at")] == [1]
+    assert [row[0] for row in _reference(conn, "shipped_at")] == [2]
+    measure = next(m for m in config.measures if m.id == "measure.clocks.authored_default_orders")
+    assert measure.compatible_temporal_roles == [ORDERED, SHIPPED]
+    assert measure.default_temporal_role == SHIPPED
+    query = _query(AMBIGUOUS_INPUTS[input_], alignment)
+    if input_ == "metric-override":
+        # The query's override never reaches the metric's own source, so it cannot choose.
+        query["temporal_role_overrides"] = {"measure.clocks.orders": SHIPPED}
     with pytest.raises(SemanticLayerError) as raised:
         if entrypoint is compile_query:
-            entrypoint(config, None, _query(alignment=alignment))
+            entrypoint(config, None, query)
         else:
-            entrypoint(config, _query(alignment=alignment))
+            entrypoint(config, query)
     error = raised.value
     assert error.code == "INVALID_TEMPORAL_BINDING"
     assert error.details["requested"] == SIGNED_UP
     assert error.details["compatible"] == [ORDERED, SHIPPED]
     assert not any(clock in str(error) for clock in [ORDERED, SHIPPED])
-    assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
-
-
-@ALIGNED_ENTRYPOINTS
-def test_measure_default_does_not_choose_an_ambiguous_window_clock(
-    warehouse, alignment, entrypoint
-):
-    config, _conn = warehouse
-    measure = next(m for m in config.measures if m.id == "measure.clocks.authored_default_orders")
-    assert measure.compatible_temporal_roles == [ORDERED, SHIPPED]
-    assert measure.default_temporal_role == SHIPPED
-    query = _query({"measure": measure.id}, alignment)
-    with pytest.raises(SemanticLayerError) as raised:
-        if entrypoint is compile_query:
-            entrypoint(config, None, query)
-        else:
-            entrypoint(config, query)
-    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
-    assert raised.value.details["requested"] == SIGNED_UP
-    assert raised.value.details["compatible"] == [ORDERED, SHIPPED]
-
-
-@ALIGNED_ENTRYPOINTS
-def test_metric_advertised_clocks_refuse_when_an_override_would_choose(
-    warehouse, alignment, entrypoint
-):
-    config, _conn = warehouse
-    query = _query({"metric": "metric.clocks.unpinned_orders"}, alignment)
-    # The query's override never reaches the metric's own source, so it cannot choose.
-    query["temporal_role_overrides"] = {"measure.clocks.orders": SHIPPED}
-    with pytest.raises(SemanticLayerError) as raised:
-        if entrypoint is compile_query:
-            entrypoint(config, None, query)
-        else:
-            entrypoint(config, query)
-    error = raised.value
-    assert error.code == "INVALID_TEMPORAL_BINDING"
-    assert error.details["requested"] == SIGNED_UP
-    assert error.details["compatible"] == [ORDERED, SHIPPED]
     assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
 
 
@@ -433,6 +359,8 @@ def test_window_clock_excluded_by_any_measure_in_metric_refuses(
     config, conn = warehouse
     assert _mixed_reference(conn, combined, threshold) == expected
     query = _mixed_query(name, threshold, alignment)
+    if alignment == "same_query_period":
+        query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
     with pytest.raises(SemanticLayerError) as raised:
         if name == "mixed_difference":
             _compile_query_sql_ast(config, query)
@@ -443,18 +371,6 @@ def test_window_clock_excluded_by_any_measure_in_metric_refuses(
     assert error.details["requested"] == ORDERED
     assert error.details["compatible"] == [SHIPPED]
     assert error.details["recovery_hints"][0]["code"] == "CHOOSE_PREDICATE_CLOCK"
-
-
-def test_contextual_window_clock_excluded_by_any_measure_in_metric_refuses(warehouse):
-    config, conn = warehouse
-    assert _mixed_reference(conn, "{ordered} + {shipped}", 2) == []
-    query = _mixed_query("mixed_sum", 2, "same_query_period")
-    query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
-    with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, None, query)
-    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
-    assert raised.value.details["requested"] == ORDERED
-    assert raised.value.details["compatible"] == [SHIPPED]
 
 
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
@@ -581,60 +497,6 @@ def _assert_override_refusal(error):
 
 
 CONVERSION_ALIGNMENTS = ["query_window", "rolling_window_in_period", "same_query_period", None]
-
-
-@pytest.mark.parametrize(
-    "alignment,entrypoint",
-    [
-        (alignment, ["runtime", "compile"][i % 2])
-        for i, alignment in enumerate(CONVERSION_ALIGNMENTS)
-    ],
-)
-def test_conversion_input_refuses_overridden_converted_measure(
-    warehouse, tmp_path, alignment, entrypoint
-):
-    config, conn = warehouse
-    assert [row[0] for row in _conversion_reference(conn, "ordered_at")] == [1]
-    assert [row[0] for row in _conversion_reference(conn, "shipped_at")] == [2]
-    query = _conversion_query(alignment, override=True)
-    with pytest.raises(SemanticLayerError) as raised:
-        if entrypoint == "runtime":
-            runtime = _runtime(tmp_path, conn)
-            try:
-                runtime.query_internal(query)
-            finally:
-                runtime.close()
-        else:
-            _compile_query_sql_ast(config, query)
-    _assert_override_refusal(raised.value)
-
-
-@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
-def test_conversion_input_without_override_matches_reference(warehouse, tmp_path, alignment):
-    config, conn = warehouse
-    expected = _conversion_reference(conn, "shipped_at")
-    assert [row[0] for row in expected] == [2]
-    query = _conversion_query(alignment, override=False)
-    if alignment == "same_query_period":
-        _assert_asks_for_a_grain(config, query)
-        return
-    assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
-    runtime = _runtime(tmp_path, conn)
-    try:
-        result = runtime.query_internal(query)
-    finally:
-        runtime.close()
-    # No grain: one total per customer over the window.
-    assert [tuple(row.values()) for row in result["rows"]] == expected
-
-
-def test_direct_lowering_cannot_bypass_override_refusal(warehouse):
-    config, _conn = warehouse
-    plan = plan_query(config, None, _conversion_query("query_window", override=False))
-    unsafe = _conversion_query("query_window", override=True)
-    with pytest.raises(SemanticLayerError) as raised:
-        lower_to_sql(replace(plan, query=unsafe), config)
-    _assert_override_refusal(raised.value)
 
 
 def _share_query(override):
@@ -847,22 +709,34 @@ def _nested_query(alignment, override, depth=1, input_=None):
     return query
 
 
+def _override_query(shape, alignment, override):
+    """The conversion metric as a predicate's input, or as the input of scoped predicates
+    nested one or two deep (``nested-1``, ``nested-2``)."""
+    if shape == "conversion":
+        return _conversion_query(alignment, override)
+    return _nested_query(alignment, override, depth=int(shape[-1]))
+
+
 @pytest.mark.parametrize(
-    "alignment,depth,entrypoint",
+    "shape,alignment,entrypoint",
     [
-        ("query_window", 1, "runtime"),
-        ("rolling_window_in_period", 2, "compile"),
-        ("same_query_period", 1, "compile"),
-        (None, 2, "runtime"),
+        *(
+            ("conversion", alignment, ["runtime", "compile"][i % 2])
+            for i, alignment in enumerate(CONVERSION_ALIGNMENTS)
+        ),
+        ("nested-1", "query_window", "runtime"),
+        ("nested-2", "rolling_window_in_period", "compile"),
+        ("nested-1", "same_query_period", "compile"),
+        ("nested-2", None, "runtime"),
     ],
 )
-def test_nested_scoped_predicate_refuses_an_override_its_input_would_drop(
-    warehouse, tmp_path, alignment, depth, entrypoint
+def test_a_predicate_input_refuses_an_override_it_would_drop(
+    warehouse, tmp_path, shape, alignment, entrypoint
 ):
     config, conn = warehouse
     assert [row[0] for row in _conversion_reference(conn, "ordered_at")] == [1]
     assert [row[0] for row in _conversion_reference(conn, "shipped_at")] == [2]
-    query = _nested_query(alignment, override=True, depth=depth)
+    query = _override_query(shape, alignment, override=True)
     with pytest.raises(SemanticLayerError) as raised:
         if entrypoint == "runtime":
             runtime = _runtime(tmp_path, conn)
@@ -876,15 +750,19 @@ def test_nested_scoped_predicate_refuses_an_override_its_input_would_drop(
 
 
 @pytest.mark.parametrize(
-    "alignment,depth",
-    [(alignment, 1 + i % 2) for i, alignment in enumerate(CONVERSION_ALIGNMENTS)],
+    "shape,alignment",
+    [
+        *(("conversion", alignment) for alignment in CONVERSION_ALIGNMENTS),
+        *((f"nested-{1 + i % 2}", alignment) for i, alignment in enumerate(CONVERSION_ALIGNMENTS)),
+    ],
 )
-def test_nested_scoped_predicate_without_override_matches_reference(
-    warehouse, tmp_path, alignment, depth
+def test_a_predicate_input_without_override_matches_reference(
+    warehouse, tmp_path, shape, alignment
 ):
     config, conn = warehouse
     expected = _conversion_reference(conn, "shipped_at")
-    query = _nested_query(alignment, override=False, depth=depth)
+    assert [row[0] for row in expected] == [2]
+    query = _override_query(shape, alignment, override=False)
     if alignment == "same_query_period":
         _assert_asks_for_a_grain(config, query)
         return
@@ -898,11 +776,13 @@ def test_nested_scoped_predicate_without_override_matches_reference(
     assert [tuple(row.values()) for row in result["rows"]] == expected
 
 
-def test_direct_lowering_cannot_bypass_nested_override_refusal(warehouse):
+@pytest.mark.parametrize("shape", ["conversion", "nested-1"])
+def test_direct_lowering_cannot_bypass_override_refusal(warehouse, shape):
     config, _conn = warehouse
-    plan = plan_query(config, None, _nested_query("query_window", override=False))
+    plan = plan_query(config, None, _override_query(shape, "query_window", override=False))
+    unsafe = _override_query(shape, "query_window", override=True)
     with pytest.raises(SemanticLayerError) as raised:
-        lower_to_sql(replace(plan, query=_nested_query("query_window", override=True)), config)
+        lower_to_sql(replace(plan, query=unsafe), config)
     _assert_override_refusal(raised.value)
 
 
