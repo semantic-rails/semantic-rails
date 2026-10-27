@@ -421,8 +421,9 @@ query fix.
 
 DuckDB is the default zero-setup runtime and runs in every gate. Snowflake, Postgres, BigQuery,
 Databricks, Athena, ClickHouse, MotherDuck, and DuckLake are optional connectors with dialect-level
-coverage. Live cloud warehouse execution depends on local credentials and is exercised on demand,
-not in every PR gate.
+coverage. Only DuckDB and Postgres run live in every CI gate; the README's
+[what is tested live](../README.md#what-is-tested-live) table lists each other warehouse's live
+runs, and which ones are compile-tested only.
 
 ## Supported vs Experimental
 
@@ -431,8 +432,7 @@ Supported core:
 - DuckDB local runtime, CLI, local MCP stdio, local MCP HTTP, and stable `/api/v1/*` routes.
 - Package authoring, package checks, examples, tests, validation, compile, explain, and
   local/customer-side execution.
-- Snowflake execution through Snow CLI or the optional native connector when a package connection
-  is configured.
+- Postgres execution through the optional `postgres` connector.
 
 Supported with guardrails:
 
@@ -441,8 +441,9 @@ Supported with guardrails:
 - Entity filters on aggregates (`having` with `over`) and `metric_predicate` for the supported
   predicate shapes.
 - Event-count conversion metrics for the supported execution model.
-- Non-DuckDB warehouse connectors through optional drivers and conformance tests; live credentials
-  are exercised on demand, not in every CI run.
+- The other warehouse connectors, through optional drivers. Some run live daily or weekly, and
+  Snowflake, Databricks and MotherDuck are compile-tested only while their live runs are paused
+  (see [what is tested live](../README.md#what-is-tested-live)).
 
 Experimental or out of scope:
 

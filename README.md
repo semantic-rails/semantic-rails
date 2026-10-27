@@ -215,16 +215,42 @@ uv tool install 'semantic-rails[postgres]'
 ```
 
 Postgres keeps `connection.kind: postgres_native` and uses ADBC with PyArrow.
-DuckDB and Postgres support bound access-policy row filters; trusted values stay
-out of SQL text. See [row-filter authoring](docs/PACKAGE_AUTHORING.md).
 
-The other connector extras are `snowflake`, `bigquery`, `databricks`, `athena` and
-`clickhouse`, and `all` installs every connector. In a project environment, use
+The other connector extras are `snowflake`, `snowflake-adbc`, `bigquery`, `databricks`,
+`athena` and `clickhouse`, and `all` installs every connector. In a project environment, use
 `uv pip install 'semantic-rails[all]'`. MotherDuck and DuckLake use the core `duckdb`
 dependency. Keep secrets in environment
 variables or files, not in package YAML. See
 [docs/DEPLOYMENT.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/DEPLOYMENT.md) and
 [docs/ADDING_A_DIALECT.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ADDING_A_DIALECT.md).
+
+### What is tested live
+
+CI checks every warehouse's SQL with dialect rendering tests. Only some warehouses also run
+the conformance battery against a live server, which compares each answer with DuckDB's;
+DuckDB and Postgres also run the correctness suite against independent reference SQL. A
+warehouse without a recent live run is compile-tested only: its SQL is checked, but nothing has
+executed it lately.
+
+| Warehouse | Row filters | Live runs |
+| --- | --- | --- |
+| DuckDB | yes | every engine change in CI |
+| Postgres 16 | yes | every engine change in CI |
+| ClickHouse | no | daily, on the latest release |
+| DuckLake | no | daily, on the latest release |
+| BigQuery | no | weekly, on the latest release |
+| Athena | no | weekly, on the latest release |
+| Snowflake (`snowflake_native`) | no | paused for lack of a test account; last passed on 2026-10-12 |
+| Snowflake through ADBC (`snowflake_adbc`) | yes | on demand only, paused for lack of a test account; CI runs its adapter tests against stubbed connections |
+| Snowflake CLI (`snowflake_cli`) | no | none: compile-tested only |
+| Databricks | no | paused for lack of a test account |
+| MotherDuck | no | paused for lack of a test account |
+
+Row filters bind the caller's trusted values as statement parameters, so the values never
+enter SQL text; a warehouse without parameter binding refuses a request that a row filter
+applies to (`POLICY_DENIED`). See [row-filter
+authoring](https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md).
+Redshift is not supported.
 
 ## Telemetry and network access
 
@@ -242,9 +268,9 @@ The hosted demo at semantic-rails.com is a separate deployment with its own
 ## Project status
 
 Semantic Rails is beta software. The supported core is the open-source runtime, the
-CLI, the MCP stdio and HTTP servers, the `/api/v1/*` HTTP API, the DuckDB path and
-Snowflake execution. The other connectors are supported with guardrails, and live
-warehouse credentials are exercised on demand, not in every CI run. The
+CLI, the MCP stdio and HTTP servers, the `/api/v1/*` HTTP API, and execution on DuckDB and
+Postgres, which are tested live on every pull request. The other connectors are supported
+with guardrails: see [what is tested live](#what-is-tested-live) for each one's live runs. The
 [agent quickstart](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md#supported-vs-experimental)
 lists what is experimental or out of scope.
 
@@ -281,8 +307,9 @@ Work in progress, without dates:
 - A flagship example: a dbt project on an open dataset, modeled end to end.
 - Broader native-model coverage in the comparison pack and a refreshed Snowflake
   capture on the current dataset.
-- Import and export for Apache Ossie, the incubating Open Semantic Interchange
-  specification.
+- Apache Ossie, the incubating Open Semantic Interchange specification: 0.1.1 export and
+  import ship today ([docs/OSSIE.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/OSSIE.md)).
+  Next are tested imports of the dbt and Snowflake converters' output, and writing Ossie 0.2.
 
 Questions and proposals are welcome in
 [GitHub Discussions](https://github.com/semantic-rails/semantic-rails/discussions).
