@@ -12,14 +12,14 @@
     "dimension.jaffle_store_name": {
       "type": "string"
     },
+    "orders_from_repeat_customers": {
+      "type": "integer"
+    },
     "period": {
       "type": "date"
     },
     "period_partial": {
       "type": "boolean"
-    },
-    "repeat_customer_orders": {
-      "type": "integer"
     }
   },
   "dialect": "duckdb",
@@ -30,7 +30,7 @@
       ],
       "select": [
         {
-          "alias": "repeat_customer_orders",
+          "alias": "orders_from_repeat_customers",
           "expression": {
             "kind": "metric",
             "metric": "metric.jaffle.orders"
@@ -120,8 +120,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.435,
-      "compile_ms": 0.924,
+      "cache_lookup_ms": 1.381,
+      "compile_ms": 0.878,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -701,7 +701,7 @@
         }
       ],
       "post_aggregation_exprs": {
-        "repeat_customer_orders": {
+        "orders_from_repeat_customers": {
           "kind": "metric",
           "metric": "metric.jaffle.orders"
         }
@@ -743,7 +743,7 @@
         ],
         "select": [
           {
-            "as": "repeat_customer_orders",
+            "as": "orders_from_repeat_customers",
             "expression": {
               "kind": "metric",
               "metric": "metric.jaffle.orders"
@@ -771,7 +771,7 @@
         ],
         "select": [
           {
-            "alias": "repeat_customer_orders",
+            "alias": "orders_from_repeat_customers",
             "expression": {
               "kind": "metric",
               "metric": "metric.jaffle.orders"
@@ -819,7 +819,7 @@
           {
             "details": {
               "outputs": {
-                "repeat_customer_orders": "metric_ref_2"
+                "orders_from_repeat_customers": "metric_ref_2"
               }
             },
             "id": "final_project",
@@ -831,7 +831,7 @@
           }
         ],
         "outputs": {
-          "repeat_customer_orders": "metric_ref_2"
+          "orders_from_repeat_customers": "metric_ref_2"
         },
         "version": 1
       },
@@ -886,7 +886,7 @@
       ],
       "select": [
         {
-          "as": "repeat_customer_orders",
+          "as": "orders_from_repeat_customers",
           "expression": {
             "kind": "metric",
             "metric": "metric.jaffle.orders"
@@ -1483,7 +1483,7 @@
               "period"
             ],
             "outputs": [
-              "repeat_customer_orders"
+              "orders_from_repeat_customers"
             ],
             "projection_wrappers": "pruned_when_no_metric_filters_or_order_by"
           },
@@ -1518,11 +1518,11 @@
       ],
       "outputs": {
         "leaf__measure_jaffle_order_count__count_distinct": "leaf_1",
-        "repeat_customer_orders": "final_project"
+        "orders_from_repeat_customers": "final_project"
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"repeat_customer_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
+    "rendered_sql": "WITH leaf_1__order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"orders_from_repeat_customers\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1558,7 +1558,7 @@
         {
           "details": {
             "outputs": {
-              "repeat_customer_orders": "metric_ref_2"
+              "orders_from_repeat_customers": "metric_ref_2"
             }
           },
           "id": "final_project",
@@ -1570,7 +1570,7 @@
         }
       ],
       "outputs": {
-        "repeat_customer_orders": "metric_ref_2"
+        "orders_from_repeat_customers": "metric_ref_2"
       },
       "version": 1
     },
@@ -2175,7 +2175,7 @@
           }
         },
         {
-          "alias": "repeat_customer_orders",
+          "alias": "orders_from_repeat_customers",
           "expression": {
             "parts": [
               "base",
@@ -2608,7 +2608,7 @@
       }
     ],
     "post_aggregation_exprs": {
-      "repeat_customer_orders": {
+      "orders_from_repeat_customers": {
         "kind": "metric",
         "metric": "metric.jaffle.orders"
       }
@@ -2650,7 +2650,7 @@
       ],
       "select": [
         {
-          "as": "repeat_customer_orders",
+          "as": "orders_from_repeat_customers",
           "expression": {
             "kind": "metric",
             "metric": "metric.jaffle.orders"
@@ -2678,7 +2678,7 @@
       ],
       "select": [
         {
-          "alias": "repeat_customer_orders",
+          "alias": "orders_from_repeat_customers",
           "expression": {
             "kind": "metric",
             "metric": "metric.jaffle.orders"
@@ -2726,7 +2726,7 @@
         {
           "details": {
             "outputs": {
-              "repeat_customer_orders": "metric_ref_2"
+              "orders_from_repeat_customers": "metric_ref_2"
             }
           },
           "id": "final_project",
@@ -2738,7 +2738,7 @@
         }
       ],
       "outputs": {
-        "repeat_customer_orders": "metric_ref_2"
+        "orders_from_repeat_customers": "metric_ref_2"
       },
       "version": 1
     },
@@ -2772,7 +2772,7 @@
     ],
     "select": [
       {
-        "as": "repeat_customer_orders",
+        "as": "orders_from_repeat_customers",
         "expression": "metric.jaffle.orders"
       }
     ],
@@ -2821,9 +2821,9 @@
     },
     {
       "display_label": "Orders",
-      "field": "repeat_customer_orders",
+      "field": "orders_from_repeat_customers",
       "semantic_id": "metric.jaffle.orders",
-      "sql_alias": "repeat_customer_orders",
+      "sql_alias": "orders_from_repeat_customers",
       "type": "count"
     }
   ],
@@ -2880,7 +2880,7 @@
     ],
     "select": [
       {
-        "as": "repeat_customer_orders",
+        "as": "orders_from_repeat_customers",
         "expression": "metric.jaffle.orders"
       }
     ],
@@ -2902,7 +2902,7 @@
       }
     ]
   },
-  "rendered_sql": "WITH leaf_1__order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"repeat_customer_orders\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
+  "rendered_sql": "WITH leaf_1__order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id\n),\nleaf_1__order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nobserved_1_rows AS (\nSELECT\n  1 AS seen\nFROM comparison_orders\nWHERE\n  comparison_orders.order_id IS NOT NULL\nLIMIT 1\n),\nobserved_1 AS (\nSELECT\n  COUNT(observed_1_rows.seen) AS seen\nFROM observed_1_rows\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 OR observed_1.seen > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\nCROSS JOIN observed_1\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"period\",\n  base.m1 AS \"orders_from_repeat_customers\"\nFROM guarded_base AS base\nORDER BY\n  t ASC NULLS LAST,\n  g1 ASC NULLS LAST",
   "routes": [
     {
       "basis": "own_key",
@@ -3272,111 +3272,111 @@
   "rows": [
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 1367,
       "period": "2016-09-01",
-      "period_partial": false,
-      "repeat_customer_orders": 1367
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 1685,
       "period": "2016-10-01",
-      "period_partial": false,
-      "repeat_customer_orders": 1685
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 2280,
       "period": "2016-11-01",
-      "period_partial": false,
-      "repeat_customer_orders": 2280
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 2862,
       "period": "2016-12-01",
-      "period_partial": false,
-      "repeat_customer_orders": 2862
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 3410,
       "period": "2017-01-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3410
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 3357,
       "period": "2017-02-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3357
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
+      "orders_from_repeat_customers": 2092,
       "period": "2017-03-01",
-      "period_partial": false,
-      "repeat_customer_orders": 2092
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 3986,
       "period": "2017-03-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3986
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
+      "orders_from_repeat_customers": 2850,
       "period": "2017-04-01",
-      "period_partial": false,
-      "repeat_customer_orders": 2850
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 3746,
       "period": "2017-04-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3746
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
+      "orders_from_repeat_customers": 3565,
       "period": "2017-05-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3565
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 4391,
       "period": "2017-05-01",
-      "period_partial": false,
-      "repeat_customer_orders": 4391
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
+      "orders_from_repeat_customers": 3963,
       "period": "2017-06-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3963
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 3916,
       "period": "2017-06-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3916
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
+      "orders_from_repeat_customers": 4053,
       "period": "2017-07-01",
-      "period_partial": false,
-      "repeat_customer_orders": 4053
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 3385,
       "period": "2017-07-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3385
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
+      "orders_from_repeat_customers": 4937,
       "period": "2017-08-01",
-      "period_partial": false,
-      "repeat_customer_orders": 4937
+      "period_partial": false
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
+      "orders_from_repeat_customers": 3801,
       "period": "2017-08-01",
-      "period_partial": false,
-      "repeat_customer_orders": 3801
+      "period_partial": false
     }
   ],
   "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
@@ -3982,7 +3982,7 @@
         }
       },
       {
-        "alias": "repeat_customer_orders",
+        "alias": "orders_from_repeat_customers",
         "expression": {
           "parts": [
             "base",
@@ -4049,7 +4049,7 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-27T03:46:01.352133Z",
+    "now": "2026-10-27T05:17:10.344910Z",
     "partial": false
   }
 }

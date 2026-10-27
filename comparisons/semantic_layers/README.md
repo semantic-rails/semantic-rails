@@ -15,9 +15,8 @@ compare latency, token use or cost. It runs without touching the active
   thresholds. Every layer answers them with its model exactly as written for q01-q16, through
   its query-time interface only. Answered, out of 8, in the pack's layer order: **Semantic Rails 8, MetricFlow 2, Cube 7
   (5 of them through SQL API workarounds), Malloy 8 and KtX 3**.
-  Semantic Rails' current count uses unreleased engine commit
-  d03fee2fd0fc4fb6e77a0f6cdae28347d1c1729a; the latest release checked, v0.3.2, answers 8 of 8
-  on the same frozen model.
+  Semantic Rails' current count uses an unreleased engine (0.3.2, engine tree 8a13b98); the
+  latest release checked, v0.3.2, answers 8 of 8 on the same frozen model.
   The competitor captures were not re-run on newer versions. Each other answer needs a model
   change, for the reason in [`shared/frozen_model.yml`](shared/frozen_model.yml). Snowflake
   Semantic Views isn't assessed. See *Frozen-Model Questions* below.
@@ -88,16 +87,19 @@ can tell a capture made on other data from a real mismatch.
 
 The Semantic Rails runner also records the source trees of its engine, its package, its queries
 and runner, and the question suite, and whether the engine is exactly a tagged release. The
-committed Semantic Rails evidence ran at commit `d03fee2`, based on main after the 0.3.2
-release: its engine tree is `8a13b98`, and it isn't exactly a tagged release (v0.3.2's engine
-tree is `e54249f`), so it is labeled "0.3.2, not a release (engine tree 8a13b98)" wherever the
-version is shown. The commit it records may not survive a squash merge, but the tree hashes do.
+committed Semantic Rails evidence ran on main after the 0.3.2 release: its engine tree is
+`8a13b98`, and it isn't exactly a tagged release (v0.3.2's engine tree is `e54249f`), so it is
+labeled "0.3.2, not a release (engine tree 8a13b98)" wherever the version is shown. The runner
+also records the commit it ran at, which a squash merge may not keep; the pack cites the engine
+tree, which it does.
 
-The latest release checked on 2026-10-27 was PyPI `semantic-rails==0.3.2`. An isolated
-installation answered the frozen-model questions with the same bootstrap and
-`semantic_rails/scripts/run_questions.py`, against a copy of the unchanged package and queries,
-on the package digest pinned in `shared/frozen_model.yml`. It answers all 8, and each answer
-matches the answer key. The compact
+The latest release checked on 2026-10-27 was PyPI `semantic-rails==0.3.2`.
+[`semantic_rails/scripts/check_release.py`](semantic_rails/scripts/check_release.py), run in an
+isolated environment that holds only the release (step 2 of *Reproduce*), answered the
+frozen-model questions on the shared database the same bootstrap built. It answered against a
+temporary copy of the unchanged package and queries, checked against the package digest pinned in
+`shared/frozen_model.yml`, with the runner's package settings and the output check's comparison.
+It answers all 8, and each answer matches the answer key. The compact
 [release capture](shared/results/semantic_rails/latest_release_frozen_model.json) records each
 question's status, row count and answer-key check, with the model and query digests, dataset
 fingerprint and capture time. The release checked before it, v0.3.1, refused to load this
@@ -137,14 +139,18 @@ each layer today. It is not a ranking.
 
 Output check: 9 of 9 match the answer key across the five layers checked on the current dataset.
 
-Semantic Rails' q11 and q12 were re-authored on 2026-10-27. They had read metrics this pack's
+Semantic Rails' q11 and q12 were re-authored on 2026-10-27
+([#457](https://github.com/semantic-rails/semantic-rails/pull/457)). They had read metrics this pack's
 model defines on the customers view's precomputed `lifetime_order_count` and
 `lifetime_spend_cents` columns, so the rubric labeled them `precomputed`. They now count the
 model's `orders` metric where a customer predicate over the whole dataset (`over: all_time`)
 holds: more than one order (q11) or at least 500 USD of revenue (q12), computed from orders at
 query time, the form q24 already used. The engine could express this before the change, so the
 earlier label reflected this pack's model, not the engine. The model is unchanged, and both
-answers still match the answer key.
+answers still match the answer key. q11's column is `orders_from_repeat_customers`:
+`repeat_customer_orders` is the name of the model's metric on the precomputed column, which this
+answer doesn't read, and the engine will refuse a governed metric's name on another
+calculation from [#475](https://github.com/semantic-rails/semantic-rails/pull/475).
 
 ## Frozen-Model Questions: q17-q24
 
@@ -170,7 +176,7 @@ the compiled SQL is identical.
 
 | Layer | Support labels | Answered with the model frozen | What answers them, or why not |
 | --- | --- | --- | --- |
-| Semantic Rails | 8 native | 8 of 8 (unreleased engine commit `d03fee2fd0fc4fb6e77a0f6cdae28347d1c1729a`); v0.3.2: 8 of 8 | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
+| Semantic Rails | 8 native | 8 of 8 (unreleased engine, engine tree `8a13b98`); v0.3.2: 8 of 8 | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
 | MetricFlow | 2 native (q23, q24), 6 requires_model_change (q17-q22) | 2 of 8 | `--where` metric filters over existing entities answer the new thresholds. A conversion window, a cumulative window, a period offset, a per-metric filter and an aggregation are each part of a metric's definition |
 | Cube | 2 native (q22, q24), 5 workaround (q18-q21, q23), 1 requires_model_change (q17) | 7 of 8 | A REST filter answers q24, and an SQL API query's `AVG` and `MAX` over the item revenue measure answer q22 (Cube pushes them down as aggregates of the measure's row expression). SQL API queries answer q18-q21 and q23 by wrapping a Cube query in SQL (a derived table, window functions, `CASE`). The 7-day window is on a declared join and the SQL API joins cubes only along declared joins, so it can narrow the window (q18) but not widen it (q17) |
 | Malloy | 8 native | 8 of 8 | Filtered and ad hoc aggregates, calculations (`sum_moving`, `lag`) and, for q17 and q18, a join the query declares on the model's source |
@@ -272,10 +278,13 @@ instead of being guessed from its name.
    uv run python comparisons/semantic_layers/shared/scripts/bootstrap_shared_duckdb.py
    ```
 
-2. Execute the local runtime:
+2. Execute the local runtime, then check the latest release on the frozen-model questions in
+   an isolated environment that holds only that release:
 
    ```bash
    uv run python comparisons/semantic_layers/semantic_rails/scripts/run_questions.py
+   uv run --isolated --no-project --with semantic-rails==0.3.2 --with pyyaml \
+     python -I comparisons/semantic_layers/semantic_rails/scripts/check_release.py
    ```
 
 3. Execute the external runnable layers. Cube needs its locked npm install first, plus the

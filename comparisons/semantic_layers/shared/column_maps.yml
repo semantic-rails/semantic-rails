@@ -40,7 +40,7 @@ semantic_rails:
   q11_repeat_customer_orders_by_store_by_month:
     month: "period"
     store_name: "dimension.jaffle_store_name"
-    repeat_customer_orders: "repeat_customer_orders"
+    repeat_customer_orders: "orders_from_repeat_customers"
   q12_orders_by_month_with_lifetime_spend_500_filter:
     month: "period"
     filtered_orders: "filtered_orders"

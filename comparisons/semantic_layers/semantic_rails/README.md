@@ -36,3 +36,6 @@ q11 and q12 count the `orders` metric where a customer predicate over the whole 
 `lifetime_order_count` and `lifetime_spend_cents` columns, which the package's
 `repeat_customer_orders` and `lifetime_spend` metrics are defined on; until 2026-10-27 they did,
 and the rubric labeled them `precomputed`.
+
+`scripts/check_release.py` answers the frozen-model questions with an installed release instead
+of this checkout, for the pack's latest-release check (see *Reproduce* in the pack README).
