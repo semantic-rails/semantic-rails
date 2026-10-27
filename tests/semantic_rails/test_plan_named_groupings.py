@@ -1291,11 +1291,13 @@ def test_level_words_need_every_named_grouping(
 
 def _assert_same_rows(actual: list[tuple], reference: list[tuple]) -> None:
     """Rows match on their two keys exactly and on their sums to float precision: DuckDB 2.0
-    adds doubles in another order than 1.5, so a total can differ in its last bits."""
+    adds doubles in another order than 1.5, so a total can differ in its last bits (about 1e-14
+    relative). rel=1e-12 still fails on a cent missing from the largest total."""
     actual = sorted(actual)
     assert [row[:2] for row in actual] == [row[:2] for row in reference]
     sums = [value for row in actual for value in row[2:]]
-    assert sums == pytest.approx([value for row in reference for value in row[2:]])
+    expected = [value for row in reference for value in row[2:]]
+    assert sums == pytest.approx(expected, rel=1e-12, abs=0)
 
 
 def _in_memory_reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
