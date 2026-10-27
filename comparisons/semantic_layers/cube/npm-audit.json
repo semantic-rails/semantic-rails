@@ -1,5 +1,5 @@
 {
-  "package_lock_sha256": "ad7797d2953c8ca49363a893f83d5e0d418f77b358a7833b683b1d5a00d1d459",
+  "package_lock_sha256": "6ff58595adc7255e52e7b290c3e0639155cc63b3bb845581eb7632154f02d370",
   "report": {
     "auditReportVersion": 2,
     "vulnerabilities": {
@@ -96,20 +96,6 @@
           "isSemVerMajor": true
         }
       },
-      "gaxios": {
-        "name": "gaxios",
-        "severity": "moderate",
-        "isDirect": false,
-        "via": [
-          "uuid"
-        ],
-        "effects": [],
-        "range": "6.4.0 - 6.7.1",
-        "nodes": [
-          "node_modules/gaxios"
-        ],
-        "fixAvailable": true
-      },
       "jwk-to-pem": {
         "name": "jwk-to-pem",
         "severity": "low",
@@ -129,48 +115,16 @@
           "version": "0.26.13",
           "isSemVerMajor": true
         }
-      },
-      "uuid": {
-        "name": "uuid",
-        "severity": "moderate",
-        "isDirect": false,
-        "via": [
-          {
-            "source": 1119441,
-            "name": "uuid",
-            "dependency": "uuid",
-            "title": "uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
-            "url": "https://github.com/advisories/GHSA-w5hq-g745-h8pq",
-            "severity": "moderate",
-            "cwe": [
-              "CWE-787",
-              "CWE-1285"
-            ],
-            "cvss": {
-              "score": 7.5,
-              "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"
-            },
-            "range": "<11.1.1"
-          }
-        ],
-        "effects": [
-          "gaxios"
-        ],
-        "range": "<11.1.1",
-        "nodes": [
-          "node_modules/gaxios/node_modules/uuid"
-        ],
-        "fixAvailable": true
       }
     },
     "metadata": {
       "vulnerabilities": {
         "info": 0,
         "low": 5,
-        "moderate": 2,
+        "moderate": 0,
         "high": 0,
         "critical": 0,
-        "total": 7
+        "total": 5
       },
       "dependencies": {
         "prod": 622,
