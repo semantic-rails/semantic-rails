@@ -153,8 +153,9 @@ queued tests, so long parametrized cases do not leave the last worker running al
 Ownership uses the full on-disk test-file inventory so targeted runs and the flake
 guard retain the full suite's assignment. Set `SR_SHARD_COUNT`
 and zero-based `SR_SHARD_INDEX` to reproduce a shard locally; unset both to run
-without partitioning. Quarantine IDs are validated against the full collection
-before partitioning. Every Python/version shard uploads its JUnit report, and the
+without partitioning. A shard never imports a test file another shard owns, and
+validates the quarantine IDs in the files it owns; an ID whose file no longer exists
+fails shard zero. Every Python/version shard uploads its JUnit report, and the
 required "All checks pass" gate waits for the event's entire backend matrix. Backend
 full-suite jobs skip pushes to main/master: pull requests and merge groups test
 the suite before merging, while pushes retain lint, security, documentation and

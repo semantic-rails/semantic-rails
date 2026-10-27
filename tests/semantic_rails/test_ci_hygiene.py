@@ -800,6 +800,47 @@ def test_real_collections_have_complete_disjoint_shards(tmp_path):
     assert len(set.union(*partitions)) == 24
 
 
+def test_a_shard_imports_only_the_files_it_owns(tmp_path):
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    log = tmp_path / "imported.log"
+    for index in range(6):
+        (tmp_path / f"test_{index}.py").write_text(
+            "import os\n"
+            "with open(os.environ['IMPORT_LOG'], 'a') as log:\n"
+            "    log.write(__name__.rsplit('.', 1)[-1] + '\\n')\n"
+            "def test_value(): pass\n"
+        )
+    shards = []
+    for index in range(3):
+        log.write_text("")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-c", str(config)]
+            + ["-p", "scripts.test_sharding", str(tmp_path)],
+            env={
+                **os.environ,
+                "PYTHONPATH": str(ROOT),
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                "IMPORT_LOG": str(log),
+                "SR_SHARD_COUNT": "3",
+                "SR_SHARD_INDEX": str(index),
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        collected = {
+            line.split("::")[0].rsplit("/", 1)[-1].removesuffix(".py")
+            for line in result.stdout.splitlines()
+            if "::test_value" in line
+        }
+        # Every file it imported is one it owns: no shard imports another shard's file.
+        assert sorted(log.read_text().split()) == sorted(collected)
+        shards.append(collected)
+    assert sorted(set().union(*shards)) == [f"test_{index}" for index in range(6)]
+
+
 def test_guard_repeats_only_files_in_its_shard(monkeypatch):
     files = test_sharding.test_files(ROOT)[:30]
     monkeypatch.setenv("SR_SHARD_COUNT", "3")
