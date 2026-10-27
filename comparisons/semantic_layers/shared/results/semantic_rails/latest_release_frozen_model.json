@@ -1,14 +1,59 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
-  "distribution": "PyPI semantic-rails==0.3.1",
-  "engine_release": "v0.3.1",
-  "generated_at": "2026-10-14T20:14:19+00:00",
-  "load_error": {
-    "code": "INVALID_CONFIG",
-    "message": "semantic_rails/package: duplicate metric id 'metric.jaffle.revenue_usd' in jaffle.revenue_usd and metric 'revenue_usd'; metric ids must be unique"
-  },
+  "distribution": "PyPI semantic-rails==0.3.2",
+  "engine_release": "v0.3.2",
+  "generated_at": "2026-10-27T03:43:23+00:00",
   "model_sha256": "00bac49988b1d21e9a3dfdeecb470a0c80b1adb1f9189246fc61e72d1a551a60",
-  "queries_sha256": "8638054f23154d06c9514abdba544259294d9b02a469c8a5c8e67f828e87d9ed",
-  "questions": [],
-  "semantic_rails_version": "0.3.1"
+  "queries_sha256": "63f40d8dd710f995572f2c0d655e2374f58118a0b54036edf7fa4ff74532ad33",
+  "questions": [
+    {
+      "answer_key_matches": true,
+      "question_id": "q17_session_to_order_conversion_14d",
+      "row_count": 1,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q18_same_store_session_to_order_conversion_50m",
+      "row_count": 1,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q19_trailing_3_month_revenue_by_month",
+      "row_count": 12,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q20_revenue_and_prior_month_revenue_by_month",
+      "row_count": 12,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q21_revenue_and_large_order_revenue_by_month",
+      "row_count": 12,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q22_average_and_max_item_revenue_by_product_type_by_month",
+      "row_count": 24,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q23_orders_from_customers_with_5plus_orders_in_month",
+      "row_count": 12,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q24_orders_by_month_with_lifetime_spend_1000_filter",
+      "row_count": 12,
+      "status": "executed"
+    }
+  ],
+  "semantic_rails_version": "0.3.2"
 }

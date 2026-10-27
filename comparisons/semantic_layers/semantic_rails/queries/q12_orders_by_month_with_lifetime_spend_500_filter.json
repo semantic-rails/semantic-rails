@@ -10,7 +10,7 @@
       "entity": "entity.jaffle_customer",
       "having": [
         {
-          "field": "metric.jaffle.lifetime_spend",
+          "field": "measure.jaffle.revenue_usd",
           "op": "gte",
           "value": 500
         }
