@@ -63,6 +63,7 @@ These tests keep the benchmark contract connected to runtime behavior:
 
 - `tests/semantic_rails/test_plan_scope_gate.py`
 - `tests/semantic_rails/test_plan.py`
+- `tests/semantic_rails/test_benchmark_plan_gate.py`
 - `tests/semantic_rails/test_agentic_governance_program.py`
 - `tests/semantic_rails/test_query_ir_schema.py`
 
@@ -72,6 +73,7 @@ Use this bundle with the benchmark scripts when reviewing agentic governance or 
 uv run pytest -q \
   tests/semantic_rails/test_plan_scope_gate.py \
   tests/semantic_rails/test_plan.py \
+  tests/semantic_rails/test_benchmark_plan_gate.py \
   tests/semantic_rails/test_agentic_governance_program.py \
   tests/semantic_rails/test_query_ir_schema.py
 ```
