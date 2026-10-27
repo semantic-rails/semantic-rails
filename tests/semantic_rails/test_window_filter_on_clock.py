@@ -274,6 +274,13 @@ SINCE_15 = _cut(OCCURRED_AT, "gte", "2026-09-15")
 # id: expression, where, grouped by account, refusal, path of the cut
 ON_THE_CLOCK = {
     "lower-bound": (PRIOR_DAY, [SINCE_14], True, "WINDOWED", "where[0]"),
+    "strict-lower-bound": (
+        PRIOR_DAY,
+        [_cut(DAY, "gt", "2026-09-13")],
+        True,
+        "WINDOWED",
+        "where[0]",
+    ),
     "pinned-total": (PRIOR_DAY, [_cut(DAY, "is", "2026-09-14")], False, "WINDOWED", "where[0]"),
     "in-list": (PRIOR_DAY, [_cut(DAY, "is", ["2026-09-14"])], True, "WINDOWED", "where[0]"),
     "excluded-day": (PRIOR_DAY, [_cut(DAY, "not", "2026-09-13")], True, "WINDOWED", "where[0]"),

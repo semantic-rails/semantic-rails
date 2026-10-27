@@ -89,6 +89,8 @@ def test_best_plan_corpus_carries_query_once(runtime) -> None:
 @pytest.mark.parametrize(
     ("intent", "expected_id"),
     [
+        # "month" is the grain, not a word of the subject: the growth ratio never outranks revenue.
+        ("monthly revenue", "measure.jaffle.revenue_usd"),
         ("new customer orders over time", "measure.jaffle.new_customer_order_count"),
         (
             "session to order conversion rate (7d)",
@@ -106,7 +108,10 @@ def test_best_plan_corpus_carries_query_once(runtime) -> None:
         ("delivered revenue by month", "measure.jaffle.delivered_revenue_usd"),
     ],
 )
-def test_plan_prefers_the_governed_or_qualified_subject(runtime, intent, expected_id) -> None:
+def test_plan_prefers_the_governed_or_qualified_subject(
+    runtime, monkeypatch, intent, expected_id
+) -> None:
+    monkeypatch.setattr(runtime, "_package_examples", [])  # the ranker, not an authored answer
     payload = plan_payload(runtime, intent=intent)
     if intent == "high value customer orders by store":
         # Its predicate reads a balance whose own time scope plan can't prove.
