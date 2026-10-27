@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.793,
-      "compile_ms": 0.434,
+      "cache_lookup_ms": 0.837,
+      "compile_ms": 0.467,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -47,6 +47,7 @@
                   "id": "relationship.order_items_order",
                   "join_semantics": "",
                   "label": "Item to Order",
+                  "link": false,
                   "name": "jaffle.Item_TO_jaffle.Order",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -147,6 +148,7 @@
                     "id": "relationship.order_items_order",
                     "join_semantics": "",
                     "label": "Item to Order",
+                    "link": false,
                     "name": "jaffle.Item_TO_jaffle.Order",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -252,6 +254,7 @@
                     "id": "relationship.order_items_order",
                     "join_semantics": "",
                     "label": "Item to Order",
+                    "link": false,
                     "name": "jaffle.Item_TO_jaffle.Order",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -538,6 +541,7 @@
                     "id": "relationship.order_items_order",
                     "join_semantics": "",
                     "label": "Item to Order",
+                    "link": false,
                     "name": "jaffle.Item_TO_jaffle.Order",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -681,6 +685,7 @@
                       "id": "relationship.order_items_order",
                       "join_semantics": "",
                       "label": "Item to Order",
+                      "link": false,
                       "name": "jaffle.Item_TO_jaffle.Order",
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
@@ -1187,6 +1192,7 @@
                   "id": "relationship.order_items_order",
                   "join_semantics": "",
                   "label": "Item to Order",
+                  "link": false,
                   "name": "jaffle.Item_TO_jaffle.Order",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1292,6 +1298,7 @@
                   "id": "relationship.order_items_order",
                   "join_semantics": "",
                   "label": "Item to Order",
+                  "link": false,
                   "name": "jaffle.Item_TO_jaffle.Order",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1546,7 +1553,7 @@
   },
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 3.749,
+  "timing_ms": 3.868,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1588,6 +1595,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-14T20:11:47.152832Z"
+    "now": "2026-10-27T03:40:56.307991Z"
   }
 }

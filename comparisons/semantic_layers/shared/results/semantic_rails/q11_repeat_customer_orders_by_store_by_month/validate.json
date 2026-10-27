@@ -98,8 +98,8 @@
     },
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 1.251,
-      "compile_ms": 0.676,
+      "cache_lookup_ms": 1.199,
+      "compile_ms": 0.701,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -124,6 +124,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -231,6 +232,7 @@
               "id": "relationship.orders_store",
               "join_semantics": "",
               "label": "Order to Store",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.Store",
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
@@ -392,6 +394,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -499,6 +502,7 @@
                 "id": "relationship.orders_store",
                 "join_semantics": "",
                 "label": "Order to Store",
+                "link": false,
                 "name": "jaffle.Order_TO_jaffle.Store",
                 "rollup_safe_aggregations_reverse": [],
                 "safety": "safe",
@@ -606,6 +610,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -1010,6 +1015,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -1206,6 +1212,7 @@
                       "id": "relationship.orders_store",
                       "join_semantics": "",
                       "label": "Order to Store",
+                      "link": false,
                       "name": "jaffle.Order_TO_jaffle.Store",
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
@@ -2206,6 +2213,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -2313,6 +2321,7 @@
               "id": "relationship.orders_store",
               "join_semantics": "",
               "label": "Order to Store",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.Store",
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
@@ -2420,6 +2429,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -3144,7 +3154,7 @@
   ],
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 6.337,
+  "timing_ms": 6.929,
   "trace": {
     "fallback": {
       "reason": "",
@@ -3193,6 +3203,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-14T20:11:47.413920Z"
+    "now": "2026-10-27T03:40:56.567915Z"
   }
 }

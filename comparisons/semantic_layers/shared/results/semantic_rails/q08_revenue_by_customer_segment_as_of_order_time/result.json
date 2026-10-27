@@ -111,8 +111,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.956,
-      "compile_ms": 0.429,
+      "cache_lookup_ms": 0.994,
+      "compile_ms": 0.455,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -137,6 +137,7 @@
                   "id": "relationship.jaffle_order_customer_history",
                   "join_semantics": "",
                   "label": "Order to Customer history",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
@@ -246,6 +247,7 @@
               "id": "relationship.jaffle_order_customer_history",
               "join_semantics": "",
               "label": "Order to Customer history",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.CustomerHistory",
               "rollup_safe_aggregations_reverse": [],
               "safety": "requires_rewrite",
@@ -394,6 +396,7 @@
                     "id": "relationship.jaffle_order_customer_history",
                     "join_semantics": "",
                     "label": "Order to Customer history",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
@@ -503,6 +506,7 @@
                 "id": "relationship.jaffle_order_customer_history",
                 "join_semantics": "",
                 "label": "Order to Customer history",
+                "link": false,
                 "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                 "rollup_safe_aggregations_reverse": [],
                 "safety": "requires_rewrite",
@@ -598,6 +602,7 @@
                     "id": "relationship.jaffle_order_customer_history",
                     "join_semantics": "",
                     "label": "Order to Customer history",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
@@ -943,6 +948,7 @@
                     "id": "relationship.jaffle_order_customer_history",
                     "join_semantics": "",
                     "label": "Order to Customer history",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
@@ -1141,6 +1147,7 @@
                       "id": "relationship.jaffle_order_customer_history",
                       "join_semantics": "",
                       "label": "Order to Customer history",
+                      "link": false,
                       "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "requires_rewrite",
@@ -1834,6 +1841,7 @@
                   "id": "relationship.jaffle_order_customer_history",
                   "join_semantics": "",
                   "label": "Order to Customer history",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
@@ -1943,6 +1951,7 @@
               "id": "relationship.jaffle_order_customer_history",
               "join_semantics": "",
               "label": "Order to Customer history",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.CustomerHistory",
               "rollup_safe_aggregations_reverse": [],
               "safety": "requires_rewrite",
@@ -2038,6 +2047,7 @@
                   "id": "relationship.jaffle_order_customer_history",
                   "join_semantics": "",
                   "label": "Order to Customer history",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
@@ -2480,55 +2490,55 @@
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-08-01",
       "period_partial": false,
-      "revenue_usd": 106851.1500000049
+      "revenue_usd": 106851.15000000411
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-06-01",
       "period_partial": false,
-      "revenue_usd": 97728.07000000357
+      "revenue_usd": 97728.07000000274
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-05-01",
       "period_partial": false,
-      "revenue_usd": 95395.17000000308
+      "revenue_usd": 95395.1700000028
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-07-01",
       "period_partial": false,
-      "revenue_usd": 94105.6900000024
+      "revenue_usd": 94105.69000000219
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-04-01",
       "period_partial": false,
-      "revenue_usd": 82682.07000000149
+      "revenue_usd": 82682.07000000135
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-03-01",
       "period_partial": false,
-      "revenue_usd": 73321.77000000032
+      "revenue_usd": 73321.77000000031
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-01-01",
       "period_partial": false,
-      "revenue_usd": 44504.92999999988
+      "revenue_usd": 44504.929999999804
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-02-01",
       "period_partial": false,
-      "revenue_usd": 42834.49999999995
+      "revenue_usd": 42834.49999999983
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2016-12-01",
       "period_partial": false,
-      "revenue_usd": 34952.61
+      "revenue_usd": 34952.61000000004
     },
     {
       "dimension.jaffle_customer_history_segment": null,
@@ -2540,25 +2550,25 @@
       "dimension.jaffle_customer_history_segment": null,
       "period": "2016-10-01",
       "period_partial": false,
-      "revenue_usd": 21277.359999999993
+      "revenue_usd": 21277.360000000026
     },
     {
       "dimension.jaffle_customer_history_segment": null,
       "period": "2016-09-01",
       "period_partial": false,
-      "revenue_usd": 17477.699999999993
+      "revenue_usd": 17477.700000000033
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2016-12-01",
       "period_partial": false,
-      "revenue_usd": 724.9900000000004
+      "revenue_usd": 724.9900000000002
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2016-10-01",
       "period_partial": false,
-      "revenue_usd": 646.5900000000003
+      "revenue_usd": 646.5900000000001
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
@@ -2570,13 +2580,13 @@
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2016-11-01",
       "period_partial": false,
-      "revenue_usd": 488.64000000000027
+      "revenue_usd": 488.64000000000004
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-03-01",
       "period_partial": false,
-      "revenue_usd": 414.4300000000003
+      "revenue_usd": 414.4300000000002
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
@@ -2594,31 +2604,31 @@
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-02-01",
       "period_partial": false,
-      "revenue_usd": 376.29000000000025
+      "revenue_usd": 376.29000000000013
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-07-01",
       "period_partial": false,
-      "revenue_usd": 374.1500000000002
+      "revenue_usd": 374.15
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-04-01",
       "period_partial": false,
-      "revenue_usd": 362.5000000000002
+      "revenue_usd": 362.50000000000017
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-06-01",
       "period_partial": false,
-      "revenue_usd": 348.7300000000003
+      "revenue_usd": 348.7300000000001
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-08-01",
       "period_partial": false,
-      "revenue_usd": 348.7200000000001
+      "revenue_usd": 348.72000000000014
     },
     {
       "dimension.jaffle_customer_history_segment": "repeat",
@@ -2630,7 +2640,7 @@
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-01-01",
       "period_partial": false,
-      "revenue_usd": 294.6700000000002
+      "revenue_usd": 294.67
     },
     {
       "dimension.jaffle_customer_history_segment": "repeat",
@@ -2669,7 +2679,7 @@
       "revenue_usd": 147.32999999999998
     }
   ],
-  "semantic_fingerprint": "sha256:fe9674f2c08a1063779abc9f0e77a5456a165c65cb71f1606cb4f419ec1439cf",
+  "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
   "source_fingerprint": "b4cea4b28332ff53f1c60f9ece4353beda75915cb1dd7fb0840b12eac13c36c1",
   "sql_plan": {
     "ctes": [
@@ -3097,7 +3107,7 @@
     }
   ],
   "window": {
-    "now": "2026-10-14T20:11:47.338791Z",
+    "now": "2026-10-27T03:40:56.490322Z",
     "partial": false
   }
 }

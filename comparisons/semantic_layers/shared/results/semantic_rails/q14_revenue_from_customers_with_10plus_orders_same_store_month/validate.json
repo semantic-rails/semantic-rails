@@ -98,8 +98,8 @@
     },
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 1.307,
-      "compile_ms": 0.8,
+      "cache_lookup_ms": 1.284,
+      "compile_ms": 0.765,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -124,6 +124,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -231,6 +232,7 @@
               "id": "relationship.orders_store",
               "join_semantics": "",
               "label": "Order to Store",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.Store",
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
@@ -393,6 +395,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -500,6 +503,7 @@
                 "id": "relationship.orders_store",
                 "join_semantics": "",
                 "label": "Order to Store",
+                "link": false,
                 "name": "jaffle.Order_TO_jaffle.Store",
                 "rollup_safe_aggregations_reverse": [],
                 "safety": "safe",
@@ -608,6 +612,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -1019,6 +1024,7 @@
                     "id": "relationship.orders_store",
                     "join_semantics": "",
                     "label": "Order to Store",
+                    "link": false,
                     "name": "jaffle.Order_TO_jaffle.Store",
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -1215,6 +1221,7 @@
                       "id": "relationship.orders_store",
                       "join_semantics": "",
                       "label": "Order to Store",
+                      "link": false,
                       "name": "jaffle.Order_TO_jaffle.Store",
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
@@ -2391,6 +2398,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -2498,6 +2506,7 @@
               "id": "relationship.orders_store",
               "join_semantics": "",
               "label": "Order to Store",
+              "link": false,
               "name": "jaffle.Order_TO_jaffle.Store",
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
@@ -2606,6 +2615,7 @@
                   "id": "relationship.orders_store",
                   "join_semantics": "",
                   "label": "Order to Store",
+                  "link": false,
                   "name": "jaffle.Order_TO_jaffle.Store",
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -3337,7 +3347,7 @@
   ],
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 7.312,
+  "timing_ms": 7.713,
   "trace": {
     "fallback": {
       "reason": "",
@@ -3386,6 +3396,6 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-14T20:11:47.542759Z"
+    "now": "2026-10-27T03:40:56.710928Z"
   }
 }
