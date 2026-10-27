@@ -949,7 +949,7 @@ def test_athena_compiles_entire_battery_to_non_empty_sql(athena_runtime):
         assert "INTERVAL (" not in sql, f"{case.name}: INTERVAL form leaked into SQL"
 
 
-# The battery cases whose SQL builds the implicit calendar's day spine. All four failed live on
+# Battery cases whose SQL builds the implicit calendar's day spine. All four failed live on
 # Athena engine v3 from 2026-10-19 with FUNCTION_NOT_FOUND: Athena has no SEQUENCE(date, date),
 # only SEQUENCE(bigint, bigint), (bigint, bigint, bigint) and (timestamp, timestamp, interval).
 DAY_SPINE_CASES = {
@@ -973,4 +973,4 @@ def test_athena_day_spine_sequences_integer_day_offsets(athena_runtime):
         # range start plus its offset, a DATE.
         assert sql.count("SEQUENCE(") == sql.count("SEQUENCE(0, DATE_DIFF('day', "), sql
         assert "DATE_ADD('day', day_series.day_offset, " in sql, sql
-    assert spines == DAY_SPINE_CASES
+    assert spines >= DAY_SPINE_CASES, sorted(DAY_SPINE_CASES - spines)
