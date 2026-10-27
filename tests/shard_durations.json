@@ -111,6 +111,7 @@
   "tests/semantic_rails/test_filter_security.py": 10.149,
   "tests/semantic_rails/test_filtered_series_buckets.py": 6.248,
   "tests/semantic_rails/test_first_last_value_nulls.py": 0.151,
+  "tests/semantic_rails/test_governed_output_names.py": 1.5,
   "tests/semantic_rails/test_grain_validation.py": 0.254,
   "tests/semantic_rails/test_hidden_as_unknown.py": 359.96,
   "tests/semantic_rails/test_http_and_smoke.py": 19.897,
