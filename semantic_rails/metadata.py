@@ -100,6 +100,7 @@ from .metadata_parts.relevance import (
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
+from .naming import governed_names, unclaimed_name
 from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
 from .request_context import policy_identity
@@ -2781,6 +2782,28 @@ def build_options_payload(
         )
 
 
+def _selected_columns(call: dict[str, Any], measure_id: str) -> set[str]:
+    """The names a call's order_by or having can use for its select of ``measure_id``."""
+    names = {measure_id, measure_id.split(".")[-1]}
+    for item in list(call.get("select") or []):
+        if isinstance(item, dict) and item.get("as"):
+            expression = item.get("expression")
+            reads = expression if isinstance(expression, str) else (expression or {}).get("measure")
+            if reads == measure_id:
+                names.add(str(item["as"]))
+    return names
+
+
+def _follow_column_rename(patch: dict[str, Any], old: set[str], new: str) -> None:
+    """Point the patch's order_by and having at ``new`` where they named the replaced column."""
+    for key in ("order_by", "having"):
+        if patch.get(key):
+            patch[key] = [
+                {**row, "field": new} if isinstance(row, dict) and row.get("field") in old else row
+                for row in patch[key]
+            ]
+
+
 def _build_options_payload(
     runtime: Runtime,
     *,
@@ -2968,7 +2991,19 @@ def _build_options_payload(
             if agg == "percentile" and isinstance(expression, dict):
                 # A percentile needs its p; the median is the neutral starting point.
                 expression["parameters"] = {"p": 0.5}
-            alias = focus_measure.id.split(".")[-1]
+            # Another aggregation is another number than the governed measure, so it answers
+            # under a name of its own (avg_revenue_usd, p50_revenue_usd) that no governed metric
+            # or measure answers to, and an order or having on the old column follows it.
+            measure_name = focus_measure.id.split(".")[-1]
+            label = "p50" if agg == "percentile" else agg
+            alias = (
+                measure_name
+                if isinstance(expression, str)
+                else unclaimed_name(
+                    [f"{label}_{measure_name}", f"{measure_name}_{label}"], governed_names(config)
+                )
+            )
+            _follow_column_rename(patch, _selected_columns(call, focus_measure.id), alias)
             patch["select"] = [
                 expression
                 if isinstance(expression, str)

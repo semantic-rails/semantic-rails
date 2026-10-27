@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from ...config_parts.measure_governance import _reachable_entities
+from ...naming import governed_names, unclaimed_name
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -26,7 +27,7 @@ from .._base import (
     _tied_top,
     _tokens,
 )
-from ..call import Call, Condition, EntityFilter, QueryBuilder
+from ..call import Call, Condition, EntityFilter, Order, QueryBuilder
 from ..generators import _target_focus_text
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import (
@@ -105,8 +106,22 @@ def _qualified(
     builder = builder_for()
     if isinstance(value, dict):
         # A population share is a percentile threshold, which only a predicate takes.
-        [item] = builder.build().select
+        draft = builder.build()
+        [item] = draft.select
         measure = item.ref
+        # The qualifying entities' part of the measure is not the governed measure, so it
+        # answers under a name of its own (revenue_usd_qualifying) that no governed metric or
+        # measure answers to, and an order or having on the old column follows it.
+        old = item.alias or measure.rsplit(".", 1)[-1]
+        alias = unclaimed_name([f"{old}_qualifying", f"qualifying_{old}"], governed_names(config))
+        builder.orders(
+            Order(alias if row.field in {old, measure} else row.field, row.direction)
+            for row in draft.order_by
+        )
+        builder.having(
+            Condition(alias, row.op, row.value) if row.field in {old, measure} else row
+            for row in draft.having
+        )
         builder.selects([])
         builder.select(
             {
@@ -125,7 +140,7 @@ def _qualified(
                     for target in predicates
                 ],
             },
-            item.alias,
+            alias,
         )
     else:
         builder.filter(

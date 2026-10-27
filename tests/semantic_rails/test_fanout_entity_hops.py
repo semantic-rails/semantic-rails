@@ -189,14 +189,15 @@ def _measure(name: str, aggregation: str = "", alias: str = "") -> dict[str, Any
 def _bound(
     clause: dict[str, Any], measure: str = "revenue", aggregation: str = "sum", alias: str = ""
 ) -> dict[str, Any]:
-    """A measure with its own filter (the metric_filter path)."""
+    """A measure with its own filter (the metric_filter path), under a name of its own: the
+    measure's name is the governed, unfiltered measure's."""
     expression = {
         "kind": "aggregate",
         "measure": f"measure.hop.{measure}",
         "aggregation": aggregation,
         "filter": {"all": [clause]},
     }
-    return {"expression": expression, "as": alias or measure}
+    return {"expression": expression, "as": alias or f"{measure}_filtered"}
 
 
 def _ask(measure: str = "revenue", aggregation: str = "", **query: Any) -> dict[str, Any]:
@@ -756,7 +757,9 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
     diamond_package: Path, alternate_key: bool, bound_filter: bool, beside_lookup: bool
 ) -> None:
     expression: dict[str, Any] = {"measure": "measure.diamond.amount"}
-    query: dict[str, Any] = {"select": [{"expression": expression, "as": "amount"}]}
+    # A filtered amount is not the governed `amount`, so it answers under its own name.
+    alias = "premium_amount" if bound_filter else "amount"
+    query: dict[str, Any] = {"select": [{"expression": expression, "as": alias}]}
     if bound_filter:
         expression.update(kind="aggregate", aggregation="sum", filter={"all": [PREMIUM_DISTRICT]})
     else:

@@ -188,22 +188,23 @@ def test_null_rank_order_matches_reference_and_reverses(
             "where": [{"field": "dimension.shop_order_id", "op": "is", "value": [1, 2, 3, 8, 9]}],
         }
         reference = "SELECT store_id FROM orders WHERE order_id IN (1, 2, 3, 8, 9) GROUP BY store_id ORDER BY (SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) IS NULL), SUM(CASE WHEN store_id = 'b' THEN 100 WHEN store_id = 'a' THEN 3 ELSE 6 END) DESC, (store_id IS NULL), store_id DESC"
-        key = STORE
+        key, ranked = STORE, "revenue"
     else:
+        # The average order under a name of its own: `revenue` names the governed measure.
         query = {
             **_rank("DESC", 10),
-            "select": [{"expression": "measure.shop.average_order", "as": "revenue"}],
+            "select": [{"expression": "measure.shop.average_order", "as": "average_order"}],
             "where": [],
         }
         runtime._config.semantic_policies[:] = [
             replace(POLICY, object_ids=["measure.shop.average_order"])
         ]
         reference = "SELECT customer_id FROM orders GROUP BY customer_id ORDER BY (AVG(amount) IS NULL), AVG(amount) DESC, (customer_id IS NULL), customer_id DESC"
-        key = CUSTOMER
+        key, ranked = CUSTOMER, "average_order"
     try:
         answers = {}
         for direction in ("DESC", "ASC"):
-            order = [{"field": "revenue", "direction": direction.lower()}]
+            order = [{"field": ranked, "direction": direction.lower()}]
             if explicit_ties:
                 order.append({"field": key, "direction": direction.lower()})
             result = runtime.query(

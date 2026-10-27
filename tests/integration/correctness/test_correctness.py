@@ -591,7 +591,7 @@ def _child_filter_cases() -> Iterator[Case]:
         "utc_authored",
         {
             "select": [
-                _item(if_("count_distinct", in_a, "order_id"), "store_a_orders"),
+                _item(if_("count_distinct", in_a, "order_id"), "orders_at_store_a"),
                 _item(if_("count", compare("amount", ">=", 5)), "orders_of_5"),
                 _item(if_("sum", in_b, "amount"), "store_b_revenue"),
             ],
@@ -635,7 +635,7 @@ def _child_filter_cases() -> Iterator[Case]:
         "utc_authored",
         {
             "select": [
-                _item(if_("sum", in_a, "amount"), "revenue"),
+                _item(if_("sum", in_a, "amount"), "matching_revenue"),
                 _item(if_("avg", in_a, "amount"), "average"),
             ],
             "where": refunded("shipping"),
@@ -653,7 +653,7 @@ def _child_filter_cases() -> Iterator[Case]:
         "utc_authored",
         {
             "select": [
-                _item(if_("sum", in_b, "amount"), "revenue"),
+                _item(if_("sum", in_b, "amount"), "matching_revenue"),
                 _item(if_("count", in_b), "orders"),
             ],
             "where": refunded("shipping"),
