@@ -257,7 +257,7 @@ def test_catalog_probe_refuses_before_binding_when_confinement_fails(
     conn = SimpleNamespace(
         close=lambda: closed.append(True),
         execute=lambda sql: SimpleNamespace(
-            fetchone=lambda: ("common_subplan",), fetchall=lambda: []
+            fetchone=lambda: ("common_subplan", ""), fetchall=lambda: []
         ),
     )
 
@@ -335,7 +335,9 @@ def test_confined_duckdb_reports_every_setting_in_effect(
     assert setting("autoinstall_known_extensions") is False
     assert setting("autoload_known_extensions") is False
     assert setting("lock_configuration") is True
-    assert setting("allowed_configs") == ["TimeZone"]
+    assert sorted(setting("allowed_configs")) == ["TimeZone", "enable_progress_bar"]
+    # Display only, and every connection to the shared instance turns it off.
+    assert setting("enable_progress_bar") is False
     assert setting("allowed_directories")[0] == directory + os.sep
     # The test hook spills elsewhere; a confined instance moves its spill inside.
     assert os.path.commonpath([setting("temp_directory"), directory]) == directory
@@ -414,7 +416,7 @@ def _held_settings(directory: str) -> dict[str, Any]:
         "autoinstall_known_extensions": False,
         "autoload_known_extensions": False,
         "lock_configuration": True,
-        "allowed_configs": ["TimeZone"],
+        "allowed_configs": ["TimeZone", "enable_progress_bar"],
         "allowed_directories": [directory + os.sep],
         "allowed_paths": [],
         "temp_directory": "",

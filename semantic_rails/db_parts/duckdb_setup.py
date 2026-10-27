@@ -26,7 +26,8 @@ def connect_duckdb(
 
 
 def configure_duckdb_connection(connection: Any) -> Any:
-    """Refuse built-in macro collisions, then merge required optimizer exclusions."""
+    """Refuse built-in macro collisions, merge required optimizer exclusions, and draw no
+    progress bar."""
     try:
         # Read definitions, never invoke file macros. Derive the reserved names
         # from the system catalog, including operators and built-in macros.
@@ -59,6 +60,16 @@ def configure_duckdb_connection(connection: Any) -> Any:
             connection.execute(
                 "SET disabled_optimizers = ?", [",".join([*optimizers, "common_subplan"])]
             )
+        # DuckDB's Python client draws a progress bar on stdout for any statement slower than
+        # 2 s: into a server's log stream, or an MCP stdio server's JSON-RPC stream. A cursor
+        # of the connection keeps the setting, and a confined instance allows it
+        # (duckdb_confinement); an instance locked any other way keeps DuckDB's default.
+        locked, allowed = connection.execute(
+            "SELECT system.main.current_setting('lock_configuration'), "
+            "system.main.current_setting('allowed_configs')"
+        ).fetchone()
+        if not locked or "enable_progress_bar" in (allowed or ()):
+            connection.execute("SET enable_progress_bar = false")
         return connection
     except BaseException:
         with contextlib.suppress(Exception):
