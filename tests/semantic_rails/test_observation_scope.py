@@ -211,7 +211,7 @@ def test_the_invariant_detects_each_lost_authored_condition(
         },
     }
     compiled = _compile(
-        config, {"select": _select(qty=regional_apples), "where": _where(STORE, "s5")}
+        config, {"select": _select(regional_apples=regional_apples), "where": _where(STORE, "s5")}
     )
     assert_settled_in_one_place(compiled, config)
     probe = next(cte.query for cte in compiled["sql_ast"].ctes if cte.name == "observed_1_rows")
@@ -580,7 +580,7 @@ def test_a_filtered_empty_month_observes_the_selected_scope(runtime: Runtime, sc
     response = _ask(
         runtime,
         scope,
-        select=_select(qty=pears),
+        select=_select(pear_qty=pears),
         where=_where(STORE, "s1"),
         time={
             "temporal_role": SOLD,
@@ -589,7 +589,7 @@ def test_a_filtered_empty_month_observes_the_selected_scope(runtime: Runtime, sc
             "end": "2025-03-01",
         },
     )
-    assert [row["qty"] for row in response["rows"]] == [expected[0]]
+    assert [row["pear_qty"] for row in response["rows"]] == [expected[0]]
     assert expected == ((0,) if scope == "dataset" else (None,))
 
 

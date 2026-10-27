@@ -454,7 +454,10 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
 
     config, registry = _load_config(package_dir)
     group_by = [f"dimension.demo_{child}_name", f"dimension.demo_{parent}_name"]
-    query = _metric_query(metric, f"{fact}s", group_by, f"temporal_role.demo_{fact}_time")
+    # The qualifying facts are not the governed `{fact}s` metric: a name of their own.
+    query = _metric_query(
+        metric, f"qualifying_{fact}s", group_by, f"temporal_role.demo_{fact}_time"
+    )
     compiled = compile_query(config, registry, query)
 
     predicate_source_sql = compiled["sql"].split(
@@ -611,7 +614,9 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
     config, registry = _load_config(package_dir)
     group_by = ["dimension.demo_customer_status", "dimension.demo_plan_name"]
     compiled = compile_query(
-        config, registry, _metric_query(metric, "orders", group_by, "temporal_role.demo_order_time")
+        config,
+        registry,
+        _metric_query(metric, "qualifying_orders", group_by, "temporal_role.demo_order_time"),
     )
     predicate_source_sql = compiled["sql"].split('"qualified_customers_month_by_orders_1" AS (', 1)[
         0
@@ -621,7 +626,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
     assert '"dimension.demo_plan_id"' not in predicate_source_sql
 
     with pytest.raises(SemanticLayerError) as exc:
-        compile_query(config, registry, _metric_query(metric, "orders", group_by))
+        compile_query(config, registry, _metric_query(metric, "qualifying_orders", group_by))
     # The query's own grouping crosses the time-valid hop with no time, before the predicate.
     assert exc.value.code == "FANOUT_UNSAFE"
     assert exc.value.details["relationships"] == ["relationship.demo_order_customer_history"]

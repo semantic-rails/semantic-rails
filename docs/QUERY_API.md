@@ -481,16 +481,16 @@ Windowed kinds need `time.grain`:
     {"expression": {"kind": "cumulative", "input": "measure.jaffle.order_count"}, "as": "orders_to_date"},
     {"expression": {"kind": "rolling", "input": "measure.jaffle.revenue_usd", "window": {"unit": "month", "value": 3}}, "as": "revenue_3m"},
     {"expression": {"kind": "prior_period", "input": "measure.jaffle.revenue_usd", "offset": {"unit": "month", "value": 1}}, "as": "revenue_month_before"},
-    {"expression": {"kind": "period_to_date", "input": "measure.jaffle.revenue_usd", "period": "year"}, "as": "revenue_ytd"}
+    {"expression": {"kind": "period_to_date", "input": "measure.jaffle.revenue_usd", "period": "year"}, "as": "revenue_year_to_date"}
   ],
   "time": {"grain": "month", "end": "2016-12-01"}
 }
 ```
 
 ```jsonc
-{"rows": [{"period": "2016-09-01", "period_partial": false, "orders_to_date": 1367, "revenue_3m": 18053.279999999995, "revenue_month_before": null, "revenue_ytd": 18053.279999999995},
-          {"period": "2016-10-01", "period_partial": false, "orders_to_date": 3052, "revenue_3m": 39977.229999999996, "revenue_month_before": 18053.279999999995, "revenue_ytd": 39977.229999999996},
-          {"period": "2016-11-01", "period_partial": false, "orders_to_date": 5332, "revenue_3m": 67894.04999999999, "revenue_month_before": 21923.949999999997, "revenue_ytd": 67894.04999999999}]}
+{"rows": [{"period": "2016-09-01", "period_partial": false, "orders_to_date": 1367, "revenue_3m": 18053.279999999995, "revenue_month_before": null, "revenue_year_to_date": 18053.279999999995},
+          {"period": "2016-10-01", "period_partial": false, "orders_to_date": 3052, "revenue_3m": 39977.229999999996, "revenue_month_before": 18053.279999999995, "revenue_year_to_date": 39977.229999999996},
+          {"period": "2016-11-01", "period_partial": false, "orders_to_date": 5332, "revenue_3m": 67894.04999999999, "revenue_month_before": 21923.949999999997, "revenue_year_to_date": 67894.04999999999}]}
 ```
 
 They read periods before the ones they return, so a `time.start` (or a `where` on a date) that
