@@ -2220,10 +2220,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             ),
             # The conversion window's own error family, so its recovery shape still applies.
             code="CONVERSION_WINDOW_REQUIRED",
-            details={
-                "received_value": raw_window,
-                "suggested_shape": dict(_CONVERSION_WINDOW_SHAPE),
-            },
+            details={"suggested_shape": dict(_CONVERSION_WINDOW_SHAPE)},
         )
         unit = str(window.get("unit", "")).strip()
         try:
