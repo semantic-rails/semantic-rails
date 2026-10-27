@@ -17,6 +17,7 @@ import contextlib
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
+from functools import lru_cache
 from typing import Any
 
 from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query, time_output_alias
@@ -386,8 +387,14 @@ def _stage_kind_bonus(stage: str, kind: str) -> float:
     return 0.0
 
 
+@lru_cache(maxsize=256)
+def _search_token_set(terms: str) -> frozenset[str]:
+    """The question's search tokens, read once for a whole catalog pass, not per candidate."""
+    return frozenset(tokenize_search_value(terms))
+
+
 def _business_priority_adjustment(terms: str, candidate: dict[str, Any]) -> tuple[float, list[str]]:
-    tokens = set(tokenize_search_value(terms))
+    tokens = _search_token_set(terms)
     if not tokens or not tokens <= {"sale", "sales"}:
         return 0.0, []
     title = " ".join(
@@ -1262,6 +1269,8 @@ def _relevance_score(
         score += 25.0
         reasons.append("search-term match")
 
+    # A repeated token scores again, with the same steps: work them out once per token.
+    token_steps: dict[str, list[tuple[float, str]]] = {}
     for token in tokens:
         # Skip stopwords ("in", "by", "the", "of", ...) — they substring-match
         # too liberally (e.g. "in" inside "drink" inflated `drink_revenue_usd`
@@ -1270,28 +1279,30 @@ def _relevance_score(
         # of compound-prefix measures outranking their unqualified parent.
         if token in _INTENT_STOPWORDS:
             continue
-        # IDF-style weight: rare tokens (e.g. "aov" in a single metric)
-        # get a 2.0 multiplier, common tokens (e.g. "customer" in a
-        # customer-centric package) get 0.5, otherwise 1.0. Without this
-        # the term-bag scorer ranks candidates that match a common token
-        # multiple times above one that matches a rare token once.
-        idf_weight = _token_idf_weight(token, token_doc_freq)
-        token_variants = {token}
-        if token.endswith("s") and len(token) > 3:
-            token_variants.add(token[:-1])
-        for candidate_token in token_variants:
-            if _contains_token(document.name_label_fields, candidate_token):
-                score += 12.0 * idf_weight
-                reasons.append(f"label/name matched '{candidate_token}'")
-            if _contains_token(document.derived_tokens, candidate_token):
-                score += 10.0 * idf_weight
-                reasons.append(f"derived-token matched '{candidate_token}'")
-            if _contains_token(document.topic_fields, candidate_token):
-                score += 8.0 * idf_weight
-                reasons.append(f"topic matched '{candidate_token}'")
-            if _contains_token(document.description_fields, candidate_token):
-                score += 6.0 * idf_weight
-                reasons.append(f"description matched '{candidate_token}'")
+        steps = token_steps.get(token)
+        if steps is None:
+            steps = token_steps[token] = []
+            # IDF-style weight: rare tokens (e.g. "aov" in a single metric)
+            # get a 2.0 multiplier, common tokens (e.g. "customer" in a
+            # customer-centric package) get 0.5, otherwise 1.0. Without this
+            # the term-bag scorer ranks candidates that match a common token
+            # multiple times above one that matches a rare token once.
+            idf_weight = _token_idf_weight(token, token_doc_freq)
+            token_variants = {token}
+            if token.endswith("s") and len(token) > 3:
+                token_variants.add(token[:-1])
+            for candidate_token in token_variants:
+                if _contains_token(document.name_label_fields, candidate_token):
+                    steps.append((12.0 * idf_weight, f"label/name matched '{candidate_token}'"))
+                if _contains_token(document.derived_tokens, candidate_token):
+                    steps.append((10.0 * idf_weight, f"derived-token matched '{candidate_token}'"))
+                if _contains_token(document.topic_fields, candidate_token):
+                    steps.append((8.0 * idf_weight, f"topic matched '{candidate_token}'"))
+                if _contains_token(document.description_fields, candidate_token):
+                    steps.append((6.0 * idf_weight, f"description matched '{candidate_token}'"))
+        for amount, reason in steps:
+            score += amount
+            reasons.append(reason)
     coverage = _name_coverage(candidate, tokens)
     if coverage:
         # The candidate's whole name is in the question ("revenue by store"
