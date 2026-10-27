@@ -55,6 +55,7 @@ def main() -> None:
 
     import duckdb
     import yaml
+
     from semantic_rails import config as config_module
     from semantic_rails.runtime import Runtime
 
