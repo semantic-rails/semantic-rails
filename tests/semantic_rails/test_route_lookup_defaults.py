@@ -3,7 +3,8 @@
 Which route a question means is a business definition, so rungs 1-4 of the route ladder answer
 only by a recorded row, the start's own key or the only route (``test_route_resolution.py``).
 Rung 5 answers a pair those rungs refuse when exactly one of its routes is a lookup (every hop
-reaches one row: a to-one hop, or a hop into a validity window), or when, of several lookups,
+reaches one row: a to-one hop, or a hop into a validity window of a relationship with a "1"
+side, never a many-to-many one), or when, of several lookups,
 exactly one follows every entity's own keys. A route reading "any of" rows is never a default.
 It answers only pairs rungs 1-4 refuse, so no answer moves; each answer it gives names the
 reading and the routes it was chosen over, never running them.
@@ -20,8 +21,10 @@ Answer keys for each default shape:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
@@ -29,6 +32,8 @@ from semantic_rails.fanout import eligible_path_targets, package_route, resolve_
 from semantic_rails.runtime import Runtime
 from semantic_rails.visible_view import build_view
 from tests.semantic_rails.campus_package import write_campus_package
+from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.hidden_absent import CALLER, visibility_policy, with_policies
 from tests.semantic_rails.test_route_resolution import (
     ACCOUNT,
     INVOICE,
@@ -100,7 +105,11 @@ def test_a_lookup_through_a_validity_window_answers_and_names_its_reading():
             out = runtime.query(SESSIONS_BY_SEGMENT, verbosity=verbosity)
             assert _answer(out) == gold
             (route,) = out["routes"]
-            assert route["via"] == SESSION_ORDER
+            assert (route["via"], route["basis"], route["by"]) == (
+                SESSION_ORDER,
+                "default",
+                "lookup",
+            )
             assert route["meaning"] == (
                 "the Customer history valid at the time of the Storefront session's Order"
             )
@@ -111,7 +120,6 @@ def test_a_lookup_through_a_validity_window_answers_and_names_its_reading():
                     "relationship.jaffle_order_customer_history",
                 ]
             ]
-        assert (route["basis"], route["by"]) == ("default", "lookup")
         windowed = {**SESSIONS_BY_SEGMENT, "time": {"grain": "month", "start": "2016-09-01",
                                                    "end": "2016-10-01"}}  # fmt: skip
         assert runtime.query(windowed, verbosity="full")["routes"] == out["routes"]
@@ -169,3 +177,130 @@ def test_discovery_offers_exactly_the_targets_the_ladder_answers(tmp_path, packa
             for target in expected
         )
     assert defaults > 0
+
+
+def _jaffle(tmp_path: Path, cardinality: str = "many_to_one") -> Path:
+    """jaffle_shop, its order-to-customer-history relationship declared ``cardinality``."""
+    root = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    graph_path = root / "graph.yml"
+    graph = yaml.safe_load(graph_path.read_text(encoding="utf-8"))
+    graph["graph"]["relationships"]["order_to_customer_history"]["cardinality"] = cardinality
+    graph_path.write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
+    return root
+
+
+def test_a_many_to_many_history_is_never_a_lookup(tmp_path):
+    """Declared many-to-many, a history's rows valid at one time can overlap (an account with two
+    owners at once), and each would count: its validity window doesn't make it a lookup, so the
+    session's segment is asked again, not answered by default, and discovery doesn't offer it."""
+    config = load_package_config(str(_jaffle(tmp_path, "many_to_many")))
+    with pytest.raises(SemanticLayerError) as asked:
+        package_route(config, start=SESSION, target=HISTORY)
+    assert asked.value.code == "AMBIGUOUS_PATH"
+    assert HISTORY not in eligible_path_targets(config, start=SESSION)
+    assert package_route(load_package_config(str(JAFFLE)), start=SESSION, target=HISTORY).by == (
+        "lookup"
+    )
+
+
+def test_a_view_that_hides_every_alternative_still_states_the_reading(tmp_path):
+    """A caller who can't see the session's customer sees one route to the segment: the answer
+    says which reading it is, and nothing about routes the caller can't see."""
+    root = _jaffle(tmp_path)
+    config = with_policies(
+        load_package_config(str(root)),
+        visibility_policy("hidden", "relationship.storefront_sessions_customer"),
+    )
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        meaning = "the Customer history valid at the time of the Storefront session's Order"
+        for verbosity in ("minimal", "full"):
+            hidden = runtime.query(SESSIONS_BY_SEGMENT, verbosity=verbosity, context=CALLER)
+            assert hidden["routes"] == [
+                {"from": SESSION, "to": HISTORY, "via": SESSION_ORDER, "meaning": meaning}
+            ]
+        seen = runtime.query(SESSIONS_BY_SEGMENT, verbosity="full")
+        assert (seen["routes"][0]["basis"], len(seen["routes"][0]["other_routes"])) == (
+            "default",
+            1,
+        )
+        assert _answer(hidden) == _answer(seen)
+    finally:
+        runtime.close()
+
+
+def _write_offices(root: Path) -> Path:
+    """Employees reach a region through their department or their office, and an office names
+    its manager: the manager key rules the office route out, so the department answers."""
+    pkg = root / "staff"
+    (pkg / "models").mkdir(parents=True)
+    relationships = {
+        "employees_department": ("employee", "department", "department_id"),
+        "employees_office": ("employee", "office", "office_id"),
+        "departments_region": ("department", "region", "region_id"),
+        "offices_region": ("office", "region", "region_id"),
+        "offices_manager": ("office", "employee", "manager_id"),
+    }
+    entities = ("employee", "department", "office", "region")
+    documents: dict[str, Any] = {
+        "package.yml": {
+            "schema_version": 1,
+            "package": {
+                "id": "staff",
+                "namespace": "staff",
+                "warehouse": "duckdb",
+                "default_db": "staff.duckdb",
+                "seed": {"kind": "external"},
+            },
+        },
+        "graph.yml": {
+            "graph": {
+                "entities": {
+                    name: {"key": [f"{name}_id"], "model": f"{name}s"} for name in entities
+                },
+                "relationships": {
+                    name: {
+                        "entities": [source, target],
+                        "cardinality": "many_to_one",
+                        "via": [column],
+                        "target": [f"{target}_id"],
+                    }
+                    for name, (source, target, column) in relationships.items()
+                },
+            }
+        },
+        "metrics.yml": {
+            "metrics": {
+                "employees": {
+                    "kind": "aggregate",
+                    "measure": "measure.staff.employee_count",
+                    "value_type": "count",
+                    "description": "Employees",
+                }
+            }
+        },
+    }
+    for name in entities:
+        model: dict[str, Any] = {"id": f"{name}s", "relation": f"{name}s", "entities": {name: {}}}
+        if name == "employee":
+            model["measures"] = {
+                "employee_count": {"kind": "entity_count", "entity_key": "employee_id"}
+            }
+        documents[f"models/{name}s.yml"] = {"model": model}
+    for name, document in documents.items():
+        (pkg / name).write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return pkg
+
+
+def test_hints_in_a_view_offer_what_the_view_resolves(tmp_path):
+    """A view answers by the whole package's route, so its hints are the whole package's that it
+    resolves: hiding the manager key doesn't make the region ambiguous for the caller, whose
+    query still reads it through the department."""
+    base = load_package_config(str(_write_offices(tmp_path)))
+    employee, region = "entity.staff_employee", "entity.staff_region"
+    resolution = package_route(base, start=employee, target=region)
+    assert (resolution.basis, resolution.by) == ("default", "own_keys")
+    view = build_view(base, frozenset({"relationship.offices_manager"}))
+    assert package_route(view, start=employee, target=region).routes[0] == resolution.routes[0]
+    assert region in eligible_path_targets(view, start=employee)
+    assert eligible_path_targets(view, start=employee) == _answered(view, employee)

@@ -1257,9 +1257,10 @@ other route the default when it would load beside the package's rows, and
 naming the pairs whose rows an inherited route follows) or `default` (the one
 lookup among the routes, [rule 5](PACKAGE_AUTHORING.md#the-route-rule): `by` is
 `lookup` or `own_keys`, with `alternatives` and `conflicts_with` as for
-`own_key`). A default's route also carries its `meaning` and `other_routes` at
-every verbosity, minimal included, so an answer never hides the reading it
-took. Route clarifications,
+`own_key`). A default's route also carries its `meaning`, `other_routes`,
+`basis` and `by` at every verbosity, minimal included, so an answer never hides
+the reading it took. When the caller's view hides every route a default was
+chosen over, its entry is `{from, to, via, meaning}` alone. Route clarifications,
 conflict rows, switches and plan candidates name only routes whose
 relationships and every waypoint are visible to the caller. Routes are never re-chosen per caller: when the
   package's route for a pair reads a hidden entity or relationship, the pair has

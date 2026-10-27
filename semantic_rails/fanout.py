@@ -534,7 +534,8 @@ def route_note(
     if resolution.routes[0] != tuple(route):
         return None
     if resolution.basis != "decided":
-        return resolution if len(resolution.routes) > 1 else None
+        # A default is named even when a view hides every route it was chosen over.
+        return resolution if len(resolution.routes) > 1 or resolution.basis == "default" else None
     analysis = get_package_analysis(config)
     pair = (start, target)
     if pair not in analysis.route_note_cache:
@@ -834,14 +835,26 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
     )
 
 
-def _reaches_one_row(config: PackageConfig, start: str, path: Sequence[str]) -> bool:
-    """Whether ``path`` is a lookup: every hop reaches one row of the next entity, a to-one hop
-    or a hop into a validity window (``hop_reach``), judged from the package alone."""
+def _lookup_hop(config: PackageConfig, rel_id: str, near: str) -> bool:
+    """Whether walking ``rel_id`` from ``near`` reaches one row of the far entity, judged from the
+    package alone: a to-one hop, or a hop into a validity window whose relationship has a "1"
+    side, so the rows it enters are versions of one row and the one valid at the time is read.
+    A many-to-many relationship is never a lookup, validity window or not: rows valid at once
+    can overlap, and each would count."""
     analysis = get_package_analysis(config)
-    entities = walk_entities(analysis.relationships, start, path)
+    rel = analysis.relationships[rel_id]
+    reach = hop_reach(rel, near, analysis.entities[near].table)
+    return reach == "one" or (
+        reach == "as_of" and "1" in rel.cardinality.replace(" ", "").split(":")
+    )
+
+
+def _reaches_one_row(config: PackageConfig, start: str, path: Sequence[str]) -> bool:
+    """Whether ``path`` is a lookup: every hop reaches one row of the next entity
+    (``_lookup_hop``)."""
+    entities = walk_entities(get_package_analysis(config).relationships, start, path)
     return all(
-        hop_reach(analysis.relationships[rel_id], near, analysis.entities[near].table) != "many"
-        for rel_id, near in zip(path, entities, strict=False)
+        _lookup_hop(config, rel_id, near) for rel_id, near in zip(path, entities, strict=False)
     )
 
 
@@ -897,16 +910,10 @@ def _reached(graph: dict[str, list[tuple[str, str]]], start: str, hop_limit: int
 
 
 def _lookup_graph(config: PackageConfig) -> dict[str, list[tuple[str, str]]]:
-    """The package graph's hops that reach one row (``hop_reach``): the walks of lookups."""
-    analysis = get_package_analysis(config)
+    """The package graph's hops that reach one row (``_lookup_hop``): the walks of lookups."""
     return {
-        near: [
-            (far, rel_id)
-            for far, rel_id in edges
-            if hop_reach(analysis.relationships[rel_id], near, analysis.entities[near].table)
-            != "many"
-        ]
-        for near, edges in analysis.graph.items()
+        near: [(far, rel_id) for far, rel_id in edges if _lookup_hop(config, rel_id, near)]
+        for near, edges in get_package_analysis(config).graph.items()
     }
 
 
@@ -1006,8 +1013,19 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
     A target with two or more routes that a lookup reaches (one more BFS over the hops that
     reach one row) may be answered by a lookup default: the same bounded search, over those
     hops only, counts up to two agreeing lookups (``_answered_by_lookup_default``).
+
+    A caller's view answers by the whole package's route (``_visible_route``), so its targets
+    are the whole package's that the view's resolution answers: a default is decided from the
+    whole package, never from what the view alone would choose.
     """
     analysis = get_package_analysis(config)
+    if analysis.view is not None:
+        base = analysis.view[0]
+        return [
+            target
+            for target in eligible_path_targets(base, start=start)
+            if target in analysis.entities and _resolves(config, start, target)
+        ]
     hop_limit = package_hop_limit(config)
     pending = deque([(start, 0)])
     reachable = {start}
@@ -1053,9 +1071,6 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
             target in lookups and _answered_by_lookup_default(config, lookup_graph, start, target)
         ):
             eligible.append(target)
-    if analysis.view is not None:
-        # A view offers a target only when its route resolution answers the pair.
-        eligible = [target for target in eligible if _resolves(config, start, target)]
     return eligible
 
 

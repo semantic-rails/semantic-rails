@@ -2531,7 +2531,9 @@ pair comes first, for that call only):
 4. **Only route.** Exactly one route remains: it is used.
 5. **Lookup default.** Two or more remain, and exactly one of them is a lookup:
    every hop reaches one row (a many-to-one or one-to-one hop, or a hop into a
-   validity window, "the … valid at the time"). It is used: a section's
+   validity window, "the … valid at the time", of a relationship with a one
+   side; a many-to-many relationship is never a lookup, since rows valid at the
+   same time can overlap and each would count). It is used: a section's
    instructor, not any of its enrolled students. With two or more lookups,
    each entity's own key acts as a recorded row (rule 3): a route that walks an
    entity to another by another part than the first entity's one to-one
@@ -2542,7 +2544,10 @@ pair comes first, for that call only):
    answers pairs rules 1-4 refuse, so it never moves an answer. Every answer
    it gives discloses the reading (`routes[*].basis: default`, `by: lookup` or
    `own_keys`, and `meaning`) and the routes it was chosen over
-   (`other_routes`, ready to send as the call's `routes`; never executed).
+   (`other_routes`, shortest first, ready to send as the call's `routes`; never
+   executed), at every verbosity. A caller whose view hides every route it was
+   chosen over gets the reading alone (`meaning`), with nothing about routes the
+   caller can't see.
    Whether a hop reaches one row comes from the package (cardinality and
    validity windows), never from the query's time window.
 6. Two or more remain: the query is refused with `AMBIGUOUS_PATH`, naming the

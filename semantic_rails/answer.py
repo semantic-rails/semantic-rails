@@ -264,12 +264,19 @@ def routes_taken(config: Any, compiled: Mapping[str, Any]) -> list[dict[str, Any
             alternatives, conflicts = offered_rows(config, start, target, resolution.routes[1:])
             route.update(basis="own_key", alternatives=alternatives, conflicts_with=conflicts)
         elif resolution.basis == "default":
-            others = [list(path) for path in resolution.routes[1:]]
+            meaning = route_reading(config, start, resolution.routes[0])
+            others = sorted((list(path) for path in resolution.routes[1:]), key=_route_order)
+            if not others:
+                # The caller's view hides every route the default was chosen over: the reading
+                # is stated, and nothing says there were others.
+                route["meaning"] = meaning
+                taken.append(route)
+                continue
             alternatives, conflicts = offered_rows(config, start, target, others)
             route.update(
                 basis="default",
                 by=resolution.by,
-                meaning=route_reading(config, start, resolution.routes[0]),
+                meaning=meaning,
                 other_routes=[{"from": start, "to": target, "via": path} for path in others[:3]],
                 more_routes=len(others) - 3 if len(others) > 3 else None,
                 alternatives=alternatives,
@@ -282,8 +289,20 @@ def routes_taken(config: Any, compiled: Mapping[str, Any]) -> list[dict[str, Any
     return [{key: value for key, value in route.items() if value not in _EMPTY} for route in taken]
 
 
-# What a minimal response keeps of each route.
+# What a minimal response keeps of each route; a default also keeps how it was chosen.
 MINIMAL_ROUTE_KEYS = ("from", "to", "via", "meaning", "other_routes", "more_routes")
+_MINIMAL_DEFAULT_KEYS = ("basis", "by")
+
+
+def minimal_route(route: Mapping[str, Any]) -> dict[str, Any]:
+    """``route`` (an answer's ``routes`` entry) as a minimal response keeps it."""
+    keys = (*MINIMAL_ROUTE_KEYS, *(_MINIMAL_DEFAULT_KEYS if "by" in route else ()))
+    return {key: route[key] for key in keys if key in route}
+
+
+def _route_order(path: Sequence[str]) -> tuple[int, Sequence[str]]:
+    """Alternatives shortest first, then by relationship ids, whatever the authored order."""
+    return len(path), path
 
 
 def _offered(config: Any, start: str, target: str) -> list[list[str]]:
