@@ -103,6 +103,15 @@ def copy_package_config(
     return target
 
 
+@pytest.fixture(scope="module")
+def sweep_package(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, object]:
+    """The visible-view sweep's jaffle_shop copy with its default metric, one per module."""
+    from tests.semantic_rails.visible_view_sweep import _with_default_metric
+
+    root = copy_package_config(tmp_path_factory.mktemp("sweep"), "jaffle_shop", preseed_db=True)
+    return root, _with_default_metric(load_package_config(str(root)))
+
+
 def opened(runtime: Runtime) -> Runtime:
     """Open `runtime`'s connection now, so the fixture sharing it across tests owns it.
 
