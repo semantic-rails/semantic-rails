@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from ...config_parts.measure_governance import _reachable_entities
+from ...naming import governed_names, unclaimed_name
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -109,13 +110,17 @@ def _qualified(
         [item] = draft.select
         measure = item.ref
         # The qualifying entities' part of the measure is not the governed measure, so it
-        # answers under a name of its own (revenue_usd_qualifying), and an order on the old
-        # column follows it.
+        # answers under a name of its own (revenue_usd_qualifying) that no governed metric or
+        # measure answers to, and an order or having on the old column follows it.
         old = item.alias or measure.rsplit(".", 1)[-1]
-        alias = f"{old}_qualifying"
+        alias = unclaimed_name([f"{old}_qualifying", f"qualifying_{old}"], governed_names(config))
         builder.orders(
             Order(alias if row.field in {old, measure} else row.field, row.direction)
             for row in draft.order_by
+        )
+        builder.having(
+            Condition(alias, row.op, row.value) if row.field in {old, measure} else row
+            for row in draft.having
         )
         builder.selects([])
         builder.select(
