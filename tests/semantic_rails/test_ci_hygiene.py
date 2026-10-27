@@ -424,16 +424,18 @@ class _BudgetEndsAtTheFirstFailure(subprocess.Popen):
     """A repetition whose time budget runs out once the guard's failure log names a test."""
 
     def wait(self, timeout=None):
+        if timeout is None:  # the guard reaping the group it killed
+            return super().wait(timeout=60)
         log = next(Path(arg.split("=", 1)[1]) for arg in self.args if "--flake-failures=" in arg)
-        deadline = time.monotonic() + (timeout if timeout is not None else 300)
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if log.exists() and log.read_text(encoding="utf-8").strip():
-                raise subprocess.TimeoutExpired(self.args, timeout or 0)
+                raise subprocess.TimeoutExpired(self.args, timeout)
             try:
                 return super().wait(timeout=0.1)
             except subprocess.TimeoutExpired:
                 continue
-        raise subprocess.TimeoutExpired(self.args, timeout or 0)
+        raise subprocess.TimeoutExpired(self.args, timeout)
 
 
 @pytest.mark.parametrize("timeout_method", ["thread", "signal"])
