@@ -112,8 +112,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.044,
-      "compile_ms": 0.505,
+      "cache_lookup_ms": 1.029,
+      "compile_ms": 0.548,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2533,19 +2533,19 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 17477.70000000003,
+      "delivered_revenue": 17477.700000000026,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2016-09-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 646.5900000000001,
+      "delivered_revenue": 646.59,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2016-10-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 21277.360000000026,
+      "delivered_revenue": 21277.360000000022,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2016-10-01",
       "period_partial": false
@@ -2557,19 +2557,19 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 27428.179999999982,
+      "delivered_revenue": 27428.180000000015,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2016-11-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 724.9900000000002,
+      "delivered_revenue": 724.9900000000001,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2016-12-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 34952.61000000004,
+      "delivered_revenue": 34952.61000000008,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2016-12-01",
       "period_partial": false
@@ -2587,13 +2587,13 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 44504.929999999804,
+      "delivered_revenue": 44504.929999999964,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-01-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 376.29000000000013,
+      "delivered_revenue": 376.29,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-02-01",
       "period_partial": false
@@ -2605,13 +2605,13 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 42834.49999999983,
+      "delivered_revenue": 42834.49999999997,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-02-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 414.4300000000002,
+      "delivered_revenue": 414.43000000000006,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-03-01",
       "period_partial": false
@@ -2623,13 +2623,13 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 73321.77000000031,
+      "delivered_revenue": 73321.77000000054,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-03-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 362.50000000000017,
+      "delivered_revenue": 362.5000000000001,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-04-01",
       "period_partial": false
@@ -2641,13 +2641,13 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 82682.07000000135,
+      "delivered_revenue": 82682.07000000136,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-04-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 396.4000000000002,
+      "delivered_revenue": 396.40000000000003,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-05-01",
       "period_partial": false
@@ -2659,7 +2659,7 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 95395.1700000028,
+      "delivered_revenue": 95395.17000000263,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-05-01",
       "period_partial": false
@@ -2677,13 +2677,13 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 97728.07000000274,
+      "delivered_revenue": 97728.07000000247,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-06-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 374.15,
+      "delivered_revenue": 374.15000000000003,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-07-01",
       "period_partial": false
@@ -2695,13 +2695,13 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 94105.69000000219,
+      "delivered_revenue": 94105.69000000253,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-07-01",
       "period_partial": false
     },
     {
-      "delivered_revenue": 348.72000000000014,
+      "delivered_revenue": 348.7200000000001,
       "dimension.jaffle_customer_history_segment": "new",
       "period": "2017-08-01",
       "period_partial": false
@@ -2713,7 +2713,7 @@
       "period_partial": false
     },
     {
-      "delivered_revenue": 106851.15000000411,
+      "delivered_revenue": 106851.15000000372,
       "dimension.jaffle_customer_history_segment": null,
       "period": "2017-08-01",
       "period_partial": false
@@ -3156,7 +3156,7 @@
     }
   ],
   "window": {
-    "now": "2026-10-27T03:46:01.581524Z",
+    "now": "2026-10-27T05:17:10.567577Z",
     "partial": false
   }
 }

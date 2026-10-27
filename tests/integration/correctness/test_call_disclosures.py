@@ -294,7 +294,8 @@ def test_a_share_over_a_name_takes_its_total_over_the_namesakes_too(duckdb_backe
     runtime = duckdb_backend.runtimes["utc_authored"]
     spec = ENTRIES["shop/share-over-a-name-spans-every-namesake"]
     result = runtime.query(spec["query"])
-    assert [(row[CUSTOMER_ID], row["share"]) for row in result["rows"]] == [
+    # The call has no order_by, so the namesakes may come back in either order.
+    assert sorted((row[CUSTOMER_ID], row["share"]) for row in result["rows"]) == [
         (101, pytest.approx(0.5)),
         (103, pytest.approx(0.5)),
     ]

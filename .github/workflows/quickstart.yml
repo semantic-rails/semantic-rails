@@ -2,6 +2,9 @@ name: README quickstart
 
 # Runs the README's published-package commands in clean environments. It tests the
 # latest release on PyPI, not this checkout, so it catches README drift and install traps.
+# Nightly, it also runs this checkout's DuckDB correctness suite on the newest release of
+# every dependency, ignoring uv.lock, so a new upstream major fails here before a user
+# finds it.
 on:
   pull_request:
     paths:
@@ -17,20 +20,23 @@ on:
       - "scripts/verify_readme_quickstart.py"
       - ".github/workflows/quickstart.yml"
   # Weekly, because a new PyPI release can break the README without any change here.
+  # Nightly (second cron) for the newest-dependency job only.
   schedule:
     - cron: "17 6 * * 1"
+    - cron: "41 5 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.schedule }}
   cancel-in-progress: true
 
 jobs:
   linux:
     name: Clean containers (Ubuntu 22.04, 24.04, python:3.12-slim)
+    if: github.event.schedule != '41 5 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -44,6 +50,7 @@ jobs:
 
   macos:
     name: Stock macOS PATH (system Python only)
+    if: github.event.schedule != '41 5 * * *'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -57,3 +64,49 @@ jobs:
           enable-cache: false
       - name: Run the README quickstart with PATH limited to /usr/bin:/bin and uv
         run: python3 scripts/verify_readme_quickstart.py --local
+
+  latest-dependencies:
+    name: Newest dependency releases (no lockfile)
+    if: github.event.schedule == '41 5 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+          enable-cache: false
+      - name: Run the README quickstart (latest release, newest dependencies)
+        run: python3 scripts/verify_readme_quickstart.py --image python:3.12-slim
+      - name: Resolve this checkout's dependencies to their newest releases
+        run: |
+          uv sync --group dev --upgrade --resolution highest
+          git diff --unified=0 uv.lock | grep -E '^[-+](name|version) = ' || echo "uv.lock is already at the newest releases"
+      - name: DuckDB correctness and conformance on the newest releases
+        run: >-
+          uv run --no-sync pytest -q -rfE -n auto
+          tests/integration/correctness tests/integration/test_conformance.py
+          tests/semantic_rails/test_duckdb_materialized_fetch.py
+          tests/semantic_rails/test_duckdb_builtin_resolution.py
+          -k "not postgres"
+      - name: Open or update the tracking issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly check on the newest dependency releases failed"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "The README quickstart or the DuckDB correctness suite failed on the newest release of every dependency (uv.lock ignored). A new upstream release may break fresh installs. Run: $RUN_URL"
+          fi

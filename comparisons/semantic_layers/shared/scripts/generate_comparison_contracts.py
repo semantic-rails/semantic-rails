@@ -1309,8 +1309,12 @@ def semantic_rails_frozen_version_note() -> str:
     release = load_json(RESULTS_ROOT / "semantic_rails" / "latest_release_frozen_model.json")
     if release["dataset_fingerprint"] != summary["dataset_fingerprint"]:
         raise SystemExit("Semantic Rails release capture uses a different dataset")
-    engine = summary["semantic_rails_commit"]
-    qualifier = "unreleased engine commit" if summary["engine_release"] is None else "engine commit"
+    # Name the engine by what survives a squash merge: its release, or its engine tree.
+    if summary["engine_release"]:
+        engine = f"engine release {summary['engine_release']}"
+    else:
+        tree = str(summary.get("semantic_rails_tree") or "")[:7]
+        engine = f"an unreleased engine ({summary['semantic_rails_version']}, engine tree {tree})"
     if "load_error" in release:
         # The release never reached a question, so it has no count to report.
         error = release["load_error"]
@@ -1331,7 +1335,7 @@ def semantic_rails_frozen_version_note() -> str:
             f" (it refuses {join_names(refused)})" if refused else ""
         )
     return (
-        f"Semantic Rails' current count uses {qualifier} {engine}; "
+        f"Semantic Rails' current count uses {engine}; "
         f"the latest release checked, {release['engine_release']}, {outcome}. "
         "The competitor captures were not re-run on newer versions."
     )

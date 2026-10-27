@@ -112,8 +112,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.061,
-      "compile_ms": 0.568,
+      "cache_lookup_ms": 1.065,
+      "compile_ms": 0.567,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2504,37 +2504,37 @@
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-08-01",
       "period_partial": false,
-      "revenue_usd": 59714.46999999916
+      "revenue_usd": 59714.46999999915
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-05-01",
       "period_partial": false,
-      "revenue_usd": 54589.11999999989
+      "revenue_usd": 54589.12
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-06-01",
       "period_partial": false,
-      "revenue_usd": 50398.659999999814
+      "revenue_usd": 50398.65999999998
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-07-01",
       "period_partial": false,
-      "revenue_usd": 49970.74999999979
+      "revenue_usd": 49970.74999999967
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-03-01",
       "period_partial": false,
-      "revenue_usd": 49092.329999999856
+      "revenue_usd": 49092.329999999885
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-06-01",
       "period_partial": false,
-      "revenue_usd": 47980.209999999875
+      "revenue_usd": 47980.209999999934
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
@@ -2546,55 +2546,55 @@
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-08-01",
       "period_partial": false,
-      "revenue_usd": 47657.120000000024
+      "revenue_usd": 47657.120000000075
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-01-01",
       "period_partial": false,
-      "revenue_usd": 45017.94999999979
+      "revenue_usd": 45017.94999999996
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-07-01",
       "period_partial": false,
-      "revenue_usd": 44886.44000000003
+      "revenue_usd": 44886.44000000007
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2017-02-01",
       "period_partial": false,
-      "revenue_usd": 43358.119999999806
+      "revenue_usd": 43358.11999999997
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-05-01",
       "period_partial": false,
-      "revenue_usd": 41481.230000000134
+      "revenue_usd": 41481.23000000006
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2016-12-01",
       "period_partial": false,
-      "revenue_usd": 35677.600000000035
+      "revenue_usd": 35677.60000000008
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-04-01",
       "period_partial": false,
-      "revenue_usd": 35420.20000000026
+      "revenue_usd": 35420.200000000346
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2016-11-01",
       "period_partial": false,
-      "revenue_usd": 27916.81999999998
+      "revenue_usd": 27916.82000000002
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "period": "2017-03-01",
       "period_partial": false,
-      "revenue_usd": 24857.99000000026
+      "revenue_usd": 24857.99000000027
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
@@ -2606,7 +2606,7 @@
       "dimension.jaffle_store_name": "Philadelphia",
       "period": "2016-09-01",
       "period_partial": false,
-      "revenue_usd": 18053.280000000024
+      "revenue_usd": 18053.28000000002
     }
   ],
   "semantic_fingerprint": "sha256:398949383e562b84665ea756dba33887da43d3820ff0743dce4e22f04dc45599",
@@ -2969,7 +2969,7 @@
     "timestamp_type": "TIMESTAMP"
   },
   "window": {
-    "now": "2026-10-27T03:46:01.022951Z",
+    "now": "2026-10-27T05:17:10.042170Z",
     "partial": false
   }
 }
