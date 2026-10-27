@@ -750,7 +750,7 @@ def test_a_metric_filter_cannot_pin_another_selections_named_grouping(
         for row in rows
     ]
     assert len(actual) == len(reference) == 4
-    assert sorted(actual) == reference
+    _assert_same_rows(actual, reference)
     assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
 
 
@@ -1080,7 +1080,7 @@ def test_complete_suffix_list_matches_reference_sql(
     )
     actual = _in_memory_rows(jaffle, query, [STORE, CUSTOMER_TYPE])
     assert len(actual) == len(reference) == 4
-    assert sorted(actual) == reference
+    _assert_same_rows(actual, reference)
     assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
     assert (
         grouping_checks._level_groupings_unmet(jaffle._config, question, Call.from_call(query))
@@ -1287,6 +1287,15 @@ def test_level_words_need_every_named_grouping(
         grouping_checks._level_groupings_unmet(jaffle._config, question, Call.from_call(query))
         == unmet
     )
+
+
+def _assert_same_rows(actual: list[tuple], reference: list[tuple]) -> None:
+    """Rows match on their two keys exactly and on their sums to float precision: DuckDB 2.0
+    adds doubles in another order than 1.5, so a total can differ in its last bits."""
+    actual = sorted(actual)
+    assert [row[:2] for row in actual] == [row[:2] for row in reference]
+    sums = [value for row in actual for value in row[2:]]
+    assert sums == pytest.approx([value for row in reference for value in row[2:]])
 
 
 def _in_memory_reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
