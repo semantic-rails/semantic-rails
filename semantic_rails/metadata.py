@@ -2968,7 +2968,9 @@ def _build_options_payload(
             if agg == "percentile" and isinstance(expression, dict):
                 # A percentile needs its p; the median is the neutral starting point.
                 expression["parameters"] = {"p": 0.5}
-            alias = focus_measure.id.split(".")[-1]
+            # Another aggregation is another number than the governed measure, so it answers
+            # under a name of its own (avg_revenue_usd).
+            alias = f"{agg}_{focus_measure.id.split('.')[-1]}"
             patch["select"] = [
                 expression
                 if isinstance(expression, str)

@@ -26,7 +26,7 @@ from .._base import (
     _tied_top,
     _tokens,
 )
-from ..call import Call, Condition, EntityFilter, QueryBuilder
+from ..call import Call, Condition, EntityFilter, Order, QueryBuilder
 from ..generators import _target_focus_text
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import (
@@ -105,8 +105,18 @@ def _qualified(
     builder = builder_for()
     if isinstance(value, dict):
         # A population share is a percentile threshold, which only a predicate takes.
-        [item] = builder.build().select
+        draft = builder.build()
+        [item] = draft.select
         measure = item.ref
+        # The qualifying entities' part of the measure is not the governed measure, so it
+        # answers under a name of its own (revenue_usd_qualifying), and an order on the old
+        # column follows it.
+        old = item.alias or measure.rsplit(".", 1)[-1]
+        alias = f"{old}_qualifying"
+        builder.orders(
+            Order(alias if row.field in {old, measure} else row.field, row.direction)
+            for row in draft.order_by
+        )
         builder.selects([])
         builder.select(
             {
@@ -125,7 +135,7 @@ def _qualified(
                     for target in predicates
                 ],
             },
-            item.alias,
+            alias,
         )
     else:
         builder.filter(

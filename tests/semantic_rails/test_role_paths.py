@@ -130,7 +130,9 @@ ROLE_QUERIES = {
         {
             "select": [
                 {
-                    "as": "seats",
+                    # Seats on large airports only: not the governed `seats` metric, so it
+                    # answers under a name of its own.
+                    "as": "large_airport_seats",
                     "expression": {
                         "kind": "scoped_aggregate",
                         "measure": SEATS,
@@ -428,8 +430,9 @@ def _pin(role: str, layout: str) -> dict:
 def _rows(runtime: Runtime, query: dict, columns: list[str], *, key=None) -> list[tuple]:
     """The seats rows as sorted tuples; pass ``key=str`` when a group can be NULL."""
     rows = runtime.query(query)["rows"]
+    value = query["select"][0]["as"]
     return sorted(
-        ((*(row[column] for column in columns), int(row["seats"])) for row in rows), key=key
+        ((*(row[column] for column in columns), int(row[value])) for row in rows), key=key
     )
 
 
