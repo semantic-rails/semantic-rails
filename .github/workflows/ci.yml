@@ -69,11 +69,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs use one version; the merge queue and manual runs keep full coverage.
-        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
-        shard: [0, 1, 2, 3]
+        # PRs run Python 3.12 (the version with the warehouse extras) on eight shards.
+        # The merge queue runs the oldest supported Python, 3.12 and the newest on five
+        # shards each: with its four other gates, 19 jobs, inside the GitHub plan's 20
+        # concurrent jobs. Manual runs add 3.13, and the nightly release gate runs it.
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || github.event_name == 'merge_group' && '["3.11", "3.12", "3.14"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0, 1, 2, 3, 4, 5, 6, 7]' || '[0, 1, 2, 3, 4]') }}
     env:
-      SR_SHARD_COUNT: "4"
+      SR_SHARD_COUNT: ${{ github.event_name == 'pull_request' && '8' || '5' }}
       SR_SHARD_INDEX: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -97,8 +100,8 @@ jobs:
           uv run --no-sync python -c "import pyarrow, adbc_driver_manager.dbapi, adbc_driver_postgresql.dbapi, snowflake.connector"
       - run: uv run python scripts/changelog_fragments.py check
       - env:
-          # The merge queue (and a manual run) measures line coverage on the 3.14 shards, the
-          # fastest; all-checks combines the four shards' data and holds the floor. The options
+          # The merge queue (and a manual run) measures line coverage on the 3.14 shards;
+          # all-checks combines their data and holds the floor. The options
           # go on the command line, not PYTEST_ADDOPTS, which the tests' own pytest runs inherit.
           COVERAGE_OPTIONS: ${{ github.event_name != 'pull_request' && matrix.python-version == '3.14' && '--cov --cov-report=' || '' }}
           COVERAGE_FILE: .coverage.shard-${{ matrix.shard }}
@@ -317,7 +320,7 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
       # The coverage floor: the merge queue's (or a manual run's) 3.14 shards record line coverage
-      # of semantic_rails/, combined here. It sits a little under the measured 93.50% so that
+      # of semantic_rails/, combined here. It sits a little under the measured 93.55% so that
       # unrelated drift doesn't eject a merge; raise it as coverage grows.
       - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -336,5 +339,5 @@ jobs:
         if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
         run: |
           uv sync --only-group dev --locked --python 3.12
-          uv run --no-sync coverage combine .coverage.shard-0 .coverage.shard-1 .coverage.shard-2 .coverage.shard-3
+          uv run --no-sync coverage combine .coverage.shard-*
           uv run --no-sync coverage report --precision=2 --skip-covered --sort=cover --fail-under=93

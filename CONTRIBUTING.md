@@ -139,15 +139,19 @@ Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
 `join`/`wait` take a timeout; `tests/semantic_rails/test_bounded_waits.py`
 enforces it.
 
-Backend CI partitions whole test files into four deterministic shards. Pull requests
-run Python 3.12 only; merge groups and manual runs cover Python 3.11, 3.12, 3.13
-and 3.14. The merge queue is the complete compatibility gate: a failure on another
-Python version ejects the change before merging. Its Python 3.14 shards also record line
+Backend CI partitions whole test files into deterministic shards: eight on pull
+requests, which run Python 3.12 only, and five per version elsewhere. Merge groups
+cover the oldest and newest supported Pythons, 3.11 and 3.14, plus 3.12; a failure
+on any of them ejects the change before merging. Python 3.13 runs in every release's
+publish suite (`publish.yml` tests 3.12 and 3.13 before anything is uploaded), in
+the manual release-readiness gate and nightly on main; manual CI runs cover all
+four versions. In the merge queue and manual runs, the Python 3.14 shards also record line
 coverage of `semantic_rails/`, and the "All checks pass" job combines them and fails below 93%
-(93.50% when the floor was set; CLI subprocesses aren't traced). To measure it locally, run
-`uv run pytest tests/semantic_rails -n 4 --cov`. The lint job also records the
-compile corpus (`scripts/dev/compile_corpus.py`) twice, under different hash seeds and worker
-counts, and fails unless the two records are byte-identical with no compile crashes. Files are assigned longest first
+(93.55% in CI when the floor was set; CLI subprocesses aren't traced). To measure it locally,
+run `uv run pytest tests/semantic_rails -n 4 --cov`. The lint job also records the compile
+corpus (`scripts/dev/compile_corpus.py`) twice, under different hash seeds and worker counts,
+and fails unless the two records are byte-identical with no compile crashes. Files are
+assigned longest first
 to the lightest shard, with paths and shard indices breaking ties.
 `tests/shard_durations.json` records summed
 per-test seconds for each file, and `test_ci_hygiene` fails when a file under
@@ -158,8 +162,9 @@ queued tests, so long parametrized cases do not leave the last worker running al
 Ownership uses the full on-disk test-file inventory so targeted runs and the flake
 guard retain the full suite's assignment. Set `SR_SHARD_COUNT`
 and zero-based `SR_SHARD_INDEX` to reproduce a shard locally; unset both to run
-without partitioning. Quarantine IDs are validated against the full collection
-before partitioning. Every Python/version shard uploads its JUnit report, and the
+without partitioning. A shard never imports a test file another shard owns, and
+validates the quarantine IDs in the files it owns; an ID whose file no longer exists
+fails shard zero. Every Python/version shard uploads its JUnit report, and the
 required "All checks pass" gate waits for the event's entire backend matrix. Backend
 full-suite jobs skip pushes to main/master: pull requests and merge groups test
 the suite before merging, while pushes retain lint, security, documentation and

@@ -343,5 +343,7 @@ def test_a_key_is_confirmed_under_the_equality_joins_use(tmp_path, sql, key):
         suggested = suggest_model(warehouse, relation)
     assert (suggested["primary_key"] or {}).get("columns") == key, suggested["key_search"]
     assert suggested["upsert_model"]["primary_key"] == (key or [])
-    status = "confirmed" if key else "none_found"
-    assert suggested["key_search"] == {"status": status, "checked": 1}
+    assert suggested["key_search"]["status"] == ("confirmed" if key else "none_found")
+    # DuckDB 2.0's COUNT(DISTINCT) honours a NOCASE collation, so profiling alone can rule
+    # the column out (0 checked); 1.5 counts 'a' and 'A' apart and the grouped check rejects it.
+    assert suggested["key_search"]["checked"] in ({1} if key else {0, 1})

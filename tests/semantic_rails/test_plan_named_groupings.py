@@ -750,7 +750,7 @@ def test_a_metric_filter_cannot_pin_another_selections_named_grouping(
         for row in rows
     ]
     assert len(actual) == len(reference) == 4
-    assert sorted(actual) == reference
+    _assert_same_rows(actual, reference)
     assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
 
 
@@ -1080,7 +1080,7 @@ def test_complete_suffix_list_matches_reference_sql(
     )
     actual = _in_memory_rows(jaffle, query, [STORE, CUSTOMER_TYPE])
     assert len(actual) == len(reference) == 4
-    assert sorted(actual) == reference
+    _assert_same_rows(actual, reference)
     assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
     assert (
         grouping_checks._level_groupings_unmet(jaffle._config, question, Call.from_call(query))
@@ -1289,6 +1289,17 @@ def test_level_words_need_every_named_grouping(
     )
 
 
+def _assert_same_rows(actual: list[tuple], reference: list[tuple]) -> None:
+    """Rows match on their two keys exactly and on their sums to float precision: DuckDB 2.0
+    adds doubles in another order than 1.5, so a total can differ in its last bits (about 1e-14
+    relative). rel=1e-12 still fails on a cent missing from the largest total."""
+    actual = sorted(actual)
+    assert [row[:2] for row in actual] == [row[:2] for row in reference]
+    sums = [value for row in actual for value in row[2:]]
+    expected = [value for row in reference for value in row[2:]]
+    assert sums == pytest.approx(expected, rel=1e-12, abs=0)
+
+
 def _in_memory_reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
     return _in_memory(runtime, sql)[1]
 
@@ -1302,16 +1313,31 @@ def _in_memory_rows(
     return [tuple(row[columns.index(item)] for item in [*dimensions, alias]) for row in rows]
 
 
-def _in_memory(runtime: Runtime, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
-    """Run SQL on in-memory copies of the order, customer and store tables."""
+# In-memory copies of the order, customer and store tables, made once per module (by seed
+# path) instead of once per comparison: the queries only read them.
+_SEED_COPIES: dict[str, duckdb.DuckDBPyConnection] = {}
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _seed_copies(jaffle: Runtime) -> Iterator[None]:
     with duckdb.connect(":memory:") as connection:
-        seed_path = str(runtime.db_path).replace("'", "''")
+        seed_path = str(jaffle.db_path).replace("'", "''")
         connection.execute(f"ATTACH '{seed_path}' AS seed (READ_ONLY)")
         for table in ["jaffle_order", "jaffle_customer", "jaffle_store"]:
             connection.execute(f"CREATE TABLE {table} AS SELECT * FROM seed.{table}")
-        cursor = connection.execute(sql)
-        return [column[0] for column in cursor.description], cursor.fetchall()
+        connection.execute("DETACH seed")
+        _SEED_COPIES[str(jaffle.db_path)] = connection
+        try:
+            yield
+        finally:
+            del _SEED_COPIES[str(jaffle.db_path)]
+
+
+def _in_memory(runtime: Runtime, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+    """Run SQL on in-memory copies of the order, customer and store tables."""
+
+    cursor = _SEED_COPIES[str(runtime.db_path)].execute(sql)
+    return [column[0] for column in cursor.description], cursor.fetchall()
 
 
 def test_repeated_description_of_one_grouping_stays_ready(

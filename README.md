@@ -192,17 +192,19 @@ tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engin
 built around the agent loop above, which you can run locally or embed.
 
 The [comparison pack](https://github.com/semantic-rails/semantic-rails/tree/main/comparisons/semantic_layers/)
-asks the same 16 questions of six modeled layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
-and KtX. It compares capability, not performance; its support labels describe the
-authored models, not each layer's limits. Nine questions were chosen to exercise
-primitives Semantic Rails ships. The
+asks the same 24 questions of six modeled layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
+and KtX. Sixteen are answered with models written for them, nine of them chosen to exercise
+primitives Semantic Rails ships. Eight more change one parameter of a metric those models
+already use, and each layer answers them with its model unchanged, through its query-time
+interface only. The pack compares capability, not performance; its support labels describe the
+authored models, not each layer's limits. The
 [output consistency check](https://github.com/semantic-rails/semantic-rails/blob/main/comparisons/semantic_layers/shared/results/validation/output_consistency.md)
-compares five layers on the current shared dataset, including Semantic Rails,
-against an independent SQL answer key: all 16 match. Cube's captured SQL was
-replayed on current data, but Cube itself was not rerun. Snowflake Semantic Views
-is a stale capture on an older dataset and is excluded from that count; it matches
-14 questions and differs on q07 and q16. The authored models and shared data leave
-some intended semantics weakly tested, so matching outputs are not a ranking.
+compares five layers on the current shared dataset, including Semantic Rails, against an
+independent SQL answer key: all five match it on all 16, and every frozen-model answer a layer
+executed matches it too. Those five layers ran live from this repo. Snowflake Semantic Views is a
+stale capture on an older dataset and is excluded from that count; it matches 14 questions and
+differs on q07 and q16. The authored models and shared data leave some intended semantics
+weakly tested, so matching outputs are not a ranking.
 
 ## Warehouses
 

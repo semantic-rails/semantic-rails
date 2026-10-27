@@ -18,6 +18,8 @@ Two-part contract under test:
 
 from __future__ import annotations
 
+import time
+
 import duckdb
 import pytest
 
@@ -193,6 +195,19 @@ def test_mcp_plan_offers_no_runnable_draft_without_the_window(runtime) -> None:
     bounded = mcp.call_tool("plan", {"intent": intent, "query": {"time": window}})
     assert bounded["status"] == "ok"
     assert bounded["best"]["query"]["time"] == window
+
+
+def test_a_thousand_word_intent_plans_in_under_a_second(runtime) -> None:
+    """Planning reads a question in passes linear in its length: a long intent can't burn
+    seconds of CPU (finding clock phrases once took 20 s on this one)."""
+    mcp = SemanticLayerMCPAdapter(runtime)
+    intent = "revenue by store " + "x " * 1000
+    timings = []
+    for _ in range(3):  # the fastest of three: a busy runner can pause any one call
+        started = time.perf_counter()
+        assert mcp.call_tool("plan", {"intent": intent})["status"] == "low_confidence"
+        timings.append(time.perf_counter() - started)
+    assert min(timings) < 1.0, timings
 
 
 def test_partial_query_bounds_suppress_the_downgrade(runtime) -> None:
