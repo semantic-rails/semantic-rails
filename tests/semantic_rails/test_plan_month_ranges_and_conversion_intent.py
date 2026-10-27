@@ -25,32 +25,18 @@ runtime = pytest.fixture(scope="module", name="runtime")(jaffle_runtime)
 
 
 @pytest.mark.parametrize(
-    ("intent", "start", "end", "grain"),
+    ("intent", "start", "end"),
     [
-        (
-            "monthly revenue by store from January 2017 through June 2017",
-            "2017-01-01",
-            "2017-07-01",
-            "month",
-        ),
-        ("revenue from Jan-Jun 2017 by month", "2017-01-01", "2017-07-01", None),
-        ("revenue by store for March 2017", "2017-03-01", "2017-04-01", None),
-        (
-            "revenue from October 2017 through December 2017 by month",
-            "2017-10-01",
-            "2018-01-01",
-            None,
-        ),
+        ("revenue from Jan-Jun 2017 by month", "2017-01-01", "2017-07-01"),
+        ("revenue from October 2017 through December 2017 by month", "2017-10-01", "2018-01-01"),
     ],
-    ids=["both-years", "shared-year", "single-month", "year-rollover"],
+    ids=["shared-year", "year-rollover"],
 )
-def test_month_bounds_land_in_query_ir(runtime, intent, start, end, grain):
+def test_month_bounds_land_in_query_ir(runtime, intent, start, end):
     payload = plan_payload(runtime, intent=intent, detail="best")
     assert payload["status"] == "ok"
     time_spec = payload["best"]["query"]["time"]
     assert (time_spec.get("start"), time_spec.get("end")) == (start, end)
-    if grain is not None:
-        assert time_spec.get("grain") == grain
 
 
 @pytest.mark.parametrize(

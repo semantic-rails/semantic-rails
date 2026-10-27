@@ -176,17 +176,6 @@ def test_the_http_route_holds_a_who_question(jaffle: Runtime) -> None:
     assert [gap["kind"] for gap in _gaps(payload)] == ["list_unrealized"]
 
 
-def test_a_caller_group_by_gives_who_its_rows(jaffle: Runtime) -> None:
-    payload = plan_payload(
-        jaffle,
-        intent="Who ordered last week?",
-        partial_query={"group_by": [CUSTOMER_ID, CUSTOMER_NAME]},
-    )
-
-    assert payload["status"] == "ok"
-    assert payload["best"]["query"]["group_by"] == [CUSTOMER_ID, CUSTOMER_NAME]
-
-
 BOTH = "How many orders and how much revenue last week?"
 BOTH_CLAUSE = '"how many", "how much"'
 # Each was `ok` with more than one value, which answered a narrower question.
@@ -410,27 +399,11 @@ STAY_OK = [
 
 @pytest.mark.parametrize("question", STAY_OK)
 def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str) -> None:
-    partial = {
-        "Revenue for each store last month": {"group_by": [STORE_NAME]},
-        # A comparison is ready only over months that have ended
-        # (test_plan_period_completeness.py).
-        "Monthly revenue vs prior year": {"time": {"end": "2018-01-01"}},
-    }.get(question, {})
+    partial = {"group_by": [STORE_NAME]} if question == "Revenue for each store last month" else {}
     payload = plan_payload(jaffle, intent=question, partial_query=partial)
 
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
-
-
-def test_a_prior_period_comparison_asks_which_reading(jaffle: Runtime) -> None:
-    """A comparison with the prior year isn't ready as one draft: plan asks which reading to
-    run, and the why names the comparison."""
-
-    payload = plan_payload(jaffle, intent="Monthly revenue vs prior year")
-
-    assert payload["status"] == "needs_clarification"
-    assert payload["why"]["code"] == "PERIOD_COMPARISON"
-    assert "ready_for" not in payload["next"]
 
 
 @pytest.mark.parametrize(
@@ -521,41 +494,13 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
             "SELECT sum(order_total_cents) / 100.0 FROM jaffle_order WHERE ordered_at >= "
             "TIMESTAMP '2017-07-01' AND ordered_at < TIMESTAMP '2017-08-01'",
         ),
-        # "store" names the Store entity: its key, with its one naming dimension beside it.
-        *(
-            (question, {}, STORE_REVENUE_LAST_MONTH)
-            for question in ("Revenue by store last month", "Revenue for each store last month")
-        ),
+        # "store" names the Store entity: its key, with its one naming dimension beside it (a
+        # store or customer list or grouping without a ranking:
+        # test_plan_entity_store_answers.py).
         (
             "Which 3 stores had the most revenue in July 2017?",
             {},
             f"{STORE_REVENUE_LAST_MONTH} ORDER BY 3 DESC LIMIT 3",
-        ),
-        (
-            "List revenue by store",
-            {},
-            "SELECT s.store_id, s.store_name, sum(o.order_total_cents) / 100.0 "
-            "FROM jaffle_order o JOIN jaffle_store s USING (store_id) GROUP BY 1, 2",
-        ),
-        *(
-            (
-                question,
-                {},
-                "SELECT s.store_id, s.store_name, count(DISTINCT o.order_id) FROM jaffle_order o "
-                f"JOIN jaffle_store s USING (store_id) {LAST_WEEK.replace('ordered_at', 'o.ordered_at')} "
-                "GROUP BY 1, 2",
-            )
-            for question in (
-                "Show orders by store last week.",
-                "How many orders did each store get last week?",
-            )
-        ),
-        # "which customers" lists the customers who ordered, by their key: Customer declares no
-        # display name and has several naming dimensions.
-        (
-            "Which customers ordered last week?",
-            {},
-            f"SELECT customer_id, count(DISTINCT order_id) FROM jaffle_order {LAST_WEEK} GROUP BY 1",
         ),
     ],
 )

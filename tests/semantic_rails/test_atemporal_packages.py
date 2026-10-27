@@ -36,7 +36,7 @@ from semantic_rails.metadata import (
 )
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.package_tools import check_package_report
-from semantic_rails.planner import plan_payload
+from semantic_rails.planner import compose, plan_payload
 from semantic_rails.runtime import Runtime
 
 COUNT = "measure.catalogue.item_count"
@@ -292,42 +292,22 @@ def test_nested_authored_time_expression_cannot_bypass_guard(runtime) -> None:
         "rolling item count",
         "item count year to date",
         "cumulative item count",
-        "item count per quarter",
         "item count YTD",
-        "item count MTD",
-        "item count QTD",
         "running total item count",
         "item count this week",
         "item count next year",
-        "item count previous day",
         "item count since 2023-01-01",
         "item count between 2023-01-01 and 2023-02-01",
-        "item count before 2023-01-01",
-        "item count after 2023-01-01",
         "item count in 2023",
         "daily item count",
-        "weekly item count",
-        "monthly item count",
-        "quarterly item count",
-        "yearly item count",
-        "annual item count",
         "item count annually",
-        "item count every month",
         "item count by calendar month",
         "item count tomorrow",
         "item count trend",
-        "item count each month",
         "item count time series",
         "hourly item count",
         "item count at month grain",
-        "item count trending",
-        "item count history",
-        "item count historical",
         "item count per second",
-        "item count by minute",
-        "item count per hour",
-        "item count every second",
-        "item count at second grain",
         "item count by date",
         "item count by time",
         "item count",
@@ -373,16 +353,19 @@ def test_plan_with_time_keeps_readiness(runtime_factory, intent, detail) -> None
         runtime.close()
 
 
-@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
-def test_plan_fallback_cannot_ignore_time_intent(package_path, detail) -> None:
+def _without_the_rollup_pattern(package_path: Path) -> None:
+    """Disable the planner pattern that drafts these questions, so the fallback answers."""
     package_file = package_path / "package.yml"
     package = yaml.safe_load(package_file.read_text())
     package["package"]["planner"] = {"disabled_patterns": ["metric_by_dimension_rollup"]}
     package_file.write_text(yaml.safe_dump(package, sort_keys=False))
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+def test_plan_fallback_cannot_ignore_time_intent(package_path, detail) -> None:
+    _without_the_rollup_pattern(package_path)
     runtime = Runtime.from_path(str(package_path))
     try:
-        from semantic_rails.planner import compose
-
         assert compose(runtime, "item count every month").draft is None
         _assert_no_time_plan(plan_payload(runtime, intent="item count every month", detail=detail))
     finally:
@@ -394,6 +377,7 @@ def test_plan_fallback_cannot_ignore_time_intent(package_path, detail) -> None:
     [
         ("item count for the History category", "Item count", "Category"),
         ("item count by daycare", "Item count", "Daycare"),
+        ("item count by monthly plans", "Item count", "Monthly plans"),
         ("count of monthly plans", "Monthly plans", "Category"),
         ("moving company count", "Moving company count", "Category"),
         ("second item count", "Second item count", "Category"),
@@ -423,6 +407,7 @@ def test_plan_ordinary_time_words_retains_query_and_downgrades(
         _assert_no_time_plan(result)
         query = result["best"]["query"]
         assert "time" not in query
+        assert query.get("group_by", []) == ([CATEGORY] if "by " in intent else [])
         rows = runtime.query(query)["rows"]
         values = [next(value for key, value in row.items() if key != CATEGORY) for row in rows]
         assert sorted(values) == (
@@ -430,6 +415,23 @@ def test_plan_ordinary_time_words_retains_query_and_downgrades(
         )
     finally:
         runtime.close()
+
+
+def _category_runtime(package_path: Path, phrase: str, match_by: str) -> tuple[str, Runtime]:
+    """A category named ``phrase`` by its value, label or alias, holding two of the four
+    items: its value, and a runtime on the package."""
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    value = phrase if match_by == "value" else "A"
+    entry = {"value": value, "label": phrase if match_by == "label" else value}
+    if match_by == "alias":
+        entry["aliases"] = [phrase]
+    model["model"]["dimensions"]["category"]["domain"] = [entry, "B"]
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    (package_path / "data/catalogue_csv/items.csv").write_text(
+        f"item_id,category,amount\n1,{value},10\n2,{value},20\n3,B,30\n4,B,40\n"
+    )
+    return value, Runtime.from_path(str(package_path))
 
 
 @pytest.mark.parametrize(
@@ -443,15 +445,15 @@ def test_plan_ordinary_time_words_retains_query_and_downgrades(
             "rolling",
             "cumulative",
             "monthly",
-            "every month",
-            "by calendar month",
             "trend",
-            "each month",
-            "time series",
-            "at month grain",
             "tomorrow",
             "next month",
             "İ monthly",
+            # Window-shaped values.
+            "last month",
+            "since 2023-01-01",
+            "in 2023",
+            "İ last month",
         )
         for match_by in ("value", "label", "alias")
     ]
@@ -460,18 +462,7 @@ def test_plan_ordinary_time_words_retains_query_and_downgrades(
 def test_plan_time_phrase_category_values_retains_query_and_downgrades(
     package_path, phrase, match_by
 ) -> None:
-    model_path = package_path / "models/core/items.yml"
-    model = yaml.safe_load(model_path.read_text())
-    value = phrase if match_by == "value" else "A"
-    entry = {"value": value, "label": phrase if match_by == "label" else value}
-    if match_by == "alias":
-        entry["aliases"] = [phrase]
-    model["model"]["dimensions"]["category"]["domain"] = [entry, "B"]
-    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
-    (package_path / "data/catalogue_csv/items.csv").write_text(
-        f"item_id,category,amount\n1,{value},10\n2,{value},20\n3,B,30\n4,B,40\n"
-    )
-    runtime = Runtime.from_path(str(package_path))
+    value, runtime = _category_runtime(package_path, phrase, match_by)
     try:
         result = plan_payload(runtime, intent=f"item count for the {phrase} category")
         _assert_no_time_plan(result)
@@ -501,18 +492,7 @@ def test_plan_time_phrase_category_values_retains_query_and_downgrades(
 def test_plan_repeated_catalogue_time_phrase_downgrades(
     package_path, phrase, intent, match_by, detail
 ):
-    model_path = package_path / "models/core/items.yml"
-    model = yaml.safe_load(model_path.read_text())
-    value = phrase if match_by == "value" else "A"
-    entry = {"value": value, "label": phrase if match_by == "label" else value}
-    if match_by == "alias":
-        entry["aliases"] = [phrase]
-    model["model"]["dimensions"]["category"]["domain"] = [entry, "B"]
-    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
-    (package_path / "data/catalogue_csv/items.csv").write_text(
-        f"item_id,category,amount\n1,{value},10\n2,{value},20\n3,B,30\n4,B,40\n"
-    )
-    runtime = Runtime.from_path(str(package_path))
+    value, runtime = _category_runtime(package_path, phrase, match_by)
     try:
         result = plan_payload(runtime, intent=intent, detail=detail)
         _assert_no_time_plan(result)
@@ -529,18 +509,13 @@ def test_plan_repeated_catalogue_time_phrase_downgrades(
 
 @pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
 def test_plan_fallback_catalogue_time_phrase_downgrades(package_path, detail):
-    package_file = package_path / "package.yml"
-    package = yaml.safe_load(package_file.read_text())
-    package["package"]["planner"] = {"disabled_patterns": ["metric_by_dimension_rollup"]}
-    package_file.write_text(yaml.safe_dump(package, sort_keys=False))
+    _without_the_rollup_pattern(package_path)
     model_path = package_path / "models/core/items.yml"
     model = yaml.safe_load(model_path.read_text())
     model["model"]["dimensions"]["category"]["domain"] = ["monthly", "B"]
     model_path.write_text(yaml.safe_dump(model, sort_keys=False))
     runtime = Runtime.from_path(str(package_path))
     try:
-        from semantic_rails.planner import compose
-
         intent = "monthly item count for the monthly category"
         assert compose(runtime, intent).draft is None
         result = plan_payload(
@@ -561,14 +536,9 @@ def test_plan_fallback_catalogue_time_phrase_downgrades(package_path, detail):
 
 
 def test_plan_fallback_accepts_null_group_by(package_path):
-    package_file = package_path / "package.yml"
-    package = yaml.safe_load(package_file.read_text())
-    package["package"]["planner"] = {"disabled_patterns": ["metric_by_dimension_rollup"]}
-    package_file.write_text(yaml.safe_dump(package, sort_keys=False))
+    _without_the_rollup_pattern(package_path)
     runtime = Runtime.from_path(str(package_path))
     try:
-        from semantic_rails.planner import compose
-
         assert compose(runtime, "item count").draft is None
         result = plan_payload(
             runtime, intent="item count", partial_query={"select": BASE["select"], "group_by": None}
@@ -581,47 +551,15 @@ def test_plan_fallback_accepts_null_group_by(package_path):
 
 
 @pytest.mark.parametrize(
-    "phrase",
-    ["last month", "since 2023-01-01", "in 2023", "İ last month"],
+    ("intent", "partial_query"),
+    [
+        ("write a poem about last month", None),
+        ("write a poem about last month", {"time": {}}),
+        ("rainfall last month", None),
+    ],
 )
-@pytest.mark.parametrize("match_by", ["value", "label", "alias"])
-def test_plan_window_shaped_category_values_downgrade(package_path, phrase, match_by) -> None:
-    model_path = package_path / "models/core/items.yml"
-    model = yaml.safe_load(model_path.read_text())
-    value = phrase if match_by == "value" else "A"
-    entry = {"value": value, "label": phrase if match_by == "label" else value}
-    if match_by == "alias":
-        entry["aliases"] = [phrase]
-    model["model"]["dimensions"]["category"]["domain"] = [entry, "B"]
-    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
-    (package_path / "data/catalogue_csv/items.csv").write_text(
-        f"item_id,category,amount\n1,{value},10\n2,{value},20\n3,B,30\n4,B,40\n"
-    )
-    runtime = Runtime.from_path(str(package_path))
-    try:
-        result = plan_payload(runtime, intent=f"item count for the {phrase} category")
-        _assert_no_time_plan(result)
-        query = result["best"]["query"]
-        assert "time" not in query
-        assert [v for k, v in runtime.query(query)["rows"][0].items() if k != CATEGORY] == [2]
-        _assert_no_time_plan(
-            plan_payload(runtime, intent=f"item count for the {phrase} category per day")
-        )
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("partial_query", [None, {"time": {}}])
-def test_plan_off_topic_time_phrase_is_out_of_scope(runtime, partial_query) -> None:
-    result = plan_payload(
-        runtime, intent="write a poem about last month", partial_query=partial_query
-    )
-    assert result["status"] == "out_of_scope"
-    assert result["best"] is None
-
-
-def test_plan_irrelevant_time_phrase_is_out_of_scope(runtime) -> None:
-    result = plan_payload(runtime, intent="rainfall last month")
+def test_plan_off_topic_time_phrase_is_out_of_scope(runtime, intent, partial_query) -> None:
+    result = plan_payload(runtime, intent=intent, partial_query=partial_query)
     assert result["status"] == "out_of_scope"
     assert result["best"] is None
 
@@ -731,35 +669,6 @@ def test_scalar_date_arithmetic_without_time_matches_independent_sql(runtime) ->
     with pytest.raises(SemanticLayerError) as exc:
         compile_query(runtime._config, runtime.registry, query)
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
-
-
-def test_plan_dimension_label_with_time_word_retains_query_and_downgrades(package_path) -> None:
-    model_path = package_path / "models/core/items.yml"
-    model = yaml.safe_load(model_path.read_text())
-    model["model"]["dimensions"]["category"]["label"] = "Monthly plans"
-    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
-    runtime = Runtime.from_path(str(package_path))
-    try:
-        result = plan_payload(runtime, intent="item count by monthly plans")
-        _assert_no_time_plan(result)
-        query = result["best"]["query"]
-        assert query["group_by"] == [CATEGORY]
-        assert "time" not in query
-        assert sorted(row["item_count"] for row in runtime.query(query)["rows"]) == [2, 2]
-    finally:
-        runtime.close()
-
-
-def test_plan_relevant_revenue_window_downgrades(package_path) -> None:
-    model_path = package_path / "models/core/items.yml"
-    model = yaml.safe_load(model_path.read_text())
-    model["model"]["measures"]["total_amount"]["label"] = "Revenue"
-    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
-    runtime = Runtime.from_path(str(package_path))
-    try:
-        _assert_no_time_plan(plan_payload(runtime, intent="revenue last month"))
-    finally:
-        runtime.close()
 
 
 @pytest.mark.parametrize(

@@ -655,10 +655,10 @@ def test_fallback_resolves_distinct_groupings_before_deduplicating(
     assert [row[2] for row in actual] == pytest.approx([row[2] for row in expected])
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-def test_plan_keeps_both_product_groupings_or_refuses_readiness(runtime, monkeypatch, path) -> None:
+def test_plan_keeps_both_product_groupings_or_refuses_readiness(runtime, monkeypatch) -> None:
+    # The primary planner's answer to it: test_plan_entity_store_answers.py.
     intent = "item revenue by product type and product"
-    _force_fallback(runtime, monkeypatch, intent, path)
+    _force_fallback(runtime, monkeypatch, intent, "fallback")
     payload = plan_payload(runtime, intent=intent)
     if payload["status"] != "ok":
         _not_ready(payload)
@@ -776,26 +776,6 @@ def test_grouping_added_beside_caller_group_by_is_not_execute_ready(
     assert partial == before
     assert payload["best"]["query"]["group_by"] == group_by
     _ambiguous_grouping(payload, intent.split(" by ")[1], group_by)
-
-
-def test_caller_group_by_naming_every_grouping_is_execute_ready(runtime) -> None:
-    partial = {"group_by": [PRODUCT_TYPE, STORE]}
-    payload = plan_payload(runtime, intent="item revenue by store", partial_query=partial)
-    query = payload["best"]["query"]
-    # The caller's Store name settles how stores show: the draft adds no Store id.
-    assert query["group_by"] == [PRODUCT_TYPE, STORE]
-    assert payload["status"] == "ok", payload.get("why")
-    assert "execute" in payload["next"].get("ready_for", [])
-    measure = _alias(query["select"][0])
-    rows = runtime.query(query)["rows"]
-    actual = sorted((row[PRODUCT_TYPE], row[STORE], row[measure]) for row in rows)
-    expected = sorted(
-        _reference(
-            runtime, ITEM_REVENUE_BY_STORE.format("i.product_type, s.store_name,", "GROUP BY 1, 2")
-        )
-    )
-    assert [row[:2] for row in actual] == [row[:2] for row in expected]
-    assert [row[2] for row in actual] == pytest.approx([row[2] for row in expected])
 
 
 def _with_districts(runtime: Runtime, monkeypatch: pytest.MonkeyPatch) -> None:

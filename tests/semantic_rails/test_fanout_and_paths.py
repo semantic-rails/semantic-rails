@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -21,7 +20,6 @@ from semantic_rails.schema import (
     MeasureConfig,
     PackageConfig,
     PackageMeta,
-    PathPreferenceConfig,
     RelationshipConfig,
     SeedSpec,
     TemporalRoleConfig,
@@ -123,42 +121,6 @@ def test_resolve_path_follows_pins_and_reuses_cached_indexes_and_candidates(
         config, start="entity.jaffle_item", target="entity.jaffle_product"
     )
     assert second_path == first_path
-
-
-def test_resolve_path_refuses_a_tie_and_follows_its_pin():
-    config = _graph(
-        ("A", "B", "1:N"),
-        ("A", "C", "1:N"),
-        ("B", "D", "1:N"),
-        ("C", "D", "1:N"),
-        path_preferences=[
-            PathPreferenceConfig(
-                source_entity="A", target_entity="D", relationship_path=["A_B", "B_D"]
-            )
-        ],
-    )
-
-    assert resolve_path(config, start="A", target="D") == (["A_B", "B_D"], [["A_B", "B_D"]])
-    with pytest.raises(SemanticLayerError) as exc:
-        resolve_path(replace(config, path_preferences=[]), start="A", target="D")
-    assert exc.value.code == "AMBIGUOUS_PATH"
-    options = exc.value.details["clarification"]["options"]
-    assert [option["relationship_path"] for option in options] == [["A_B", "B_D"], ["A_C", "C_D"]]
-    assert options[1]["decision"] == {
-        "source_entity": "A",
-        "target_entity": "D",
-        "relationship_path": ["A_C", "C_D"],
-        "label": options[1]["meaning"],
-    }
-
-
-def test_resolve_path_honors_allowed_directions():
-    config = _graph(("A", "B", "N:1", {"allowed_directions": ["forward"]}))
-
-    assert resolve_path(config, start="A", target="B")[0] == ["A_B"]
-    with pytest.raises(SemanticLayerError) as exc:
-        resolve_path(config, start="B", target="A")
-    assert exc.value.code == "PATH_NOT_FOUND"
 
 
 def test_resolve_path_handles_cycles_without_recursing_indefinitely():

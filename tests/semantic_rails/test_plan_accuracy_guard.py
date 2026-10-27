@@ -822,33 +822,19 @@ def test_filter_shapes_the_call_refuses_never_reach_the_guard(
     assert refused.value.code == "INVALID_QUERY"
 
 
-@pytest.mark.parametrize(
-    ("where", "honored"),
-    [
-        (
-            [
-                {"field": STORE, "op": "not", "value": ["Brooklyn"]},
-                {"field": STORE, "op": "is", "value": "Philadelphia"},
-            ],
-            True,
-        ),
-        ([{"field": STORE, "op": "not", "value": ["Brooklyn", "Philadelphia"]}], False),
-        # Dropping New Orleans changes nothing once only Philadelphia is kept.
-        (
-            [
-                {"field": STORE, "op": "not", "value": ["Brooklyn", "New Orleans"]},
-                {"field": STORE, "op": "is", "value": "Philadelphia"},
-            ],
-            True,
-        ),
-    ],
-)
 def test_mixed_value_coverage_respects_each_values_polarity_and_shape(
-    adapter: SemanticLayerMCPAdapter, where: list[dict[str, Any]], honored: bool
+    adapter: SemanticLayerMCPAdapter,
 ) -> None:
-    draft = _query(where=where)
+    # Dropping New Orleans changes nothing once only Philadelphia is kept (the other drafts of
+    # this question: test_explicit_inclusion_ends_exclusion_scope).
+    draft = _query(
+        where=[
+            {"field": STORE, "op": "not", "value": ["Brooklyn", "New Orleans"]},
+            {"field": STORE, "op": "is", "value": "Philadelphia"},
+        ]
+    )
     kinds = _gap_kinds(adapter, "revenue excluding Brooklyn, including Philadelphia", draft)
-    assert ("filter_values_unrealized" not in kinds) is honored
+    assert "filter_values_unrealized" not in kinds
 
 
 @pytest.mark.parametrize(
@@ -1730,53 +1716,45 @@ def test_a_metric_is_named_only_around_every_measure_named(
         assert "execute" not in payload["next"].get("ready_for", [])
 
 
-# The orders run to the end of August 2017: the last 3 months are June to August 2017, the
-# last 6 March to August.
+# The orders run to the end of August 2017: the last 3 months are June to August 2017.
 SEPTEMBER_2017 = "2017-09-15"
 
 
 @pytest.mark.parametrize(
-    ("intent", "start", "end", "limit"),
+    ("intent", "start", "end"),
     [
         # A number in a time phrase sizes the window; it doesn't make a top N. No grain is
-        # asked for, so each store has one total over the window (and the ranking keeps the
-        # top 3 stores, never store-months).
-        ("What is revenue in the last 3 months by store?", "2017-06-01", "2017-09-01", None),
+        # asked for, so each store has one total over the window (a ranking beside the window:
+        # test_plan_unasked_groupings.py::test_a_one_total_matches_plain_sql).
+        ("What is revenue in the last 3 months by store?", "2017-06-01", "2017-09-01"),
         (
             "What was revenue from January 1 2017 to March 31 2017 by store?",
             "2017-01-01",
             "2017-04-01",
-            None,
         ),
-        ("What was revenue in 2017 by store?", "2017-01-01", "2018-01-01", None),
-        (
-            "which 3 stores have the highest revenue in the last 6 months",
-            "2017-03-01",
-            "2017-09-01",
-            3,
-        ),
+        ("What was revenue in 2017 by store?", "2017-01-01", "2018-01-01"),
     ],
 )
 def test_a_number_in_a_time_phrase_is_not_a_ranking(
-    adapter: SemanticLayerMCPAdapter, intent: str, start: str, end: str, limit: int | None
+    adapter: SemanticLayerMCPAdapter, intent: str, start: str, end: str
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query", "now": SEPTEMBER_2017})
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query"]
-    assert query.get("limit") == limit
+    assert "limit" not in query
     assert "grain" not in query["time"]
     rows = adapter.runtime.query(query, now=SEPTEMBER_2017)["rows"]
     with duckdb.connect(adapter.runtime.db_path, read_only=True) as connection:
         reference = connection.execute(
-            "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0) AS revenue "
+            "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0) "
             "FROM jaffle_order o JOIN jaffle_store s USING (store_id) "
             f"WHERE o.ordered_at >= TIMESTAMP '{start}' AND o.ordered_at < TIMESTAMP '{end}' "
-            "GROUP BY 1, 2 ORDER BY revenue DESC" + (f" LIMIT {limit}" if limit else "")
+            "GROUP BY 1, 2"
         ).fetchall()
     actual = [(row[STORES[0]], row[STORE], round(float(row["revenue_usd"]), 2)) for row in rows]
     expected = [(key, name, round(float(revenue), 2)) for key, name, revenue in reference]
     assert reference
-    assert (actual if limit else sorted(actual)) == (expected if limit else sorted(expected))
+    assert sorted(actual) == sorted(expected)
 
 
 Q1_2017 = {"start": "2017-01-01", "end": "2017-04-01"}

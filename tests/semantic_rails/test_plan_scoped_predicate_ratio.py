@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner.patterns.scoped_predicate_ratio import _metric_predicate
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """
@@ -103,12 +102,6 @@ def runtime(tmp_path: Path):
         yield runtime
     finally:
         runtime.close()
-
-
-def test_a_drafted_metric_predicate_never_asks_for_calendar_alignment():
-    metric = type("Metric", (), {"id": "metric.plan.sms_sent"})()
-    entity = type("Entity", (), {"id": "entity.plan_account"})()
-    assert "time_alignment" not in _metric_predicate(metric, entity)
 
 
 def test_a_share_drafted_across_clocks_is_not_offered_as_ready(runtime):

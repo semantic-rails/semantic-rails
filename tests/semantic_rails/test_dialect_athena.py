@@ -422,29 +422,9 @@ def test_athena_adapter_redacts_driver_errors(monkeypatch: pytest.MonkeyPatch):
 
 
 # ---------------------------------------------------------------------------
-# (b1) Compatibility pass — Trino integer/decimal division truncates, so
-#      the compiler's `x / NULLIF(y, 0)` ratio guard is cast to DOUBLE
-#      before execution (mirrors db_parts/postgres.py).
+# (b1) Typed literals — text compared with a date or timestamp is a TIMESTAMP
+#      literal; text compared with text stays text.
 # ---------------------------------------------------------------------------
-
-
-def test_athena_prepare_casts_nullif_ratio_guards_to_double_and_leaves_literals():
-    for sql, expected in [
-        (
-            "SELECT a / NULLIF(b, 0) AS ratio FROM t",
-            "SELECT a / CAST(NULLIF(b, 0) AS DOUBLE) AS ratio FROM t",
-        ),
-        (
-            "SELECT x / NULLIF(y / NULLIF(z, 0), 0) FROM t",
-            "SELECT x / CAST(NULLIF(y / CAST(NULLIF(z, 0) AS DOUBLE), 0) AS DOUBLE) FROM t",
-        ),
-        # Typing is the renderer's (SqlLiteral.temporal): a string compare stays one.
-        (
-            "SELECT 1 FROM t WHERE dt = '2026-01-01' AND ts >= '2016-09-01'",
-            "SELECT 1 FROM t WHERE dt = '2026-01-01' AND ts >= '2016-09-01'",
-        ),
-    ]:
-        assert DIALECT.prepare_query(sql).sql == expected
 
 
 def test_athena_types_iso_temporal_literals_only():

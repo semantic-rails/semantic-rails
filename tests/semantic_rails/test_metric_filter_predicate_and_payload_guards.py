@@ -51,89 +51,42 @@ def _metric_filter_sql(config, metric_filter: dict) -> str:
     return compile_query(config, Registry(config), query)["sql"]
 
 
-def test_bare_comparison_metric_filter_is_the_predicate(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    rendered = _metric_filter_sql(
-        config,
-        {
-            "expression": {
-                "kind": "comparison",
-                "op": ">",
-                "left": {"measure": "measure.jaffle.revenue_usd"},
-                "right": {"kind": "literal", "value": 100},
-            }
-        },
-    )
-    predicate = rendered.rsplit("WHERE", 1)[-1]
-    assert "IS NULL" not in predicate, f"comparison filter compared to NULL:\n{rendered}"
-    assert "= TRUE" in predicate
+_REVENUE_OVER_100 = {
+    "kind": "comparison",
+    "op": ">",
+    "left": {"measure": "measure.jaffle.revenue_usd"},
+    "right": {"kind": "literal", "value": 100},
+}
+_REVENUE_UNDER_10000 = {
+    **_REVENUE_OVER_100,
+    "op": "<",
+    "right": {"kind": "literal", "value": 10000},
+}
 
 
-def test_bare_boolean_metric_filter_is_the_predicate(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    rendered = _metric_filter_sql(
-        config,
+@pytest.mark.parametrize(
+    "metric_filter",
+    [
+        {"expression": _REVENUE_OVER_100},
         {
             "expression": {
                 "kind": "boolean",
                 "op": "and",
-                "args": [
-                    {
-                        "kind": "comparison",
-                        "op": ">",
-                        "left": {"measure": "measure.jaffle.revenue_usd"},
-                        "right": {"kind": "literal", "value": 100},
-                    },
-                    {
-                        "kind": "comparison",
-                        "op": "<",
-                        "left": {"measure": "measure.jaffle.revenue_usd"},
-                        "right": {"kind": "literal", "value": 10000},
-                    },
-                ],
+                "args": [_REVENUE_OVER_100, _REVENUE_UNDER_10000],
             }
         },
-    )
-    predicate = rendered.rsplit("WHERE", 1)[-1]
-    assert "IS NULL" not in predicate
-    assert "= TRUE" in predicate
-
-
-def test_comparison_metric_filter_with_explicit_envelope_still_compares(package_config_factory):
-    """An explicit op/value envelope on a comparison expression keeps the
-    existing compare-the-result behavior (`(expr) = TRUE` etc.)."""
+        # An explicit op/value envelope on a comparison expression keeps the existing
+        # compare-the-result behavior (`(expr) = TRUE` etc.).
+        {"expression": _REVENUE_OVER_100, "op": "=", "value": True},
+    ],
+    ids=["bare-comparison", "bare-boolean", "explicit-envelope"],
+)
+def test_a_predicate_metric_filter_is_the_predicate(package_config_factory, metric_filter):
     config, _ = package_config_factory("jaffle_shop")
-    rendered = _metric_filter_sql(
-        config,
-        {
-            "expression": {
-                "kind": "comparison",
-                "op": ">",
-                "left": {"measure": "measure.jaffle.revenue_usd"},
-                "right": {"kind": "literal", "value": 100},
-            },
-            "op": "=",
-            "value": True,
-        },
-    )
+    rendered = _metric_filter_sql(config, metric_filter)
     predicate = rendered.rsplit("WHERE", 1)[-1]
-    assert "IS NULL" not in predicate
+    assert "IS NULL" not in predicate, f"predicate filter compared to NULL:\n{rendered}"
     assert "= TRUE" in predicate
-
-
-def test_measure_metric_filter_with_value_keeps_threshold_semantics(package_config_factory):
-    """Non-predicate expressions (a measure ref with an explicit value)
-    are unaffected — the envelope still supplies the comparison."""
-    config, _ = package_config_factory("jaffle_shop")
-    rendered = _metric_filter_sql(
-        config,
-        {
-            "expression": {"measure": "measure.jaffle.revenue_usd"},
-            "op": ">",
-            "value": 100,
-        },
-    )
-    assert "> 100" in rendered
 
 
 # ---------------------------------------------------------------------
@@ -141,20 +94,14 @@ def test_measure_metric_filter_with_value_keeps_threshold_semantics(package_conf
 # ---------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("normalize", [normalize_query, normalize_partial_query])
 @pytest.mark.parametrize("bad_item", ["oops", 7, ["nested"]])
-def test_non_dict_metric_filters_item_is_invalid_query(bad_item):
+def test_non_dict_metric_filters_item_is_invalid_query(normalize, bad_item):
     with pytest.raises(SemanticLayerError) as exc:
-        normalize_query({"select": _select_revenue(), "metric_filters": [bad_item]})
+        normalize({"select": _select_revenue(), "metric_filters": [bad_item]})
     assert exc.value.code == "INVALID_QUERY"
     assert exc.value.details["path"] == "metric_filters[0]"
     assert exc.value.details["received_type"] == type(bad_item).__name__
-
-
-def test_non_dict_metric_filters_item_is_invalid_query_in_partial_normalize():
-    with pytest.raises(SemanticLayerError) as exc:
-        normalize_partial_query({"select": _select_revenue(), "metric_filters": ["oops"]})
-    assert exc.value.code == "INVALID_QUERY"
-    assert exc.value.details["path"] == "metric_filters[0]"
 
 
 @pytest.mark.parametrize("normalize", [normalize_query, normalize_partial_query])

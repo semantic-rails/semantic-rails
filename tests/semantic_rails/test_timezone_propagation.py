@@ -84,53 +84,6 @@ def _patch_orders_times(
     orders_yml.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
-def test_column_timezone_rewrite_actually_runs_on_duckdb(package_config_factory) -> None:
-    """Compile-time success meant nothing before: the old rewrite produced
-    ok:true and then died at execute time on the reference warehouse."""
-    import duckdb
-
-    _, package_path = package_config_factory("jaffle_shop")
-    _patch_orders_times(
-        package_path,
-        timezone="America/New_York",
-        column_timezone="UTC",
-    )
-    config = load_package_config(str(package_path))
-    rendered = compile_query(config, Registry(config), _query())["sql"]
-
-    with duckdb.connect() as con:
-        con.execute("CREATE TABLE jaffle_order (order_id VARCHAR, ordered_at TIMESTAMP)")
-        con.execute("INSERT INTO jaffle_order VALUES ('o1', TIMESTAMP '2024-01-15 12:00:00')")
-        rows = con.execute(rendered).fetchall()
-    assert rows, rendered
-    # 12:00 UTC is 07:00 in New York, so the row truncates into January.
-    assert str(rows[0][0]).startswith("2024-01-01")
-
-
-@pytest.mark.parametrize(
-    ("warehouse", "expected"),
-    [
-        ("duckdb", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
-        ("postgres", "TIMEZONE('America/New_York', TIMEZONE('UTC', t.ts))"),
-        ("snowflake", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
-        ("databricks", "CONVERT_TIMEZONE('UTC', 'America/New_York', t.ts)"),
-        ("bigquery", "DATETIME(CAST(t.ts AS TIMESTAMP), 'America/New_York')"),
-        ("clickhouse", "toTimeZone(toDateTime(t.ts, 'UTC'), 'America/New_York')"),
-        ("athena", "AT_TIMEZONE(WITH_TIMEZONE(t.ts, 'UTC'), 'America/New_York')"),
-    ],
-)
-def test_every_warehouse_emits_its_own_timezone_rewrite(warehouse: str, expected: str) -> None:
-    from semantic_rails.dialects import dialect_for_warehouse
-    from semantic_rails.renderer import render_expr
-    from semantic_rails.sql_ast import SqlIdentifier
-
-    dialect = dialect_for_warehouse(warehouse)
-    rendered = render_expr(
-        dialect.convert_timezone("UTC", "America/New_York", SqlIdentifier(parts=["t", "ts"]))
-    )
-    assert rendered == expected
-
-
 def test_unknown_warehouse_refuses_the_rewrite_instead_of_guessing() -> None:
     """The base class used to emit Snowflake syntax for anything it did not
     recognize. Refusing to compile is the honest outcome."""

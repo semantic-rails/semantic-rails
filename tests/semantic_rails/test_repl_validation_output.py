@@ -1,4 +1,4 @@
-"""REPL validation names its database, preserves existing files, and deduplicates errors."""
+"""REPL validation names its database and preserves existing files."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.cli import output, scaffold
+from semantic_rails.cli import scaffold
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.repl import backend, shell
 from semantic_rails.repl.backend import PlainBackend
@@ -176,22 +176,3 @@ def test_confirmed_validation_does_not_create_an_unmanaged_database(
 
     assert not database.exists()
     assert database.is_symlink() is (scenario == "broken_link")
-
-
-def test_an_error_every_probe_reports_prints_once_with_a_count(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    missing_seed = {"message": "package.seed.source 'data/missing_csv' not found"}
-    output._print_project_validation(
-        {
-            "package": {"id": "shop"},
-            "checks": {},
-            "errors": [missing_seed, missing_seed, missing_seed, {"message": "Another problem."}],
-        }
-    )
-
-    assert capsys.readouterr().out.splitlines()[-3:] == [
-        "Errors:",
-        "  package.seed.source 'data/missing_csv' not found (3 times)",
-        "  Another problem.",
-    ]

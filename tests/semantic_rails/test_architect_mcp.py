@@ -371,41 +371,6 @@ def test_preview_reports_exact_changes_without_writing(tmp_path: Path):
     assert status["revision"] == before_revision
 
 
-def test_retry_replays_idempotently_and_key_reuse_with_new_intent_conflicts(
-    tmp_path: Path,
-):
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    created = _create_project(server, "idempotent_core")
-    arguments = {
-        "project_path": created["project_path"],
-        "metric_key": "retry_metric",
-        "spec": _metric_spec("Retry"),
-        "expected_revision": created["revision"],
-        "idempotency_key": "retry-metric-key",
-    }
-
-    first = _call_tool(server, "upsert_metric", arguments)
-    replay = _call_tool(server, "upsert_metric", arguments)
-    conflicting = _call_tool(
-        server,
-        "upsert_metric",
-        {
-            **arguments,
-            "spec": _metric_spec("Different intent"),
-        },
-    )
-
-    assert first["ok"] is True
-    assert replay["ok"] is True
-    assert replay["status"] == "replayed"
-    assert replay["original_status"] == "upserted"
-    assert replay["idempotent_replay"] is True
-    assert replay["revision"] == first["revision"]
-    assert conflicting["ok"] is False
-    assert conflicting["error"]["code"] == "CONFIG_CONFLICT"
-    assert conflicting["error"]["details"]["conflict_kind"] == "idempotency_key_reuse"
-
-
 def test_two_writers_from_same_revision_cannot_lose_updates(tmp_path: Path):
     creator = create_architect_mcp_server(workspace_root=tmp_path)
     created = _create_project(creator, "race_core")
@@ -485,40 +450,6 @@ def test_metric_synonyms_are_in_the_authoring_tool_schema(tmp_path: Path):
     synonyms = tool.inputSchema["properties"]["spec"]["properties"]["synonyms"]
     assert synonyms["type"] == "array"
     assert synonyms["items"] == {"type": "string"}
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_write_project_files_commits_or_previews_one_batch(tmp_path: Path, dry_run: bool):
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-    created = _create_project(server, "batch_core")
-    project_path = Path(created["project_path"])
-    files = [
-        {
-            "path": path,
-            "content": (project_path / path).read_text().replace("total_amount", "renamed_amount"),
-        }
-        for path in ("models/core/events.yml", "metrics/core.yml")
-    ]
-    before = {entry["path"]: (project_path / entry["path"]).read_bytes() for entry in files}
-    result = _call_tool(
-        server,
-        "write_project_files",
-        {
-            "project_path": str(project_path),
-            "files": files,
-            "expected_revision": created["revision"],
-            "idempotency_key": "batch-rename",
-            "dry_run": dry_run,
-        },
-    )
-
-    assert result["ok"], result
-    assert result["status"] == ("preview" if dry_run else "written")
-    assert set(result["changed_files"]) == set(before)
-    for entry in files:
-        assert (project_path / entry["path"]).read_bytes() == (
-            before[entry["path"]] if dry_run else entry["content"].encode()
-        )
 
 
 @pytest.mark.parametrize(

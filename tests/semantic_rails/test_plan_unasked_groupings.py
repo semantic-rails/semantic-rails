@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import closing
-from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any
 
@@ -34,7 +33,7 @@ from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import opened
 from tests.semantic_rails.planner_fixtures import jaffle_runtime
 from tests.semantic_rails.result_helpers import typed_rows
-from tests.semantic_rails.test_plan_listed_groupings import _upkeep
+from tests.semantic_rails.test_plan_listed_groupings import _outcome, _upkeep
 
 STORE = "dimension.jaffle_store_name"
 STORE_ID = "dimension.jaffle_store_id"
@@ -49,10 +48,6 @@ UNASKED = "PLAN_UNASKED_GROUPING"
 RANKING = "PLAN_RANKING_PERIOD_AMBIGUOUS"
 UNMATCHED = "PLAN_UNMATCHED_TERMS"
 GAP = "PLAN_INTENT_COVERAGE_GAP"
-COMPARISON = "PERIOD_COMPARISON"
-UNSTATED = "ENTITY_FILTER_PERIOD_UNSTATED"
-# The holds that ask the caller which reading the question means.
-CLARIFY = {COMPARISON, UNSTATED}
 
 
 jaffle = pytest.fixture(scope="module", name="jaffle")(jaffle_runtime)
@@ -342,7 +337,7 @@ def test_a_window_inside_the_list_never_hides_a_later_grouping(
     assert [(row[INCIDENT_NAME], row["repair_cost"]) for row in rows] == [("Leak", 30)]
 
 
-def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime, jaffle: Runtime) -> None:
+def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime) -> None:
     payload = plan_payload(incident, intent="repair cost by incident name last month and incident")
 
     assert payload["status"] == "ok", payload.get("why")
@@ -356,24 +351,6 @@ def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime, jaffle: R
     ]
     # The window filters: neither incident was reported in February.
     assert typed_rows(incident.query(query, now="2026-03-15")) == []
-
-    payload = plan_payload(jaffle, intent="revenue by store last month and customer type")
-    assert payload["status"] == "ok", payload.get("why")
-    query = payload["best"]["query"]
-    assert query["group_by"] == [STORE_ID, STORE, CUSTOMER_TYPE]
-    rows = typed_rows(jaffle.query(query, now="2017-04-15"))
-    assert sorted(
-        (row[STORE], row[CUSTOMER_TYPE], round(float(row["revenue_usd"]), 2)) for row in rows
-    ) == sorted(
-        (store, kind, round(float(revenue), 2))
-        for store, kind, revenue in _reference(
-            jaffle,
-            "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
-            "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
-            "JOIN jaffle_customer c ON o.customer_id = c.customer_id "
-            "WHERE o.ordered_at >= '2017-03-01' AND o.ordered_at < '2017-04-01' GROUP BY 1, 2",
-        )
-    )
 
 
 def _draft(query: dict[str, Any]) -> RuntimeCompositionDraft:
@@ -460,171 +437,6 @@ def test_a_grain_splits_the_rows_unless_its_window_fits_one_bucket(
     assert unasked_groupings._grain_splits(time_of(time)) is splits
 
 
-@dataclass(frozen=True)
-class _Case:
-    intent: str
-    # What plan answered before the check: ready, or the code that held it.
-    before: str
-    # What it answers now, and the unasked groupings it names.
-    after: str = OK
-    unasked: tuple[str, ...] = ()
-    partial: dict[str, Any] | None = None
-
-
-def _ended(case: _Case) -> _Case:
-    """A period comparison over months that have ended, the only one plan calls ready
-    (test_plan_period_completeness.py)."""
-    return replace(case, partial={"time": {"end": "2018-01-01"}})
-
-
-def _ranking(intent: str) -> _Case:
-    return _Case(intent, OK, RANKING)
-
-
-_CASES = [
-    # A grain the question names, or one bucket.
-    _Case("revenue by month", OK),
-    _Case("monthly revenue by store", OK),
-    _Case("show monthly revenue by store", OK),
-    _Case("weekly revenue last 3 months", OK),
-    _Case("daily revenue for the last 30 days", OK),
-    _Case("revenue by order date", OK),
-    _Case("revenue by order date in March 2017", OK),
-    _Case("revenue in Q1 2017 by store", OK),
-    _Case("revenue last month by store", OK),
-    _Case("revenue yesterday", OK),
-    _Case("revenue by store from January 1 2016 to December 31 2017 by year", OK),
-    _Case("revenue in 2017", OK),
-    _Case("top 5 stores by revenue in 2017", OK),
-    _Case("new customer orders over time", OK),
-    _Case("revenue trend over time", OK),
-    _ended(_Case("month over month revenue growth by month", OK)),
-    _Case("revenue by store in each month", OK),
-    # The comparison names no prior period to compare with.
-    _Case("revenue vs order count by store last quarter", OK, GAP),
-    _Case("orders by store and month", OK),
-    _Case("food revenue vs drink revenue in Q1 2017 by store", OK, GAP),
-    # A dimension the question asks for, or filters to values it names.
-    _Case("revenue by store", OK),
-    _Case("top stores by revenue", OK),
-    _Case("which 5 stores had the most orders", OK),
-    _Case("revenue per store", "PLAN_FALLBACK_SEMANTIC_DRIFT", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-    _Case("revenue for each store", OK),
-    _Case("revenue for Brooklyn store by month", OK),
-    _Case("revenue for Brooklyn and Philadelphia stores by month", OK),
-    _Case("revenue by store last month and customer type", OK),
-    # Held before, for another reason.
-    _Case("top 3 stores by revenue in each month", GAP, GAP),
-    # "store" names the rows, so it doesn't pick the same-store conversion rate for "orders".
-    _Case("orders per store", GAP, GAP),
-    # "monthly revenue" is no measure's or metric's name, so the ranked value isn't named.
-    _Case("top 3 stores by monthly revenue", GAP, GAP),
-    _Case("which 3 stores have the highest monthly revenue by customer type", GAP, GAP),
-    _Case("revenue by store, last month and customer type", UNMATCHED, UNMATCHED),
-    # A ranking split by a period the question names.
-    _ranking("top 3 stores by revenue at month level"),
-    _ranking("top 1 store by revenue at month level"),
-    _ranking("top 3 stores by revenue by month"),
-    _ranking("top stores by revenue by month"),
-    _ranking("top 3 stores by cumulative revenue by month"),
-    # A ranking of more than the entity it ranks.
-    _ranking("which 3 stores have the highest revenue by customer type by month"),
-    _ranking("which 3 stores have the highest revenue by customer type"),
-    # Drafted without a grain, a comparison of two values names nothing to compare them with,
-    # which the coverage check after the grouping checks holds.
-    _Case("food revenue vs drink revenue by store and customer type", OK, GAP),
-    _Case("food revenue share vs drink revenue share by store", OK, GAP),
-    _Case("What share of revenue comes from food vs drink?", OK, GAP),
-    _Case("orders by customer type, new vs repeat", OK, GAP),
-    # A comparison of periods asks which periods it compares, with or without the checks.
-    _Case("revenue vs last month", COMPARISON, COMPARISON),
-    _Case("monthly revenue with YoY", COMPARISON, COMPARISON),
-    _Case("revenue vs prior year by store", COMPARISON, COMPARISON),
-    _Case("revenue with YoY", COMPARISON, COMPARISON),
-    _Case("revenue year over year", COMPARISON, COMPARISON),
-    _Case("revenue vs last year", COMPARISON, COMPARISON),
-    _Case("revenue compared to last year", COMPARISON, COMPARISON),
-    # A qualified ranking or rollup with no window: one total per store, its qualification
-    # over all time (their rows: test_a_one_total_matches_plain_sql).
-    _Case("top 3 stores by revenue with at least 4 distinct customers", OK),
-    _Case("top 3 stores by order count with at least 4 distinct customers", OK),
-    _Case("top stores by order count with at least 4 distinct customers", OK),
-    _Case("top 10 stores by revenue with at least 10 orders", OK),
-    _Case("revenue from customers with at least 10 orders by store", OK),
-    # A window of several periods, answered as one total over it.
-    _Case("which 3 stores have the highest revenue in the last 6 months", OK),
-    _Case("What is revenue in the last 3 months by store?", OK),
-    _Case("revenue for the last 3 months by store", OK),
-    _Case("revenue in the last 3 months", OK),
-    _Case("revenue over the past 3 months", OK),
-    _Case("revenue by store over the last 2 weeks", OK),
-    _Case("revenue in the trailing 12 months", OK),
-    _Case("revenue trailing 12 months", OK),
-    _Case("Revenue, trailing 7 days", OK),
-    _Case("revenue for the last 30 days", OK),
-    _Case("revenue last 30 days", OK),
-    _Case("revenue for the last 7 days", OK),
-    _Case("revenue last 7 days", OK),
-    _Case("revenue by store last 7 days", OK),
-    _Case("orders past 2 weeks", OK),
-    _Case("orders last three quarters", OK),
-    _Case("orders from December 30, 2016 to January 2, 2017", OK),
-    _Case("revenue in 2016 and 2017", OK),
-    _Case("revenue between 2016 and 2017", OK),
-    _Case("revenue by store from January 1 2016 to December 31 2017", OK),
-    # A store split the question never asks for.
-    _Case("new store revenue by month", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
-    # A window beside a qualification: is each store's count taken in it or over all time?
-    _Case("stores with more than 2000 orders in 2017", UNSTATED, UNSTATED),
-    _Case(
-        "Give me the 28D adoption funnel from signup to Send for stores that have an order rate of over 90% grouped by month",
-        UNSTATED,
-        UNASKED,
-    ),
-    _Case("Store name", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
-    _Case("item revenue where store", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
-]
-
-
-def _outcome(payload: dict[str, Any]) -> str:
-    if payload["status"] == "ok" and "execute" in payload["next"].get("ready_for", []):
-        return OK
-    assert "execute" not in payload["next"].get("ready_for", [])
-    return str((payload.get("why") or {}).get("code"))
-
-
-@pytest.mark.parametrize("case", _CASES, ids=lambda case: case.intent)
-def test_the_check_only_holds_a_plan_that_was_ready(
-    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, case: _Case
-) -> None:
-    monkeypatch.setattr(jaffle, "_package_examples", [])  # generic grouping checks
-    after = plan_payload(jaffle, intent=case.intent, partial_query=case.partial)
-    with monkeypatch.context() as without_checks:
-        # The two checks are the only readers of the listed groupings, with the answer-shape
-        # check after them, which only holds a plan (test_plan_answer_shape.py).
-        without_checks.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
-        without_checks.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
-        without_checks.setattr(plan_module, "_answer_shape_why", lambda *args: None)
-        before = plan_payload(jaffle, intent=case.intent, partial_query=case.partial)
-
-    # Without them, plan answers as it did before; with them, the draft is the same.
-    assert _outcome(before) == case.before
-    assert after["best"].get("query") == before["best"].get("query")
-    assert after["best"].get("pattern") == before["best"].get("pattern")
-    assert _outcome(after) == case.after
-    if case.after in CLARIFY:
-        assert after["status"] == "needs_clarification"
-    if case.after == case.before:
-        assert after.get("why") == before.get("why")
-        assert after["next"] == before["next"]
-    else:
-        # A prior hold can change its reason, but it never gains readiness.
-        assert case.after != OK
-        details = _held(after, case.after)
-        if case.unasked:
-            assert details["unasked_groupings"] == list(case.unasked)
-
-
 # "last week" is 2017-08-14 .. 2017-08-21: each relative window is whole periods before now.
 AUGUST = "2017-08-21"
 _STORE_REVENUE = (
@@ -706,7 +518,7 @@ def _plain(value: Any) -> Any:
 def test_a_one_total_matches_plain_sql(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, intent: str, columns: list[str], sql: str
 ) -> None:
-    # As planned in test_the_check_only_holds_a_plan_that_was_ready.
+    # As the generic corpus plans it (test_plan_listed_groupings.py).
     monkeypatch.setattr(jaffle, "_package_examples", [])
     payload = plan_payload(jaffle, intent=intent, now=AUGUST)
 

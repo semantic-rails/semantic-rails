@@ -359,28 +359,38 @@ def test_profile_row_cap_cannot_be_raised_by_the_caller(tmp_path: Path) -> None:
 # At the cap the profile reads every row; one row more and a sample, and the key is confirmed on
 # every row either way.
 @pytest.mark.parametrize("offset", [0, 1], ids=["at", "above"])
+@pytest.mark.parametrize(
+    ("relation", "columns", "key"),
+    [
+        ("fct_orders", "range AS order_id, 1 AS amount", ["order_id"]),
+        (
+            "fct_order_lines",
+            "range // 2 AS order_id, range % 2 AS line_number, 1 AS amount",
+            ["order_id", "line_number"],
+        ),
+    ],
+    ids=["single", "composite"],
+)
 def test_key_suggestion_states_what_was_checked_at_the_profile_cap(
-    tmp_path: Path, offset: int
+    tmp_path: Path, offset: int, relation: str, columns: str, key: list[str]
 ) -> None:
     rows = MAX_PROFILE_ROWS + offset
-    db_path = tmp_path / "orders.duckdb"
+    db_path = tmp_path / "facts.duckdb"
     with duckdb.connect(str(db_path)) as conn:
-        conn.execute(
-            f"CREATE TABLE fct_orders AS SELECT range AS order_id, 1 AS amount FROM range({rows})"
-        )
+        conn.execute(f"CREATE TABLE {relation} AS SELECT {columns} FROM range({rows})")
 
     with open_duckdb(db_path) as warehouse:
-        suggested = suggest_model(warehouse, "fct_orders")
+        suggested = suggest_model(warehouse, relation)
 
     # Refuted on the sample, then confirmed on every row: only a confirmed key is suggested.
     assert suggested["sampled"] is (offset > 0)
     assert suggested["key_search"] == {"status": "confirmed", "checked": 1}
     assert suggested["primary_key"] == {
-        "columns": ["order_id"],
+        "columns": key,
         "confidence": "high",
-        "reason": f"(order_id) is never null and unique in all {rows} rows",
+        "reason": f"({', '.join(key)}) is never null and unique in all {rows} rows",
     }
-    assert suggested["upsert_model"]["primary_key"] == ["order_id"]
+    assert suggested["upsert_model"]["primary_key"] == key
 
 
 def test_declared_key_is_certain_above_the_profile_cap(tmp_path: Path) -> None:
@@ -401,15 +411,26 @@ def test_declared_key_is_certain_above_the_profile_cap(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "expression",
-    ["range % 1000", "CASE WHEN range % 2 = 0 THEN NULL ELSE range END"],
-    ids=["duplicates", "nulls"],
+    ("columns", "checked"),
+    [
+        ("range % 1000 AS order_id", 0),
+        ("CASE WHEN range % 2 = 0 THEN NULL ELSE range END AS order_id", 0),
+        # A composite duplicate outside the sample is rejected on every row.
+        (
+            "CASE WHEN range = 1000000 THEN 0 ELSE range // 2 END AS order_id, "
+            "range % 2 AS line_number",
+            1,
+        ),
+    ],
+    ids=["duplicates", "nulls", "composite-late-duplicate"],
 )
-def test_sampled_duplicate_or_null_key_is_not_suggested(tmp_path: Path, expression: str) -> None:
+def test_sampled_duplicate_or_null_key_is_not_suggested(
+    tmp_path: Path, columns: str, checked: int
+) -> None:
     db_path = tmp_path / "invalid-key.duckdb"
     with duckdb.connect(str(db_path)) as conn:
         conn.execute(
-            f"CREATE TABLE fct_orders AS SELECT {expression} AS order_id, 1 AS amount "
+            f"CREATE TABLE fct_orders AS SELECT {columns}, 1 AS amount "
             f"FROM range({MAX_PROFILE_ROWS + 1})"
         )
 
@@ -417,48 +438,7 @@ def test_sampled_duplicate_or_null_key_is_not_suggested(tmp_path: Path, expressi
         suggested = suggest_model(warehouse, "fct_orders")
 
     assert suggested["sampled"] is True
-    assert suggested["primary_key"] is None
-    assert suggested["upsert_model"]["primary_key"] == []
-
-
-@pytest.mark.parametrize("offset", [0, 1], ids=["at", "above"])
-def test_composite_key_suggestion_has_bounded_and_honest_evidence(
-    tmp_path: Path, offset: int
-) -> None:
-    rows = MAX_PROFILE_ROWS + offset
-    db_path = tmp_path / "lines.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute(
-            f"CREATE TABLE fct_order_lines AS SELECT range // 2 AS order_id, "
-            f"range % 2 AS line_number, 1 AS amount FROM range({rows})"
-        )
-
-    with open_duckdb(db_path) as warehouse:
-        suggested = suggest_model(warehouse, "fct_order_lines")
-
-    assert suggested["key_search"]["status"] == "confirmed"
-    assert suggested["primary_key"] == {
-        "columns": ["order_id", "line_number"],
-        "confidence": "high",
-        "reason": f"(order_id, line_number) is never null and unique in all {rows} rows",
-    }
-    assert suggested["upsert_model"]["primary_key"] == ["order_id", "line_number"]
-
-
-def test_composite_duplicate_outside_the_sample_is_rejected_on_every_row(tmp_path: Path) -> None:
-    db_path = tmp_path / "late-duplicate.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute(
-            "CREATE TABLE fct_order_lines AS SELECT CASE WHEN range = 1000000 THEN 0 "
-            "ELSE range // 2 END AS order_id, range % 2 AS line_number "
-            f"FROM range({MAX_PROFILE_ROWS + 1})"
-        )
-
-    with open_duckdb(db_path) as warehouse:
-        suggested = suggest_model(warehouse, "fct_order_lines")
-
-    assert suggested["sampled"] is True
-    assert suggested["key_search"] == {"status": "none_found", "checked": 1}
+    assert suggested["key_search"] == {"status": "none_found", "checked": checked}
     assert suggested["primary_key"] is None
     assert suggested["upsert_model"]["primary_key"] == []
 

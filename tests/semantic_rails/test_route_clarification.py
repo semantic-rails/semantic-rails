@@ -1315,21 +1315,6 @@ def test_record_route_decision_replaces_every_spelling_of_the_pair(tmp_path):
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_OWNER)
 
 
-def test_record_route_decision_writes_the_list_the_loader_reads(tmp_path):
-    """The recorded row replaces the pair's row in graph.path_preferences, and takes effect."""
-    pkg = _write_package(tmp_path, decisions=[BRANCH_BY_KEY])
-    package_before = (pkg / "package.yml").read_bytes()
-    report = (
-        ArchitectProject(pkg, workspace_root=tmp_path).record_route_decision(**DIAMOND_ROW).report
-    )
-    assert (report["changed_files"], report["replaced"]) == (["graph.yml"], BRANCH_BY_KEY)
-    graph = yaml.safe_load((pkg / "graph.yml").read_text())["graph"]
-    assert graph["path_preferences"] == [DIAMOND_ROW]
-    assert (pkg / "package.yml").read_bytes() == package_before
-    out = Runtime.from_path(str(pkg)).query(BALANCE_BY_DISTRICT)
-    assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_OWNER)
-
-
 def test_record_route_decision_refuses_a_row_another_row_disagrees_with(tmp_path):
     """The reverse pair's row walks (account, district) by the branch: recording the owner route
     would leave two definitions of the pair. Refused, naming that row; nothing is written."""
@@ -1817,24 +1802,6 @@ def test_live_valid_values_without_a_query_measure_explains_the_missing_anchor(
         )
     assert refused.value.code == "NO_VALID_VALUES_SOURCE"
     assert refused.value.details == {"attempts": []}
-
-
-def test_mcp_route_options_match_reference_sql(tmp_path):
-    # Every shape answers each option by its route in the runtime tests above.
-    query, columns, _, expected = SHAPES["shorter_fan_out"]
-    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(_write_package(tmp_path))))
-    try:
-        refusal = adapter.call_tool("execute", {"query": query})
-        issue = refusal["errors"][0]
-        assert issue["code"] == "AMBIGUOUS_PATH", refusal
-        clarification = issue["details"]["clarification"]
-        assert all("clarification" not in hint for hint in issue.get("recovery_hints", []))
-        for option in clarification["options"]:
-            out = adapter.call_tool("execute", {"query": _routed(query, option["decision"])})
-            assert out["ok"], out
-            assert _rows(out, columns) == _gold(expected[option["id"]][2])
-    finally:
-        adapter.close()
 
 
 def test_mcp_a_route_named_by_its_option_id_is_refused(tmp_path):

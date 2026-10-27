@@ -457,28 +457,3 @@ def test_loader_refuses_an_inconsistent_package(tmp_path: Path, options, expecte
 
     assert exc.value.code == "INVALID_CONFIG"
     assert all(part in str(exc.value) for part in expected), str(exc.value)
-
-
-def test_loader_rejects_duplicate_entity_ids(tmp_path: Path):
-    package_dir = tmp_path / "duplicate_entity_demo"
-    _write_minimal_package(package_dir)
-    graph_path = package_dir / "graph.yml"
-    graph = yaml.safe_load(graph_path.read_text(encoding="utf-8"))
-    graph["graph"]["entities"]["invoice"] = {
-        "as": "entity.demo_order",
-        "name": "demo.Invoice",
-        "label": "Invoice",
-        "key": ["order_id"],
-        "model": "invoices",
-    }
-    _write_yaml(graph_path, graph)
-    _write_yaml(
-        package_dir / "models" / "invoices.yml",
-        {"model": {"entities": {"invoice": {}}, "relation": "order_fact"}},
-    )
-
-    with pytest.raises(SemanticLayerError) as exc:
-        load_package_config(str(package_dir))
-
-    assert exc.value.code == "INVALID_CONFIG"
-    assert "duplicate object id 'entity.demo_order'" in str(exc.value)

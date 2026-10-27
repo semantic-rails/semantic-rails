@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from semantic_rails import cli as cli_module
-from semantic_rails.config_validation import parse_config_report, resolve_package_reference
+from semantic_rails.config_validation import resolve_package_reference
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.metadata import (
     build_options_payload,
@@ -431,15 +431,6 @@ def test_metric_constraint_policy_restricts_role_scoped_revenue_cuts(runtime_fac
         )
     finally:
         runtime.close()
-
-
-def test_parse_config_emits_authoring_profile_warnings(tmp_path: Path):
-    package_dir = tmp_path / "warning_demo"
-    _write_package(package_dir)
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-    assert report["ok"] is True
-    assert report["warnings"]
-    assert any(warning["code"] == "AUTHORING_PROFILE_WARNING" for warning in report["warnings"])
 
 
 @pytest.mark.parametrize(

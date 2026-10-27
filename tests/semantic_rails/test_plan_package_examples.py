@@ -6,7 +6,6 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.planner_fixtures import jaffle_runtime
@@ -144,32 +143,12 @@ def _reference(runtime, day, limit):
         ).fetchall()
 
 
-def test_authored_snapshot_question_answers_reference(subscriptions):
-    result = _plan(subscriptions)
-    assert result["status"] == "ok", result.get("why")
-    assert result["best"]["pattern"] == "package_example"
-    rows = subscriptions.query(result["best"]["query"], now=NOW["now"])["rows"]
-    gold = _reference(subscriptions, "2026-10-04", 2)
-    assert gold == [("Acme Data Co", 500), ("Initech", 99)]
-    assert [(row[NAME], row["mrr"]) for row in rows] == gold
-
-
-def test_snapshot_policy_holds_a_query_without_the_day(subscriptions):
-    # Neither a day grouping nor a day grain: the balance isn't read per day.
-    query = {
-        **QUERY,
-        "group_by": [NAME],
-        "time": {"temporal_role": ROLE, "last": {"unit": "day", "value": 1}},
-        "order_by": [{"field": NAME, "direction": "asc"}],
-    }
-    with pytest.raises(SemanticLayerError, match="can only be read by day: group by "):
-        subscriptions.query(query, now=NOW["now"])
-
-
 @pytest.mark.parametrize(
-    "question", [QUESTION + " ", QUESTION.upper(), QUESTION.replace(" ", "  ")]
+    "question", [QUESTION, QUESTION + " ", QUESTION.upper(), QUESTION.replace(" ", "  ")]
 )
-def test_case_and_whitespace_variants_match_reference(subscriptions, question):
+def test_the_authored_question_and_its_case_and_whitespace_variants_match_reference(
+    subscriptions, question
+):
     result = _plan(subscriptions, question)
     assert result["status"] == "ok", result.get("why")
     assert result["best"]["pattern"] == "package_example"
@@ -177,7 +156,9 @@ def test_case_and_whitespace_variants_match_reference(subscriptions, question):
     assert query["limit"] == 2
     assert query["time"]["last"] == {"unit": "day", "value": 1}
     rows = subscriptions.query(query, now=NOW["now"])["rows"]
-    assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, "2026-10-04", 2)
+    gold = _reference(subscriptions, "2026-10-04", 2)
+    assert gold == [("Acme Data Co", 500), ("Initech", 99)]
+    assert [(row[NAME], row["mrr"]) for row in rows] == gold
     assert result["best"]["interpreted_intent"]["consumed_spans"] == [[0, len(result["intent"])]]
 
 

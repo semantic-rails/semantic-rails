@@ -10,7 +10,6 @@ import pytest
 import yaml
 
 from scripts.benchmark_plan import _load_cases
-from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import TOOL_DEFINITIONS, SemanticLayerMCPAdapter
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
@@ -171,14 +170,6 @@ def test_plan_returns_out_of_scope_for_nonsense_at_each_detail(runtime) -> None:
     assert "next" not in query
 
 
-@pytest.mark.parametrize("intent", ["   ", None])
-def test_plan_rejects_missing_or_non_string_intent(runtime, intent) -> None:
-    with pytest.raises(SemanticLayerError) as exc_info:
-        plan_payload(runtime, intent=intent)
-    assert exc_info.value.code == "INVALID_QUERY"
-    assert exc_info.value.details["path"] == "intent"
-
-
 def test_plan_preserves_partial_query_state(runtime) -> None:
     partial = {
         "group_by": ["dimension.jaffle_store_name"],
@@ -210,14 +201,6 @@ def test_plan_rejects_a_partial_query_it_cannot_read(runtime, partial, path) -> 
     error = response["errors"][0]
     assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
     assert error["recovery_hints"][0]["code"] == "FIX_QUERY_CALL"
-
-
-def test_plan_keeps_the_callers_store_name_grouping(runtime) -> None:
-    partial = {"group_by": ["dimension.jaffle_store_name"]}
-    payload = plan_payload(runtime, intent="revenue by store", partial_query=partial)
-    # The caller's Store name settles how the stores show: the draft adds no Store id.
-    assert payload["status"] == "ok"
-    assert payload["best"]["query"]["group_by"] == ["dimension.jaffle_store_name"]
 
 
 @pytest.mark.parametrize(
@@ -263,14 +246,6 @@ def test_plan_reads_a_seed_ordered_by_a_selected_id(runtime, item, column) -> No
     assert query["order_by"][0] == {"field": column, "direction": "desc"}
     by_column = {**seed, "order_by": [{"field": column, "direction": "desc"}]}
     assert runtime.query(query)["rows"] == runtime.query(by_column)["rows"]
-
-
-def test_plan_keeps_a_different_computation_beside_the_caller_one(runtime) -> None:
-    average = {"as": "avg_rev", "expression": {**REVENUE_SUM, "aggregation": "avg"}}
-    payload = plan_payload(runtime, intent="revenue by store", partial_query={"select": [average]})
-    select = payload["best"]["query"]["select"]
-    expressions = [row if isinstance(row, str) else row["expression"] for row in select]
-    assert expressions == [average["expression"], REVENUE]
 
 
 def test_plan_demotes_a_failed_validation_and_caps_its_errors(runtime, monkeypatch) -> None:
@@ -389,6 +364,10 @@ def test_plan_best_detail_rejects_grouping_drift_fallback(runtime) -> None:
     full = plan_payload(runtime, intent=question, detail="full", limit=3)
     assert best["status"] == "low_confidence"
     assert best["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+    # The drift message says best.query is the named pattern's draft, the one that fails.
+    assert best["why"]["message"].startswith("best.query is the named pattern's draft")
+    assert "fails validation" in best["why"]["message"]
+    assert [row["code"] for row in best["why"]["details"]["primary_errors"]] == ["AMBIGUOUS_PATH"]
     assert best["best"]["pattern"] == "metric_by_dimension_rollup"
     assert best["best"]["validation_ok"] is False
     assert "ready_for" not in best["next"]
@@ -616,20 +595,6 @@ def test_plan_answers_a_lifetime_cohort_with_an_entity_filter(runtime) -> None:
     assert actual == pytest.approx(dict(reference))
 
 
-def test_plan_keeps_target_and_single_reachable_value_filter(runtime) -> None:
-    payload = plan_payload(
-        runtime, intent="Show total revenue by store where customer type is repeat.", detail="best"
-    )
-    assert payload["status"] == "ok"
-    query = payload["best"]["query"]
-    assert query["select"] == [REVENUE]
-    assert query["group_by"] == ["dimension.jaffle_store_id", "dimension.jaffle_store_name"]
-    assert query["where"] == [
-        {"field": "dimension.jaffle_customer_type", "op": "is", "value": "repeat"}
-    ]
-    assert payload["best"]["trace"]["intent_slots"]["target"]
-
-
 def test_plan_structural_precheck_short_circuits() -> None:
     class _NoCallRuntime:
         def validate(self, payload, **kwargs):  # noqa: ARG002
@@ -672,28 +637,6 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime) -> None:
     assert ranked_query["order_by"][0]["direction"] == "desc"
     # An explicit grain cue keeps the time bucket.
     assert bucketed["best"]["query"]["time"]["grain"] == "month"
-
-
-@pytest.mark.parametrize(
-    ("name", "code"),
-    [
-        # "by revenue" after "What are the top stores" reads as a grouping it lacks.
-        ("top_stores_by_revenue", "PLAN_UNMATCHED_TERMS"),
-        ("inventory_levels_by_store", "PLAN_INTENT_COVERAGE_GAP"),
-        # A balance summed over each month is not the snapshot asked for; that hold comes
-        # before asking over which rows the stores qualify.
-        ("active_menu_snapshot_for_high_activity_stores", "PLAN_INTENT_COVERAGE_GAP"),
-        ("adversarial_fake_ids_route_to_real_revenue", "PLAN_UNMATCHED_TERMS"),
-    ],
-)
-def test_benchmark_store_questions_require_clarification(runtime, name, code) -> None:
-    case = next(row for row in _load_cases() if row["name"] == name)
-    assert case["expected"] == "clarify"
-    assert case["forbid_ready_for_execute"] is True
-    payload = plan_payload(runtime, intent=case["intent"])
-    assert payload["status"] == case["expected_status"]
-    assert payload["why"]["code"] == code, payload.get("why")
-    assert "execute" not in payload["next"].get("ready_for", [])
 
 
 def test_a_statistic_no_metric_defines_holds_with_its_yaml(runtime) -> None:

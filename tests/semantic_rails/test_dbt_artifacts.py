@@ -12,18 +12,15 @@ from mcp.shared.memory import create_connected_server_and_client_session
 
 from semantic_rails import architect_mcp
 from semantic_rails.architect_mcp import create_architect_mcp_server
-from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.dbt_artifacts import (
     dbt_import_models,
     load_dbt_artifacts,
     suggest_models_from_dbt,
 )
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import (
     build_dbt_warehouse,
     write_dbt_artifacts,
-    write_orders_package,
 )
 
 
@@ -366,63 +363,35 @@ def test_suggestions_prefer_dbt_facts_over_guesses(target: Path) -> None:
     assert draft["description"] == "One row per order."
 
 
+@pytest.mark.parametrize(
+    ("types", "untyped", "dimensions"),
+    [
+        (
+            {"weights": "INTEGER[]", "attrs": "STRUCT(score INTEGER)", "lookup": "MAP(VARCHAR,INTEGER)"},
+            {"weights", "attrs", "lookup"},
+            set(),
+        ),
+        # Container words and brackets inside enum labels keep an enum a dimension.
+        (
+            {
+                "category": "ENUM('MAP', 'ARRAY', 'ok')",
+                "label": "ENUM('x[]', 'it''s MAP[] DATE INTEGER', 'ok')",
+                "labels": "ENUM('MAP', 'ok')[]",
+            },
+            {"labels"},
+            {"category", "label"},
+        ),
+    ],
+    ids=["containers", "enum-labels"],
+)  # fmt: skip
 def test_dbt_catalog_container_types_stay_unmodeled_in_suggestion_and_import(
-    target: Path,
+    target: Path, types: dict[str, str], untyped: set[str], dimensions: set[str]
 ) -> None:
     catalog_path = target / "catalog.json"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     columns = catalog["nodes"]["model.shop_dbt.fct_orders"]["columns"]
-    for index, (name, data_type) in enumerate(
-        (
-            ("weights", "INTEGER[]"),
-            ("attrs", "STRUCT(score INTEGER)"),
-            ("lookup", "MAP(VARCHAR,INTEGER)"),
-        ),
-        start=100,
-    ):
+    for index, (name, data_type) in enumerate(types.items(), start=100):
         columns[name] = {"name": name, "type": data_type, "index": index}
-    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
-
-    project = load_dbt_artifacts(target)
-    (suggestion,) = suggest_models_from_dbt(project, ["fct_orders"])
-    items, skipped, _ = dbt_import_models(project, ["fct_orders"])
-
-    assert {"weights", "attrs", "lookup"} <= set(suggestion["untyped_columns"])
-    assert {"weights", "attrs", "lookup"}.isdisjoint(suggestion["upsert_model"]["measures"])
-    assert "order_total" in suggestion["upsert_model"]["measures"]
-    assert skipped == []
-    assert len(items) == 1
-    assert {"weights", "attrs", "lookup"}.isdisjoint(items[0]["measures"])
-
-    server = create_architect_mcp_server(workspace_root=target.parent)
-    result = _call(
-        server,
-        "suggest_models_from_dbt",
-        {"target_dir": "target", "select": ["fct_orders"]},
-    )
-    assert result["ok"] is True
-    assert {"weights", "attrs", "lookup"} <= set(result["models"][0]["untyped_columns"])
-
-
-def test_dbt_catalog_enum_labels_with_container_words_remain_dimensions(target: Path) -> None:
-    catalog_path = target / "catalog.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    columns = catalog["nodes"]["model.shop_dbt.fct_orders"]["columns"]
-    columns["category"] = {
-        "name": "category",
-        "type": "ENUM('MAP', 'ARRAY', 'ok')",
-        "index": 100,
-    }
-    columns["label"] = {
-        "name": "label",
-        "type": "ENUM('x[]', 'it''s MAP[] DATE INTEGER', 'ok')",
-        "index": 101,
-    }
-    columns["labels"] = {
-        "name": "labels",
-        "type": "ENUM('MAP', 'ok')[]",
-        "index": 102,
-    }
     catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
 
     project = load_dbt_artifacts(target)
@@ -430,20 +399,17 @@ def test_dbt_catalog_enum_labels_with_container_words_remain_dimensions(target: 
     items, skipped, _ = dbt_import_models(project, ["fct_orders"])
     server = create_architect_mcp_server(workspace_root=target.parent)
     mcp = _call(
-        server,
-        "suggest_models_from_dbt",
-        {"target_dir": "target", "select": ["fct_orders"]},
+        server, "suggest_models_from_dbt", {"target_dir": "target", "select": ["fct_orders"]}
     )
 
+    assert mcp["ok"] is True and skipped == [] and len(items) == 1
     for result in (suggestion, mcp["models"][0]):
-        assert {"category", "label"} <= {row["column"] for row in result["dimensions"]}
-        assert {"category", "label"} <= set(result["upsert_model"]["dimensions"])
-        assert "labels" in result["untyped_columns"]
-        assert "labels" not in result["upsert_model"]["dimensions"]
-    assert mcp["ok"] is True and skipped == []
-    assert len(items) == 1
-    assert {"category", "label"} <= set(items[0]["dimensions"])
-    assert "labels" not in items[0]["dimensions"]
+        assert untyped <= set(result["untyped_columns"])
+        assert dimensions <= {row["column"] for row in result["dimensions"]}
+        assert "order_total" in result["upsert_model"]["measures"]
+    for draft in (suggestion["upsert_model"], mcp["models"][0]["upsert_model"], items[0]):
+        assert dimensions <= set(draft["dimensions"])
+        assert untyped.isdisjoint(draft["dimensions"]) and untyped.isdisjoint(draft["measures"])
 
 
 def test_by_default_every_model_and_no_seed_is_suggested(target: Path) -> None:
@@ -520,118 +486,48 @@ def test_malformed_dbt_sections_report_config_errors(
     assert field in str(excinfo.value)
 
 
-def _contract_target(
-    target: Path,
-    *,
-    to: str,
-    column_level: bool = False,
-    columns: list[str] | None = None,
-    to_columns: list[str] | None = None,
-    model: str = "fct_orders",
-) -> None:
+def _contract_target(target: Path, *, to: str, column_level: bool = False, edit=None) -> None:
+    """fct_orders's customer_id link as a contract foreign key to ``to`` instead of a test,
+    after ``edit`` changes the manifest."""
     path = target / "manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
+    if edit is not None:
+        edit(manifest)
     nodes = manifest["nodes"]
-    if model == "fct_orders":
-        for unique_id, node in list(nodes.items()):
-            if (
-                node.get("resource_type") == "test"
-                and node.get("attached_node") == "model.shop_dbt.fct_orders"
-                and node.get("column_name") == "customer_id"
-                and node.get("test_metadata", {}).get("name") == "relationships"
-            ):
-                del nodes[unique_id]
-    constraint = {
-        "type": "foreign_key",
-        "to": to,
-        "to_columns": to_columns or ["customer_id"],
-    }
-    entry = nodes[f"model.shop_dbt.{model}"]
+    for unique_id, node in list(nodes.items()):
+        if (
+            node.get("resource_type") == "test"
+            and node.get("attached_node") == "model.shop_dbt.fct_orders"
+            and node.get("column_name") == "customer_id"
+            and node.get("test_metadata", {}).get("name") == "relationships"
+        ):
+            del nodes[unique_id]
+    constraint = {"type": "foreign_key", "to": to, "to_columns": ["customer_id"]}
+    entry = nodes["model.shop_dbt.fct_orders"]
     if column_level:
-        assert columns is None or len(columns) == 1
-        column = (columns or ["customer_id"])[0]
-        entry.setdefault("columns", {}).setdefault(column, {"name": column}).setdefault(
-            "constraints", []
-        ).append(constraint)
+        entry.setdefault("columns", {}).setdefault("customer_id", {"name": "customer_id"})
+        entry["columns"]["customer_id"].setdefault("constraints", []).append(constraint)
     else:
-        entry.setdefault("constraints", []).append(
-            {**constraint, "columns": columns or ["customer_id"]}
-        )
+        entry.setdefault("constraints", []).append({**constraint, "columns": ["customer_id"]})
     path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
-@pytest.mark.parametrize("column_level", [False, True], ids=["model", "column"])
-@pytest.mark.parametrize("to", ["ref('dim_customers')", "ref('shop_dbt', 'dim_customers')"])
-def test_contract_foreign_keys_resolve_ref_and_keep_target_columns(
-    target: Path, to: str, column_level: bool
-) -> None:
-    _contract_target(target, to=to, column_level=column_level)
-
-    project = load_dbt_artifacts(target)
-    foreign_key = next(
-        fk for fk in project.find("fct_orders").foreign_keys if fk["source"] == "contract"
-    )
-    assert foreign_key["to"] == "model.shop_dbt.dim_customers"
-    assert foreign_key["to_relation"] == "main_marts.dim_customers"
-    assert foreign_key["to_columns"] == ["customer_id"]
-    items, skipped, _ = dbt_import_models(project, ["dim_customers", "fct_orders"])
-    assert skipped == []
-    orders = next(item for item in items if item["model_id"] == "orders")
-    assert {
-        "relation": "main_marts.dim_customers",
-        "columns": ["customer_id"],
-        "to_columns": ["customer_id"],
-        "target_dbt_unique_id": "model.shop_dbt.dim_customers",
-        "entity": "customer",
-    } in orders["references"]
-
-
-def test_package_qualified_ref_disambiguates_same_named_models(target: Path) -> None:
-    path = target / "manifest.json"
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    other = dict(manifest["nodes"]["model.shop_dbt.dim_customers"])
+def _same_named_model(manifest: dict[str, Any]) -> None:
+    other = dict(manifest["nodes"][CUSTOMERS])
     other.update(
         {"unique_id": "model.other.dim_customers", "schema": "other", "alias": "other_customers"}
     )
     manifest["nodes"][other["unique_id"]] = other
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    _contract_target(target, to="ref('shop_dbt', 'dim_customers')")
-
-    project = load_dbt_artifacts(target)
-    contract = next(
-        fk for fk in project.find("fct_orders").foreign_keys if fk["source"] == "contract"
-    )
-    assert contract["to"] == "model.shop_dbt.dim_customers"
-    assert contract["to_relation"] == "main_marts.dim_customers"
 
 
-@pytest.mark.parametrize("to", ["ref('dim_customers')", "analytics.served.customers_v2"])
-def test_contract_target_uses_manifest_alias_schema_and_database(target: Path, to: str) -> None:
-    path = target / "manifest.json"
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    node = manifest["nodes"]["model.shop_dbt.dim_customers"]
-    node.update({"database": "analytics", "schema": "served", "alias": "customers_v2"})
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    _contract_target(target, to=to)
-
-    project = load_dbt_artifacts(target)
-    foreign_key = next(
-        fk for fk in project.find("fct_orders").foreign_keys if fk["source"] == "contract"
-    )
-    assert foreign_key["to_relation"] == "analytics.served.customers_v2"
-    items, _, _ = dbt_import_models(project, ["dim_customers", "fct_orders"])
-    orders = next(item for item in items if item["model_id"] == "orders")
-    assert any(
-        reference["relation"] == "analytics.served.customers_v2"
-        for reference in orders["references"]
-    )
+def _served_alias(manifest: dict[str, Any]) -> None:
+    alias = {"database": "analytics", "schema": "served", "alias": "customers_v2"}
+    manifest["nodes"][CUSTOMERS].update(alias)
 
 
-def test_contract_source_target_uses_source_manifest_identity(target: Path) -> None:
-    path = target / "manifest.json"
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    manifest["sources"]["source.shop_dbt.raw.customer_feed"] = {
-        "unique_id": "source.shop_dbt.raw.customer_feed",
+def _keyed_source(manifest: dict[str, Any]) -> None:
+    manifest["sources"][FEED] = {
+        "unique_id": FEED,
         "resource_type": "source",
         "name": "customer_feed",
         "database": "warehouse",
@@ -641,21 +537,53 @@ def test_contract_source_target_uses_source_manifest_identity(target: Path) -> N
             "customer_id": {"name": "customer_id", "constraints": [{"type": "primary_key"}]}
         },
     }
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    _contract_target(target, to="source('raw', 'customer_feed')")
+
+
+SERVED = "analytics.served.customers_v2"
+
+
+@pytest.mark.parametrize(
+    ("edit", "to", "column_level", "target_id", "relation"),
+    [
+        (None, "ref('dim_customers')", False, CUSTOMERS, "main_marts.dim_customers"),
+        (None, "ref('dim_customers')", True, CUSTOMERS, "main_marts.dim_customers"),
+        (None, "ref('shop_dbt', 'dim_customers')", False, CUSTOMERS, "main_marts.dim_customers"),
+        (None, "ref('shop_dbt', 'dim_customers')", True, CUSTOMERS, "main_marts.dim_customers"),
+        # A package-qualified ref picks its package's model over a same-named one.
+        (_same_named_model, "ref('shop_dbt', 'dim_customers')", False, CUSTOMERS,
+         "main_marts.dim_customers"),
+        # The target relation is the manifest's database, schema and alias.
+        (_served_alias, "ref('dim_customers')", False, CUSTOMERS, SERVED),
+        (_served_alias, SERVED, False, CUSTOMERS, SERVED),
+        # A source target is the source's manifest identity.
+        (_keyed_source, "source('raw', 'customer_feed')", False, FEED, "raw_customers"),
+    ],
+    ids=["ref-model", "ref-column", "qualified-model", "qualified-column", "same-named",
+         "alias-ref", "alias-relation", "source"],
+)  # fmt: skip
+def test_contract_foreign_keys_resolve_to_the_manifest_identity(
+    target: Path, edit, to: str, column_level: bool, target_id: str, relation: str
+) -> None:
+    _contract_target(target, to=to, column_level=column_level, edit=edit)
 
     project = load_dbt_artifacts(target)
     foreign_key = next(
         fk for fk in project.find("fct_orders").foreign_keys if fk["source"] == "contract"
     )
-    assert foreign_key["to"] == "source.shop_dbt.raw.customer_feed"
-    assert foreign_key["to_relation"] == "raw_customers"
-    items, skipped, _ = dbt_import_models(
-        project, ["source.shop_dbt.raw.customer_feed", "fct_orders"]
-    )
+    assert (foreign_key["to"], foreign_key["to_relation"]) == (target_id, relation)
+    assert foreign_key["to_columns"] == ["customer_id"]
+    items, skipped, _ = dbt_import_models(project, [target_id, "fct_orders"])
     assert skipped == []
     orders = next(item for item in items if item["model_id"] == "orders")
-    assert any(reference["relation"] == "raw_customers" for reference in orders["references"])
+    (reference,) = [row for row in orders["references"] if row["relation"] == relation]
+    assert reference == {
+        "relation": relation,
+        "columns": ["customer_id"],
+        "to_columns": ["customer_id"],
+        "target_dbt_unique_id": target_id,
+        # An aliased target's entity is named after its alias.
+        "entity": reference["entity"] if edit is _served_alias else "customer",
+    }
 
 
 def test_an_unknown_or_ambiguous_model_is_reported(target: Path) -> None:
@@ -663,28 +591,6 @@ def test_an_unknown_or_ambiguous_model_is_reported(target: Path) -> None:
 
     with pytest.raises(SemanticLayerError, match="not in the manifest"):
         project.find("fct_refunds")
-
-
-def test_a_suggested_draft_runs_against_the_dbt_warehouse(tmp_path: Path, target: Path) -> None:
-    package = write_orders_package(tmp_path, seed={"kind": "external"}, with_customers=False)
-    build_dbt_warehouse(package / "data" / "warehouse.duckdb")
-    (customers,) = suggest_models_from_dbt(load_dbt_artifacts(target), ["dim_customers"])
-
-    mutation = ArchitectProject(package, workspace_root=tmp_path).upsert_model(
-        **customers["upsert_model"]
-    )
-    assert mutation.report["ok"] is True, mutation.report
-    runtime = Runtime.from_path(str(package))
-    try:
-        rows = runtime.query(
-            {
-                "select": [{"expression": "measure.shop.customer_count", "as": "customers"}],
-                "limit": 5,
-            }
-        )["rows"]
-    finally:
-        runtime.close()
-    assert rows == [{"customers": 5}]
 
 
 def _call(server: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

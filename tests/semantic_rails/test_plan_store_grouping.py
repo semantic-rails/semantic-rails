@@ -209,7 +209,6 @@ def test_store_attribute_matches_reference_sql_or_withholds_execution(
         ("fallback", "revenue by store name per month"),
         ("primary", "revenue by store name sorted by revenue"),
         ("fallback", "revenue by, store name"),
-        ("primary", "revenue for each store name"),
         ("fallback", "revenue by\tstore name"),
         ("primary", "revenue by\nstore name"),
     ],

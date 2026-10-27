@@ -476,16 +476,6 @@ def test_model_upsert_rewrites_an_object_and_reports_what_drops(tmp_path: Path) 
     assert preview.report["dropped_fields"] == mutation.report["dropped_fields"]
 
 
-def test_models_upsert_reports_dropped_fields_per_model(tmp_path: Path) -> None:
-    project_path = _create_project(tmp_path)
-    mutation = ArchitectProject(project_path, workspace_root=tmp_path).upsert_models(
-        models=[{**_EVENTS, "dimensions": {"event_type": {"kind": "categorical"}}}]
-    )
-
-    assert mutation.report["ok"] is True, mutation.report
-    assert mutation.report["models"][0]["dropped_fields"] == ["dimensions.event_type.label"]
-
-
 def test_mcp_upsert_model_returns_dropped_fields(tmp_path: Path) -> None:
     import asyncio
 

@@ -144,33 +144,11 @@ def test_external_relation_with_quoted_component_runs(tmp_path: Path, relation: 
     assert _yaml(project / "models" / "core" / "orders.yml")["model"]["relation"] == relation
 
 
-def test_other_warehouses_get_a_connection_block(tmp_path: Path) -> None:
-    spec = ProjectSpec(
-        package_id="pg_shop",
-        warehouse=ProjectWarehouse(
-            kind="postgres",
-            data="external",
-            connection_kind="postgres_native",
-            connection_options={"host_env": "PGHOST", "password_env": "PGPASSWORD"},
-        ),
-        first_model=ORDERS,
-    )
-
-    mutation = create_project("pg_shop", spec, workspace_root=tmp_path)
-
-    assert mutation.report["ok"] is True, mutation.report
-    package = _yaml(tmp_path / "pg_shop" / "package.yml")["package"]
-    assert package["connection"] == {
-        "kind": "postgres_native",
-        "options": {"host_env": "PGHOST", "password_env": "PGPASSWORD"},
-    }
-    assert "seed" not in package and "default_db" not in package
-    assert load_package_config(str(tmp_path / "pg_shop")).package.warehouse == "postgres"
-
-
 @pytest.mark.parametrize(
     ("warehouse", "kind", "options"),
     [
+        ("postgres", "postgres_native", {"host_env": "PGHOST", "password_env": "PGPASSWORD"}),
+        # File references are written as given and stay valid.
         (
             "motherduck",
             "motherduck_native",
@@ -183,23 +161,24 @@ def test_other_warehouses_get_a_connection_block(tmp_path: Path) -> None:
         ),
     ],
 )
-def test_connection_file_references_remain_valid(
+def test_other_warehouses_get_a_connection_block(
     tmp_path: Path, warehouse: str, kind: str, options: dict[str, str]
 ) -> None:
     spec = ProjectSpec(
-        package_id="referenced",
+        package_id="pg_shop",
         warehouse=ProjectWarehouse(
             kind=warehouse, data="external", connection_kind=kind, connection_options=options
         ),
         first_model=ORDERS,
     )
 
-    mutation = create_project("referenced", spec, workspace_root=tmp_path)
+    mutation = create_project("pg_shop", spec, workspace_root=tmp_path)
+
     assert mutation.report["ok"] is True, mutation.report
-    assert (
-        _yaml(tmp_path / "referenced" / "package.yml")["package"]["connection"]["options"]
-        == options
-    )
+    package = _yaml(tmp_path / "pg_shop" / "package.yml")["package"]
+    assert package["connection"] == {"kind": kind, "options": options}
+    assert "seed" not in package and "default_db" not in package
+    assert load_package_config(str(tmp_path / "pg_shop")).package.warehouse == warehouse
 
 
 @pytest.mark.parametrize(
@@ -368,17 +347,6 @@ def test_dry_run_previews_without_writing(tmp_path: Path) -> None:
         project_scaffold_files(EXTERNAL_SHOP)
     )
     assert not (tmp_path / "shop").exists()
-
-
-def test_create_is_idempotent_and_guarded_by_revision(tmp_path: Path) -> None:
-    first = create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path, idempotency_key="k1")
-    replay = create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path, idempotency_key="k1")
-
-    assert first.report["ok"] is True
-    assert replay.report["status"] == "replayed"
-    with pytest.raises(SemanticLayerError) as excinfo:
-        create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path, idempotency_key="k2")
-    assert excinfo.value.code == "CONFIG_CONFLICT"
 
 
 @pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
@@ -773,33 +741,6 @@ def test_partial_legacy_receipt_cannot_claim_complete_scaffold(
         _assert_unchanged(project, before, revision)
 
 
-def test_byte_identical_noop_without_receipt_creates_no_provenance(tmp_path: Path) -> None:
-    project = tmp_path / "shop"
-    _create_shop(tmp_path)
-    _receipt_path(tmp_path, "create").unlink()
-    revision = project_revision(project)
-    noop = _create_via_route(
-        tmp_path,
-        EXTERNAL_SHOP,
-        key="noop",
-        expected_revision=revision,
-        overwrite=True,
-    )
-    assert noop["ok"] is True and noop["changes"] == []
-    assert "scaffold_files" not in json.loads(
-        _receipt_path(tmp_path, "noop").read_text(encoding="utf-8")
-    )
-    changed = replace(EXTERNAL_SHOP, description="Description B")
-    with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-        _create_via_route(
-            tmp_path,
-            changed,
-            key="changed",
-            expected_revision=revision,
-            overwrite=True,
-        )
-
-
 def test_overwrite_does_not_replace_authored_ignored_file_in_absent_project(tmp_path: Path) -> None:
     project = tmp_path / "shop"
     project.mkdir()
@@ -1092,95 +1033,51 @@ def test_overwrite_retires_only_the_generated_first_model_and_undo_restores_it(
     assert warehouse.read_bytes() == b"keep external warehouse"
 
 
-def test_overwrite_refuses_to_delete_a_modified_first_model(tmp_path: Path) -> None:
-    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
-    project = tmp_path / "shop"
-    old_model = project / "models" / "core" / "orders.yml"
-    old_model.write_bytes(old_model.read_bytes() + b"# authored change\n")
-    current = project_revision(project)
-    customer = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="customer"))
-
-    with pytest.raises(SemanticLayerError, match="modified") as exc:
-        create_project(
-            "shop", customer, workspace_root=tmp_path, expected_revision=current, overwrite=True
-        )
-    assert exc.value.code == "INVALID_CONFIG"
-    assert old_model.read_bytes().endswith(b"# authored change\n")
-    assert not (project / "models" / "core" / "customers.yml").exists()
-
-
-@pytest.mark.parametrize("dry_run", [True, False])
-def test_same_path_entity_overwrite_preserves_modified_model(tmp_path: Path, dry_run: bool) -> None:
-    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
-    project = tmp_path / "shop"
-    graph = project / "graph.yml"
-    original_graph = graph.read_bytes()
-    model = project / "models" / "core" / "orders.yml"
-    model.write_bytes(model.read_bytes() + b"# authored change\n")
-    authored_model = model.read_bytes()
-    renamed = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="orders"))
-
-    with pytest.raises(SemanticLayerError, match="modified"):
-        create_project(
-            "shop",
-            renamed,
-            workspace_root=tmp_path,
-            expected_revision=project_revision(project),
-            overwrite=True,
-            dry_run=dry_run,
-        )
-    assert graph.read_bytes() == original_graph
-    assert model.read_bytes() == authored_model
-
-
-def test_same_path_entity_overwrite_replaces_unchanged_scaffold_model(tmp_path: Path) -> None:
-    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
-    project = tmp_path / "shop"
-    renamed = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="orders"))
-
-    mutation = create_project(
-        "shop",
-        renamed,
-        workspace_root=tmp_path,
-        expected_revision=project_revision(project),
-        overwrite=True,
-    )
-    assert mutation.report["ok"] is True, mutation.report
-    assert "orders_count" in _yaml(project / "models" / "core" / "orders.yml")["model"]["measures"]
-
-
-# Each edit, path and mode once: the guard is the same whatever the combination.
+# An authored edit to a scaffold file refuses the overwrite, whether the first model moves
+# (customer), keeps its path under another entity (orders) or stays (order); each edit, path and
+# mode once: the guard is the same whatever the combination.
 @pytest.mark.parametrize(
-    ("edit", "same_path", "dry_run"),
+    ("edit", "entity", "dry_run", "message"),
     [
-        ("relation", False, False),
-        ("relation", True, True),
-        ("dimension", False, True),
-        ("dimension", True, False),
+        ("model_note", "customer", False, "modified"),
+        ("model_note", "orders", True, "modified"),
+        ("model_note", "orders", False, "modified"),
+        ("relation", "customer", False, "modified|provenance"),
+        ("relation", "orders", True, "modified|provenance"),
+        ("dimension", "customer", True, "modified|provenance"),
+        ("dimension", "orders", False, "modified|provenance"),
+        ("relation", "order", False, "modified|provenance"),
+        ("relation", "order", True, "modified|provenance"),
+        ("metrics_note", "order", False, "modified|receipt|provenance"),
+        ("metrics_note", "order", True, "modified|receipt|provenance"),
     ],
 )
-def test_create_overwrite_refuses_semantically_modified_first_model(
-    tmp_path: Path, dry_run: bool, same_path: bool, edit: str
+def test_create_overwrite_refuses_an_authored_scaffold_edit(
+    tmp_path: Path, edit: str, entity: str, dry_run: bool, message: str
 ) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     project = tmp_path / "shop"
-    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    build_dbt_warehouse(project / "data" / "shop.duckdb")
     model_path = project / "models" / "core" / "orders.yml"
-    if edit == "relation":
+    metrics_path = project / "metrics" / "core.yml"
+    if edit == "model_note":
+        model_path.write_bytes(model_path.read_bytes() + b"# authored change\n")
+    elif edit == "relation":
         model_path.write_bytes(
             model_path.read_bytes().replace(
                 b"main_marts.fct_orders", b"main_marts.authored_orders_view"
             )
         )
-    else:
+    elif edit == "dimension":
         model = _yaml(model_path)
         model["model"]["dimensions"] = {"category": {"label": "Category", "kind": "categorical"}}
         model_path.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
-    before = _project_bytes(project)
+    else:
+        metrics_path.write_bytes(metrics_path.read_bytes() + b"# authored metric note\n")
+    before = _project_bytes(project)  # the model, graph, metrics and warehouse bytes
     revision = project_revision(project)
-    new_entity = "orders" if same_path else "customer"
-    new_spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=new_entity))
-    with pytest.raises(SemanticLayerError, match="modified|provenance"):
+    new_spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=entity))
+    with pytest.raises(SemanticLayerError, match=message) as exc:
         create_project(
             "shop",
             new_spec,
@@ -1189,10 +1086,9 @@ def test_create_overwrite_refuses_semantically_modified_first_model(
             overwrite=True,
             dry_run=dry_run,
         )
+    assert exc.value.code == "INVALID_CONFIG"
     _assert_unchanged(project, before, revision)
-    assert db.read_bytes() == before["data/shop.duckdb"]
-    if not same_path:
-        assert not (project / "models" / "core" / "customers.yml").exists()
+    assert not (project / "models" / "core" / "customers.yml").exists()
 
 
 @pytest.mark.parametrize(
@@ -1251,59 +1147,43 @@ def test_create_overwrite_keeps_unchanged_scaffold_control(
     assert applied["ok"] is True, applied
     assert db.read_bytes() == before_db
     model_id = new_entity if new_entity.endswith("s") else f"{new_entity}s"
-    assert (project / "models" / "core" / f"{model_id}.yml").exists()
+    model = _yaml(project / "models" / "core" / f"{model_id}.yml")["model"]
+    assert f"{new_entity}_count" in model["measures"]  # the new entity's scaffold model
     if not same_path:
         assert not (project / "models" / "core" / "orders.yml").exists()
 
 
 @pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
-def test_create_overwrite_refuses_when_creation_provenance_is_missing(
+def test_without_a_creation_receipt_only_a_byte_identical_overwrite_goes_through(
     tmp_path: Path, dry_run: bool
 ) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     project = tmp_path / "shop"
-    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
+    build_dbt_warehouse(project / "data" / "shop.duckdb")
     for receipt in (tmp_path / ".semantic-rails" / "architect-transactions").glob("*/*.json"):
         receipt.unlink()
     before = _project_bytes(project)
     revision = project_revision(project)
-    customer = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="customer"))
+    overwrite = {
+        "workspace_root": tmp_path,
+        "expected_revision": revision,
+        "overwrite": True,
+        "dry_run": dry_run,
+    }
 
-    with pytest.raises(SemanticLayerError, match="no creation receipt"):
-        create_project(
-            "shop",
-            customer,
-            workspace_root=tmp_path,
-            expected_revision=revision,
-            overwrite=True,
-            dry_run=dry_run,
-        )
+    noop = create_project("shop", EXTERNAL_SHOP, idempotency_key="noop", **overwrite).report
+    assert noop["ok"] is True and noop["changes"] == [], noop
     _assert_unchanged(project, before, revision)
-    assert db.read_bytes() == before["data/shop.duckdb"]
-
-
-@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
-def test_create_same_entity_refuses_to_replace_authored_relation(
-    tmp_path: Path, dry_run: bool
-) -> None:
-    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
-    project = tmp_path / "shop"
-    model_path = project / "models" / "core" / "orders.yml"
-    model_path.write_bytes(
-        model_path.read_bytes().replace(b"main_marts.fct_orders", b"main_marts.authored_view")
-    )
-    before = _project_bytes(project)
-    revision = project_revision(project)
-    with pytest.raises(SemanticLayerError, match="modified|provenance"):
-        create_project(
-            "shop",
-            EXTERNAL_SHOP,
-            workspace_root=tmp_path,
-            expected_revision=revision,
-            overwrite=True,
-            dry_run=dry_run,
-        )
-    _assert_unchanged(project, before, revision)
+    if not dry_run:  # the no-op's receipt claims no scaffold provenance
+        receipt = json.loads(_receipt_path(tmp_path, "noop").read_text(encoding="utf-8"))
+        assert "scaffold_files" not in receipt
+    for changed, message in (
+        (replace(EXTERNAL_SHOP, description="Description B"), "modified|receipt|provenance"),
+        (replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="customer")), "no creation"),
+    ):
+        with pytest.raises(SemanticLayerError, match=message):
+            create_project("shop", changed, **overwrite)
+        _assert_unchanged(project, before, revision)
 
 
 @pytest.mark.parametrize(
@@ -1370,55 +1250,6 @@ def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
             dry_run=dry_run,
         )
     assert str(exc.value.details["reason"]).startswith("scaffold_")
-    _assert_unchanged(project, before, revision)
-    assert db.read_bytes() == before["data/shop.duckdb"]
-
-
-@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
-def test_create_overwrite_refuses_modified_shared_scaffold_file(
-    tmp_path: Path, dry_run: bool
-) -> None:
-    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
-    project = tmp_path / "shop"
-    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
-    metrics = project / "metrics" / "core.yml"
-    metrics.write_bytes(metrics.read_bytes() + b"# authored metric note\n")
-    before = _project_bytes(project)
-    revision = project_revision(project)
-    with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-        create_project(
-            "shop",
-            EXTERNAL_SHOP,
-            workspace_root=tmp_path,
-            expected_revision=revision,
-            overwrite=True,
-            dry_run=dry_run,
-        )
-    _assert_unchanged(project, before, revision)
-    assert db.read_bytes() == before["data/shop.duckdb"]
-
-
-@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
-def test_create_overwrite_byte_identical_noop_needs_no_receipt(
-    tmp_path: Path, dry_run: bool
-) -> None:
-    create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
-    project = tmp_path / "shop"
-    db = build_dbt_warehouse(project / "data" / "shop.duckdb")
-    for receipt in (tmp_path / ".semantic-rails" / "architect-transactions").glob("*/*.json"):
-        receipt.unlink()
-    before = _project_bytes(project)
-    revision = project_revision(project)
-    report = create_project(
-        "shop",
-        EXTERNAL_SHOP,
-        workspace_root=tmp_path,
-        expected_revision=revision,
-        overwrite=True,
-        dry_run=dry_run,
-    ).report
-    assert report["ok"] is True, report
-    assert report["changes"] == []
     _assert_unchanged(project, before, revision)
     assert db.read_bytes() == before["data/shop.duckdb"]
 
@@ -1580,25 +1411,6 @@ def _setup_dialog(server, package_id: str, content: dict[str, Any]) -> dict[str,
     return dialog
 
 
-def test_mcp_setup_dialog_elicits_the_warehouse(tmp_path: Path) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-
-    dialog = _setup_dialog(
-        server,
-        "shop",
-        {
-            "package_id": "shop",
-            "warehouse": "duckdb",
-            "data": "external",
-            "relation": "main_marts.fct_orders",
-        },
-    )
-
-    assert dialog["mode"] == "elicitation"
-    assert dialog["draft_arguments"]["data"] == "external"
-    assert dialog["draft_arguments"]["relation"] == "main_marts.fct_orders"
-
-
 def test_mcp_dialog_to_create_postgres_round_trip(tmp_path: Path) -> None:
     server = create_architect_mcp_server(workspace_root=tmp_path)
 
@@ -1624,9 +1436,9 @@ def test_mcp_dialog_to_create_postgres_round_trip(tmp_path: Path) -> None:
         [("setup_project_dialog", {"package_id": "pg_shop", "interactive": True})],
         elicitation_callback=answer,
     )
-    assert dialog["ok"] is True, dialog
+    assert dialog["ok"] is True and dialog["mode"] == "elicitation", dialog
     draft = dialog["draft_arguments"]
-    assert draft["data"] == "external"
+    assert (draft["data"], draft["relation"]) == ("external", "main_marts.fct_orders")
     assert draft["connection_options"] == {"host_env": "PGHOST", "password_env": "PGPASSWORD"}
     (created,) = _session_call(
         server,

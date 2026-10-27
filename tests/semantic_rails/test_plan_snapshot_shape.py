@@ -237,13 +237,6 @@ def test_the_numbers_are_the_customers_balance_on_that_day(runtime: Runtime) -> 
     assert plan["best"]["query"]["select"] == [MRR]
 
 
-def test_right_now_is_the_same_read_as_no_time_words(runtime: Runtime) -> None:
-    asked, plain = _plan(runtime, "MRR right now"), _plan(runtime, "What's our MRR?")
-    for key in ("select", "time", "group_by"):
-        assert asked["best"]["query"].get(key) == plain["best"]["query"].get(key)
-    assert _answer(runtime, asked) == _answer(runtime, plain) == {(): 599}
-
-
 def test_a_caller_select_keeps_its_measure_and_alias(runtime: Runtime) -> None:
     select = [{"as": "all_mrr", "expression": {
         "kind": "measure", "measure": f"measure.{NS}.mrr_all", "aggregation": "last_value",
@@ -346,27 +339,24 @@ def test_a_balance_window_without_a_clock_reading_is_held(
     assert "last complete day" in gap.recovery_hint["message"]
 
 
-def test_a_caller_balance_window_on_a_complete_day_executes(runtime: Runtime) -> None:
-    plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
-        "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
-        "time": {"temporal_role": CLOCK, "grain": "day",
-                 "start": "2026-10-04", "end": "2026-10-05"},
-        **({"group_by": [DAY]} if runtime._config.semantic_policies else {}),
-    })  # fmt: skip
-    assert plan["status"] == "ok", plan.get("why")
-    assert plan["next"]["ready_for"] == ["execute"]
-    assert _answer(runtime, plan) == _reference(_balance("mrr", "2026-10-04")) == {(): 599}
-
-
-@pytest.mark.parametrize(("day", "complete"), [("2026-10-03", True), ("2026-10-04", False)])
-def test_day_completion_uses_the_balance_clock_zone(
-    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, day: str, complete: bool
+@pytest.mark.parametrize(
+    ("zone", "day", "complete"),
+    [
+        # On the package's UTC clock the last complete day at NOW is October 4.
+        (None, "2026-10-04", True),
+        # NOW is October 4 on a Los Angeles clock, while UTC has already reached October 5.
+        ("America/Los_Angeles", "2026-10-03", True),
+        ("America/Los_Angeles", "2026-10-04", False),
+    ],
+)
+def test_a_caller_balance_window_executes_on_a_day_complete_on_the_balance_clock(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, zone: str | None, day: str, complete: bool
 ) -> None:
-    roles = [replace(role, timezone="America/Los_Angeles") if role.id == CLOCK else role
-             for role in runtime._config.temporal_roles]  # fmt: skip
-    monkeypatch.setattr(runtime, "_config", replace(runtime._config, temporal_roles=roles))
+    if zone:
+        roles = [replace(role, timezone=zone) if role.id == CLOCK else role
+                 for role in runtime._config.temporal_roles]  # fmt: skip
+        monkeypatch.setattr(runtime, "_config", replace(runtime._config, temporal_roles=roles))
     end = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
-    # NOW is October 4 on this clock, while UTC has already reached October 5.
     plan = plan_payload(runtime, intent="What's our MRR?", partial_query={
         "policy_context": NOW, "select": [{"as": "mrr", "expression": MRR}],
         "time": {"temporal_role": CLOCK, "grain": "day", "start": day, "end": end},
@@ -374,6 +364,7 @@ def test_day_completion_uses_the_balance_clock_zone(
     })  # fmt: skip
     if complete:
         assert plan["status"] == "ok", plan.get("why")
+        assert plan["next"]["ready_for"] == ["execute"]
         assert _answer(runtime, plan) == _reference(_balance("mrr", day)) == {(): 599}
     else:
         assert plan["status"] == "low_confidence", plan.get("why")

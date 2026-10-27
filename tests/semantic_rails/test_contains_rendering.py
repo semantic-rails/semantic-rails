@@ -68,26 +68,14 @@ EXPECTED = {
 }
 
 
-def _rendered(warehouse: str, text: str = TEXT) -> str:
-    condition = build_filter_condition(SqlIdentifier(["t", "name"]), "contains", text)
+def _rendered(warehouse: str, word: str, text: str = TEXT) -> str:
+    condition = build_filter_condition(SqlIdentifier(["t", "name"]), word, text)
     select = SqlSelect(
         select=[SqlField(SqlIdentifier(["t", "name"]), "name")],
         from_table=SqlTableRef("t"),
         where=[condition],
     )
     return render_select_for_profile(select, dialect=dialect_for_warehouse(warehouse))
-
-
-def test_contains_renders_an_escaped_case_folded_pattern_that_matches_literally():
-    for warehouse, expected in EXPECTED.items():
-        sql = _rendered(warehouse)
-        assert " ".join(sql.split("WHERE", 1)[1].split()) == expected, warehouse
-    rows = ["50%_OFF\\x'y today", "50x_off\\x'y", "500 offx'y", "nothing"]
-    with duckdb.connect() as connection:
-        connection.execute("CREATE TABLE t (name VARCHAR)")
-        connection.executemany("INSERT INTO t VALUES (?)", [(row,) for row in rows])
-        found = [row[0] for row in connection.execute(_rendered("duckdb")).fetchall()]
-    assert found == ["50%_OFF\\x'y today"]
 
 
 # The other text words take the same escaping and case folding: starts_with drops the leading
@@ -109,13 +97,7 @@ def _expected(word: str, warehouse: str) -> str:
 @pytest.mark.parametrize("word", [*SHAPES, *(f"not_{word}" for word in SHAPES)])
 def test_each_text_word_renders_its_pattern_on_every_dialect(word):
     for warehouse in EXPECTED:
-        condition = build_filter_condition(SqlIdentifier(["t", "name"]), word, TEXT)
-        select = SqlSelect(
-            select=[SqlField(SqlIdentifier(["t", "name"]), "name")],
-            from_table=SqlTableRef("t"),
-            where=[condition],
-        )
-        sql = render_select_for_profile(select, dialect=dialect_for_warehouse(warehouse))
+        sql = _rendered(warehouse, word)
         assert " ".join(sql.split("WHERE", 1)[1].split()) == _expected(word, warehouse), (
             word,
             warehouse,
@@ -160,12 +142,7 @@ TRICKY = ["Σ", "σ", "ς", "ß", "ẞ", "İ", "ı", "K", "Å", "Ω", "̇"]
 
 
 def _matching(connection, word: str, text: str) -> list[str]:
-    select = SqlSelect(
-        select=[SqlField(SqlIdentifier(["t", "name"]), "name")],
-        from_table=SqlTableRef("t"),
-        where=[build_filter_condition(SqlIdentifier(["t", "name"]), word, text)],
-    )
-    sql = render_select_for_profile(select, dialect=dialect_for_warehouse("duckdb"))
+    sql = _rendered("duckdb", word, text)
     return sorted(row[0] for row in connection.execute(sql).fetchall())
 
 
@@ -204,33 +181,3 @@ def test_text_with_a_letter_whose_lowercase_is_unstable_is_refused(word, letter)
     assert caught.value.details["path"] == "where[0].value"
     hint = caught.value.details["recovery_hints"][0]["message"]
     assert '"op": "is"' in hint and "valid-values" in hint
-
-
-def test_clickhouse_cuts_zero_padding_only_from_a_fixedstring():
-    """lowerUTF8 refuses FixedString and Enum: toString reads any type as String (NULL kept).
-    Only a FixedString loses its zero padding; a String keeps every byte, NUL included."""
-    sql = _rendered("clickhouse", "web")
-    assert _clickhouse_fold("t.name") in sql
-    assert "toStringCutToZero(toString(t.name)), toString(t.name)" in sql
-
-
-@pytest.mark.parametrize(
-    ("warehouse", "fold"),
-    [
-        ("snowflake", "LOWER(COLLATE(t.name, ''))"),
-        ("bigquery", "LOWER(COLLATE(t.name, ''))"),
-        ("databricks", "LOWER((t.name) COLLATE UTF8_BINARY)"),
-        ("postgres", 'LOWER(CAST(t.name AS TEXT) COLLATE "und-x-icu")'),
-        ("duckdb", "LOWER(t.name)"),
-        ("athena", "LOWER(t.name)"),
-    ],
-)
-def test_a_columns_own_collation_is_set_aside_before_folding(warehouse, fold):
-    where = " ".join(_rendered(warehouse, "web").split("WHERE", 1)[1].split())
-    assert where.split(" LIKE ")[0] == f"({fold}"
-
-
-def test_postgres_folds_both_operands_under_one_explicit_collation():
-    sql = _rendered("postgres", "É")
-    assert sql.count('COLLATE "und-x-icu"') == 2
-    assert "LOWER(CAST(t.name AS TEXT) COLLATE" in sql

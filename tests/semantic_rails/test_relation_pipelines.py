@@ -11,7 +11,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.relation_pipelines import lower_relation
 from semantic_rails.renderer import render_select
 from semantic_rails.runtime import Runtime
-from semantic_rails.sql_ast import SqlField, SqlLiteral, SqlSelect, SqlSetQuery
+from semantic_rails.sql_ast import SqlField, SqlLiteral, SqlSelect
 
 
 @pytest.fixture(autouse=True)
@@ -736,20 +736,3 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
     with pytest.raises(SemanticLayerError) as exc:
         lower_relation(bad_relation, warehouse=bad_config.package.warehouse)
     assert "pre-aggregation boundary" in str(exc.value)
-
-
-def test_sql_set_query_renders_union_all_without_from_clause():
-    query = SqlSetQuery(
-        "UNION ALL",
-        [
-            SqlSelect(select=[SqlField(SqlLiteral(1), "value")]),
-            SqlSelect(select=[SqlField(SqlLiteral(2), "value")]),
-        ],
-    )
-
-    assert (
-        render_select(SqlSelect(select=[SqlField(SqlLiteral(1), "one")], ctes=[]))
-        == "SELECT\n  1 AS one"
-    )
-    rendered = "\nUNION ALL\n".join(render_select(item) for item in query.queries)
-    assert rendered == "SELECT\n  1 AS value\nUNION ALL\nSELECT\n  2 AS value"

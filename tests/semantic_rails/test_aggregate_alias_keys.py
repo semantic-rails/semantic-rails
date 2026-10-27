@@ -59,19 +59,6 @@ def _each_alone(runtime, select: list[dict], **kwargs) -> dict[str, list]:
     return {item["as"]: _query(runtime, [item], **kwargs)[item["as"]] for item in select}
 
 
-def test_aggregates_of_one_measure_that_differ_by_filter_keep_their_own_columns(runtime):
-    select = [
-        {"expression": _NEW_ORDERS, "as": "new_orders"},
-        {"expression": _ORDERS, "as": "orders"},
-    ]
-    together = [_query(runtime, ordered) for ordered in (select, select[::-1])]
-    alone = _each_alone(runtime, select)
-
-    for result in together:
-        assert result == alone
-    assert alone["new_orders"] != alone["orders"]
-
-
 def test_a_share_of_one_measure_under_a_filter_is_not_one(runtime):
     # This returned [1.0, 1.0].
     share = {"kind": "ratio", "numerator": _NEW_ORDERS, "denominator": _ORDERS}

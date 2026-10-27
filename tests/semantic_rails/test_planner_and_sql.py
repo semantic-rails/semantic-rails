@@ -371,6 +371,22 @@ REFUSED = [
         "CUMULATIVE_TIME_FILTER_UNSUPPORTED", {}, id="cumulative-with-a-start",
     ),
     pytest.param(
+        {"select": ["metric.sales.cumulative_revenue"]}, "INVALID_QUERY", {},
+        id="cumulative-without-time",
+    ),
+    pytest.param(
+        {"select": [{"as": "orders_7d", "expression": {
+            "kind": "rolling", "input": "measure.jaffle.order_count",
+            "window": {"unit": "day", "value": 7}}}], "time": MONTHLY},
+        "REWRITE_NOT_SUPPORTED", {}, id="rolling-window-finer-than-the-grain",
+    ),
+    pytest.param(
+        {"select": [{"as": "orders_prev_7d", "expression": {
+            "kind": "prior_period", "input": "measure.jaffle.order_count",
+            "offset": {"unit": "day", "value": 7}}}], "time": MONTHLY},
+        "REWRITE_NOT_SUPPORTED", {}, id="prior-period-finer-than-the-grain",
+    ),
+    pytest.param(
         {"select": [{"as": "repeat_customers_only", "expression": {
             "kind": "metric_predicate", "entity": "entity.jaffle_customer",
             "input": "measure.jaffle.lifetime_order_count", "op": "gt", "value": 1,
@@ -487,7 +503,7 @@ def test_object_not_found_close_matches_on_segment(runtime):
     assert error["details"]["closest_matches"]
 
 
-def test_group_by_only_distinct_values_compile_without_measures(config):
+def test_group_by_only_distinct_values_compile_without_measures(config, runtime):
     compiled = compile_query(
         config,
         Registry(config),
@@ -502,9 +518,12 @@ def test_group_by_only_distinct_values_compile_without_measures(config):
     assert compiled["logical_plan"].measure_plans == []
     assert "FROM jaffle_store" in compiled["sql"]
     assert "g1 ASC" in compiled["sql"]
+    order = [{"field": STORE_NAME, "direction": "asc"}]
+    rows = runtime.query({"group_by": [STORE_NAME], "order_by": order, "limit": 5})["rows"]
+    assert rows and list(rows[0]) == [STORE_NAME]
 
 
-def test_time_only_distinct_values_compile_with_explicit_temporal_role(config):
+def test_time_only_distinct_values_compile_with_explicit_temporal_role(config, runtime):
     compiled = compile_query(
         config,
         Registry(config),
@@ -514,6 +533,9 @@ def test_time_only_distinct_values_compile_with_explicit_temporal_role(config):
     assert compiled["logical_plan"].bound_measures == []
     assert "DATE_TRUNC('month'" in compiled["sql"]
     assert "ORDER BY\n  t ASC" in compiled["sql"]
+    order = [{"field": "period", "direction": "asc"}]
+    rows = runtime.query({"time": MONTHLY, "order_by": order, "limit": 3})["rows"]
+    assert rows and "period" in rows[0]
 
 
 def test_mixed_grain_measures_are_rewritten_into_classified_leaf_aggregates(config, runtime):

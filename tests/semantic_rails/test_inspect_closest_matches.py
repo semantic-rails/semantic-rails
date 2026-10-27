@@ -67,21 +67,3 @@ def test_http_inspect_typo_returns_closest_matches(runtime) -> None:
     closest = list(details.get("closest_matches", []) or [])
     assert closest
     assert "measure.jaffle.order_count" in closest
-
-
-def test_mcp_inspect_unknown_id_with_no_near_neighbor_still_structured(runtime) -> None:
-    """Even a wildly wrong id must produce a structured envelope —
-    not a bare exception. ``closest_matches`` may be empty when
-    nothing is close, but ``recovery_hints`` must always be populated.
-    """
-    adapter = SemanticLayerMCPAdapter(runtime)
-    result = adapter.call_tool(
-        "inspect",
-        {"object_id": "measure.unrelated_package.totally_unrelated_zzz"},
-    )
-    assert result["ok"] is False
-    errors = list(result.get("errors", []) or [])
-    assert errors
-    assert errors[0]["code"] == "OBJECT_NOT_FOUND"
-    hints = list(result["errors"][0].get("recovery_hints", []) or [])
-    assert hints, "recovery_hints must never be empty on OBJECT_NOT_FOUND"

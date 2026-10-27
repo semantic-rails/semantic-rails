@@ -132,20 +132,23 @@ def test_single_file_artifact_fails_with_structured_error_when_seed_missing(tmp_
     assert not (tmp_path / "second.tar.gz").exists()
 
 
-def test_validate_config_writes_manifest_for_single_file_package(
-    tmp_path: Path, monkeypatch, capsys
+@pytest.mark.parametrize("no_manifest", [False, True])
+def test_validate_config_manifest_for_single_file_package(
+    tmp_path: Path, monkeypatch, capsys, no_manifest: bool
 ):
     package_yml = _scaffold_single_file_package(tmp_path)
     capsys.readouterr()  # drain the init scaffold's own JSON output
     monkeypatch.delenv("SR_DEV_NO_MANIFEST", raising=False)
-    monkeypatch.setattr(
-        sys, "argv", ["semantic-rails", "validate-config", "--path", str(package_yml), "--quiet"]
-    )
+    argv = ["semantic-rails", "validate-config", "--path", str(package_yml), "--quiet"]
+    monkeypatch.setattr(sys, "argv", [*argv, *(["--no-manifest"] if no_manifest else [])])
     cli_module.main()
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
 
     manifest_path = package_yml.parent / ".compiled" / "manifest.json"
+    if no_manifest:
+        assert not manifest_path.exists()
+        return
     assert manifest_path.is_file(), (
         "validate-config must write .compiled/manifest.json next to a single-file "
         "package, exactly as it does inside a directory package"
@@ -158,26 +161,3 @@ def test_validate_config_writes_manifest_for_single_file_package(
     loaded = load_manifest(str(package_yml))
     assert loaded is not None, "written manifest must load back (fingerprint must match)"
     assert loaded["catalogs"], "manifest must carry precomputed catalog variants"
-
-
-def test_validate_config_honors_no_manifest_flag_for_single_file_package(
-    tmp_path: Path, monkeypatch, capsys
-):
-    package_yml = _scaffold_single_file_package(tmp_path)
-    capsys.readouterr()  # drain the init scaffold's own JSON output
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "semantic-rails",
-            "validate-config",
-            "--path",
-            str(package_yml),
-            "--quiet",
-            "--no-manifest",
-        ],
-    )
-    cli_module.main()
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is True
-    assert not (package_yml.parent / ".compiled" / "manifest.json").exists()

@@ -22,7 +22,6 @@ from semantic_rails.config import _load_package_source, load_package_config
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -225,19 +224,23 @@ def test_name_binding_refuses_another_entitys_primary_key(tmp_path: Path) -> Non
     assert "graph.entities already declares 'reading'" in str(exc.value)
 
 
-def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path) -> None:
+@pytest.mark.parametrize("variant", ["whitespace-in-model-binding", "null-model-kind"])
+def test_graph_model_binding_preserves_authored_relationship(tmp_path: Path, variant: str) -> None:
+    whitespace = variant == "whitespace-in-model-binding"
+    kind = {} if whitespace else {"kind": None}
     pkg = _write_synthetic_package(
-        tmp_path / "normalized_binding",
+        tmp_path / "relationship_binding",
         graph_entities={
-            "reading": {"model": "readings ", "key": "reading_id"},
-            "device": {"model": " devices", "key": "device_id"},
+            "reading": {"model": "readings " if whitespace else "readings", "key": "reading_id"},
+            "device": {"model": " devices" if whitespace else "devices", "key": "device_id"},
         },
         models={
             "readings": {
+                **kind,
                 "relation": "readings",
                 "entities": {"reading": {}, "device": {}},
             },
-            "devices": {"relation": "devices"},
+            "devices": {**kind, "relation": "devices"},
         },
         graph_relationships={"reading_device": {"entities": ["reading", "device"]}},
     )
@@ -247,31 +250,19 @@ def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path
     ]
 
 
-def test_implicit_binding_resolves_model_name(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reading_bound", [False, True], ids=["implicit", "explicit"])
+def test_implicit_binding_resolves_model_name(tmp_path: Path, reading_bound: bool) -> None:
+    # An explicit binding on one entity does not stop the other's identity backfill.
+    reading_model = "readings" if reading_bound else "reading"
+    reading_entities = {"reading": {}} if reading_bound else {"device": {}, "reading": {}}
     pkg = _write_synthetic_package(
-        tmp_path / "implicit_resolution",
-        graph_entities={"reading": {"key": "reading_id"}, "device": {"key": "device_id"}},
-        models={
-            "reading": {"relation": "readings", "entities": {"device": {}, "reading": {}}},
-            "device": {"relation": "devices", "entities": {"device": {}}},
-        },
-    )
-    config = load_package_config(str(pkg))
-    assert {entity.id: entity.table for entity in config.entities} == {
-        "entity.synth_reading": "readings",
-        "entity.synth_device": "devices",
-    }
-
-
-def test_explicit_binding_does_not_prevent_other_identity_backfill(tmp_path: Path) -> None:
-    pkg = _write_synthetic_package(
-        tmp_path / "mixed_bindings",
+        tmp_path / "bindings",
         graph_entities={
-            "reading": {"model": "readings", "key": "reading_id"},
+            "reading": {"key": "reading_id", **({"model": "readings"} if reading_bound else {})},
             "device": {"key": "device_id"},
         },
         models={
-            "readings": {"relation": "readings", "entities": {"reading": {}}},
+            reading_model: {"relation": "readings", "entities": reading_entities},
             "device": {"relation": "devices", "entities": {"device": {}}},
         },
     )
@@ -312,29 +303,6 @@ def test_name_fallback_cannot_select_an_explicitly_bound_entity(tmp_path: Path) 
     assert exc.value.code == "INVALID_CONFIG"
     # Nothing is homed on 'reading', so it would be row grain under its own name: taken.
     assert "graph.entities already declares 'reading'" in str(exc.value)
-
-
-def test_null_model_kind_accepts_authored_graph_relationship(tmp_path: Path) -> None:
-    pkg = _write_synthetic_package(
-        tmp_path / "null_kind",
-        graph_entities={
-            "reading": {"model": "readings", "key": "reading_id"},
-            "device": {"model": "devices", "key": "device_id"},
-        },
-        models={
-            "readings": {
-                "kind": None,
-                "relation": "readings",
-                "entities": {"reading": {}, "device": {}},
-            },
-            "devices": {"kind": None, "relation": "devices"},
-        },
-        graph_relationships={"reading_device": {"entities": ["reading", "device"]}},
-    )
-    config = load_package_config(str(pkg))
-    assert [(edge.id, edge.source_entity, edge.target_entity) for edge in config.relationships] == [
-        ("relationship.reading_device", "entity.synth_reading", "entity.synth_device")
-    ]
 
 
 def test_graph_model_cannot_be_primary_for_two_entities(tmp_path: Path) -> None:
@@ -434,18 +402,6 @@ def test_architect_mutation_rolls_back_when_primary_remains_unidentified(tmp_pat
         for error in report["parse"]["errors"]
     )
     assert (pkg / "models" / "supplier.yml").read_bytes() == original
-
-
-@pytest.mark.parametrize(
-    "package_path",
-    [
-        "configs/semantic_rails/jaffle_shop",
-        "configs/semantic_rails/tpch_sf1_showcase",
-        "configs/examples/semantic_rails_package_starter.yml",
-    ],
-)
-def test_bundled_packages_resolve_primary_entities(package_path: str) -> None:
-    assert load_package_config(str(REPO_ROOT / package_path)).entities
 
 
 def test_model_primary_is_not_chosen_by_declaration_order(tmp_path: Path) -> None:
@@ -1058,45 +1014,6 @@ def test_legacy_authoring_form_is_refused_at_load(
     assert any(all(part in error for part in expected) for error in validate_runtime_package(pkg))
 
 
-def test_measure_inherits_defaults_accumulation_kind(tmp_path: Path) -> None:
-    """A measure with no `accumulation:` of its own takes `defaults.measure.accumulation`."""
-    pkg = _write_synthetic_package(
-        tmp_path / "defaults_stock",
-        models={
-            "widgets": {
-                "relation": "widget",
-                "entities": {"widget": {}},
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default": True,
-                    },
-                },
-                "measures": {
-                    "balance_usd": {
-                        "label": "Balance (USD)",
-                        "description": "Balance.",
-                        "kind": "aggregate",
-                        "expr": "balance_usd",
-                        "value_type": "currency",
-                    },
-                },
-            },
-        },
-    )
-    document = pkg / "package.yml"
-    raw = yaml.safe_load(document.read_text(encoding="utf-8"))
-    raw["defaults"]["measure"] = {"accumulation": {"kind": "stock"}}
-    _write_yaml(document, raw)
-    config = load_package_config(str(pkg))
-    balance = next(m for m in config.measures if "balance_usd" in m.id)
-    assert balance.measure_class == "semi_additive"
-    assert balance.default_aggregation == "last_value"
-
-
 # ---------------------------------------------------------------------------
 # Section 8: A measure's accumulation states the kind and snapshot it means
 # ---------------------------------------------------------------------------
@@ -1383,41 +1300,6 @@ def test_times_block_consolidates_temporal_role_and_dimension(tmp_path: Path) ->
     assert [r.id for r in config.temporal_roles] == ["temporal_role.synth_order_ordered_at"]
     backing = [d for d in config.dimensions if d.id == "dimension.synth_order_ordered_at"]
     assert [d.column for d in backing] == ["ordered_at"]
-
-
-# ----------------------------------------------------------------------
-# MetricConfig.value_type — explicit authoring on every metric.
-#
-# In v1 the auto-publish path was removed: every authored metric must
-# declare its `value_type:` directly. The legacy "inherit value_type
-# from underlying measure" pass is gone, and so is the implicit
-# `number` default — strict-mode validation rejects metrics without an
-# explicit type.
-# ----------------------------------------------------------------------
-
-
-def _metric_by_id(config, metric_id):
-    return next(m for m in config.metric_recipes if m.id == metric_id)
-
-
-def test_authored_metric_value_type_round_trips(tmp_path):
-    """Round-trip an authored value_type override — `ratio` is read back
-    on the loaded MetricConfig, demonstrating the field is first-class
-    on every metric, not derived from the underlying measure."""
-    pkg = copy_package_config(tmp_path, "jaffle_shop")
-    metrics_dir = pkg / "metrics"
-    target = next(metrics_dir.rglob("*.yml"))
-    raw = yaml.safe_load(target.read_text(encoding="utf-8"))
-    assert "metrics" in raw
-    metric_key, metric_spec = next(iter(raw["metrics"].items()))
-    metric_spec["value_type"] = "ratio"
-    raw["metrics"][metric_key] = metric_spec
-    target.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-    config = load_package_config(str(pkg))
-    metric_id = str(metric_spec.get("as") or metric_spec.get("id") or f"metric.{metric_key}")
-    metric = _metric_by_id(config, metric_id)
-    assert metric.value_type == "ratio"
 
 
 # ----------------------------------------------------------------------

@@ -28,52 +28,25 @@ def runtime(runtime_factory):
     runtime.close()
 
 
-def test_plan_route_returns_status_ok_for_realizable_intent(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload, status = _post_json(
-            runtime,
-            "/api/v1/plan",
-            {"intent": "top stores by revenue"},
-        )
-    finally:
-        runtime.close()
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["status"] == "ok"
-    assert payload["best"]["pattern"] == "package_example"
-
-
-def test_plan_route_preserves_partial_query(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload, status = _post_json(
-            runtime,
-            "/api/v1/plan",
-            {
-                "intent": "revenue",
-                "query": {"group_by": ["dimension.jaffle_store_name"]},
-            },
-        )
-    finally:
-        runtime.close()
+def test_plan_route_preserves_partial_query(runtime) -> None:
+    payload, status = _post_json(
+        runtime,
+        "/api/v1/plan",
+        {"intent": "revenue", "query": {"group_by": ["dimension.jaffle_store_name"]}},
+    )
     assert status == 200
     assert payload["status"] == "ok"
     assert "dimension.jaffle_store_name" in payload["best"]["query"]["group_by"]
 
 
-def test_plan_route_full_detail_returns_alternatives(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload, status = _post_json(
-            runtime,
-            "/api/v1/plan",
-            {"intent": "top stores by revenue", "detail": "full", "limit": 3},
-        )
-    finally:
-        runtime.close()
+def test_plan_route_full_detail_returns_alternatives(runtime) -> None:
+    payload, status = _post_json(
+        runtime, "/api/v1/plan", {"intent": "top stores by revenue", "detail": "full", "limit": 3}
+    )
     assert status == 200
+    assert payload["ok"] is True
     assert payload["status"] == "ok"
+    assert payload["best"]["pattern"] == "package_example"
     assert "alternatives" in payload
     assert "blocked" in payload
 

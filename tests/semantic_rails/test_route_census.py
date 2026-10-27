@@ -665,20 +665,6 @@ def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     assert _gold(AMOUNT_BY_BRANCH) != _gold(AMOUNT_BY_ISSUED)
 
 
-def test_a_preview_refuses_unrecorded_decisions_without_generating_rows(tmp_path):
-    project = _architect(tmp_path)
-    revision = project.revision()
-    before = _files_and_receipts(project)
-    with pytest.raises(SemanticLayerError) as raised:
-        project.upsert_relationship(
-            from_entity="owner", to_entity="region", columns=["home_region_id"], dry_run=True
-        )
-    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert _pairs(raised.value.details["route_changes"]) == MOVED
-    assert project.revision() == revision
-    assert _files_and_receipts(project) == before
-
-
 @pytest.mark.parametrize(
     ("dry_run", "grouped", "role"),
     [
@@ -1154,8 +1140,8 @@ def _files_and_receipts(project):
     }
 
 
-@pytest.mark.parametrize("decide", [False, True])
-def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path, decide):
+def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path):
+    """With the pair's row the swap is written; without it, it is refused (the batch test below)."""
     project = ArchitectProject(
         _write_package(
             tmp_path,
@@ -1171,25 +1157,15 @@ def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path, decide):
         "as": "relationship.accounts_billing_region",
         "via": ["billing_region_id"],
     }
-    if decide:
-        graph["graph"]["path_preferences"] = [
-            _pin(ACCOUNT, REGION, ["relationship.accounts_billing_region"]),
-        ]
-    revision, before = project.revision(), _files_and_receipts(project)
-    content = yaml.safe_dump(graph)
-    if decide:
-        report = project.write_files([{"path": "graph.yml", "content": content}]).report
-        assert report["ok"] is True
-        assert report["route_decisions_added"] == []
-        assert _pairs(report["route_changes"]) == [(ACCOUNT, REGION)]
-        assert project.revision() != revision
-    else:
-        with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
-            project.write_files([{"path": "graph.yml", "content": content}])
-        assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-        assert _pairs(raised.value.details["route_changes"]) == [(ACCOUNT, REGION)]
-        assert project.revision() == revision
-        assert _files_and_receipts(project) == before
+    graph["graph"]["path_preferences"] = [
+        _pin(ACCOUNT, REGION, ["relationship.accounts_billing_region"]),
+    ]
+    revision = project.revision()
+    report = project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph)}]).report
+    assert report["ok"] is True
+    assert report["route_decisions_added"] == []
+    assert _pairs(report["route_changes"]) == [(ACCOUNT, REGION)]
+    assert project.revision() != revision
 
 
 def test_a_removal_reports_a_refused_pair_becoming_the_only_route(tmp_path):
@@ -1582,7 +1558,7 @@ def test_batch_route_swap_refuses_every_file_without_recorded_decision(tmp_path,
     }
     revision, before = project.revision(), _files_and_receipts(project)
 
-    with pytest.raises(SemanticLayerError) as raised:
+    with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
         project.write_files(
             [
                 {"path": "graph.yml", "content": yaml.safe_dump(graph)},

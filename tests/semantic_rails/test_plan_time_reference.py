@@ -344,6 +344,14 @@ PURCHASE_RATE_ON_OCTOBER_4 = (
             SIGNUPS_ON_LOCAL_DAY.format(zone="America/New_York", now="2026-10-05 01:00:00+00"),
             2,
         ),
+        # At 12:00Z both zones read October 5: today executes on that day.
+        (
+            "local_subscriptions",
+            "new accounts today",
+            "2026-10-05T12:00:00Z",
+            SIGNUPS_ON_LOCAL_DAY.format(zone="America/New_York", now="2026-10-05 12:00:00+00"),
+            1,
+        ),
         # The call's clock is the sessions role (UTC), whose yesterday is October 4; each leg
         # reads that day in its own zone, orders on New York's October 4.
         ("shop", "purchase rate yesterday", "2026-10-05T01:00:00Z", PURCHASE_RATE_ON_OCTOBER_4, 0.25),
@@ -369,8 +377,8 @@ PURCHASE_RATE_ON_OCTOBER_4 = (
             4,
         ),
     ],
-    ids=["local-today", "mixed-zone-ratio-yesterday", "same-day-in-both-zones", "utc-today-so-far",
-         "shared-zone-yesterday"],
+    ids=["local-today", "local-today-same-day-in-both-zones", "mixed-zone-ratio-yesterday",
+         "same-day-in-both-zones", "utc-today-so-far", "shared-zone-yesterday"],
 )  # fmt: skip
 def test_a_relative_window_is_read_in_the_roles_zone_at_the_requests_now(
     request: pytest.FixtureRequest,
@@ -388,19 +396,6 @@ def test_a_relative_window_is_read_in_the_roles_zone_at_the_requests_now(
     gold = _reference(runtime, reference)
     assert gold == expected
     assert _answer(runtime, plan, now) == gold
-
-
-def test_today_executes_where_both_zones_read_the_same_day(local_subscriptions: Runtime) -> None:
-    plan = plan_payload(
-        local_subscriptions,
-        intent="new accounts today",
-        partial_query={},
-        now="2026-10-05T12:00:00Z",
-    )
-    assert plan["best"]["query"]["time"]["this"] == "day"
-    gold = _signups(local_subscriptions, "2026-10-05", "2026-10-06")
-    assert gold == 1
-    assert _total(local_subscriptions, plan, "2026-10-05T12:00:00Z") == gold
 
 
 @pytest.mark.parametrize(
@@ -929,26 +924,6 @@ def test_the_clock_is_scoped_and_the_cache_is_keyed_by_date(
     assert cue.bounds == {"start": "2026-09-01", "end": "2026-10-01"}
     cue = _time_window("MRR end of last month").as_of[0]
     assert cue.bounds == {"start": "2031-01-01", "end": "2031-02-01"}
-
-
-def test_a_forced_wrong_day_draft_is_held(
-    subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    result = compose(subscriptions, "new accounts today", policy_context=NOW)
-    wrong = replace(
-        result.draft.query,
-        time=result.draft.query.time.with_window({"start": "2026-10-06", "end": "2026-10-07"}),
-    )
-    monkeypatch.setattr(
-        "semantic_rails.planner.plan.compose",
-        lambda *_args, **_kwargs: replace(result, draft=replace(result.draft, query=wrong)),
-    )
-    plan = plan_payload(
-        subscriptions, intent="new accounts today", partial_query={"policy_context": NOW}
-    )
-    assert plan["status"] == "low_confidence"
-    assert not plan["next"].get("ready_for")
-    assert "time_window_unrealized" in str(plan["why"])
 
 
 @pytest.mark.parametrize(

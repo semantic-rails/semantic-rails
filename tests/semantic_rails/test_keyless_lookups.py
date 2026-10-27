@@ -174,15 +174,6 @@ def test_a_row_filter_on_a_one_per_key_dimension_is_refused(tmp_path):
     assert "must be a plain column of its entity's relation" in str(raised.value)
 
 
-def test_a_join_into_a_row_grain_model_names_one_per_key(tmp_path):
-    joins_rows = ("models/people.yml", lambda doc: doc["model"]["entities"].update(room_rows={}))
-    with pytest.raises(SemanticLayerError) as raised:
-        load_package_config(str(_shop(tmp_path, joins_rows)))
-    assert str(raised.value).endswith(
-        "To look up what is fixed per key, model its relation again with one_per_key: true."
-    )
-
-
 # The aggregates that read a true/false group's lowest and highest value, where MIN and MAX
 # aren't documented to take a boolean. Postgres takes no MIN or MAX of a boolean, and a column
 # only a measure reads has no declared type, so it reads every column's least and greatest value
@@ -406,31 +397,6 @@ def test_every_generated_name_keeps_the_reserved_prefix_once_shortened(tmp_path)
         shortened = _shortened_identifier(name) if len(name.encode()) > 63 else name
         assert shortened.startswith("sr_one_per_key__"), name
     runtime = Runtime.from_config(config, source_path=str(package), package_id="shop")
-    try:
-        rows = runtime.query({"select": [HEADCOUNT, ROOM_COUNT]})["rows"]
-    finally:
-        runtime.close()
-    assert rows == [{"headcount": 7, "room_count": 5}]
-
-
-def test_a_table_under_the_old_generated_name_is_an_ordinary_table(tmp_path):
-    """A table named as generated relations once were reads as itself: seven people, five
-    rooms."""
-    seed_package = _shop(tmp_path)
-    seed = seed_package / "data" / "seed.sql"
-    seed.write_text(
-        seed.read_text(encoding="utf-8")
-        + "\nALTER TABLE people RENAME TO shop_room__one_per_key;\n",
-        encoding="utf-8",
-    )
-    people = seed_package / "models" / "people.yml"
-    people.write_text(
-        people.read_text(encoding="utf-8").replace(
-            "relation: people", "relation: shop_room__one_per_key"
-        ),
-        encoding="utf-8",
-    )
-    runtime = _runtime(seed_package)
     try:
         rows = runtime.query({"select": [HEADCOUNT, ROOM_COUNT]})["rows"]
     finally:

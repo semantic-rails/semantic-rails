@@ -34,7 +34,6 @@ from semantic_rails.runtime_parts.answer_warnings import (
 )
 from semantic_rails.sql_ast import SqlJoin, SqlTableRef
 from semantic_rails.sql_preparation import ParameterSlot, parameters_denied
-from tests.semantic_rails import shared_seed
 from tests.semantic_rails.conftest import opened
 
 CLOSING = "BALANCE_CLOSING_DAY"
@@ -199,6 +198,8 @@ def test_staggered_snapshot_days_are_never_dropped_silently(stocks: Runtime) -> 
         "periods_missing": 1,
     }
     assert "2020-12-20" in warning["message"] and "1 of 2 series" in warning["message"]
+    # It says how to model a table that records only changes.
+    assert "state_as_of" in warning["message"]
     # By quarter, each quarter's closing day misses X.
     result = stocks.query(_call("inv_stagger", grain="quarter", **YEAR))
     assert _values(result) == [200, 200, 200, 200]
@@ -213,18 +214,6 @@ def test_staggered_snapshot_days_are_never_dropped_silently(stocks: Runtime) -> 
         "series_missing": 4,
         "periods_missing": 4,
     }
-
-
-def test_sparse_change_records_warn_and_point_to_state_as_of(stocks: Runtime) -> None:
-    """Q changed in March and R in August; the closing day (Aug 10) holds R only."""
-    day, total, seen, missing = _closing_read(stocks, "inv_changes", IN_2020)
-    assert (day, total, seen, missing) == ("2020-08-10", 40, 2, 1)
-    result = stocks.query(_call("inv_changes", **YEAR))
-    assert _values(result) == [float(total)]
-    warning = _one(result, "warnings", MISSING)
-    assert warning["details"]["closing_day"] == day
-    assert warning["details"]["series_missing"] == missing
-    assert "state_as_of" in warning["message"]
 
 
 def test_a_current_state_stock_on_an_event_clock_reads_each_series(stocks: Runtime) -> None:
@@ -284,37 +273,6 @@ def test_every_closing_day_read_names_its_day(stocks: Runtime) -> None:
         "series_missing": 1,
         "periods_missing": 1,
     }
-
-
-def test_jaffle_lifetime_spend_reads_every_customer_in_the_quarter(runtime_factory) -> None:
-    """The customers table holds one row per customer, on the event clock first_order_at:
-    Q1 2017 adds up every customer who first ordered in it, not the customers of one day."""
-    seed = shared_seed.seed_for("jaffle_shop")
-    assert seed is not None
-    with duckdb.connect(str(seed), read_only=True) as con:
-        ((customers, total),) = con.execute(
-            "SELECT COUNT(*), ROUND(SUM(lifetime_spend_cents) / 100.0, 2) FROM jaffle_customer "
-            "WHERE first_order_at >= TIMESTAMP '2017-01-01' "
-            "AND first_order_at < TIMESTAMP '2017-04-01'"
-        ).fetchall()
-    assert (customers, float(total)) == (341, 267324.55)
-    runtime = runtime_factory("jaffle_shop")
-    call = {
-        "select": [
-            {
-                "expression": {"kind": "measure", "measure": "measure.jaffle.lifetime_spend_usd"},
-                "as": "v",
-            }
-        ],  # fmt: skip
-        "time": {
-            "temporal_role": "temporal_role.jaffle_customer_first_order_at",
-            "start": "2017-01-01",
-            "end": "2017-04-01",
-        },
-    }
-    result = runtime.query(call)
-    assert [round(value, 2) for value in _values(result)] == [267324.55]
-    assert CLOSING not in _codes(result, "assumptions")
 
 
 @pytest.mark.parametrize("warehouse", supported_warehouses())

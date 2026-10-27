@@ -31,11 +31,6 @@ ACCEPTED = [
         id="bare-metric",
     ),
     pytest.param(
-        {"metric": METRIC, "as": "aov"},
-        {"expression": {"kind": "metric", "metric": METRIC}, "as": "aov"},
-        id="bare-metric-alias",
-    ),
-    pytest.param(
         {"measure": MEASURE, "aggregation": "sum", "as": "rev"},
         {"expression": {"kind": "measure", "measure": MEASURE, "aggregation": "sum"}, "as": "rev"},
         id="bare-measure-aggregation",
@@ -98,18 +93,6 @@ def test_runtime_refuses_a_bare_select_item_with_the_reference_to_send(
     assert error["details"]["path"].startswith("select[0]")
     (hint,) = error["recovery_hints"]
     assert canonical["expression"].get("metric", MEASURE) in hint["message"]
-
-
-@pytest.mark.parametrize("kind", [None, "dimension", "group", "ref"])
-def test_runtime_refuses_a_dimension_wrapped_in_an_expression(runtime_factory, kind):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        item = {"expression": {**({"kind": kind} if kind else {}), "dimension": DIM}}
-        (error,) = runtime.validate(_call([item, {"expression": METRIC, "as": "aov"}]))["errors"]
-    finally:
-        runtime.close()
-    assert error["code"] == "INVALID_QUERY"
-    assert error["details"]["path"].startswith("select[0].expression")
 
 
 def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):

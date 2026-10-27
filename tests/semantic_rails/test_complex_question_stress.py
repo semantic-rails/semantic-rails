@@ -351,6 +351,7 @@ def test_plan_composes_exact_complex_question_shapes(runtime):
     # the draft validates; the plan still holds it because a balance summed over a month is
     # not the snapshot the question asks for.
     assert_plan_held(snapshot, "PLAN_INTENT_COVERAGE_GAP")
+    assert "stock_as_of_unrealized" in {gap["kind"] for gap in snapshot["why"]["details"]["gaps"]}
     assert "ready_for" not in snapshot["next"]
     snapshot_query = snapshot["best"]["query"]
     snapshot_expr = snapshot_query["select"][0]["expression"]

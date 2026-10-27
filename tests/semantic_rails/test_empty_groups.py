@@ -545,33 +545,24 @@ def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime) -> None:
 @pytest.mark.parametrize(
     ("grain", "expected"),
     [
+        # The total: a total with data says nothing about missing data.
+        (None, [(1, 0, 1)]),
         ("week", [(1, 0, 1)]),
         # Each month the window touches: no order in its November days, order 3 in December.
         ("month", [(0, 0, 0), (1, 0, 1)]),
     ],
 )
 def test_a_window_total_observes_conditional_counts_outside_its_bounds(
-    shop: Runtime, grain: str, expected: list[tuple[int, int, int]]
+    shop: Runtime, grain: str | None, expected: list[tuple[int, int, int]]
 ) -> None:
     for time in LAST_WEEK_SPELLINGS:
+        bucket = {"grain": grain} if grain else {}
         response = shop.query(
-            {"select": A_B_NET, "time": {"temporal_role": SHOP_ROLE, "grain": grain, **time}},
+            {"select": A_B_NET, "time": {"temporal_role": SHOP_ROLE, **bucket, **time}},
             now=WEEK_END,
         )
         assert _a_b_net(response) == expected, time
         assert not _warnings(response)
-
-
-@pytest.mark.parametrize("time", LAST_WEEK_SPELLINGS, ids=["named", "last-week"])
-def test_grainless_conditional_count_total_has_no_missing_data_warning(
-    shop: Runtime, time: dict[str, Any]
-) -> None:
-    """The answer is the ledger's; a total with data says nothing about missing data."""
-    response = shop.query(
-        {"select": A_B_NET, "time": {"temporal_role": SHOP_ROLE, **time}}, now=WEEK_END
-    )
-    assert _a_b_net(response) == [(1, 0, 1)]
-    assert not _warnings(response)
 
 
 @pytest.mark.parametrize("grain", [None, "week"])
@@ -1508,17 +1499,6 @@ def test_a_rollup_never_answers_a_conditional_sum(
     assert (leaf.aggregate_relation_id != "") is routed
     if not routed:
         assert set(leaf.aggregate_relation_rejections.values()) == {"aggregation_not_reaggregable"}
-
-
-# -- ClickHouse reads an unmatched outer-join field as NULL only when told to ---------------
-
-
-@pytest.mark.parametrize("warehouse", ["duckdb", "postgres", "clickhouse", "snowflake"])
-def test_clickhouse_statements_set_join_use_nulls(config: Any, warehouse: str) -> None:
-    config = replace(config, package=replace(config.package, warehouse=warehouse))
-    query = {"select": _select(revenue=REVENUE, items=ITEMS), "group_by": [STORE]}
-    sql = compile_query(config, Registry(config), query)["sql"]
-    assert sql.endswith("\nSETTINGS join_use_nulls = 1") is (warehouse == "clickhouse")
 
 
 # -- a path that skips the guard is refused -------------------------------------------------

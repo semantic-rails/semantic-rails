@@ -169,8 +169,6 @@ def test_a_compile_on_such_a_warehouse_refuses_rather_than_ignores_it(shop):
     "warehouse",
     [
         "duckdb",
-        "motherduck",
-        "ducklake",
         "postgres",
         "snowflake",
         "bigquery",

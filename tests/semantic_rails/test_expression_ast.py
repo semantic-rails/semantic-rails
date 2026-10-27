@@ -221,83 +221,70 @@ def test_aggregate_if_value_is_optional_only_for_count():
     assert (payload["kind"], payload["aggregation"]) == ("aggregate_if", "sum")
     assert payload["value"]["column"] == "order_total_cents"
 
+    with pytest.raises(SemanticLayerError) as exc:
+        parse_semantic_expression(
+            {"kind": "aggregate_if", "aggregation": "sum", "condition": X}, context="query"
+        )
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+    assert exc.value.details == {"aggregation": "sum", "expression_kind": "aggregate_if"}
+
 
 @pytest.mark.parametrize(
-    "raw,context,code,details",
+    "raw,context,code",
     [
-        ({"kind": "in", "expr": X, "values": []}, "config", "INVALID_EXPRESSION_AST", None),
+        ({"kind": "in", "expr": X, "values": []}, "config", "INVALID_EXPRESSION_AST"),
         (
             {key: value for key, value in _predicate().items() if key != "scope_mode"},
             "config",
             "INVALID_METRIC_PREDICATE",
-            None,
         ),
         (
             _predicate(scope_mode="entity_only", time_grain="month"),
             "config",
             "INVALID_METRIC_PREDICATE",
-            None,
         ),
-        (_predicate(time_alignment="next_query_period"), "query", "INVALID_METRIC_PREDICATE", None),
-        (_predicate(time_alignment="query_window"), "query", "INVALID_METRIC_PREDICATE", None),
-        (_predicate(entity=""), "query", "PREDICATE_ENTITY_REQUIRED", None),
+        (_predicate(time_alignment="next_query_period"), "query", "INVALID_METRIC_PREDICATE"),
+        (_predicate(time_alignment="query_window"), "query", "INVALID_METRIC_PREDICATE"),
+        (_predicate(entity=""), "query", "PREDICATE_ENTITY_REQUIRED"),
         (
             {key: value for key, value in _predicate().items() if key != "input"},
             "query",
             "PREDICATE_INPUT_REQUIRED",
-            None,
         ),
-        (_conversion(entity=""), "query", "CONVERSION_ENTITY_REQUIRED", None),
-        (_conversion(window={"value": 7}), "query", "CONVERSION_WINDOW_REQUIRED", None),
-        (
-            _conversion(window={"unit": "day", "value": 0}),
-            "query",
-            "CONVERSION_WINDOW_REQUIRED",
-            None,
-        ),
+        (_conversion(entity=""), "query", "CONVERSION_ENTITY_REQUIRED"),
+        (_conversion(window={"value": 7}), "query", "CONVERSION_WINDOW_REQUIRED"),
+        (_conversion(window={"unit": "day", "value": 0}), "query", "CONVERSION_WINDOW_REQUIRED"),
         (
             _conversion(window={"unit": "day", "value": "abc"}),
             "query",
             "CONVERSION_WINDOW_REQUIRED",
-            None,
         ),
         (
             _conversion(matching_mode="last_converted_before_base"),
             "query",
             "CONVERSION_MATCHING_MODE_REQUIRED",
-            None,
         ),
-        (_conversion(matching_mode=""), "query", "CONVERSION_MATCHING_MODE_REQUIRED", None),
-        ({"kind": "between", "low": ONE, "high": TWO}, "config", "INVALID_EXPRESSION_AST", None),
-        ({"kind": "between", "expr": X, "low": ONE}, "config", "INVALID_EXPRESSION_AST", None),
+        (_conversion(matching_mode=""), "query", "CONVERSION_MATCHING_MODE_REQUIRED"),
+        ({"kind": "between", "low": ONE, "high": TWO}, "config", "INVALID_EXPRESSION_AST"),
+        ({"kind": "between", "expr": X, "low": ONE}, "config", "INVALID_EXPRESSION_AST"),
         (
             {"kind": "between", "expr": X, "low": ONE, "high": TWO, "inclusive": True},
             "config",
             "INVALID_EXPRESSION_KEY",
-            None,
         ),
-        (
-            {"kind": "aggregate_if", "aggregation": "sum", "condition": X},
-            "query",
-            "INVALID_EXPRESSION_AST",
-            {"aggregation": "sum", "expression_kind": "aggregate_if"},
-        ),
-        ({"kind": "aggregate_if", "condition": X}, "query", "INVALID_EXPRESSION_AST", None),
-        ({"kind": "aggregate_if", "aggregation": "count"}, "query", "INVALID_EXPRESSION_AST", None),
+        ({"kind": "aggregate_if", "condition": X}, "query", "INVALID_EXPRESSION_AST"),
+        ({"kind": "aggregate_if", "aggregation": "count"}, "query", "INVALID_EXPRESSION_AST"),
         (
             {"kind": "aggregate_if", "aggregation": "count", "condition": X, "filter": {"all": []}},
             "query",
             "INVALID_EXPRESSION_KEY",
-            None,
         ),
     ],
 )
-def test_malformed_expressions_are_refused(raw, context, code, details):
+def test_malformed_expressions_are_refused(raw, context, code):
     with pytest.raises(SemanticLayerError) as exc:
         parse_semantic_expression(raw, context=context)
     assert exc.value.code == code
-    if details is not None:
-        assert exc.value.details == details
 
 
 def test_coverage_cutoff_functions_are_engine_only():

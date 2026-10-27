@@ -288,34 +288,6 @@ def test_a_relation_named_like_a_sample_is_confirmed_on_its_own_rows(tmp_path):
     assert temporary == 0  # the sample is dropped
 
 
-def test_a_key_is_confirmed_under_the_equality_joins_use(tmp_path):
-    # 'a' and 'A' are one value to a NOCASE column's joins and groups.
-    path = tmp_path / "collated.duckdb"
-    with duckdb.connect(str(path)) as connection:
-        connection.execute(
-            "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE, category VARCHAR); "
-            "INSERT INTO accounts VALUES ('a', 'x'), ('A', 'x')"
-        )
-    with open_duckdb(path) as warehouse:
-        suggested = suggest_model(warehouse, "accounts")
-    assert suggested["primary_key"] is None, suggested["key_search"]
-    assert suggested["key_search"]["status"] == "none_found"
-
-
-def test_a_declared_primary_key_is_confirmed_like_any_other(tmp_path):
-    # DuckDB keeps 'a' and 'A' under a NOCASE primary key, but joins read them as one value.
-    path = tmp_path / "declared.duckdb"
-    with duckdb.connect(str(path)) as connection:
-        connection.execute(
-            "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE PRIMARY KEY, "
-            "category VARCHAR); INSERT INTO accounts VALUES ('a', 'x'), ('A', 'x')"
-        )
-    with open_duckdb(path) as warehouse:
-        suggested = suggest_model(warehouse, "accounts")
-    assert suggested["primary_key"] is None, suggested["key_search"]
-    assert suggested["upsert_model"]["primary_key"] == []
-
-
 def test_one_deadline_covers_sampling_profiling_and_the_search(
     warehouse: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -339,7 +311,20 @@ def test_one_deadline_covers_sampling_profiling_and_the_search(
 
 @pytest.mark.parametrize(
     ("sql", "key"),
-    [  # a key column named like an internal alias reads as itself
+    [
+        # 'a' and 'A' are one value to a NOCASE column's joins and groups.
+        (
+            "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE, category VARCHAR); "
+            "INSERT INTO accounts VALUES ('a', 'x'), ('A', 'x')",
+            None,
+        ),
+        # DuckDB keeps 'a' and 'A' under a NOCASE primary key, but joins read them as one value.
+        (
+            "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE PRIMARY KEY, "
+            "category VARCHAR); INSERT INTO accounts VALUES ('a', 'x'), ('A', 'x')",
+            None,
+        ),
+        # A key column named like an internal alias reads as itself.
         (
             "CREATE TABLE accounts (account_id VARCHAR COLLATE NOCASE, n INTEGER); "
             "INSERT INTO accounts VALUES ('a', 1), ('A', 1)",
@@ -347,8 +332,9 @@ def test_one_deadline_covers_sampling_profiling_and_the_search(
         ),
         ("CREATE TABLE letters (n VARCHAR); INSERT INTO letters VALUES ('a'), ('b')", ["n"]),
     ],
+    ids=["nocase", "nocase-declared", "internal-name-nocase", "internal-name"],
 )
-def test_key_columns_never_collide_with_internal_names(tmp_path, sql, key):
+def test_a_key_is_confirmed_under_the_equality_joins_use(tmp_path, sql, key):
     path = tmp_path / "names.duckdb"
     with duckdb.connect(str(path)) as connection:
         connection.execute(sql)
@@ -356,3 +342,6 @@ def test_key_columns_never_collide_with_internal_names(tmp_path, sql, key):
     with open_duckdb(path) as warehouse:
         suggested = suggest_model(warehouse, relation)
     assert (suggested["primary_key"] or {}).get("columns") == key, suggested["key_search"]
+    assert suggested["upsert_model"]["primary_key"] == (key or [])
+    status = "confirmed" if key else "none_found"
+    assert suggested["key_search"] == {"status": status, "checked": 1}

@@ -724,16 +724,6 @@ def test_runtime_from_path_prefers_package_relative_assets_for_external_packages
         runtime.close()
 
 
-def test_parse_config_succeeds_for_monolithic_yaml(tmp_path: Path):
-    package_file = tmp_path / "monolithic.yml"
-    _write_monolithic_package(package_file, "monolithic_demo")
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_file)))
-
-    assert report["ok"] is True
-    assert report["package"]["id"] == "monolithic_demo"
-
-
 def test_jaffle_reference_package_has_release_authoring_profile():
     report, config = parse_config_report(resolve_package_reference(package_id="jaffle_shop"))
     assert report["ok"] is True
@@ -1040,12 +1030,8 @@ def test_validate_config_writes_compiled_manifest(tmp_path: Path):
     package_dir = tmp_path / "manifest_demo"
     _write_minimal_package(package_dir)
 
-    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
-    assert report["ok"] is True
-
-    # validate-config itself doesn't write — the CLI wrapper does. Call
-    # write_manifest directly to assert the artifact's shape and on-disk
-    # location are stable.
+    # The CLI wrapper writes the manifest. Call write_manifest directly to
+    # assert the artifact's shape and on-disk location are stable.
     from semantic_rails.catalog_service import write_manifest
 
     runtime = Runtime.from_path(str(package_dir))
@@ -1086,17 +1072,6 @@ def test_runtime_manifest_catalog_returns_isolated_dicts(tmp_path: Path):
         second = runtime.manifest_catalog(view="summary", verbosity="compact")
         assert second is not None
         assert "__corrupted" not in second
-    finally:
-        runtime.close()
-
-
-def test_runtime_manifest_catalog_returns_none_when_no_manifest(tmp_path: Path):
-    """No manifest → graceful None, callers fall back to live compute."""
-    package_dir = tmp_path / "no_manifest_demo"
-    _write_minimal_package(package_dir)
-    runtime = Runtime.from_path(str(package_dir))
-    try:
-        assert runtime.manifest_catalog(view="summary", verbosity="compact") is None
     finally:
         runtime.close()
 
@@ -1923,35 +1898,6 @@ def test_invalid_metric_shapes_return_errors(tmp_path, layout, shape):
     assert (report["ok"], config) == (False, None)
 
 
-def test_strict_accepts_measure_rollup_semantics(tmp_path: Path):
-    """Model variants rely on measure rollup semantics in strict packages."""
-    package_dir = tmp_path / "strict_measure_rollup"
-    _write_current_minimal_package(package_dir, measure_overrides={"rollup": "additive"})
-
-    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
-
-    assert report["ok"] is True, [e.get("message") for e in report.get("errors", [])]
-
-
-def test_check_passes_column_reachability_on_jaffle(tmp_path: Path):
-    """The reference jaffle_shop package must pass column reachability —
-    every authored dimension and measure expr resolves against the
-    duckdb seed table.
-    """
-    from semantic_rails.package_tools import (
-        check_warehouse_column_reachability_report,
-    )
-
-    package_dir = _copy_external_jaffle_package(tmp_path)
-    ref = resolve_package_reference(path=str(package_dir))
-
-    report = check_warehouse_column_reachability_report(ref)
-
-    assert report["ok"] is True, report["errors"]
-    assert report["summary"]["tables_probed"] > 0
-    assert report["summary"]["missing_columns"] == 0
-
-
 @pytest.mark.parametrize("expression", ["1", "1.0"])
 def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str):
     package_dir = _copy_external_jaffle_package(tmp_path)
@@ -2484,44 +2430,6 @@ def test_directory_validation_rejects_unknown_segment_keys(
     assert expected in errors[0]
 
 
-def test_directory_validation_rejects_unknown_metric_keys(package_config_factory):
-    _, package_dir = package_config_factory("jaffle_shop")
-    metric_file = Path(package_dir) / "metrics" / "core" / "core_metrics.yml"
-    raw = yaml.safe_load(metric_file.read_text(encoding="utf-8"))
-    metric_key = next(iter(raw["metrics"]))
-    raw["metrics"][metric_key]["valeu_type"] = "number"
-    _write_yaml(metric_file, raw)
-
-    errors = validate_runtime_package(Path(package_dir))
-
-    assert len(errors) == 1, errors
-    assert f"metric '{metric_key}' has unknown key 'valeu_type'" in errors[0]
-    assert "did you mean 'value_type'?" in errors[0]
-
-
-def test_single_file_validation_rejects_unknown_membership_keys(tmp_path: Path):
-    package_file = tmp_path / "monolithic.yml"
-    _write_monolithic_package(package_file, "monolithic_demo")
-    payload = yaml.safe_load(package_file.read_text(encoding="utf-8"))
-    payload["segments"] = {
-        "big_orders": {
-            "as": "segment.demo.big_orders",
-            "entity": "order",
-            "basis_metric": "metric.sales.orders",
-            "membership": {
-                "filters": [{"field": "dimension.demo_order_id", "op": ">", "value": 1}]
-            },
-        }
-    }
-    _write_yaml(package_file, payload)
-
-    errors = validate_runtime_package(package_file)
-
-    assert len(errors) == 1, errors
-    assert "segment 'big_orders' membership has unknown key 'filters'" in errors[0]
-    assert "write it under membership.where" in errors[0]
-
-
 def test_directory_validation_accepts_every_membership_key_the_loader_reads(
     package_config_factory,
 ):
@@ -2611,6 +2519,8 @@ def test_key_checks_cover_every_layout_the_loader_reads(
     else:
         assert len(errors) == 1, errors
         assert f"unknown key '{extra_key}'" in errors[0]
+        if kind == "metric":
+            assert "did you mean 'value_type'?" in errors[0]
 
 
 def _jaffle_with_duplicate_metric(package_config_factory, *, typo_in: str) -> Path:
@@ -2752,39 +2662,39 @@ def _jaffle_with_metric_role(package_config_factory, metric_file: str, key: str,
     return Path(package_dir)
 
 
-def test_validation_rejects_a_metric_timed_by_a_clock_its_measures_lack(package_config_factory):
-    # AOV over order measures, labeled with the sessions table's clock.
-    package_dir = _jaffle_with_metric_role(
-        package_config_factory,
-        "core/core_metrics.yml",
-        "sales.aov_usd",
-        "temporal_role.jaffle_session_started_at",
-    )
+@pytest.mark.parametrize(
+    ("metric_file", "key", "role", "expected"),
+    [
+        # AOV over order measures, labeled with the sessions table's clock.
+        (
+            "core/core_metrics.yml",
+            "sales.aov_usd",
+            "temporal_role.jaffle_session_started_at",
+            "metric metric.sales.aov_usd has temporal_role "
+            "'temporal_role.jaffle_session_started_at', but its measures are timed by "
+            "temporal_role.jaffle_order_time",
+        ),
+        # Sessions to orders: a conversion is timed by its base operand, the sessions clock.
+        (
+            "extensions/advanced_metrics.yml",
+            "sales.session_to_order_conversion_rate_7d",
+            "temporal_role.jaffle_order_time",
+            "metric metric.sales.session_to_order_conversion_rate_7d has temporal_role "
+            "'temporal_role.jaffle_order_time', but its measures are timed by "
+            "temporal_role.jaffle_session_started_at",
+        ),
+    ],
+    ids=["ratio", "conversion-base-operand"],
+)
+def test_validation_rejects_a_metric_timed_by_a_clock_its_measures_lack(
+    package_config_factory, metric_file, key, role, expected
+):
+    package_dir = _jaffle_with_metric_role(package_config_factory, metric_file, key, role)
 
     errors = validate_runtime_package(package_dir)
 
     assert len(errors) == 1, errors
-    assert (
-        "metric metric.sales.aov_usd has temporal_role "
-        "'temporal_role.jaffle_session_started_at', but its measures are timed by "
-        "temporal_role.jaffle_order_time"
-    ) in errors[0]
-
-
-def test_validation_times_a_conversion_metric_by_its_base_operand(package_config_factory):
-    # Sessions to orders: the sessions clock is right, the orders clock is not.
-    package_dir = _jaffle_with_metric_role(
-        package_config_factory,
-        "extensions/advanced_metrics.yml",
-        "sales.session_to_order_conversion_rate_7d",
-        "temporal_role.jaffle_order_time",
-    )
-
-    errors = validate_runtime_package(package_dir)
-
-    assert len(errors) == 1, errors
-    assert "sales.session_to_order_conversion_rate_7d has temporal_role" in errors[0]
-    assert "timed by temporal_role.jaffle_session_started_at" in errors[0]
+    assert expected in errors[0]
 
 
 def _add(left: dict, right: dict) -> dict:

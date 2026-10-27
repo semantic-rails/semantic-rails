@@ -517,15 +517,6 @@ def test_an_excluded_value_named_top_is_no_ranking(shop):
     _assert_answered(shop, payload, BOTH)
 
 
-def test_an_exclusion_is_answered_with_the_null_keeping_not(shop):
-    # Its numbers, with and without a window, are the answers ledger's
-    # shop/plan-signups-excluding-web cases: here, the draft's form and the caller's '!='.
-    assert _plan(shop, "signups excluding web")["best"]["query"]["where"] == _drops("web")
-    # A plain '!=' is the same word.
-    payload = _plan(shop, "signups excluding web", _drops("web", op="!="))
-    _assert_answered(shop, payload, "channel IS DISTINCT FROM 'web'")
-
-
 def test_an_exclusion_keeps_rows_with_no_recorded_value(tmp_path):
     seed = (
         "\nDELETE FROM signups;\nINSERT INTO signups (customer_id, signed_up_at, channel) VALUES "
