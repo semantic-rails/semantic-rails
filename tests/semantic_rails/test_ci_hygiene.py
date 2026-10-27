@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
@@ -740,6 +741,36 @@ def test_backend_matrix_covers_versions_for_each_event(event, versions, shards, 
         "docs",
         "postgres",
     ]
+
+
+def test_every_supported_python_passes_before_a_merge_or_a_release():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    prefix = "Programming Language :: Python :: 3."
+    supported = {
+        classifier.removeprefix("Programming Language :: Python :: ")
+        for classifier in project["project"]["classifiers"]
+        if classifier.startswith(prefix)
+    }
+    workflows = ROOT / ".github/workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text())["jobs"]
+    merged = set(_evaluate(ci["backend"]["strategy"]["matrix"]["python-version"], "merge_group"))
+    # The tag-push publish workflow is the release path: its suite gates the upload.
+    publish = yaml.safe_load((workflows / "publish.yml").read_text())["jobs"]
+    released = set(publish["suite"]["strategy"]["matrix"]["python-version"])
+    assert "suite" in publish["test"]["needs"]
+    assert supported == {"3.11", "3.12", "3.13", "3.14"}
+    assert merged | released == supported
+    assert supported - merged == {"3.13"}
+    # The manual release gate and its nightly run on main cover 3.13 as well.
+    readiness = yaml.safe_load((workflows / "release-readiness.yml").read_text())
+    trigger = readiness.get("on", readiness.get(True))
+    assert trigger["schedule"] == [{"cron": "41 5 * * *"}]
+    versions = readiness["jobs"]["suite"]["strategy"]["matrix"]["python-version"]
+    assert _evaluate(versions, "schedule") == ["3.13"]
+    assert _evaluate(versions, "workflow_dispatch") == ["3.12", "3.13"]
+    assert (
+        readiness["jobs"]["release-readiness"]["if"] == "github.event_name == 'workflow_dispatch'"
+    )
 
 
 @pytest.mark.parametrize("event", ["pull_request", "merge_group", "workflow_dispatch"])

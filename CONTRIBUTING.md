@@ -142,8 +142,9 @@ enforces it.
 Backend CI partitions whole test files into deterministic shards: eight on pull
 requests, which run Python 3.12 only, and five per version elsewhere. Merge groups
 cover the oldest and newest supported Pythons, 3.11 and 3.14, plus 3.12; a failure
-on any of them ejects the change before merging. Python 3.13 runs nightly on main
-and in every release gate (`release-readiness.yml`), and manual CI runs cover all
+on any of them ejects the change before merging. Python 3.13 runs in every release's
+publish suite (`publish.yml` tests 3.12 and 3.13 before anything is uploaded), in
+the manual release-readiness gate and nightly on main; manual CI runs cover all
 four versions. Files are assigned longest first
 to the lightest shard, with paths and shard indices breaking ties.
 `tests/shard_durations.json` records summed
