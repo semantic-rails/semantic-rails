@@ -947,3 +947,30 @@ def test_athena_compiles_entire_battery_to_non_empty_sql(athena_runtime):
             assert forbidden not in sql, f"{case.name}: forbidden {forbidden} in SQL"
         # Trino rejects the portable INTERVAL date_add form.
         assert "INTERVAL (" not in sql, f"{case.name}: INTERVAL form leaked into SQL"
+
+
+# The battery cases whose SQL builds the implicit calendar's day spine. All four failed live on
+# Athena engine v3 from 2026-10-19 with FUNCTION_NOT_FOUND: Athena has no SEQUENCE(date, date),
+# only SEQUENCE(bigint, bigint), (bigint, bigint, bigint) and (timestamp, timestamp, interval).
+DAY_SPINE_CASES = {
+    "example_inline_yoy",
+    "advanced_revenue_share_from_session_customers_executes",
+    "advanced_p80_customer_revenue_returns_monthly_rows",
+    "advanced_order_share_from_session_customers_by_store_executes",
+}
+
+
+def test_athena_day_spine_sequences_integer_day_offsets(athena_runtime):
+    from tests.integration.harness import load_battery
+
+    spines = set()
+    for case in load_battery():
+        sql = str(athena_runtime.compile(case.payload)["rendered_sql"])
+        if "SEQUENCE(" not in sql:
+            continue
+        spines.add(case.name)
+        # Every SEQUENCE counts whole days from 0 (the bigint overload), and each day is the
+        # range start plus its offset, a DATE.
+        assert sql.count("SEQUENCE(") == sql.count("SEQUENCE(0, DATE_DIFF('day', "), sql
+        assert "DATE_ADD('day', day_series.day_offset, " in sql, sql
+    assert spines == DAY_SPINE_CASES

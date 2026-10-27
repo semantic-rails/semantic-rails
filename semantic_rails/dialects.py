@@ -1204,15 +1204,19 @@ class AthenaDialect(SqlDialect):
     date_diff_units = ()  # its native date_diff counts complete elapsed units
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
-        # SEQUENCE over DATEs includes its end and steps one day. Trino caps one
-        # sequence at 10,000 elements (about 27 years) and fails loudly beyond that.
+        # Athena has no SEQUENCE(date, date): it offers SEQUENCE over integers, and over
+        # timestamps only with an INTERVAL step. Integer day offsets include their end, and
+        # DATE_ADD('day', n, date) is a DATE, as the spine needs. The day count is exact,
+        # since both bounds are midnight. SEQUENCE caps at 10,000 elements (about 27 years)
+        # and fails loudly beyond that.
         series = SqlTableFunction(
             "UNNEST",
-            args=[SqlCall("SEQUENCE", [start, end])],
+            args=[SqlCall("SEQUENCE", [SqlLiteral(0), self.date_diff("day", start, end)])],
             alias="day_series",
-            columns=["series_day"],
+            columns=["day_offset"],
         )
-        return _day_rows(SqlIdentifier(parts=["day_series", "series_day"]), source, series)
+        offset = SqlIdentifier(parts=["day_series", "day_offset"])
+        return _day_rows(self.date_add("day", offset, start), source, series)
 
     def prepare_query(self, sql: str) -> PreparedQuery:
         return PreparedQuery(float_nullif_divisions(sql, cast_type="DOUBLE"))

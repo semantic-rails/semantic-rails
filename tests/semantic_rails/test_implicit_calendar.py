@@ -498,8 +498,9 @@ GOLDENS = {
     ),
     "databricks": (f"EXPLODE(SEQUENCE({BOUNDS})) AS date_day\nFROM dense_bounds", BUCKET),
     "athena": (
-        "day_series.series_day AS date_day\nFROM dense_bounds\n"
-        f"CROSS JOIN UNNEST(SEQUENCE({BOUNDS})) AS day_series(series_day)",
+        f"DATE_ADD('day', day_series.day_offset, {START}) AS date_day\nFROM dense_bounds\n"
+        f"CROSS JOIN UNNEST(SEQUENCE(0, DATE_DIFF('day', CAST({START} AS TIMESTAMP), "
+        "CAST(CAST(dense_bounds.range_end AS DATE) AS TIMESTAMP)))) AS day_series(day_offset)",
         BUCKET,
     ),
 }
