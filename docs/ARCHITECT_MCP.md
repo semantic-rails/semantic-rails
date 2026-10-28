@@ -146,17 +146,28 @@ package with one model, its count and amount metrics, an example, a package test
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
 
-Writes, `validate_project`, `project_status` and `promotion_check` answer with a summary that an
-MCP client shows whole, whatever the package's size: each `warnings` list as `warning_counts` by
-code and 10 of its warnings without their `details`, the first of each code before any repeat, in
-report order (`warnings_omitted` counts the rest), the
-route census as its `counts` and its first 3 `undecided` pairs (whole, with the options that
-record them), `project_status` `files` without those under dot-directories (transaction
-receipts), only the failing `probes`, `examples` and `tests`, and file `changes` with their
-`diff` but no `proposed_content` (diffs share a 12,000-character budget; a cut one says
-`diff_truncated`). Errors, revisions, `changed_files`, and refusals' `details` (such as
-`CONFIG_CONFLICT`'s `retry`) are never cut. The `report` field says so. `full_report: true`
+Writes, `validate_project`, `project_status`, `promotion_check`, `diff_project` and
+`impact_project` answer with a summary that fits one page (16,000 characters of compact JSON),
+whatever the package's size: each `warnings` list as `warning_counts` by code and 10 of its
+warnings without their `details`, the first of each code before any repeat, in report order
+(`warnings_omitted` counts the rest), the route census as its `counts` and its first 3
+`undecided` pairs (each with the first of its long lists, such as its options), `project_status`
+`files` without those under dot-directories (transaction receipts), only the failing `probes`,
+`examples` and `tests`, every other list as its first rows within 2,000 characters, and file
+`changes` with their `diff` but no `proposed_content` (diffs share a 12,000-character budget; a
+cut one says `diff_truncated`). A summary that still doesn't fit halves those budgets, up to
+three times. Errors, revisions, `changed_files`, and refusals' `details` (such as
+`CONFIG_CONFLICT`'s `retry`) are never cut. `pages` names each list the summary leaves rows out
+of by its path (`parse.warnings`, `route_census.undecided`,
+`route_census.undecided.0.details.clarification.options`), with its `total_count` and the
+`next_offset` of the first row it leaves out. The `report` field says so. `full_report: true`
 returns the whole report.
+
+On the read-only report tools, `page` (a path from `pages`) answers with that list instead:
+`items` from `offset`, each shown as the summary shows rows, with the [paging](#paging) fields
+and `pages` for the lists its items cut short in turn. A write's summary counts what it leaves out
+in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
+the same `idempotency_key` replays the write).
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
    `promotion_check` with `compare_path` or `base_ref` when an environment gate matters.
 
@@ -166,6 +177,31 @@ The terminal REPL exposes the same abstraction upserts through `author model`,
 similar-definition warnings, a pre-write YAML preview, and session-local
 `undo`; use the MCP tools when an MCP client is orchestrating the same work.
 
+## Paging
+
+The tools whose answer is one long list (`list_tables`, `describe_table`, `profile_columns`,
+`suggest_model`, `suggest_links`, `suggest_models_from_dbt` and `list_project_files`) page it the
+way the query MCP's `valid-values` does: `offset` (default 0) and `limit` (default 100) in, and
+`offset`, `total_count`, `has_more` and `next_offset` (`null` on the last page) out. A page holds
+the items from `offset`, in a stable order, as many as fit in 16,000 characters of compact JSON
+(always at least one, at most `limit`); the rest of the answer is the same on every page. Pass
+`next_offset` as `offset` for the next page. Paging is not a limit: every item is on exactly one
+page, and `full_report: true` returns them all in one answer.
+
+- `describe_table` pages its columns; its keys are on every page.
+- `profile_columns` profiles only the page's columns, at most 50 at a time.
+- `suggest_model` pages its times, then dimensions, then measures, and each page's
+  `upsert_model` draft holds only those: the pages' drafts merge into the whole one.
+- `suggest_links` pages its `proposals`, then `below_threshold`, then `not_proposed`, and
+  `counts` totals each on every page.
+
+An `offset` past the last item, an `offset` with `full_report`, an `offset` without `page` on a
+report tool, `page` with `full_report`, and a `page` that names no list are
+`INVALID_MCP_ARGUMENTS` errors whose message names the fix; an unknown `page` lists the paths
+there are in `details.pages`. A negative `offset` or a `limit` under 1 fails the tool's schema.
+`scripts/mcp_context.py` gates the first page of each paged tool, and each summary, on a
+100-relation warehouse (`scripts/large_warehouse.py`).
+
 ## Warehouse Introspection
 
 Four read-only tools look at a DuckDB database before or while you model it. Pass `duckdb_path`
@@ -173,8 +209,7 @@ Four read-only tools look at a DuckDB database before or while you model it. Pas
 package: its `default_db`). They open the file read-only with DuckDB external access disabled and
 never create, seed or change it.
 
-- `list_tables`: tables and views, optionally for one `schema`, with column counts. The MCP tool
-  returns at most 200 and sets `truncated` when there are more; narrow with `schema`.
+- `list_tables`: tables and views, optionally for one `schema`, with column counts, in pages.
 - `describe_table`: columns with types, nullability and defaults, and declared primary, unique and
   foreign keys, with referenced relations schema-qualified when needed.
 - `profile_columns`: row, distinct and null counts, min/max and up to 20 sample values per column
@@ -299,8 +334,7 @@ The same functions are available to Python callers in `semantic_rails.architect_
 
 `suggest_models_from_dbt` reads a dbt project's artifacts; it never runs dbt. Pass `target_dir`
 (dbt's `target/`, inside the workspace) or `manifest_path`, and optionally `catalog_path`; `select`
-narrows the models by name; without it, the MCP tool returns the first 20 models and sets
-`truncated` when there are more. Run `dbt build` first, and `dbt docs generate` for `catalog.json`,
+narrows the models by name; the MCP tool pages the models. Run `dbt build` first, and `dbt docs generate` for `catalog.json`,
 which carries column types (without it, columns the manifest does not type are reported as
 `untyped_columns`). The final manifest and catalog files must resolve inside the workspace;
 in-workspace links are supported. Container catalog types are also reported in `untyped_columns`
@@ -446,7 +480,8 @@ same report: `rules` (each with its tier and hits), `proof`, `choices_pending`, 
 Which route between two entities a question means is a business definition (see
 [the route census](PACKAGE_AUTHORING.md#route-census-and-route-changes)).
 
-- `project_status` (with `full_report: true`; by default its counts and first pairs) returns
+- `project_status` (with `full_report: true`, or one list with `page: route_census.undecided`;
+  by default its counts and first pairs) returns
   `route_census` once, outside `parse`: `undecided` lists the
   entity pairs a question can need that are refused until a `graph.path_preferences` row records
   their route, each with the `AMBIGUOUS_PATH` refusal's `details.clarification.options`
@@ -552,7 +587,7 @@ The server's `instructions` hold the workflow and the write contract (`dry_run`,
 `expected_revision`, idempotency keys, rollback) once. Tool descriptions follow the rules in
 [MCP_INTERFACE.md](MCP_INTERFACE.md#writing-tool-descriptions), and every tool carries a title and
 hints: `openWorldHint` marks the ones that can query the warehouse. The listed schemas leave out
-pydantic's per-property titles, which only repeated the names. `scripts/mcp_context.py` tracks the
+pydantic's per-property titles, which only repeated the names. `scripts/mcp_context.py` gates the
 tool list's size.
 
 - `architect_guidance`

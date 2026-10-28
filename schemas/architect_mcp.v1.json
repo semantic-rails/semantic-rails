@@ -165,7 +165,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -435,12 +435,27 @@
         "properties": {
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "include_runtime_checks": {
             "default": false,
             "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page": {
+            "default": "",
+            "description": "a path from the summary's pages",
+            "type": "string"
           },
           "project_path": {
             "type": "string"
@@ -468,6 +483,21 @@
       "description": "List files inside a Semantic Rails project directory.",
       "inputSchema": {
         "properties": {
+          "full_report": {
+            "default": false,
+            "description": "true: every item, unpaged",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
           "project_path": {
             "type": "string"
           }
@@ -540,7 +570,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -896,7 +926,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "group": {
@@ -1225,7 +1255,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -1507,7 +1537,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -1782,7 +1812,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "group": {
@@ -2065,7 +2095,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -2338,7 +2368,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -2601,7 +2631,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -2900,7 +2930,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "idempotency_key": {
@@ -3164,6 +3194,21 @@
             "default": "",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: every item, unpaged",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
           "project_path": {
             "default": "",
             "type": "string"
@@ -3195,6 +3240,21 @@
           "duckdb_path": {
             "default": "",
             "type": "string"
+          },
+          "full_report": {
+            "default": false,
+            "description": "true: every item, unpaged",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
           },
           "project_path": {
             "default": "",
@@ -3244,8 +3304,23 @@
             "default": "",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: every item, unpaged",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
           "max_rows": {
             "default": 1000000,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
             "type": "integer"
           },
           "project_path": {
@@ -3279,12 +3354,27 @@
         "readOnlyHint": true,
         "title": "Suggest a model"
       },
-      "description": "Propose a key, times, dimensions, measures and foreign keys for a relation, with confidences, reasons and draft upsert_model arguments. Read-only.",
+      "description": "Propose a key, times, dimensions, measures and foreign keys for a relation, with confidences, reasons and draft upsert_model arguments. Pages hold times, then dimensions, then measures, and a draft of those; drafts merge, and full_report: true gives one. Read-only.",
       "inputSchema": {
         "properties": {
           "duckdb_path": {
             "default": "",
             "type": "string"
+          },
+          "full_report": {
+            "default": false,
+            "description": "true: every item, unpaged",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
           },
           "project_path": {
             "default": "",
@@ -3361,7 +3451,7 @@
         "readOnlyHint": true,
         "title": "Suggest relationships"
       },
-      "description": "Propose relationships from a table to other tables' keys from their values: per candidate column, the distinct values and rows found among the target's keys (coverage), a few not found, and the cardinality. proposals reach min_coverage (default 0.95, stated as threshold); below_threshold lists the rest with the same evidence for you to decide. columns tries those columns against every key whatever their names. With project_path the targets are the package's entities and each carries draft upsert_relationship arguments. Read-only.",
+      "description": "Propose relationships from a table to other tables' keys from their values: per candidate column, the distinct values and rows found among the target's keys (coverage), a few not found, and the cardinality. proposals reach min_coverage (default 0.95, stated as threshold); below_threshold lists the rest with the same evidence for you to decide. columns tries those columns against every key whatever their names. With project_path the targets are the package's entities and each carries draft upsert_relationship arguments. Pages hold proposals, then the rest; counts totals each. Read-only.",
       "inputSchema": {
         "properties": {
           "columns": {
@@ -3382,9 +3472,24 @@
             "default": "",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: every item, unpaged",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
           "min_coverage": {
             "default": 0.95,
             "type": "number"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
           },
           "project_path": {
             "default": "",
@@ -3420,9 +3525,24 @@
             "default": "",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: every item, unpaged",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
           "manifest_path": {
             "default": "",
             "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
           },
           "select": {
             "anyOf": [
@@ -3475,7 +3595,7 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
           },
           "group": {
@@ -3752,11 +3872,26 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
           },
           "mode": {
             "default": "parse",
+            "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page": {
+            "default": "",
+            "description": "a path from the summary's pages",
             "type": "string"
           },
           "project_path": {
@@ -3793,6 +3928,26 @@
             "default": "",
             "type": "string"
           },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report, not a summary",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page": {
+            "default": "",
+            "description": "a path from the summary's pages",
+            "type": "string"
+          },
           "project_path": {
             "type": "string"
           }
@@ -3825,6 +3980,26 @@
           },
           "compare_path": {
             "default": "",
+            "type": "string"
+          },
+          "full_report": {
+            "default": false,
+            "description": "true: the whole report, not a summary",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page": {
+            "default": "",
+            "description": "a path from the summary's pages",
             "type": "string"
           },
           "project_path": {
@@ -3866,8 +4041,23 @@
           },
           "full_report": {
             "default": false,
-            "description": "true: the whole report (default: a summary; see its report field)",
+            "description": "true: the whole report, not a summary",
             "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page": {
+            "default": "",
+            "description": "a path from the summary's pages",
+            "type": "string"
           },
           "project_path": {
             "type": "string"

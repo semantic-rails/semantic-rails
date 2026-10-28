@@ -551,7 +551,7 @@ def _measure_sessions(
 
 
 def measure_architect_mcp(workspace_root: Path) -> dict[str, int]:
-    """Size the Architect MCP's tool list and instructions (tracked, not gated)."""
+    """Size the Architect MCP's tool list and instructions."""
 
     from semantic_rails.architect_mcp import create_architect_mcp_server
 
@@ -626,7 +626,11 @@ def measure_architect_pages(workspace_root: Path) -> dict[str, int]:
         structured = call_tool(server, tool, arguments)
         if not structured.get("ok"):
             raise RuntimeError(f"{tool} failed: {structured.get('error')}")
-        metrics[f"architect.page.{label}_tokens"] = approx_tokens(compact_json(structured))
+        # The temporary workspace's path is the one thing that differs between runs.
+        text = compact_json(structured)
+        for path in sorted({str(workspace.root), str(workspace.root.resolve())}, key=len)[::-1]:
+            text = text.replace(path, "/workspace")
+        metrics[f"architect.page.{label}_tokens"] = approx_tokens(normalize_volatile(text))
     return metrics
 
 
