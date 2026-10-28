@@ -81,16 +81,16 @@ class _Columns:
                     held[entity].update(c.casefold() for c in columns if _COLUMN.match(c or ""))
         self.held = held
 
-    def key(self, entity: str) -> set[str]:
+    def key_of(self, entity: str) -> set[str]:
         return {column.casefold() for column in self.keys.get(entity, [])}
 
     def holds_key_of(self, holder: str, keyed: str) -> bool:
         """Whether ``holder`` holds every column of ``keyed``'s key, by a name that says what it
         is: two entities both keyed by a bare ``id`` hold nothing of each other's."""
-        key = self.key(keyed)
+        key = self.key_of(keyed)
         if not key or holder == keyed or not key <= self.held.get(holder, set()):
             return False
-        return not key <= self.key(holder) or all(_specific(column) for column in key)
+        return not key <= self.key_of(holder) or all(_specific(column) for column in key)
 
 
 def path_gap(
@@ -195,14 +195,14 @@ def path_gap(
                 column
                 for column in columns.held[near_entity] & columns.held[far_entity]
                 if _identifier(column)
-                and column not in columns.key(near_entity)
-                and column not in columns.key(far_entity)
+                and column not in columns.key_of(near_entity)
+                and column not in columns.key_of(far_entity)
             )
             if shared:
                 keyed_by = sorted(
                     entity
                     for entity in analysis.entities
-                    if columns.key(entity) and columns.key(entity) <= set(shared)
+                    if columns.key_of(entity) and columns.key_of(entity) <= set(shared)
                 )
                 link: dict[str, Any] = {
                     "kind": "many_to_many",
