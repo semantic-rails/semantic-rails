@@ -9,12 +9,13 @@ at that grain, so a distinct count or an average is never added up from the rows
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import replace
 from typing import Any
 
 from ..ast import TIME_AXIS, time_output_alias
 from ..errors import SemanticLayerError
+from ..expressions import _expression_children
 from ..ir import LogicalPlan
 from ..schema import PackageConfig
 from ..sql_ast import (
@@ -30,6 +31,7 @@ from .empty_groups import recording_outputs_as
 from .lowering_common import _dialect
 from .namespacing import _namespace_sql_select
 from .paths import _join_condition, display_key
+from .post_aggregation import share_over
 
 # The keys of a call the coarser call keeps as they are; the rest it sets or leaves out.
 _CARRIED = ("version", "where", "temporal_role_overrides", "route_decisions", "observation_scope")
@@ -263,15 +265,48 @@ def total_sources(
     return ctes, joins, values
 
 
+def _shares(node: Any) -> Iterator[Mapping[str, Any]]:
+    """Every share in an engine expression, at any depth."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _shares(item)
+    elif isinstance(node, Mapping):
+        if node.get("kind") == "share":
+            yield node
+        for _, child in _expression_children(node):
+            yield from _shares(child)
+
+
 def coarser_calls(
     config: PackageConfig, query: Mapping[str, Any]
-) -> list[tuple[str, dict[str, Any]]]:
-    """Each total's coarser call in the caller's terms (``query`` is the engine's form of the
-    call, before binding), by the first total it answers, for the request's policies to hold
-    it to as a call of its own."""
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """The calls a call reads at a coarser grain, in the caller's terms (``query`` is the
+    engine's form of the call, before binding), for the request's policies to hold each to as
+    a call of its own: ``("total", alias, call)`` for each total's coarser call, by the first
+    total it answers, and ``("share", alias, call)`` for each share's denominator, by the select
+    item the share is in: its input grouped as its window is taken (``share_partition``: without
+    the columns :func:`share_over` names). A call with an entity filter or a route decision has
+    no share denominators here: its shares are held only by the call's own check."""
+    select = list(query.get("select") or [])
     out = []
-    for over, items in _over_groups(selected_totals(query.get("select") or [])).items():
-        sources = _row_sources(query.get("select") or [], over)
-        select = [{"expression": source, "as": f"value_{n}"} for n, source in enumerate(sources, 1)]
-        out.append((items[0][0], coarse_call(query, over, select, config)))
+    for over, items in _over_groups(selected_totals(select)).items():
+        sources = _row_sources(select, over)
+        reads = [{"expression": source, "as": f"value_{n}"} for n, source in enumerate(sources, 1)]
+        out.append(("total", items[0][0], coarse_call(query, over, reads, config)))
+    entity_filtered = any(
+        (item.get("expression") or {}).get("kind") == "metric_predicate"
+        for item in query.get("metric_filters") or []
+    )
+    if entity_filtered or query.get("route_decisions"):
+        return out
+    for row in select:
+        for share in _shares(row.get("expression")):
+            source = share.get("input")
+            source = dict(source) if isinstance(source, Mapping) else source
+            across = share_over(share.get("over") or [], config)
+            payload = coarse_call(query, across, [{"expression": source, "as": "value_1"}], config)
+            payload["group_by"] = [
+                column for column in query.get("group_by") or [] if column not in across
+            ]
+            out.append(("share", str(row.get("as")), payload))
     return out

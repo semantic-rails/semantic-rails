@@ -996,9 +996,15 @@ columns (and `period`, unless `over` names it), among the rows the call keeps: a
 zero or NULL total reads NULL. The input is one measure or metric id whose values add up across
 rows (a sum or count of a flow, a count of distinct row keys, or sums and differences of
 them); a ratio, an average or other statistic, or a stock is refused with `ROLLUP_UNSAFE`. Each `over` item is a `group_by` id of
-the call, or `period` when `time` has a grain, or it is refused at its path. The answer names
-the denominator and the unit in `assumptions`, with how many rows the total spans when every
-returned row's total spans the same number:
+the call, or `period` when `time` has a grain, or it is refused at its path. The denominator is
+held to the caller's policies as a call of its own: its input grouped as the total is taken,
+without the `over` columns and the key beside each `over` name. A share over a grouping a policy
+requires is refused with `POLICY_DENIED` ("... and the share in 'store_share' reads it across
+them"), as a [total](#coarser-totals) over it is, bare or inside another expression, and a share
+of a withheld value is refused. In a call with an entity filter or `routes`, the denominator is
+not checked on its own (see [Known limitations](#shares-and-totals-under-a-required-grouping)).
+The answer names the denominator and the unit in `assumptions`, with how many rows the total
+spans when every returned row's total spans the same number:
 
 ```json
 {"select": ["measure.jaffle.revenue_usd",
@@ -1237,6 +1243,14 @@ The engine trusts the data as it is stored in three cases:
   are refused.
 - On Postgres, a key with very many distinct values in a one-per-key column can fail the query
   (out of memory or array size) instead of reading NULL.
+
+### Shares and totals under a required grouping
+
+- In a call with an entity filter or `routes`, a share's denominator is held to the caller's
+  policies only by the call's own check, so a share over a grouping a policy requires
+  (`required_group_by`) can answer there, and its denominator is the total the policy refuses.
+- A total in a call with `routes` is not checked on its own when the call without the `over`
+  columns no longer walks the route.
 
 ### Text words
 
