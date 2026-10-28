@@ -852,3 +852,56 @@ def test_restricted_warehouse_failure_keeps_safe_operational_code(granted_runtim
     assert "Warehouse query execution failed" in str(exc.value)
     assert "private" not in json.dumps(exc.value.details)
     assert "hidden" not in json.dumps(exc.value.details)
+
+
+# What a granted caller can learn about ids outside the grant: nothing. An ungranted
+# metric or measure must be refused exactly like an id the package doesn't have, including
+# where the call's clock would come from the object (a grain or a window without a role).
+_UNGRANTED = {"metric": AOV, "measure": "measure.jaffle.revenue_usd"}
+# Made-up ids far from every real one, so no typo suggestion differs from the ungranted id's.
+_UNKNOWN = {"metric": "metric.sales.qqq_nothing", "measure": "measure.jaffle.qqq_nothing"}
+_OUTSIDE_CALLS = {
+    "plain": lambda x: {"select": [x]},
+    "grain": lambda x: {"select": [x], "time": {"grain": "day"}},
+    "window": lambda x: {"select": [x], "time": {"last": {"unit": "day", "value": 3}}},
+    "grain_and_window": lambda x: {
+        "select": [x],
+        "time": {"grain": "day", "last": {"unit": "day", "value": 3}},
+    },
+}
+_PER_CALL = ("request_id", "timing_ms")  # differ between any two calls
+
+
+def _answers(runtime, call, trusted):
+    """What a caller is sent for ``call``: REST validate and query, MCP execute in both modes."""
+    service = SemanticHTTPService(runtime)
+    answers = []
+    for path in ("/validate", "/query"):
+        try:
+            payload, status = service.handle("POST", path, {"query": call}, context=trusted)
+        except SemanticLayerError as exc:  # the HTTP boundary's own envelope for a refusal
+            payload, status = service.exception_payload(exc, stage=path[1:], context=trusted)
+        answers.append((status, payload))
+    adapter = SemanticLayerMCPAdapter(runtime)
+    for mode in ("validate", "run"):
+        result = adapter.call_tool(
+            "execute", {"query": call, "mode": mode}, request_context=trusted
+        )
+        answers.append({key: value for key, value in result.items() if key not in _PER_CALL})
+    return answers
+
+
+@pytest.mark.parametrize("kind", sorted(_UNGRANTED))
+@pytest.mark.parametrize("shape", sorted(_OUTSIDE_CALLS))
+def test_an_ungranted_id_is_refused_exactly_like_an_unknown_one(granted_runtime, kind, shape):
+    build = _OUTSIDE_CALLS[shape]
+    seen = {}
+    for label, object_id in (("ungranted", _UNGRANTED[kind]), ("unknown", _UNKNOWN[kind])):
+        answers = _answers(granted_runtime, build(object_id), context())
+        seen[label] = json.dumps(answers, sort_keys=True, default=str).replace(object_id, "<id>")
+    assert '"ok": false' in seen["ungranted"]
+    assert seen["ungranted"] == seen["unknown"], shape  # byte for byte, on every transport
+    assert not granted_runtime.adapter.statements
+    # The granted metric still takes its own clock from its definition, once time is granted.
+    time_granted = context(dimensions=("temporal_role.jaffle_customer_first_order_at",))
+    assert granted_runtime.validate(build(CUSTOMERS), context=time_granted)["ok"], shape
