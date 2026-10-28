@@ -284,15 +284,21 @@ def coarser_calls(
     engine's form of the call, before binding), for the request's policies to hold each to as
     a call of its own: ``("total", alias, call)`` for each total's coarser call, by the first
     total it answers, and ``("share", alias, call)`` for each share's denominator, by the select
-    item the share is in. A denominator is the share's input grouped as its window is taken
-    (``share_partition``: without the columns :func:`share_over` names), with no entity filter,
-    which reads its aggregate per entity and was held to the policies with the call itself."""
+    item the share is in: its input grouped as its window is taken (``share_partition``: without
+    the columns :func:`share_over` names). A call with an entity filter or a route decision has
+    no share denominators here: its shares are held only by the call's own check."""
     select = list(query.get("select") or [])
     out = []
     for over, items in _over_groups(selected_totals(select)).items():
         sources = _row_sources(select, over)
         reads = [{"expression": source, "as": f"value_{n}"} for n, source in enumerate(sources, 1)]
         out.append(("total", items[0][0], coarse_call(query, over, reads, config)))
+    entity_filtered = any(
+        (item.get("expression") or {}).get("kind") == "metric_predicate"
+        for item in query.get("metric_filters") or []
+    )
+    if entity_filtered or query.get("route_decisions"):
+        return out
     for row in select:
         for share in _shares(row.get("expression")):
             source = share.get("input")
@@ -302,6 +308,5 @@ def coarser_calls(
             payload["group_by"] = [
                 column for column in query.get("group_by") or [] if column not in across
             ]
-            payload["metric_filters"] = []
             out.append(("share", str(row.get("as")), payload))
     return out

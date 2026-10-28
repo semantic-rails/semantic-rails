@@ -409,33 +409,27 @@ def test_a_share_that_keeps_the_required_grouping_answers(per_store_revenue):
 
 STORE_KEY, STORE_NAME = "dimension.shop_store_id", "dimension.shop_store_name"
 CUSTOMER_KEY, CUSTOMER_NAME = "dimension.shop_customer_id", "dimension.shop_customer_name"
-TO_STORE = [
-    {"from": "entity.shop_order", "to": "entity.shop_store", "via": ["relationship.orders_store"]}
-]
-# Stores with revenue of at least 10 (each store's own), and customers with an order that quarter.
-BIG_STORES = {
-    "entity": "entity.shop_store",
-    "having": [{"field": REVENUE, "op": "gte", "value": 10}],
-    "over": "all_time",
-}
-BUYERS = {
-    "entity": "entity.shop_customer",
-    "having": [{"field": ORDERS, "op": "gte", "value": 1}],
-    "over": "period",
-}
+CHANNEL = "dimension.shop_customer_channel"
 
 
 def _share(input_id: str, over: list[str]) -> dict[str, Any]:
     return {"expression": {"kind": "share", "input": input_id, "over": over}, "as": "part"}
 
 
-# (the grouping revenue requires, the call, the item refused or None when the call answers)
+def _having(entity: str, field: str, over: str) -> dict[str, Any]:
+    """Each entity's own ``field`` of at least 10 (1 for a count), over ``over``."""
+    value = 1 if field == ORDERS else 10
+    having = [{"field": field, "op": "gte", "value": value}]
+    return {"entity": f"entity.shop_{entity}", "having": having, "over": over}
+
+
+# (the grouping revenue requires, the call, whether the share is refused)
 DENOMINATORS = {
     # The window drops a name's key with the name: revenue across stores.
     "over-a-name-grouped-with-its-key": (
         STORE_KEY,
         {"select": [REVENUE, _share(REVENUE, [STORE_NAME])], "group_by": [STORE_NAME, STORE_KEY]},
-        "share",
+        True,
     ),
     # The window keeps only the name: the two customers named Ann share one denominator.
     "over-a-key-grouped-with-its-name": (
@@ -444,66 +438,17 @@ DENOMINATORS = {
             "select": [REVENUE, _share(REVENUE, [CUSTOMER_KEY])],
             "group_by": [CUSTOMER_NAME, CUSTOMER_KEY],
         },
-        "share",
+        True,
     ),
-    # Without the store, the call walks no route to it: the decision leaves the check's call.
-    "share-with-routes": (
-        STORE_KEY,
-        {
-            "select": [REVENUE, _share(REVENUE, [STORE_KEY])],
-            "group_by": [STORE_KEY],
-            "routes": TO_STORE,
-        },
-        "share",
-    ),
-    "total-with-routes": (
-        STORE_KEY,
-        {
-            "select": [REVENUE, _total(REVENUE, [STORE_KEY], "part")],
-            "group_by": [STORE_KEY],
-            "routes": TO_STORE,
-        },
-        "total",
-    ),
-    # The entity filter reads each store's own revenue; the denominator adds up orders only.
-    "orders-share-under-a-revenue-filter": (
-        STORE_KEY,
-        {
-            "select": [ORDERS, _share(ORDERS, [STORE_KEY])],
-            "group_by": [STORE_KEY],
-            "where": [BIG_STORES],
-        },
-        None,
-    ),
-    "revenue-share-under-a-revenue-filter": (
-        STORE_KEY,
-        {
-            "select": [REVENUE, _share(REVENUE, [STORE_KEY])],
-            "group_by": [STORE_KEY],
-            "where": [BIG_STORES],
-        },
-        "share",
-    ),
-    # A filter per period doesn't keep the denominator over the store and period from its check.
-    "over-store-and-period-under-a-filter-per-period": (
-        STORE,
-        {
-            "select": [REVENUE, _share(REVENUE, [STORE, "period"])],
-            "group_by": [STORE],
-            "time": QUARTER,
-            "where": [BUYERS],
-        },
-        "share",
-    ),
-    "over-period-under-a-filter-per-period": (
-        STORE,
+    # Over the period, the window keeps the name and its key: each customer's own revenue.
+    "over-the-period-grouped-by-name-and-key": (
+        CUSTOMER_KEY,
         {
             "select": [REVENUE, _share(REVENUE, ["period"])],
-            "group_by": [STORE],
+            "group_by": [CUSTOMER_NAME, CUSTOMER_KEY],
             "time": QUARTER,
-            "where": [BUYERS],
         },
-        None,
+        False,
     ),
 }
 
@@ -511,23 +456,105 @@ DENOMINATORS = {
 @pytest.mark.parametrize("case", DENOMINATORS)
 def test_a_denominator_is_checked_as_the_call_computes_it(revenue_per, case):
     """The check reads a share's denominator as its window takes it: without the ``over``
-    columns and each ``over`` name's key, and with no entity filter, which reads per entity.
-    A route the call without the ``over`` columns no longer walks leaves it, for a total too."""
+    columns and each ``over`` name's key, never a key the window doesn't keep."""
     required, call, refused = DENOMINATORS[case]
     runtime = revenue_per(required)
-    if refused is None:
-        # Within each group the share keeps, the parts add up to the whole.
-        over = call["select"][1]["expression"]["over"]
-        wholes: dict[tuple[Any, ...], float] = {}
-        for row in runtime.query(call)["rows"]:
-            group = tuple(row[column] for column in call["group_by"] if column not in over)
-            wholes[group] = wholes.get(group, 0) + (row["part"] or 0)
-        assert wholes and all(whole == pytest.approx(1) for whole in wholes.values())
+    if not refused:
+        _assert_parts_make_wholes(runtime.query(call)["rows"], call)
         return
     with pytest.raises(SemanticLayerError) as raised:
         runtime.query(call)
     assert raised.value.code == "POLICY_DENIED"
-    assert f"the {refused} in 'part' reads it across them" in str(raised.value)
+    assert "the share in 'part' reads it across them" in str(raised.value)
+
+
+def _assert_parts_make_wholes(rows: list[dict[str, Any]], call: dict[str, Any]) -> None:
+    """Within each group the share keeps, the parts add up to the whole (a group with no
+    revenue has no parts)."""
+    over = call["select"][1]["expression"]["over"]
+    wholes: dict[tuple[Any, ...], float] = {}
+    for row in rows:
+        if row["part"] is not None:
+            group = tuple(row[column] for column in call["group_by"] if column not in over)
+            wholes[group] = wholes.get(group, 0) + row["part"]
+    assert wholes and all(whole == pytest.approx(1) for whole in wholes.values())
+
+
+# Calls with an entity filter or routes, checked as before: by the call's own check and, for a
+# total, its coarser call as it was. Each answers as it did. (the grouping revenue requires,
+# the call, the parts or totals by group)
+CHECKED_AS_BEFORE = {
+    # Orders of stores with revenue of at least 10: the filter reads each store's own revenue.
+    "orders-share-of-big-stores": (
+        STORE_KEY,
+        {
+            "select": [ORDERS, _share(ORDERS, [STORE_KEY])],
+            "group_by": [STORE_KEY],
+            "where": [_having("store", REVENUE, "all_time")],
+        },
+        {("a",): 0.6, ("b",): 0.4},
+    ),
+    # "Each store's share of orders from customers who have spent at least $10 overall."
+    "orders-share-of-big-customers": (
+        STORE,
+        {
+            "select": [ORDERS, _share(ORDERS, [STORE])],
+            "group_by": [STORE],
+            "where": [_having("customer", REVENUE, "all_time")],
+        },
+        {(None,): 0.2, ("a",): 0.6, ("b",): 0.2},
+    ),
+    # Each store's quarters, of customers with an order that quarter.
+    "share-over-the-period-of-buyers": (
+        STORE,
+        {
+            "select": [REVENUE, _share(REVENUE, ["period"])],
+            "group_by": [STORE],
+            "time": QUARTER,
+            "where": [_having("customer", ORDERS, "period")],
+        },
+        None,
+    ),
+    # "Orders by store and signup channel, with the overall total, for stores whose lifetime
+    # revenue is at least $10": the customer route is the channel's.
+    "total-by-store-and-channel-of-big-stores": (
+        STORE,
+        {
+            "select": [ORDERS, _total(ORDERS, [STORE, CHANNEL], "part")],
+            "group_by": [STORE, CHANNEL],
+            "where": [_having("store", REVENUE, "all_time")],
+            "routes": [
+                {
+                    "from": "entity.shop_order",
+                    "to": "entity.shop_customer",
+                    "via": ["relationship.orders_customer"],
+                }
+            ],
+        },
+        {
+            (store, channel): 10
+            for store, channel in [
+                ("a", None),
+                ("a", "store"),
+                ("a", "web"),
+                ("b", "store"),
+                ("b", "web"),
+            ]
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("case", CHECKED_AS_BEFORE)
+def test_a_call_with_an_entity_filter_or_routes_is_checked_as_before(revenue_per, case):
+    required, call, expected = CHECKED_AS_BEFORE[case]
+    rows = revenue_per(required).query(call)["rows"]
+    if expected is None:
+        _assert_parts_make_wholes(rows, call)
+        return
+    assert {tuple(row[column] for column in call["group_by"]): row["part"] for row in rows} == {
+        group: pytest.approx(value) for group, value in expected.items()
+    }
 
 
 SEATS = "measure.shop.seats"
