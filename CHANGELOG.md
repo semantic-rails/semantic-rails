@@ -8,6 +8,310 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.3 — 2026-10-28 — Totals, lookup routes and stricter refusals
+
+**Upgrading from 0.3.2:** 0.3.3 refuses some packages and calls that 0.3.2 accepted, where 0.3.2
+ignored a key or answered wrongly, and a few answers move toward the stated semantics.
+
+- **Check each package.** Run `semantic-rails check` on it with 0.3.3 before you deploy. These
+  now fail at load: a `rolling` or `conversion` window (or a predicate's or anchored scoped
+  aggregate's window) with a key the engine doesn't read, such as `exclude_current` or
+  `include_end`, and a `temporal_validity` with an unknown key or an `as_of` with neither
+  `valid_from` nor `valid_to`; remove the key. An example or test whose select names a home-made
+  calculation after a governed metric or measure fails with `OUTPUT_NAME_GOVERNED`; rename the
+  alias.
+- **Check the answers that change.** A conversion rate counts every base event in its
+  denominator, so it falls where base events have no customer and rises where the customer row
+  arrives after the event. A `many_to_many` history read at the query's time is refused with
+  `MIXED_GRAIN_INVALID` where it used to double count. Under a policy that requires a grouping,
+  a share over that grouping is refused with `POLICY_DENIED`. On ClickHouse, a conversion whose
+  base events need a lookup is refused with `CONVERSION_NOT_SUPPORTED`. A call's column named
+  `t`, `g1`, `m1` or `p1` reads its own values.
+- **Clients that read columns by name or type.** Counts are JSON integers with `column_types`
+  `integer`, where they were decimal text. Generated column names say what they compute
+  (`avg_revenue_usd`, `<measure>_qualifying`). A caller whose view keeps one route reads
+  `only_route`. `plan` returns `needs_clarification` with `AMBIGUOUS_PATH` when only the route is
+  unclear. `discover` cards leave out a label their id already says.
+- **Install and imports.** A fresh install resolves DuckDB 2.0 (a file DuckDB 2.0 writes can't be
+  opened by 1.x) and `mcp` 1.30.0 or later. The `snowflake` extra stays on connector 4.x.
+  `semantic_rails.request_context` no longer re-exports the API-key helpers; import them from
+  `semantic_rails.api_keys`.
+
+### Added
+
+- Architect's `suggest_links` proposes relationships from a table to other tables' keys from their
+  values, where `suggest_model` only named candidates. Each pair states how many of the column's
+  distinct values (and rows) are keys of the target, with a few values not found, for example
+  "23 of 25 distinct subject_id values (92.0%) are subjects.subject_id keys". Pairs at or over
+  the stated threshold (`min_coverage`, default 95%) are proposed and the rest are listed with the
+  same evidence, so a partial link is the author's call rather than a hidden cut. A generic key
+  (`id`) pairs only with a column named for its table (`customer_id` with `customers.id`), so a
+  table's own `id` pairs with no other table's. `columns` tries columns named like no key (an
+  office location holding room keys). With `project_path` each pair carries draft
+  `upsert_relationship` arguments (`one_to_one` when both sides are unique). It writes nothing:
+  apply the drafts with `dry_run`, then `expected_revision`.
+- The package authoring guide says what an explicit `safety: safe` on a `many_to_many` history
+  states: its versions never overlap, and nothing checks that at query time (where they do, a row
+  counts once per overlapping version).
+- Architect's `suggest_one_per_key` proposes reading a table with no key of its own one row per a
+  key it repeats (a room listed once per load, a catalog item once per copy), so other tables can
+  look it up. From the data, each candidate key shows its rows, rows without a key, distinct
+  keys, keys with several rows, and which columns are fixed or vary within a key. A proposal
+  states its coverage ("5 of 6 rows have a key; 1 row has none and is still counted by the
+  row-grain model") and returns draft `upsert_model` arguments (`one_per_key: true`, the fixed
+  columns, a fixed key column as the parent entity) and, with `project_path`, the
+  `upsert_relationship` that links the table's row-grain model to it. It writes nothing: apply the
+  drafts with `dry_run`, then `expected_revision`. A table keyed by one column of its own is
+  pointed to `suggest_model` instead, and a table whose columns all vary within every key gets no
+  proposal, with the reason.
+- A call can select a coarser total beside its rows: `{"kind": "total", "input": <id>,
+  "over": [<group_by id> | "period"]}` is the input computed by the same call without the
+  `over` columns (the same `where`, window, entity filters, routes, row filters and policies),
+  on each row of the groups that remain. A distinct count, an average or a ratio is computed at
+  that grain, never added up from the rows, and across a link each entity counts once. The
+  answer states each total as `TOTAL_OVER` in `assumptions`. See
+  [Coarser totals](docs/QUERY_CALL.md#coarser-totals).
+- `export_semantic_contract` is on the `semantic_rails.embedding` facade, so the contracts doc's
+  example no longer imports an internal module.
+- `plan` hints the call shape for a total it doesn't draft. When a question asks for a grand
+  total, subtotals, each group's total or each group's share, and its plan isn't `ok`, its
+  `warnings` carry `PLAN_TOTALS_HINT` (severity `info`) with `details.add`: the `totals` or the
+  `total`/`share` select item to add, named with `best.query`'s ids. The plan's status and
+  `best.query` don't change. See [Plan](docs/MCP_INTERFACE.md#plan).
+- A question whose two entities connect by several routes answers when exactly one route is a
+  lookup (one row at every hop: a to-one hop, or the version valid at the time of a relationship
+  with a one side; a many-to-many history never counts as one), instead of
+  being refused with `AMBIGUOUS_PATH`: a section's instructor, not any of its enrolled students.
+  With several lookups, each entity's own keys decide between them (a seat's building is its
+  room's building). A route reading "any of" rows is never chosen this way, and no question
+  that answered before changes its answer. Each such answer says which reading it took and
+  which routes it was chosen over (`routes[*].basis: default`, `by`, `meaning`,
+  `other_routes`, at every verbosity); a caller whose view hides those routes gets the reading
+  alone. `route_census.defaults` lists every pair it answers.
+  Opening reverse hops on a forward-only package now keeps every answer it gave: on a
+  synthetic 74-entity campus warehouse, all 291 forward-only answers stay identical when it is
+  opened both ways, where before 104 of its 253 answers were refused.
+- A call can ask for subtotal and grand-total rows with `totals`: the `group_by` ids the subtotal
+  rows keep, outermost first (`[]` for the grand total alone). Each total row is the same call at
+  its grain, so a distinct count, an average or a ratio is computed there, never added up from
+  the rows. The rows come after the call's own rows; `having` and `limit` cut only the call's
+  own rows; a `total_over` column names what each total row adds up; and the answer states
+  `TOTALS`. See [`totals`](docs/QUERY_CALL.md#totals).
+- A relationship's `temporal_validity` takes `as_of: end_of_day`: every hop into the history
+  through that relationship reads the version in force at the end of the row's day on the query's
+  clock, instead of at the row's own time. Use it for a history written a moment after the row it
+  describes: "new workspaces by the plan they signed up on" then reads the plan in force at the
+  end of the signup day, instead of an empty Plan for every workspace whose plan was written
+  seconds later. A plan changed on the signup day reads the day's last plan. `as_of: time` (the
+  default) keeps today's answers. Route readings and `NULL_PRESERVING_HISTORY` say "valid at the
+  end of the day", and `temporal_validity` refuses unknown keys and an `as_of` with neither
+  `valid_from` nor `valid_to`. Checked on DuckDB and Postgres; see the zone note in
+  `docs/PACKAGE_AUTHORING.md` for the other warehouses.
+
+### Changed
+
+- The comparison pack's Semantic Rails evidence is recaptured on 0.3.2 (`main` after the
+  release), and its latest-release check now runs PyPI `semantic-rails==0.3.2`, which answers
+  all 8 frozen-model questions. q11 and q12 now compute each customer's lifetime order count and
+  spend from orders with a query-time customer predicate (`over: all_time`) instead of reading
+  the precomputed customer columns, so the rubric labels all 24 Semantic Rails answers
+  `native`; every answer still matches the independent answer key.
+- The comparison pack's latest-release check is now a committed script,
+  `comparisons/semantic_layers/semantic_rails/scripts/check_release.py`, run in an isolated
+  environment holding only the release. The pack names the Semantic Rails engine by its
+  release or engine tree, and its q11 answer is the column `orders_from_repeat_customers`.
+- MCP `discover` cards at the default and `compact` verbosity leave out a `label` whose every
+  word is already in the card's id ("Store name" on `dimension.store_name`), so a ranked
+  response is about 15% smaller on the bundled package. A label that adds a word ("Orders"
+  on `measure.order_count`), blocked cards, dimension values and `verbosity="full"` keep it.
+  See [MCP interface](docs/MCP_INTERFACE.md).
+- The embedding facade no longer imports DuckDB until the first DuckDB connection: loading a
+  package, compiling and enforcing policies run without it, so a host that passes its own
+  warehouse adapter never loads DuckDB. A host can install without DuckDB, the MCP Python SDK
+  and pydantic (see [docs/EMBEDDING.md](docs/EMBEDDING.md)); there, opening a DuckDB database
+  stops with `MISSING_DEPENDENCY` naming DuckDB. The default install is unchanged.
+- `semantic_rails.embedding` is named as the engine's one public Python surface: the package
+  docstring, the README and the embedding, MCP, query API and contracts docs now all say so, and
+  their examples import from it. From 0.4.0 the facade follows Semantic Versioning (minor
+  releases carry breaking changes while the version starts with 0); see "Stability" in
+  [docs/EMBEDDING.md](docs/EMBEDDING.md). The promise isn't retroactive, and no compatibility
+  shims are added for earlier changes.
+- A select can't name a home-made calculation after a governed metric or measure: its id,
+  name, column or authored `synonyms:`, in any case. An order
+  count, the `max` of the revenue measure or a filtered revenue named `revenue_usd` (or
+  `measure.jaffle.revenue_usd`) is refused with `OUTPUT_NAME_GOVERNED`, which names the
+  governed object and suggests a name of its own; the same calculation under that name
+  answers. The governed object answers under its own name as before, however it is written
+  (by id, as its default aggregate, or rounded).
+- Generated queries name a calculation after what it computes, not after the governed measure
+  it starts from. The build-options aggregation patch (`POST /api/v1/build-options` and the
+  `build-options` CLI command) names a non-default aggregation `<aggregation>_<measure>` (an
+  average of revenue is `avg_revenue_usd`, the median-percentile option `p50_revenue_usd`), and
+  a `plan` draft restricted to a population share names its column `<measure>_qualifying`. A
+  generated name never takes a name a governed metric or measure answers to (jaffle_shop's
+  `median_item_revenue_usd` is a governed daily-snapshot median, so the median option is
+  `item_revenue_usd_median`), and an `order_by` or `having` on the old column follows the new
+  name. Agents that read these columns by name see the new names; the numbers are unchanged.
+- A caller whose view keeps one route between two entities now sees `only_route` wherever an
+  answer states how that route was chosen: the `hop_profile`'s `route_basis`, a
+  `ROUTE_PASS_THROUGH` warning's `details.route_basis`, and the `replaced` of the caller's own
+  `routes` row. That holds whatever chose the route among routes the caller can't see: a
+  recorded row, the start's own key or a lookup default. These fields used to name the rule,
+  which showed that other routes exist. A caller with row filters and nothing hidden also reads
+  `only_route` where an unrestricted caller reads `colocated_key` for a single direct key.
+- A history declared `many_to_many` now reads as "any of" its rows in route meanings: its
+  versions valid at one time can overlap, so no one version is read. One rule (a validity window
+  holds versions of one row only when its relationship has a one side) now decides route
+  defaults, route wording and a hop's safety at the query's time. Such a history with an
+  explicit `safety: safe` no longer carries `NULL_PRESERVING_HISTORY`, the warning for one
+  version valid at each row's time.
+- MCP tool calls no longer copy the whole package to check which tools it offers. On the
+  example package this saves about 3 ms per call, and larger packages save more.
+- `PATH_NOT_FOUND` names what keeps a call's start from its target when no relationship chain
+  joins them: the relationship that allows only the other walk, the key one side already holds,
+  the entity that holds both keys, or the identifier both share that is a key of neither
+  (`details.missing_link`, also in the message), and the nearest entity the start reaches. The
+  author's fix says whether a measure would repeat across the rows the new join meets. It ranks
+  the reachable dimensions that come closest to what was asked, each offered as a different
+  dimension to confirm with the user, and each hint says whether it is for the caller or the
+  package author. A misspelled entity gets its closest entity ids instead. See
+  [MCP interface](docs/MCP_INTERFACE.md).
+- `validate`, `check` and Architect's `project_status` warn about a route only where the
+  package's own metrics, examples or tests walk it. On a large warehouse with thousands of
+  entity pairs that have two or more routes, `ROUTES_UNDECIDED` now counts only the pairs those
+  queries need, and `ROUTE_PASS_THROUGH` only the crossings they read; `route_census` still
+  lists every pair, each with `needed_by`, needed pairs first. Any other pair is asked about
+  when a question needs it, never guessed, and an answer that reads a crossing still discloses
+  it. A synthetic 74-entity campus warehouse goes from 3,199 undecided pairs and 690 crossing
+  warnings to the 8 forks its 12 example questions hit.
+- `plan` asks which route a question means when its draft is refused only because its pieces
+  connect by two or more routes: `needs_clarification` with `AMBIGUOUS_PATH`, the question in
+  business words ("Which District does the question mean for an Account: the District of the
+  Account's Branch, or the District of the Account's Owner?"), and per reading a ready call and
+  the `graph.path_preferences` row that makes it the package default. It used to return
+  `low_confidence` with no next step.
+- The `snowflake` and `all` extras require `snowflake-connector-python` below 5. Connector 5.x
+  drops the certificate revocation settings that Snowflake connections pass, so a fresh install
+  stays on the 4.x connector until 5.x support is verified.
+- The README states which warehouses run live and how often, and which are compile-tested only.
+  Snowflake is no longer listed in the supported core: its live runs are paused, along with
+  Databricks' and MotherDuck's. Row filters are listed for DuckDB, Postgres and Snowflake through
+  ADBC, the adapters that bind parameters. Apache Ossie 0.1.1 export and import are listed as
+  shipped, not on the roadmap.
+
+### Removed
+
+- `semantic_rails.request_context` no longer re-exports the API-key helpers
+  (`MISSING_API_KEY_FILE_SENTINEL`, `api_key_auth_result`, `configured_api_keys`,
+  `extract_bearer_or_api_key`); import them from `semantic_rails.api_keys`.
+  `warn_if_default_policy_resolver_exposed` moved to `semantic_rails.http_core`. Neither module
+  is part of the embedding facade.
+
+### Fixed
+
+- Athena: queries that fill a time window, such as a prior-period or rolling comparison, failed
+  with `FUNCTION_NOT_FOUND` because Athena has no `SEQUENCE(date, date)`. The implicit calendar
+  now counts whole days with `SEQUENCE(0, DATE_DIFF('day', start, end))` and adds each to the
+  start date, so every day is still a `DATE`.
+- A call's column named `t`, `g1`, `m1`, `p1` (or another name the engine gives the period, a
+  group key, a measure or a result filter inside the statement, in any case) reads its own
+  values. Beside a `having` it used to read the period or a group key (a store's name in place of
+  its order count), or be refused beside a `limit` with "Limited ordering must resolve to an
+  output column". The engine now gives its own columns names the call doesn't use.
+- The canonical answers now check, on DuckDB and Postgres, that a metric wrapped in
+  `COALESCE(…, 0)` reads 0 for a period that has data but none that matches the query's `where`,
+  and keeps that period's row. 0.3.2 already answered this way; earlier releases dropped the row
+  (or came back empty for a one-period window).
+- A conversion rate counts every base event in its denominator. A session with no customer
+  (anonymous traffic), or with a missing lookup for a constant property such as its store, now
+  counts as a session that didn't convert. Before, such sessions dropped out of the
+  denominator and the rate came back too high: one anonymous session among 11 read 1.0
+  instead of 0.909. A metric filter on a conversion rate counts the same sessions as the rate
+  shown.
+- Conversion events match on their own key column (for example `sessions.customer_id` =
+  `orders.customer_id`), so a customer the customers table doesn't hold yet still converts.
+  A NULL key never matches another NULL key, and an event whose constant-property lookup
+  finds no row, on either side, pairs with nothing.
+- On ClickHouse, a conversion whose base events need a lookup (a grouping or constant
+  property read through another table) is refused with `CONVERSION_NOT_SUPPORTED` instead of
+  dropping those events.
+- A conversion rate's own base filter keeps an event whose looked-up column is missing in a
+  metric filter on the rate too (it reads NULL, as a NULL in the row does), so a rate filtered
+  on reads the same events as the rate shown. A query's `where` on a column the base events
+  look up (the customer's or store's attributes) joins that lookup; before, such a query failed
+  to execute.
+- Counts come back as integers, whatever numeric type the warehouse widens them to. Postgres sums
+  bigint counts as `NUMERIC` (a count read from an aggregate table, a running total or a
+  period-to-date count), and Snowflake ADBC's high-precision results type every `NUMBER` count as
+  a decimal; both came back as decimal text (`"6"`) with `column_types` `decimal`. A count, a row
+  count (`expr: 1`) and a running total of either now read `6` with type `integer`. Sums of stored
+  columns, including a stored count column, ratios and averages keep the driver's type. A count
+  beyond 2^53 is an exact JSON integer, which a client reading numbers as doubles rounds.
+- Semantic Rails runs on DuckDB 2.0 as well as 1.5.6 or later; a fresh install now resolves
+  DuckDB 2.0. With 2.0, SQL run with bound parameters and a row cap no longer fails when it ends
+  with `;` and a comment, `DESCRIBE`, `SHOW` and `SUMMARIZE` run as written, and duplicate column
+  names keep their names. On 2.0, column profiles count a `NOCASE` column's distinct values the
+  way its joins compare them. A DuckDB file written by DuckDB 2.0 can't be opened by 1.x.
+- DuckDB and MotherDuck connections no longer draw DuckDB's progress bar on standard output
+  when a statement takes longer than 2 seconds. On a server, the bar went into the log stream,
+  and on the MCP stdio server it went into the JSON-RPC stream.
+- A history declared `many_to_many` with `temporal_validity` is no longer joined as one version
+  per row when a query reads it at its time. Its versions valid at one time can overlap (an
+  account with two owners at once), and a plain join counted the row once per version (an
+  account's usage read twice under one segment). Such a hop now keeps its cardinality's rule
+  and is refused (`MIXED_GRAIN_INVALID`) where it would have double counted. A history declared
+  `many_to_one` or `one_to_one` still reads the version valid at each row's time.
+- `plan` reads a long question in time linear in its length: finding clock phrases ("by
+  order date", "weekly") checked every run of words, so a 1,000-word intent took about 20 s
+  of CPU. It now takes well under a second, and plans are unchanged.
+- A query reads from a rollup (a `model.variants:` entry) only the measures and dimensions its
+  `columns:` names. A measure or dimension it doesn't name used to be read from a column named
+  after it, which the rollup table might not have, so the call failed with
+  `QUERY_EXECUTION_ERROR`; such a query now reads the base tables. Name each column the rollup
+  table holds in `columns:` for it to answer from the rollup, and `excludes:` the dimensions it
+  isn't grouped by.
+- A share's denominator is held to the caller's policies as a call of its own, grouped as the
+  share takes it (without the `over` columns and the key beside each `over` name): under a
+  policy that requires a grouping, a share over that grouping is refused with `POLICY_DENIED`,
+  naming the grouping and the share, where it used to return the total the policy refuses (the
+  value divided by its share). A share within the required grouping, over the period or another
+  column, still answers. A call with an entity filter or `routes` is checked as before; see
+  [Known limitations](docs/QUERY_CALL.md#shares-and-totals-under-a-required-grouping).
+- An expression `kind` padded with spaces (`" total "`) now reads as that kind everywhere, so a
+  total or share written that way is held to the caller's policies as it is unpadded.
+- A call that selects a `total` and orders its rows by the period or a `group_by` column runs
+  on every warehouse; it used to fail at the warehouse with an ambiguous column.
+- Totals keep every disclosure the call would make without them. A total over the period states
+  `PARTIAL_DATA` for its window, a total of a metric built from several measures states
+  `NO_DATA_YET` for its unloaded periods, and with total rows `NO_DATA_IN_SCOPE`,
+  `EMPTY_RESULT_WINDOW`, `data_diagnostics` and `NULL_PRESERVING_HISTORY` read the call's own
+  rows only. A limited call's boundary probe no longer takes a slot of the transport's `max_rows`,
+  so it never displaces a total row.
+- A `rolling` or `conversion` window (and a predicate's or anchored scoped aggregate's window)
+  with a key the engine doesn't read, such as `exclude_current` or `include_end`, is refused
+  and names the key. Before, the key was ignored and the default window's number came back as
+  if the request had been understood.
+
+### Security
+
+- Update the locked certifi CA bundle to 2026.10.19, which removes the
+  emSign ECC Root CA - G3 root (PYSEC-2026-4320 / GHSA-6q48-6c7w-9gw2).
+- Update the locked Databricks connector to 4.7.0 and oauthlib to 4.0.0, the
+  patched release for PYSEC-2026-4114 / CVE-2026-49265 (GHSA-xpv3-w29h-x7cv).
+- Require `mcp` 1.30.0 or later (was 1.27.0), the patched release for CVE-2026-59951, so a fresh
+  install or an upgrade alongside other pins can no longer resolve an affected version. The
+  locked version was already 1.30.0.
+- Update the locked Snowflake connector to 4.8.1 and filelock to 4.2.1, the
+  patched release for CVE-2026-112940, CVE-2026-112913 and CVE-2026-112907.
+- `snowflake_native` connections check Snowflake's TLS certificates for
+  revocation again. Snowflake connector 4.8 stopped checking unless asked;
+  connections now use the connector's revocation-list check in advisory mode,
+  which refuses a revoked certificate without failing when the list cannot be
+  fetched. Revocation lists are cached in memory, so a read-only home
+  directory does not affect connections. Set `cert_revocation_check_mode` to
+  `enabled` or `disabled` in `package.connection.options` to change it; see
+  [Snowflake certificate revocation checks](docs/PACKAGE_AUTHORING.md#snowflake-certificate-revocation-checks).
+
 ## 0.3.2 — 2026-10-15 — Query call v2
 
 **Upgrading from 0.3.2rc3** (from 0.3.1, read the 0.3.2rc1, rc2 and rc3 notes below too): the
