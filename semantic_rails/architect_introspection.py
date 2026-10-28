@@ -207,7 +207,7 @@ def _require_relation(warehouse: DuckDBWarehouse, schema: str, name: str) -> str
         raise SemanticLayerError(
             "OBJECT_NOT_FOUND",
             f"relation {_relation_name(schema, name)!r} does not exist in the warehouse",
-            details={"relation": _relation_name(schema, name)},
+            details={"relation": _relation_name(schema, name), "duckdb_path": warehouse.path},
         )
     return str(kinds[0]["kind"])
 
@@ -1382,7 +1382,7 @@ def suggest_links(
             if target_types is None:
                 target_types = {
                     str(column["name"]): str(column["type"])
-                    for column in describe_table(warehouse, str(target["relation"]))["columns"]
+                    for column in _describe_target(warehouse, target)["columns"]
                 }
                 described_targets[str(target["relation"])] = target_types
             key = str(target["key"])
@@ -1411,6 +1411,22 @@ def suggest_links(
     for bucket in ("proposals", "below_threshold", "not_proposed"):
         answer[bucket].sort(key=lambda row: (-row["evidence"]["coverage"], row["column"]))
     return answer
+
+
+def _describe_target(warehouse: DuckDBWarehouse, target: dict[str, Any]) -> dict[str, Any]:
+    """``describe_table`` of a link target; a package entity's missing relation names it."""
+    try:
+        return describe_table(warehouse, str(target["relation"]))
+    except SemanticLayerError as exc:
+        if exc.code != "OBJECT_NOT_FOUND" or not target.get("entity"):
+            raise
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND",
+            f"entity {target['entity']!r} reads relation {target['relation']!r}, which does not "
+            "exist in the warehouse: point its model at a relation list_tables shows "
+            "(upsert_model), or remove it (remove_object)",
+            details={**(exc.details or {}), "entity": target["entity"]},
+        ) from exc
 
 
 def _place_link(

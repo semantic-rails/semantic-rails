@@ -326,6 +326,22 @@ def test_impact_project_missing_baseline_has_recovery_hint(tmp_path: Path):
     assert "compare_path" in result["recovery_hints"][0]["message"]
 
 
+def test_a_write_without_expected_revision_names_the_values_it_takes(tmp_path: Path):
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    refused = _create_project(server, "revision_core", expected_revision="")
+
+    assert refused["ok"] is False
+    assert refused["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+    assert refused["error"]["message"] == (
+        "expected_revision is required for every Architect mutation: pass the revision "
+        "project_status or the last write returned, or 'absent' for a package that doesn't "
+        "exist yet"
+    )
+    assert refused["error"]["details"]["accepted"][-1] == "absent"
+    assert not (tmp_path / "configs" / "semantic_rails" / "revision_core").exists()
+
+
 def test_mcp_client_config_uses_current_python_not_uv(tmp_path: Path):
     server = create_architect_mcp_server(workspace_root=tmp_path)
 

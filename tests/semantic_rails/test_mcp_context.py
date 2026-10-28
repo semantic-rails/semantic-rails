@@ -203,11 +203,35 @@ def test_default_probes_call_every_tool(jaffle_package: Path) -> None:
     assert {tool for _name, tool, _arguments in mcp_context.V2_PROBES} == listed
 
 
-def test_architect_tool_list_is_tracked(tmp_path: Path) -> None:
+def _budget_failures(metrics: dict[str, int], prefix: str) -> list[str]:
+    return [
+        f"{check.metric}: measured {check.value}, budget {check.budget} ({check.status})"
+        for check in mcp_context.check_budgets(metrics, mcp_context.load_budgets(), prefix=prefix)
+        if check.failed
+    ]
+
+
+def test_architect_tool_list_stays_within_context_budgets(tmp_path: Path) -> None:
     metrics = mcp_context.measure_architect_mcp(tmp_path)
-    # Recorded for comparison, not gated: the budgets gate the query MCP.
-    assert set(metrics) == set(mcp_context.load_budgets()["tracked"])
     assert metrics["architect.tools_list.tools"] > 0
+    failures = [
+        *_budget_failures(metrics, "architect.tools_list."),
+        *_budget_failures(metrics, "architect.instructions"),
+    ]
+    assert not failures, (
+        "Architect MCP tool-list budgets failed. Raise one only for an intended change, with "
+        "`uv run python scripts/mcp_context.py --write-baseline`:\n" + "\n".join(failures)
+    )
+
+
+def test_architect_first_pages_stay_within_context_budgets(tmp_path: Path) -> None:
+    metrics = mcp_context.measure_architect_pages(tmp_path)
+    assert len(metrics) > 10
+    failures = _budget_failures(metrics, mcp_context.ARCHITECT_PAGES)
+    assert not failures, (
+        "Architect MCP first-page budgets failed. Raise one only for an intended change, with "
+        "`uv run python scripts/mcp_context.py --write-baseline`:\n" + "\n".join(failures)
+    )
 
 
 def test_planner_accuracy_does_not_regress(

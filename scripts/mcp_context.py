@@ -19,10 +19,10 @@ Two gates read the files under ``tests/semantic_rails/mcp_context/``:
 
 * ``budgets.json`` holds a ceiling for every measured size. A run fails when a
   gated metric exceeds its budget by more than the tolerance. The Architect
-  MCP's tool list is tracked but not gated; the first page of each of its
-  paged tools, on a 100-relation warehouse (``scripts/large_warehouse.py``),
-  is gated. Those ceilings only go down: lower one with ``--write-baseline``
-  when a change shrinks its page.
+  MCP's tool list and instructions are gated, and so is the first page of
+  each of its paged tools on a 100-relation warehouse
+  (``scripts/large_warehouse.py``). Those ceilings only go down: lower one
+  with ``--write-baseline`` when a change shrinks it.
 * ``eval_jaffle.jsonl`` is the frozen gold question set, and
   ``plan_accuracy_baseline.json`` records each case's planner outcome and the
   slots it gets wrong. A run fails when a case's outcome gets worse, when a
@@ -1333,28 +1333,19 @@ def write_baseline(
             "Ceilings for scripts/mcp_context.py's query MCP (interface v2): its surface, "
             "defaults, sessions, resources, errors and hosted probes (compact cards, which "
             "carry query patches; query.v2.default covers default discover), and the "
-            "Architect MCP's first pages on a 100-relation warehouse (architect.page), in "
-            "tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, "
-            "budget * tolerance), counts above budget; tracked ones are reported only. "
-            "Regenerate with --write-baseline and review the diff."
+            "Architect MCP's tool list, instructions and first pages on a 100-relation "
+            "warehouse (architect.page), in tokens = round(chars / 4). Gated token metrics fail "
+            "CI above budget + max(8, budget * tolerance), counts above budget; tracked ones "
+            "are reported only. Regenerate with --write-baseline and review the diff."
         ),
         "tolerance": tolerance,
         "gated": rebaseline(
             {
                 name: value
                 for name, value in metrics.items()
-                if name.startswith(("query.", ARCHITECT_PAGES))
+                if name.startswith(("query.", "architect."))
             },
             budgets.get("gated", {}),
-            tolerance,
-        ),
-        "tracked": rebaseline(
-            {
-                name: value
-                for name, value in metrics.items()
-                if name.startswith("architect.") and not name.startswith(ARCHITECT_PAGES)
-            },
-            budgets.get("tracked", {}),
             tolerance,
         ),
     }

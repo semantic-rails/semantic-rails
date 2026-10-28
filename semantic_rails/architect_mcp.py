@@ -121,14 +121,12 @@ _WRITE_SUMMARY_NOTE = (
     "contents; pages counts each list cut short. The same call with full_report: true returns "
     "everything (a retry with the same idempotency_key replays a write)"
 )
-FullReport = Annotated[
-    bool, Field(description="true: the whole report (default: a summary; see its report field)")
-]
+FullReport = Annotated[bool, Field(description="true: the whole report, not a summary")]
 # Paging is a convention every list tool shares, which the server instructions state once.
 FullList = Annotated[bool, Field(description="true: every item, unpaged")]
 Offset = Annotated[int, Field(ge=0)]
 Limit = Annotated[int, Field(ge=1)]
-Page = Annotated[str, Field(description="a path from the summary's pages: page that list")]
+Page = Annotated[str, Field(description="a path from the summary's pages")]
 # RFC 6750 b64token: what a client can send in an Authorization header.
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 _TOKEN_HINT = (
@@ -552,7 +550,7 @@ def _check_report_paging(page: str, offset: int, full_report: bool) -> None:
     if page and full_report:
         raise SemanticLayerError(
             "INVALID_MCP_ARGUMENTS",
-            "full_report returns the whole report and page one list of it: pass one of them",
+            "full_report returns the whole report and page one list in it: pass one of them",
             details={"page": page},
         )
     if not page and offset:
@@ -774,6 +772,16 @@ def _recovery_hints(exc: Exception) -> list[dict[str, str]]:
                 "message": (
                     "Call diff_project or impact_project with compare_path for a baseline "
                     "package directory, or base_ref for a git baseline."
+                )
+            }
+        ]
+    details = (exc.details or {}) if isinstance(exc, SemanticLayerError) else {}
+    if getattr(exc, "code", "") == "OBJECT_NOT_FOUND" and "duckdb_path" in details:
+        return [
+            {
+                "message": (
+                    "Call list_tables for the relations in this warehouse, or pass duckdb_path "
+                    "(or project_path) for the warehouse that holds the relation."
                 )
             }
         ]
