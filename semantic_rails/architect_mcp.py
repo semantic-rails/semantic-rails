@@ -78,6 +78,8 @@ MAX_PREVIEW_ROWS = 200
 # valid-values count them: a page holds what fits in PAGE_CHARS characters of compact JSON (at
 # least one item; limit lowers it). Paging is not a limit: full_report: true returns every item.
 PAGE_CHARS = 16_000
+# A page holds at most this many items unless limit says otherwise, as valid-values does.
+PAGE_ITEMS = 100
 # A profile_columns page profiles at most this many columns before it is cut to fit.
 PROFILE_PAGE_COLUMNS = 50
 # A default response is a summary an MCP client shows whole; full_report returns everything.
@@ -122,14 +124,11 @@ _WRITE_SUMMARY_NOTE = (
 FullReport = Annotated[
     bool, Field(description="true: the whole report (default: a summary; see its report field)")
 ]
-FullList = Annotated[bool, Field(description="true: every item in one response, unpaged")]
-Offset = Annotated[int, Field(ge=0, description="the page's first item: the last next_offset")]
-Limit = Annotated[
-    int | None, Field(ge=1, description="at most this many items (default: what fits a page)")
-]
-Page = Annotated[
-    str, Field(description="a list the summary cut short, by its path in the summary's pages")
-]
+# Paging is a convention every list tool shares, which the server instructions state once.
+FullList = Annotated[bool, Field(description="true: every item, unpaged")]
+Offset = Annotated[int, Field(ge=0)]
+Limit = Annotated[int, Field(ge=1)]
+Page = Annotated[str, Field(description="a path from the summary's pages: page that list")]
 # RFC 6750 b64token: what a client can send in an Authorization header.
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 _TOKEN_HINT = (
@@ -539,38 +538,37 @@ def _check_offset(offset: int, total: int, what: str) -> None:
         )
 
 
-def _check_list_paging(offset: int, limit: int | None, full_report: bool, what: str) -> None:
-    if full_report and (offset or limit is not None):
+def _check_list_paging(offset: int, full_report: bool, what: str) -> None:
+    if full_report and offset:
         raise SemanticLayerError(
             "INVALID_MCP_ARGUMENTS",
-            f"full_report returns every {what} in one response: drop offset and limit, or drop "
+            f"full_report returns every {what} in one response: drop offset, or drop "
             "full_report to page",
-            details={"offset": offset, "limit": limit},
+            details={"offset": offset},
         )
 
 
-def _check_report_paging(page: str, offset: int, limit: int | None, full_report: bool) -> None:
+def _check_report_paging(page: str, offset: int, full_report: bool) -> None:
     if page and full_report:
         raise SemanticLayerError(
             "INVALID_MCP_ARGUMENTS",
             "full_report returns the whole report and page one list of it: pass one of them",
             details={"page": page},
         )
-    if not page and (offset or limit is not None):
+    if not page and offset:
         raise SemanticLayerError(
             "INVALID_MCP_ARGUMENTS",
-            "offset and limit page the list that page names: pass page, a path from the "
-            "summary's pages",
-            details={"offset": offset, "limit": limit},
+            "offset pages the list that page names: pass page, a path from the summary's pages",
+            details={"offset": offset},
         )
 
 
-def _fill(sizes: Any, limit: int | None, room: int) -> int:
+def _fill(sizes: Any, limit: int, room: int) -> int:
     """How many items, in order, a page holds: at most ``limit``, as many as fit in ``room``
     characters, and at least one."""
     count = used = 0
     for size in sizes:
-        if (limit is not None and count >= limit) or (count and used + size > room):
+        if count >= limit or (count and used + size > room):
             break
         count, used = count + 1, used + size + 1
     return count
@@ -580,7 +578,7 @@ def _paged(
     payload: dict[str, Any],
     key: str,
     offset: int,
-    limit: int | None,
+    limit: int,
     full_report: bool,
     what: str,
 ) -> dict[str, Any]:
@@ -603,7 +601,7 @@ def _paged_groups(
     payload: dict[str, Any],
     groups: tuple[str, ...],
     offset: int,
-    limit: int | None,
+    limit: int,
     full_report: bool,
     what: str,
     *,
@@ -637,7 +635,7 @@ _LINK_BUCKETS = ("proposals", "below_threshold", "not_proposed")
 
 
 def _paged_suggestion(
-    suggestion: dict[str, Any], offset: int, limit: int | None, full_report: bool
+    suggestion: dict[str, Any], offset: int, limit: int, full_report: bool
 ) -> dict[str, Any]:
     """``suggestion`` with one page of its times, then dimensions, then measures, and its draft
     ``upsert_model`` arguments for those: applied in turn, the pages' drafts merge into one
@@ -674,7 +672,7 @@ def _report_or_page(
     full_report: bool,
     page: str,
     offset: int,
-    limit: int | None,
+    limit: int,
 ) -> dict[str, Any]:
     """The report's summary, the whole report, or one page of a list in it."""
     if not page:
@@ -686,7 +684,7 @@ def _report_or_page(
 
 
 def _report_page(
-    report: dict[str, Any], page: str, offset: int, limit: int | None, envelope: dict[str, Any]
+    report: dict[str, Any], page: str, offset: int, limit: int, envelope: dict[str, Any]
 ) -> dict[str, Any]:
     """One page of the list at ``page`` (dotted keys and list indexes) in ``report``: its items
     as the summary shows rows, and the lists each of them leaves rows out of in ``pages``."""
@@ -716,7 +714,7 @@ def _report_page(
         nested: dict[str, Any] = {}
         item = _summary(target[index], nested, f"{page}.{index}.")
         size = _json_size(item) + _json_size(nested)
-        if (limit is not None and len(items) >= limit) or (items and used + size > room):
+        if len(items) >= limit or (items and used + size > room):
             break
         items.append(item)
         pages.update(nested)
@@ -1407,10 +1405,10 @@ def create_architect_mcp_server(
         full_report: FullReport = False,
         page: Page = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
     ) -> dict[str, Any]:
         try:
-            _check_report_paging(page, offset, limit, full_report)
+            _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             parse = _parse_report(project)
             census = parse.pop("route_census", None)
@@ -1462,11 +1460,14 @@ def create_architect_mcp_server(
 
     @mcp.tool(annotations=_read_only_annotations("List project files"))
     def list_project_files(
-        project_path: str, offset: Offset = 0, limit: Limit = None, full_report: FullList = False
+        project_path: str,
+        offset: Offset = 0,
+        limit: Limit = PAGE_ITEMS,
+        full_report: FullList = False,
     ) -> dict[str, Any]:
-        """List files inside a Semantic Rails project directory, a page at a time."""
+        """List files inside a Semantic Rails project directory."""
         try:
-            _check_list_paging(offset, limit, full_report, "file")
+            _check_list_paging(offset, full_report, "file")
             project = _resolve_project_path(project_path, workspace_root=root)
             payload = {
                 "ok": True,
@@ -2021,12 +2022,12 @@ def create_architect_mcp_server(
         duckdb_path: str = "",
         schema: str = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
     ) -> dict[str, Any]:
         """List tables and views (read-only) in a DuckDB package's database or a DuckDB file."""
         try:
-            _check_list_paging(offset, limit, full_report, "table")
+            _check_list_paging(offset, full_report, "table")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 tables = introspection.list_tables(warehouse, schema=schema)
             return _paged(
@@ -2041,13 +2042,12 @@ def create_architect_mcp_server(
         project_path: str = "",
         duckdb_path: str = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
     ) -> dict[str, Any]:
-        """Columns (type, nullability, default), a page at a time, and declared primary, unique
-        and foreign keys."""
+        """Columns (type, nullability, default) and declared primary, unique and foreign keys."""
         try:
-            _check_list_paging(offset, limit, full_report, "column")
+            _check_list_paging(offset, full_report, "column")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 described = {"ok": True, **introspection.describe_table(warehouse, relation)}
             return _paged(described, "columns", offset, limit, full_report, "columns")
@@ -2058,7 +2058,7 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Profile table columns"),
         description=(
             "Per-column counts, min/max and up to 20 samples (sample_limit=0 for none), sampling "
-            "tables above max_rows (at most one million), a page of columns at a time. Read-only."
+            "tables above max_rows (at most one million). Read-only."
         ),
     )
     def profile_columns(
@@ -2069,11 +2069,11 @@ def create_architect_mcp_server(
         project_path: str = "",
         duckdb_path: str = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
-            _check_list_paging(offset, limit, full_report, "column")
+            _check_list_paging(offset, full_report, "column")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 described = introspection.describe_table(warehouse, relation)
                 names = [column["name"] for column in described["columns"]]
@@ -2084,12 +2084,12 @@ def create_architect_mcp_server(
                 else:
                     _check_offset(offset, len(wanted), "columns")
                     # Profile only this page's columns: what fits is known once they are.
-                    chunk = wanted[offset : offset + (limit or PROFILE_PAGE_COLUMNS)]
+                    chunk = wanted[offset : offset + min(limit, PROFILE_PAGE_COLUMNS)]
                 profile = introspection.profile_columns(
                     warehouse, relation, chunk, sample_limit=sample_limit, max_rows=max_rows
                 )
             if full_report:
-                return _paged({"ok": True, **profile}, "columns", 0, None, True, "columns")
+                return _paged({"ok": True, **profile}, "columns", 0, limit, True, "columns")
             page = _paged({"ok": True, **profile}, "columns", 0, limit, False, "columns")
             return {**page, **_page_fields(offset, len(page["columns"]), len(wanted))}
         except Exception as exc:
@@ -2099,9 +2099,9 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Suggest a model"),
         description=(
             "Propose a key, times, dimensions, measures and foreign keys for a relation, with "
-            "confidences, reasons and draft upsert_model arguments. Pages hold the times, then "
-            "the dimensions, then the measures; each page's draft holds that page's, so apply "
-            "the drafts in turn (they merge), or pass full_report: true for one draft. Read-only."
+            "confidences, reasons and draft upsert_model arguments. Pages hold times, then "
+            "dimensions, then measures, and a draft of those; drafts merge, and full_report: true "
+            "gives one. Read-only."
         ),
     )
     def suggest_model(
@@ -2109,11 +2109,11 @@ def create_architect_mcp_server(
         project_path: str = "",
         duckdb_path: str = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
-            _check_list_paging(offset, limit, full_report, "suggestion")
+            _check_list_paging(offset, full_report, "suggestion")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 suggestion = {"ok": True, **introspection.suggest_model(warehouse, relation)}
             return _paged_suggestion(suggestion, offset, limit, full_report)
@@ -2160,8 +2160,8 @@ def create_architect_mcp_server(
             "(default 0.95, stated as threshold); below_threshold lists the rest with the same "
             "evidence for you to decide. columns tries those columns against every key whatever "
             "their names. With project_path the targets are the package's entities and each "
-            "carries draft upsert_relationship arguments. Pages hold the proposals, then "
-            "below_threshold, then not_proposed; counts has each list's total. Read-only."
+            "carries draft upsert_relationship arguments. Pages hold proposals, then the rest; "
+            "counts totals each. Read-only."
         ),
     )
     def suggest_links(
@@ -2171,11 +2171,11 @@ def create_architect_mcp_server(
         project_path: str = "",
         duckdb_path: str = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
-            _check_list_paging(offset, limit, full_report, "candidate")
+            _check_list_paging(offset, full_report, "candidate")
             context = (
                 ArchitectProject(project_path, workspace_root=root).link_context(relation)
                 if project_path
@@ -2233,8 +2233,8 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Suggest models from dbt"),
         description=(
             "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never "
-            "runs), a page of models at a time; keys, links and value sets come from dbt tests "
-            "and contracts. select narrows by model name. Read-only."
+            "runs); keys, links and value sets come from dbt tests and contracts. select narrows "
+            "by model name. Read-only."
         ),
     )
     def suggest_models_from_dbt(
@@ -2243,11 +2243,11 @@ def create_architect_mcp_server(
         catalog_path: str = "",
         select: list[str] | None = None,
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
-            _check_list_paging(offset, limit, full_report, "model")
+            _check_list_paging(offset, full_report, "model")
             project = _dbt_project(target_dir, manifest_path, catalog_path)
             payload = {
                 "ok": True,
@@ -2339,10 +2339,10 @@ def create_architect_mcp_server(
         full_report: FullReport = False,
         page: Page = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
     ) -> dict[str, Any]:
         try:
-            _check_report_paging(page, offset, limit, full_report)
+            _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             ref = _package_ref(project)
             check = str(mode or "parse").strip().lower()
@@ -2387,11 +2387,11 @@ def create_architect_mcp_server(
         full_report: FullReport = False,
         page: Page = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
     ) -> dict[str, Any]:
         """Diff one project against another path or a git base ref."""
         try:
-            _check_report_paging(page, offset, limit, full_report)
+            _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             report = diff_package_report(
                 _package_ref(project),
@@ -2410,11 +2410,11 @@ def create_architect_mcp_server(
         full_report: FullReport = False,
         page: Page = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
     ) -> dict[str, Any]:
         """Return behavior-change impact, reviewer teams, and risk for a package change."""
         try:
-            _check_report_paging(page, offset, limit, full_report)
+            _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             report = impact_report(
                 _package_ref(project),
@@ -2441,10 +2441,10 @@ def create_architect_mcp_server(
         full_report: FullReport = False,
         page: Page = "",
         offset: Offset = 0,
-        limit: Limit = None,
+        limit: Limit = PAGE_ITEMS,
     ) -> dict[str, Any]:
         try:
-            _check_report_paging(page, offset, limit, full_report)
+            _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             report = promote_package_report(
                 _package_ref(project),

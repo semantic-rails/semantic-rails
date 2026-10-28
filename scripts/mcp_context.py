@@ -18,8 +18,11 @@ provider bills.
 Two gates read the files under ``tests/semantic_rails/mcp_context/``:
 
 * ``budgets.json`` holds a ceiling for every measured size. A run fails when a
-  gated metric exceeds its budget by more than the tolerance. Architect MCP
-  sizes are tracked but not gated.
+  gated metric exceeds its budget by more than the tolerance. The Architect
+  MCP's tool list is tracked but not gated; the first page of each of its
+  paged tools, on a 100-relation warehouse (``scripts/large_warehouse.py``),
+  is gated. Those ceilings only go down: lower one with ``--write-baseline``
+  when a change shrinks its page.
 * ``eval_jaffle.jsonl`` is the frozen gold question set, and
   ``plan_accuracy_baseline.json`` records each case's planner outcome and the
   slots it gets wrong. A run fails when a case's outcome gets worse, when a
@@ -74,6 +77,7 @@ DEV_SET_SHA256 = "add4819581e4426cf30eb672c1e4bcb7deb52470ebde29c3a1d2bc7f8c13ef
 HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"
 
 PACKAGE_ID = "jaffle_shop"
+ARCHITECT_PAGES = "architect.page."
 DEFAULT_TOLERANCE = 0.02
 # Token budgets also allow this many tokens of slack, so small metrics (an
 # empty instructions string, a short error) don't fail on a one-word change.
@@ -560,6 +564,69 @@ def measure_architect_mcp(workspace_root: Path) -> dict[str, int]:
         f"architect.tools_list.{key}": value for key, value in tool_list_sizes(tools).items()
     }
     metrics["architect.instructions_tokens"] = approx_tokens(str(server.instructions or ""))
+    return metrics
+
+
+def architect_page_calls(workspace: Any) -> list[tuple[str, str, dict[str, Any]]]:
+    """``(label, tool, arguments)`` for the first page of each paged Architect tool, and each
+    summary, on ``build_large_workspace``'s warehouse and package."""
+
+    from scripts.large_warehouse import FACT, PACKAGE_MARTS, WIDE_FACT
+
+    warehouse = {"duckdb_path": workspace.duckdb_path}
+    package = {"project_path": workspace.package}
+    scaffold = {**package, "compare_path": workspace.scaffold}
+    return [
+        ("list_tables", "list_tables", warehouse),
+        ("describe_table_wide", "describe_table", {**warehouse, "relation": WIDE_FACT}),
+        ("profile_columns_wide", "profile_columns", {**warehouse, "relation": WIDE_FACT}),
+        ("suggest_model_wide", "suggest_model", {**warehouse, "relation": WIDE_FACT}),
+        (
+            "suggest_links_columns",
+            "suggest_links",
+            {**warehouse, "relation": FACT, "columns": ["customer_id"]},
+        ),
+        (
+            "suggest_models_from_dbt",
+            "suggest_models_from_dbt",
+            {"target_dir": workspace.target_dir},
+        ),
+        (
+            "import_dbt_project_preview",
+            "import_dbt_project",
+            {
+                "project_path": workspace.scaffold,
+                "target_dir": workspace.target_dir,
+                "select": PACKAGE_MARTS,
+                "expected_revision": workspace.scaffold_revision,
+                "idempotency_key": "preview",
+                "dry_run": True,
+            },
+        ),
+        ("project_status", "project_status", package),
+        ("list_project_files", "list_project_files", package),
+        ("validate_project_parse", "validate_project", package),
+        ("validate_project_runtime", "validate_project", {**package, "mode": "runtime"}),
+        ("diff_project", "diff_project", scaffold),
+        ("impact_project", "impact_project", scaffold),
+    ]
+
+
+def measure_architect_pages(workspace_root: Path) -> dict[str, int]:
+    """Size the first page of each paged Architect tool, and each summary, on a 100-relation
+    warehouse and a package over 34 of its tables (gated)."""
+
+    from scripts.large_warehouse import build_large_workspace, call_tool
+    from semantic_rails.architect_mcp import create_architect_mcp_server
+
+    workspace = build_large_workspace(workspace_root)
+    server = create_architect_mcp_server(workspace_root=workspace.root)
+    metrics: dict[str, int] = {}
+    for label, tool, arguments in architect_page_calls(workspace):
+        structured = call_tool(server, tool, arguments)
+        if not structured.get("ok"):
+            raise RuntimeError(f"{tool} failed: {structured.get('error')}")
+        metrics[f"architect.page.{label}_tokens"] = approx_tokens(compact_json(structured))
     return metrics
 
 
@@ -1265,19 +1332,28 @@ def write_baseline(
         "description": (
             "Ceilings for scripts/mcp_context.py's query MCP (interface v2): its surface, "
             "defaults, sessions, resources, errors and hosted probes (compact cards, which "
-            "carry query patches; query.v2.default covers default discover), in "
+            "carry query patches; query.v2.default covers default discover), and the "
+            "Architect MCP's first pages on a 100-relation warehouse (architect.page), in "
             "tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, "
             "budget * tolerance), counts above budget; tracked ones are reported only. "
             "Regenerate with --write-baseline and review the diff."
         ),
         "tolerance": tolerance,
         "gated": rebaseline(
-            {name: value for name, value in metrics.items() if name.startswith("query.")},
+            {
+                name: value
+                for name, value in metrics.items()
+                if name.startswith(("query.", ARCHITECT_PAGES))
+            },
             budgets.get("gated", {}),
             tolerance,
         ),
         "tracked": rebaseline(
-            {name: value for name, value in metrics.items() if name.startswith("architect.")},
+            {
+                name: value
+                for name, value in metrics.items()
+                if name.startswith("architect.") and not name.startswith(ARCHITECT_PAGES)
+            },
             budgets.get("tracked", {}),
             tolerance,
         ),
@@ -1393,6 +1469,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         metrics = measure_query_mcp(package)
         with tempfile.TemporaryDirectory(prefix="mcp-context-architect-") as workspace:
             metrics.update(measure_architect_mcp(Path(workspace)))
+        with tempfile.TemporaryDirectory(prefix="mcp-context-architect-pages-") as workspace:
+            metrics.update(measure_architect_pages(Path(workspace)))
         outcomes = run_plan_accuracy(package, cases)
         gold_problems = check_gold_answers(package, cases)
 

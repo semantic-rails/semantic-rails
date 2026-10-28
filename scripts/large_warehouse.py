@@ -1,19 +1,26 @@
-"""A 100-relation DuckDB warehouse and its dbt artifacts, generated at test time.
+"""A 100-relation DuckDB warehouse, its dbt artifacts and a package over part of it.
 
 The shape is what ``dbt build`` on a mid-sized dbt-duckdb project leaves behind: 25 dimension
 and 60 fact tables in ``main_marts`` (declared primary keys, and foreign keys from each fact to
 three to six dimensions) and 15 staging views in ``main_staging``. Most tables have 10 to 50
 columns; three are wide (120 to 180 columns), as real marts often are. ``write_large_dbt_artifacts``
 writes the ``manifest.json`` and ``catalog.json`` that project would leave, with model and column
-descriptions and the usual tests. Everything is deterministic: the same call builds the same
-bytes of data and the same artifacts.
+descriptions and the usual tests. ``build_large_workspace`` lays out all of it, and a package
+over ``PACKAGE_MARTS`` written through the Architect MCP, as an agent would. Everything is
+deterministic: the same call builds the same data, artifacts and package.
+
+``scripts/mcp_context.py`` sizes the Architect MCP's first pages on it, and the paging tests read
+every page of it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 
@@ -335,3 +342,85 @@ def write_large_dbt_artifacts(db_path: Path, target_dir: Path) -> Path:
         encoding="utf-8",
     )
     return target_dir
+
+
+PACKAGE_ID = "large"
+# The marts the package models: enough entities that a pair of them has more routes than a
+# summary shows, few enough that every check on it runs in about a second.
+PACKAGE_MARTS = [dimension_table(name) for name in DIMENSIONS[:10]] + [
+    table for _, table, _ in fact_tables()[:24]
+]
+FACT = f"{MARTS_SCHEMA}.fct_sales_orders"
+WIDE_FACT = f"{MARTS_SCHEMA}.fct_sales_refunds"
+
+
+@dataclass(frozen=True)
+class LargeWorkspace:
+    """Paths relative to ``root``, the Architect MCP's workspace root."""
+
+    root: Path
+    duckdb_path: str
+    target_dir: str
+    # The package over PACKAGE_MARTS, and a copy of it as create_project left it, before the import.
+    package: str
+    scaffold: str
+    scaffold_revision: str
+
+
+def call_tool(server: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """The structured answer of one call to an MCP server's tool."""
+    _, structured = cast(tuple[Any, dict[str, Any]], asyncio.run(server.call_tool(name, arguments)))
+    return dict(structured)
+
+
+def build_large_workspace(root: Path) -> LargeWorkspace:
+    """The warehouse in the package's ``data/``, the dbt target, and the package: created and
+    then imported from dbt through the Architect MCP."""
+    from semantic_rails.architect_mcp import create_architect_mcp_server
+
+    package = root / PACKAGE_ID
+    db_path = build_large_warehouse(package / "data" / f"{PACKAGE_ID}.duckdb")
+    write_large_dbt_artifacts(db_path, root / "dbt" / "target")
+    server = create_architect_mcp_server(workspace_root=root)
+
+    def call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = call_tool(server, name, arguments)
+        if not result.get("ok"):
+            raise RuntimeError(f"{name} failed: {result.get('error') or result.get('status')}")
+        return result
+
+    created = call(
+        "create_project",
+        {
+            "package_id": PACKAGE_ID,
+            "project_path": PACKAGE_ID,
+            "data": "external",
+            "default_db": f"data/{PACKAGE_ID}.duckdb",
+            "first_entity": "customer",
+            "relation": f"{MARTS_SCHEMA}.dim_customers",
+            "primary_key": "customer_id",
+            "time_column": "created_at",
+            "expected_revision": "absent",
+            "idempotency_key": "create",
+        },
+    )
+    scaffold = root / "scaffold" / PACKAGE_ID
+    shutil.copytree(package, scaffold, ignore=shutil.ignore_patterns("*.duckdb*"))
+    call(
+        "import_dbt_project",
+        {
+            "project_path": PACKAGE_ID,
+            "target_dir": "dbt/target",
+            "select": PACKAGE_MARTS,
+            "expected_revision": created["revision"],
+            "idempotency_key": "import",
+        },
+    )
+    return LargeWorkspace(
+        root=root,
+        duckdb_path=db_path.relative_to(root).as_posix(),
+        target_dir="dbt/target",
+        package=PACKAGE_ID,
+        scaffold=scaffold.relative_to(root).as_posix(),
+        scaffold_revision=str(created["revision"]),
+    )
