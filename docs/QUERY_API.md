@@ -585,6 +585,17 @@ MetricFlow's conversion bounds. The window takes only `unit` and `value`: there 
 options, and any other key is refused (`CONVERSION_WINDOW_REQUIRED`, naming the key) instead of
 being ignored.
 
+Every base event counts in the rate's denominator. Base and converted events match on their
+own key column (`sessions.customer_id` = `orders.customer_id`), so a customer the customers
+table doesn't hold yet still converts. One with no key (an anonymous session) counts and never
+converts: a NULL key never matches another NULL key. So does one whose constant-property lookup
+finds no row, on either side. A constant property whose lookup found a row compares
+null-safely: two events with no city have the same city. A rate filtered on (a metric filter on
+the conversion) counts the same events as the rate shown. The base events a query's metric
+filter excludes aren't in the rate at all. On ClickHouse, whose outer joins read `''` or `0`
+for a missing row, a conversion whose base events need a lookup (a grouping or constant
+property read through another table) is refused with `CONVERSION_NOT_SUPPORTED`.
+
 Current limit:
 
 - enriched conversion expressions are executable for the supported event-count model

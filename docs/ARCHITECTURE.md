@@ -498,7 +498,10 @@ Important planner behaviors:
   leaf, whatever reads the looked-up dimension, so a row with a NULL or unmatched foreign key
   keeps its measure value under NULL. Only these reads keep an inner join: a time role
   (`_INNER_LOOKUP_PURPOSES`), a metric predicate's route to its entity and its own nested
-  query, a distribution's per-entity values (both `inner_lookups`), conversions, the hops
+  query, a distribution's per-entity values (both `inner_lookups`), a conversion's converted
+  events and its metric filter's context dimensions (its base events keep their rows, even
+  under `inner_lookups`: `_KEEPS_ROWS_PURPOSES`; both sides match on the events' own key
+  column, `_match_key_route`), the hops
   from an `entity_in_terms_of` anchor back to the counted entity, a dimension any rollup of
   the measure's model holds (even at a grain that rollup can never answer; the
   `entity_in_terms_of` leaf leaves such a query to the measure's own leaf, and

@@ -646,8 +646,10 @@ def _is_link_hop(rel: RelationshipConfig, current_entity: str, config: PackageCo
 
 # The reads that need the looked-up row, so they join every hop of their path INNER: a time
 # role (a row with no time has no bucket), a metric predicate's route to the entity its set is
-# matched on, a conversion's events, and the measure's own entity read back from the anchor of
-# an entity_in_terms_of leaf (a child row whose parent has no record counts no entity).
+# matched on, a conversion's converted events and the dimensions its metric filter is matched on
+# (a conversion's base events keep theirs: they are the rate's denominator), and the measure's
+# own entity read back from the anchor of an entity_in_terms_of leaf (a child row whose parent
+# has no record counts no entity).
 _INNER_LOOKUP_PURPOSES = frozenset(
     {
         "time",
@@ -658,6 +660,12 @@ _INNER_LOOKUP_PURPOSES = frozenset(
     }
 )
 _inner_lookups: ContextVar[bool] = ContextVar("inner_lookups", default=False)
+# A conversion's base events are its rate's denominator, so these reads keep their rows even
+# inside a metric filter's own query (``_inner_lookups``): a rate shown and a rate filtered on
+# must count the same events. Their missing rows read NULL and match nothing.
+_KEEPS_ROWS_PURPOSES = frozenset(
+    {"conversion_base_property", "conversion_base_match_entity", "conversion_base_filter"}
+)
 
 
 @contextmanager
@@ -747,6 +755,18 @@ def _joins_for_paths(
             inner_hops.add((rel.id, current))
             current = rel.target_entity if current == rel.source_entity else rel.source_entity
     keep_rows = not _inner_lookups.get()
+    # A hop keeps its rows for the base-event reads only when no other read walks it.
+    keeps_rows = {
+        rel_id
+        for selection in path_selections
+        if selection.purpose in _KEEPS_ROWS_PURPOSES
+        for rel_id in selection.chosen_path
+    } - {
+        rel_id
+        for selection in path_selections
+        if selection.purpose not in _KEEPS_ROWS_PURPOSES
+        for rel_id in selection.chosen_path
+    }
     joins: list[SqlJoin] = []
     overrides = dict(table_overrides or {})
     # Each physical table may appear in the FROM clause once, so it can
@@ -779,7 +799,7 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
-                kept = keep_rows and join_key not in inner_hops
+                kept = (keep_rows or rel.id in keeps_rows) and join_key not in inner_hops
                 lookup = kept and _is_lookup_hop(rel, current_entity, config)
                 # A grouping across a link keeps a key with no row there (an orphan the lookup
                 # before it kept): it reads the NULL group, not no group.

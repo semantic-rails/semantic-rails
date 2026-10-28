@@ -8,8 +8,10 @@ it, and every other comparison drops it unless it asks for a missing value.
 ``test_lookups_keep_rows.py`` checks every query shape.
 
 A few reads keep the inner join they always had (see the last section): a time role, a metric
-filter's own query and its route to its entity, a conversion, and a dimension a rollup holds.
-A metric filter's set is matched on its context entities, so a row with none is not in it.
+filter's own query and its route to its entity, a conversion's converted events, and a
+dimension a rollup holds. A metric filter's set is matched on its context entities, so a row
+with none is not in it. A conversion's base events are its rate's denominator, so they keep
+their rows: one with no match key counts and converts nothing.
 
 Fixture: boardings of flight legs, with a crew roster keyed by (leg, person). Boarding 7 has
 no person, boarding 8 a person with no record (P9), boarding 11 a leg with no record (L9),
@@ -441,16 +443,17 @@ def test_filters_on_a_looked_up_column_follow_the_null_rules(
     assert got == reference[None]
 
 
-# Check-ins that lead to a boarding by the same person within a day. Check-ins 2 (no person)
-# and 6 (a person with no record) have no person to match on, so they take no part; 1, 5, 7
-# and 8 convert, 3 and 4 don't.
+# Check-ins that lead to a boarding by the same person within a day, matched on the events' own
+# person_id. Every check-in counts in the rate. Check-in 2 (no person) matches nothing; check-in
+# 6 and boarding 8 share P9, whom the people table doesn't hold (a late-arriving person), and
+# pair as they do in plain SQL. 1, 5, 6, 7 and 8 convert; 2, 3 and 4 don't.
 CONVERSION_SQL = """
 SELECT {group}, AVG(CASE WHEN EXISTS (
   SELECT 1 FROM boardings AS b WHERE b.person_id = c.person_id
   AND b.boarded_at >= c.checked_in_at AND b.boarded_at < c.checked_in_at + INTERVAL 1 DAY
   {same_city}
 ) THEN 1.0 ELSE 0.0 END)
-FROM checkins AS c WHERE c.person_id IN (SELECT person_id FROM people) {where}
+FROM checkins AS c WHERE TRUE {where}
 GROUP BY 1
 """
 SQL_CHECKIN_EMPLOYEE = "(SELECT p.is_employee FROM people AS p WHERE p.person_id = c.person_id)"
@@ -466,40 +469,47 @@ def _conversion_sql(*, group: str = "NULL", same_city: str = "", where: str = ""
     return CONVERSION_SQL.format(group=group, same_city=same_city, where=where)
 
 
-def test_conversion_does_not_pair_events_that_have_no_match_entity(runtime, gold):
-    """Events pair on the person key with null-safe equality, so an event whose person lookup
-    found no row must not pair with another such event (check-in 2 with boarding 7, 6 with 8)."""
+def test_conversion_pairs_on_the_events_own_key(runtime, gold):
+    """Events pair on their own person_id. An event with no person pairs with nothing, not with
+    another event without one (check-in 2 with boarding 7). Check-in 6 and boarding 8 share P9,
+    whom the people table doesn't hold, and pair: a late-arriving person still converts. Every
+    check-in counts in the rate."""
     (row,) = _conversion_rate(runtime)
-    assert row["rate"] == pytest.approx(4 / 6)
+    assert row["rate"] == pytest.approx(5 / 8)
     assert row["rate"] == pytest.approx(gold(_conversion_sql())[None])
 
     by_employee = _conversion_rate(runtime, group_by=[EMPLOYEE])
     rates = {row[EMPLOYEE]: row["rate"] for row in by_employee}
-    assert rates == {False: pytest.approx(0.75), True: pytest.approx(0.5)}  # 1, 7, 8 of 1, 3, 7, 8
+    # 1, 7, 8 of 1, 3, 7, 8; 5 of 4, 5; 6 of 2, 6 (no person record: the NULL group).
+    assert rates == {
+        False: pytest.approx(0.75),
+        True: pytest.approx(0.5),
+        None: pytest.approx(0.5),
+    }
     assert rates == pytest.approx(gold(_conversion_sql(group=SQL_CHECKIN_EMPLOYEE)))
 
 
 def test_conversion_pairs_on_a_matched_lookup_whose_property_is_null(null_city_runtime, gold):
     """Events also pair on constant properties, here the airport city read through the leg.
     Check-in 7 and boarding 11 (leg L9) and check-in 5 and boarding 9 (an airport with no
-    record) have no city, so they must not pair as having "the same city": they take no part.
-    Where the lookup matched but the property is NULL, as it is on the event's own entity,
-    check-in 9 pairs with boarding 14 (both at an airport with no city) and not with boarding
-    15 (Chicago)."""
+    record) have no city, so they must not pair as having "the same city": those check-ins
+    count and don't convert. Where the lookup matched but the property is NULL, as it is on the
+    event's own entity, check-in 9 pairs with boarding 14 (both at an airport with no city) and
+    not with boarding 15 (Chicago)."""
     # A leg whose airport row exists: its city, NULL or not, is a match.
     matched = "SELECT l.leg_id FROM legs AS l JOIN airports AS a ON a.airport_code = l.airport_code"
     reference = gold(
         _conversion_sql(
-            same_city=f"AND b.leg_id IN ({matched})"
+            same_city=f"AND c.leg_id IN ({matched}) AND b.leg_id IN ({matched})"
             f" AND {SQL_CITY} IS NOT DISTINCT FROM {SQL_CHECKIN_CITY}",
-            where=f"AND c.leg_id IN ({matched})",
         ),
         NULL_CITY_SEED,
     )
 
     (row,) = _conversion_rate(null_city_runtime, (CITY,))
 
-    assert row["rate"] == pytest.approx(0.75)  # check-ins 1, 8 and 9 convert, 10 doesn't
+    # Check-ins 1, 8 and 9 convert; 2-7 and 10 don't, and every one of the 10 counts.
+    assert row["rate"] == pytest.approx(0.3)
     assert reference[None] == pytest.approx(row["rate"])
 
 
@@ -516,7 +526,9 @@ def test_conversion_predicate_does_not_qualify_rows_without_its_entity(runtime, 
 
     busy = "SELECT leg_id FROM boardings GROUP BY leg_id HAVING COUNT(*) >= 2"
     reference = gold(_conversion_sql(where=f"AND c.leg_id IN ({busy})"))[None]
-    assert row["rate"] == pytest.approx(1.0)  # check-ins 1, 5 and 8 qualify, and convert
+    # Check-ins 1, 2, 5, 6 and 8 are on busy legs; 1, 5, 6 and 8 convert, and 2 has no person
+    # to match. 3 and 4 aren't in the rate at all.
+    assert row["rate"] == pytest.approx(4 / 5)
     assert reference == pytest.approx(row["rate"])
 
 
@@ -726,7 +738,12 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(runtime):
 @pytest.mark.parametrize(
     ("query", "left_joins"),
     [
-        (_conversion_query(metric_filters=[_metric_filter("leg", "entity_only", ">=", 2)]), []),
+        # A conversion matches on the events' own person_id, so neither side joins people; the
+        # leg its metric filter is matched on stays inner.
+        (
+            _conversion_query(metric_filters=[_metric_filter("leg", "entity_only", ">=", 2)]),
+            [],
+        ),
         (_monthly_query(_on_busy("boarding_count", 1)), []),
         # The set's own query groups by the airport, read through the leg: a nested query.
         (_monthly_query(_on_busy("boarding_count", 1, entity="airport")), []),
@@ -746,3 +763,104 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(runtime):
 )
 def test_every_other_read_of_a_lookup_keeps_the_inner_join(runtime, query, left_joins):
     assert _lookup_left_joins(runtime.config, query) == left_joins
+
+
+# A conversion authored with a filter on its base events: check-ins of passengers, the people
+# who aren't employees. "not true" keeps a check-in with no person record (its is_employee reads
+# NULL), as it keeps a NULL in the row itself.
+PASSENGERS = {"all": [{"field": EMPLOYEE, "op": "not", "value": True}]}
+PASSENGER_CONVERSION = "metric.crew.passenger_conversion"
+
+
+@pytest.fixture(scope="module")
+def passenger_runtime(tmp_path_factory: pytest.TempPathFactory):
+    root = tmp_path_factory.mktemp("passengers")
+    package = _write_package(root)
+    (package / "metrics").mkdir()
+    expression = _conversion_query()["select"][0]["expression"]
+    expression["base"] = {**expression["base"], "filter": PASSENGERS}
+    metric = {
+        "label": "Passenger conversion",
+        "kind": "conversion",
+        "value_type": "percent",
+        "expression": expression,
+    }
+    (package / "metrics" / "conversion.yml").write_text(
+        yaml.safe_dump({"metrics": {"passenger_conversion": metric}})
+    )
+    runtime = Runtime.from_path(str(package))
+    yield opened(runtime)
+    runtime.close()
+
+
+SQL_CHECKIN_LEG = "(SELECT l.leg_id FROM legs AS l WHERE l.leg_id = c.leg_id)"
+PASSENGER_RATE_BY_LEG_SQL = f"""
+SELECT {SQL_CHECKIN_LEG}, AVG(CASE WHEN EXISTS (
+  SELECT 1 FROM boardings AS b WHERE b.person_id = c.person_id
+  AND b.boarded_at >= c.checked_in_at AND b.boarded_at < c.checked_in_at + INTERVAL 1 DAY
+) THEN 1.0 ELSE 0.0 END)
+FROM checkins AS c WHERE {SQL_CHECKIN_EMPLOYEE} IS DISTINCT FROM TRUE
+GROUP BY 1
+"""
+
+
+def test_a_conversion_filtered_on_reads_the_events_its_base_filter_keeps(passenger_runtime, gold):
+    """The rate shown per leg and the rate a leg filter reads are one rate. Check-in 2 (no
+    person) and 6 (P9, no person record) pass "is employee not true"; 6 converts on its own key
+    (late-arriving P9) and 2 can't. So L2 is 1/2 and L3 is 1/1, and legs with a rate of at least
+    0.6 are L1 and L3."""
+    shown = passenger_runtime.query({"select": [PASSENGER_CONVERSION], "group_by": [LEG]})["rows"]
+    rates = {row[LEG]: row["passenger_conversion"] for row in shown}
+    reference = gold(PASSENGER_RATE_BY_LEG_SQL)
+    assert rates == {leg: pytest.approx(rate) for leg, rate in reference.items()}
+    assert rates["L2"] == pytest.approx(0.5) and rates["L3"] == pytest.approx(1.0)
+
+    qualifying = {leg for leg, rate in reference.items() if leg is not None and rate >= 0.6}
+    assert qualifying == {"L1", "L3"}
+    fares = passenger_runtime.query(
+        {
+            "select": ["measure.crew.fare"],
+            "group_by": [LEG],
+            "where": [
+                {
+                    "entity": "entity.crew_leg",
+                    "having": [{"field": PASSENGER_CONVERSION, "op": "gte", "value": 0.6}],
+                    "over": "all_time",
+                }
+            ],
+        }
+    )["rows"]
+    fare_sql = "SELECT b.leg_id, SUM(b.fare) FROM boardings AS b GROUP BY 1"
+    expected = {leg: fare for leg, fare in gold(fare_sql).items() if leg in qualifying}
+    assert {row[LEG]: float(row["fare"]) for row in fares} == {
+        leg: pytest.approx(float(fare)) for leg, fare in expected.items()
+    }
+    # The same filter without a grouping: the qualifying legs' total fare (L1 220 + L3 210).
+    (total,) = passenger_runtime.query(
+        {
+            "select": ["measure.crew.fare"],
+            "where": [
+                {
+                    "entity": "entity.crew_leg",
+                    "having": [{"field": PASSENGER_CONVERSION, "op": "gte", "value": 0.6}],
+                    "over": "all_time",
+                }
+            ],
+        }
+    )["rows"]
+    assert float(total["fare"]) == pytest.approx(sum(float(fare) for fare in expected.values()))
+
+
+@pytest.mark.parametrize(
+    ("condition", "where_sql"),
+    [
+        # The matched person's own attribute, one hop from the check-in.
+        ({"field": EMPLOYEE, "op": "is", "value": False}, f"AND {SQL_CHECKIN_EMPLOYEE} = FALSE"),
+        # Another looked-up column, two hops away (leg, then airport).
+        ({"field": CITY, "op": "is", "value": "New York"}, f"AND {SQL_CHECKIN_CITY} = 'New York'"),
+    ],
+    ids=["person-attribute", "two-hop-city"],
+)
+def test_a_where_on_a_looked_up_base_column_answers(runtime, gold, condition, where_sql):
+    (row,) = _conversion_rate(runtime, where=[condition])
+    assert row["rate"] == pytest.approx(gold(_conversion_sql(where=where_sql))[None])

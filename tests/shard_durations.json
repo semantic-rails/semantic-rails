@@ -63,6 +63,7 @@
   "tests/semantic_rails/test_config_registry.py": 0.285,
   "tests/semantic_rails/test_config_validation.py": 101.692,
   "tests/semantic_rails/test_contains_rendering.py": 0.404,
+  "tests/semantic_rails/test_conversion_keeps_base_events.py": 6.0,
   "tests/semantic_rails/test_conversion_operand_filters.py": 4.345,
   "tests/semantic_rails/test_conversion_recovery.py": 2.739,
   "tests/semantic_rails/test_conversion_window_bounds.py": 0.907,

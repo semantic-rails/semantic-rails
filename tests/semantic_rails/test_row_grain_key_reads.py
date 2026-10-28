@@ -65,6 +65,8 @@ REFUSES = {
     ("compiler_parts/conversion.py", "_conversion_entity_key_fields"),
     ("compiler_parts/conversion.py", "_conversion_event_cte"),
     ("compiler_parts/conversion.py", "_conversion_operand_problem"),
+    ("compiler_parts/conversion.py", "_looked_up_property_keys"),
+    ("compiler_parts/conversion.py", "_match_key_route"),
     ("compiler_parts/conversion.py", "_measure_conversion_source"),
     ("compiler_parts/indexes.py", "_measure_has_source_row_key"),
     ("compiler_parts/leaves.py", "_fanout_dedup_leaf_select"),

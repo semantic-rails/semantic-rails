@@ -357,6 +357,13 @@ def test_battery_compiles_for_clickhouse():
         try:
             result = compile_query(config, registry, read_call(case.payload, config=config)[0])
         except SemanticLayerError as exc:
+            if exc.code == "CONVERSION_NOT_SUPPORTED":
+                # A conversion whose base events need a lookup: ClickHouse's outer join reads
+                # '' or 0 for a missing row, so it would drop or mismatch events.
+                assert exc.details["warehouse"] == "clickhouse", (case.name, exc)
+                assert exc.details["lookup_entities"], (case.name, exc)
+                refused.append(case.name)
+                continue
             # ClickHouse has no implicit calendar, which every filled series uses.
             assert exc.code == "REWRITE_NOT_SUPPORTED", (case.name, exc)
             assert exc.details == {"warehouse": "clickhouse", "rewrite": "day_series"}
