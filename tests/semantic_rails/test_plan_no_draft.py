@@ -80,6 +80,130 @@ def test_the_closest_objects_are_offered_without_a_draft(jaffle: Runtime) -> Non
     _no_draft(payload)
 
 
+def test_a_dimension_that_mentions_the_words_is_named_beside_the_measures(
+    jaffle: Runtime,
+) -> None:
+    # "threshold" is in the large-order flag's description too: it groups or filters, and
+    # plan says so after the measure it offers.
+    why = _plan(jaffle, "threshold breaches by store")["why"]
+    flag = "dimension.jaffle_order_is_large_order"
+    assert why["details"]["other_matches"] == [
+        {"kind": "dimension", "id": flag, "label": "Is large order"}
+    ]
+    assert why["message"].endswith(
+        "plan again naming one of them, or ask the user. They also match dimension Is large "
+        f"order ({flag}), which can group or filter but isn't a measure."
+    )
+
+
+# Two fields the package holds as dimensions, said in the words of their descriptions: no measure
+# or metric mentions them, and no dimension's name says them.
+CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+STORE_NAME = "dimension.jaffle_store_name"
+FIELDS = {
+    CUSTOMER_TYPE: "The customer's loyalty tier: new or returning.",
+    STORE_NAME: "The pickup location the order names.",
+}
+
+
+def _with_fields(runtime: Runtime, monkeypatch: pytest.MonkeyPatch, *policies: Any) -> None:
+    from dataclasses import replace
+
+    config = runtime.package_config
+    dimensions = [
+        replace(row, description=FIELDS[row.id]) if row.id in FIELDS else row
+        for row in config.dimensions
+    ]
+    monkeypatch.setattr(
+        runtime,
+        "_config",
+        replace(
+            config,
+            dimensions=dimensions,
+            semantic_policies=[*config.semantic_policies, *policies],
+        ),
+    )
+
+
+def _as(runtime: Runtime, question: str, roles: list[str] | None = None) -> dict[str, Any]:
+    context = {**NOW, **({"roles": roles} if roles is not None else {})}
+    return plan_payload(runtime, intent=question, partial_query={"policy_context": context})
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query"])
+def test_words_only_dimensions_mention_name_those_dimensions(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, detail: str
+) -> None:
+    """The catalog holds the words as dimensions, which can group or filter but count nothing:
+    plan names them and never says nothing in the catalog mentions them."""
+    runtime = runtime_factory("jaffle_shop")
+    _with_fields(runtime, monkeypatch)
+    try:
+        payload = _plan(runtime, "loyalty tier and pickup location", detail)
+    finally:
+        runtime.close()
+    assert payload["status"] == "low_confidence", payload.get("why")
+    why = payload["why"]
+    assert why["code"] == "PLAN_SUBJECT_UNMATCHED"
+    assert why["details"]["terms"] == ["loyalty", "tier", "pickup", "location"]
+    assert why["details"]["candidates"] == []
+    assert why["details"]["other_matches"] == [
+        {"kind": "dimension", "id": CUSTOMER_TYPE, "label": "Customer type"},
+        {"kind": "dimension", "id": STORE_NAME, "label": "Store name"},
+    ]
+    assert why["message"] == (
+        "No measure or metric matches what the question asks about (loyalty, tier, pickup, "
+        "location), so plan offers no draft on an unrelated one. These words match dimension "
+        f"Customer type ({CUSTOMER_TYPE}) and dimension Store name ({STORE_NAME}), which can "
+        "group or filter but aren't measures; name the measure or metric to count, or ask the "
+        "user."
+    )
+    assert "discover" in why["recovery_hints"][0]["message"]
+    if detail != "query":
+        assert payload["next"] == {"discover": {"terms": "loyalty tier pickup location"}}
+    _no_draft(payload)
+
+
+@pytest.mark.parametrize(
+    ("question", "named"),
+    [
+        # The only object that mentions the words is hidden: the answer is the absent one's.
+        ("loyalty tier by store", []),
+        # One of two is hidden: only the visible one is named, as if the other were absent.
+        ("loyalty tier and pickup location", [STORE_NAME]),
+    ],
+)
+def test_a_hidden_dimension_answers_as_an_absent_one(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, question: str, named: list[str]
+) -> None:
+    from semantic_rails import visible_view
+    from tests.semantic_rails.hidden_absent import absent, envelope, visibility_policy
+
+    runtime = runtime_factory("jaffle_shop")
+    _with_fields(runtime, monkeypatch, visibility_policy("visible_only", CUSTOMER_TYPE))
+    try:
+        # Finance holds the grant and sees the dimension named.
+        granted = _as(runtime, question, ["finance"])
+        hidden_from = visible_view.hidden_object_ids(runtime.package_config, roles=["support"])
+        assert CUSTOMER_TYPE in hidden_from
+        payload = _as(runtime, question, ["support"])
+        monkeypatch.setattr(runtime, "_config", absent(runtime.package_config, hidden_from))
+        expected = _as(runtime, question, ["support"])
+    finally:
+        runtime.close()
+    assert CUSTOMER_TYPE in [row["id"] for row in granted["why"]["details"]["other_matches"]]
+    assert envelope(payload) == envelope(expected)
+    why = payload["why"]
+    assert why["code"] == "PLAN_SUBJECT_UNMATCHED"
+    assert [row["id"] for row in why["details"]["other_matches"]] == named
+    assert CUSTOMER_TYPE not in json.dumps(payload)
+    assert "Customer type" not in json.dumps(payload)
+    if not named:
+        assert payload["status"] == "unrealizable"
+        assert why["message"].endswith("Nothing in the catalog mentions them.")
+    _no_draft(payload)
+
+
 @pytest.mark.parametrize(
     "question",
     [
