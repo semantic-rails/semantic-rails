@@ -962,6 +962,7 @@ ratio) and a "which" naming a dimension rather than an entity draft no list. A t
 or "every" ends at the first word that names nothing more ("each plan make" groups by plan). The
 readiness checks read the same stand-ins, so a draft grouped by another entity's column stays
 held.
+
 **How plan drafts a total.** A question that asks for a total is planned without its total
 words, then its ready draft takes the call shape that answers it, validated as `execute` reads
 it, on the request's clock and identity:
@@ -974,14 +975,19 @@ it, on the request's clock and identity:
   where its key is grouped beside it, since a level keeps the key of each name it keeps. When
   the named grouping is all the call groups by and the call has a grain, each group's total
   across the periods is drafted beside its rows instead;
-- "with each store's total (across months)", "the total for each store": a
+- "with each store's total", "the total for each store": a
   [`total`](QUERY_CALL.md#coarser-totals) item for each measure or metric the draft selects, as
   `<column>_total`, over the call's other groupings and `period` under a grain ("each month's
-  total" keeps the period);
+  total" keeps the period). "Across" or "over" names what it adds up across ("each store's total
+  across months" is over `period` alone); a word that names none of the call's other groupings
+  ("over the year" on a monthly call) is held;
 - "each store's share", "as a share of the total", "what percent of total revenue comes from
   each store": a [`share`](QUERY_CALL.md#share-of-a-total) item for each measure or metric, as
-  `<column>_share`, over the named grouping, or every grouping within each period ("of the
-  grand total": across the periods too).
+  `<column>_share`, over the named grouping ("each month's share": `period`), or every grouping
+  within each period ("of the grand total": across the periods too).
+
+A total row beside a `limit` or `having` adds up every row the call keeps before them, and
+`assumptions` says so ("top 3 stores with the grand total" totals every store).
 
 "Total" before a measure word ("total revenue by store") and a metric named with "share" ask
 for none. A series' "grand" or "overall" total is one number across its periods, which no total
@@ -995,6 +1001,7 @@ something else carries the same code as a warning. Plan reads one total per ques
 ("with the grand total and each store's share") stays in the question's words and holds the
 draft. With `detail="best"`, `intent_ir.intent` is the question without its total words and
 `intent_ir.totals` the phrase read.
+
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.

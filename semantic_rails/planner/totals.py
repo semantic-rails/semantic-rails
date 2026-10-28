@@ -29,7 +29,7 @@ from ..clock import floor_period, period_end
 from ..errors import SemanticLayerError
 from ..query_call import TIME_AXIS
 from ._base import _singular, _tokens
-from .call import Call
+from .call import Call, QueryBuilder, Time
 from .groupings import _entity_stand_ins
 from .plan_query import _validate_query
 
@@ -55,7 +55,8 @@ _SUBTOTALS = re.compile(
 _BESIDE = re.compile(
     r"\b(?:(?:with|and|plus|including)\s+)?(?:each|every)\s+"
     rf"(?P<words>[a-z]+(?:\s+[a-z]+)?){_APOSTROPHE}s?\s+totals?"
-    r"(?:\s+(?:across|over)\s+(?:all\s+)?(?:the\s+|its\s+|their\s+)?[a-z]+)?" + _END + "|"
+    r"(?:\s+(?:across|over)\s+(?:all\s+)?(?:the\s+|its\s+|their\s+)?"
+    r"(?P<across>[a-z]+(?:\s+(?!(?:and|with|plus)\b)[a-z]+)?))?" + _END + "|"
     r"\b(?:(?:with|and|plus|including)\s+)?(?:the\s+)?totals?\s+(?:for|per|of)\s+"
     r"(?:each|every)\s+(?P<per>[a-z]+(?:\s+[a-z]+)?)" + _END,
     re.IGNORECASE,
@@ -79,6 +80,10 @@ _ACROSS_PERIODS = (
     "each total row keeps its period, so none is the grand total across the periods (ask "
     "without the period for it, or for each group's total across the periods)"
 )
+_BEFORE_THE_CUT = (
+    "Each total row adds up every row the call keeps before its having and limit, not only the "
+    "rows it returns."
+)
 _WHAT = {
     "rows": "a grand total row",
     "subtotals": "subtotal rows",
@@ -96,6 +101,7 @@ class TotalsAsk:
     words: str  # the grouping the phrase names ("store"), or ""
     phrase: str
     rest: str
+    across: str = ""  # what a group's total adds up across ("months"), or ""
 
 
 def asked_totals(question: str, config: Any) -> TotalsAsk | None:
@@ -109,7 +115,8 @@ def asked_totals(question: str, config: Any) -> TotalsAsk | None:
         match = pattern.search(question)
         if match is None:
             continue
-        words = next((value for value in match.groupdict().values() if value), "").strip()
+        groups = match.groupdict()
+        words = (groups.get("words") or groups.get("by") or groups.get("per") or "").strip()
         words = "" if words.lower() in _PRONOUNS else words  # "each one's share"
         before = _FILLER_END.sub("", question[: match.start()])
         after = _FILLER_START.sub("", question[match.end() :])
@@ -122,7 +129,8 @@ def asked_totals(question: str, config: Any) -> TotalsAsk | None:
             rest = f"{rest} by {words}"
         if not re.search(r"\w", rest):
             return None
-        return TotalsAsk(kind, words, question[match.start() : match.end()].strip(), rest)
+        phrase = question[match.start() : match.end()].strip()
+        return TotalsAsk(kind, words, phrase, rest, (groups.get("across") or "").strip())
     return None
 
 
@@ -134,67 +142,75 @@ def _catalog_phrases(config: Any) -> set[str]:
     return {phrase for phrase in phrases if set(phrase.split()) & _TOTAL_WORDS}
 
 
-def shaped_call(
-    config: Any, call: dict[str, Any], asked: TotalsAsk
-) -> tuple[dict[str, Any] | None, str]:
-    """``call`` (a ready draft, in the call's spelling) with the total ``asked`` names, or
-    None and why the draft has no place for it."""
-    group_by = list(call.get("group_by") or [])
-    grain = str((call.get("time") or {}).get("grain") or "")
+def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None, str]:
+    """``call`` (a ready draft) with the total ``asked`` names, or None and why the draft has
+    no place for it."""
+    group_by = list(call.group_by)
+    grain = call.time.grain if call.time is not None else ""
     # "The grand total" of a series is one number across its periods, which a total row is only
     # when the window holds one period (a balance read on its one day).
-    time = call.get("time") or {}
-    grand = bool(grain) and _GRAND.search(asked.phrase) is not None and not _one_period(time)
-    if asked.kind in {"rows", "subtotals"} and call.get("totals") is not None:
+    grand = bool(grain) and _GRAND.search(asked.phrase) is not None and not _one_period(call.time)
+    if asked.kind in {"rows", "subtotals"} and call.totals is not None:
         return call, ""  # the caller's call already asks for total rows
-    if not group_by:
-        if asked.kind == "rows" and not grain:
-            return call, ""  # a call grouped by nothing is its own grand total
-        if grain:
-            return None, "the draft groups only by period, and a total row adds up groups"
-        return None, "the draft groups by nothing, so it has no rows to total"
     named = _named_columns(config, group_by, asked.words, grain)
     if asked.words and not named:
         return None, f"the draft groups by nothing '{asked.words}' names"
+    if not group_by:
+        if asked.kind == "rows" and not grain:
+            return call, ""  # a call grouped by nothing is its own grand total
+        if asked.kind == "share" and named == [TIME_AXIS]:
+            return _with_items(config, call, "share", named)  # "each month's share"
+        if asked.kind == "beside" and named == [TIME_AXIS] and not asked.across:
+            return call, ""  # "each month's total": the rows are the totals
+        if grain:
+            return None, "the draft groups only by period, and a total row adds up groups"
+        return None, "the draft groups by nothing, so it has no rows to total"
+    builder = QueryBuilder(config, call)
     if asked.kind == "rows":
         if grand:
             return None, _ACROSS_PERIODS
-        return {**call, "totals": []}, ""
+        return builder.totals([]).build(), ""
     if asked.kind == "subtotals":
         if named == [TIME_AXIS]:
-            return {**call, "totals": []}, ""  # each total row keeps its period
+            return builder.totals([]).build(), ""  # each total row keeps its period
         kept = named or _with_partners(config, group_by, group_by[:1])
         if not set(kept) >= set(group_by):
-            return {**call, "totals": _totals_levels(config, group_by, kept)}, ""
+            return builder.totals(_totals_levels(config, group_by, kept)).build(), ""
         if not grain:
-            return {**call, "totals": []}, ""
+            return builder.totals([]).build(), ""
         # Total rows keep the period: each group's total across the periods is a total
         # beside its rows.
-        return _with_items(call, "total", [TIME_AXIS])
+        return _with_items(config, call, "total", [TIME_AXIS])
     if asked.kind == "share":
-        return _with_items(call, "share", named or [*group_by, *([TIME_AXIS] if grand else [])])
+        over = named or [*group_by, *([TIME_AXIS] if grand else [])]
+        return _with_items(config, call, "share", over)
     if not named:
         return None, "the question names no grouping whose total to show"
-    # A group's total beside each of its rows: the call without its other columns.
-    over = [column for column in group_by if column not in named]
-    if grain and TIME_AXIS not in named:
-        over.append(TIME_AXIS)
-    return _with_items(call, "total", over) if over else (call, "")  # the rows are the totals
+    # A group's total beside each of its rows: the call without its other columns, or without
+    # the ones the question says it adds up across ("each store's total across types").
+    others = [column for column in group_by if column not in named]
+    others += [TIME_AXIS] if grain and TIME_AXIS not in named else []
+    over = others
+    if asked.across:
+        over = _named_columns(config, group_by, asked.across, grain)
+        if not over or not set(over) <= set(others):
+            return None, f"'{asked.across}' names none of the draft's other groupings"
+    return _with_items(config, call, "total", over) if over else (call, "")  # rows are totals
 
 
-def _one_period(time: dict[str, Any]) -> bool:
+def _one_period(time: Time | None) -> bool:
     """Whether the call's window holds exactly one period of its grain."""
-    grain = str(time.get("grain") or "")
-    if time.get("last"):
-        return bool(time["last"].get("unit") == grain and time["last"].get("value") == 1)
-    if time.get("this"):
-        return bool(time["this"] == grain)
-    bounds = [str(time.get(key) or "") for key in ("start", "end")]
-    if not all(len(bound) == 10 for bound in bounds):
+    if time is None:
+        return False
+    if time.last is not None:
+        return time.last == (time.grain, 1)
+    if time.this:
+        return time.this == time.grain
+    if not (len(time.start) == 10 and len(time.end) == 10):
         return False  # an open window, or a bound inside a day
     try:
-        start, end = (date.fromisoformat(bound) for bound in bounds)
-        return floor_period(start, grain) == start and period_end(start, grain) == end
+        start, end = date.fromisoformat(time.start), date.fromisoformat(time.end)
+        return floor_period(start, time.grain) == start and period_end(start, time.grain) == end
     except (ValueError, SemanticLayerError):
         return False  # not a date, or a grain finer than a day
 
@@ -258,19 +274,15 @@ def _totals_levels(config: Any, group_by: list[str], kept: list[str]) -> list[st
     return [column for column in kept if column not in keys]
 
 
-def _with_items(
-    call: dict[str, Any], kind: str, over: list[str]
-) -> tuple[dict[str, Any] | None, str]:
+def _with_items(config: Any, call: Call, kind: str, over: list[str]) -> tuple[Call | None, str]:
     """``call`` with a ``kind`` item over ``over`` beside each measure or metric it selects."""
-    items = []
-    for item in call.get("select") or []:
-        source = item if isinstance(item, str) else item.get("expression")
+    builder = QueryBuilder(config, call)
+    for item in call.select:
+        source = item.expression
         if not isinstance(source, str) or not source.startswith(("measure.", "metric.")):
             return None, f"a {kind} of a computed column isn't drafted"
-        alias = (item.get("as") if isinstance(item, dict) else "") or source.rsplit(".", 1)[-1]
-        expression = {"kind": kind, "input": source, "over": list(over)}
-        items.append({"expression": expression, "as": f"{alias}_{kind}"})
-    return {**call, "select": [*call["select"], *items]}, ""
+        builder.select({"kind": kind, "input": source, "over": list(over)}, f"{item.alias}_{kind}")
+    return builder.build(), ""
 
 
 def with_totals(
@@ -287,13 +299,16 @@ def with_totals(
     if payload["status"] != "ok" or not isinstance(query, dict):
         # The draft is held already; it says so beside the plan's own why.
         return _not_drafted(payload, asked, "plan drafts it once the draft is ready", held=False)
-    shaped, reason = shaped_call(runtime._config, query, asked)
+    draft = Call.from_call(query, runtime._config.measures)
+    try:
+        shaped, reason = shaped_call(runtime._config, draft, asked)
+    except SemanticLayerError as exc:  # the builder's own check: never a call to hand back
+        shaped, reason = None, f"the draft can't carry it ({exc.code})"
     if shaped is None:
         return _not_drafted(payload, asked, reason)
-    if shaped is query:
+    if shaped is draft:
         return payload
-    call = Call.from_call(shaped, runtime._config.measures)
-    validation = _validate_query(runtime, call)
+    validation = _validate_query(runtime, shaped)
     if not validation["ok"]:
         error = (validation.get("errors") or [{}])[0]
         refusal = {key: error[key] for key in ("code", "message") if error.get(key)}
@@ -302,7 +317,10 @@ def with_totals(
             refusal["path"] = path
         reason = f"the engine refuses it ({error.get('code')})"
         return _not_drafted(payload, asked, reason, refusal=refusal)
-    payload["best"] = {**best, "query": call.to_call()}
+    payload["best"] = {**best, "query": shaped.to_call()}
+    if asked.kind in {"rows", "subtotals"} and (shaped.limit is not None or shaped.having):
+        # "Top 3 stores with the grand total": the total of every store, not of the 3.
+        payload["assumptions"] = [*payload.get("assumptions", []), _BEFORE_THE_CUT]
     return payload
 
 

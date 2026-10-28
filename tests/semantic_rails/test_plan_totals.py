@@ -162,14 +162,50 @@ def test_subtotals_of_a_series_s_one_grouping_are_its_total_across_the_periods(r
             "revenue by store and customer type with each store's total",
             ["dimension.jaffle_customer_type"],
         ),
+        # With nothing named after it, a group's total adds up everything else, the months too.
+        (
+            "monthly revenue by store and customer type with each store's total",
+            ["dimension.jaffle_customer_type", "period"],
+        ),
+        # What it adds up across, when named, is all it adds up across.
+        (
+            "monthly revenue by store and customer type with each store's total across types",
+            ["dimension.jaffle_customer_type"],
+        ),
+        (
+            "monthly revenue by store and customer type with each month's total across stores",
+            STORES,
+        ),
+        # Without a grouping, each month's row is its own total.
+        ("revenue by month with each month's total", None),
     ],
 )
 def test_each_group_s_total_sits_beside_its_rows(runtime, question, over):
     query = _ready(_plan(runtime, question))
+    if over is None:
+        assert not _items(query)
+        return
     [item] = _items(query)
     assert item["expression"]["kind"] == "total" and item["expression"]["over"] == over
     # The draft's own order_by on its keys runs beside the total's coarser call.
     assert query["order_by"] and runtime.query(query, now=NOW)["rows"]
+
+
+def test_each_period_s_share_is_over_the_periods(runtime):
+    query = _ready(_plan(runtime, "each month's share of revenue"))
+    [item] = _items(query)
+    assert item["expression"] == {"kind": "share", "input": REVENUE, "over": ["period"]}
+    rows = runtime.query(query, now=NOW)["rows"]
+    assert sum(row["revenue_usd_share"] for row in rows) == pytest.approx(1)
+
+
+def test_a_total_row_beside_a_ranking_says_it_adds_up_every_row(runtime):
+    """ "Top 3 stores with the grand total": the total of every store the call keeps, before
+    its limit, as the answer's TOTALS says too."""
+    plan = _plan(runtime, "top 3 stores by revenue with the grand total")
+    query = _ready(plan)
+    assert query["totals"] == [] and query["limit"] == 3
+    assert any("before its having and limit" in line for line in plan["assumptions"])
 
 
 def test_each_group_s_share_is_of_the_total_across_the_named_grouping(runtime):
@@ -191,6 +227,9 @@ def test_each_group_s_share_is_of_the_total_across_the_named_grouping(runtime):
         ("revenue by store and month with the grand total", None),
         ("revenue by month with the grand total", None),
         ("revenue by store with subtotals by product", None),
+        # "Over the year" names none of a monthly call's other groupings.
+        ("revenue by store and month with each store's total over the year", None),
+        ("revenue by store and customer type with each store's total across months", None),
     ],
 )
 def test_a_total_the_draft_cannot_carry_holds_the_plan(runtime, question, code):
