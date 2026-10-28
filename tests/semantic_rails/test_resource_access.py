@@ -852,3 +852,48 @@ def test_restricted_warehouse_failure_keeps_safe_operational_code(granted_runtim
     assert "Warehouse query execution failed" in str(exc.value)
     assert "private" not in json.dumps(exc.value.details)
     assert "hidden" not in json.dumps(exc.value.details)
+
+
+# What a granted caller can learn about ids outside the grant: nothing. An ungranted
+# metric or measure must be refused exactly like an id the package doesn't have, including
+# where the call's clock would come from the object (a grain or a window without a role).
+_UNGRANTED = {"metric": AOV, "measure": "measure.jaffle.revenue_usd"}
+# Made-up ids far from every real one, so no typo suggestion differs from the ungranted id's.
+_UNKNOWN = {"metric": "metric.sales.qqq_nothing", "measure": "measure.jaffle.qqq_nothing"}
+_OUTSIDE_CALLS = {
+    "plain": lambda x: {"select": [x]},
+    "grain": lambda x: {"select": [x], "time": {"grain": "day"}},
+    "window": lambda x: {"select": [x], "time": {"last": {"unit": "day", "value": 3}}},
+    "grain_and_window": lambda x: {
+        "select": [x],
+        "time": {"grain": "day", "last": {"unit": "day", "value": 3}},
+    },
+}
+
+
+def _refusal(runtime, call):
+    """The refusal a granted caller gets for ``call`` from validate and from query."""
+    report = runtime.validate(call, context=context())
+    try:
+        runtime.query(call, context=context())
+        answered = None
+    except SemanticLayerError as exc:
+        answered = (exc.code, str(exc), exc.details)
+    return report["ok"], [(e["code"], e.get("details")) for e in report["errors"]], answered
+
+
+@pytest.mark.parametrize("kind", sorted(_UNGRANTED))
+@pytest.mark.parametrize("shape", sorted(_OUTSIDE_CALLS))
+def test_an_ungranted_id_is_refused_exactly_like_an_unknown_one(granted_runtime, kind, shape):
+    build = _OUTSIDE_CALLS[shape]
+    ungranted, unknown = _UNGRANTED[kind], _UNKNOWN[kind]
+    seen = {}
+    for label, object_id in (("ungranted", ungranted), ("unknown", unknown)):
+        refusal = _refusal(granted_runtime, build(object_id))
+        seen[label] = json.loads(json.dumps(refusal, default=str).replace(object_id, "<id>"))
+    assert seen["ungranted"][0] is False
+    assert seen["ungranted"] == seen["unknown"], shape
+    assert not granted_runtime.adapter.statements
+    # The granted metric still takes its own clock from its definition, once time is granted.
+    time_granted = context(dimensions=("temporal_role.jaffle_customer_first_order_at",))
+    assert granted_runtime.validate(build(CUSTOMERS), context=time_granted)["ok"], shape
