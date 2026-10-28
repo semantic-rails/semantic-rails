@@ -2523,7 +2523,8 @@ class Runtime:
                     seed_warnings=self._seed_warnings,
                 )
             ) from exc
-        visible_rows = strip_segment_preview_metric(list(rows))
+        # The preview's rows, without the columns its SQL carries for the engine alone.
+        visible_rows = strip_segment_preview_metric(list(split_hidden(rows, preview_compiled)[0]))
         member_count = int(count_rows[0].get("member_count", 0)) if count_rows else 0
         return {
             "segment": {

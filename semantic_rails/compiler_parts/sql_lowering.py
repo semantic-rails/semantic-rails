@@ -60,6 +60,7 @@ from .empty_groups import (
     absent_marker,
     base_reads,
     carried_zero_lookups,
+    counts_its_own_key,
     expr_resolves_to_zero,
     guard_empty_groups,
     has_nested_case,
@@ -546,6 +547,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         else {}
     )
     marked: dict[str, str] = {}
+    leaves = {row.bound_measure.alias: row for row in plan.measure_plans}
     projected_fields: list[SqlField] = [
         SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in key_aliases
     ]
@@ -591,6 +593,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     hidden.append(
                         SqlField(SqlIdentifier(parts=["base", absent[read]]), absent[read])
                     )
+            # A bare count of its own entity's key read from its rows reads 0 only where they
+            # never reached the group: ``<output> not 0`` then leaves out exactly those groups.
+            only = leaves[unreached[0]] if len(unreached) == 1 else None
             record_zero_output(
                 alias,
                 (
@@ -599,6 +604,15 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     if row.bound_measure.alias in reads
                 ),
                 [absent[read] for read in unreached],
+                zero_means_absent=only is not None
+                and isinstance(post_expr, dict)
+                and post_expr.get("kind") == "measure"
+                and not only.aggregate_relation_id
+                and counts_its_own_key(
+                    zero[unreached[0]],
+                    _measure_index(config).get(only.bound_measure.measure_id),
+                    config,
+                ),
             )
         elif guard_empty and (
             lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)

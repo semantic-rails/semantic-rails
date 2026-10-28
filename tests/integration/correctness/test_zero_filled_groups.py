@@ -13,6 +13,7 @@ so their statements carry none.
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -35,6 +36,7 @@ SIGNUPS = "measure.shop.signup_count"
 ORDERS = "measure.shop.order_count"
 REVENUE = "measure.shop.revenue"
 HUGE_ORDERS = "measure.shop.huge_order_count"
+LARGE_ORDERS = "measure.shop.large_order_count"
 REFUNDS = "measure.shop.refund_count"
 CUSTOMER = "dimension.shop_customer_id"
 STORE = "dimension.shop_order_store_id"
@@ -107,7 +109,8 @@ def test_counts_the_customers_a_count_or_sum_reads_0_for_want_of_rows(request, b
                         "output": "revenue",
                         "zero_filled": no_orders,
                         "entities": ["entity.shop_order"],
-                        "having": {"field": "revenue", "op": "not", "value": 0},
+                        # A sum can read a real 0: the order count's condition is the exact one.
+                        "having": {"field": "order_count", "op": "not", "value": 0},
                     },
                 ],
                 "groups": customers,
@@ -167,6 +170,46 @@ def test_a_group_that_reads_null_is_never_counted(request, backend):
     assert "NO_DATA_IN_SCOPE" in codes
     [note] = _notes(result)
     assert [row["output"] for row in note["details"]["outputs"]] == ["signup_count"]
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_condition_is_given_only_when_it_leaves_out_exactly_those_groups(request, backend):
+    """Signups and large orders by customer, less the customers who never ordered: a customer
+    whose orders are all small reads a real 0 large orders, so ``large_order_count not 0`` would
+    drop them too. The note names customer 107 and gives no condition for it; signups, a count
+    of the customer key that reads 0 only where no signup reached the group, keep theirs."""
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    [[small_only]] = source.reference(
+        "SELECT COUNT(*) FROM (SELECT customer_id FROM orders GROUP BY customer_id "
+        "HAVING COUNT(CASE WHEN amount >= 10 THEN 1 END) = 0) AS small"
+    )
+    assert small_only == 5
+    call = {"select": [SIGNUPS, LARGE_ORDERS], "group_by": [CUSTOMER]}
+
+    result = runtime.query(call)
+
+    zeros = sorted(row[CUSTOMER] for row in result["rows"] if row["large_order_count"] == 0)
+    assert zeros == [102, 104, 105, 106, 107, 108]
+    [note] = _notes(result)
+    assert note["message"] == (
+        "1 of 8 groups has no rows of entity.shop_customer in this call, so its signup_count "
+        f"is 0 (to leave it out, add {_having('signup_count')} to having); 1 of 8 groups has no "
+        "rows of entity.shop_order in this call, so its large_order_count is 0. A 0 there is "
+        "data of nothing, not missing data."
+    )
+    assert note["details"]["outputs"] == [
+        {
+            "output": "signup_count",
+            "zero_filled": 1,
+            "entities": ["entity.shop_customer"],
+            "having": {"field": "signup_count", "op": "not", "value": 0},
+        },
+        {"output": "large_order_count", "zero_filled": 1, "entities": ["entity.shop_order"]},
+    ]
+    # The one condition given leaves out exactly the group it names.
+    kept = runtime.query({**call, "having": [json.loads(_having("signup_count"))]})
+    assert sorted(row[CUSTOMER] for row in kept["rows"]) == [101, 102, 103, 104, 105, 106, 107]
 
 
 @pytest.mark.parametrize("backend", ["duckdb", "postgres"])
@@ -312,6 +355,24 @@ def test_a_marked_group_that_reads_null_is_no_zero_filled_group(shop):
     assert zero_filled_groups_notes(shop, compiled, rows, hidden) == []
 
 
+def test_no_condition_when_another_row_shown_reads_the_same_0(shop):
+    """A count of its own key reads 0 only where its rows never reached the group; a returned
+    row that says otherwise (an unmarked 0) gets no condition that would drop it too."""
+    compiled = _compiled(shop, BY_CUSTOMER)
+    exact = [item["output"] for item in compiled["zero_outputs"] if item.get("zero_means_absent")]
+    assert exact == ["signup_count", "order_count"]
+    returned = [
+        {CUSTOMER: 106, "signup_count": 1, "order_count": 0, "revenue": 0}
+        | {"m1_absent": 0, "m2_absent": 0, "m3_absent": 0},
+        {CUSTOMER: 107, "signup_count": 1, "order_count": 0, "revenue": 0}
+        | {"m1_absent": 0, "m2_absent": 1, "m3_absent": 1},
+    ]
+    rows, hidden = split_hidden(returned, compiled)
+    [note] = zero_filled_groups_notes(shop, compiled, rows, hidden)
+    assert [row.get("having") for row in note["details"]["outputs"]] == [None, None]
+    assert "having" not in note["message"]
+
+
 def test_a_withheld_output_or_a_mark_that_never_came_back_counts_nothing(shop):
     """A policy that withholds an output's values hears nothing of its groups either, and an
     output whose mark the warehouse never returned is never guessed at."""
@@ -345,3 +406,47 @@ def test_a_call_that_holds_no_such_group_carries_no_mark(shop, query):
     compiled = _compiled(shop, query)
     assert compiled["absent_rows"] == {}
     assert "_absent" not in compiled["sql"]
+
+
+TOUCHES = """  shop.customer_touches:
+    as: metric.shop.customer_touches
+    label: Signups plus orders
+    kind: derived
+    value_type: count
+    expression: {kind: arithmetic, op: add, left: {measure: measure.shop.signup_count},
+      right: {measure: measure.shop.order_count}}
+"""
+TOUCHED = """segments:
+  customer.touched:
+    as: segment.shop.touched_customers
+    name: shop.Customer.touched
+    label: Touched customers
+    entity: entity.shop_customer
+    basis_metric: metric.shop.customer_touches
+    preview_dimensions: [dimension.shop_customer_channel]
+"""
+
+
+def test_a_segment_preview_shows_no_mark(tmp_path):
+    """An active-customers segment on signups plus orders joins two facts on the customer, so
+    its preview's statement carries the marks; the preview's rows hold only the members and
+    their preview dimensions."""
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    metrics = package / "metrics" / "metrics.yml"
+    metrics.write_text(metrics.read_text() + TOUCHES)
+    (package / "segments").mkdir(exist_ok=True)
+    (package / "segments" / "touched.yml").write_text(TOUCHED)
+    config = load_package_config(str(package))
+    runtime = Runtime.from_config(config, source_path=str(package), package_id="shop")
+    try:
+        preview = runtime.segment_preview("segment.shop.touched_customers", limit=20)
+    finally:
+        runtime.close()
+
+    assert "_absent" in preview["rendered_sql"]
+    assert preview["rows"]
+    assert {key for row in preview["rows"] for key in row} == {
+        CUSTOMER,
+        "dimension.shop_customer_channel",
+    }

@@ -36,6 +36,7 @@ from ..expressions import (
     AggregateExpr,
     ArithmeticExpr,
     CaseExpr,
+    ColumnRefExpr,
     MeasureRefExpr,
     MetricRecipeRefExpr,
     SemanticExpr,
@@ -121,6 +122,24 @@ def reads_every_row(measure: MeasureConfig) -> bool:
     marker (``_row_marker``) applies the same test. A nested CASE cannot prove this either
     and keeps base settlement instead of deriving a marker."""
     return not (has_nested_case(measure) or is_conditional_case(measure.expr))
+
+
+def counts_its_own_key(
+    aggregation: str, measure: MeasureConfig | None, config: PackageConfig
+) -> bool:
+    """Whether a count of the measure is at least 1 in every group its rows reach: it counts its
+    own entity's key, which every row holds. Only then is a 0 a group its rows never reached; a
+    conditional count, a count of another column and a sum read a real 0 as well."""
+    if measure is None or aggregation not in _COUNTING:
+        return False
+    expr = measure.expr
+    keys = next((row.key_columns for row in config.entities if row.id == measure.entity), [])
+    return (
+        isinstance(expr, ColumnRefExpr)
+        and not expr.table
+        and expr.entity in ("", measure.entity)
+        and expr.column in keys
+    )
 
 
 def absent_marker(alias: str, aggregation: str, rows: Mapping[str, str]) -> SqlIdentifier | None:
@@ -838,12 +857,21 @@ def recording_outputs_as(names: Mapping[str, str]) -> Iterator[None]:
             ]
 
 
-def record_zero_output(output: str, measure_ids: Iterable[str], absent: Sequence[str] = ()) -> None:
+def record_zero_output(
+    output: str,
+    measure_ids: Iterable[str],
+    absent: Sequence[str] = (),
+    *,
+    zero_means_absent: bool = False,
+) -> None:
     """``absent`` names the guard's columns marking the groups each measure the output reads
-    never reached (``guard_empty_groups``); a group all of them mark, read as 0, is zero-filled."""
+    never reached (``guard_empty_groups``); a group all of them mark, read as 0, is zero-filled.
+    ``zero_means_absent``: the output reads 0 in no other group (``counts_its_own_key``)."""
     outputs = _zero_outputs.get()
     if outputs is not None:
         item: dict[str, Any] = {"output": output, "measures": sorted(set(measure_ids))}
         if absent:
             item["absent"] = list(absent)
+        if zero_means_absent:
+            item["zero_means_absent"] = True
         outputs.append(item)

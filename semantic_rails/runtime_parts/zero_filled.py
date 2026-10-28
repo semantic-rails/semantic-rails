@@ -33,7 +33,9 @@ def zero_filled_groups_notes(
     (``guard_empty_groups``): nothing else is read. A group that read rows, even ones summing
     to 0, and one that reads NULL (no data) are not counted, nor are total rows. A truncated
     answer counts the rows shown, as a lower bound. Outputs 0 in the same groups share one
-    sentence, and its ``having`` condition names the first of them."""
+    sentence. Its ``having`` condition is given only when it leaves out exactly those groups:
+    it names an output that reads 0 in no other group (``zero_means_absent``, a count of its
+    own entity's key), nor in any other row shown."""
     marked = {
         output: names
         for output, names in dict(compiled.get("absent_rows") or {}).items()
@@ -42,7 +44,9 @@ def zero_filled_groups_notes(
     own = [index for index, row in enumerate(rows) if row.get(TOTAL_OVER) is None]
     if not marked or not own:
         return []
-    measures = {item["output"]: item["measures"] for item in compiled.get("zero_outputs") or []}
+    recorded = list(compiled.get("zero_outputs") or [])
+    measures = {item["output"]: item["measures"] for item in recorded}
+    exact = {item["output"] for item in recorded if item.get("zero_means_absent")}
     # The entity a measure counts rows of, as the caller sees it (else the measure itself).
     visible = {row.id for row in config.entities}
     entity_of = {row.id: row.entity if row.entity in visible else row.id for row in config.measures}
@@ -71,12 +75,26 @@ def zero_filled_groups_notes(
             if truncated
             else f"{count} of {len(own)} groups"
         )
+        chosen = set(filled)
+        others = [index for index in own if index not in chosen]
+        field = next(
+            (
+                name
+                for name in names
+                if name in exact and not any(_reads_zero(rows[i].get(name)) for i in others)
+            ),
+            None,
+        )
+        having = {"field": field, "op": "not", "value": 0} if field else None
         sentences.append(
             f"{counted} {'has' if one else 'have'} no rows of {' or '.join(entities)} in this "
             f"call, so "
-            f"{'its' if one else 'their'} {_listed(names)} {'is' if len(names) == 1 else 'are'}"
-            f" 0 (to leave {'it' if one else 'them'} out, add "
-            f"{json.dumps({'field': names[0], 'op': 'not', 'value': 0})} to having)"
+            f"{'its' if one else 'their'} {_listed(names)} {'is' if len(names) == 1 else 'are'} 0"
+            + (
+                f" (to leave {'it' if one else 'them'} out, add {json.dumps(having)} to having)"
+                if having
+                else ""
+            )
         )
         outputs.extend(
             {
@@ -85,7 +103,7 @@ def zero_filled_groups_notes(
                 "entities": sorted(
                     {entity_of[m] for m in measures.get(output, []) if m in entity_of}
                 ),
-                "having": {"field": output, "op": "not", "value": 0},
+                **({"having": having} if having else {}),
             }
             for output in names
         )
@@ -112,6 +130,14 @@ def zero_filled_groups_notes(
 
 def _listed(names: list[str]) -> str:
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _reads_zero(value: Any) -> bool:
+    """Whether an output reads 0, as any warehouse returns it (an int, a decimal, text)."""
+    try:
+        return value is not None and float(value) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _marks(value: Any) -> bool:
