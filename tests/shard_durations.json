@@ -342,6 +342,5 @@
   "tests/semantic_rails/test_window_total.py": 20.701,
   "tests/semantic_rails/test_window_unknown_keys.py": 1.5,
   "tests/semantic_rails/test_withheld_rank.py": 17.308,
-  "tests/semantic_rails/test_zero_filled_groups.py": 0.6,
   "tests/semantic_rails/test_zero_through.py": 4.422
 }

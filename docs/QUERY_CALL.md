@@ -170,7 +170,9 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
 
 Dimension ids. Each becomes a column named by its full id, so a reader keys on it without
 guessing. Time is never a `group_by` item: ask for `time.grain` and the answer has a `period`
-column. Groups with no rows stay absent: the engine never cross-joins dimension values. A
+column. Groups with no rows stay absent: the engine never cross-joins dimension values. Beside another
+measure whose rows hold a group, a count or sum with no rows there reads `0`, and the answer
+says so ([Zero-filled groups](#empty-groups-null-or-0)). A
 policy's `required_group_by` on the clock's own date dimension is met by any `time.grain` at or
 below that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
 naming it ("measure.x can only be read by day: group by dimension.d, or set time.grain to
@@ -1399,6 +1401,29 @@ reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those
 has data, and neither does a truncated answer. An ungrouped distinct-population count over
 nothing reads `0` with no warning, a known limitation
 ([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+
+**Zero-filled groups.** Two selected measures that the `group_by` joins answer a row for every
+group either one's rows hold, so a group can hold rows of one and none of the other. "Signups
+and orders by customer" has a row for a customer who signed up and never ordered, whose order
+count is `0`: data of nothing. The note `ZERO_FILLED_GROUPS` says so, read from the answer's own
+statement, which marks those groups (no other query runs):
+
+```jsonc
+{"code": "ZERO_FILLED_GROUPS", "severity": "info",
+ "message": "1 of 8 groups has no rows of entity.shop_order in this call, so its order_count is 0 (to leave it out, add {\"field\": \"order_count\", \"op\": \"not\", \"value\": 0} to having). A 0 there is data of nothing, not missing data.",
+ "details": {"outputs": [{"output": "order_count", "zero_filled": 1, "entities": ["entity.shop_order"],
+                          "having": {"field": "order_count", "op": "not", "value": 0}}],
+             "groups": 8, "truncated": false, "agent_action": "mention_when_interpreting_results"}}
+```
+
+`zero_filled` counts the returned groups (total rows aside) where the output reads `0` and no
+row of its measure reaches the group; outputs zero in the same groups share one sentence.
+`entities` names the entity with no rows there. The `having` condition leaves those groups out,
+and any other group that reads `0`. A truncated answer counts the rows shown, as a lower bound
+("at least 1 group (1 of the 3 rows shown)"). A group that reads `NULL` (no data in scope) or
+whose rows sum to `0` is never counted. A call with one measure, or several read from the same
+rows, holds no such group, since groups with no rows stay absent, and a series' empty periods
+are periods, not groups: neither carries the note.
 
 ClickHouse fills an unmatched outer-join field with a type default unless the join yields
 NULLs, so every ClickHouse statement ends with `SETTINGS join_use_nulls = 1`.

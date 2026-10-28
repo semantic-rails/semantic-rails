@@ -1936,8 +1936,8 @@ class Runtime:
             _partial_data_warnings,
             _zero_after_last_row_notes,
             closing_day_disclosures,
-            zero_filled_groups_notes,
         )
+        from .runtime_parts.zero_filled import zero_filled_groups_notes
 
         refusal = _scope_refusal(payload)
         if refusal is not None:
