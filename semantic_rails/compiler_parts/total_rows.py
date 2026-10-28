@@ -15,6 +15,7 @@ the call's own rows), so a total row never reads as a NULL group.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..ast import TIME_AXIS
@@ -34,6 +35,7 @@ from ..sql_ast import (
 )
 from ..top_n import limit_order
 from . import nested
+from .empty_groups import recording_outputs_as
 from .lowering_common import _query_key_aliases
 from .namespacing import _namespace_sql_select
 from .paths import display_key
@@ -43,7 +45,8 @@ from .totals import coarse_call
 
 
 def total_levels(plan: LogicalPlan, config: PackageConfig) -> list[list[str]]:
-    """The group_by columns each level of total rows rolls up, finest level first."""
+    """The group_by columns each level of total rows rolls up, finest level first, each level
+    once. A level keeps its prefix of ``totals`` and the entity key of each name it keeps."""
     totals = plan.query.get("totals")
     if totals is None:
         return []
@@ -52,15 +55,14 @@ def total_levels(plan: LogicalPlan, config: PackageConfig) -> list[list[str]]:
         kept = totals[:size]
         keep = {*kept, *filter(None, (display_key(config, column) for column in kept))}
         rolled = [column for column in plan.group_by if column not in keep]
-        if rolled:
+        if rolled and rolled not in levels:
             levels.append(rolled)
     return levels
 
 
-def _named(rolled: list[str], config: PackageConfig) -> str:
-    """``total_over``'s value: the rolled-up columns, without the key a rolled name brings."""
-    keys = {display_key(config, column) for column in rolled}
-    return ", ".join(column for column in rolled if column not in keys)
+def _named(rolled: list[str]) -> str:
+    """``total_over``'s value: every column the level rolls up, in group_by order."""
+    return ", ".join(rolled)
 
 
 def with_total_rows(plan: LogicalPlan, config: PackageConfig, detail: SqlSelect) -> SqlSelect:
@@ -76,7 +78,10 @@ def with_total_rows(plan: LogicalPlan, config: PackageConfig, detail: SqlSelect)
     }
     detail_name = _unique("total_detail", taken)
     rows_name = _unique("total_rows", taken)
-    level_column = f"{rows_name}_level"  # orders the rows; never returned
+    # Orders the rows and is never returned: named like none of the call's columns.
+    level_column, suffix = f"{rows_name}_level", 2
+    while level_column.casefold() in {column.casefold() for column in outputs}:
+        level_column, suffix = f"{rows_name}_level_{suffix}", suffix + 1
 
     def branch(source: str, produced: set[str], level: int, marker: str | None) -> SqlSelect:
         fields = [
@@ -95,22 +100,26 @@ def with_total_rows(plan: LogicalPlan, config: PackageConfig, detail: SqlSelect)
             from_table=SqlTableRef(name=source),
         )
 
-    ctes = [SqlCte(name=detail_name, query=detail)]
+    # The call's own statement stays at the top, its CTEs where the answer's readers (its
+    # coverage, NO_DATA_YET) find them.
+    ctes = [*detail.ctes, SqlCte(name=detail_name, query=replace(detail, ctes=[]))]
     branches = [branch(detail_name, set(outputs), 0, None)]
     for index, rolled in enumerate(levels, start=1):
         payload = coarse_call(
             plan.query,
-            rolled,
+            [],
             [dict(row) for row in plan.query.get("select") or []],
             config,
-            group_by=plan.group_by,
+            group_by=[column for column in plan.group_by if column not in rolled],
             time=plan.time,
         )
         name = _unique("total_level", taken)
-        level = nested.query_sql(config, payload, standalone=True)
+        # The call's own outputs carry its disclosures; a level's are the same columns again.
+        with recording_outputs_as({}):
+            level = nested.query_sql(config, payload, standalone=True)
         ctes.append(SqlCte(name=name, query=_namespace_sql_select(level, f"{name}__")))
         produced = {field.alias for field in level.select}
-        branches.append(branch(name, produced, index, _named(rolled, config)))
+        branches.append(branch(name, produced, index, _named(rolled)))
     ctes.append(SqlCte(name=rows_name, query=SqlSetQuery("UNION ALL", branches)))
     return SqlSelect(
         ctes=ctes,
@@ -156,10 +165,23 @@ def total_rows_disclosure(plan: LogicalPlan, config: PackageConfig) -> dict[str,
         return None
     return {
         "code": "TOTALS",
-        "levels": [_named(rolled, config) for rolled in levels],
+        "levels": [_named(rolled) for rolled in levels],
         "message": (
             f"Rows whose {TOTAL_OVER} names columns add those columns up: each is the call at "
             "that grain, computed from the rows the call keeps before having and limit, never "
             "added up from the returned rows."
         ),
     }
+
+
+def call_rows(statement: SqlSelect) -> SqlSelect:
+    """The statement of the call's own rows: ``statement`` itself, or, when it adds total rows,
+    the CTE those rows come from (with the call's order and limit)."""
+    ctes = {cte.name: cte.query for cte in statement.ctes}
+    source = statement.from_table
+    rows = ctes.get(source.name) if isinstance(source, SqlTableRef) else None
+    if isinstance(rows, SqlSetQuery) and isinstance(rows.queries[0].from_table, SqlTableRef):
+        detail = ctes.get(rows.queries[0].from_table.name)
+        if isinstance(detail, SqlSelect):
+            return detail
+    return statement

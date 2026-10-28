@@ -53,6 +53,8 @@ def _merge_partial_query(config: Any, draft_query: Call, partial_query: Call | N
         builder.routes(partial.routes)
     if partial.observation_scope:
         builder.observation_scope(partial.observation_scope)
+    if partial.totals is not None:
+        builder.totals(partial.totals)
     return builder.build()
 
 

@@ -1703,7 +1703,7 @@ def _totals(raw: Any, group_by: list[str], select: list[dict[str, Any]]) -> list
                 totals_allowed=group_by,
             )
     for row in select:
-        if row["as"] == TOTAL_OVER:
+        if row["as"].casefold() == TOTAL_OVER:
             raise refusal(
                 "totals",
                 f"'{TOTAL_OVER}' is the column that says which columns a total row adds up",
@@ -1847,6 +1847,8 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
         call["routes"] = [route_entry(row) for row in query["route_decisions"]]
     if query.get("observation_scope"):
         call["observation_scope"] = query["observation_scope"]
+    if query.get("totals") is not None:
+        call["totals"] = list(query["totals"])
     return call
 
 

@@ -789,7 +789,8 @@ column is the call's own grain and adds nothing. With `time.grain`, every total 
 period: total rows add up the groups within each period.
 
 Each total row is the call itself at its level's grain, from the rows the call keeps (its
-`where`, window, entity filters, routes, row filters and policies), so every column is computed
+`where`, window, entity filters, routes, row filters and policies), settled as that call is on
+its own (data of nothing reads `0`, a period not loaded yet `null`), so every column is computed
 from its own rows there, never added up from the call's rows: a distinct count counts distinct
 values, an average averages every row, a ratio divides the totals, and across a
 [link](#groups-across-a-link) each entity counts once. A rolled-up column reads `null` on a
@@ -811,8 +812,9 @@ call's own rows), so a total row never reads as a NULL group:
                   "message": "Rows whose total_over names columns add those columns up: each is the call at that grain, computed from the rows the call keeps before having and limit, never added up from the returned rows."}]}
 ```
 
-`total_over` lists every rolled-up id, joined with `, `, outermost first as `group_by` orders
-them. The total rows come after the call's own rows, level by level from the finest to the grand
+`total_over` lists every rolled-up id, joined with `, `, in `group_by` order. A level keeps the
+entity key of each name it keeps, as any call does, and a key `totals` names stays on its level
+while its name rolls up. The total rows come after the call's own rows, level by level from the finest to the grand
 total, each level in the call's `order_by` and then its group keys ascending. `having` and
 `limit` cut only the call's own rows: total rows always come back, and they count the rows
 `having` and `limit` leave out (ties at a `limit` are broken as usual but not reported). A

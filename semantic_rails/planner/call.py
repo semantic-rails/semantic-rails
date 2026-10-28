@@ -1,7 +1,8 @@
 """The planner's draft: the query call it hands back, built through one builder.
 
 A draft is a :class:`Call`, the caller's own spelling of a query (``select``, ``group_by``,
-``where``, ``having``, ``time``, ``order_by``, ``limit``, ``routes``, ``observation_scope``)
+``where``, ``having``, ``time``, ``order_by``, ``limit``, ``routes``, ``observation_scope``,
+``totals``)
 as frozen values. Every planner path produces its draft with :class:`QueryBuilder`, whose
 ``build()`` checks what the planner can get wrong before the engine reads the call: every id
 exists, a relative window carries no dates, an order names a column the call returns, and
@@ -212,6 +213,7 @@ class Call:
     limit: int | None = None
     routes: tuple[Route, ...] = ()
     observation_scope: str = ""
+    totals: tuple[str, ...] | None = None  # None: no total rows; () the grand total alone
 
     @property
     def conditions(self) -> tuple[Condition, ...]:
@@ -271,6 +273,8 @@ class Call:
             call["routes"] = [item.to_call() for item in self.routes]
         if self.observation_scope:
             call["observation_scope"] = self.observation_scope
+        if self.totals is not None:
+            call["totals"] = list(self.totals)
         return call
 
     @classmethod
@@ -324,6 +328,11 @@ class Call:
                 for row in raw.get("routes") or []
             ),
             observation_scope=str(raw.get("observation_scope") or ""),
+            totals=(
+                tuple(str(item).strip() for item in raw["totals"])
+                if raw.get("totals") is not None
+                else None
+            ),
         )
 
 
@@ -458,6 +467,10 @@ class QueryBuilder:
 
     def observation_scope(self, scope: str) -> QueryBuilder:
         self._fields["observation_scope"] = scope
+        return self
+
+    def totals(self, columns: Iterable[str]) -> QueryBuilder:
+        self._fields["totals"] = tuple(columns)
         return self
 
     def _canonical(self, expression: Any) -> Any:
