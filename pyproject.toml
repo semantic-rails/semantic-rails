@@ -61,7 +61,7 @@ Changelog = "https://github.com/semantic-rails/semantic-rails/blob/main/CHANGELO
 # The Architect MCP (`semantic-rails-architect-mcp`) runs on the MCP Python SDK. The query
 # MCP server, the CLI and the embedding facade don't need it.
 architect = [
-  "mcp>=1.27.0,<2",
+  "mcp>=1.30.0,<2",
   "pydantic>=2.13.0",
 ]
 server = [
@@ -100,7 +100,7 @@ repl = [
 # MotherDuck and DuckLake ride on the core duckdb dependency — no extra
 # driver needed (DuckLake's extension is fetched by duckdb at ATTACH time).
 all = [
-  "mcp>=1.27.0,<2",
+  "mcp>=1.30.0,<2",
   "pydantic>=2.13.0",
   "uvicorn>=0.49.0",
   "snowflake-connector-python>=4.6.0,<5",
@@ -183,7 +183,7 @@ dev = [
   "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.8.0",
   # The Architect MCP and its tests (the architect extra).
-  "mcp>=1.27.0,<2",
+  "mcp>=1.30.0,<2",
   "pydantic>=2.13.0",
   "uvicorn>=0.49.0",
   "ruff>=0.15.17",

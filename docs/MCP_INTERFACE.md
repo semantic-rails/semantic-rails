@@ -208,8 +208,10 @@ alias index (see [Resources And Prompts](#resources-and-prompts)).
 up to 120 characters (sentences naming package dimensions, entities, measures or metrics survive
 past the cap; descriptions repeating the label are omitted) and `default_temporal_role`, plus
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
-bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
-with. `verbosity="compact"` keeps the same slim cards and descriptions but omits unavailable
+bucket leaves out its `kind`, and its `label` when every word of the label is already in the id
+past its kind ("Store name" on `dimension.store_name`; "Orders" on `measure.order_count` stays);
+blocked and dimension-value cards keep theirs. The response leaves out the `terms` and
+`verbosity` it was called with. `verbosity="compact"` keeps the same slim cards and descriptions but omits unavailable
 candidates and the blocked bucket. Match reasons, starter patches, companions, recommended actions
 and blocked metadata are retained with `verbosity="full"`, subject to the response budget. When the
 question uses an object's whole name ("revenue by store"), that object ranks
