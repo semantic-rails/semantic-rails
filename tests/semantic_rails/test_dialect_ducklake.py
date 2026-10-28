@@ -14,7 +14,6 @@ Three layers, no network and no live warehouse:
 from __future__ import annotations
 
 import os
-import types
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -24,7 +23,6 @@ import pytest
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config, repo_root, resolve_repo_path
 from semantic_rails.db import create_warehouse_adapter
-from semantic_rails.db_parts import duckdb_setup
 from semantic_rails.db_parts.ducklake import DuckLakeAdapter, create_adapter
 from semantic_rails.dialects import (
     DuckDbDialect,
@@ -104,9 +102,7 @@ class FakeConnection:
 
 
 def _install_fake_duckdb(monkeypatch: pytest.MonkeyPatch, log: dict[str, Any]) -> None:
-    module = types.ModuleType("duckdb")
-    module.connect = lambda *args, **kwargs: FakeConnection(log)
-    monkeypatch.setattr(duckdb_setup, "duckdb", module)
+    monkeypatch.setattr("duckdb.connect", lambda *args, **kwargs: FakeConnection(log))
 
 
 def test_adapter_rejects_unknown_and_literal_secret_options():

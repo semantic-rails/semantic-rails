@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 from . import operations
-from .api_keys import api_key_auth_result
+from .api_keys import api_key_auth_result, configured_api_keys
 from .diagnostics import (
     enrich_column_expression,
     enrich_expression_ast_error,
@@ -50,6 +51,7 @@ from .http_request import (
 from .metadata_parts.capabilities import capabilities_payload
 from .query_call import EXPRESSION_SHAPES
 from .request_context import (
+    HeaderPolicyContextResolver,
     RequestContext,
     get_policy_context_resolver,
     loopback_host,
@@ -78,6 +80,7 @@ __all__ = [
     "rebinding_refusal",
     "request_id_from_parts",
     "status_label",
+    "warn_if_default_policy_resolver_exposed",
 ]
 
 
@@ -222,6 +225,38 @@ def rebinding_refusal(
     else:
         return None
     return status, {"ok": False, "error": refused, "errors": [refused]}
+
+
+def warn_if_default_policy_resolver_exposed(host: str, *, transport: str) -> bool:
+    """Print a hard warning when binding beyond loopback with the default resolver.
+
+    The default ``HeaderPolicyContextResolver`` trusts caller-supplied
+    ``X-Semantic-Audience`` / ``X-Semantic-Environment`` headers, so any remote
+    caller can self-assert the context
+    that object visibility and access policies key on. Binding to a
+    non-loopback interface without replacing the resolver is the footgun
+    this warning exists for. Returns True when the warning fired.
+    """
+    if loopback_host(host):
+        return False
+    if type(get_policy_context_resolver()) is not HeaderPolicyContextResolver:
+        return False
+    auth_note = (
+        " API-key auth is enabled, but key holders can still self-assert policy context."
+        if configured_api_keys()
+        else " No API keys are configured, so this applies to any remote caller."
+    )
+    print(
+        f"WARNING: {transport} is binding to {host or 'all interfaces'!r} with the default "
+        "header-trusting policy-context resolver — callers can self-assert identity headers "
+        f"(audience, environment, roles, tenant) and bypass object policies.{auth_note} "
+        "For hosted or multi-tenant deployments, install an identity-aware resolver via "
+        "set_policy_context_resolver(...) before serving traffic. "
+        "See docs/QUERY_API.md (trusted upstream context).",
+        file=sys.stderr,
+        flush=True,
+    )
+    return True
 
 
 # Options a REST call may set beside its query (``{"query": ..., "options": {...}}``).

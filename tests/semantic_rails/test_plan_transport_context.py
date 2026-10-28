@@ -8,11 +8,11 @@ import json
 import httpx
 import pytest
 
+from semantic_rails.api_keys import extract_bearer_or_api_key
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION
 from semantic_rails.request_context import (
     RequestContext,
-    extract_bearer_or_api_key,
     get_policy_context_resolver,
     set_policy_context_resolver,
 )

@@ -53,6 +53,28 @@ def test_only_claude_desktop_install_reports_and_prints_quit_note(
         assert note not in output
 
 
+def test_without_the_architect_extra_setup_defaults_to_query_and_names_the_extra(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    ref = PackageReference(source_path="", package_id="jaffle_shop")
+    assert manager.architect_installed()  # the dev environment carries the extra
+    report = manager.mcp_client_config_report(ref, client="claude", workspace_root=str(tmp_path))
+    assert (report["mcp"], sorted(report["servers"])) == (
+        "both",
+        ["semantic-rails", "semantic-rails-architect"],
+    )
+    monkeypatch.setattr(manager.importlib.util, "find_spec", lambda name: None)
+    report = manager.mcp_client_config_report(ref, client="claude", workspace_root=str(tmp_path))
+    assert (report["mcp"], sorted(report["servers"])) == ("query", ["semantic-rails"])
+    for mcp in ("architect", "both"):
+        with pytest.raises(SemanticLayerError) as exc:
+            manager.mcp_client_config_report(ref, client="claude", mcp=mcp)
+        assert exc.value.code == "MISSING_DEPENDENCY"
+        assert "semantic-rails[architect]" in str(exc.value)
+
+
 def test_cursor_and_claude_code_targets_install_and_both_stays_desktop_and_codex(
     tmp_path: Path, monkeypatch
 ) -> None:

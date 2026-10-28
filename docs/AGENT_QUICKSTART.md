@@ -84,7 +84,9 @@ semantic-rails mcp client-config --path "$PACKAGE_PATH" --client codex --mcp bot
 ```
 
 `--mcp query` exposes the runtime/query MCP. `--mcp architect` exposes the
-package-authoring MCP. `--mcp both` installs both entries.
+package-authoring MCP, which needs the `architect` extra
+(`uv tool install 'semantic-rails[architect]'`). `--mcp both` installs both entries. Without
+`--mcp`, setup includes the Architect MCP only when the extra is installed.
 
 ## HTTP API Path
 

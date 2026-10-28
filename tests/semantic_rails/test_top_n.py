@@ -233,6 +233,33 @@ def test_runtime_cutoff_uses_warehouse_result_key_casing(
         assert not warnings
 
 
-def test_probe_removal_preserves_adapter_truncation():
-    rows, _ = limit_rows(QueryRows([{"score": 1}, {"score": 2}], truncated=True), 1, ("score",))
-    assert rows.truncated
+def test_probe_removal_preserves_adapter_truncation(package):
+    config, config_path = package
+    rows = [{"order_count": 3, "store": "a"}, {"order_count": 2, "store": "b"}]
+    returned = QueryRows(rows, truncated=True)
+
+    class TruncatingAdapter(WarehouseAdapter):
+        engine = "duckdb"
+
+        def query(self, sql, *, limits=None):
+            return returned
+
+        def close(self):
+            pass
+
+    runtime = Runtime.from_config(config, source_path=str(config_path))
+    runtime.set_adapter(TruncatingAdapter())
+    try:
+        result = runtime.query(
+            {
+                "select": [{"expression": "measure.jaffle.order_count", "as": "order_count"}],
+                "group_by": ["dimension.jaffle_store_name"],
+                "order_by": [{"field": "order_count", "direction": "desc"}],
+                "limit": 1,
+            }
+        )
+    finally:
+        runtime.close()
+    assert result["status"] == "ok"
+    assert result["rows"] == rows[:1]
+    assert result["truncated"]

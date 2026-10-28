@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
-from .db_parts.base import QueryRows
 from .errors import SemanticLayerError
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder, SqlSelect
 
@@ -90,4 +89,4 @@ def limit_rows(
                     "details": {"at": limit, "tied": count},
                 }
             )
-    return QueryRows(rows[:limit], truncated=bool(getattr(rows, "truncated", False))), warnings
+    return rows[:limit], warnings

@@ -1182,7 +1182,10 @@ edit made while it runs is lost and the old server keeps answering.
 `claude mcp add-json`, live in the next session.
 
 Use `--mcp query`, `--mcp architect`, or `--mcp both` depending on whether the
-client should answer governed analytics questions, author packages, or do both.
+client should answer governed analytics questions, author packages, or do both. The
+Architect MCP needs the `architect` extra (`uv tool install 'semantic-rails[architect]'`);
+without the extra, `--mcp architect` and `--mcp both` stop and name it, and the default is
+`query`. The query MCP server needs no extra: it doesn't use the MCP Python SDK.
 
 ```bash
 curl -s http://127.0.0.1:8091/health
@@ -1291,8 +1294,8 @@ each request declares, so older clients see no change:
 
 ### MCP Python SDK 2.x
 
-The engine pins `mcp<2`. Before lifting the pin, qualify these known integration points on
-the chosen SDK version:
+The `architect` extra pins `mcp<2`. Before lifting the pin, qualify these known integration
+points on the chosen SDK version:
 
 - **The Architect MCP.** `semantic_rails.architect_mcp` imports `mcp.server.fastmcp` at import
   time. Its tests also read `call_tool` results as a `(content, structured)` pair and read
