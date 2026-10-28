@@ -68,7 +68,15 @@ def _slim_best(
     }
     if validation_ok is not None:
         out["validation_ok"] = bool(validation_ok)
-    disclosures = [row for row in warnings or [] if row.get("code") == "ROUTE_PASS_THROUGH"]
+    # A route through rows no link table declares, and a whole value counted in every group
+    # across a one-to-many hop (``overlapping_groups.whole_amounts``): each says what the draft's
+    # number counts, so the agent sees it before running the draft.
+    disclosures = [
+        row
+        for row in warnings or []
+        if row.get("code") == "ROUTE_PASS_THROUGH"
+        or ((row.get("details") or {}).get("overlapping_groups") or {}).get("whole_amounts")
+    ]
     if disclosures:
         out["warnings"] = disclosures
     out["trace"] = _plan_trace(

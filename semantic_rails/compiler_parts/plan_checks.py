@@ -744,9 +744,10 @@ _FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
 
 # Grouped, each row counts once, with its whole value, in every group it has a child row in, so
 # sums, counts and averages over the de-duplicated rows have one reading: a room in two
-# departments counts in each, an order in each of its tags. Across a link (a one-per-key model
-# to the rows of its own relation) always; across any other one-to-many descent when nothing
-# there could split the value instead (``_counts_whole``).
+# departments counts in each, an order in each of its items' product types. Across a link (a
+# one-per-key model to the rows of its own relation) always; across any other one-to-many
+# descent unless a select item weighs the measure against one of another entity
+# (``_beside_another_entity``).
 _WHOLE_GROUPED_AGGREGATIONS = frozenset({"sum", "count", "avg", "count_distinct"})
 
 
@@ -802,12 +803,13 @@ def _fanout_dedup_refusal(
     group it has a matching child in.
 
     Grouped, a distinct count is answered, and so is a sum, count or average that counts each
-    row with its whole value in every group (``_WHOLE_GROUPED_AGGREGATIONS``) when that is its
-    one reading (``_counts_whole``): departments by course level, order revenue by tag. The
-    groups can overlap (the disclosure says so). That answer is tried only where the narrower
-    check refuses, and any shape it doesn't answer keeps the narrower check's refusal as it
-    was. A share over such a grouping is refused (``_overlapping_share``): its total would add
-    up the overlapping groups.
+    row with its whole value in every group (``_WHOLE_GROUPED_AGGREGATIONS``): departments by
+    course level, the revenue of the orders that carry each tag or include each product type.
+    The groups can overlap (the disclosure says so). Never beside a measure of another entity
+    in one select item (``_beside_another_entity``). That answer is tried only where the
+    narrower check refuses, and any shape it doesn't answer keeps the narrower check's refusal
+    as it was. A share over such a grouping is refused (``_overlapping_share``): its total
+    would add up the overlapping groups.
 
     Every leaf is checked here: an authored measure, a query's ``aggregate_if`` (a synthetic
     measure over its entity's table) and each operand of a ratio or arithmetic, so each one
@@ -815,7 +817,7 @@ def _fanout_dedup_refusal(
     """
     args = (measure, bound, selections, config, query)
     refusal = _dedup_refusal(*args, whole=False)
-    if refusal is not None and _counts_whole(measure, bound, selections, config, query):
+    if refusal is not None and not _beside_another_entity(measure, config, query):
         try:
             if _dedup_refusal(*args, whole=True) is None:
                 refusal = None
@@ -827,41 +829,6 @@ def _fanout_dedup_refusal(
 def _is_count(measure: MeasureConfig, aggregation: str) -> bool:
     """Whether ``aggregation`` of ``measure`` counts rows or keys rather than adding a value."""
     return aggregation in {"count", "count_distinct"} or isinstance(measure.expr, LiteralExpr)
-
-
-def _counts_whole(
-    measure: MeasureConfig,
-    bound: BoundMeasure,
-    selections: list[PathSelection],
-    config: PackageConfig,
-    query: NormalizedQuery,
-) -> bool:
-    """Whether counting each row once, with its whole value, in every group across the leaf's
-    one-to-many hops is the call's one reading. A count of the rows always is (departments by
-    course level). A sum or average of a value is only while no measure of an entity across the
-    hop adds a value: order revenue by product type reads as the items' own revenue as often as
-    the orders' totals, so beside an item amount it stays refused, and the refusal names the
-    item measure. Never beside a measure of another entity in one select item."""
-    if _beside_another_entity(measure, config, query):
-        return False
-    aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-    if _is_count(measure, aggregation):
-        return True
-    across: set[str] = set()
-    for row in selections:
-        if row.purpose != "group_by" or row.analysis.get("status") == "ok":
-            continue
-        crossed = False
-        for hop in row.analysis.get("relationships", []) or []:
-            crossed = crossed or hop.get("directional_safety") == "requires_rewrite"
-            if crossed:
-                forward = hop.get("traversal") == "forward"
-                across.add(str(hop["target_entity" if forward else "source_entity"]))
-    return not any(
-        other.entity in across
-        and not _is_count(other, str(other.default_aggregation or "").lower())
-        for other in config.measures
-    )
 
 
 def _beside_another_entity(
@@ -1514,8 +1481,8 @@ def _overlapping_groups(
 ) -> tuple[str, dict[str, Any]] | None:
     """The disclosure of a grouping across a one-to-many hop that isn't a link: which hops fan
     out, and that each row counts whole in every group, so the groups can overlap. The sentence
-    and its details (``group_by``, ``relationships``), or None for a leaf that only filters
-    across the hop."""
+    and its details (``group_by``, ``relationships``, and ``whole_amounts`` for a sum or average
+    of a value), or None for a leaf that only filters across the hop."""
     crossing = [row for row in path_selections if row.analysis.get("status") != "ok"]
     grouped = [
         (dim.id, hop)
@@ -1524,20 +1491,28 @@ def _overlapping_groups(
     ]
     if not grouped:
         return None
-    hops = [
-        str(row["id"])
-        for _, selection in grouped
-        for row in selection.analysis.get("relationships", []) or []
-        if row.get("directional_safety") == "requires_rewrite"
-    ]
-    hops = list(dict.fromkeys(hops))
+    far: dict[str, str] = {}
+    for _, selection in grouped:
+        for row in selection.analysis.get("relationships", []) or []:
+            if row.get("directional_safety") == "requires_rewrite":
+                side = "target_entity" if row.get("traversal") == "forward" else "source_entity"
+                far.setdefault(str(row["id"]), str(row[side]))
+    hops = list(far)
     sentence = (
         f" Grouped by {', '.join(repr(dim) for dim, _ in grouped)} across the one-to-many "
         f"{'hop' if len(hops) == 1 else 'hops'} {', '.join(repr(rel) for rel in hops)}, each "
         f"'{entity}' counts once, with its whole value, in every group it has a row in, so the "
         "groups can overlap and need not add up to the total."
     )
-    return sentence, {"group_by": [dim for dim, _ in grouped], "relationships": list(hops)}
+    details: dict[str, Any] = {"group_by": [dim for dim, _ in grouped], "relationships": hops}
+    measure = _measure_index(config)[bound.measure_id]
+    if not _is_count(measure, str(bound.aggregation or measure.default_aggregation).lower()):
+        # A sum or average of a value: plan repeats it (``plan_trace``), since a measure of the
+        # child would split the value over the child rows instead.
+        details["whole_amounts"] = True
+        children = " or ".join(f"'{child}'" for child in sorted(set(far.values())))
+        sentence += f" To split values over the child rows instead, use a measure of {children}."
+    return sentence, details
 
 
 def _range_crosses_window_boundary(

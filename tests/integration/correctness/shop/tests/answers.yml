@@ -8715,16 +8715,22 @@ tests:
     query:
       select: [measure.shop.scanned_orders]
       group_by: [dimension.shop_refund_refund_type]
-  shop/row-grain-parent-sum-by-child-column-refuses:
-    kind: validate_fails_with_code
-    expect: refuse
-    code: MIXED_GRAIN_INVALID
-    why: Scans carry a value of their own (their weight), so revenue by scan type could mean each order's whole amount under every type or values split over the scans; it stays refused, pointing at a measure of the scans.
+  shop/row-grain-parent-sum-by-child-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue by scan type counts each order once, with its whole amount, under every type it has a scan of. Pickup holds orders 1, 2, 4, 6 and 8 (45), delivery orders 1 and 4 (30), so the groups add up to 75 of the 74 in all; order 1's duplicate pickup scan counts once, and the scans with no order or an unknown one reach none.
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop]
-    tags: [row-grain, refusal]
+    tags: [row-grain]
     query:
       select: [measure.shop.revenue]
       group_by: [dimension.shop_shipment_scans_scan_type]
+    expected_rows:
+      - {dimension.shop_shipment_scans_scan_type: pickup, revenue: 45}
+      - {dimension.shop_shipment_scans_scan_type: delivery, revenue: 30}
+    reference_sql: |
+      SELECT s.scan_type, SUM(o.amount) FROM orders AS o
+      JOIN (SELECT DISTINCT order_id, scan_type FROM shipment_scans) AS s ON s.order_id = o.order_id
+      GROUP BY s.scan_type
   shop/bridge-parent-sum-by-tag:
     kind: query_matches_snapshot
     expect: answer
@@ -8743,16 +8749,22 @@ tests:
       JOIN (SELECT DISTINCT l.order_id, g.tag_name FROM order_tags AS l JOIN tags AS g ON g.tag_id = l.tag_id) AS t
         ON t.order_id = o.order_id
       GROUP BY t.tag_name
-  shop/keyed-child-parent-sum-by-refund-type-refuses:
-    kind: validate_fails_with_code
-    expect: refuse
-    code: MIXED_GRAIN_INVALID
-    why: Refunds carry amounts of their own, so revenue by refund type could mean each order's whole amount under every type it has a refund of or amounts split over the refunds; it stays refused.
+  shop/keyed-child-parent-sum-by-refund-type:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue by refund type counts each order's whole amount once per type it has a refund of. Goods holds orders 2 (two goods refunds, counted once), 6 and 7 (no amount), shipping orders 4 and 7; the refunds' own amounts are other measures.
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop]
-    tags: [refusal]
+    tags: [null-vs-zero]
     query:
       select: [measure.shop.revenue]
       group_by: [dimension.shop_refund_refund_type]
+    expected_rows:
+      - {dimension.shop_refund_refund_type: goods, revenue: 9}
+      - {dimension.shop_refund_refund_type: shipping, revenue: 20}
+    reference_sql: |
+      SELECT r.refund_type, SUM(o.amount) FROM orders AS o
+      JOIN (SELECT DISTINCT order_id, refund_type FROM refunds) AS r ON r.order_id = o.order_id
+      GROUP BY r.refund_type
   shop/one-per-key-rooms-by-booker:
     kind: query_matches_snapshot
     expect: answer
@@ -8795,7 +8807,7 @@ tests:
   shop/one-per-key-room-area-by-booker:
     kind: query_matches_snapshot
     expect: answer
-    why: Bookings carry no value of their own, so each room's whole area counts once under every booker of it. Ana's r1 and r2 add 400 and Ben's r3 100; Cy's r5 has two areas, so its area reads NULL and Cy's group is NULL, not 0.
+    why: Each room's whole area counts once under every booker of it. Ana's r1 and r2 add 400 and Ben's r3 100; Cy's r5 has two areas, so its area reads NULL and Cy's group is NULL, not 0.
     cites: [tests/integration/correctness/shop/models/rooms.yml#model.measures.room_area, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop, docs/PACKAGE_AUTHORING.md#one-row-per-key]
     tags: [one-per-key, null-vs-zero]
     query:
