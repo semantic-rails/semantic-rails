@@ -413,7 +413,7 @@ def embedded_query_call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
             "Expression": {
                 "description": (
                     "An id, or an object whose kind names its keys (*: required; E: "
-                    f"expression; id: measure or metric id): {_kind_table(kinds)}"
+                    f"expression; id: measure/metric id): {_kind_table(kinds)}"
                 ),
                 "anyOf": [{"$ref": "#/$defs/Ref"}, {"type": "object", "required": ["kind"]}],
             },

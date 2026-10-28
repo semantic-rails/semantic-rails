@@ -85,7 +85,9 @@ def test_a_total_is_its_input_computed_at_the_coarser_grain(request, backend, ca
         {"select": [input_id, _total(input_id, over)], "group_by": [STORE], "time": QUARTER}
     )
     expected = {(_period(k) if key == "period" else k): v for k, v in source.reference(reference)}
-    assert _by_key(result["rows"], key) == pytest.approx({k: float(v) for k, v in expected.items()})
+    # Postgres returns an exact average, which the answer carries as decimal text.
+    totals = {k: float(v) for k, v in _by_key(result["rows"], key).items()}
+    assert totals == pytest.approx({k: float(v) for k, v in expected.items()})
 
 
 def test_a_total_states_what_it_reads_in_the_inputs_unit(duckdb_backend):
