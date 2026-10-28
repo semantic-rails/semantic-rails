@@ -1421,9 +1421,11 @@ row of its measure reaches the group; outputs zero in the same groups share one 
 `entities` names the entity with no rows there. The `having` condition leaves those groups out,
 and any other group that reads `0`. A truncated answer counts the rows shown, as a lower bound
 ("at least 1 group (1 of the 3 rows shown)"). A group that reads `NULL` (no data in scope) or
-whose rows sum to `0` is never counted. A call with one measure, or several read from the same
-rows, holds no such group, since groups with no rows stay absent, and a series' empty periods
-are periods, not groups: neither carries the note.
+whose rows sum to `0` is never counted. The note comes under either `observation_scope`; under
+`query`, a measure with no value inside the call's filters reads `NULL` in every group instead,
+with `NO_DATA_IN_SCOPE`, and nothing is noted. A call with one measure, or several read from
+the same rows, holds no such group, since groups with no rows stay absent, and a series' empty
+periods are periods, not groups: neither carries the note.
 
 ClickHouse fills an unmatched outer-join field with a type default unless the join yields
 NULLs, so every ClickHouse statement ends with `SETTINGS join_use_nulls = 1`.

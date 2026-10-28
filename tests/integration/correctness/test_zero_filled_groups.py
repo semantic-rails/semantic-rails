@@ -170,6 +170,35 @@ def test_a_group_that_reads_null_is_never_counted(request, backend):
 
 
 @pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_either_observation_scope_notes_the_groups_it_fills(request, backend):
+    """Under either scope, orders have data in the call's scope, so customer 107's empty group
+    reads 0 and the note says so. Only for customer 107 alone does ``query`` find no order in
+    scope: there the order outputs read NULL with NO_DATA_IN_SCOPE, and nothing is noted."""
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    alone = {**BY_CUSTOMER, "where": [{"field": CUSTOMER, "op": "is", "value": 107}]}
+    order_outputs = ["order_count", "revenue"]
+
+    for scope in ("dataset", "query"):
+        result = runtime.query({**BY_CUSTOMER, "observation_scope": scope})
+        assert result["observation_scope"] == scope
+        [note] = _notes(result)
+        assert [row["output"] for row in note["details"]["outputs"]] == [
+            "signup_count",
+            *order_outputs,
+        ]
+
+    [filled] = runtime.query({**alone, "observation_scope": "dataset"})["rows"]
+    assert (filled["order_count"], Decimal(str(filled["revenue"]))) == (0, 0)
+    queried = runtime.query({**alone, "observation_scope": "query"})
+    [row] = queried["rows"]
+    assert (row["order_count"], row["revenue"]) == (None, None)
+    [no_data] = [row for row in queried["warnings"] if row["code"] == "NO_DATA_IN_SCOPE"]
+    assert no_data["details"]["outputs"] == order_outputs
+    assert _notes(queried) == []
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
 def test_a_truncated_answer_counts_the_rows_shown_as_a_lower_bound(request, backend):
     source = request.getfixturevalue(f"{backend}_backend")
     runtime = source.runtimes["utc_authored"]
