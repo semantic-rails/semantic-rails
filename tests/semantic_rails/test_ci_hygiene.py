@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -600,6 +601,28 @@ def test_dependabot_updates_uv_lock_weekly_and_keeps_actions():
     python = config["updates"][0]
     assert python["schedule"]["interval"] == "weekly"
     assert set(python["groups"]) == {"python-deps", "python-deps-major"}
+    # Every dependency pyproject caps has an ignore, so no update proposes crossing the cap.
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    requirements = [
+        *project["project"]["dependencies"],
+        *(item for items in project["project"]["optional-dependencies"].values() for item in items),
+        *(
+            item
+            for items in project.get("dependency-groups", {}).values()
+            for item in items
+            if isinstance(item, str)
+        ),
+    ]
+    capped = {
+        re.match(r"[A-Za-z0-9_.-]+", requirement).group(0).lower()
+        for requirement in requirements
+        if "<" in requirement and "<=" not in requirement
+    }
+    ignored = {entry["dependency-name"].lower() for entry in python["ignore"]}
+    assert capped <= ignored, capped - ignored
+    assert {"dependency-name": "snowflake-connector-python", "versions": [">=5"]} in python[
+        "ignore"
+    ]
 
 
 def test_release_hygiene_accepts_only_the_ci_manifests():
