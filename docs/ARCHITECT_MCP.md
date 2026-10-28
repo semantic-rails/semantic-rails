@@ -207,7 +207,7 @@ never create, seed or change it.
   authoritative. Otherwise a key-like column (`id`, or ending in `_id`, `_key`, `_code`, `_sk`)
   links to each other relation whose declared single-column primary key has the same name and a
   compatible type; values are not compared, so such a link is `medium`, or `low` when several
-  relations declare that key. Single-column links use `column`; composite links use `columns` and
+  relations declare that key (`suggest_links` compares them). Single-column links use `column`; composite links use `columns` and
   preserve the ordered local and referenced columns. Foreign-key links are review evidence, not
   arguments in the draft `upsert_model` call.
   A numeric column named like a count of distinct people (`unique`, `uniques`, `distinct`,
@@ -258,6 +258,30 @@ never create, seed or change it.
   - **Nothing is written.** Apply the drafts with `dry_run`, then `expected_revision`. Nothing
     checks the data at query time: a column with two values within a key reads NULL on the
     one-per-key model, which is why the draft leaves such columns off.
+- `suggest_links`: the relationships from a table to other tables' keys, from their values.
+  - **Candidates.** Each column paired with another table's key: the package's entities with a
+    one-column key (with `project_path`), else every declared single-column primary key. A column
+    is paired when it is named like the key (the same name, one ending in the other, or the
+    target entity's name with a key suffix). A generic key (`id`, `key`, `code`) is paired only
+    by that last form (`customer_id` with `customers.id`), so a table's own `id` pairs with no
+    other table's; a key named for its table (`order_id` on an `order_lifecycle` extension table)
+    still pairs with the table it names. `columns` tries those columns against every key of a compatible type, whatever their
+    names. Columns are compared only with keys of their type.
+  - **Evidence.** `rows`, `rows_with_value`, `distinct_values`, `distinct_found` and `rows_found`
+    (the column's values that are target keys), `coverage` (by distinct value) and `row_coverage`,
+    up to five `missing_samples`, and whether the target key names one row (`target_key_unique`)
+    and the column is unique (`column_unique`), with `reason` saying it in words.
+  - **`threshold`.** `min_coverage` (default `0.95`, over 0 and at most 1) is stated in the
+    answer. A pair at or over it
+    is in `proposals`; one under it is in `below_threshold` with the same evidence and drafts, for
+    you to decide. A row whose value isn't found keeps its row, and reads NULL through the link.
+    A target key that repeats or is missing on some rows names no one row and is in
+    `not_proposed` (`suggest_one_per_key` says whether that table reads one row per key).
+  - **Drafts.** With `project_path`, each pair carries `upsert_relationship` arguments from the
+    entity (or row-grain model) over the table: `one_to_one` when the column is unique and never
+    null, else `many_to_one`. Targets the model already links to are skipped.
+  - **Nothing is written.** Apply a draft with `dry_run`, then `expected_revision`. One 60-second
+    deadline covers the comparisons; `timed_out` says it ended early.
 
 Profiles and samples show real values from the warehouse; use `sample_limit: 0` where that matters.
 Tables and views backed by data stored in the DuckDB file work normally. A view that needs an
@@ -558,6 +582,7 @@ tool list's size.
 - `profile_columns`
 - `suggest_model`
 - `suggest_one_per_key`
+- `suggest_links`
 - `suggest_models_from_dbt`
 - `import_dbt_project`
 

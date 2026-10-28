@@ -3359,6 +3359,58 @@
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": true,
+        "title": "Suggest relationships"
+      },
+      "description": "Propose relationships from a table to other tables' keys from their values: per candidate column, the distinct values and rows found among the target's keys (coverage), a few not found, and the cardinality. proposals reach min_coverage (default 0.95, stated as threshold); below_threshold lists the rest with the same evidence for you to decide. columns tries those columns against every key whatever their names. With project_path the targets are the package's entities and each carries draft upsert_relationship arguments. Read-only.",
+      "inputSchema": {
+        "properties": {
+          "columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "duckdb_path": {
+            "default": "",
+            "type": "string"
+          },
+          "min_coverage": {
+            "default": 0.95,
+            "type": "number"
+          },
+          "project_path": {
+            "default": "",
+            "type": "string"
+          },
+          "relation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "type": "object"
+      },
+      "name": "suggest_links",
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
         "title": "Suggest models from dbt"
       },
       "description": "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never runs); keys, links and value sets come from dbt tests and contracts. select narrows by model name. Read-only.",

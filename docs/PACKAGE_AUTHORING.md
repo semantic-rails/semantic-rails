@@ -1265,6 +1265,12 @@ signs up on Pro and moves to Builder the same day reads Builder, and one whose o
 that day reads none. Route readings and `NULL_PRESERVING_HISTORY` say "valid at the end of the
 day". An unknown key is refused, and so is `as_of` with neither `valid_from` nor `valid_to`.
 
+A `many_to_many` history read at a query's time keeps its cardinality's rule: its versions
+valid at one time can overlap, so a query that would count a row once per overlapping version
+is refused. An explicit `safety: safe` on such a relationship states that its versions never
+overlap: the engine then joins it as one version per row, and nothing checks the data at query
+time, so where versions do overlap, a row counts once per overlapping version.
+
 The end of the day is a wall-clock timestamp in the role's zone, compared with the validity
 columns as the row's own time is:
 

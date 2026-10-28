@@ -1228,3 +1228,222 @@ def _one_per_key_proposal(
             "upsert_relationship": {"from_entity": link_model, "to_entity": target, "columns": key}
         }
     return proposal
+
+
+# A link is proposed when at least this share of the column's distinct values are target keys.
+DEFAULT_LINK_COVERAGE = 0.95
+MAX_MISSING_SAMPLES = 5
+# Key names every table may use for its own key: they say nothing about which table a column
+# refers to.
+_GENERIC_KEYS = frozenset({"id", "key", "code", "sk", "pk", "uuid"})
+
+
+def _names_link(column: str, key: str, entity: str = "") -> bool:
+    """Whether ``column`` is named like a reference to ``key`` (of ``entity``): the same name, one
+    name ending in the other (``office_room_id`` and ``room_id``; ``building_key`` and
+    ``fac_building_key``), or the entity's own name with a key suffix. A generic key (``id``)
+    is named only that last way (``customer_id`` for ``customers.id``): every table's ``id`` and
+    every ``*_id`` column would otherwise pair with it."""
+    column, key = column.lower(), key.lower()
+    named = {f"{entity}{suffix}" for suffix in _KEY_SUFFIXES} if entity else set()
+    if key in _GENERIC_KEYS:
+        return column in named
+    return (
+        column == key or column.endswith(f"_{key}") or key.endswith(f"_{column}") or column in named
+    )
+
+
+def _link_evidence(
+    warehouse: DuckDBWarehouse, source: str, column: str, target: str, key: str, deadline: float
+) -> dict[str, Any]:
+    """How the values of ``column`` in ``source`` meet ``key`` in ``target``: rows, rows with a
+    value, distinct values, how many of them (and of the rows) are ``target`` keys, a few that
+    aren't, and whether ``key`` names one ``target`` row (never null, never repeated)."""
+    _in_time(deadline)
+    col, ref = quote_identifier(column), quote_identifier(key)
+    found = f"{col} IN (SELECT {ref} FROM {target} WHERE {ref} IS NOT NULL)"
+    rows, valued, distinct, rows_found = warehouse.execute(
+        f"SELECT system.main.count(*), system.main.count({col}), "
+        f"system.main.count(DISTINCT {col}), system.main.count(*) FILTER (WHERE {found}) "
+        f"FROM {source}"
+    )[1][0]
+    _in_time(deadline)
+    (distinct_found,) = warehouse.execute(
+        f"SELECT system.main.count(*) FROM (SELECT DISTINCT {col} FROM {source} "
+        f"WHERE {col} IS NOT NULL) AS v WHERE {found}"
+    )[1][0]
+    _in_time(deadline)
+    target_rows, target_keys, target_valued = warehouse.execute(
+        f"SELECT system.main.count(*), system.main.count(DISTINCT {ref}), "
+        f"system.main.count({ref}) FROM {target}"
+    )[1][0]
+    _in_time(deadline)
+    missing = [
+        _sample_text(row[0])
+        for row in warehouse.execute(
+            f"SELECT DISTINCT {col} FROM {source} WHERE {col} IS NOT NULL AND NOT {found} "
+            f"ORDER BY 1 LIMIT {MAX_MISSING_SAMPLES}"
+        )[1]
+    ]
+    return {
+        "rows": int(rows),
+        "rows_with_value": int(valued),
+        "distinct_values": int(distinct),
+        "distinct_found": int(distinct_found),
+        "rows_found": int(rows_found),
+        "coverage": round(int(distinct_found) / int(distinct), 4) if distinct else 0.0,
+        "row_coverage": round(int(rows_found) / int(valued), 4) if valued else 0.0,
+        "missing_samples": missing,
+        "target_rows": int(target_rows),
+        "target_key_unique": int(target_keys) == int(target_valued) == int(target_rows),
+        "column_unique": int(distinct) == int(valued) == int(rows),
+    }
+
+
+def _link_words(column: str, target: dict[str, Any], evidence: dict[str, Any]) -> str:
+    """The evidence in words."""
+    words = (
+        f"{evidence['distinct_found']} of {evidence['distinct_values']} distinct {column} values "
+        f"({evidence['coverage']:.1%}) are {target['relation']}.{target['key']} keys, on "
+        f"{evidence['rows_found']} of {evidence['rows_with_value']} rows with a value"
+    )
+    if evidence["rows"] > evidence["rows_with_value"]:
+        words += f"; {evidence['rows'] - evidence['rows_with_value']} rows have none"
+    if evidence["missing_samples"]:
+        words += f"; not found: {', '.join(map(str, evidence['missing_samples']))}"
+    return words + "."
+
+
+def suggest_links(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    columns: list[str] | None = None,
+    *,
+    min_coverage: float = DEFAULT_LINK_COVERAGE,
+    targets: list[dict[str, Any]] | None = None,
+    from_entity: str = "",
+    linked: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Propose the relationships from ``relation`` to other tables' keys, from their values.
+
+    A candidate pairs a column of ``relation`` with a key of another table: each of ``targets``
+    (``{relation, key, entity}``; by default every declared single-column primary key) that the
+    column is named like (``columns`` tries those columns against every target of a compatible
+    type, whatever their names). Each pair's ``evidence`` counts the column's values found among
+    the target's keys, by distinct value (``coverage``) and by row, with a few values not found.
+    A pair whose target key names one row, and whose coverage reaches ``min_coverage`` (the
+    stated ``threshold``), is in ``proposals``; one under it is in ``below_threshold`` with the
+    same evidence and drafts, for the author to decide (a row whose value isn't found keeps its
+    rows, and reads NULL through the link). Each carries draft ``upsert_relationship`` arguments
+    when ``from_entity`` (the package's entity or row-grain model over ``relation``) and the
+    target's entity are known: ``one_to_one`` when the column is unique and never null too,
+    else ``many_to_one``. Targets already linked (``linked``) are skipped. Nothing is written,
+    and nothing checks data at query time.
+    """
+    if not 0 < min_coverage <= 1:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"min_coverage is a share of distinct values, over 0 and at most 1 (got {min_coverage})",
+            details={"min_coverage": min_coverage},
+        )
+    described = describe_table(warehouse, relation)
+    schema, name = _split_relation(relation)
+    source = _qualified(warehouse, schema, name)
+    types = {str(column["name"]): str(column["type"]) for column in described["columns"]}
+    unknown = [column for column in columns or [] if column not in types]
+    if unknown:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND",
+            f"columns not in {described['relation']}: {', '.join(unknown)}",
+            details={"relation": described["relation"], "unknown_columns": unknown},
+        )
+    if targets is None:
+        targets = [
+            {"relation": row["relation"], "key": row["column"], "entity": "", "type": row["type"]}
+            for rows in _declared_keys(warehouse).values()
+            for row in rows
+        ]
+    answer: dict[str, Any] = {
+        "relation": described["relation"],
+        "threshold": {"coverage": min_coverage},
+        "proposals": [],
+        "below_threshold": [],
+        "not_proposed": [],
+    }
+    described_targets: dict[str, dict[str, str]] = {}
+    deadline = time.monotonic() + KEY_SEARCH_SECONDS
+    try:
+        for target in targets:
+            if _split_relation(str(target["relation"])) == (schema, name):
+                continue
+            if target.get("entity") and target["entity"] in linked:
+                continue
+            target_types = described_targets.get(str(target["relation"]))
+            if target_types is None:
+                target_types = {
+                    str(column["name"]): str(column["type"])
+                    for column in describe_table(warehouse, str(target["relation"]))["columns"]
+                }
+                described_targets[str(target["relation"])] = target_types
+            key = str(target["key"])
+            if key not in target_types:
+                continue
+            entity = str(
+                target.get("entity") or entity_name(_split_relation(target["relation"])[1])
+            )
+            for column in columns or list(types):
+                if not _fk_types_compatible(types[column], target_types[key]):
+                    continue
+                if not columns and not _names_link(column, key, entity):
+                    continue
+                target_schema, target_name = _split_relation(str(target["relation"]))
+                evidence = _link_evidence(
+                    warehouse,
+                    source,
+                    column,
+                    _qualified(warehouse, target_schema, target_name),
+                    key,
+                    deadline,
+                )
+                _place_link(answer, column, target, evidence, min_coverage, from_entity)
+    except _OutOfTime:
+        answer["timed_out"] = True
+    for bucket in ("proposals", "below_threshold", "not_proposed"):
+        answer[bucket].sort(key=lambda row: (-row["evidence"]["coverage"], row["column"]))
+    return answer
+
+
+def _place_link(
+    answer: dict[str, Any],
+    column: str,
+    target: dict[str, Any],
+    evidence: dict[str, Any],
+    min_coverage: float,
+    from_entity: str,
+) -> None:
+    row: dict[str, Any] = {
+        "column": column,
+        "target": {key: target[key] for key in ("relation", "key", "entity") if target.get(key)},
+        "evidence": evidence,
+    }
+    if not evidence["distinct_found"]:
+        return  # a column named like a key whose values are none of its keys: no candidate
+    if not evidence["target_key_unique"]:
+        row["reason"] = (
+            f"{target['relation']}.{target['key']} repeats or is missing on some rows, so it "
+            "names no one row: no lookup can read it (suggest_one_per_key says whether that "
+            "table can be read one row per key)"
+        )
+        answer["not_proposed"].append(row)
+        return
+    cardinality = "one_to_one" if evidence["column_unique"] else "many_to_one"
+    row["cardinality"] = cardinality
+    row["reason"] = _link_words(column, target, evidence)
+    if from_entity and target.get("entity"):
+        row["upsert_relationship"] = {
+            "from_entity": from_entity,
+            "to_entity": target["entity"],
+            "columns": [column],
+            "cardinality": cardinality,
+        }
+    answer["proposals" if evidence["coverage"] >= min_coverage else "below_threshold"].append(row)

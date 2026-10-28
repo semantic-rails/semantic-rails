@@ -873,7 +873,8 @@ def create_architect_mcp_server(
             "package starts with setup_project_dialog, then create_project (expected_revision: "
             "absent).\n"
             "Order: project_status (note its revision); explore a DuckDB warehouse (list_tables, "
-            "describe_table, profile_columns, suggest_model, suggest_one_per_key) or a dbt target "
+            "describe_table, profile_columns, suggest_model, suggest_one_per_key, suggest_links) or "
+            "a dbt target "
             "(suggest_models_from_dbt); write (upsert_model, upsert_relationship, upsert_metric, "
             "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object, "
             "record_route_decision, upgrade_project); "
@@ -1752,6 +1753,41 @@ def create_architect_mcp_server(
                 return {
                     "ok": True,
                     **introspection.suggest_one_per_key(warehouse, relation, key, **context),
+                }
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Suggest relationships"),
+        description=(
+            "Propose relationships from a table to other tables' keys from their values: per "
+            "candidate column, the distinct values and rows found among the target's keys "
+            "(coverage), a few not found, and the cardinality. proposals reach min_coverage "
+            "(default 0.95, stated as threshold); below_threshold lists the rest with the same "
+            "evidence for you to decide. columns tries those columns against every key whatever "
+            "their names. With project_path the targets are the package's entities and each "
+            "carries draft upsert_relationship arguments. Read-only."
+        ),
+    )
+    def suggest_links(
+        relation: str,
+        columns: list[str] | None = None,
+        min_coverage: float = introspection.DEFAULT_LINK_COVERAGE,
+        project_path: str = "",
+        duckdb_path: str = "",
+    ) -> dict[str, Any]:
+        try:
+            context = (
+                ArchitectProject(project_path, workspace_root=root).link_context(relation)
+                if project_path
+                else {}
+            )
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {
+                    "ok": True,
+                    **introspection.suggest_links(
+                        warehouse, relation, columns, min_coverage=min_coverage, **context
+                    ),
                 }
         except Exception as exc:
             return _report_error(exc)
