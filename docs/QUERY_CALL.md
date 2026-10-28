@@ -77,6 +77,12 @@ beside `query` and `options` is refused. A tool argument sent inside the call (`
 key of the call sent beside `query` (`"limit"`, ...) with the hint to move it inside. MCP also
 reads a `query` sent as a JSON string.
 
+MCP `row_format` shapes the rows: `records` (objects, the default) or `columns` (`columns` once,
+each row an array). When a call sends no `row_format` and its rows as records exceed the MCP
+response budget but fit as columns, `execute` returns columns with the note
+`ROW_FORMAT_COLUMNS`, from the one warehouse run, so read `row_format` before `rows`
+([MCP interface](MCP_INTERFACE.md#query-verbosity-tiers-execute-modes)).
+
 ```bash
 uv run semantic-rails query --package jaffle_shop --now 2017-09-04T12:00:00Z \
   --query-json '{"select": ["measure.jaffle.order_count"], "time": {"last": {"unit": "week", "value": 1}}}'
