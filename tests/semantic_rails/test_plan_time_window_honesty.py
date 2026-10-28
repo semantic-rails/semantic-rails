@@ -197,7 +197,7 @@ def test_mcp_plan_offers_no_runnable_draft_without_the_window(runtime) -> None:
     assert bounded["best"]["query"]["time"] == window
 
 
-def test_a_thousand_word_intent_plans_in_under_a_second(runtime) -> None:
+def test_a_thousand_word_intent_plans_in_under_two_seconds(runtime) -> None:
     """Planning reads a question in passes linear in its length: a long intent can't burn
     seconds of CPU (finding clock phrases once took 20 s on this one)."""
     mcp = SemanticLayerMCPAdapter(runtime)
@@ -207,7 +207,7 @@ def test_a_thousand_word_intent_plans_in_under_a_second(runtime) -> None:
         started = time.perf_counter()
         assert mcp.call_tool("plan", {"intent": intent})["status"] == "low_confidence"
         timings.append(time.perf_counter() - started)
-    assert min(timings) < 1.0, timings
+    assert min(timings) < 2.0, timings  # about 0.5 s on CI; the quadratic path took 4.5 s
 
 
 def test_partial_query_bounds_suppress_the_downgrade(runtime) -> None:

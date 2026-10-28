@@ -751,3 +751,50 @@ def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(
     assert exc.value.code == "FANOUT_UNSAFE"
     assert exc.value.details["relationships"] == [HOP]
     assert exc.value.details["entities"] == [HISTORY]
+
+
+# A2 holds two segment versions at once, which a many-to-many history allows.
+OVERLAPPING = (
+    "INSERT INTO account_segments VALUES ('A2', 'starter', 'T2', 3, TIMESTAMP '2026-01-01', NULL)"
+)
+
+
+def test_a_many_to_many_history_read_at_the_query_time_is_not_one_version_per_row(tmp_path):
+    """Declared many-to-many, a history's versions valid at one time can overlap: A2 is in two at
+    once. Reading it at the query's time doesn't make it one version per row, so the hop keeps
+    its cardinality's rule and is refused, rather than joined plainly to count A2's usage once
+    per version (starter would read 20, not 15, in January)."""
+    near = "entities: [usage, account_segment]\n              cardinality: many_to_one"
+    assert FILES["graph.yml"].count(near) == 1
+    files = {
+        **FILES,
+        "graph.yml": FILES["graph.yml"].replace(near, near.replace("many_to_one", "many_to_many")),
+    }
+    pkg = _write_package(tmp_path, files)
+    (pkg / "data" / "seed.sql").write_text(f"{SEED_SQL};\n{OVERLAPPING}")
+    plain = duckdb.connect()
+    plain.execute(f"{SEED_SQL};\n{OVERLAPPING}")
+    (joined,) = plain.execute(
+        "SELECT SUM(u.amount) FROM usage AS u JOIN account_segments AS s ON s.account_id = "
+        "u.account_id AND s.valid_from <= u.used_at AND (s.valid_to > u.used_at OR s.valid_to "
+        "IS NULL) WHERE s.segment = 'starter' AND u.used_at < TIMESTAMP '2026-02-01'"
+    ).fetchone()
+    plain.close()
+    assert float(joined) == 20.0  # a plain join's answer: A1's 10, and A2's 5 counted twice
+    runtime = Runtime.from_path(str(pkg))
+    try:
+        starter = [{"field": SEGMENT, "op": "is", "value": "starter"}]
+        for query in (
+            _amount(group_by=[SEGMENT], time=MONTHLY),
+            _amount(where=starter, time=MONTHLY),
+        ):
+            with pytest.raises(SemanticLayerError) as refused:
+                runtime.query(query)
+            assert refused.value.code == "MIXED_GRAIN_INVALID"
+        config = load_package_config(str(pkg))
+        analysis = analyze_fanout(
+            config, "entity.hist_usage", [HOP], time_bound_relationships={HOP}
+        )
+        assert analysis["status"] != "ok", analysis
+    finally:
+        runtime.close()

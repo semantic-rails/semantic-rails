@@ -3311,6 +3311,54 @@
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": true,
+        "title": "Suggest a one-per-key model"
+      },
+      "description": "For a table with no key of its own, propose reading it one row per a key it repeats (one_per_key): per candidate key, the rows, NULL-key rows, distinct keys, keys with several rows, and each column fixed or varying within a key; the proposal's coverage, draft upsert_model arguments and, with project_path, the upsert_relationship that links the table's row-grain model to it. key tries one column set. Read-only: apply the drafts with dry_run, then expected_revision.",
+      "inputSchema": {
+        "properties": {
+          "duckdb_path": {
+            "default": "",
+            "type": "string"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "project_path": {
+            "default": "",
+            "type": "string"
+          },
+          "relation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "relation"
+        ],
+        "type": "object"
+      },
+      "name": "suggest_one_per_key",
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
         "title": "Suggest models from dbt"
       },
       "description": "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never runs); keys, links and value sets come from dbt tests and contracts. select narrows by model name. Read-only.",
