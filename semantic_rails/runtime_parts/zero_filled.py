@@ -11,13 +11,22 @@ reads the returned rows and runs no other query.
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from typing import Any
 
 from ..diagnostics import semantic_issue
 from ..query_call import TOTAL_OVER
+from ..schema import PackageConfig
 
 
-def zero_filled_groups_notes(config, compiled, rows, hidden, *, excluded_outputs=()):
+def zero_filled_groups_notes(
+    config: PackageConfig,
+    compiled: dict[str, Any],
+    rows: list[dict[str, Any]],
+    hidden: dict[str, list[Any]],
+    *,
+    excluded_outputs: Collection[str] = (),
+) -> list[dict[str, Any]]:
     """ZERO_FILLED_GROUPS: the call's groups whose count or sum reads 0 because none of its
     measure's own rows reach them, while another measure's rows hold the group (two leaves
     joined on the call's keys, ``absent_rows``). A count of the returned rows' hidden marks

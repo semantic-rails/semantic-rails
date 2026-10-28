@@ -283,6 +283,24 @@ def test_a_marked_group_that_reads_null_is_no_zero_filled_group(shop):
     assert zero_filled_groups_notes(shop, compiled, rows, hidden) == []
 
 
+def test_a_withheld_output_or_a_mark_that_never_came_back_counts_nothing(shop):
+    """A policy that withholds an output's values hears nothing of its groups either, and an
+    output whose mark the warehouse never returned is never guessed at."""
+    compiled = _compiled(shop, BY_CUSTOMER)
+    returned = [
+        {CUSTOMER: 107, "signup_count": 1, "order_count": 0, "revenue": 0}
+        | {"m1_absent": 0, "m2_absent": 1},
+    ]
+    rows, hidden = split_hidden(returned, compiled)
+    [note] = zero_filled_groups_notes(shop, compiled, rows, hidden)
+    assert [row["output"] for row in note["details"]["outputs"]] == ["order_count"]
+    assert note["object_ids"] == [ORDERS]
+    withheld = zero_filled_groups_notes(
+        shop, compiled, rows, hidden, excluded_outputs={"order_count"}
+    )
+    assert withheld == []
+
+
 CALLS = {
     "a series": {
         **BY_CUSTOMER,
