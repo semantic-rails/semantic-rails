@@ -8,6 +8,7 @@ ConnectionCredentialProvider{credentials_for(self, *, warehouse, connection_kind
 DuckDBAdapter(_)
 LruCompiledSqlCache(maxsize=)
 MCPAdapter{call_tool(self, name, arguments, /, *, request_context); get_prompt(self, name, arguments, /); list_prompts(self); list_resources(self); list_tools(self); package_id; read_resource(self, uri, /, *, request_context)}
+MCPHTTPResponse().status
 MCP_PROTOCOL_VERSION
 PUBLIC_V1_ROUTES
 PackageReference(_)
@@ -25,6 +26,7 @@ RequestContext(tenant=)
 Runtime().adapter
 Runtime().close()
 Runtime().config
+Runtime().package_config
 Runtime().package_id
 Runtime().query(_)
 Runtime().set_adapter(_)
@@ -50,15 +52,18 @@ SemanticLayerMCPAdapter(_, interface=)
 SnowflakeCliAdapter(_, options=)
 SnowflakeNativeAdapter(credential_provider=, options=)
 TrustedAttributes(_)
+TrustedAttributes(_, roles=)
 WarehouseAdapter().close()
 WarehouseAdapter.query
 WarehouseAdapter.query_prepared(_, _, limits=)
 create_warehouse_adapter(_)
+diff_semantic_contract(_, _)
 emit_audit_event(_, error_codes=, package_id=, request_context=, request_id=, status=, timing_ms=, tool=)
 get_audit_sink()
 handle_jsonrpc_message(*, **)
 handle_jsonrpc_message(_, _)
 handle_jsonrpc_message(_, _, request_context=)
+handle_streamable_http_request(_, headers=, method=)
 impact_report(_, compare_path=, snapshot=)
 load_package_snapshot(_)
 parse_config_report(_)
