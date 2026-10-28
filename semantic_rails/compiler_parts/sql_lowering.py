@@ -130,6 +130,7 @@ from .time_series import (
     _series_base_ctes,
     _tier_internal_aliases,
 )
+from .total_rows import with_total_rows
 from .totals import selected_totals, total_sources
 
 
@@ -205,8 +206,10 @@ def lower_to_sql(
     if plan.time.get("window_total"):
         # One total over the window: the constant time key isn't a column.
         time_alias = _time_alias_for_plan(plan)
-        return replace(select, select=[item for item in select.select if item.alias != time_alias])
-    if default_order and plan.time and not plan.query.get("order_by"):
+        select = replace(
+            select, select=[item for item in select.select if item.alias != time_alias]
+        )
+    elif default_order and plan.time and not plan.query.get("order_by"):
         # Every request's final projection orders by time, then the authored groups.
         # Nested query sources opt out at their shared compilation boundary.
         # Use output aliases after internal aliasing so this also covers dense and combined SQL.
@@ -220,6 +223,9 @@ def lower_to_sql(
             select,
             order_by=[SqlOrder(SqlIdentifier(parts=[key]), "ASC") for key in order_keys],
         )
+    if plan.query.get("totals") is not None:
+        # The call's own rows, then its subtotal and grand-total rows.
+        return with_total_rows(plan, config, select)
     return select
 
 

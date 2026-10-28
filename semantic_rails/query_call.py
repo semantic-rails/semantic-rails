@@ -1,7 +1,7 @@
 """The query call: the caller's spelling, read once into the engine's query.
 
-A call has nine fields: ``select``, ``group_by``, ``where``, ``having``, ``time``,
-``order_by``, ``limit``, ``routes`` and ``observation_scope``. This module is the only reader
+A call has ten fields: ``select``, ``group_by``, ``where``, ``having``, ``time``,
+``order_by``, ``limit``, ``routes``, ``observation_scope`` and ``totals``. This module is the only reader
 of that spelling. It checks the call against the tables below (the published schema is
 generated from the same tables), resolves the time window against ``now``, and hands the
 compiler its own form, which :func:`semantic_rails.ast.normalize_query` reads.
@@ -60,7 +60,11 @@ FIELDS: tuple[str, ...] = (
     "limit",
     "routes",
     "observation_scope",
+    "totals",
 )
+# The column a call with ``totals`` adds: the group_by ids a total row adds up (null on a row
+# of the call's own grain).
+TOTAL_OVER = "total_over"
 TIME_KEYS: tuple[str, ...] = ("temporal_role", "grain", "start", "end", "last", "this", "fill")
 GRAINS: tuple[str, ...] = UNITS
 LAST_KEYS: tuple[str, ...] = ("unit", "value")
@@ -457,6 +461,8 @@ def read_call(
                 fix=f"Use one of {list(OBSERVATION_SCOPES)}.",
             )
         internal["observation_scope"] = scope
+    if payload.get("totals") is not None:
+        internal["totals"] = _totals(payload["totals"], group_by, select)
     if not partial and not (select or group_by or time):
         raise refusal(
             "select", "a call needs select, group_by or time", fix="Name a measure or metric."
@@ -1677,6 +1683,53 @@ def _limit(raw: Any) -> int:
     return raw
 
 
+def _totals(raw: Any, group_by: list[str], select: list[dict[str, Any]]) -> list[str]:
+    """The group_by ids subtotal rows keep, outermost first; ``[]`` asks for the grand total
+    alone. Each total row is the call at its grain, so every select column must have one."""
+    if not isinstance(raw, list):
+        raise refusal(
+            "totals",
+            "lists the group_by ids subtotal rows keep, outermost first",
+            fix='Write "totals": [] for the grand total alone.',
+        )
+    if not group_by:
+        raise refusal("totals", "a call without group_by is its own total", fix="Remove totals.")
+    for index, column in enumerate(raw):
+        if column not in group_by or column in raw[:index]:
+            raise refusal(
+                f"totals[{index}]",
+                f"'{column}' is not a group_by id of this call, once each",
+                fix=f"Use one of {group_by}.",
+                totals_allowed=group_by,
+            )
+    for row in select:
+        if row["as"].casefold() == TOTAL_OVER:
+            raise refusal(
+                "totals",
+                f"'{TOTAL_OVER}' is the column that says which columns a total row adds up",
+                fix=f"Name the select item '{TOTAL_OVER}' with another \"as\".",
+                code="DUPLICATE_OUTPUT_ALIAS",
+                alias=TOTAL_OVER,
+            )
+        if kind := next(iter(_kinds_in(row["expression"]) & {"share", "total"}), None):
+            raise refusal(
+                "totals",
+                f"'{row['as']}' is a {kind}, which has no reading on a total row",
+                fix=f"Ask for '{row['as']}' in a call of its own, or remove totals.",
+            )
+    return list(raw)
+
+
+def _kinds_in(node: Any) -> set[str]:
+    """Every expression kind in an engine expression, at any depth."""
+    if isinstance(node, Mapping):
+        own = {str(node["kind"])} if isinstance(node.get("kind"), str) else set()
+        return own.union(*(_kinds_in(value) for value in node.values()))
+    if isinstance(node, list):
+        return set().union(*(_kinds_in(value) for value in node))
+    return set()
+
+
 def _routes(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         raise refusal(
@@ -1794,6 +1847,8 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
         call["routes"] = [route_entry(row) for row in query["route_decisions"]]
     if query.get("observation_scope"):
         call["observation_scope"] = query["observation_scope"]
+    if query.get("totals") is not None:
+        call["totals"] = list(query["totals"])
     return call
 
 

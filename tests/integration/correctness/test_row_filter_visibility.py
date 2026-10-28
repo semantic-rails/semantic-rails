@@ -134,6 +134,11 @@ EVERY_OCCURRENCE: dict[str, tuple[dict[str, Any], str | None]] = {
     ),
     # A ratio reads its numerator and denominator in separate leaves.
     "average-order-value": ({"select": ["metric.shop.average_order_value"]}, None),
+    # The grand-total row reads orders again, in its own call without the store.
+    "revenue-by-store-and-the-grand-total": (
+        {"select": [REVENUE], "group_by": [STORE_NAME], "totals": []},
+        None,
+    ),
     # A total reads orders again, in its own call without the store: the stores the caller sees.
     "revenue-beside-every-store's-revenue": (
         {

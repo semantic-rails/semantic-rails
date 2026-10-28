@@ -289,6 +289,12 @@ def query_call_schema_document() -> dict[str, Any]:
                 },
             },
             "observation_scope": {"enum": list(OBSERVATION_SCOPES)},
+            "totals": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "description": "group_by ids subtotal rows keep, outermost first; [] the grand "
+                "total alone.",
+            },
             "version": {"description": "Ignored."},
         },
         "patternProperties": {"^_": {}},

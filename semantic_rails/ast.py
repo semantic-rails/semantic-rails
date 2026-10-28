@@ -269,6 +269,9 @@ class NormalizedQuery:
     debug: bool = False
     route_decisions: list[RouteDecision] = field(default_factory=list)
     observation_scope: str = ""  # "" defers to the package's defaults.observation_scope
+    # The group_by ids subtotal rows keep, outermost first ([] the grand total alone); None
+    # when the call asks for no total rows.
+    totals: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         # Only a query that decides a route or a scope carries the key, so other queries'
@@ -279,9 +282,11 @@ class NormalizedQuery:
             else {}
         )
         scope = {"observation_scope": self.observation_scope} if self.observation_scope else {}
+        totals = {"totals": list(self.totals)} if self.totals is not None else {}
         return {
             **decisions,
             **scope,
+            **totals,
             "version": self.version,
             "select": [
                 {
@@ -683,6 +688,7 @@ QUERY_INPUT_KEYS: frozenset[str] = frozenset(
         "temporal_role_overrides",
         "route_decisions",
         "observation_scope",
+        "totals",
         "debug",
         # Envelope keys consumed by the runtime / MCP layer (verbosity,
         # sql_profile, policy_context, limits, request_id). They reach
@@ -932,6 +938,7 @@ def normalize_query(
         debug=bool(payload.get("debug", False)),
         route_decisions=route_decisions_from_payload(payload),
         observation_scope=_observation_scope(payload),
+        totals=_totals(payload, group_by),
     )
 
 
@@ -973,6 +980,23 @@ def _order_by_from_payload(
             )
         order_by.append(OrderBy(field=field, direction=direction))
     return order_by
+
+
+def _totals(payload: dict[str, Any], group_by: list[str]) -> list[str] | None:
+    raw = payload.get("totals")
+    if raw is None:
+        return None
+    if (
+        not isinstance(raw, list)
+        or len(set(map(str, raw))) != len(raw)
+        or not set(raw) <= set(group_by)
+    ):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"totals lists group_by ids once each, got {raw!r}",
+            details={"path": "totals", "group_by": list(group_by)},
+        )
+    return [str(column) for column in raw]
 
 
 def _observation_scope(payload: dict[str, Any]) -> str:

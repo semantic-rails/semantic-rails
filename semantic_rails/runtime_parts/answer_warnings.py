@@ -17,6 +17,7 @@ from ..compiler import read_routes
 from ..compiler_parts.empty_groups import GUARDED_BASE, base_reads, sql_nodes
 from ..compiler_parts.indexes import get_package_analysis
 from ..compiler_parts.paths import _leaf_time_role
+from ..compiler_parts.total_rows import call_rows
 from ..diagnostics import rewrite_warning_payload, semantic_issue
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -28,6 +29,7 @@ from ..fanout import (
     reads_end_of_day,
     route_hops,
 )
+from ..query_call import TOTAL_OVER
 from ..sql_ast import filter_rejects_null
 from ..temporal_support import _date_key, _range_intersects
 from .disclosures import mixed_time_role_warnings
@@ -129,7 +131,10 @@ def _history_result_warnings(config, compiled, rows, warnings, *, truncated=Fals
     root, measures = plan.root_entity, {row.id: row for row in config.measures}
     root_key = getattr(get_package_analysis(config).entities.get(root), "key_columns", ())
     complete = not (truncated or getattr(rows, "truncated", False))
-    complete = complete and compiled["sql_ast"].limit is None
+    if plan.query.get("totals") is not None:
+        # A total row's rolled-up columns read NULL by design: the empty group is the call's.
+        rows = [row for row in rows if row.get(TOTAL_OVER) is None]
+    complete = complete and call_rows(compiled["sql_ast"]).limit is None
     complete = complete and not plan.query.get("metric_filters")
     visible_outputs = {output for row in rows for output in row}
     single_group = not any(
@@ -627,7 +632,7 @@ def _guard_probe_names(compiled, prefix):
     from ..sql_ast import SqlIdentifier
 
     ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
-    projection = ctes["projected"].query if "projected" in ctes else compiled["sql_ast"]
+    projection = ctes["projected"].query if "projected" in ctes else call_rows(compiled["sql_ast"])
 
     def probes(guard_name: str, start: str) -> dict[str, set[str]]:
         guard = ctes.get(guard_name)

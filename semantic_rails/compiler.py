@@ -60,6 +60,7 @@ from .compiler_parts.row_counts import override_row_counts, share_group_counts
 from .compiler_parts.sql_lowering import lower_to_sql
 from .compiler_parts.temporal import _requires_query_time as _requires_query_time
 from .compiler_parts.temporal import _time_bound_relationship_ids as _time_bound_relationship_ids
+from .compiler_parts.total_rows import call_rows, with_call_rows
 from .diagnostics import relationship_contract_payload
 from .dialects import dialect_for_warehouse
 from .ir import ExplainArtifact
@@ -157,7 +158,9 @@ def compile_query(
         else bind_query(config, registry, payload, row_filters=row_filters)
     )
     plan, config = bound.plan, bound.config
-    sql_ast, limit_order_keys = limit_order(bound.sql_ast, _query_key_aliases(plan))
+    # The call's own rows take the limit's tie-break, under any total rows that follow them.
+    own, limit_order_keys = limit_order(call_rows(bound.sql_ast), _query_key_aliases(plan))
+    sql_ast = with_call_rows(bound.sql_ast, own)
     outputs = {field.alias for field in sql_ast.select}
     # The hidden columns the runtime reads and removes: each re-aggregated measure's row count,
     # and the rows each share's total spans.
@@ -180,8 +183,8 @@ def compile_query(
 
     prepared = prepare(sql_ast)
     limit_probe = None
-    if limit_order_keys and sql_ast.limit is not None and sql_ast.limit > 0:
-        limit_probe = prepare(replace(sql_ast, limit=sql_ast.limit + 1))
+    if limit_order_keys and own.limit is not None and own.limit > 0:
+        limit_probe = prepare(with_call_rows(sql_ast, replace(own, limit=own.limit + 1)))
     rendered = prepared.sql
     physical_plan = build_physical_plan(plan, config)
     performance_plan = build_performance_plan(

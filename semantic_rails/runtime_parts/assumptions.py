@@ -12,6 +12,7 @@ from typing import Any
 
 from ..compiler_parts.bind import aggregation_overrides, select_measure_reads
 from ..compiler_parts.paths import display_key, keyed_entity
+from ..compiler_parts.total_rows import total_rows_disclosure
 from ..config_parts.measure_governance import governed_out_of_view, governing_metrics
 from ..db_parts.base import QueryRows
 from ..errors import SemanticLayerError
@@ -302,5 +303,6 @@ def call_assumptions(
         *governed_metric_exists(config, compiled),
         *share_of_total(compiled, hidden),
         *total_over(compiled),
+        *filter(None, [total_rows_disclosure(compiled["logical_plan"], config)]),
         *grouped_by_key(config, compiled, payload),
     ]

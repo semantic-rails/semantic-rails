@@ -294,8 +294,8 @@ Current metric kinds demonstrated in the active package:
 
 ## Query Contract
 
-The public query call has nine fields (`select`, `group_by`, `where`, `having`, `time`,
-`order_by`, `limit`, `routes`, `observation_scope`); [QUERY_CALL.md](QUERY_CALL.md) is its
+The public query call has ten fields (`select`, `group_by`, `where`, `having`, `time`,
+`order_by`, `limit`, `routes`, `observation_scope`, `totals`); [QUERY_CALL.md](QUERY_CALL.md) is its
 reference and `schemas/query.v2.json` its schema, generated from the parser's own tables
 (`semantic_rails/contracts/query_schema.py`). The engine reads it in one place:
 

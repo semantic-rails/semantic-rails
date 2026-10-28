@@ -21,6 +21,7 @@ from ..expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
+from ..query_call import TOTAL_OVER
 
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
 _VALID_SQL_PROFILES: tuple[str, ...] = ("audit", "compact", "debug", "off")
@@ -248,6 +249,18 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
                 "sql_alias": alias,
                 "type": value_type,
                 "lineage": lineage,
+            }
+        )
+    if query.get("totals") is not None:
+        # Which group_by ids a total row adds up; null on the call's own rows.
+        columns.append(
+            {
+                "field": TOTAL_OVER,
+                "semantic_id": "",
+                "display_label": TOTAL_OVER,
+                "sql_alias": TOTAL_OVER,
+                "type": "string",
+                "lineage": [],
             }
         )
     return columns

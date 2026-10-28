@@ -78,6 +78,7 @@ from .compiler_parts.empty_groups import (
     observed_outside_filters,
 )
 from .compiler_parts.paths import dimensions_over_column, text_dimension
+from .compiler_parts.total_rows import call_rows
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -95,7 +96,7 @@ from .db import (
     seed_digest,
     temporal_cast_error_value,
 )
-from .db_parts.base import query_with_limits, reject_parameters
+from .db_parts.base import QueryRows, query_with_limits, reject_parameters
 from .db_parts.duckdb_confinement import confinement_directory, require_inside
 from .diagnostics import (
     enrich_column_expression,
@@ -118,7 +119,7 @@ from .policies import (
     withheld_rank_order,
 )
 from .policy_rules import check_request_environment
-from .query_call import read_call, route_options
+from .query_call import TOTAL_OVER, read_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_with_slots
@@ -1952,7 +1953,7 @@ class Runtime:
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
         limits = _normalize_query_limits(payload.get("limits"), zone)
-        limit = compiled["sql_ast"].limit
+        limit = call_rows(compiled["sql_ast"]).limit
         probe = compiled.get("limit_probe")
         # A resource fence that hides the boundary row takes precedence over
         # tie detection. Keep both the adapter cap and its truncation signal.
@@ -2004,7 +2005,15 @@ class Runtime:
             if probe is not None:
                 from .top_n import limit_rows
 
-                rows, tie_warnings = limit_rows(rows, limit, compiled["limit_order_keys"])
+                # Total rows (``total_over`` set) follow the call's own rows and are never cut.
+                totaled = compiled["logical_plan"].query.get("totals") is not None
+                own = [row for row in rows if not totaled or row.get(TOTAL_OVER) is None]
+                assert limit is not None  # a boundary probe exists only under a limit
+                cut, tie_warnings = limit_rows(own, limit, compiled["limit_order_keys"])
+                rows = QueryRows(
+                    [*cut, *(row for row in rows if totaled and row.get(TOTAL_OVER) is not None)],
+                    truncated=bool(getattr(rows, "truncated", False)),
+                )
             rows, hidden = split_hidden(rows, compiled)
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":

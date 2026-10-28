@@ -7,7 +7,7 @@ Start with these canonical docs:
 - [Deployment](DEPLOYMENT.md) for Docker, ASGI, health/readiness, request context, and API-key shim setup.
 - [Package authoring](PACKAGE_AUTHORING.md) for the schema.
 - [Architect MCP](ARCHITECT_MCP.md) for revision-safe concurrent package mutations.
-- [The query call](QUERY_CALL.md) for the call's nine fields, filter words, time windows, the answer and refusals.
+- [The query call](QUERY_CALL.md) for the call's ten fields, filter words, time windows, the answer and refusals.
 - [Query API](QUERY_API.md) for agent discovery, planning, validation, compile-only SQL, and execution surfaces.
 - [MCP interface](MCP_INTERFACE.md) for self-hosted Streamable HTTP, the in-process adapter, and local compatibility transports.
 - [Benchmark evidence](BENCHMARK_EVIDENCE.md) for measured plan/agent scorecard gates.

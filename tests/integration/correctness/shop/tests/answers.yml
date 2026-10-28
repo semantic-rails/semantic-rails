@@ -351,6 +351,40 @@ tests:
             FROM orders GROUP BY date_trunc('quarter', ordered_at)) AS q
         ON q.quarter = date_trunc('quarter', o.ordered_at)
       GROUP BY o.store_id, CAST(date_trunc('quarter', o.ordered_at) AS DATE), q.quarter_revenue
+  shop/store-and-channel-revenue-with-store-subtotals-and-a-grand-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each store's subtotal across signup channels, then the grand total, each the call at its grain and named by total_over; the grand total counts 7 distinct buying customers, not the 10 its store subtotals add up to (customer 102 buys at both stores, 101 at store a and with no store).
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.buying_customers, docs/QUERY_CALL.md#totals]
+    query:
+      select:
+        - {expression: measure.shop.revenue, as: revenue}
+        - {expression: measure.shop.buying_customers, as: customers}
+      group_by: [dimension.shop_order_store_id, dimension.shop_customer_channel]
+      totals: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: a, dimension.shop_customer_channel: store, revenue: 4, customers: 1, total_over: null}
+      - {dimension.shop_order_store_id: a, dimension.shop_customer_channel: web, revenue: 37, customers: 2, total_over: null}
+      - {dimension.shop_order_store_id: a, dimension.shop_customer_channel: null, revenue: 2, customers: 2, total_over: null}
+      - {dimension.shop_order_store_id: b, dimension.shop_customer_channel: store, revenue: 13, customers: 2, total_over: null}
+      - {dimension.shop_order_store_id: b, dimension.shop_customer_channel: web, revenue: 12, customers: 2, total_over: null}
+      - {dimension.shop_order_store_id: null, dimension.shop_customer_channel: web, revenue: 6, customers: 1, total_over: null}
+      - {dimension.shop_order_store_id: a, dimension.shop_customer_channel: null, revenue: 43, customers: 5, total_over: dimension.shop_customer_channel}
+      - {dimension.shop_order_store_id: b, dimension.shop_customer_channel: null, revenue: 25, customers: 4, total_over: dimension.shop_customer_channel}
+      - {dimension.shop_order_store_id: null, dimension.shop_customer_channel: null, revenue: 6, customers: 1, total_over: dimension.shop_customer_channel}
+      - {dimension.shop_order_store_id: null, dimension.shop_customer_channel: null, revenue: 74, customers: 7, total_over: 'dimension.shop_order_store_id, dimension.shop_customer_channel'}
+    reference_sql: |
+      SELECT o.store_id, s.channel, SUM(o.amount) AS revenue, COUNT(DISTINCT o.customer_id) AS customers,
+        CAST(NULL AS VARCHAR(64)) AS total_over
+      FROM orders AS o LEFT JOIN signups AS s ON s.customer_id = o.customer_id
+      GROUP BY o.store_id, s.channel
+      UNION ALL
+      SELECT store_id, NULL, SUM(amount), COUNT(DISTINCT customer_id), 'dimension.shop_customer_channel'
+      FROM orders GROUP BY store_id
+      UNION ALL
+      SELECT NULL, NULL, SUM(amount), COUNT(DISTINCT customer_id),
+        'dimension.shop_order_store_id, dimension.shop_customer_channel'
+      FROM orders
   shop/top-customers-by-name-rank-by-key-so-namesakes-stay-apart:
     kind: query_matches_snapshot
     expect: answer

@@ -39,6 +39,7 @@ DECISIONS = {
     "docs/QUERY_CALL.md#having",
     "docs/QUERY_CALL.md#time",
     "docs/QUERY_CALL.md#order_by",
+    "docs/QUERY_CALL.md#totals",
     "docs/QUERY_CALL.md#inline-expression-kinds",
     "docs/QUERY_CALL.md#empty-groups-null-or-0",
     "docs/QUERY_CALL.md#groups-across-a-link",

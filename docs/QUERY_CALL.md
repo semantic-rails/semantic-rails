@@ -23,7 +23,7 @@ section shows `assumptions`, it shows them all.
 
 ## The call at a glance
 
-Nine fields, all optional, no other keys:
+Ten fields, all optional, no other keys:
 
 | Field | Shape | Meaning | When omitted |
 |---|---|---|---|
@@ -36,6 +36,7 @@ Nine fields, all optional, no other keys:
 | [`limit`](#limit) | integer ≥ 1 | the question's top N | every row |
 | [`routes`](#routes) | list of `{from, to, via}` | the join route this question means | the package's routes |
 | [`observation_scope`](#observation_scope) | `dataset` \| `query` | which rows count as "has data" | the package default |
+| [`totals`](#totals) | list of `group_by` ids, outermost first | subtotal and grand-total rows | no total rows |
 
 A call needs at least one of `select`, `group_by` or `time`. `version` is ignored, whatever
 its value. Keys starting with `_` (such as `_note`) are annotations and are ignored. Any other
@@ -778,6 +779,53 @@ keeps the same rows. Without `time.grain` that order is the `group_by` columns, 
 NULLs last. With `time.grain` it is the series order the answer always has: `period` first,
 then the `group_by` columns, ascending, with a NULL group placed by the warehouse's default
 (a monthly series by store with `limit: 2` keeps the first month's two stores).
+
+## `totals`
+
+Subtotal and grand-total rows after the call's own rows. `totals` lists the `group_by` ids the
+subtotal rows keep, outermost first; each shorter prefix of it is one level of total rows, down
+to the grand total, and `[]` asks for the grand total alone. A level that keeps every `group_by`
+column is the call's own grain and adds nothing. With `time.grain`, every total row keeps its
+period: total rows add up the groups within each period.
+
+Each total row is the call itself at its level's grain, from the rows the call keeps (its
+`where`, window, entity filters, routes, row filters and policies), settled as that call is on
+its own (data of nothing reads `0`, a period not loaded yet `null`), so every column is computed
+from its own rows there, never added up from the call's rows: a distinct count counts distinct
+values, an average averages every row, a ratio divides the totals, and across a
+[link](#groups-across-a-link) each entity counts once. A rolled-up column reads `null` on a
+total row, and the `total_over` column names the `group_by` ids the row adds up (`null` on the
+call's own rows), so a total row never reads as a NULL group:
+
+```json
+{"select": ["measure.jaffle.order_count", "measure.jaffle.ordering_customer_count"],
+ "group_by": ["dimension.jaffle_store_name"],
+ "time": {"start": "2017-01-01", "end": "2017-04-01"},
+ "totals": []}
+```
+
+```jsonc
+{"rows": [{"dimension.jaffle_store_name": "Brooklyn", "order_count": 2092, "ordering_customer_count": 252, "total_over": null},
+          {"dimension.jaffle_store_name": "Philadelphia", "order_count": 10753, "ordering_customer_count": 366, "total_over": null},
+          {"dimension.jaffle_store_name": null, "order_count": 12845, "ordering_customer_count": 618, "total_over": "dimension.jaffle_store_name"}],
+ "assumptions": [{"code": "TOTALS", "levels": ["dimension.jaffle_store_name"],
+                  "message": "Rows whose total_over names columns add those columns up: each is the call at that grain, computed from the rows the call keeps before having and limit, never added up from the returned rows."}]}
+```
+
+`total_over` lists every rolled-up id, joined with `, `, in `group_by` order. A level keeps the
+entity key of each name it keeps, as any call does, and a key `totals` names stays on its level
+while its name rolls up. The total rows come after the call's own rows, level by level from the finest to the grand
+total. The call's own rows, and each level's, come in the call's `order_by` (by default the
+period first), then the period and group keys ascending with NULLs last. `having` and `limit`
+cut only the call's own rows: total rows always come back, and they count the rows `having` and
+`limit` leave out (ties at a `limit` are broken and reported as usual). A transport's row cap
+counts total rows too, so a truncated answer can end before them.
+
+`totals` is refused at its path when an item is not a `group_by` id of the call (once each),
+when the call has no `group_by`, when a select item is named `total_over`, and beside a `share`
+or a [`total`](#coarser-totals), which have no reading on a total row. A policy that requires a
+grouping refuses `totals` (the grand total groups by nothing) with `POLICY_DENIED`, as do
+withheld values.
 
 ## `routes`
 

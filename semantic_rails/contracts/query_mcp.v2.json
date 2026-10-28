@@ -978,6 +978,12 @@
                 },
                 "type": "object"
               },
+              "totals": {
+                "items": {
+                  "$ref": "#/$defs/Text"
+                },
+                "type": "array"
+              },
               "version": {},
               "where": {
                 "items": {
