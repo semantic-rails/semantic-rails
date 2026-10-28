@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from .schema import PackageConfig
@@ -85,12 +85,13 @@ class _Columns:
         return {column.casefold() for column in self.keys.get(entity, [])}
 
     def holds_key_of(self, holder: str, keyed: str) -> bool:
-        """Whether ``holder`` holds every column of ``keyed``'s key, by a name that says what it
-        is: two entities both keyed by a bare ``id`` hold nothing of each other's."""
+        """Whether ``holder`` holds every column of ``keyed``'s declared key, and every one of
+        those columns says what it identifies: an entity keyed by a bare ``id`` is never looked
+        up by a column of the same name, which another table's own ``id`` would match."""
         key = self.key_of(keyed)
         if not key or holder == keyed or not key <= self.held.get(holder, set()):
             return False
-        return not key <= self.key_of(holder) or all(_specific(column) for column in key)
+        return all(_specific(column) for column in key)
 
 
 def path_gap(
@@ -146,6 +147,7 @@ def path_gap(
                         "from": near_entity,
                         "to": far_entity,
                         "allowed_directions": list(rel.allowed_directions),
+                        "fans_out": _fans_out(rel, near_entity),
                     },
                     near_entity,
                 )
@@ -211,8 +213,30 @@ def path_gap(
                 }
                 if keyed_by:
                     link["keyed_by"] = keyed_by[0]
+                    link["keyed_by_columns"] = list(columns.keys[keyed_by[0]])
                 return found(link, near_entity)
     return {}
+
+
+def _fans_out(rel: Any, walked_from: str) -> bool | None:
+    """Whether walking ``rel`` from ``walked_from`` meets many rows per row: a one-to-many walk
+    by the relationship's declared cardinality (``N:1`` walked from its target, ``1:N`` from
+    its source, ``M:N`` either way). None when the cardinality says neither."""
+    cardinality = str(rel.cardinality or "").upper().replace(" ", "")
+    if cardinality == "M:N":
+        return True
+    if cardinality not in {"1:1", "N:1", "1:N"}:
+        return None
+    forward = rel.source_entity == walked_from
+    return cardinality == ("1:N" if forward else "N:1")
+
+
+def _repeats(near: str, far: str, via: str = "") -> str:
+    through = f" through '{via}'" if via else ""
+    return (
+        f" Each '{near}' row then meets many '{far}' rows{through}, so a measure read through "
+        f"'{near}' repeats across them."
+    )
 
 
 def missing_link_fact(link: dict[str, Any]) -> str:
@@ -245,38 +269,56 @@ def missing_link_fact(link: dict[str, Any]) -> str:
 
 
 def missing_link_fix(link: dict[str, Any]) -> str:
-    """The change a package author could make to connect the pair."""
+    """The change a package author could make to connect the pair, and what it does to the
+    rows a call reads through it: whether a measure would repeat (fan out) across them."""
     kind = link.get("kind")
     if kind == "direction":
+        near, far = link["from"], link["to"]
+        fans_out = link.get("fans_out")
+        consequence = (
+            _repeats(near, far)
+            if fans_out
+            else f" Each '{near}' row then meets one '{far}' row, so nothing repeats."
+            if fans_out is False
+            else (
+                f" Its cardinality doesn't say how many '{far}' rows each '{near}' row meets: "
+                f"if many, a measure read through '{near}' repeats across them."
+            )
+        )
         return (
-            f"Allow the walk from '{link['from']}' in relationship '{link['relationship']}''s "
-            "allowed_directions, if its rows may be read that way."
+            f"Allow the walk from '{near}' in relationship '{link['relationship']}''s "
+            f"allowed_directions, if its rows may be read that way.{consequence}"
         )
     if kind == "lookup":
-        on = ", ".join(link["columns"])
-        walk = (
-            f" A call walks it from '{link['target_entity']}': one of its rows to many."
+        source, target = link["source_entity"], link["target_entity"]
+        consequence = (
+            _repeats(target, source)
             if link.get("walk") == "reverse"
-            else ""
+            else f" Each '{source}' row then meets one '{target}' row, so nothing repeats."
         )
         return (
-            f"Add a graph.relationships row from '{link['source_entity']}' to "
-            f"'{link['target_entity']}' on {on}.{walk}"
+            f"Add a graph.relationships row from '{source}' to '{target}' on "
+            f"{', '.join(link['columns'])}.{consequence}"
         )
     if kind == "bridge":
         near, far = link["entities"]
         return (
             f"Relate '{link['via']}' to '{near}' and to '{far}' on those keys, so a call walks "
-            "through it."
+            f"through it.{_repeats(near, link['via'])}"
         )
     if kind == "many_to_many":
         near, far = link["entities"]
         if link.get("keyed_by"):
+            keyed_by = link["keyed_by"]
+            on = ", ".join(link.get("keyed_by_columns") or [])
             return (
-                f"Relate '{near}' and '{far}' each to '{link['keyed_by']}', which "
-                f"{', '.join(link['columns'])} is the key of."
+                f"Relate '{near}' and '{far}' each to '{keyed_by}' on its key ({on})."
+                + _repeats(near, far, keyed_by)
             )
-        return f"Add a link entity with one row per pair of '{near}' and '{far}', related to both."
+        return (
+            f"Add a link entity with one row per pair of '{near}' and '{far}', related to both."
+            + _repeats(near, far, "it")
+        )
     return ""
 
 
@@ -321,12 +363,21 @@ def closest_dimensions(
     return _ranked(rows, wanted, population)[:CLOSEST_DIMENSIONS]
 
 
-def closest_measures(config: PackageConfig, target: str, asked: Sequence[str]) -> list[str]:
-    """Measures that do reach ``target`` and whose names share words with the measures the call
-    asked for. Each is a different measure: a stand-in to offer, never to switch to silently."""
+def closest_measures(
+    config: PackageConfig,
+    target: str,
+    asked: Sequence[str],
+    runnable: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Measures that do reach ``target``, that the caller could run (``runnable``: no access
+    policy denies or withholds it), and whose names share words with the measures the call asked
+    for. Each is a different measure: a stand-in to offer, never to switch to silently. Without
+    ``runnable`` the caller's policies are unknown, so nothing is offered."""
     from .compiler_parts.indexes import get_package_analysis
     from .fanout import eligible_path_targets, package_hop_limit
 
+    if runnable is None:
+        return []
     measures = {row.id: row for row in config.measures}
     wanted = set().union(
         *(_words(measures[m].label, measures[m].name) for m in asked if m in measures)
@@ -350,6 +401,8 @@ def closest_measures(config: PackageConfig, target: str, asked: Sequence[str]) -
     # a bounded number of times.
     for measure_id in _ranked(rows, wanted, population)[: CLOSEST_MEASURES * 3]:
         entity = measures[measure_id].entity
+        if not runnable(measure_id):
+            continue
         if entity == target or target in eligible_path_targets(config, start=entity):
             out.append(measure_id)
         if len(out) == CLOSEST_MEASURES:

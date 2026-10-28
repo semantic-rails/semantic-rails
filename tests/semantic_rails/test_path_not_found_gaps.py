@@ -99,11 +99,19 @@ def _package(
     return config, path
 
 
-def _issue(config: Any, start: str, target: str, **details: Any) -> dict[str, Any]:
+def _issue(
+    config: Any, start: str, target: str, runnable: Any = None, **details: Any
+) -> dict[str, Any]:
     with pytest.raises(SemanticLayerError) as raised:
         resolve_path(config, start=start, target=target)
     raised.value.details.update(details)
-    return exception_issue(enrich_path_not_found(raised.value, config), stage="validate")
+    enriched = enrich_path_not_found(raised.value, config, runnable_measure=runnable)
+    return exception_issue(enriched, stage="validate")
+
+
+def _author(issue: dict[str, Any]) -> str:
+    kinds = ("author_relationship", "declare_key")
+    return " ".join(hint["message"] for hint in issue["recovery_hints"] if hint["kind"] in kinds)
 
 
 def _audiences(issue: dict[str, Any]) -> dict[str, str]:
@@ -206,6 +214,7 @@ def test_a_one_hop_miss_names_the_nearest_reachable_entity(package_config_factor
             "from": "entity.customer",
             "to": "entity.loyalty",
             "allowed_directions": ["forward"],
+            "fans_out": True,
         }
         assert "allows no walk from 'entity.customer'" in issue["message"]
     else:
@@ -340,9 +349,17 @@ def test_closest_stand_ins_share_rare_words_with_what_was_asked(package_config_f
 
 def test_closest_measures_are_offered_as_different_measures(runtime_with_loyalty_measures):
     config = runtime_with_loyalty_measures
-    stand_ins = closest_measures(config, "entity.loyalty", ["measure.order_points"])
+
+    def anything(_measure_id: str) -> bool:
+        return True
+
+    stand_ins = closest_measures(config, "entity.loyalty", ["measure.order_points"], anything)
     assert stand_ins == ["measure.loyalty_points"]
-    issue = _issue(config, "entity.order", "entity.loyalty", measures=["measure.order_points"])
+    # Without a way to check the caller's policies, nothing is offered.
+    assert closest_measures(config, "entity.loyalty", ["measure.order_points"]) == []
+    issue = _issue(
+        config, "entity.order", "entity.loyalty", anything, measures=["measure.order_points"]
+    )
     assert issue["details"]["closest_measures"] == ["measure.loyalty_points"]
     hint = next(hint for hint in issue["recovery_hints"] if hint["kind"] == "switch_measure")
     assert hint["audience"] == "caller"
@@ -383,3 +400,209 @@ def test_the_jaffle_refusal_names_the_membership_key_it_lacks(jaffle_snapshot):
         assert "holds the key of 'entity.jaffle_customer' (customer_id)" in error["message"]
     finally:
         runtime.close()
+
+
+# --- Round 2: the advice itself ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("cardinality", "fans_out"), [("N:1", True), ("1:1", False), ("", None)], ids=str
+)
+def test_allowing_a_walk_says_whether_a_measure_repeats(
+    package_config_factory, cardinality, fans_out
+):
+    # loyalty -> customer, walkable forward only: from customer, the walk would be its reverse.
+    one_way = _rel(
+        "loyalty_customer",
+        "entity.loyalty",
+        "entity.customer",
+        "customer_id",
+        allowed_directions=["forward"],
+    )
+    one_way = replace(one_way, cardinality=cardinality)
+    config, _ = _package(
+        package_config_factory, LOYALTY, LOYALTY_COLUMNS, [ORDER_CUSTOMER, one_way]
+    )
+    issue = _issue(config, "entity.order", "entity.loyalty")
+    assert issue["details"]["missing_link"]["fans_out"] is fans_out
+    author = _author(issue)
+    if fans_out:
+        assert "Each 'entity.customer' row then meets many 'entity.loyalty' rows" in author
+        assert "repeats across them" in author
+    elif fans_out is False:
+        assert "meets one 'entity.loyalty' row, so nothing repeats" in author
+    else:
+        assert "if many, a measure read through 'entity.customer' repeats" in author
+
+
+def test_a_bridge_says_each_row_meets_many_through_it(package_config_factory):
+    config, _ = _package(package_config_factory, SCHOOL, SCHOOL_COLUMNS)
+    author = _author(_issue(config, "entity.student", "entity.course"))
+    assert "Each 'entity.student' row then meets many 'entity.enrollment' rows" in author
+    assert "a measure read through 'entity.student' repeats across them" in author
+
+
+def test_a_lookup_says_whether_it_repeats(package_config_factory):
+    config, _ = _package(package_config_factory, LOYALTY, LOYALTY_COLUMNS, [ORDER_CUSTOMER])
+    reverse = _author(_issue(config, "entity.order", "entity.loyalty"))
+    assert "Each 'entity.customer' row then meets many 'entity.loyalty' rows" in reverse
+    # The order side holds the loyalty key: a lookup, one row each.
+    columns = {**LOYALTY_COLUMNS, "order": [*LOYALTY_COLUMNS["order"], "loyalty_id"]}
+    config, _ = _package(package_config_factory, LOYALTY, columns, [ORDER_CUSTOMER])
+    forward = _author(_issue(config, "entity.order", "entity.loyalty"))
+    assert (
+        "Each 'entity.order' row then meets one 'entity.loyalty' row, so nothing repeats" in forward
+    )
+
+
+def test_keyed_by_names_its_own_key_and_the_fan_out(package_config_factory):
+    entities = {"order": ["order_id"], "rep": ["rep_id"], "region": ["region_code"]}
+    columns = {
+        "order": ["order_id", "country_code", "region_code"],
+        "rep": ["rep_id", "country_code", "region_code"],
+        "region": ["region_code"],
+    }
+    config, _ = _package(package_config_factory, entities, columns)
+    issue = _issue(config, "entity.order", "entity.rep")
+    link = issue["details"]["missing_link"]
+    assert link["columns"] == ["country_code", "region_code"]
+    assert (link["keyed_by"], link["keyed_by_columns"]) == ("entity.region", ["region_code"])
+    author = _author(issue)
+    assert "each to 'entity.region' on its key (region_code)" in author
+    assert "country_code, region_code is the key" not in author
+    assert "meets many 'entity.rep' rows through 'entity.region'" in author
+
+
+def test_a_bare_id_is_never_another_entitys_key(package_config_factory):
+    # order holds a column named id, its own surrogate; customer is keyed by a bare id.
+    entities = {"order": ["order_id"], "customer": ["id"]}
+    columns = {"order": ["order_id", "id"], "customer": ["id", "customer_name"]}
+    config, _ = _package(package_config_factory, entities, columns)
+    assert path_gap(config, "entity.order", "entity.customer", []) == {}
+    issue = _issue(config, "entity.order", "entity.customer")
+    assert "holds the key" not in issue["message"]
+    assert " on id" not in _author(issue)
+
+
+def test_closest_dimensions_are_offered_as_different_dimensions(package_config_factory):
+    config, _ = _package(package_config_factory, LOYALTY, LOYALTY_COLUMNS, [ORDER_CUSTOMER])
+    issue = _issue(
+        config,
+        "entity.order",
+        "entity.loyalty",
+        unreachable_items=["dimension.loyalty_loyalty_tier"],
+    )
+    hint = next(h for h in issue["recovery_hints"] if h["kind"] == "switch_group_by_dimension")
+    assert hint["closest_dimensions"] == [
+        "dimension.order_order_tier",
+        "dimension.customer_customer_tier",
+    ]
+    assert (
+        "Each is a different dimension, so ask the user before grouping by one."
+        in (hint["message"])
+    )
+
+
+MEMBERSHIP_REVENUE = "measure.jaffle.membership_revenue_usd"
+
+
+@pytest.mark.parametrize("action", ["deny", "withhold_values"])
+def test_a_stand_in_the_caller_cant_run_is_never_offered(jaffle_snapshot, monkeypatch, action):
+    runtime = opened(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
+    config = runtime.package_config
+    revenue = next(m for m in config.measures if m.id == "measure.jaffle.revenue_usd")
+    stand_in = replace(
+        revenue,
+        id=MEMBERSHIP_REVENUE,
+        name="jaffle.membership_revenue_usd",
+        label="Membership revenue",
+        entity="entity.jaffle_customer_segment_membership",
+    )
+    policy = SemanticPolicyConfig(
+        id="policy.test.membership_revenue",
+        kind="object_access",
+        action=action,
+        object_ids=[MEMBERSHIP_REVENUE],
+        audiences=["reader"],
+        **({"config": {"max_rank": 3}} if action == "withhold_values" else {}),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_config",
+        replace(config, measures=[*config.measures, stand_in], semantic_policies=[policy]),
+    )
+    adapter = SemanticLayerMCPAdapter(runtime)
+    query = {
+        "select": ["measure.jaffle.revenue_usd"],
+        "group_by": ["dimension.jaffle_membership_status"],
+    }
+    try:
+        offered = {}
+        for who, context in (("author", None), ("reader", READER.to_policy_context())):
+            kwargs = {"request_context": context_from_policy_context(context)} if context else {}
+            response = adapter.call_tool("execute", {"query": query, "mode": "validate"}, **kwargs)
+            error = response["errors"][0]
+            assert error["code"] == "PATH_NOT_FOUND"
+            offered[who] = error["details"].get("closest_measures", [])
+        assert offered["author"] == [MEMBERSHIP_REVENUE]
+        assert MEMBERSHIP_REVENUE not in offered["reader"]
+    finally:
+        adapter.close()  # Closes its runtime too.
+
+
+# --- Round 2: hardening -------------------------------------------------------------------------
+
+
+def test_an_entity_slot_is_offered_entities_only(jaffle_snapshot):
+    runtime = opened(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
+    try:
+        having = [{"field": "measure.jaffle.order_count", "op": "gte", "value": 2}]
+        query = {
+            "select": ["measure.jaffle.revenue_usd"],
+            "where": [
+                {"entity": "dimension.jaffle_store_name", "having": having, "over": "all_time"}
+            ],
+        }
+        (error,) = runtime.validate(query)["errors"]
+        matches = error["details"]["closest_matches"]
+        assert matches and all(match.startswith("entity.") for match in matches)
+        assert "entity.jaffle_store" in matches
+    finally:
+        runtime.close()
+
+
+def test_a_long_unknown_id_is_echoed_short(package_config_factory):
+    config, _ = _package(package_config_factory, LOYALTY, LOYALTY_COLUMNS, [ORDER_CUSTOMER])
+    target = "entity." + "x" * 5_000
+    issue = _issue(config, "entity.order", target)
+    assert len(issue["details"]["unknown_entity"]) <= 120
+    assert len(issue["recovery_hints"][0]["message"]) < 400
+
+
+def test_enriching_again_under_a_narrower_view_rebuilds_the_gap(package_config_factory):
+    config, _ = _package(package_config_factory, SCHOOL, SCHOOL_COLUMNS)
+    with pytest.raises(SemanticLayerError) as raised:
+        resolve_path(config, start="entity.student", target="entity.course")
+    broad = enrich_path_not_found(raised.value, config)
+    assert broad.details["missing_link"]["via"] == "entity.enrollment"
+    narrow = replace(
+        config,
+        entities=[e for e in config.entities if e.id != "entity.enrollment"],
+        dimensions=[d for d in config.dimensions if d.entity != "entity.enrollment"],
+    )
+    rebuilt = enrich_path_not_found(broad, narrow)
+    assert "missing_link" not in rebuilt.details
+    assert "enrollment" not in str(rebuilt) and "enrollment" not in json.dumps(rebuilt.details)
+
+
+def test_a_row_grain_targets_key_is_the_authors_to_declare(package_config_factory):
+    entities = {"order": ["order_id"], "event": []}
+    columns = {"order": ["order_id"], "event": ["event_name"]}
+    config, _ = _package(package_config_factory, entities, columns)
+    issue = _issue(config, "entity.order", "entity.event")
+    audiences = _audiences(issue)
+    assert audiences["row_grain_target"] == "caller"
+    assert audiences["declare_key"] == "author"
+    assert "declare a key" not in next(
+        h["message"] for h in issue["recovery_hints"] if h["kind"] == "row_grain_target"
+    )

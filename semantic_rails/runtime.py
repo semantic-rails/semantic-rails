@@ -116,6 +116,7 @@ from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import (
     enforce_query_policies,
     row_filters_for_context,
+    runnable_measure_check,
     withheld_rank_order,
 )
 from .policy_rules import check_request_environment
@@ -242,7 +243,13 @@ def _enrich_runtime_error(
     exc = enrich_object_not_found(exc, config)
     exc = enrich_expression_ast_error(exc, config)
     exc = enrich_column_expression(exc, config)
-    exc = enrich_path_not_found(exc, config)
+    # Stand-ins are offered only when this caller's policies would let them run.
+    view = visible_view.pinned()
+    environment, audience, roles = view.key if view is not None else ("", "", frozenset())
+    runnable = runnable_measure_check(
+        config, environment=environment, audience=audience, roles=roles
+    )
+    exc = enrich_path_not_found(exc, config, runnable_measure=runnable)
     return exc
 
 

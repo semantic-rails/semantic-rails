@@ -48,6 +48,7 @@ from .http_request import (
     status_label,
 )
 from .metadata_parts.capabilities import capabilities_payload
+from .policies import runnable_measure_check
 from .query_call import EXPRESSION_SHAPES
 from .request_context import (
     RequestContext,
@@ -325,11 +326,17 @@ class SemanticHTTPService:
                 config = self.runtime.view_for(context) if context is not None else None
             except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
                 config = None
-            if config is not None:
+            if config is not None and context is not None:
                 enriched = enrich_object_not_found(enriched, config)
                 enriched = enrich_expression_ast_error(enriched, config)
                 enriched = enrich_column_expression(enriched, config)
-                enriched = enrich_path_not_found(enriched, config)
+                runnable = runnable_measure_check(
+                    config,
+                    environment=context.environment,
+                    audience=context.audience,
+                    roles=context.roles,
+                )
+                enriched = enrich_path_not_found(enriched, config, runnable_measure=runnable)
             error_issue = exception_issue(enriched, stage=stage)
             return {
                 "ok": False,

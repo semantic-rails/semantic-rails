@@ -99,6 +99,8 @@ NOT_AN_ENTITY = {
     ("cli/commands/project.py", "cmd_project_new"),
     # ParentHop.key is the join's single owner column, not EntityConfig.key.
     ("row_filters.py", "Visibility._predicate"),
+    # RequestView.key is the pinned caller's visibility key (environment, audience, roles).
+    ("runtime.py", "_enrich_runtime_error"),
     ("visible_view.py", "request_view"),
 }
 # Reads and projections of `key_columns` by field name (a string), not by attribute: each
