@@ -34,8 +34,9 @@ ignored a key or answered wrongly, and a few answers move toward the stated sema
   unclear. `discover` cards leave out a label their id already says.
 - **Install and imports.** A fresh install resolves DuckDB 2.0 (a file DuckDB 2.0 writes can't be
   opened by 1.x) and `mcp` 1.30.0 or later. The `snowflake` extra stays on connector 4.x.
-  `semantic_rails.request_context` no longer re-exports the API-key helpers; import them from
-  `semantic_rails.api_keys`.
+  `semantic_rails.request_context` no longer re-exports the API-key helpers or the audit sink;
+  import the helpers from `semantic_rails.api_keys` and the audit names from
+  `semantic_rails.embedding`.
 
 ### Added
 
@@ -206,6 +207,10 @@ ignored a key or answered wrongly, and a few answers move toward the stated sema
   `extract_bearer_or_api_key`); import them from `semantic_rails.api_keys`.
   `warn_if_default_policy_resolver_exposed` moved to `semantic_rails.http_core`. Neither module
   is part of the embedding facade.
+- `semantic_rails.request_context` no longer re-exports the audit sink (`AuditSink`,
+  `StderrAuditSink`, `audit_logging_enabled`, `emit_audit_event`, `get_audit_sink`,
+  `set_audit_sink`), as the 0.3.2rc1 deprecation announced. Hosts import them from
+  `semantic_rails.embedding`; they also live in `semantic_rails.audit`.
 
 ### Fixed
 
