@@ -61,6 +61,12 @@ def _items(query: dict[str, Any]) -> list[dict[str, Any]]:
             "orders by store and type",
         ),
         (
+            "revenue by store, channel and type with subtotals by store and channel",
+            "subtotals",
+            "store and channel",
+            "revenue by store, channel and type",
+        ),
+        (
             "orders by store and month, with each store's total across months",
             "beside",
             "store",
@@ -93,6 +99,8 @@ def test_a_question_s_total_words_are_read_apart_from_the_rest(
         "revenue by store with total revenue",
         "food revenue share by store",
         "grand total",
+        # "Each store's percentage of returning customers" may be a rate inside each store.
+        "each store's percentage of revenue",
     ],
 )
 def test_a_total_that_is_a_measure_s_own_word_asks_for_no_total(runtime, question):
@@ -176,6 +184,11 @@ def test_subtotals_of_a_series_s_one_grouping_are_its_total_across_the_periods(r
             "monthly revenue by store and customer type with each month's total across stores",
             STORES,
         ),
+        (
+            "monthly revenue by store and customer type with each store's total across types "
+            "and months",
+            ["dimension.jaffle_customer_type", "period"],
+        ),
         # Without a grouping, each month's row is its own total.
         ("revenue by month with each month's total", None),
     ],
@@ -195,6 +208,24 @@ def test_each_group_s_share_among_the_filtered_rows_is_ready(runtime):
     """Without "of the total", the filter names the rows the share is among."""
     query = _ready(_plan(runtime, "each store's share of revenue for new customers"))
     assert query["where"] and _items(query)[0]["expression"]["kind"] == "share"
+
+
+def test_a_share_of_a_series_grand_total_is_over_the_periods_too(runtime):
+    query = _ready(_plan(runtime, "revenue by store and month as a share of the grand total"))
+    [item] = _items(query)
+    assert item["expression"]["over"] == [*STORES, "period"]
+
+
+def test_an_example_authored_for_the_whole_question_answers_it(runtime, monkeypatch):
+    """A package example answers only its own question, total words included."""
+    example = {
+        "question": "revenue by store with the grand total",
+        "query": {"select": ["measure.jaffle.order_count"], "group_by": [STORE]},
+    }
+    monkeypatch.setattr(runtime, "_get_package_examples", lambda: [("example.totals", example)])
+    plan = _plan(runtime, "Revenue by store with the grand total")
+    assert plan["best"]["pattern"] == "package_example"
+    assert plan["best"]["query"] == example["query"]
 
 
 def test_each_period_s_share_is_over_the_periods(runtime):
@@ -246,6 +277,8 @@ def test_each_group_s_share_is_of_the_total_across_the_named_grouping(runtime):
         ("share of total revenue by store for new customers", None),
         # "Customer" names the customer, never "Customer type".
         ("revenue by customer type and store with each customer's total", None),
+        # A series' "total": each period's, or the whole window's?
+        ("revenue by store and month as a share of the total", None),
     ],
 )
 def test_a_total_the_draft_cannot_carry_holds_the_plan(runtime, question, code):

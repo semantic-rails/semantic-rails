@@ -34,7 +34,7 @@ from .answer_shape import _answer_shape_why, _listed_entity_terms
 from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
 from .coverage import CoverageGap, _coverage_why
-from .examples import example_plan
+from .examples import _match, example_plan
 from .faithfulness import (
     hidden_governor_why,
     intent_faithfulness_why,
@@ -181,7 +181,11 @@ def plan_payload(
     def plan_question(text: str) -> dict[str, Any]:
         # A total the question asks for is planned without its words, then shaped onto the
         # ready draft (planner/totals.py).
-        asked = asked_totals(text, catalog_config)
+        authored = any(
+            _match(text, _normalize_question(question, _apostrophe_names(catalog_config)))
+            for question in _example_questions(runtime)
+        )
+        asked = None if authored else asked_totals(text, catalog_config)
         planned = asked.rest if asked else text
         payload = _question_payload(runtime, planned, caller, detail_level, limit, catalog_config)
         return with_totals(runtime, payload, asked, text) if asked else payload
@@ -197,6 +201,15 @@ def plan_payload(
     with suppress(SemanticLayerError):
         payload = _parts_payload(payload, split, plan_question, detail_level) if split else payload
     return _query_detail_payload(payload) if detail_level == "query" else payload
+
+
+def _example_questions(runtime: Any) -> list[str]:
+    """The questions the package's examples author, each answered only as authored."""
+    return [
+        str(entry["question"])
+        for _example_id, entry in runtime._get_package_examples()
+        if isinstance(entry.get("question"), str)
+    ]
 
 
 def _caller_call(runtime: Any, partial_query: dict[str, Any] | None, now: Any) -> Call | None:

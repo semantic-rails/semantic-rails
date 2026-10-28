@@ -35,6 +35,9 @@ from .plan_query import _validate_query
 
 _APOSTROPHE = "['’]"
 _END = r"(?=\s*(?:$|[,.;:!?)]|\s+(?:and|with|plus)\b))"
+# Groupings a phrase lists: "store", "customer type", "types and months", "store, channel".
+_ITEM = r"[a-z]+(?:\s+(?!(?:and|with|plus)\b)[a-z]+)?"
+_LIST = rf"{_ITEM}(?:(?:\s*,\s*|\s+and\s+)(?!(?:the|an?|each|every|with|plus|its|their)\b){_ITEM})*"
 # A total row: "with the grand total", "plus a total row", "and the overall total". "Total" asks
 # for a row only where the clause ends after it: in "total revenue" it is the measure's own word.
 _ROWS = re.compile(
@@ -47,23 +50,23 @@ _ROWS = re.compile(
 # store" is revenue by store).
 _SUBTOTALS = re.compile(
     r"\b(?:(?:with|and|plus|including)\s+)?(?:the\s+)?sub-?totals?"
-    r"(?:\s+(?:by|per|for)\s+(?:each\s+|every\s+|the\s+)?(?P<words>[a-z][a-z ]*?))?" + _END + "|"
+    rf"(?:\s+(?:by|per|for)\s+(?:each\s+|every\s+|the\s+)?(?P<words>{_LIST}))?" + _END + "|"
     r"\b(?:with|and|plus|including)\s+(?:the\s+)?totals\s+(?:by|per)\s+(?:each\s+|every\s+)?"
-    r"(?P<by>[a-z][a-z ]*?)" + _END,
+    rf"(?P<by>{_LIST})" + _END,
     re.IGNORECASE,
 )
 _BESIDE = re.compile(
     r"\b(?:(?:with|and|plus|including)\s+)?(?:each|every)\s+"
     rf"(?P<words>[a-z]+(?:\s+[a-z]+)?){_APOSTROPHE}s?\s+totals?"
     r"(?:\s+(?:across|over)\s+(?:all\s+)?(?:the\s+|its\s+|their\s+)?"
-    r"(?P<across>[a-z]+(?:\s+(?!(?:and|with|plus)\b)[a-z]+)?))?" + _END + "|"
+    rf"(?P<across>{_LIST}))?" + _END + "|"
     r"\b(?:(?:with|and|plus|including)\s+)?(?:the\s+)?totals?\s+(?:for|per|of)\s+"
     r"(?:each|every)\s+(?P<per>[a-z]+(?:\s+[a-z]+)?)" + _END,
     re.IGNORECASE,
 )
 _SHARE = re.compile(
     rf"\b(?:each|every)\s+(?P<words>[a-z]+(?:\s+[a-z]+)?){_APOSTROPHE}s?\s+"
-    r"(?:share|percentage|proportion)\b(?:\s+of\s+(?:the\s+)?(?:total|all)\b)?|"
+    r"share\b(?:\s+of\s+(?:the\s+)?(?:total|all)\b)?|"
     r"\b(?:share|percentage|percent|proportion)\s+of\s+(?:the\s+)?(?:grand\s+|overall\s+)?total\b",
     re.IGNORECASE,
 )
@@ -85,6 +88,10 @@ _FILTERED_TOTAL = (
     "the draft filters its rows, and a share's total counts only the rows the call keeps, while "
     "'of the total' may mean every row (ask for each group's share without 'of the total' for "
     "the filtered rows' total, or without the filter for every row's)"
+)
+_WHICH_PERIOD_TOTAL = (
+    "the draft is a series, and 'the total' may be each period's or the whole window's (say "
+    "'each store's share' for each period's, or 'of the grand total' for the window's)"
 )
 _BEFORE_THE_CUT = (
     "Each total row adds up every row the call keeps before its having and limit, not only the "
@@ -161,7 +168,7 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
     grand = bool(grain) and _GRAND.search(asked.phrase) is not None and not _one_period(call.time)
     if asked.kind in {"rows", "subtotals"} and call.totals is not None:
         return call, ""  # the caller's call already asks for total rows
-    named = _named_columns(config, group_by, asked.words, grain)
+    named = _named_list(config, group_by, asked.words, grain) if asked.words else []
     if asked.words and not named:
         return None, f"the draft groups by nothing '{asked.words}' names"
     if not group_by:
@@ -184,7 +191,8 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
             return None, _ACROSS_PERIODS
         if named == [TIME_AXIS]:
             return builder.totals([]).build(), ""  # each total row keeps its period
-        kept = named or _with_partners(config, group_by, group_by[:1])
+        kept = [column for column in named if column != TIME_AXIS]  # rows keep the period
+        kept = kept or _with_partners(config, group_by, group_by[:1])
         if not set(kept) >= set(group_by):
             return builder.totals(_totals_levels(config, group_by, kept)).build(), ""
         if not grain:
@@ -193,6 +201,9 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
         # beside its rows.
         return _with_items(config, call, "total", [TIME_AXIS])
     if asked.kind == "share":
+        if not named and grain and not _one_period(call.time) and not _GRAND.search(asked.phrase):
+            # "As a share of the total" by month: each month's total, or the whole window's?
+            return None, _WHICH_PERIOD_TOTAL
         if call.where and _OF_TOTAL.search(asked.phrase):
             # "Percent of total revenue by store for new customers": a share's total counts the
             # rows the call keeps, and "of total revenue" may mean every row.
@@ -207,7 +218,7 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
     others += [TIME_AXIS] if grain and TIME_AXIS not in named else []
     over = others
     if asked.across:
-        over = _named_columns(config, group_by, asked.across, grain)
+        over = _named_list(config, group_by, asked.across, grain)
         if not over or not set(over) <= set(others):
             return None, f"'{asked.across}' names none of the draft's other groupings"
     return _with_items(config, call, "total", over) if over else (call, "")  # rows are totals
@@ -228,6 +239,18 @@ def _one_period(time: Time | None) -> bool:
         return floor_period(start, time.grain) == start and period_end(start, time.grain) == end
     except (ValueError, SemanticLayerError):
         return False  # not a date, or a grain finer than a day
+
+
+def _named_list(config: Any, group_by: list[str], words: str, grain: str) -> list[str]:
+    """The columns a list of groupings names ("types and months"), or none when an item names
+    none of the call's columns."""
+    named: set[str] = set()
+    for item in re.split(r"\s*,\s*|\s+and\s+", words.strip()):
+        columns = _named_columns(config, group_by, item, grain)
+        if not columns:
+            return []
+        named.update(columns)
+    return [column for column in [*group_by, TIME_AXIS] if column in named]
 
 
 def _named_columns(config: Any, group_by: list[str], words: str, grain: str) -> list[str]:
