@@ -51,7 +51,8 @@ The facade includes:
 
 Importing the facade, loading a package, compiling and enforcing its policies import neither
 DuckDB, the MCP Python SDK nor pydantic. DuckDB loads at the first DuckDB connection, so a host
-that passes its own adapter to `Runtime.set_adapter` never loads it; the MCP SDK and pydantic
+that passes its own adapter to `Runtime.set_adapter` never loads it (without DuckDB installed,
+opening a DuckDB database raises `MISSING_DEPENDENCY` naming it); the MCP SDK and pydantic
 serve only the Architect MCP and come with the `architect` extra, not the default install. CI
 compiles the bundled package with its policies in an environment without the three
 (`scripts/verify_embedding_core.py`).

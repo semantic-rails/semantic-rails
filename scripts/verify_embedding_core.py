@@ -4,8 +4,9 @@
 A host that embeds the engine to load a package, compile calls and enforce policies imports
 neither DuckDB, the MCP Python SDK nor pydantic: DuckDB loads at the first DuckDB connection,
 and the MCP SDK and pydantic belong to the Architect MCP (the `architect` extra). CI runs this
-script in an environment without them (`--absent`); the import contract tests run it beside
-them, where none may load.
+script in an environment without them (`--absent`), where running the DuckDB package must also
+stop with MISSING_DEPENDENCY naming DuckDB; the import contract tests run it beside them, where
+none may load.
 """
 
 from __future__ import annotations
@@ -29,6 +30,19 @@ def _denying_policies(runtime, call, context) -> set[str]:
             raise
         return {effect["policy_id"] for effect in exc.details.get("policy_effects", [])}
     return set()
+
+
+def _require_duckdb_named(runtime, call, context) -> None:
+    """Without DuckDB, running a DuckDB package names the missing package, never a bad file."""
+    from semantic_rails.embedding import SemanticLayerError
+
+    try:
+        runtime.query(call, context=context)
+    except SemanticLayerError as exc:
+        if exc.code == "MISSING_DEPENDENCY" and "DuckDB isn't installed" in str(exc):
+            return
+        raise SystemExit(f"running without DuckDB raised {exc.code}: {exc}") from exc
+    raise SystemExit("a DuckDB package ran without DuckDB installed")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -62,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     loaded = sorted({name.partition(".")[0] for name in sys.modules} & set(LEAN))
     if loaded:
         raise SystemExit(f"loading, compiling and enforcing policies imported {loaded}")
+    if args.absent:
+        _require_duckdb_named(runtime, by_store, sales)
     print(f"Compiled {Path(args.package).name} with its policies; imported none of {list(LEAN)}.")
     return 0
 

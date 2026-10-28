@@ -7,4 +7,5 @@
   both, as before.
 - The embedding facade no longer imports DuckDB until the first DuckDB connection: loading a
   package, compiling and enforcing policies run without it, so a host that passes its own
-  warehouse adapter never loads DuckDB.
+  warehouse adapter never loads DuckDB. Without DuckDB installed, opening a DuckDB database
+  stops with `MISSING_DEPENDENCY` naming the `duckdb` package.
