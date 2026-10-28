@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import asdict
 from functools import lru_cache
 from typing import Any
@@ -101,6 +101,7 @@ from .metadata_parts.relevance import (
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
 from .naming import governed_names, unclaimed_name
+from .path_gap import measure_lookalikes, model_population
 from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
 from .request_context import policy_identity
@@ -2599,20 +2600,86 @@ def inspect_payload(
         payload["card"].update(
             entity_graph(runtime._config, object_id, minimal=verbosity == "minimal")
         )
-    if payload["card"]["kind"] == "measure" and verbosity == "full":
-        # Whose dimensions a call reading this measure can group by, besides its own entity's:
-        # each entity a declared route reaches one row per measure row, as the caller sees them.
-        root = payload["card"]["root_entity"]
-        payload["card"]["grouping_entities"] = [
-            target
-            for target in eligible_path_targets(runtime._config, start=root)
-            if _path_reach(runtime._config, root, target).available
-        ]
+    if payload["card"]["kind"] == "measure":
+        payload["card"].update(_lookalike_notice(runtime._config, payload["card"], partial_query))
     if verbosity == "minimal":
         payload["card"] = _slim_inspect_card(payload["card"])
         if not payload["query_state"]:
             payload.pop("query_state")
     return payload
+
+
+LOOKALIKE_NOTICE = (
+    "Other models define a measure named like this one (lookalike_measures). Each model holds "
+    "its own rows and a call reads only its own measure's model: read the one whose rows the "
+    "user asks about, and tell the user which model the answer reads."
+)
+
+
+def _grouping_entities(config: PackageConfig, entity: str) -> list[str]:
+    """The entities a call reading ``entity``'s measures can group by, besides ``entity``: each
+    one a declared route reaches one row per measure row, as the caller sees them."""
+    return [
+        target
+        for target in eligible_path_targets(config, start=entity)
+        if _path_reach(config, entity, target).available
+    ]
+
+
+def _lookalike_notice(
+    config: PackageConfig, card: dict[str, Any], partial_query: dict[str, Any]
+) -> dict[str, Any]:
+    """A measure card's notice of its look-alikes on other models (``measure_lookalikes``) that
+    the caller sees and may read: each one's model description, the entities it reaches and,
+    when the call names dimensions, which of them it reaches. Read from the package and the
+    caller's view only (never from a question); empty when the measure has none."""
+    scope = policy_identity(_policy_context(partial_query))
+
+    def readable(*object_ids: str) -> bool:
+        return not any(
+            effect["action"] in {"deny", "hidden"}
+            for object_id in object_ids
+            for effect in policy_effects_for_object(config, object_id, **scope)
+        )
+
+    others = [row for row in measure_lookalikes(config, card["id"]) if readable(row.id, row.entity)]
+    if not others:
+        return {}
+    entities = {row.id: row for row in config.entities}
+    dimension_entity = {row.id: row.entity for row in config.dimensions}
+
+    def named(value: Any) -> Iterator[str]:
+        if isinstance(value, str) and value in dimension_entity:
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from named(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from named(item)
+
+    dimensions = list(
+        dict.fromkeys(named([partial_query.get("group_by"), partial_query.get("where")]))
+    )
+    rows = []
+    for other in others:
+        reach = _grouping_entities(config, other.entity)
+        row: dict[str, Any] = {"measure": other.id, "entity": other.entity}
+        if population := model_population(entities[other.entity]):
+            row["description"] = population
+        row["grouping_entities"] = reach
+        if dimensions:
+            held = {other.entity, *reach}
+            row["reaches"] = [item for item in dimensions if dimension_entity[item] in held]
+        rows.append(row)
+    root = card["root_entity"]
+    own = model_population(entities[root]) if root in entities else ""
+    return {
+        **({"model_description": own} if own else {}),
+        "grouping_entities": _grouping_entities(config, root),
+        "lookalike_measures": rows,
+        "lookalike_notice": LOOKALIKE_NOTICE,
+    }
 
 
 # Card fields that repeat another field: object_type repeats kind,

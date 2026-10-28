@@ -9,6 +9,7 @@ caller could group by instead, each a different dimension to confirm with them f
 ``lookalike_swaps`` pairs the call's measures on the start with the measures of the same name
 on another model (``lookalike_fact`` and ``lookalike_rows_in_view`` state them). The runtime
 keeps a pair only when the call compiles with it, in the caller's own request scope.
+``measure_lookalikes`` lists one measure's look-alikes, for the notice on its card.
 
 Nothing here chooses, caches or renders a route: it reads the package's entities, columns and
 walkable relationship graph, and the targets route resolution already proved reachable. The
@@ -473,6 +474,22 @@ def lookalike_swaps(
         for entity, swaps in sorted(found.items())
         if set(swaps) == wanted and all(len(ids) == 1 for ids in swaps.values())
     ]
+
+
+def measure_lookalikes(config: PackageConfig, measure_id: str) -> list[Any]:
+    """The published look-alikes (``_alike``) of one measure on other entities, by id."""
+    entities = {row.id: row for row in config.entities}
+    asked = next((row for row in config.measures if row.id == measure_id), None)
+    if asked is None:
+        return []
+    return sorted(
+        (
+            other
+            for other in config.measures
+            if other.entity != asked.entity and other.publish and _alike(asked, other, entities)
+        ),
+        key=lambda row: row.id,
+    )
 
 
 def swapped_call(

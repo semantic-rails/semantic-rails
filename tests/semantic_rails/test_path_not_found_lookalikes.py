@@ -6,7 +6,7 @@ tag, totalled the same way) and the call compiles with it in place, for this cal
 caller's policies, the refusal names it by id with what its model says its rows are. The agent
 picks; the engine never answers from a model the call didn't name. A measure the caller can't
 see or may not read is never named, and ``plan`` validating its own drafts offers none.
-A measure's full inspect card lists the entities a call reading it can group by.
+A measure's inspect card names its look-alikes the same way, with the entities each reaches.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import yaml
 
 from semantic_rails.diagnostics import enrich_path_not_found, exception_issue
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.metadata import LOOKALIKE_NOTICE
 from semantic_rails.path_gap import lookalike_swaps
 from semantic_rails.planner.call import Call
 from semantic_rails.planner.plan_query import _validate_query
@@ -433,29 +434,91 @@ def test_plan_s_own_drafts_offer_no_lookalikes(shop):
     assert ATTRIBUTED_REVENUE not in json.dumps(report)
 
 
-# --- The card says where a measure reaches -------------------------------------------------------
+# --- The card of a measure with look-alikes says so ----------------------------------------------
 
 
-def test_a_full_measure_card_lists_the_entities_it_reaches(shop):
-    runtime = shop()
+NOTICE_KEYS = ("model_description", "grouping_entities", "lookalike_measures", "lookalike_notice")
 
-    def card(object_id: str, verbosity: str) -> dict[str, Any]:
-        arguments = {"object_id": object_id, "verbosity": verbosity}
-        return mcp_call(runtime, "inspect", arguments)["card"]
 
-    assert card(HIST_AREA, "full")["grouping_entities"] == []
-    assert card(ROOMS_AREA, "full")["grouping_entities"] == ["entity.shop_building"]
-    assert card(REVENUE, "full")["grouping_entities"] == ["entity.shop_customer"]
-    # The default and compact cards stay as they were.
-    assert "grouping_entities" not in card(ROOMS_AREA, "minimal")
-    assert "grouping_entities" not in card(ROOMS_AREA, "compact")
+def _card(runtime: Runtime, object_id: str, query: dict[str, Any] | None = None, **arguments):
+    arguments = {"object_id": object_id, **arguments, **({"query": query} if query else {})}
+    return mcp_call(runtime, "inspect", arguments)["card"]
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_a_measure_card_names_its_lookalikes_with_their_rows(shop, verbosity):
+    card = _card(shop(), REVENUE, CAMPAIGN_REVENUE, verbosity=verbosity)
+    assert {key: card[key] for key in NOTICE_KEYS} == {
+        "model_description": "One row per completed order.",
+        "grouping_entities": ["entity.shop_customer"],
+        "lookalike_measures": [
+            {
+                "measure": ATTRIBUTED_REVENUE,
+                "entity": "entity.shop_attributed_order",
+                "description": ATTRIBUTED,
+                "grouping_entities": [],
+                "reaches": [CAMPAIGN],
+            }
+        ],
+        "lookalike_notice": LOOKALIKE_NOTICE,
+    }
+
+
+def test_the_card_says_which_of_the_call_s_dimensions_each_lookalike_reaches(shop):
+    card = _card(shop(v2=True), HIST_AREA, AREA_BY_BUILDING)
+    assert [
+        (row["measure"], row["grouping_entities"], row["reaches"])
+        for row in card["lookalike_measures"]
+    ] == [
+        (ROOMS_AREA, ["entity.shop_building"], [BUILDING_NAME]),
+        (V2_AREA, ["entity.shop_building"], [BUILDING_NAME]),
+    ]
+    assert "grouping_entities" not in card  # the history copy reaches no other entity
+    # Without a call, each look-alike says only where it reaches.
+    bare = _card(shop(), ROOMS_AREA)
+    assert bare["grouping_entities"] == ["entity.shop_building"]
+    assert bare["lookalike_measures"] == [
+        {
+            "measure": HIST_AREA,
+            "entity": "entity.shop_room_hist",
+            "description": "One row per version of a room, past and present.",
+            "grouping_entities": [],
+        }
+    ]
     # The legacy copy's area is text: a categorical dimension, which no call totals.
-    legacy = card(LEGACY_AREA, "minimal")
+    legacy = _card(shop(), LEGACY_AREA)
     assert (legacy["kind"], legacy["kind_semantics"]) == ("dimension", "categorical")
 
 
-def test_a_full_measure_card_lists_only_what_the_caller_sees(shop):
-    hide = visibility_policy("hidden", "entity.shop_building")
-    runtime = shop(change=lambda config: with_policies(config, hide))
-    arguments = {"object_id": ROOMS_AREA, "verbosity": "full", "policy_context": CALLER}
-    assert mcp_call(runtime, "inspect", arguments)["card"]["grouping_entities"] == []
+def test_a_card_without_lookalikes_says_nothing_new(jaffle_snapshot):
+    runtime = Runtime.from_path(jaffle_snapshot.source_path)
+    try:
+        for measure in runtime.package_config.measures:
+            for verbosity in ("minimal", "compact"):
+                card = _card(runtime, measure.id, verbosity=verbosity)
+                assert not set(NOTICE_KEYS) & set(card), measure.id
+    finally:
+        runtime.close()
+
+
+def test_a_card_never_names_a_lookalike_hidden_from_the_caller(shop):
+    hide = visibility_policy("hidden", "entity.shop_room")
+    reader = shop(change=lambda config: with_policies(config, hide))
+    without = shop(change=lambda config: absent(with_policies(config, hide), ROOM_OBJECTS))
+    seen = _card(reader, HIST_AREA, AREA_BY_BUILDING, policy_context=CALLER)
+    assert not set(NOTICE_KEYS) & set(seen)
+    assert ROOMS_AREA not in json.dumps(seen)
+    # The reader's card is the card of a package without the hidden model.
+    assert seen == _card(without, HIST_AREA, AREA_BY_BUILDING, policy_context=CALLER)
+    author = _card(reader, HIST_AREA, AREA_BY_BUILDING)
+    assert [row["measure"] for row in author["lookalike_measures"]] == [ROOMS_AREA]
+
+
+@pytest.mark.parametrize("target", ["entity.shop_room", ROOMS_AREA])
+def test_a_card_never_names_a_lookalike_the_caller_may_not_read(shop, target):
+    runtime = shop(change=lambda config: with_policies(config, access_policy("deny", target)))
+    seen = _card(runtime, HIST_AREA, policy_context=CALLER)
+    assert not set(NOTICE_KEYS) & set(seen)
+    assert ROOMS_AREA not in json.dumps(seen)
+    author = _card(runtime, HIST_AREA)
+    assert [row["measure"] for row in author["lookalike_measures"]] == [ROOMS_AREA]

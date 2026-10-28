@@ -5,5 +5,8 @@
   the caller's own visibility and policies; a measure the caller can't see or read is never
   named, and none is chosen for the caller. See the `PATH_NOT_FOUND` row in
   [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
-- A measure's `inspect` card at `verbosity="full"` lists `grouping_entities`: the entities
-  whose dimensions a call reading it can group by through a declared route.
+- A measure's `inspect` card names its look-alikes on other models, when it has any:
+  `lookalike_measures`, each by id with its model's description, the entities it reaches and
+  which of the seed call's dimensions it reaches, with the card's own `grouping_entities`,
+  `model_description` and a fixed `lookalike_notice`. Only models the caller sees and may read
+  are named; cards without look-alikes are unchanged.

@@ -241,11 +241,23 @@ the label, generic `recommended_next_actions`, empty structural fields, and ever
 and query literals remain exact, including blank and null values. `"compact"` or `"full"` return
 the whole card, which is also the HTTP default.
 
-A measure's `"full"` card adds `grouping_entities`: each entity, besides its own `root_entity`,
-whose dimensions a call reading the measure can group by, because a declared route reaches one of
-its rows per measure row, as the caller sees the package. An entity it reaches only by a route
-that would repeat its rows, or not at all, is not listed (a `group_by` on it is refused with
-`MIXED_GRAIN_INVALID` or `PATH_NOT_FOUND`).
+A measure's card, at every verbosity, names its look-alikes on other models when it has any:
+published measures with the same key or label once each model's table name is taken off, that
+total the same way (the rule of the `PATH_NOT_FOUND` row below). Cards without one are unchanged.
+Read from the package and the caller's view only, never from a question, the card then adds:
+
+- `lookalike_measures`: each look-alike the caller sees and may read, by `measure` id, with its
+  `entity`, `description` (its model's `description`, which states its rows, else the entity's
+  own), `grouping_entities` and, when the `query` seed names dimensions in `group_by` or `where`,
+  `reaches`: those of them a call reading it can group or filter by;
+- `grouping_entities`: each entity, besides its own `root_entity`, whose dimensions a call
+  reading this measure can group by, because a declared route reaches one of its rows per measure
+  row (an entity reached only by a route that would repeat its rows is not listed);
+- `model_description`: what this measure's own model says its rows are, when it says;
+- `lookalike_notice`: a fixed sentence saying each model holds its own rows, so the answer should
+  read the one whose rows the user asks about and say which model it read.
+
+None is chosen, and no call changes: a call reads only the measure it names.
 
 An entity's card shows its place in the join graph, read from the caller's visible view:
 
