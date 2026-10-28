@@ -124,8 +124,9 @@ discover -> plan -> execute
   period. A `time` with neither a grain nor a window is refused. Pass `now` beside the call
   (HTTP `options.now`) to pin relative windows ([`now`](QUERY_CALL.md#now)).
   Every MCP tool and mode fits one 32,000-character response budget. Optional plans and metadata
-  are trimmed first (`omitted_fields` names them); required data that still cannot fit is
-  refused with `RESULT_TOO_LARGE`. Compact responses omit compiler plans.
+  are trimmed first (`omitted_fields` names them); rows too wide as records come back as
+  columns when those fit (the note `ROW_FORMAT_COLUMNS`); required data that still cannot fit
+  is refused with `RESULT_TOO_LARGE`. Compact responses omit compiler plans.
 - `validate` (optional dry run) returns diagnostics, repair hints, output columns, and risk
   metadata without executing.
 - `compile` (optional dry run) returns SQL and plan metadata without executing. At `compact` or `full` verbosity,

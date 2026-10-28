@@ -1013,6 +1013,11 @@ optional detail fits. `omitted_fields` names detail removed by verbosity or budg
 keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
+When a run sends no `row_format` and its rows as records exceed the response budget below but
+fit as columns, `execute` returns them as columns, exactly as `row_format="columns"` would,
+with the note `ROW_FORMAT_COLUMNS` in `warnings`. It decides from the rows it already fetched,
+so the warehouse runs once. Read `row_format` before reading `rows`. A caller that sends
+`row_format="records"` gets records or the refusal below, never columns.
 
 In mode `run`, `execute` returns at most `max_rows` rows (default 200, up to 100,000). It fetches
 only that many (the warehouse adapter reads one more row to tell whether more exist), so a larger
@@ -1031,8 +1036,9 @@ Optional compiler plans are removed first, then rendered SQL in mode `run`, then
 and query/context echoes if needed;
 `omitted_fields` lists what was removed. Compact responses exclude plan detail even when it
 would fit. Rows are shortened only by the row cap, never silently by the character budget.
-Rendered SQL remains required in mode `sql`. If required data (rows, SQL-mode text,
-a plan draft or diagnostics) still cannot fit,
+Rendered SQL remains required in mode `sql`. A run's rows as records that still cannot fit
+come back as columns when those fit (see `row_format` above). If required data (rows, SQL-mode
+text, a plan draft or diagnostics) still cannot fit,
 the tool returns a bounded `RESULT_TOO_LARGE` error. No partial rows or SQL are returned.
 Narrow the query, lower `max_rows`, select fewer columns, or request fewer catalog objects.
 Session hints are added only to responses that fit; their size is checked again before
@@ -1074,6 +1080,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
 | `PLAN_TOTALS_HINT` | `plan` | Severity `info`, on a plan that isn't `ok` whose question asks for a total (`details.kind`: `rows`, `subtotals`, `beside` or `share`, in `details.phrase`): `details.add` is the call shape that adds it, named with `best.query`'s ids. plan drafts no total, so this never changes the status. See [Plan](#plan) |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned the first `max_rows` rows; more exist — narrow the query or raise `max_rows` |
+| `ROW_FORMAT_COLUMNS` | `execute` | A note: the call sent no `row_format`, and its rows as records exceed the response budget, so they come back as columns (`columns`, array `rows`, `row_format: "columns"`). `details` `{max_result_chars, records_chars}`. See [Query Verbosity Tiers](#query-verbosity-tiers-execute-modes) |
 | `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`: `edge` is the date of the measure's last visible row (`edge_source` `last_row`), or of its declared edge (`zero_through`: `loaded`, with a null `edge` when the load log holds no date, or `now`). Both are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
 | `ZERO_AFTER_LAST_ROW` | `execute` | A note: a sum or count whose package says its table is always loaded (`zero_through: now`) read days after its last row as `0`, as a stalled load would. `details.measures` lists `{id, last_row}`. See [Empty periods](PACKAGE_AUTHORING.md#empty-periods) |
 | `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` | `execute` | A balance on an `as_of_time` clock is read on each period's closing day, and series seen earlier in a period had no snapshot that day, so they are not counted. `details` `{measure, outputs, nested, closing_day, periods, checked, series, series_missing, periods_missing}` (`closing_day` is the latest such day; `outputs` empty for the whole answer, `null` when the engine can't tell, and then dropped beside a withheld column; `nested` for a read inside an entity filter, predicate or branch). A series that stopped is right to leave out; one that takes its snapshots on other days, or a table that records only changes, is undercounted. Granted when the measure or a granted output reading it is; a measure not granted is named by those outputs, never by a column that doesn't read it. See [Balances](QUERY_CALL.md#balances) |
