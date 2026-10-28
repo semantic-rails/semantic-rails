@@ -21,6 +21,7 @@ from ..diagnostics import rewrite_warning_payload, semantic_issue
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..fanout import (
+    caller_basis,
     entity_label,
     package_route,
     pass_through_disclosure,
@@ -53,8 +54,10 @@ def _pass_through_notes(config, compiled) -> list[dict[str, Any]]:
             continue
         where = plain_filters(plan.query.get("where"))
         where = [item for item in where if entity_of.get(item.get("field")) == target]
+        # Gated on the package's basis; the warning states the caller's view of it.
+        basis = caller_basis(config, start, target, resolution)
         disclosure = resolution.routes[0] == path and pass_through_disclosure(
-            config, start, target, path, where, route_basis=resolution.basis
+            config, start, target, path, where, route_basis=basis
         )
         if disclosure:
             note = semantic_issue(

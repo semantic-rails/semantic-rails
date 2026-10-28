@@ -403,10 +403,9 @@ def test_no_route_where_nothing_was_chosen_and_the_minimal_response_names_only_t
     assert out.get("routes") == routes
 
 
-def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkeypatch):
-    """A pin bypasses candidate enumeration even when hundreds of thousands of routes fit
-    the ceiling. The note scans edges a bounded number of times and caches only a boolean.
-    """
+def _dense_pinned(tmp_path: Path) -> Any:
+    """Eleven entities, each with a key to every later one, and e10's route to e0 pinned:
+    hundreds of thousands of routes fit the ceiling of 8."""
     base = load_package_config(str(_write_package(tmp_path)))
     entities = [EntityConfig(id=f"e{i}", table=f"e{i}", key_columns=["id"]) for i in range(11)]
     relationships = [
@@ -423,7 +422,7 @@ def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkey
         for i in range(11)
         for j in range(i + 1, 11)
     ]
-    config = replace(
+    return replace(
         base,
         entities=entities,
         relationships=relationships,
@@ -449,6 +448,14 @@ def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkey
         path_preferences=[PathPreferenceConfig("e10", "e0", relationship_path=["r0_10"])],
         path_policy=PathPolicyConfig(max_hops=8),
     )
+
+
+def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkeypatch):
+    """A pin bypasses candidate enumeration even when hundreds of thousands of routes fit
+    the ceiling. The note scans edges a bounded number of times and caches only a boolean.
+    """
+    config = _dense_pinned(tmp_path)
+    relationships = config.relationships
     analysis = get_package_analysis(config)
     work = {"enumerations": 0, "edges": 0}
 
@@ -1003,3 +1010,29 @@ def test_bundled_routes_through_undeclared_rows_are_exactly_these():
     assert fanout_module.route_reading(shop, "entity.shop_customer", path[0]) == (
         "the Customer history valid at the time of any of the Customer's Orders"
     )
+
+
+def test_a_hop_profile_in_a_view_never_enumerates_a_pinned_pair(tmp_path, monkeypatch):
+    """In a caller's view, whether a decided pair has another route the caller can see is the
+    note's bounded, cached check, never an enumeration of every route."""
+    from semantic_rails.fanout import build_hop_profile
+    from semantic_rails.visible_view import build_view
+
+    view = build_view(_dense_pinned(tmp_path), frozenset({"r5_6"}))
+
+    def fail_enumeration(*_args, **_kwargs):
+        pytest.fail("a view's hop profile must not enumerate a pinned pair's routes")
+
+    monkeypatch.setattr(fanout_module, "enumerate_paths", fail_enumeration)
+    call = _query("measure.e10_count", group_by=["dimension.e0_id"])
+    compiled = compile_query(view, Registry(view), read_call(call, config=view)[0])
+    plan = compiled["logical_plan"]
+    for _ in range(2):
+        profile = build_hop_profile(
+            view,
+            root_entity=plan.root_entity,
+            selected_paths=plan.selected_paths,
+            candidate_paths=plan.candidate_paths,
+        )
+        assert profile["targets"]["e0"]["route_basis"] == "decided"
+    assert get_package_analysis(view).route_note_cache == {("e10", "e0"): True}

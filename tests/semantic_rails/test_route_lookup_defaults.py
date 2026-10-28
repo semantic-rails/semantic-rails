@@ -52,6 +52,7 @@ from tests.semantic_rails.test_route_resolution import (
     REGION,
     ROOT,
     TWO_KEYS,
+    _pin,
     _write_package,
 )
 
@@ -372,3 +373,76 @@ def test_a_many_to_many_history_reads_any_of_its_rows_not_one_version(tmp_path):
         order = next(row for row in config.entities if row.id == "entity.jaffle_order")
         assert hop_reach(rel, order.id, order.table) == reach
         assert words in route_reading(config, SESSION, SESSION_ORDER)
+
+
+def test_a_hop_profile_in_a_view_counts_the_routes_a_recorded_row_leaves(tmp_path):
+    """The account's region is recorded as its branch, so the membership's route through the
+    owner's home region is dropped; hiding the owner's primary membership leaves the membership
+    one route to the region. The profile says only_route, not a default chosen among routes the
+    caller can't see, though the view's graph still shows the dropped route."""
+    pins = [_pin(ACCOUNT, REGION, BRANCH)]
+    base = load_package_config(str(_write_package(tmp_path, pins=pins)))
+    view = build_view(base, frozenset({PRIMARY[-1]}))
+    resolution = package_route(view, start=MEMBERSHIP, target=REGION)
+    assert (resolution.basis, len(resolution.routes)) == ("default", 1)
+
+    def profile(config):
+        paths = {REGION: list(resolution.routes[0])}
+        candidates = {REGION: [list(route) for route in resolution.routes]}
+        return build_hop_profile(
+            config, root_entity=MEMBERSHIP, selected_paths=paths, candidate_paths=candidates
+        )["targets"][REGION]
+
+    assert (profile(view)["route_basis"], profile(view)["alternates_considered"]) == (
+        "only_route",
+        0,
+    )
+    assert profile(base)["route_basis"] == "default"
+
+
+def test_a_pass_through_warning_in_a_view_states_the_callers_basis(tmp_path):
+    """Customers by a calendar day read the day through orders and the store's inventory: a
+    route inherited from the package's rows. A caller who can't see the session's customer
+    has that one route, so the warning's route_basis says only_route, as the hop profile does,
+    at every verbosity."""
+    root, config = _hidden_customer_route(tmp_path)
+    call = {
+        "select": ["measure.jaffle.customer_count"],
+        "where": [{"field": "dimension.jaffle_time_date_day", "op": "is", "value": "2017-01-05"}],
+    }
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        for verbosity in ("minimal", "full"):
+            hidden = runtime.compile(call, verbosity=verbosity, context=CALLER)
+            [warning] = [w for w in hidden["warnings"] if w["code"] == "ROUTE_PASS_THROUGH"]
+            assert warning["details"]["route_basis"] == "only_route"
+        assert hidden["hop_profile"]["targets"]["entity.jaffle_time"]["route_basis"] == (
+            "only_route"
+        )
+        seen = runtime.compile(call, verbosity="full")
+    finally:
+        runtime.close()
+    [warning] = [w for w in seen["warnings"] if w["code"] == "ROUTE_PASS_THROUGH"]
+    assert warning["details"]["route_basis"] == "inherited"
+
+
+def test_a_callers_own_route_in_a_view_replaces_the_only_route_it_sees(tmp_path):
+    """A caller who can't see the session's customer sends the one route they see: their
+    routes row replaced the only route they have, never a default chosen among routes they
+    can't see."""
+    root, config = _hidden_customer_route(tmp_path)
+    call = {
+        **SESSIONS_BY_SEGMENT,
+        "routes": [{"from": SESSION, "to": HISTORY, "via": SESSION_ORDER}],
+    }
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        hidden = runtime.query(call, verbosity="full", context=CALLER)
+        seen = runtime.query(call, verbosity="full")
+    finally:
+        runtime.close()
+    assert [(row["basis"], row["replaced"]) for row in hidden["routes"]] == [
+        ("routes", "only_route")
+    ]
+    assert hidden["hop_profile"]["targets"][HISTORY]["route_basis"] == "only_route"
+    assert [(row["basis"], row["replaced"]) for row in seen["routes"]] == [("routes", "default")]

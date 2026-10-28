@@ -455,12 +455,48 @@ def pair_routes(config: PackageConfig, start: str, target: str) -> list[list[str
 
 def route_decision_basis(config: PackageConfig, start: str, target: str) -> str:
     """What a query's own row for the pair replaces: the rung of the package's ladder that
-    resolves it (``decided``, ``colocated_key``, ``inherited`` or ``only_route``), or
-    ``undecided`` when the package refuses it."""
+    resolves it (``decided``, ``colocated_key``, ``inherited``, ``default`` or ``only_route``,
+    as the caller's view states it: ``caller_basis``), or ``undecided`` when the package
+    refuses it."""
     try:
-        return package_route(config, start=start, target=target).basis
+        resolution = package_route(config, start=start, target=target)
     except SemanticLayerError:
         return "undecided"
+    return caller_basis(config, start, target, resolution)
+
+
+def caller_basis(
+    config: PackageConfig, start: str, target: str, resolution: RouteResolution
+) -> str:
+    """The basis an answer states for the pair's resolution. In a caller's view, a pair the
+    caller sees one route for says ``only_route``, whatever chose it among routes they can't
+    see; every basis a response serializes (the hop profile, ``ROUTE_PASS_THROUGH``, a
+    ``routes`` row's ``replaced``) goes through here, so none of them names a hidden choice.
+
+    A ``decided`` or ``query`` resolution holds its one route, so whether the view has
+    another is checked on the view's graph, bounded and cached as ``route_note`` checks it.
+    Every other resolution already holds the view's routes, with those a recorded row drops
+    gone (``default``) or kept (``colocated_key``, ``inherited``: the caller sees the route a
+    row dropped)."""
+    if get_package_analysis(config).view is None or resolution.basis == "only_route":
+        return resolution.basis
+    if resolution.basis in {"decided", "query"}:
+        multiple = _multiple_routes(config, start, target)
+    else:
+        multiple = len(resolution.routes) > 1
+    return resolution.basis if multiple else "only_route"
+
+
+def _multiple_routes(config: PackageConfig, start: str, target: str) -> bool:
+    """Whether two or more routes join the pair within the hop ceiling in ``config``'s graph
+    (the caller's view's, when it has one), without enumerating them; cached per pair."""
+    analysis = get_package_analysis(config)
+    pair = (start, target)
+    if pair not in analysis.route_note_cache:
+        analysis.route_note_cache[pair] = _has_multiple_routes(
+            analysis.graph, start, target, package_hop_limit(config)
+        )
+    return analysis.route_note_cache[pair]
 
 
 _query_routes: ContextVar[dict[tuple[str, str], tuple[str, ...]] | None] = ContextVar(
@@ -518,11 +554,12 @@ def route_basis(config: PackageConfig, start: str, target: str) -> str:
     ``"query"`` (the query's own row), ``"decided"`` (the pair's own row),
     ``"colocated_key"`` (the start's own key), ``"inherited"`` (rows for pairs its routes walk
     through), ``"only_route"`` or ``"default"`` (the one lookup among several routes). ``""``
-    when the pair is refused."""
+    when the pair is refused. In a caller's view, as the view states it (``caller_basis``)."""
     try:
-        return resolve_route(config, start=start, target=target).basis
+        resolution = resolve_route(config, start=start, target=target)
     except SemanticLayerError:
         return ""
+    return caller_basis(config, start, target, resolution)
 
 
 def route_note(
@@ -546,13 +583,7 @@ def route_note(
     if resolution.basis != "decided":
         # A default is named even when a view hides every route it was chosen over.
         return resolution if len(resolution.routes) > 1 or resolution.basis == "default" else None
-    analysis = get_package_analysis(config)
-    pair = (start, target)
-    if pair not in analysis.route_note_cache:
-        analysis.route_note_cache[pair] = _has_multiple_routes(
-            analysis.graph, start, target, package_hop_limit(config)
-        )
-    return resolution if analysis.route_note_cache[pair] else None
+    return resolution if _multiple_routes(config, start, target) else None
 
 
 def decision_conflicts(
@@ -1106,8 +1137,7 @@ def build_hop_profile(
     candidates for shortcut relationships, entity colocation, or authored
     aggregate relations.
     """
-    analysis = get_package_analysis(config)
-    rel_index, view = analysis.relationships, analysis.view is not None
+    rel_index = get_package_analysis(config).relationships
     candidates = candidate_paths or {}
     targets: dict[str, Any] = {}
     max_hop_count = 0
@@ -1132,17 +1162,12 @@ def build_hop_profile(
                 }
             )
             current = next_entity
-        basis = route_basis(config, root_entity, target)
-        if basis and view and len(pair_routes(config, root_entity, target)) == 1:
-            # The caller's view keeps one route: whatever chose it among routes the caller can't
-            # see, it is the only route the caller has.
-            basis = "only_route"
         targets[target] = {
             "hop_count": len(path),
             "path": list(path),
             "hops": hops,
             "alternates_considered": max(0, len(candidates.get(target, [])) - 1),
-            "route_basis": basis,
+            "route_basis": route_basis(config, root_entity, target),
         }
         label = route_label(config, root_entity, target, path)
         if label:
