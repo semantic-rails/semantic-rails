@@ -2782,6 +2782,48 @@ class ArchitectProject:
         taken = {row.key for row in raw["entities"]} | {row.key for row in raw["models"]}
         return {"taken": frozenset(taken), "link_model": link, "parents": parents}
 
+    def link_context(self, relation: str) -> dict[str, Any]:
+        """What ``suggest_links`` reads from the package for ``relation``: each entity with a
+        one-column key, with its model's relation (``targets``); the entity homed on a model over
+        ``relation``, else the row-grain model over it, that a link starts from
+        (``from_entity``); and the entities that model already links to (``linked``)."""
+        raw = self._raw_inventory()
+
+        def bare(name: Any) -> str:
+            return str(name or "").replace('"', "").strip().lower().rpartition(".")[2]
+
+        models = {row.key: row for row in raw["models"]}
+        targets: list[dict[str, str]] = []
+        homed: dict[str, tuple[str, _RawObject]] = {}
+        for row in raw["entities"]:
+            model = models.get(str(row.spec.get("model") or row.key))
+            keys = _as_list(row.spec.get("key"))
+            if model is None:
+                continue
+            homed.setdefault(bare(model.spec.get("relation")), (row.key, model))
+            if len(keys) == 1:
+                targets.append(
+                    {
+                        "relation": str(model.spec.get("relation")),
+                        "key": str(keys[0]),
+                        "entity": row.key,
+                    }
+                )
+        start = homed.get(bare(relation))
+        if start is None:
+            row_grain = self._row_grain_models(raw)
+            start = next(
+                (
+                    (key, model)
+                    for key, model in row_grain.items()
+                    if bare(model.spec.get("relation")) == bare(relation)
+                ),
+                None,
+            )
+        from_entity, model = start if start is not None else ("", None)
+        linked = set(dict(model.spec.get("entities") or {})) if model is not None else set()
+        return {"targets": targets, "from_entity": from_entity, "linked": frozenset(linked)}
+
     def _entity_names(
         self, raw: dict[str, list[_RawObject]], row_grain: Mapping[str, _RawObject]
     ) -> dict[str, str]:
