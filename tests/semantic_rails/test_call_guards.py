@@ -333,6 +333,10 @@ STATED = {
         "group_by": [STORE],
     },
     "SHOWN_BY_KEY": {"select": [REVENUE], "group_by": ["dimension.jaffle_store_id"]},
+    "TOTAL_OVER": {
+        "select": [REVENUE, {"expression": {"kind": "total", "input": REVENUE, "over": [STORE]}}],
+        "group_by": [STORE],
+    },
     "WINDOW_TOTAL": {"select": [REVENUE], "time": {"last": {"unit": "month", "value": 1}}},
 }
 
