@@ -21,24 +21,20 @@ from typing import Any
 from ..ast import NormalizedQuery
 from ..errors import SemanticLayerError
 from ..expressions import AggregateExpr, CallExpr, MeasureRefExpr, MetricRecipeRefExpr
+from ..naming import object_names
 from ..schema import MeasureConfig, MetricConfig, PackageConfig
 
 Owner = tuple[str, str]  # ("metric" | "measure", object id)
 
 
-def _names(object_id: str, name: str) -> set[str]:
-    """The names a governed object answers to: its id, its name and its last segment."""
-    return {value for value in (object_id, name, object_id.rsplit(".", 1)[-1]) if value}
-
-
 def _governed_owners(config: PackageConfig) -> dict[str, set[Owner]]:
+    """Each name a governed object answers to (``naming.object_names``: its id, name, column
+    and authored synonyms), case-folded, with the objects that hold it."""
     owners: dict[str, set[Owner]] = {}
-    for metric in config.metric_recipes:
-        for name in _names(metric.id, metric.name):
-            owners.setdefault(name, set()).add(("metric", metric.id))
-    for measure in config.measures:
-        for name in _names(measure.id, measure.name):
-            owners.setdefault(name, set()).add(("measure", measure.id))
+    for kind, rows in (("metric", config.metric_recipes), ("measure", config.measures)):
+        for row in rows:
+            for name in object_names(row):
+                owners.setdefault(name, set()).add((kind, row.id))
     return owners
 
 
@@ -147,7 +143,7 @@ def _suggestion(
         candidates.append(f"{expr.aggregation}_{measure}" if expr.aggregation else measure)
     candidates.append(f"{alias.rsplit('.', 1)[-1]}_calculated")
     for candidate in candidates:
-        owners = owners_by_name.get(candidate)
+        owners = owners_by_name.get(candidate.casefold())
         if not owners or _computes(expr, owners, config):
             return candidate
     return candidates[-1]
@@ -156,7 +152,8 @@ def _suggestion(
 def refuse_impersonating_aliases(query: NormalizedQuery, config: PackageConfig) -> None:
     owners_by_name = _governed_owners(config)
     for index, item in enumerate(query.select):
-        owners = owners_by_name.get(item.as_)
+        # Case-folded: most warehouses fold an unquoted `Revenue_USD` to `revenue_usd`.
+        owners = owners_by_name.get(item.as_.casefold())
         if not owners or item.expression is None or _computes(item.expression, owners, config):
             continue
         owner = min(owners, key=lambda found: (found[0] != "metric", found[1]))

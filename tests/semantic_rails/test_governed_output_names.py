@@ -197,3 +197,42 @@ def test_a_hidden_object_s_name_answers_as_if_it_were_absent(tmp_path, hidden, a
         )
     finally:
         visible.close()
+
+
+def test_a_name_in_another_case_is_the_governed_name(runtime) -> None:
+    """Most warehouses fold an unquoted identifier, so `Revenue_USD` names `revenue_usd`."""
+    result = runtime.validate(_select(_aggregate(ORDERS), "Revenue_USD"))
+    assert [error["code"] for error in result["errors"]] == ["OUTPUT_NAME_GOVERNED"]
+    assert result["errors"][0]["details"]["governed_object"] == REVENUE
+
+
+def test_an_authored_synonym_is_a_governed_name(tmp_path) -> None:
+    """A metric's `synonyms:` are names it answers to: another calculation can't take one, in
+    any case, and the metric itself answers under it."""
+    import dataclasses
+
+    from semantic_rails.config import load_package_config
+    from semantic_rails.naming import governed_names, object_names, unclaimed_name
+    from tests.semantic_rails.conftest import copy_package_config
+
+    root = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    config = load_package_config(str(root))
+    metrics = [
+        dataclasses.replace(row, aliases=["Average_Ticket"])
+        if row.id == "metric.sales.aov_usd"
+        else row
+        for row in config.metric_recipes
+    ]
+    config = dataclasses.replace(config, metric_recipes=metrics)
+    aov = next(row for row in config.metric_recipes if row.id == "metric.sales.aov_usd")
+    assert "average_ticket" in object_names(aov) and "average_ticket" in governed_names(config)
+    assert unclaimed_name(["AVERAGE_TICKET", "ticket"], governed_names(config)) == "ticket"
+    synonymous = Runtime.from_config(config, source_path=str(root))
+    try:
+        for alias in ("average_ticket", "AVERAGE_TICKET"):
+            result = synonymous.validate(_select(_aggregate(ORDERS), alias))
+            assert [error["code"] for error in result["errors"]] == ["OUTPUT_NAME_GOVERNED"]
+            assert result["errors"][0]["details"]["governed_object"] == "metric.sales.aov_usd"
+        assert synonymous.validate(_select("metric.sales.aov_usd", "average_ticket"))["ok"]
+    finally:
+        synonymous.close()

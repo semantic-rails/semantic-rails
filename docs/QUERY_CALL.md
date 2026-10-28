@@ -140,8 +140,9 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
   gets the engine's name (`expr_<n>`, its position in `select`), so give every inline kind an
   `as`. A name used twice is refused with `DUPLICATE_OUTPUT_ALIAS` at the repeating item's
   path, with the `as` that makes it unique.
-- An `as` that is a governed metric's or measure's id, name or column (`revenue_usd`,
-  `measure.jaffle.revenue_usd`) must name that object. Another calculation under it (an order
+- An `as` that is a governed metric's or measure's id, name, column or authored synonym
+  (`revenue_usd`, `measure.jaffle.revenue_usd`), in any case (`Revenue_USD`), must name that
+  object. Another calculation under it (an order
   count, the `max` of the revenue measure, a filtered revenue) is refused with
   `OUTPUT_NAME_GOVERNED`, naming the governed object and a name to use instead, so its numbers
   never read as the governed one's. The object itself answers under its name however it is
