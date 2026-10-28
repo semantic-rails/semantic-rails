@@ -1074,15 +1074,24 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "UNKNOWN_MCP_TOOL":
+        available = list(details.get("available_tools", []) or [])
+        message = (
+            "Call tools/list first and pick a name from "
+            "available_tools — common entry points are 'discover', "
+            "'inspect', 'plan'."
+        )
+        if available and "plan" not in available:
+            # Served without plan, the agent builds the call itself.
+            message = (
+                "Call tools/list first and pick a name from available_tools: find ids "
+                "with 'discover' and 'inspect', then run the call with 'execute' "
+                "(mode 'validate' only checks it)."
+            )
         return [
             {
                 "kind": "use_available_tool",
-                "message": (
-                    "Call tools/list first and pick a name from "
-                    "available_tools — common entry points are 'discover', "
-                    "'inspect', 'plan'."
-                ),
-                "available_tools": list(details.get("available_tools", []) or []),
+                "message": message,
+                "available_tools": available,
                 "details": dict(details),
             }
         ]

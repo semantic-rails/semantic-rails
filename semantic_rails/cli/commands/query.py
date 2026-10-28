@@ -18,6 +18,7 @@ from ...metadata import (
 from ...planner import plan_payload
 from ...request_payload import checked_string_list
 from ..common import (
+    _mcp_plan_from_args,
     _policy_context_from_args,
     _print,
     _query_call_from_args,
@@ -160,6 +161,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
         host=args.host,
         port=args.port,
         path=ref.source_path if not ref.package_id else "",
+        plan=_mcp_plan_from_args(args),
     )
 
 

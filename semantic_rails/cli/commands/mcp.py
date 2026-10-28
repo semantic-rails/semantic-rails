@@ -19,6 +19,7 @@ from ...runtime import Runtime
 from ..common import (
     _confirm,
     _is_bundled_ref,
+    _mcp_plan_from_args,
     _print,
     _ref_from_args,
     _runtime_from_package_or_path,
@@ -32,10 +33,11 @@ MCP_REQUIRED_TOOLS = ("discover", "inspect", "valid-values", "plan", "execute")
 
 
 def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
-    required_tools = list(MCP_REQUIRED_TOOLS)
+    adapter = SemanticLayerMCPAdapter(runtime)
+    # Served without plan (SEMANTIC_RAILS_MCP_PLAN=off), the server needs no plan tool.
+    required_tools = [name for name in MCP_REQUIRED_TOOLS if name != "plan" or adapter.serves_plan]
     if runtime.config.segments:
         required_tools.append("segment")
-    adapter = SemanticLayerMCPAdapter(runtime)
     try:
         tools = adapter.list_tools()
     finally:
@@ -65,7 +67,7 @@ def cmd_mcp_stdio(args: argparse.Namespace) -> None:
                 runtime = _runtime_from_ref(ref)
             except (OSError, yaml.YAMLError, TypeError, ValueError) as exc:
                 raise SemanticLayerError("INVALID_CONFIG", str(exc)) from exc
-            adapter = SemanticLayerMCPAdapter(runtime)
+            adapter = SemanticLayerMCPAdapter(runtime, plan=_mcp_plan_from_args(args))
             adapter.list_tools()
     except Exception as exc:
         error = (

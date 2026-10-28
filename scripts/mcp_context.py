@@ -190,14 +190,17 @@ class QueryMCPClient:
 
     With ``request_context``, every call arrives the way an authenticated
     network transport delivers it: the transport, not the caller, supplies
-    the identity and policy context.
+    the identity and policy context. ``plan=False`` serves it without plan.
     """
 
-    def __init__(self, package_path: Path, *, request_context: Any = None) -> None:
+    def __init__(
+        self, package_path: Path, *, request_context: Any = None, plan: bool | None = None
+    ) -> None:
         from semantic_rails.mcp import SemanticLayerMCPAdapter
         from semantic_rails.mcp_session import MCPQuerySession
+        from semantic_rails.runtime import Runtime
 
-        self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path))
+        self.adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(package_path)), plan=plan)
         self.request_context = request_context
         self.session = MCPQuerySession() if request_context is None else None
         self._next_id = 0
@@ -466,6 +469,8 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
     from semantic_rails.mcp_session import MCPQuerySession
 
     metrics: dict[str, int] = {}
+    with QueryMCPClient(package_path, plan=False) as client:
+        metrics.update(_measure_surface(client, "query.v2.no_plan."))
     with QueryMCPClient(package_path) as client:
         metrics.update(_measure_surface(client, "query.v2."))
         resources = client.request("resources/list")["resources"]

@@ -49,10 +49,10 @@ __all__ = ["API_VERSION", "CORS_ALLOW_HEADERS", "PUBLIC_V1_ROUTES", "AppState", 
 
 
 class AppState:
-    def __init__(self, package_id: str, *, path: str = ""):
+    def __init__(self, package_id: str, *, path: str = "", plan: bool | None = None):
         self.runtime = Runtime.from_path(path) if path else Runtime(package_id)
         self.package_id = self.runtime.package_id
-        self.mcp_adapter = SemanticLayerMCPAdapter(self.runtime)
+        self.mcp_adapter = SemanticLayerMCPAdapter(self.runtime, plan=plan)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -337,8 +337,16 @@ def _json(handler: Handler, status: int, payload: dict[str, Any], *, wrap: bool 
     )
 
 
-def serve(package_id: str, host: str = "127.0.0.1", port: int = 8090, *, path: str = "") -> None:
-    state = AppState(package_id, path=path)
+def serve(
+    package_id: str,
+    host: str = "127.0.0.1",
+    port: int = 8090,
+    *,
+    path: str = "",
+    plan: bool | None = None,
+) -> None:
+    """Serve the HTTP API and /mcp; ``plan=False`` serves the MCP without plan."""
+    state = AppState(package_id, path=path, plan=plan)
 
     class _H(Handler):
         pass

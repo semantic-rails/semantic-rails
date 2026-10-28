@@ -388,6 +388,22 @@ def _add_now_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_no_plan_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-plan",
+        action="store_true",
+        help=(
+            "Serve the query MCP without the plan tool: agents build each call from discover "
+            "and inspect. Same as SEMANTIC_RAILS_MCP_PLAN=off."
+        ),
+    )
+
+
+def _mcp_plan_from_args(args: argparse.Namespace) -> bool | None:
+    """``False`` with ``--no-plan``; otherwise ``None``, so SEMANTIC_RAILS_MCP_PLAN decides."""
+    return False if getattr(args, "no_plan", False) else None
+
+
 def _add_policy_context_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--environment",

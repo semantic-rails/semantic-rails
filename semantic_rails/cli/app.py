@@ -52,6 +52,7 @@ from .commands.query import (
     cmd_validate,
 )
 from .common import (
+    _add_no_plan_arg,
     _add_now_arg,
     _add_optional_reference_args,
     _add_package_or_path_args,
@@ -629,6 +630,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the MCP server over stdio (for desktop hosts like Claude Desktop).",
     )
     _add_package_or_path_args(p_mcp_stdio, package_choices)
+    _add_no_plan_arg(p_mcp_stdio)
     p_mcp_stdio.set_defaults(func=cmd_mcp_stdio)
 
     p_mcp_doctor = mcp_sub.add_parser(
@@ -846,6 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=8090,
         help="Port to bind (default: 8090).",
     )
+    _add_no_plan_arg(p_serve)
     p_serve.set_defaults(func=cmd_serve)
     return parser
 
