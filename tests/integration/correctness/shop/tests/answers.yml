@@ -912,6 +912,36 @@ tests:
         COUNT(o.order_id) / CAST(SUM(COUNT(o.order_id)) OVER () AS DOUBLE PRECISION)
       FROM orders AS o LEFT JOIN stores AS r ON r.store_id = o.store_id
       GROUP BY r.region
+  shop/plan-large-orders-as-a-share-of-total-orders-by-region:
+    kind: query_matches_snapshot
+    expect: answer
+    why: One measure as a share of another is the package's declared ratio, large orders over every order within each region; the West has orders 1 and 4 of its 6 at 10 or more (order 7 has no amount), the East and the unknown region none. Never each region's share of all large orders.
+    cites: &large_share_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.large_order_count, tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/metrics/metrics.yml#metrics.large_order_share, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region]
+    tags: [planner]
+    intent: large orders as a share of total orders by region
+    query: {select: &large_share [metric.shop.large_order_share], group_by: *region}
+    expected_rows:
+      - {dimension.shop_store_region: West, large_order_share: 0.3333333333333333}
+      - {dimension.shop_store_region: East, large_order_share: 0}
+      - {dimension.shop_store_region: null, large_order_share: 0}
+    reference_sql: &large_share_sql |
+      SELECT r.region,
+        COUNT(CASE WHEN o.amount >= 10 THEN o.order_id END) / CAST(COUNT(o.order_id) AS DOUBLE PRECISION)
+      FROM orders AS o LEFT JOIN stores AS r ON r.store_id = o.store_id
+      GROUP BY r.region
+  shop/plan-share-of-total-orders-that-were-large-by-region:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The share of total orders that were large is the same declared ratio within each region, not a share of all large orders.
+    cites: *large_share_cites
+    tags: [planner]
+    intent: what share of total orders were large orders by region
+    query: {select: *large_share, group_by: *region}
+    expected_rows:
+      - {dimension.shop_store_region: West, large_order_share: 0.3333333333333333}
+      - {dimension.shop_store_region: East, large_order_share: 0}
+      - {dimension.shop_store_region: null, large_order_share: 0}
+    reference_sql: *large_share_sql
   shop/plan-seats-by-plan-on-a-day-with-the-grand-total:
     kind: query_matches_snapshot
     expect: answer

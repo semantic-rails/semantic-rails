@@ -982,35 +982,39 @@ it, on the request's clock and identity:
   total" keeps the period). "Across" or "over" names what it adds up across ("each store's total
   across months" is over `period` alone); a word that names none of the call's other groupings
   ("over the year" on a monthly call) is held;
-- "each store's share", "as a share of the total", "what percent of total revenue comes from
-  each store": a [`share`](QUERY_CALL.md#share-of-a-total) item for each measure or metric, as
-  `<column>_share`, over the named grouping ("each month's share": `period`), or every grouping
-  ("of the grand total" on a series: and the periods). With no grouping named, a series' "total"
-  may be each period's or the window's, so it is held. A share's total counts the rows the call
-  keeps, so a share "of the total" beside a filter ("percent of total revenue by store for new
-  customers") is held: "of total revenue" may mean every row. "Each store's percentage of …"
-  reads no share: it may be a rate inside each store.
+- "each store's share of revenue": a [`share`](QUERY_CALL.md#share-of-a-total) item of the one
+  value the draft selects, as `<column>_share`, over the named grouping ("each month's share":
+  `period`). One measure within another ("food revenue as a share of total revenue by store",
+  "what share of total revenue was food revenue"), any "percent", "percentage" or "proportion",
+  and a share the package declares (every word of a ratio metric's label, or of one named with
+  "share") read no share item: plan reads the question as asked, so the declared metric
+  answers. A share is held when the question names no grouping and the draft is a series or
+  groups by several groupings ("each one's share": of each group's total, or of everything?),
+  when the draft selects several values, and when it is "of the total" beside a filter ("each
+  store's share of the total revenue for new customers"), since its total counts only the rows
+  the call keeps.
 
 A phrase's grouping words may list several ("across types and months", "subtotals by store and
-channel"); each names an entity's key and name when it is the entity's whole name ("each
-customer's total" never reads "Customer type"), else a grouped dimension by its own words
-("across types"), and an item that names none of the call's columns holds the plan. A package
-example authored for the whole question, total words included, answers it as authored.
+channel": store subtotals, outermost first in the phrase's order, then the grand total; a listed
+period is held, since every total row keeps it); each names an entity's key and name when it is the
+entity's whole name ("each customer's total" never reads "Customer type"), else a grouped dimension
+by its own words ("across types"), and an item that names none of the call's columns holds the plan.
+A package example authored for the whole question, total words included, answers it as authored.
 
 A total row beside a `limit` or `having` adds up every row the call keeps before them, and
 `assumptions` says so ("top 3 stores with the grand total" totals every store).
 
-"Total" before a measure word ("total revenue by store") and a metric named with "share" ask
-for none. A series' "grand" or "overall" total is one number across its periods, which no total
-row is unless the window holds one period (a balance read on its one day), so plan doesn't
-draft it. When the engine refuses the shaped call (a share of an average or a balance,
-`ROLLUP_UNSAFE`; a policy that requires a grouping or withholds values, `POLICY_DENIED`), or the
-draft has no place for it (no grouping, or none the phrase names), `best.query` is the
-question without its total, held `low_confidence` with `why.code="PLAN_TOTALS_NOT_DRAFTED"` and `why.details` `{kind, phrase,
+"Total" before a measure word ("total revenue by store") and a metric named with "share" ask for
+none. A series' "grand" or "overall" total is one number across its periods, which no total row is
+unless the window holds one period (a balance read on its one day), so plan doesn't draft it. When
+the engine refuses the shaped call (a share of an average or a balance, `ROLLUP_UNSAFE`; a policy
+that requires a grouping or withholds values, `POLICY_DENIED`), or the draft has no place for it (no
+grouping, or none the phrase names), `best.query` is the question without its total, held
+`low_confidence` with `why.code="PLAN_TOTALS_NOT_DRAFTED"` and `why.details` `{kind, phrase,
 refusal}` (`refusal` is the engine's `{code, message, path}`, when it refused). A draft held for
 something else carries the same code as a warning. Plan reads one total per question; a second
-("with the grand total and each store's share") stays in the question's words and holds the
-draft. With `detail="best"`, `intent_ir.intent` is the question without its total words and
+("with the grand total and each store's share") stays in the question's words and holds the draft.
+With `detail="best"`, `intent_ir.intent` is the question without its total words and
 `intent_ir.totals` the phrase read.
 
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's

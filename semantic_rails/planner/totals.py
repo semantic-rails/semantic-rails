@@ -8,8 +8,10 @@ answers it with (``shaped_call``):
 - "with subtotals by store": ``totals`` keeping the named columns, down to the grand total;
 - "with each store's total", "the total for each store": a ``total`` item beside each row,
   over the call's other columns (and the period);
-- "each store's share", "as a share of the total": a ``share`` item over the named columns
-  (the call's columns when none is named).
+- "each store's share of revenue": a ``share`` item over the named columns. "Revenue as a share
+  of total sales" and "the share of total sales that was revenue" name one measure within
+  another, which a share item isn't, and a share the package declares is its own metric: both
+  are planned as asked.
 
 ``with_totals`` validates the shaped call as execute reads it, on the request's clock and
 identity. When the engine refuses it (a policy that requires a grouping, withheld values, a
@@ -64,10 +66,20 @@ _BESIDE = re.compile(
     r"(?:each|every)\s+(?P<per>[a-z]+(?:\s+[a-z]+)?)" + _END,
     re.IGNORECASE,
 )
+# A share: only "each store's share (of the total)" of one measure. "X as a share of total Y" and
+# "share of total Y that was X" name one measure within another, which a share item isn't.
 _SHARE = re.compile(
     rf"\b(?:each|every)\s+(?P<words>[a-z]+(?:\s+[a-z]+)?){_APOSTROPHE}s?\s+"
-    r"share\b(?:\s+of\s+(?:the\s+)?(?:total|all)\b)?|"
-    r"\b(?:share|percentage|percent|proportion)\s+of\s+(?:the\s+)?(?:grand\s+|overall\s+)?total\b",
+    r"share\b(?:\s+of\s+(?:the\s+)?(?:total|all)\b)?",
+    re.IGNORECASE,
+)
+# The words that name a part within a whole: "as a share of", "share of Y that was X", "of Y
+# from X". Beside any of them a question asks for no share item.
+_PART_OF = re.compile(
+    r"\bas\s+(?:an?\s+)?(?:share|percent(?:age)?|proportion|fraction)\b|"
+    r"\b(?:share|percent(?:age)?|proportion|fraction)\s+of\b.*?"
+    r"\b(?:that|which|was|were|is|are|came|comes|come|from|within|among)\b|"
+    r"\b(?:percent(?:age)?|proportion|fraction)\b",
     re.IGNORECASE,
 )
 # Checked in this order: a share or a subtotal also reads "total", and "each store's total"
@@ -90,8 +102,12 @@ _FILTERED_TOTAL = (
     "the filtered rows' total, or without the filter for every row's)"
 )
 _WHICH_PERIOD_TOTAL = (
-    "the draft is a series, and 'the total' may be each period's or the whole window's (say "
-    "'each store's share' for each period's, or 'of the grand total' for the window's)"
+    "the draft is a series and the question names no grouping, so 'the total' may be each "
+    "period's or the whole window's (name the grouping: 'each store's share')"
+)
+_WHICH_GROUPING_TOTAL = (
+    "the draft groups by several groupings and the question names none, so 'the total' may be "
+    "each group's or every row's (name the grouping: 'each store's share')"
 )
 _BEFORE_THE_CUT = (
     "Each total row adds up every row the call keeps before its having and limit, not only the "
@@ -121,13 +137,19 @@ def asked_totals(question: str, config: Any) -> TotalsAsk | None:
     """The total the question asks for, or None: the first phrase found, in ``_PHRASES``
     order. A question that names a catalog object with a total's word ("Order total",
     "Food revenue share") asks for none, nor one with nothing left beside its total words."""
-    said = f" {' '.join(_singular(token) for token in _tokens(question))} "
+    singular = [_singular(token) for token in _tokens(question)]
+    said = f" {' '.join(singular)} "
     if any(f" {phrase} " in said for phrase in _catalog_phrases(config)):
         return None
     for kind, pattern in _PHRASES:
         match = pattern.search(question)
         if match is None:
             continue
+        if kind == "share" and (
+            _PART_OF.search(question) or _declared_share(config, set(singular)) is not None
+        ):
+            # One measure within another, or a share the package declares: planned as asked.
+            return None
         groups = match.groupdict()
         words = (groups.get("words") or groups.get("by") or groups.get("per") or "").strip()
         words = "" if words.lower() in _PRONOUNS else words  # "each one's share"
@@ -156,6 +178,16 @@ def _catalog_phrases(config: Any) -> set[str]:
     names = (name for row in rows for name in (row.label, row.name, *row.aliases))
     phrases = (" ".join(_singular(token) for token in _tokens(name)) for name in names)
     return {phrase for phrase in phrases if set(phrase.split()) & _TOTAL_WORDS}
+
+
+def _declared_share(config: Any, said: set[str]) -> Any:
+    """A ratio metric, or one named with a share's word, whose every label word the question
+    says: the package's own definition of the share asked for."""
+    for metric in config.metric_recipes:
+        words = _singulars(metric.label or metric.name)
+        if words and words <= said and (metric.kind == "ratio" or words & _TOTAL_WORDS):
+            return metric
+    return None
 
 
 def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None, str]:
@@ -191,6 +223,9 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
             return None, _ACROSS_PERIODS
         if named == [TIME_AXIS]:
             return builder.totals([]).build(), ""  # each total row keeps its period
+        items = _named_items(config, group_by, asked.words, grain) if asked.words else []
+        if len(items) > 1:
+            return _listed_levels(config, call, items)
         kept = [column for column in named if column != TIME_AXIS]  # rows keep the period
         kept = kept or _with_partners(config, group_by, group_by[:1])
         if not set(kept) >= set(group_by):
@@ -201,15 +236,19 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
         # beside its rows.
         return _with_items(config, call, "total", [TIME_AXIS])
     if asked.kind == "share":
-        if not named and grain and not _one_period(call.time) and not _GRAND.search(asked.phrase):
-            # "As a share of the total" by month: each month's total, or the whole window's?
+        if not named and grain and not _one_period(call.time):
+            # "Each one's share" by month: of each month's total, or of the whole window's?
             return None, _WHICH_PERIOD_TOTAL
+        if not named and _groupings(config, group_by) > 1:
+            # "Each one's share" by type and store: of each store's total, or of everything?
+            return None, _WHICH_GROUPING_TOTAL
+        if len(call.select) > 1:
+            return None, "the draft selects several values, and a share is of one"
         if call.where and _OF_TOTAL.search(asked.phrase):
             # "Percent of total revenue by store for new customers": a share's total counts the
             # rows the call keeps, and "of total revenue" may mean every row.
             return None, _FILTERED_TOTAL
-        over = named or [*group_by, *([TIME_AXIS] if grand else [])]
-        return _with_items(config, call, "share", over)
+        return _with_items(config, call, "share", named or group_by)
     if not named:
         return None, "the question names no grouping whose total to show"
     # A group's total beside each of its rows: the call without its other columns, or without
@@ -239,6 +278,48 @@ def _one_period(time: Time | None) -> bool:
         return floor_period(start, time.grain) == start and period_end(start, time.grain) == end
     except (ValueError, SemanticLayerError):
         return False  # not a date, or a grain finer than a day
+
+
+def _named_items(config: Any, group_by: list[str], words: str, grain: str) -> list[list[str]]:
+    """The columns each listed grouping names, in the phrase's order, each once."""
+    items: list[list[str]] = []
+    for item in re.split(r"\s*,\s*|\s+and\s+", words.strip()):
+        columns = _named_columns(config, group_by, item, grain)
+        if columns and columns not in items:
+            items.append(columns)
+    return items
+
+
+def _listed_levels(config: Any, call: Call, items: list[list[str]]) -> tuple[Call | None, str]:
+    """Subtotals by several groupings, outermost first in the phrase's order: each level keeps
+    one more of them, down to the grand total. A level that keeps every grouping is the call's
+    own rows; a listed period isn't a level (every total row keeps it)."""
+    group_by = list(call.group_by)
+    if any(TIME_AXIS in columns for columns in items):
+        return (
+            None,
+            "total rows keep the period, so a level by period and another grouping isn't one",
+        )
+    if set().union(*map(set, items)) >= set(group_by):
+        items = items[:-1]  # the last level is the call's own rows
+    levels = [column for columns in items for column in _totals_levels(config, group_by, columns)]
+    kept: set[str] = set()
+    for column in levels:
+        kept |= set(_with_partners(config, group_by, [column]))
+        if kept >= set(group_by):
+            return None, "a listed level would repeat the call's own rows"
+    return QueryBuilder(config, call).totals(levels).build(), ""
+
+
+def _groupings(config: Any, group_by: list[str]) -> int:
+    """How many groupings the call's columns are: an entity's key and name are one."""
+    seen: set[str] = set()
+    count = 0
+    for column in group_by:
+        if column not in seen:
+            seen |= set(_with_partners(config, group_by, [column]))
+            count += 1
+    return count
 
 
 def _named_list(config: Any, group_by: list[str], words: str, grain: str) -> list[str]:

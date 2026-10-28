@@ -74,13 +74,7 @@ def _items(query: dict[str, Any]) -> list[dict[str, Any]]:
         ),
         ("revenue total for each store", "beside", "store", "revenue by store"),
         ("each store's share of revenue", "share", "store", "revenue by store"),
-        ("revenue by store as a share of the total", "share", "", "revenue by store"),
-        (
-            "what percent of total revenue comes from each store",
-            "share",
-            "",
-            "what revenue comes from each store",
-        ),
+        ("each store's share of the total revenue", "share", "store", "revenue by store"),
     ],
 )
 def test_a_question_s_total_words_are_read_apart_from_the_rest(
@@ -101,6 +95,14 @@ def test_a_question_s_total_words_are_read_apart_from_the_rest(
         "grand total",
         # "Each store's percentage of returning customers" may be a rate inside each store.
         "each store's percentage of revenue",
+        # One measure within another, or a share the package declares, is planned as asked.
+        "food revenue as a share of total revenue by store",
+        "what share of total revenue was food revenue by store",
+        "what percent of total revenue is food revenue for each store",
+        "each store's share of revenue that was food revenue",
+        "each store's share of revenue from food",
+        "each store's share of food revenue",
+        "revenue by store as a share of the total",
     ],
 )
 def test_a_total_that_is_a_measure_s_own_word_asks_for_no_total(runtime, question):
@@ -116,6 +118,22 @@ def test_a_catalog_name_holding_a_total_s_word_is_read_as_that_object():
     assert asked_totals("order totals by store with the grand total", config) is None
     asked = asked_totals("revenue by store with the grand total", config)
     assert asked is not None and asked.kind == "rows"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what share of total revenue was food revenue by store",
+        "food revenue as a share of total revenue by store",
+    ],
+)
+def test_a_share_of_one_measure_within_another_is_the_declared_metric(runtime, question):
+    """Food revenue over revenue within each store (0.43, 0.44), never each store's share of
+    all food revenue (0.34, 0.66)."""
+    query = _ready(_plan(runtime, question))
+    assert query["select"] == ["metric.sales.food_revenue_share"]
+    rows = runtime.query(query, now=NOW)["rows"]
+    assert sorted(round(row["food_revenue_share"], 4) for row in rows) == [0.4318, 0.442]
 
 
 def test_the_grand_total_is_a_total_row(runtime):
@@ -210,12 +228,6 @@ def test_each_group_s_share_among_the_filtered_rows_is_ready(runtime):
     assert query["where"] and _items(query)[0]["expression"]["kind"] == "share"
 
 
-def test_a_share_of_a_series_grand_total_is_over_the_periods_too(runtime):
-    query = _ready(_plan(runtime, "revenue by store and month as a share of the grand total"))
-    [item] = _items(query)
-    assert item["expression"]["over"] == [*STORES, "period"]
-
-
 def test_an_example_authored_for_the_whole_question_answers_it(runtime, monkeypatch):
     """A package example answers only its own question, total words included."""
     example = {
@@ -246,13 +258,31 @@ def test_a_total_row_beside_a_ranking_says_it_adds_up_every_row(runtime):
 
 
 def test_each_group_s_share_is_of_the_total_across_the_named_grouping(runtime):
-    query = _ready(_plan(runtime, "each store's share of revenue and orders"))
+    query = _ready(_plan(runtime, "each store's share of revenue"))
     assert [item["expression"] for item in _items(query)] == [
         {"kind": "share", "input": REVENUE, "over": STORES},
-        {"kind": "share", "input": "measure.jaffle.order_count", "over": STORES},
     ]
     rows = runtime.query(query, now=NOW)["rows"]
     assert sum(row["revenue_usd_share"] for row in rows) == pytest.approx(1)
+
+
+@pytest.mark.parametrize(
+    "question,totals",
+    [
+        # Outermost first in the phrase's order; the level keeping both is the call's rows.
+        ("revenue by store and customer type with subtotals by store and customer type", [STORE]),
+        (
+            "revenue by store and customer type with subtotals by customer type and store",
+            ["dimension.jaffle_customer_type"],
+        ),
+    ],
+)
+def test_listed_subtotals_are_levels_in_the_phrase_s_order(runtime, question, totals):
+    query = _ready(_plan(runtime, question))
+    assert query["totals"] == totals
+    rows = runtime.query(query, now=NOW)["rows"]
+    levels = [row["total_over"] for row in rows if row["total_over"]]
+    assert len(levels) == 3  # two subtotals and the grand total, no level repeating the rows
 
 
 @pytest.mark.parametrize(
@@ -273,12 +303,17 @@ def test_each_group_s_share_is_of_the_total_across_the_named_grouping(runtime):
             "monthly revenue by store and customer type with subtotals by store and a grand total",
             None,
         ),
-        # "Of total revenue" may mean every row; the share's total counts the filtered ones.
-        ("share of total revenue by store for new customers", None),
+        # "Of the total" may mean every row; the share's total counts the filtered ones.
+        ("each store's share of the total revenue for new customers", None),
         # "Customer" names the customer, never "Customer type".
         ("revenue by customer type and store with each customer's total", None),
-        # A series' "total": each period's, or the whole window's?
-        ("revenue by store and month as a share of the total", None),
+        # No grouping named: of each period's total or the window's, each store's or everything?
+        ("revenue by store and month with each one's share", None),
+        ("revenue by customer type and store with each one's share", None),
+        # A share is of one value.
+        ("each store's share of revenue and orders", None),
+        # A listed period isn't a level: every total row keeps it.
+        ("revenue by store and month with subtotals by store and month", None),
     ],
 )
 def test_a_total_the_draft_cannot_carry_holds_the_plan(runtime, question, code):
