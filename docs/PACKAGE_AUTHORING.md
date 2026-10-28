@@ -2618,7 +2618,9 @@ history may be passed through); or a `graph.path_preferences` row whose path
 walks the same two relationships in a row, in either order. A pair decided by
 a row (the package's or the query's own) or by the start's own key never
 warns, and neither does a descent alone or a lookup followed by a descent.
-The warning changes no route and no number.
+The warning changes no route and no number. A call of dimensions alone counts nothing, so a
+[listing through such a route](QUERY_CALL.md#listings-through-one-to-many-routes) states
+`LISTED_THROUGH` in its `assumptions` instead, and may walk any relationship either way.
 The next release refuses a to-one lookup ("the T of an S") reachable only through child
 rows, while existence and group questions through a `bridge: true` link table keep
 answering; for each warning, declare the key in `entities:` or mark the link table now.

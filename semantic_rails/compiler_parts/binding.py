@@ -87,6 +87,7 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
+from .listings import bind_listing
 from .lowering_common import recording_stock_key_gaps
 from .paths import (
     _leaf_time_role,
@@ -291,14 +292,17 @@ def bind_query(
     filters and without asking (it holds child groups, so it cannot ask again), and then
     passes ``check_policies``, the caller's semantic policy gate, when given. If any option
     raises, the query is refused MIXED_GRAIN_INVALID, naming that option and its error code.
+
+    A dimension-only call no lookup route answers is bound once more as a listing through
+    one-to-many hops (``listings.bind_listing``).
     """
 
-    def bind(query: dict[str, Any]) -> BoundQuery:
+    def bind(query: dict[str, Any], on: PackageConfig = config) -> BoundQuery:
         # Finish compiler dependency binding before authorizing a source diagnostic.
         refusals: list[SemanticLayerError] = []
         token = _source_filter_refusals.set(refusals)
         try:
-            binding = _bind_with_row_filters(config, registry, query, row_filters)
+            binding = _bind_with_row_filters(on, registry, query, row_filters)
             if refusals:
                 if check_policies is not None:
                     check_policies(query, binding)
@@ -312,7 +316,10 @@ def bind_query(
         return bind(payload)
     except SemanticLayerError as exc:
         if exc.code != "AMBIGUOUS_CHILD_SCOPE":
-            raise
+            listed = bind_listing(config, payload, exc, lambda listing: bind(payload, listing))
+            if listed is None:
+                raise
+            return listed
         ambiguity = exc
     for option in ambiguity.details["clarification"]["options"]:
         # An option is the call's where; entity filters re-enter as the engine's predicates.

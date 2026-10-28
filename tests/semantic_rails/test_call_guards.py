@@ -322,6 +322,11 @@ STATED = {
     },
     "GOVERNED_METRIC_EXISTS": {"select": [ORDERS]},
     "GROUPED_BY_KEY": {"select": [REVENUE], "group_by": ["dimension.jaffle_customer_name"]},
+    # Each store's perishable supplies: a store reaches them only through its orders' items.
+    "LISTED_THROUGH": {
+        "group_by": [STORE, "dimension.jaffle_supply_name"],
+        "where": [{"field": "dimension.jaffle_supply_is_perishable", "op": "is", "value": True}],
+    },
     "OBSERVED_PERIODS_ONLY": {
         "select": [REVENUE],
         "group_by": ["dimension.jaffle_order_ordered_at"],
