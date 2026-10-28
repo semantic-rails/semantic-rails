@@ -575,3 +575,45 @@ def test_a_metric_total_of_several_measures_states_its_unloaded_periods(tmp_path
     }
     [no_data] = [w for w in answer["warnings"] if w["code"] == "NO_DATA_YET"]
     assert no_data["details"]["outputs"] == ["total"]
+
+
+def test_a_total_over_the_period_reads_its_own_inputs_edge(tmp_path):
+    """Accounts are counted on the account days, loaded through now; seats are a stock whose
+    snapshots end on January 15. Beside seats, the accounts' total over January covers what the
+    accounts alone cover (all of it, so nothing is said), never the seats' edge."""
+    from .conftest import _runtime, _write_variant
+
+    package = _write_variant(tmp_path, "utc_authored")
+    path = package / "models" / "account_days.yml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["model"]["zero_through"] = "now"
+    document["model"]["measures"]["accounts"] = {
+        "kind": "entity_count",
+        "entity_key": "account_id",
+        "accumulation": {"kind": "flow"},
+    }
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    window = {"temporal_role": SNAPSHOT_DAY, "start": "2024-01-01", "end": "2024-02-01"}
+    now = "2024-10-15T00:00:00Z"
+    try:
+        answer = runtime.query(
+            {
+                "select": [SEATS, _total("measure.shop.accounts", ["period"])],
+                "group_by": [PLAN],
+                "time": {**window, "grain": "day"},
+            },
+            now=now,
+        )
+        alone = runtime.query(
+            {"select": ["measure.shop.accounts"], "group_by": [PLAN], "time": window}, now=now
+        )
+    finally:
+        runtime.close()
+    totals = [
+        w["details"]
+        for w in answer["warnings"]
+        if w["code"] == "PARTIAL_DATA" and w["details"].get("column") == "total"
+    ]
+    expected = [w["details"] for w in alone.get("warnings") or [] if w["code"] == "PARTIAL_DATA"]
+    assert totals == [{**row, "column": "total"} for row in expected]

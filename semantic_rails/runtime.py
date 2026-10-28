@@ -2051,7 +2051,10 @@ class Runtime:
         # Disclosures about the call's rows read only those: total rows are the call at
         # coarser grains, and their rolled-up NULLs are no group of the call's.
         own_rows = (
-            [row for row in rows if row.get(TOTAL_OVER) is None]
+            QueryRows(
+                [row for row in rows if row.get(TOTAL_OVER) is None],
+                truncated=bool(getattr(rows, "truncated", False)),
+            )
             if compiled["logical_plan"].query.get("totals") is not None
             else rows
         )

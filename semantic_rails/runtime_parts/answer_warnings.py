@@ -726,6 +726,9 @@ def _settled_by(compiled, outputs):
             if output not in totals:
                 names &= by_output.get(output, set())
                 edges &= edge_output.get(output, set())
+            elif len(item["measures"]) == 1 and by_output.get(output):
+                # A total of one measure: exactly the probes its coarser call settled it with.
+                names, edges = by_output[output], edge_output.get(output, set())
             # Combined plans can settle the output itself instead of its leaf aliases.
             if not names and len(item["measures"]) == 1:
                 names, edges = by_output.get(output, set()), edge_output.get(output, set())
@@ -963,11 +966,23 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
             spans.extend((None, column, first, last) for column in _totals_over_period(compiled))
     warnings = []
     for period, column, start, end in spans:
+        if column:
+            # A total's edge is its own input's, read by its coarser call's own coverage.
+            reads = _total_probes(compiled, column)
+            own = {
+                key: value for key, value in coverage.items() if key.rpartition("__")[0] in reads
+            }
+            total_through, _ = data_through(own, zone)
+            if total_through is None:
+                continue
+            span_through, edge_day = total_through, date.fromisoformat(total_through)
+        else:
+            span_through, edge_day = through, edge
         end = min(end, today)
         # A whole day after the edge and before today, inside the span.
-        if edge < start or edge >= min(end, today - timedelta(days=1)):
+        if edge_day < start or edge_day >= min(end, today - timedelta(days=1)):
             continue
-        days, covered = (end - start).days + 1, (min(edge, end) - start).days + 1
+        days, covered = (end - start).days + 1, (min(edge_day, end) - start).days + 1
         span = (
             f"the total in '{column}'"
             if column
@@ -979,11 +994,11 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
         warnings.append(
             semantic_issue(
                 code="PARTIAL_DATA",
-                message=f"Data runs through {through}, so {span} covers {covered} of {whole} {days} days.",
+                message=f"Data runs through {span_through}, so {span} covers {covered} of {whole} {days} days.",
                 severity="warning",
                 stage="execution",
                 details={
-                    "through": through,
+                    "through": span_through,
                     "days_covered": covered,
                     "days": days,
                     **({"period": period.isoformat()} if period is not None else {}),
@@ -992,6 +1007,13 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
             )
         )
     return warnings
+
+
+def _total_probes(compiled, column: str) -> set[str]:
+    """The coverage and declared-edge probes a total's coarser call settled its column with."""
+    _, coverage = _guard_probe_names(compiled, "coverage_")
+    _, edges = _guard_probe_names(compiled, "edge_")
+    return coverage.get(column, set()) | edges.get(column, set())
 
 
 def _totals_over_period(compiled) -> list[str]:

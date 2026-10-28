@@ -436,3 +436,26 @@ def test_an_empty_window_keeps_its_diagnostics_beside_total_rows(duckdb_backend)
     plain = runtime.query(call, now=now)
     totaled = runtime.query({**call, "totals": []}, now=now)
     assert totaled["data_diagnostics"] == plain["data_diagnostics"]
+
+
+def test_a_capped_answer_judges_its_own_rows_as_without_totals(duckdb_backend):
+    """Order 7 has no amount and order 8 has 6, cut by a one-row cap: the answer is
+    truncated, so its NULL says nothing about the rest, with or without totals."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    order = "dimension.shop_order_id"
+    call = {
+        "select": [REVENUE],
+        "group_by": [order],
+        "where": [{"field": order, "op": "is", "value": [7, 8]}],
+        "order_by": [{"field": order, "direction": "asc"}],
+        "observation_scope": "query",
+    }
+    codes = [
+        {row["code"] for row in answer.get("warnings") or []}
+        for answer in (
+            runtime.query({**call, "totals": []}, limits={"max_rows": 1}),
+            runtime.query(call, limits={"max_rows": 1}),
+        )
+    ]
+    assert codes[0] == codes[1]
+    assert "NO_DATA_IN_SCOPE" not in codes[0]
