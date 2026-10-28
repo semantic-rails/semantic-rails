@@ -481,6 +481,15 @@ def _grouped(query: dict, *dims: str, where: list | None = None) -> dict:
 
 
 _DISTINCT_BUYERS = _monthly(buyers={"column": "buyers", "holds": "count_distinct"})
+# The same table, grouped by store too, with columns that don't name store_id.
+_DISTINCT_BUYERS_STORE_UNNAMED = (
+    {
+        "monthly": {
+            **_DISTINCT_BUYERS[0]["monthly"],
+            "columns": {"buyers": {"column": "buyers", "holds": "count_distinct"}},
+        }
+    },
+)
 _BUYERS_MONTH = _rollup_query(_BUYERS, "count_distinct", "month")
 _REGION = {
     "id": "aggregate_relation.region",
@@ -587,6 +596,7 @@ _SHIP_TO_KEY = {
         pytest.param(_DISTINCT_BUYERS, _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": "in", "value": ["s1", "s2"]}]), "aggregation_not_reaggregable", id="distinct-dimension-in-list"),
         pytest.param(_DISTINCT_BUYERS, _grouped(_BUYERS_MONTH, where=[{"field": _STORE, "op": ">=", "value": "s1"}]), "aggregation_not_reaggregable", id="distinct-dimension-range"),
         pytest.param(_DISTINCT_BUYERS, _BUYERS_MONTH, "aggregation_not_reaggregable", id="distinct-dimension-not-grouped"),
+        pytest.param(_DISTINCT_BUYERS_STORE_UNNAMED, _BUYERS_MONTH, "aggregation_not_reaggregable", id="distinct-dimension-not-named"),
         pytest.param(_DISTINCT_BUYERS, _grouped(_rollup_query(_BUYERS, "count_distinct", "quarter"), _STORE), "aggregation_not_reaggregable", id="distinct-coarser-grain"),
         pytest.param(_MONTHLY_ONLY, _grouped(_BUYERS_MONTH, _STORE), "aggregation_not_reaggregable", id="distinct-without-holds"),
         pytest.param(

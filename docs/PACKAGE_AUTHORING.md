@@ -2891,10 +2891,11 @@ Use `model.variants:` when one semantic model is physically stored at multiple
 time grains, such as transaction, daily, weekly, and monthly tables. The model
 continues to own the measures, dimensions, entities, and default time role. Each
 non-transaction variant declares what the rollup table covers, and its `columns:`
-names every measure and dimension column the table holds. A measure or dimension
-it doesn't name is not in the rollup, and a query that needs one reads the base
-tables. A variant that inherits another's `columns:` (`inherits_from`) leaves one
-out with `excludes: {measures: [...], dimensions: [...]}`.
+names every measure and dimension column a query may read from it. A query that
+needs a measure or dimension it doesn't name reads the base tables, so the model's
+`relation:` must hold every measure and dimension, whatever its rollups hold. A
+variant that inherits another's `columns:` (`inherits_from`) leaves one out with
+`excludes: {measures: [...], dimensions: [...]}`.
 
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
@@ -2947,7 +2948,9 @@ model:
       relation: order_monthly
       grain: { time: month, entities: [store] }
       time: { role: ordered_at, column: month_start }
-      columns:                        # customer_id isn't named: it isn't in the table
+      excludes:
+        dimensions: [customer_id]
+      columns:
         store_id: store_id
         revenue_usd: revenue_usd
       eligible_time_grains: [month, quarter, year]
@@ -2989,7 +2992,10 @@ Routing is conservative in the MVP:
   added up across rollup rows. A column declared `holds: count_distinct` still
   answers them at the rollup's own time grain when every rollup dimension is
   grouped or pinned to one value by an `is` condition, so each result row is one
-  rollup row. The rollup must have one row per time bucket and dimension columns
+  rollup row. A rollup dimension is each one `columns:` names and every other
+  dimension of the model (but an `id` one) the variant doesn't exclude, since the
+  table may be grouped by a column it doesn't name: `excludes:` the dimensions the
+  table isn't grouped by. The rollup must have one row per time bucket and dimension columns
   (and per key of any `grain.entities`); an `is` list of several values or a range on a rollup
   dimension that isn't grouped runs on the base tables.
 - A time role whose `column_timezone` differs from its `timezone` runs on the
