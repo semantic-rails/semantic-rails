@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 import time
 import uuid
@@ -40,8 +39,12 @@ from .request_context import (
     request_context_payload,
 )
 from .request_payload import (
+    DEFAULT_MAX_RESULT_CHARS,
     DISCOVER_KIND_NAMES,
+    MAX_RESULT_CHARS_ENV,
+    MIN_RESULT_CHARS,
     checked_discover_kinds,
+    max_result_chars,
     parse_string_list,
     singular_kinds,
 )
@@ -99,11 +102,11 @@ MCP_DEFAULT_MAX_ROWS = 200
 # The largest max_rows an MCP caller may request.
 MCP_MAX_ROWS_LIMIT = 100_000
 # Every final tool payload, serialized identically for both MCP content channels,
-# fits this character budget. Optional plans are trimmed before refusing an answer.
-MCP_DEFAULT_MAX_RESULT_CHARS = 32_000
-# An error envelope must itself fit, even with an unusably small operator setting.
-MCP_MIN_RESULT_CHARS = 512
-_MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
+# fits this character budget (``request_payload``). Optional plans are trimmed before refusing
+# an answer.
+MCP_DEFAULT_MAX_RESULT_CHARS = DEFAULT_MAX_RESULT_CHARS
+MCP_MIN_RESULT_CHARS = MIN_RESULT_CHARS
+_MAX_RESULT_CHARS_ENV = MAX_RESULT_CHARS_ENV
 
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
@@ -1136,10 +1139,7 @@ def _truncate_rows(result: dict[str, Any], *, cap: int, query: Mapping[str, Any]
 def _max_result_chars() -> int:
     """One final-payload budget, with room for a bounded refusal envelope."""
 
-    return max(
-        MCP_MIN_RESULT_CHARS,
-        _positive_int(os.environ.get(_MAX_RESULT_CHARS_ENV)) or MCP_DEFAULT_MAX_RESULT_CHARS,
-    )
+    return max_result_chars()
 
 
 def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:

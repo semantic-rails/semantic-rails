@@ -39,11 +39,12 @@ SEED = """
 CREATE TABLE department AS SELECT * FROM (VALUES
  (1, 'Physics'), (2, 'History'), (3, 'Music')) t(dept_id, department_name);
 CREATE TABLE org_unit AS SELECT * FROM (VALUES
- (11, 1, 'Physics Lab'), (12, 1, 'Physics Office'), (21, 2, 'History Office')
+ (11, 1, 'Physics Lab'), (12, 1, 'Physics Office'), (13, 1, 'Physics Admin'),
+ (21, 2, 'History Office')
 ) t(org_unit_id, dept_id, unit_name);
 CREATE TABLE room AS SELECT * FROM (VALUES
  (1, 11, 100, 'R-101', 'public', 30), (2, 12, 100, 'R-102', 'staff', 20),
- (3, 21, 200, 'R-201', 'staff', 50)
+ (3, 21, 200, 'R-201', 'staff', 50), (4, 11, NULL, 'R-103', 'staff', 10)
 ) t(room_id, org_unit_id, building_id, room_code, access, capacity);
 CREATE TABLE building AS SELECT * FROM (VALUES
  (100, 'B-1'), (200, 'B-2'), (300, 'B-3')) t(building_id, building_key);
@@ -80,15 +81,21 @@ OWN_DEPARTMENTS = {
     "attribute": "departments",
     "audiences": ["visitor"],
 }
-# Each department's cities through its rooms' buildings, every department kept (the rooms a
-# caller sees in place of ``room``): the reference.
+# Each department's cities through its rooms' buildings (the rooms a caller sees in place of
+# ``room``), every department kept: one with no city reads NULL, and one with a city has no
+# blank row (the admin unit has no rooms, and room R-103 no building). The reference.
 CITIES_SQL = """
-SELECT DISTINCT d.department_name, a.city
-FROM department d
-LEFT JOIN org_unit u ON u.dept_id = d.dept_id
-LEFT JOIN {rooms} r ON r.org_unit_id = u.org_unit_id
-LEFT JOIN building b ON b.building_id = r.building_id
-LEFT JOIN building_address a ON a.building_id = b.building_id
+WITH reached AS (
+  SELECT DISTINCT d.dept_id, d.department_name, a.city
+  FROM department d
+  LEFT JOIN org_unit u ON u.dept_id = d.dept_id
+  LEFT JOIN {rooms} r ON r.org_unit_id = u.org_unit_id
+  LEFT JOIN building b ON b.building_id = r.building_id
+  LEFT JOIN building_address a ON a.building_id = b.building_id
+)
+SELECT DISTINCT department_name, city FROM reached r
+WHERE city IS NOT NULL
+   OR NOT EXISTS (SELECT 1 FROM reached o WHERE o.dept_id = r.dept_id AND o.city IS NOT NULL)
 """
 
 
@@ -218,6 +225,31 @@ def test_a_department_lists_the_cities_of_its_rooms_buildings(runtime):
     assert _rows(out, DEPARTMENT_NAME, CITY) == CITIES
     assert _rows(out, DEPARTMENT_NAME, CITY) == _reference(runtime, CITIES_SQL.format(rooms="room"))
     assert not out.get("warnings")
+
+
+def test_a_start_row_lists_a_blank_row_only_when_it_reaches_nothing(runtime):
+    """Physics has an admin unit with no rooms and a lab room with no building beside its
+    rooms in B-1: its cities are B-1's two, with no blank row beside them. A row the call
+    asks for keeps its own NULLs: room R-103 lists with no city, and Music, which reaches
+    nothing, lists once with NULL."""
+    by_department = {
+        "group_by": [DEPARTMENT_NAME, BUILDING_KEY, CITY],
+        "where": [{"field": DEPARTMENT_NAME, "op": "contains", "value": "Physics"}],
+    }
+    assert _rows(runtime.query(by_department), DEPARTMENT_NAME, BUILDING_KEY, CITY) == [
+        ("Physics", "B-1", "Shelbyville"),
+        ("Physics", "B-1", "Springfield"),
+    ]
+    by_room = {"group_by": [DEPARTMENT_NAME, ROOM_CODE, CITY]}
+    assert _rows(runtime.query(by_room), DEPARTMENT_NAME, ROOM_CODE, CITY) == [
+        ("History", "R-201", "Springfield"),
+        ("Music", None, None),
+        ("Physics", "R-101", "Shelbyville"),
+        ("Physics", "R-101", "Springfield"),
+        ("Physics", "R-102", "Shelbyville"),
+        ("Physics", "R-102", "Springfield"),
+        ("Physics", "R-103", None),
+    ]
 
 
 def test_a_listing_was_refused_before(runtime, monkeypatch):
@@ -378,11 +410,10 @@ def test_a_row_filter_on_the_rooms_holds_for_the_listing(package):
             )
         public = runtime.query(BY_CITY, context=_visitor(access="public", departments=every))
         assert _rows(public, DEPARTMENT_NAME, CITY) == [
-            ("History", None),
+            ("History", None),  # its one room is staff only
             ("Music", None),
             ("Physics", "Shelbyville"),
             ("Physics", "Springfield"),
-            ("Physics", None),  # the office's one room is staff only
         ]
         own = runtime.query(BY_CITY, context=_visitor(access="staff", departments=["History"]))
         assert _rows(own, DEPARTMENT_NAME, CITY) == [("History", "Springfield")]
@@ -410,12 +441,15 @@ def test_a_listing_from_an_entity_no_row_filter_reaches_is_held(package):
         runtime.close()
 
 
+ORDERED = {**BY_CITY, "order_by": [{"field": DEPARTMENT_NAME}, {"field": CITY}]}
+
+
 def _execute(package: Path, config: Any, caller: dict[str, Any]) -> dict[str, Any]:
     runtime = Runtime.from_config(config, source_path=str(package))
     try:
         return envelope(
             SemanticLayerMCPAdapter(runtime).call_tool(
-                "execute", {"query": BY_CITY}, request_context=context_from_policy_context(caller)
+                "execute", {"query": ORDERED}, request_context=context_from_policy_context(caller)
             )
         )
     finally:
@@ -463,3 +497,67 @@ def test_a_denied_object_on_the_route_refuses_the_listing(package, denied):
     finally:
         runtime.close()
     assert (refused.code, str(refused)) == ("POLICY_DENIED", f"{denied} is denied by policy.")
+
+
+def _write_dense_package(root: Path, size: int) -> Path:
+    """Facts over shared dimensions, forward only: ``size`` sales facts on a store and on
+    ``size`` product lines, and ``size`` staffing facts on those lines and on a region, so a
+    store reaches a region only by down, up, down and up again, ``size ** 3`` ways."""
+    lines = [f"line_{index}" for index in range(size)]
+    facts = {f"sales_{i}": ["store", *lines] for i in range(size)}
+    facts.update({f"staffing_{i}": [*lines, "region"] for i in range(size)})
+    names = ["store", "region", *lines, *facts]
+    _put(root, "package.yml", {
+        "schema_version": 1,
+        "package": {"id": "dense", "namespace": "dense", "name": "dense", "description": "Facts.",
+                    "warehouse": "duckdb", "default_db": "dense.duckdb", "seed": {"kind": "external"}},
+        "defaults": {"relationship": {"traversal": ["forward"]},
+                     "dimension": {"groupable": True, "filterable": True}},
+    })  # fmt: skip
+    _put(root, "graph.yml", {"graph": {
+        "entities": {name: {"label": name.title(), "key": [f"{name}_id"], "model": name}
+                     for name in names},
+        "relationships": {
+            f"{fact}_{target}": {"as": f"relationship.{fact}_{target}", "entities": [fact, target],
+                                 "cardinality": "many_to_one", "via": [f"{target}_id"],
+                                 "target": [f"{target}_id"]}
+            for fact, targets in facts.items() for target in targets
+        },
+    }})  # fmt: skip
+    with duckdb.connect(str(root / "dense.duckdb")) as connection:
+        for name in names:
+            columns = [f"{name}_id", *(f"{target}_id" for target in facts.get(name, []))]
+            connection.execute(
+                f"CREATE TABLE {name} ({', '.join(f'{column} INTEGER' for column in columns)}, "
+                "name VARCHAR)"
+            )
+            _put(root, f"models/{name}.yml", {"model": {
+                "id": name, "relation": name, "entities": {name: {}},
+                "dimensions": {"name": {"kind": "categorical"}},
+            }})  # fmt: skip
+    return root
+
+
+def test_a_listing_whose_routes_dont_fit_the_response_keeps_its_own_refusal(tmp_path, monkeypatch):
+    """A store and a region connect through 64 routes on a package of many facts: a question
+    listing all of them would not fit the response, so the call keeps the refusal it had,
+    which says the relationships' direction blocks the pair. Under a larger budget it asks."""
+    runtime = Runtime.from_path(str(_write_dense_package(tmp_path / "dense", 4)))
+    call = {"group_by": ["dimension.dense_store_name", "dimension.dense_region_name"]}
+
+    def execute() -> dict[str, Any]:
+        return envelope(SemanticLayerMCPAdapter(runtime).call_tool("execute", {"query": call}))
+
+    try:
+        listed = execute()
+        with monkeypatch.context() as patch:
+            _as_main(patch)
+            assert listed == execute()
+        assert listed["error"]["code"] == "PATH_NOT_FOUND"
+        assert listed["errors"][0]["details"]["blocked_by"] == "direction"
+        monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "10000000")
+        refused = _refusal(lambda: runtime.query(call))
+        assert refused.code == "AMBIGUOUS_PATH"
+        assert len(refused.details["clarification"]["options"]) == 64
+    finally:
+        runtime.close()

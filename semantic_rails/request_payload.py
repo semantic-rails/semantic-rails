@@ -8,6 +8,7 @@ claims an identity, so a new transport cannot accept a caller's claim.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -175,3 +176,20 @@ def refuse_identity_claims(
     path = identity_claim_path(request)
     if path is not None:
         raise identity_claim_refusal(path, remote=remote, transport=transport)
+
+
+# Every final response payload, serialized as the MCP text channels do, fits this character
+# budget (``SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS`` sets another); an error envelope must itself
+# fit, even with an unusably small operator setting.
+DEFAULT_MAX_RESULT_CHARS = 32_000
+MIN_RESULT_CHARS = 512
+MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
+
+
+def max_result_chars() -> int:
+    """One final-payload budget, with room for a bounded refusal envelope."""
+    try:
+        configured = int(os.environ.get(MAX_RESULT_CHARS_ENV) or 0)
+    except (TypeError, ValueError, OverflowError):
+        configured = 0
+    return max(MIN_RESULT_CHARS, configured if configured > 0 else DEFAULT_MAX_RESULT_CHARS)

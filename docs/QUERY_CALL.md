@@ -229,15 +229,19 @@ the call is answered as a listing through that route:
   then its `where` fields'), and reaches each other entity by the [route rules](#routes): the
   call's `routes`, the package's recorded rows, the start's own key, the only route, or the one
   lookup among several. Two or more routes none of these chooses are refused with
-  `AMBIGUOUS_PATH`, asking which route the question means, and nothing runs. A listing walks a
-  relationship either way, whatever its `allowed_directions`: nothing is counted, so a hop to
-  many rows only lists more rows.
+  `AMBIGUOUS_PATH`, asking which route the question means, and nothing runs. When that question
+  with every route would not fit the response budget (a package of many facts over shared
+  dimensions can offer dozens), the call keeps the refusal it had without listings, which names
+  what blocks the pair. A listing walks a relationship either way, whatever its
+  `allowed_directions`: nothing is counted, so a hop to many rows only lists more rows.
 - The rows are the distinct values of exactly the requested dimensions, ordered and capped
   (`limit`, `max_rows`) as for any call. Every hop joins as a lookup does (a left join, inner
-  on ClickHouse), so each row of the start is listed: a department with no rooms lists once,
-  with NULL in the columns it would reach (no data is NULL), and a department one of whose
-  units has no room lists a NULL row beside its buildings, as a listing of rooms lists a room
-  with no building.
+  on ClickHouse), so each row of the start is listed. A start row that reaches nothing lists
+  once, with NULL in the columns beyond its own entity (no data is NULL): a department with no
+  rooms. One that reaches rows lists only those: a department with rooms in two cities and a
+  unit with no room lists its two cities, with no blank row beside them. A row the call asks
+  for keeps its own NULLs, as a lookup with no match does: a room with no building lists with
+  no city.
 - The answer's `assumptions` carries `LISTED_THROUGH {message, routes}` at every verbosity:
   each route from the start that crosses a one-to-many hop, as `{from, to, via, meaning}`, and
   the message reads the longest ones in business words ("any of the Supplies of the Product of

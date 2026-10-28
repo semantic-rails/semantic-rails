@@ -85,7 +85,7 @@ from .indexes import (
     _relationship_index,
     _temporal_role_index,
 )
-from .listings import is_listing_plan
+from .listings import is_listing_plan, listing_rows
 from .lowering_common import (
     _aggregate_relation_index,
     _all_metric_predicates,
@@ -1379,13 +1379,14 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
             time_spec=plan.time,
         )
     )
-    return SqlSelect(
+    select = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=entities[plan.root_entity].table),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,
     )
+    return listing_rows(select, plan, config) if is_listing_plan(plan) else select
 
 
 def _source_rollup_strategy(
