@@ -398,27 +398,18 @@ def lookalikes_off() -> bool:
     return _LOOKALIKES_OFF.get()
 
 
-def _source_tags(entity: Any) -> set[str]:
-    """The names a measure's key or label may carry for its model: its table, name and label."""
-    table = str(getattr(entity, "table", "") or "").rpartition(".")[2]
-    names = (table, getattr(entity, "name", ""), getattr(entity, "label", ""))
-    return {str(name).casefold() for name in names if name}
-
-
 def _measure_names(measure: Any, entity: Any) -> tuple[str, str]:
-    """A measure's key (its name's last part) and label, each without the tag of its own model:
-    a ``<table>_`` key prefix (``rooms_hist_area``) or a ``(<table>)`` label suffix (``Area
-    (ROOMS_HIST)``), as a package mirrored from warehouse tables writes them."""
-    tags = _source_tags(entity)
+    """A measure's key (its name's last part) and label, each without its model's table: a
+    ``<table>_`` key prefix (``rooms_hist_area``) or a ``(<table>)`` label suffix (``Area
+    (ROOMS_HIST)``), as a package mirrored from warehouse tables names a column of each."""
+    table = str(getattr(entity, "table", "") or "").rpartition(".")[2].casefold()
     key = str(measure.name or measure.id).rpartition(".")[2].casefold()
-    for tag in sorted(tags, key=len, reverse=True):
-        prefix = re.sub(r"\W+", "_", tag) + "_"
-        if key.startswith(prefix) and len(key) > len(prefix):
-            key = key[len(prefix) :]
-            break
+    prefix = re.sub(r"\W+", "_", table) + "_"
+    if table and key.startswith(prefix) and len(key) > len(prefix):
+        key = key[len(prefix) :]
     label = str(measure.label or "").strip()
     tagged = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", label)
-    if tagged and tagged.group(2).strip().casefold() in tags:
+    if table and tagged and tagged.group(2).strip().casefold() == table:
         label = tagged.group(1)
     return key, label.casefold()
 

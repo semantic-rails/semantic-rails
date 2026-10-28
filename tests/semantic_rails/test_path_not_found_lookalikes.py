@@ -23,6 +23,7 @@ import yaml
 
 from semantic_rails.diagnostics import enrich_path_not_found, exception_issue
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.path_gap import lookalike_swaps
 from semantic_rails.planner.call import Call
 from semantic_rails.planner.plan_query import _validate_query
 from semantic_rails.runtime import Runtime
@@ -36,6 +37,7 @@ from tests.semantic_rails.hidden_absent import (
     visibility_policy,
     with_policies,
 )
+from tests.semantic_rails.test_runtime_and_metadata import jaffle_snapshot as jaffle_snapshot
 
 REVENUE = "measure.shop.revenue"
 ATTRIBUTED_REVENUE = "measure.shop.attributed_revenue"
@@ -353,6 +355,17 @@ def test_a_lookalike_that_totals_another_number_is_never_named(shop):
     error = _refusal(_validate(shop(change=in_euros), CAMPAIGN_REVENUE))
     assert "lookalike_measures" not in error["details"]
     assert ATTRIBUTED_REVENUE not in json.dumps(error)
+
+
+def test_measures_named_for_different_things_are_never_lookalikes(jaffle_snapshot):
+    # Order count and item count, revenue and item revenue: a model's name in a measure's key
+    # says what it counts. Only its table's name, as a mirrored package writes it, is a tag.
+    config = jaffle_snapshot.config
+    assert [
+        (measure.id, swaps)
+        for measure in config.measures
+        if (swaps := lookalike_swaps(config, [measure.id], measure.entity))
+    ] == []
 
 
 # --- Only what this caller can see and read -----------------------------------------------------
