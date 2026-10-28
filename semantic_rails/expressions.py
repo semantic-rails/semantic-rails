@@ -1146,7 +1146,7 @@ def _comparison(op: str, left: SemanticExpr, right: SemanticExpr, path: str) -> 
     if word == "not":
         if isinstance(literal, bool):
             return ComparisonExpr(op="IS NOT", left=left, right=right)
-        differs = ComparisonExpr(op="<>", left=left, right=right)
+        differs = ComparisonExpr(op=operators.COMPARISON_SQL[word], left=left, right=right)
         if literal is None:
             return differs
         unknown = ComparisonExpr(op="=", left=left, right=LiteralExpr(value=None))
@@ -1169,8 +1169,8 @@ def _comparison(op: str, left: SemanticExpr, right: SemanticExpr, path: str) -> 
                     ],
                 },
             )
-        null = LiteralExpr(value=None)
-        return ComparisonExpr(op="=" if literal else "<>", left=left, right=null)
+        sql = operators.COMPARISON_SQL["is" if literal else "not"]
+        return ComparisonExpr(op=sql, left=left, right=LiteralExpr(value=None))
     return ComparisonExpr(op=op, left=left, right=right)
 
 
