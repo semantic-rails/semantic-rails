@@ -869,30 +869,38 @@ _OUTSIDE_CALLS = {
         "time": {"grain": "day", "last": {"unit": "day", "value": 3}},
     },
 }
+_PER_CALL = ("request_id", "timing_ms")  # differ between any two calls
 
 
-def _refusal(runtime, call):
-    """The refusal a granted caller gets for ``call`` from validate and from query."""
-    report = runtime.validate(call, context=context())
-    try:
-        runtime.query(call, context=context())
-        answered = None
-    except SemanticLayerError as exc:
-        answered = (exc.code, str(exc), exc.details)
-    return report["ok"], [(e["code"], e.get("details")) for e in report["errors"]], answered
+def _answers(runtime, call, trusted):
+    """What a caller is sent for ``call``: REST validate and query, MCP execute in both modes."""
+    service = SemanticHTTPService(runtime)
+    answers = []
+    for path in ("/validate", "/query"):
+        try:
+            payload, status = service.handle("POST", path, {"query": call}, context=trusted)
+        except SemanticLayerError as exc:  # the HTTP boundary's own envelope for a refusal
+            payload, status = service.exception_payload(exc, stage=path[1:], context=trusted)
+        answers.append((status, payload))
+    adapter = SemanticLayerMCPAdapter(runtime)
+    for mode in ("validate", "run"):
+        result = adapter.call_tool(
+            "execute", {"query": call, "mode": mode}, request_context=trusted
+        )
+        answers.append({key: value for key, value in result.items() if key not in _PER_CALL})
+    return answers
 
 
 @pytest.mark.parametrize("kind", sorted(_UNGRANTED))
 @pytest.mark.parametrize("shape", sorted(_OUTSIDE_CALLS))
 def test_an_ungranted_id_is_refused_exactly_like_an_unknown_one(granted_runtime, kind, shape):
     build = _OUTSIDE_CALLS[shape]
-    ungranted, unknown = _UNGRANTED[kind], _UNKNOWN[kind]
     seen = {}
-    for label, object_id in (("ungranted", ungranted), ("unknown", unknown)):
-        refusal = _refusal(granted_runtime, build(object_id))
-        seen[label] = json.loads(json.dumps(refusal, default=str).replace(object_id, "<id>"))
-    assert seen["ungranted"][0] is False
-    assert seen["ungranted"] == seen["unknown"], shape
+    for label, object_id in (("ungranted", _UNGRANTED[kind]), ("unknown", _UNKNOWN[kind])):
+        answers = _answers(granted_runtime, build(object_id), context())
+        seen[label] = json.dumps(answers, sort_keys=True, default=str).replace(object_id, "<id>")
+    assert '"ok": false' in seen["ungranted"]
+    assert seen["ungranted"] == seen["unknown"], shape  # byte for byte, on every transport
     assert not granted_runtime.adapter.statements
     # The granted metric still takes its own clock from its definition, once time is granted.
     time_granted = context(dimensions=("temporal_role.jaffle_customer_first_order_at",))
