@@ -139,17 +139,18 @@ def asked_totals(question: str, config: Any) -> TotalsAsk | None:
     "Food revenue share") asks for none, nor one with nothing left beside its total words."""
     singular = [_singular(token) for token in _tokens(question)]
     said = f" {' '.join(singular)} "
-    if any(f" {phrase} " in said for phrase in _catalog_phrases(config)):
+    if any(f" {phrase} " in said for phrase in _catalog_phrases(config)) or _PART_OF.search(
+        question
+    ):
+        # A catalog name with a total's word, or one value as a part of another ("as a share of
+        # the grand total"): planned as asked, never shaped.
         return None
     for kind, pattern in _PHRASES:
         match = pattern.search(question)
         if match is None:
             continue
-        if kind == "share" and (
-            _PART_OF.search(question) or _declared_share(config, set(singular)) is not None
-        ):
-            # One measure within another, or a share the package declares: planned as asked.
-            return None
+        if kind == "share" and _declared_share(config, set(singular)) is not None:
+            return None  # a share the package declares: planned as asked
         groups = match.groupdict()
         words = (groups.get("words") or groups.get("by") or groups.get("per") or "").strip()
         words = "" if words.lower() in _PRONOUNS else words  # "each one's share"

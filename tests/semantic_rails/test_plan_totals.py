@@ -103,10 +103,17 @@ def test_a_question_s_total_words_are_read_apart_from_the_rest(
         "each store's share of revenue from food",
         "each store's share of food revenue",
         "revenue by store as a share of the total",
+        "revenue by store as a share of the grand total",
     ],
 )
 def test_a_total_that_is_a_measure_s_own_word_asks_for_no_total(runtime, question):
     assert asked_totals(question, runtime._config) is None
+
+
+def test_a_share_question_never_gets_total_rows(runtime):
+    """ "As a share of the grand total" asks for a share: never revenue beside a total row."""
+    plan = _plan(runtime, "revenue by store as a share of the grand total")
+    assert plan["status"] != "ok" or "totals" not in plan["best"]["query"]
 
 
 def test_a_catalog_name_holding_a_total_s_word_is_read_as_that_object():
