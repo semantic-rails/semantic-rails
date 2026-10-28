@@ -273,7 +273,8 @@ def test_aggregate_if_value_is_optional_only_for_count():
             "INVALID_EXPRESSION_KEY",
         ),
         ({"kind": "aggregate_if", "condition": X}, "query", "INVALID_EXPRESSION_AST"),
-        ({"kind": "aggregate_if", "aggregation": "count"}, "query", "INVALID_EXPRESSION_AST"),
+        # The condition is optional (every row), but a sum still needs its value.
+        ({"kind": "aggregate_if", "aggregation": "sum"}, "query", "INVALID_EXPRESSION_AST"),
         (
             {"kind": "aggregate_if", "aggregation": "count", "condition": X, "filter": {"all": []}},
             "query",

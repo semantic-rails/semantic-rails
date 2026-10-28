@@ -1164,7 +1164,7 @@ def recovery_hints_for_error(
             if kind == "column":
                 owner = {key: details[key] for key in ("entity", "table") if details.get(key)}
                 column = {"kind": "column", "column": details.get("column") or "<column>"}
-                shape = {
+                shape: dict[str, Any] = {
                     "kind": "aggregate_if",
                     "aggregation": "sum",
                     "value": {**column, **(owner or {"entity": "<entity id>"})},
