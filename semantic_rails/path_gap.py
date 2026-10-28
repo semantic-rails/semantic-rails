@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from .expressions import expr_to_dict
 from .schema import PackageConfig
 
 _WORD = re.compile(r"[^\W_]+")
@@ -415,13 +416,28 @@ def _measure_names(measure: Any, entity: Any) -> tuple[str, str]:
     return key, label.casefold()
 
 
+def _reads_column(expr: Any) -> bool:
+    if isinstance(expr, dict):
+        return expr.get("kind") == "column" or any(_reads_column(item) for item in expr.values())
+    if isinstance(expr, list):
+        return any(_reads_column(item) for item in expr)
+    return False
+
+
 def _alike(asked: Any, other: Any, entities: dict[str, Any]) -> bool:
-    """The same key or label (each without its model's table name) that totals the same way:
-    the same default aggregation, measure class, additivity, value type and currency."""
+    """The same key or label (each without its model's table name) over the same expression of
+    its own table's columns, totalled the same way: the same default aggregation, measure
+    class, additivity, value type and currency. An expression that reads no column (a row
+    count's literal) counts its own model's rows, so it is no other model's measure."""
     asked_key, asked_label = _measure_names(asked, entities.get(asked.entity))
     other_key, other_label = _measure_names(other, entities.get(other.entity))
     named = asked_key == other_key or bool(asked_label) and asked_label == other_label
-    return named and all(
+    if not named:
+        return False
+    expression = expr_to_dict(asked.expr)
+    if not _reads_column(expression) or expression != expr_to_dict(other.expr):
+        return False
+    return all(
         getattr(asked, field) == getattr(other, field)
         for field in (
             "default_aggregation",
@@ -492,6 +508,17 @@ def measure_lookalikes(config: PackageConfig, measure_id: str) -> list[Any]:
     )
 
 
+def renamed_columns(call: dict[str, Any], swaps: dict[str, str]) -> dict[str, str]:
+    """The call's result columns named by default after a swapped measure (its id's last part),
+    each to its look-alike's name: what an order_by or having naming the column must say."""
+    names = {old.rpartition(".")[2]: new.rpartition(".")[2] for old, new in swaps.items()}
+    return {
+        item["as"]: names[item["as"]]
+        for item in call.get("select") or []
+        if isinstance(item, dict) and item.get("as") in names
+    }
+
+
 def swapped_call(
     call: dict[str, Any], swaps: dict[str, str], temporal_role: str = ""
 ) -> dict[str, Any]:
@@ -509,7 +536,7 @@ def swapped_call(
             return [swap(item) for item in value]
         return value
 
-    names = {old.rpartition(".")[2]: new.rpartition(".")[2] for old, new in swaps.items()}
+    names = renamed_columns(call, swaps)
     out = {key: value for key, value in call.items() if key != "_call_notes"}
     out.update({key: swap(call[key]) for key in _VALUE_KEYS if key in call})
     out["select"] = [
@@ -538,9 +565,17 @@ def model_population(entity: Any) -> str:
     return "" if entity.description in ("", entity.label) else str(entity.description)
 
 
+def first_sentence(text: str) -> str:
+    """A description's first sentence (through its first full stop), or all of it."""
+    text = " ".join(str(text).split())
+    head, stop, _ = text.partition(". ")
+    return f"{head}." if stop else text
+
+
 def lookalike_rows_in_view(config: PackageConfig, rows: Sequence[Any]) -> list[dict[str, Any]]:
     """The look-alike rows whose entity and measures ``config`` (a caller's view) shows, each
-    with its model's description as this view reads it."""
+    with the first sentence of its model's description as this view reads it (its card has the
+    rest)."""
     entities = {row.id: row for row in config.entities}
     measures = {row.id for row in config.measures}
     kept = []
@@ -551,11 +586,12 @@ def lookalike_rows_in_view(config: PackageConfig, rows: Sequence[Any]) -> list[d
         if not pairs or not set(pairs) | set(pairs.values()) <= measures:
             continue
         out: dict[str, Any] = {"entity": row["entity"], "measures": pairs}
-        population = model_population(entities[row["entity"]])
+        population = first_sentence(model_population(entities[row["entity"]]))
         if population:
             out["description"] = population
-        if row.get("temporal_role"):
-            out["temporal_role"] = row["temporal_role"]
+        for key in ("columns", "temporal_role"):
+            if row.get(key):
+                out[key] = row[key]
         kept.append(out)
     return kept
 
@@ -567,25 +603,35 @@ def _lookalike_clause(row: dict[str, Any]) -> str:
 
 
 def lookalike_fact(rows: Sequence[dict[str, Any]]) -> str:
-    """The refusal's sentence naming the look-alikes that answer the call, or ""."""
+    """The refusal's sentence saying how many look-alikes answer the call, or ""."""
     if not rows:
         return ""
+    if len(rows) == 1:
+        return (
+            "Another model's measure of the same name answers this call as it stands "
+            "(details.lookalike_measures)."
+        )
     return (
-        "The same-named measures of another model answer this call as it stands: "
-        + "; ".join(_lookalike_clause(row) for row in rows)
-        + "."
+        f"{len(rows)} other models' measures of the same name answer this call as it stands "
+        "(details.lookalike_measures)."
     )
 
 
 def lookalike_advice(rows: Sequence[dict[str, Any]]) -> str:
-    """The caller hint: each look-alike, what its model says its rows are, and the caveat."""
-    readings = []
-    for row in rows:
-        said = f": {row['description']}" if row.get("description") else ""
-        readings.append(_lookalike_clause(row) + said.rstrip(".") + ".")
+    """The caller hint: each look-alike by id, how to read it, and the caveat. What each one's
+    model holds is in ``details.lookalike_measures`` and, in full, on the measure's card."""
+    renames = (
+        " Where the call names a result column (order_by, having), use the row's `columns`."
+        if any(row.get("columns") for row in rows)
+        else ""
+    )
     return (
-        "Read the same measure from another model, keeping this call's group_by, where and time. "
-        + " ".join(readings)
-        + " Each model holds its own rows, which may not be every row the user asked about: "
-        "tell the user which model the answer reads."
+        "Read the same measure from another model in details.lookalike_measures, keeping this "
+        "call's group_by, where and time: "
+        + "; ".join(_lookalike_clause(row) for row in rows)
+        + "."
+        + renames
+        + " Each model holds its own rows, which may be fewer, more or other rows (such as "
+        "every version of each row) than the user asked about: inspect the measure for its "
+        "model's description, and tell the user which model the answer reads."
     )

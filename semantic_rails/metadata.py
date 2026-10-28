@@ -101,7 +101,7 @@ from .metadata_parts.relevance import (
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
 from .naming import governed_names, unclaimed_name
-from .path_gap import measure_lookalikes, model_population
+from .path_gap import first_sentence, measure_lookalikes, model_population
 from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
 from .request_context import policy_identity
@@ -2610,9 +2610,10 @@ def inspect_payload(
 
 
 LOOKALIKE_NOTICE = (
-    "Other models define a measure named like this one (lookalike_measures). Each model holds "
-    "its own rows and a call reads only its own measure's model: read the one whose rows the "
-    "user asks about, and tell the user which model the answer reads."
+    "Other models define a measure named like this one (lookalike_measures; inspect one for its "
+    "model's full description and reach). Each model holds its own rows and a call reads only "
+    "its own measure's model: read the one whose rows the user asks about, and tell the user "
+    "which model the answer reads."
 )
 
 
@@ -2630,9 +2631,10 @@ def _lookalike_notice(
     config: PackageConfig, card: dict[str, Any], partial_query: dict[str, Any]
 ) -> dict[str, Any]:
     """A measure card's notice of its look-alikes on other models (``measure_lookalikes``) that
-    the caller sees and may read: each one's model description, the entities it reaches and,
-    when the call names dimensions, which of them it reaches. Read from the package and the
-    caller's view only (never from a question); empty when the measure has none."""
+    the caller sees and may read: each one by id with the first sentence of its model's
+    description (its own card has the rest and where it reaches) and, when the call names
+    dimensions, which of them it reaches. Read from the package and the caller's view only
+    (never from a question); empty when the measure has none."""
     scope = policy_identity(_policy_context(partial_query))
 
     def readable(*object_ids: str) -> bool:
@@ -2663,13 +2665,11 @@ def _lookalike_notice(
     )
     rows = []
     for other in others:
-        reach = _grouping_entities(config, other.entity)
         row: dict[str, Any] = {"measure": other.id, "entity": other.entity}
-        if population := model_population(entities[other.entity]):
+        if population := first_sentence(model_population(entities[other.entity])):
             row["description"] = population
-        row["grouping_entities"] = reach
         if dimensions:
-            held = {other.entity, *reach}
+            held = {other.entity, *_grouping_entities(config, other.entity)}
             row["reaches"] = [item for item in dimensions if dimension_entity[item] in held]
         rows.append(row)
     root = card["root_entity"]

@@ -376,13 +376,7 @@ def recovery_hints_for_error(
         if lookalikes:
             from .path_gap import lookalike_advice
 
-            hints.append(
-                {
-                    "kind": "use_lookalike_measure",
-                    "message": lookalike_advice(lookalikes),
-                    "lookalike_measures": lookalikes,
-                }
-            )
+            hints.append({"kind": "use_lookalike_measure", "message": lookalike_advice(lookalikes)})
         if not reachable:
             blocked = {
                 "direction": f"by direction, each relationship of '{start}' leads only to it",

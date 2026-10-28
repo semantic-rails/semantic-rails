@@ -114,7 +114,13 @@ from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
-from .path_gap import call_measures, lookalike_swaps, lookalikes_off, swapped_call
+from .path_gap import (
+    call_measures,
+    lookalike_swaps,
+    lookalikes_off,
+    renamed_columns,
+    swapped_call,
+)
 from .policies import (
     enforce_query_policies,
     row_filters_for_context,
@@ -2351,8 +2357,14 @@ class Runtime:
                 self._enforced_compile(swapped_call(payload, pairs, role), policy_context)
             except Exception:  # noqa: BLE001 — a look-alike the call can't compile answers nothing
                 continue
+            columns = renamed_columns(payload, pairs)
             rows.append(
-                {"entity": entity, "measures": pairs, **({"temporal_role": role} if role else {})}
+                {
+                    "entity": entity,
+                    "measures": pairs,
+                    **({"columns": columns} if columns else {}),
+                    **({"temporal_role": role} if role else {}),
+                }
             )
         if not rows:
             return exc

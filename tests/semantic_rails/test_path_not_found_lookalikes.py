@@ -23,6 +23,7 @@ import yaml
 
 from semantic_rails.diagnostics import enrich_path_not_found, exception_issue
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.mcp import _max_result_chars as max_result_chars
 from semantic_rails.metadata import LOOKALIKE_NOTICE
 from semantic_rails.path_gap import lookalike_swaps
 from semantic_rails.planner.call import Call
@@ -99,7 +100,14 @@ def _orders(model_id: str, entity: str, description: str, dimension: str, key: s
                 }
             },
             "dimensions": {dimension: {"kind": "categorical"}},
-            "measures": {key: _measure("Revenue", "amount", "currency")},
+            "measures": {
+                key: _measure("Revenue", "amount", "currency"),
+                # Each table's row count, as a package mirrored from warehouse tables names it.
+                f"{model_id}_count": {
+                    **_measure("Row count", "", "count"),
+                    "expr": {"kind": "literal", "value": 1},
+                },
+            },
         }
     }
 
@@ -112,7 +120,17 @@ def _rooms(model_id: str, entity: str, description: str, *, building: bool, meas
             "description": description,
             "entities": {entity: {}, **({"building": {}} if building else {})},
             "dimensions": {"area": {"kind": "categorical"}} if not measure else {},
-            "measures": {f"{model_id}_area": _measure(f"Area ({model_id.upper()})", "area")}
+            "measures": {
+                f"{model_id}_area": _measure(f"Area ({model_id.upper()})", "area"),
+                # A count of the model's own key: rooms here, room versions on the history copy.
+                f"{model_id}_count": {
+                    "label": f"Count ({model_id.upper()})",
+                    "kind": "entity_count",
+                    "entity_key": "version_id" if model_id == "rooms_hist" else "room_id",
+                    "accumulation": {"kind": "population"},
+                    "value_type": "count",
+                },
+            }
             if measure
             else {},
         }
@@ -252,11 +270,28 @@ def _hint(error: dict[str, Any]) -> dict[str, Any]:
     return next(hint for hint in error["recovery_hints"] if hint["kind"] == "use_lookalike_measure")
 
 
+def _follow(call: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    """``call`` as the hint says to write it from ``row``: its measures in place of the call's,
+    and its renamed columns wherever the call names them (order_by, having)."""
+    measures, columns = row["measures"], row.get("columns", {})
+    out = {**call, "select": [measures.get(item, item) for item in call["select"]]}
+    for key in ("order_by", "having"):
+        if key in call:
+            out[key] = [
+                {**item, "field": columns.get(item["field"], measures.get(item["field"]))}
+                if item["field"] in columns or item["field"] in measures
+                else item
+                for item in call[key]
+            ]
+    return out
+
+
 CAMPAIGN_REVENUE = {"select": [REVENUE], "group_by": [CAMPAIGN]}
 # The rooms model's objects, which hiding its entity hides with it.
 ROOM_OBJECTS = [
     "entity.shop_room",
     ROOMS_AREA,
+    "measure.shop.rooms_count",
     "dimension.shop_room_id",
     "dimension.shop_room_building_id",
     "relationship.room_building",
@@ -275,27 +310,32 @@ def test_the_one_model_holding_the_campaign_answers_and_says_its_rows(shop):
         "entity": "entity.shop_attributed_order",
         "measures": {REVENUE: ATTRIBUTED_REVENUE},
         "description": ATTRIBUTED,
+        "columns": {"revenue": "attributed_revenue"},
     }
     assert error["details"]["lookalike_measures"] == [row]
     assert error["message"].endswith(
-        "The same-named measures of another model answer this call as it stands: "
-        f"'{ATTRIBUTED_REVENUE}' in place of '{REVENUE}' (on 'entity.shop_attributed_order')."
+        "Another model's measure of the same name answers this call as it stands "
+        "(details.lookalike_measures)."
     )
     hint = _hint(error)
     assert error["recovery_hints"][0] is not None and error["recovery_hints"][0]["kind"] == (
         "use_lookalike_measure"
     )
     assert hint["audience"] == "caller"
-    assert hint["lookalike_measures"] == [row]
     assert hint["message"] == (
-        "Read the same measure from another model, keeping this call's group_by, where and "
-        f"time. '{ATTRIBUTED_REVENUE}' in place of '{REVENUE}' (on 'entity.shop_attributed_order'): "
-        "Only orders attributed to a marketing campaign; unattributed orders are not in it. "
-        "Each model holds its own rows, which may not be every row the user asked about: tell "
-        "the user which model the answer reads."
+        "Read the same measure from another model in details.lookalike_measures, keeping this "
+        f"call's group_by, where and time: '{ATTRIBUTED_REVENUE}' in place of '{REVENUE}' (on "
+        "'entity.shop_attributed_order'). Where the call names a result column (order_by, "
+        "having), use the row's `columns`. Each model holds its own rows, which may be fewer, "
+        "more or other rows (such as every version of each row) than the user asked about: "
+        "inspect the measure for its model's description, and tell the user which model the "
+        "answer reads."
     )
+    # Each look-alike is stated once, in the details; the hint names it by id only.
+    assert json.dumps(error).count(ATTRIBUTED) == 1
     # The named call answers, and only for the attributed orders' rows (hand SQL below).
-    swapped = {"select": [ATTRIBUTED_REVENUE], "group_by": [CAMPAIGN]}
+    swapped = _follow(CAMPAIGN_REVENUE, row)
+    assert swapped == {"select": [ATTRIBUTED_REVENUE], "group_by": [CAMPAIGN]}
     result = mcp_call(runtime, "execute", {"query": swapped})
     assert result["ok"], result
     with duckdb.connect(runtime.db_path, read_only=True) as connection:
@@ -314,9 +354,101 @@ def test_the_rooms_copy_that_reaches_buildings_answers(shop):
             "entity": "entity.shop_room",
             "measures": {HIST_AREA: ROOMS_AREA},
             "description": "One row per room in use.",
+            "columns": {"rooms_hist_area": "rooms_area"},
         }
     ]
     assert "room_legacy" not in json.dumps(error["details"]["lookalike_measures"])
+
+
+def test_a_ranked_call_written_as_the_hint_says_compiles(shop):
+    # Top buildings by room area, ordered and filtered by the result column's default name.
+    ranked = {
+        **AREA_BY_BUILDING,
+        "having": [{"field": "rooms_hist_area", "op": "gt", "value": 20}],
+        "order_by": [{"field": "rooms_hist_area", "direction": "desc"}],
+    }
+    runtime = shop()
+    (row,) = _refusal(_validate(runtime, ranked))["details"]["lookalike_measures"]
+    assert row["columns"] == {"rooms_hist_area": "rooms_area"}
+    swapped = _follow(ranked, row)
+    assert swapped["order_by"] == [{"field": "rooms_area", "direction": "desc"}]
+    result = mcp_call(runtime, "execute", {"query": swapped})
+    assert result["ok"], result
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        expected = connection.execute(
+            "SELECT b.name, SUM(r.area) FROM rooms r JOIN buildings b USING (building_id) "
+            "GROUP BY 1 HAVING SUM(r.area) > 20 ORDER BY 1"
+        ).fetchall()
+    assert sorted((item[BUILDING_NAME], item["rooms_area"]) for item in result["rows"]) == expected
+
+
+def test_two_tables_row_counts_are_never_lookalikes(shop):
+    # "How many orders per campaign": the orders table's row count is not the attributed orders'
+    # row count, and a count of room versions is not a count of rooms.
+    runtime = shop(v2=True)
+    for measure, entity, call in (
+        ("measure.shop.orders_count", "entity.shop_order", {"group_by": [CAMPAIGN]}),
+        ("measure.shop.rooms_hist_count", "entity.shop_room_hist", {"group_by": [BUILDING_NAME]}),
+    ):
+        error = _refusal(_validate(runtime, {"select": [measure], **call}))
+        assert "lookalike_measures" not in error["details"], measure
+        assert lookalike_swaps(runtime.package_config, [measure], entity) == []
+        assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, measure))
+    # A count of the same key on two copies of one table counts the same rooms.
+    assert lookalike_swaps(
+        runtime.package_config, ["measure.shop.rooms_count"], "entity.shop_room"
+    ) == [("entity.shop_room_v2", {"measure.shop.rooms_count": "measure.shop.rooms_v2_count"})]
+
+
+def _copies(root: Path, count: int) -> None:
+    """The shop package with ``count`` more copies of the rooms table, each reaching buildings
+    and described at a realistic length."""
+    files = _files(False)
+    seed = [SEED]
+    for index in range(count):
+        name = f"rooms_c{index:02d}"
+        files[f"models/{name}.yml"] = _rooms(
+            name,
+            f"room_c{index:02d}",
+            f"Copy {index} of the rooms table, loaded nightly from the facilities system of "
+            f"campus {index}, with one row per room in use, its building and its floor area in "
+            "square metres, kept for the planning team's space reports and reconciled against "
+            "the registrar's room list at the start of every term.",
+            building=True,
+            measure=True,
+        )
+        graph = files["graph.yml"]["graph"]
+        graph["entities"][f"room_c{index:02d}"] = {"key": ["room_id"], "model": name}
+        graph["relationships"][f"c{index:02d}_building"] = {
+            "entities": [f"room_c{index:02d}", "building"],
+            "cardinality": "many_to_one",
+        }
+        seed.append(f"CREATE TABLE {name} AS SELECT * FROM rooms;")
+    for name, body in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(body), encoding="utf-8")
+    with duckdb.connect(str(root / "shop.duckdb")) as connection:
+        connection.execute("\n".join(seed))
+
+
+def test_many_lookalikes_fit_the_response_budget_each_stated_once(tmp_path):
+    _copies(tmp_path, 30)
+    runtime = Runtime.from_path(str(tmp_path))
+    try:
+        response = _validate(runtime, AREA_BY_BUILDING)
+        rows = _refusal(response)["details"]["lookalike_measures"]
+        assert len(rows) == 31  # the rooms table and its 30 copies
+        text = json.dumps(response)
+        assert len(text) < max_result_chars()
+        # Each copy is stated once: its row in the details, and its id once more in the hint.
+        assert text.count("Copy 7 of the rooms table") == 1
+        assert text.count("measure.shop.rooms_c07_area") == 2
+        card = _card(runtime, HIST_AREA, AREA_BY_BUILDING)
+        assert len(card["lookalike_measures"]) == 31
+        assert len(json.dumps(card)) < max_result_chars()
+    finally:
+        runtime.close()
 
 
 def test_two_models_that_answer_are_both_named_and_none_is_picked(shop):
@@ -416,12 +548,12 @@ def test_enriching_again_keeps_only_what_the_view_sees_and_says_it_once(shop):
     assert author.details["lookalike_measures"]
     again = enrich_path_not_found(author, runtime.package_config)
     assert str(again) == str(author)
-    assert str(again).count("same-named measures") == 1
+    assert str(again).count("of the same name") == 1
     reader = enrich_path_not_found(author, view_of(runtime.package_config, CALLER))
     issue = exception_issue(reader, stage="validate")
     assert "lookalike_measures" not in issue["details"]
     assert ROOMS_AREA not in json.dumps(issue)
-    assert "same-named" not in issue["message"]
+    assert "of the same name" not in issue["message"]
 
 
 def test_plan_s_own_drafts_offer_no_lookalikes(shop):
@@ -456,7 +588,6 @@ def test_a_measure_card_names_its_lookalikes_with_their_rows(shop, verbosity):
                 "measure": ATTRIBUTED_REVENUE,
                 "entity": "entity.shop_attributed_order",
                 "description": ATTRIBUTED,
-                "grouping_entities": [],
                 "reaches": [CAMPAIGN],
             }
         ],
@@ -466,15 +597,12 @@ def test_a_measure_card_names_its_lookalikes_with_their_rows(shop, verbosity):
 
 def test_the_card_says_which_of_the_call_s_dimensions_each_lookalike_reaches(shop):
     card = _card(shop(v2=True), HIST_AREA, AREA_BY_BUILDING)
-    assert [
-        (row["measure"], row["grouping_entities"], row["reaches"])
-        for row in card["lookalike_measures"]
-    ] == [
-        (ROOMS_AREA, ["entity.shop_building"], [BUILDING_NAME]),
-        (V2_AREA, ["entity.shop_building"], [BUILDING_NAME]),
+    assert [(row["measure"], row["reaches"]) for row in card["lookalike_measures"]] == [
+        (ROOMS_AREA, [BUILDING_NAME]),
+        (V2_AREA, [BUILDING_NAME]),
     ]
     assert "grouping_entities" not in card  # the history copy reaches no other entity
-    # Without a call, each look-alike says only where it reaches.
+    # Without a call, each look-alike is named with its rows; its own card says where it reaches.
     bare = _card(shop(), ROOMS_AREA)
     assert bare["grouping_entities"] == ["entity.shop_building"]
     assert bare["lookalike_measures"] == [
@@ -482,9 +610,9 @@ def test_the_card_says_which_of_the_call_s_dimensions_each_lookalike_reaches(sho
             "measure": HIST_AREA,
             "entity": "entity.shop_room_hist",
             "description": "One row per version of a room, past and present.",
-            "grouping_entities": [],
         }
     ]
+    assert _card(shop(), HIST_AREA)["lookalike_measures"][0]["measure"] == ROOMS_AREA
     # The legacy copy's area is text: a categorical dimension, which no call totals.
     legacy = _card(shop(), LEGACY_AREA)
     assert (legacy["kind"], legacy["kind_semantics"]) == ("dimension", "categorical")
