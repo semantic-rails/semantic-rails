@@ -964,6 +964,23 @@ ratio) and a "which" naming a dimension rather than an entity draft no list. A t
 or "every" ends at the first word that names nothing more ("each plan make" groups by plan). The
 readiness checks read the same stand-ins, so a draft grouped by another entity's column stays
 held.
+
+**Totals: a hint, never a draft.** `plan` doesn't draft a total, subtotals, each group's total
+or a share: its status and `best.query` are the question's own. When the question asks for one
+("with the grand total", "with subtotals by store", "with each store's total across months",
+"each store's share of revenue") and the plan isn't `ok`, `warnings` carries
+`PLAN_TOTALS_HINT` (severity `info`). Its `details.add` holds the call fields that add the
+total, named with `best.query`'s ids: `{"totals": []}`, `{"totals": [<ids>]}`, or a
+`select` item of kind [`total`](QUERY_CALL.md#coarser-totals) or
+[`share`](QUERY_CALL.md#share-of-a-total). A series' grand total is a `total` over every column
+and the period; subtotals keep the named groupings in the phrase's order ("by month" on a series
+is `{"totals": []}`, since each total row keeps its period). When no one shape answers the
+question (a word that names none of `best.query`'s groupings, a listed period, or a level that
+would only repeat the call's rows), there is no hint. Once `best.query` answers the rest of the
+question, add them and validate before executing. A catalog name holding a total's word ("Food
+revenue share"), one value as a part of another ("food revenue as a share of total revenue"),
+and any "percent" wording get no hint.
+
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.
@@ -1052,6 +1069,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, the message names the dimension and says no values were read, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query: true`, which a first call may pass too. No warehouse lookup runs without that argument; a declared empty domain remains a successful empty result |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
+| `PLAN_TOTALS_HINT` | `plan` | Severity `info`, on a plan that isn't `ok` whose question asks for a total (`details.kind`: `rows`, `subtotals`, `beside` or `share`, in `details.phrase`): `details.add` is the call shape that adds it, named with `best.query`'s ids. plan drafts no total, so this never changes the status. See [Plan](#plan) |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned the first `max_rows` rows; more exist — narrow the query or raise `max_rows` |
 | `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`: `edge` is the date of the measure's last visible row (`edge_source` `last_row`), or of its declared edge (`zero_through`: `loaded`, with a null `edge` when the load log holds no date, or `now`). Both are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
 | `ZERO_AFTER_LAST_ROW` | `execute` | A note: a sum or count whose package says its table is always loaded (`zero_through: now`) read days after its last row as `0`, as a stalled load would. `details.measures` lists `{id, last_row}`. See [Empty periods](PACKAGE_AUTHORING.md#empty-periods) |
