@@ -1418,8 +1418,12 @@ statement, which marks those groups (no other query runs):
 
 `zero_filled` counts the returned groups (total rows aside) where the output reads `0` and no
 row of its measure reaches the group; outputs zero in the same groups share one sentence.
-`entities` names the entity with no rows there. The `having` condition leaves those groups out,
-and any other group that reads `0`. A truncated answer counts the rows shown, as a lower bound
+`entities` names the entity with no rows there. `having` is a condition that leaves out exactly
+those groups. It names an output that counts its own entity's key, which reads `0` only where
+its rows never reached the group; a sum or a conditional count can read a real `0` as well. With
+no such output among them, or when another returned row reads the same `0`, the note gives none
+(signups and large orders by customer: a customer whose orders are all small reads a real 0
+large orders). A truncated answer counts the rows shown, as a lower bound
 ("at least 1 group (1 of the 3 rows shown)"). A group that reads `NULL` (no data in scope) or
 whose rows sum to `0` is never counted. The note comes under either `observation_scope`; under
 `query`, a measure with no value inside the call's filters reads `NULL` in every group instead,
