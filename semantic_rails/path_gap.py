@@ -3,8 +3,8 @@
 ``missing_link`` names the one change that would connect the call's start to its target: a
 relationship that allows only the other walk, a key one side already holds, an entity that
 holds both sides' keys, or an identifier both share that is a key of neither (a many-to-many
-join, which needs a link entity). ``closest_dimensions`` and ``closest_measures`` rank what the
-caller could ask for instead.
+join, which needs a link entity). ``closest_dimensions`` ranks the reachable dimensions the
+caller could group by instead, each a different dimension to confirm with them first.
 
 Nothing here chooses, caches or renders a route: it reads the package's entities, columns and
 walkable relationship graph, and the targets route resolution already proved reachable. The
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from .schema import PackageConfig
@@ -26,7 +26,6 @@ _COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Words that say a column identifies something without saying what.
 _IDENTIFIER_WORDS = frozenset({"id", "key", "code", "number", "num", "no", "uuid", "sk", "pk"})
 CLOSEST_DIMENSIONS = 5
-CLOSEST_MEASURES = 3
 
 
 def _words(*texts: Any) -> set[str]:
@@ -188,6 +187,8 @@ def path_gap(
                     near_entity: list(columns.keys[near_entity]),
                     far_entity: list(columns.keys[far_entity]),
                 },
+                # Keyed by the near side's own key: one bridge row per near row.
+                "via_keyed_by_near": columns.key_of(bridge) == columns.key_of(near_entity),
             },
             near_entity,
         )
@@ -302,9 +303,15 @@ def missing_link_fix(link: dict[str, Any]) -> str:
         )
     if kind == "bridge":
         near, far = link["entities"]
+        via = str(link["via"])
+        consequence = (
+            f" Each '{near}' row then meets one '{via}' row, so nothing repeats."
+            if link.get("via_keyed_by_near")
+            else _repeats(near, via)
+        )
         return (
-            f"Relate '{link['via']}' to '{near}' and to '{far}' on those keys, so a call walks "
-            f"through it.{_repeats(near, link['via'])}"
+            f"Relate '{via}' to '{near}' and to '{far}' on those keys, so a call walks "
+            f"through it.{consequence}"
         )
     if kind == "many_to_many":
         near, far = link["entities"]
@@ -317,7 +324,8 @@ def missing_link_fix(link: dict[str, Any]) -> str:
             )
         return (
             f"Add a link entity with one row per pair of '{near}' and '{far}', related to both."
-            + _repeats(near, far, "it")
+            f" Each '{near}' row then meets many '{far}' rows through it, so a measure read "
+            f"through '{near}' repeats across them."
         )
     return ""
 
@@ -361,50 +369,3 @@ def closest_dimensions(
         if dim.entity in order and dim.id not in asked
     )
     return _ranked(rows, wanted, population)[:CLOSEST_DIMENSIONS]
-
-
-def closest_measures(
-    config: PackageConfig,
-    target: str,
-    asked: Sequence[str],
-    runnable: Callable[[str], bool] | None = None,
-) -> list[str]:
-    """Measures that do reach ``target``, that the caller could run (``runnable``: no access
-    policy denies or withholds it), and whose names share words with the measures the call asked
-    for. Each is a different measure: a stand-in to offer, never to switch to silently. Without
-    ``runnable`` the caller's policies are unknown, so nothing is offered."""
-    from .compiler_parts.indexes import get_package_analysis
-    from .fanout import eligible_path_targets, package_hop_limit
-
-    if runnable is None:
-        return []
-    measures = {row.id: row for row in config.measures}
-    wanted = set().union(
-        *(_words(measures[m].label, measures[m].name) for m in asked if m in measures)
-    )
-    if not wanted:
-        return []
-    analysis = get_package_analysis(config)
-    reverse: dict[str, list[tuple[str, str]]] = {}
-    for source, edges in analysis.graph.items():
-        for end, rel in edges:
-            reverse.setdefault(end, []).append((source, rel))
-    reaches = _hops(reverse, target, package_hop_limit(config))
-    population = [_words(row.label, row.name) for row in config.measures]
-    rows = (
-        (row.id, _words(row.label, row.name), (reaches[row.entity],))
-        for row in config.measures
-        if row.entity in reaches and row.id not in set(asked)
-    )
-    out: list[str] = []
-    # A walk toward the target isn't a route the package answers by: check each one offered,
-    # a bounded number of times.
-    for measure_id in _ranked(rows, wanted, population)[: CLOSEST_MEASURES * 3]:
-        entity = measures[measure_id].entity
-        if not runnable(measure_id):
-            continue
-        if entity == target or target in eligible_path_targets(config, start=entity):
-            out.append(measure_id)
-        if len(out) == CLOSEST_MEASURES:
-            break
-    return out

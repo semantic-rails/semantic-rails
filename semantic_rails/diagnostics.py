@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from datetime import date, timedelta
 from difflib import get_close_matches
 from typing import Any
@@ -442,18 +442,6 @@ def recovery_hints_for_error(
                     "message": message,
                     "compatible_group_by_dimensions": compatible_dims,
                     **({"closest_dimensions": closest} if closest else {}),
-                }
-            )
-        stand_ins = list(details.get("closest_measures", []) or [])
-        if stand_ins:
-            hints.append(
-                {
-                    "kind": "switch_measure",
-                    "message": (
-                        f"Measures that do reach '{target}': {stand_ins}. Each is a different "
-                        "measure, so ask the user before answering with one."
-                    ),
-                    "closest_measures": stand_ins,
                 }
             )
         if items and reachable:
@@ -1451,7 +1439,6 @@ _GAP_KEYS = (
     "missing_link",
     "nearest_entity",
     "closest_dimensions",
-    "closest_measures",
     "unknown_entity",
 )
 # A caller's own id is echoed at most this long (a refusal's own message names it whole).
@@ -1475,31 +1462,25 @@ def _closest_entity_ids(config: PackageConfig, missing: str) -> list[str]:
     return [by_tail[match] for match in matches if by_tail[match] != missing]
 
 
-def enrich_path_not_found(
-    exc: SemanticLayerError,
-    config: PackageConfig,
-    *,
-    runnable_measure: Callable[[str], bool] | None = None,
-) -> SemanticLayerError:
+def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     """Attach reachable-target context to ``PATH_NOT_FOUND``.
 
     Shared path eligibility approves alternatives: relationship
     directions, hop limits, and route decisions apply to hints too.
-    ``runnable_measure`` says whether the caller's access policies let them run a measure;
-    stand-in measures are offered only with it, and only ones it allows. Enriching again (under
-    another view) rebuilds the gap from scratch, so nothing an earlier view saw survives.
+    Enriching again (under another view) rebuilds the gap from scratch, so nothing an earlier
+    view saw survives.
     """
     if exc.code != "PATH_NOT_FOUND":
         return exc
     details = dict(exc.details or {})
     message = str(exc)
     # Undo an earlier enrichment: its facts were appended to the message, after the base text.
-    prior = [details.pop(key, None) for key in _GAP_KEYS]
+    prior = {key: details.pop(key, None) for key in _GAP_KEYS}
     from .path_gap import missing_link_fact
 
     for fact in (
-        missing_link_fact(prior[0] or {}),
-        _unknown_entity_fact(str(prior[4])) if prior[4] else "",
+        missing_link_fact(prior["missing_link"] or {}),
+        _unknown_entity_fact(str(prior["unknown_entity"])) if prior["unknown_entity"] else "",
     ):
         if fact:
             message = message.replace(f": {fact}.", "")
@@ -1557,7 +1538,7 @@ def enrich_path_not_found(
     reason = str(details.get("reason") or "")
     if reason == "excluded_by_decision":
         return SemanticLayerError(exc.code, message, details=details)
-    from .path_gap import closest_dimensions, closest_measures, path_gap
+    from .path_gap import closest_dimensions, path_gap
 
     entity_ids = [row.id for row in config.entities]
     if target not in entity_ids:
@@ -1581,11 +1562,6 @@ def enrich_path_not_found(
     closest = closest_dimensions(config, start, reachable_sorted, target, items)
     if closest:
         details["closest_dimensions"] = closest
-    stand_ins = closest_measures(
-        config, target, list(details.get("measures") or []), runnable_measure
-    )
-    if stand_ins:
-        details["closest_measures"] = stand_ins
     return SemanticLayerError(exc.code, message, details=details)
 
 

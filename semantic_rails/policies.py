@@ -59,7 +59,7 @@ from .policy_rules import visible_only_listed as _visible_only_listed
 from .query_call import refusal
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, base_of, require_base
+from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 
 WITHHOLD = "withhold_values"
@@ -541,40 +541,6 @@ def withheld_measure_ids(
     recipes = set(withheld) - measures
     reads = set(withheld) | (bind_metadata_objects(config, recipes) if recipes else frozenset())
     return reads & measures
-
-
-def runnable_measure_check(
-    config: PackageConfig,
-    *,
-    environment: str = "",
-    audience: str = "",
-    roles: Iterable[str] | None = None,
-) -> Callable[[str], bool]:
-    """Whether this caller could run a measure on its own: no access policy denies or hides it
-    and none withholds its values. A suggestion offers only those. ``config`` may be a view;
-    policies are read from the whole package. Anything that can't be checked counts as not
-    runnable."""
-    base = base_of(config)
-    scope: dict[str, Any] = {
-        "environment": environment,
-        "audience": audience,
-        "roles": list(roles or []),
-    }
-    withheld: set[str] | None = None
-
-    def runnable(measure_id: str) -> bool:
-        nonlocal withheld
-        try:
-            if withheld is None:
-                withheld = withheld_measure_ids(base, **scope)
-            if measure_id in withheld:
-                return False
-            effects = query_policy_effects(base, [measure_id], **scope)
-        except SemanticLayerError:
-            return False
-        return not any(row["action"] in {"deny", "hidden"} for row in effects)
-
-    return runnable
 
 
 def withheld_shape(
