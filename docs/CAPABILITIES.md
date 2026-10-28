@@ -308,7 +308,7 @@ Current behavior:
 ### Execution Backends
 
 - DuckDB is the default local execution engine and supports package-local seed/bootstrap workflows.
-- Snowflake SQL rendering is supported through the Snowflake dialect. Live execution is available through the Snow CLI adapter when `package.connection.kind: snowflake_cli` is configured, or through the optional native connector when `package.connection.kind: snowflake_native` and `semantic-rails[snowflake]` are installed.
+- Snowflake SQL rendering is supported through the Snowflake dialect. Live execution is available through the Snow CLI adapter when `package.connection.kind: snowflake_cli` is configured, or through the optional native connector when `package.connection.kind: snowflake_native` and `semantic-rails[snowflake]` are installed. Live runs against Snowflake are paused, so execution there is compile-tested only for now (see the README's [what is tested live](../README.md#what-is-tested-live)).
 - Managed cloud execution-on-behalf is intentionally not part of the local runtime contract; use `compile` for SQL/plan output and customer-side connectors for execution.
 
 ### Package Verification And Artifacts
