@@ -854,6 +854,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             node[key] = _operand(value, child, context)
         else:
             node[key] = value
+    node["kind"] = kind
     if text_word:
         node["op"] = text_word
     if node.get("aggregation") and "measure" in node:

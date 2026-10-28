@@ -286,24 +286,38 @@ def test_a_package_metric_cannot_be_a_total():
 
 
 @pytest.fixture
-def per_store_revenue(duckdb_backend):
-    """Revenue may only be read grouped by store."""
+def revenue_per(duckdb_backend):
+    """Runtimes where revenue may only be read grouped by a given dimension."""
     base = duckdb_backend.runtimes["utc_authored"]
-    policy = SemanticPolicyConfig(
-        id="policy.shop.revenue_per_store",
-        kind="metric_constraint",
-        object_ids=[REVENUE],
-        config={"required_group_by": [STORE]},
-    )
-    config = base.package_config
-    runtime = Runtime.from_config(
-        replace(config, semantic_policies=[*config.semantic_policies, policy]),
-        source_path=base.source_path,
-    )
+    opened: list[Runtime] = []
+
+    def runtime(dimension: str) -> Runtime:
+        policy = SemanticPolicyConfig(
+            id="policy.shop.revenue_per_store",
+            kind="metric_constraint",
+            object_ids=[REVENUE],
+            config={"required_group_by": [dimension]},
+        )
+        config = base.package_config
+        opened.append(
+            Runtime.from_config(
+                replace(config, semantic_policies=[*config.semantic_policies, policy]),
+                source_path=base.source_path,
+            )
+        )
+        return opened[-1]
+
     try:
         yield runtime
     finally:
-        runtime.close()
+        for runtime_ in opened:
+            runtime_.close()
+
+
+@pytest.fixture
+def per_store_revenue(revenue_per):
+    """Revenue may only be read grouped by store."""
+    return revenue_per(STORE)
 
 
 def test_a_total_beside_a_governed_item_is_held_to_its_policy(per_store_revenue):
@@ -341,15 +355,17 @@ PERCENT_OF_STORES = {
 }
 
 
-@pytest.mark.parametrize("expression", [SHARE_OF_STORES, PERCENT_OF_STORES])
-def test_a_share_over_a_required_grouping_is_refused_as_its_total_is(per_store_revenue, expression):
+@pytest.mark.parametrize("form", ["bare", "nested", "padded-kind"])
+def test_a_share_over_a_required_grouping_is_refused_as_its_total_is(per_store_revenue, form):
     """A share's denominator is its input across the ``over`` columns: revenue across stores,
-    the total the policy refuses. The share is refused with the total's code and words, bare or
-    inside another expression, at validate as at execute."""
-    for item, word in (
-        ({"expression": expression, "as": "part"}, "share"),
-        (_total(REVENUE, [STORE], "part"), "total"),
-    ):
+    the total the policy refuses. The share is refused with the total's code and words, bare,
+    inside another expression or with its kind padded, at validate as at execute."""
+    share, total = dict(SHARE_OF_STORES), _total(REVENUE, [STORE], "part")
+    if form == "nested":
+        share = {**PERCENT_OF_STORES, "left": share}
+    if form == "padded-kind":
+        share["kind"], total["expression"]["kind"] = " share ", " total "
+    for item, word in (({"expression": share, "as": "part"}, "share"), (total, "total")):
         call = {"select": [REVENUE, item], "group_by": [STORE]}
         with pytest.raises(SemanticLayerError) as raised:
             per_store_revenue.query(call)
@@ -389,6 +405,129 @@ def test_a_share_that_keeps_the_required_grouping_answers(per_store_revenue):
     orders = {"expression": {"kind": "share", "input": ORDERS, "over": [STORE]}, "as": "part"}
     answer = per_store_revenue.query({"select": [REVENUE, orders], "group_by": [STORE]})
     assert sum(row["part"] for row in answer["rows"]) == pytest.approx(1)
+
+
+STORE_KEY, STORE_NAME = "dimension.shop_store_id", "dimension.shop_store_name"
+CUSTOMER_KEY, CUSTOMER_NAME = "dimension.shop_customer_id", "dimension.shop_customer_name"
+TO_STORE = [
+    {"from": "entity.shop_order", "to": "entity.shop_store", "via": ["relationship.orders_store"]}
+]
+# Stores with revenue of at least 10 (each store's own), and customers with an order that quarter.
+BIG_STORES = {
+    "entity": "entity.shop_store",
+    "having": [{"field": REVENUE, "op": "gte", "value": 10}],
+    "over": "all_time",
+}
+BUYERS = {
+    "entity": "entity.shop_customer",
+    "having": [{"field": ORDERS, "op": "gte", "value": 1}],
+    "over": "period",
+}
+
+
+def _share(input_id: str, over: list[str]) -> dict[str, Any]:
+    return {"expression": {"kind": "share", "input": input_id, "over": over}, "as": "part"}
+
+
+# (the grouping revenue requires, the call, the item refused or None when the call answers)
+DENOMINATORS = {
+    # The window drops a name's key with the name: revenue across stores.
+    "over-a-name-grouped-with-its-key": (
+        STORE_KEY,
+        {"select": [REVENUE, _share(REVENUE, [STORE_NAME])], "group_by": [STORE_NAME, STORE_KEY]},
+        "share",
+    ),
+    # The window keeps only the name: the two customers named Ann share one denominator.
+    "over-a-key-grouped-with-its-name": (
+        CUSTOMER_KEY,
+        {
+            "select": [REVENUE, _share(REVENUE, [CUSTOMER_KEY])],
+            "group_by": [CUSTOMER_NAME, CUSTOMER_KEY],
+        },
+        "share",
+    ),
+    # Without the store, the call walks no route to it: the decision leaves the check's call.
+    "share-with-routes": (
+        STORE_KEY,
+        {
+            "select": [REVENUE, _share(REVENUE, [STORE_KEY])],
+            "group_by": [STORE_KEY],
+            "routes": TO_STORE,
+        },
+        "share",
+    ),
+    "total-with-routes": (
+        STORE_KEY,
+        {
+            "select": [REVENUE, _total(REVENUE, [STORE_KEY], "part")],
+            "group_by": [STORE_KEY],
+            "routes": TO_STORE,
+        },
+        "total",
+    ),
+    # The entity filter reads each store's own revenue; the denominator adds up orders only.
+    "orders-share-under-a-revenue-filter": (
+        STORE_KEY,
+        {
+            "select": [ORDERS, _share(ORDERS, [STORE_KEY])],
+            "group_by": [STORE_KEY],
+            "where": [BIG_STORES],
+        },
+        None,
+    ),
+    "revenue-share-under-a-revenue-filter": (
+        STORE_KEY,
+        {
+            "select": [REVENUE, _share(REVENUE, [STORE_KEY])],
+            "group_by": [STORE_KEY],
+            "where": [BIG_STORES],
+        },
+        "share",
+    ),
+    # A filter per period doesn't keep the denominator over the store and period from its check.
+    "over-store-and-period-under-a-filter-per-period": (
+        STORE,
+        {
+            "select": [REVENUE, _share(REVENUE, [STORE, "period"])],
+            "group_by": [STORE],
+            "time": QUARTER,
+            "where": [BUYERS],
+        },
+        "share",
+    ),
+    "over-period-under-a-filter-per-period": (
+        STORE,
+        {
+            "select": [REVENUE, _share(REVENUE, ["period"])],
+            "group_by": [STORE],
+            "time": QUARTER,
+            "where": [BUYERS],
+        },
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", DENOMINATORS)
+def test_a_denominator_is_checked_as_the_call_computes_it(revenue_per, case):
+    """The check reads a share's denominator as its window takes it: without the ``over``
+    columns and each ``over`` name's key, and with no entity filter, which reads per entity.
+    A route the call without the ``over`` columns no longer walks leaves it, for a total too."""
+    required, call, refused = DENOMINATORS[case]
+    runtime = revenue_per(required)
+    if refused is None:
+        # Within each group the share keeps, the parts add up to the whole.
+        over = call["select"][1]["expression"]["over"]
+        wholes: dict[tuple[Any, ...], float] = {}
+        for row in runtime.query(call)["rows"]:
+            group = tuple(row[column] for column in call["group_by"] if column not in over)
+            wholes[group] = wholes.get(group, 0) + (row["part"] or 0)
+        assert wholes and all(whole == pytest.approx(1) for whole in wholes.values())
+        return
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(call)
+    assert raised.value.code == "POLICY_DENIED"
+    assert f"the {refused} in 'part' reads it across them" in str(raised.value)
 
 
 SEATS = "measure.shop.seats"

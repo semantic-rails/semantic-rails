@@ -31,6 +31,7 @@ from .empty_groups import recording_outputs_as
 from .lowering_common import _dialect
 from .namespacing import _namespace_sql_select
 from .paths import _join_condition, display_key
+from .post_aggregation import share_over
 
 # The keys of a call the coarser call keeps as they are; the rest it sets or leaves out.
 _CARRIED = ("version", "where", "temporal_role_overrides", "route_decisions", "observation_scope")
@@ -282,8 +283,10 @@ def coarser_calls(
     """The calls a call reads at a coarser grain, in the caller's terms (``query`` is the
     engine's form of the call, before binding), for the request's policies to hold each to as
     a call of its own: ``("total", alias, call)`` for each total's coarser call, by the first
-    total it answers, and ``("share", alias, call)`` for each share's denominator, its input in
-    the call without the share's ``over`` columns, by the select item the share is in."""
+    total it answers, and ``("share", alias, call)`` for each share's denominator, by the select
+    item the share is in. A denominator is the share's input grouped as its window is taken
+    (``share_partition``: without the columns :func:`share_over` names), with no entity filter,
+    which reads its aggregate per entity and was held to the policies with the call itself."""
     select = list(query.get("select") or [])
     out = []
     for over, items in _over_groups(selected_totals(select)).items():
@@ -294,7 +297,11 @@ def coarser_calls(
         for share in _shares(row.get("expression")):
             source = share.get("input")
             source = dict(source) if isinstance(source, Mapping) else source
-            reads = [{"expression": source, "as": "value_1"}]
-            payload = coarse_call(query, share.get("over") or [], reads, config)
+            across = share_over(share.get("over") or [], config)
+            payload = coarse_call(query, across, [{"expression": source, "as": "value_1"}], config)
+            payload["group_by"] = [
+                column for column in query.get("group_by") or [] if column not in across
+            ]
+            payload["metric_filters"] = []
             out.append(("share", str(row.get("as")), payload))
     return out

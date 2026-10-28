@@ -11,6 +11,7 @@ effects to execution unchanged; responses carry ``visible_view.public_effects``.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
@@ -292,7 +293,7 @@ def _coarser_blocking(
     blocking: list[dict[str, Any]] = []
     for item, alias, payload in coarser_calls(config, query):
         try:
-            binding = bind_query(config, None, payload)
+            payload, binding = _bound_coarser(config, payload)
         except SemanticLayerError:
             continue  # a total's compile refuses it there; a share's input binds as its call's
         for row in query_policy_effects(
@@ -302,6 +303,25 @@ def _coarser_blocking(
                 violations = [{**cut, item: alias} for cut in row.get("violations") or []]
                 blocking.append({**row, **({"violations": violations} if violations else {})})
     return blocking
+
+
+def _bound_coarser(
+    config: PackageConfig, payload: dict[str, Any]
+) -> tuple[dict[str, Any], BoundQuery]:
+    """A coarser call and its binding. A route decision it no longer walks (its ``over``
+    columns were the route's end) leaves it, one at a time, instead of refusing the binding."""
+    while True:
+        try:
+            return payload, bind_query(config, None, payload)
+        except SemanticLayerError as exc:
+            details = exc.details or {}
+            rows = list(payload.get("route_decisions") or [])
+            unused = details.get("reason") == "route_decision_unused"
+            index = re.fullmatch(r"routes\[(\d+)\]", str(details.get("path"))) if unused else None
+            if index is None or int(index[1]) >= len(rows):
+                raise
+            del rows[int(index[1])]
+            payload = {**payload, "route_decisions": rows}
 
 
 def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLayerError:

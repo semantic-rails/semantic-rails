@@ -997,10 +997,12 @@ zero or NULL total reads NULL. The input is one measure or metric id whose value
 rows (a sum or count of a flow, a count of distinct row keys, or sums and differences of
 them); a ratio, an average or other statistic, or a stock is refused with `ROLLUP_UNSAFE`. Each `over` item is a `group_by` id of
 the call, or `period` when `time` has a grain, or it is refused at its path. The denominator is
-held to the caller's policies as its input in the call without the `over` columns, the
-[total](#coarser-totals) over the same columns: a share over a grouping a policy requires is
-refused with `POLICY_DENIED` ("... and the share in 'store_share' reads it across them"), as
-that total is, bare or inside another expression, and a share of a withheld value is refused.
+held to the caller's policies as a call of its own: its input grouped as the total is taken,
+without the `over` columns and the key beside each `over` name (an entity filter reads each
+entity's own aggregate, and is held to them with the call). A share over a grouping a policy
+requires is refused with `POLICY_DENIED` ("... and the share in 'store_share' reads it across
+them"), as a [total](#coarser-totals) over it is, bare or inside another expression, and a share
+of a withheld value is refused.
 The answer names the denominator and the unit in `assumptions`, with how many rows the total
 spans when every returned row's total spans the same number:
 
