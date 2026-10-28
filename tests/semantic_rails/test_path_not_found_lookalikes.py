@@ -23,7 +23,8 @@ import yaml
 
 from semantic_rails.diagnostics import enrich_path_not_found, exception_issue
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.planner import plan_payload
+from semantic_rails.planner.call import Call
+from semantic_rails.planner.plan_query import _validate_query
 from semantic_rails.runtime import Runtime
 from semantic_rails.visible_view import view_of
 from tests.semantic_rails.hidden_absent import (
@@ -79,9 +80,7 @@ def _measure(label: str, expr: str, value_type: str = "number") -> dict[str, Any
     }
 
 
-def _orders(
-    model_id: str, entity: str, description: str, dimension: str, key: str, customer: bool
-):
+def _orders(model_id: str, entity: str, description: str, dimension: str, key: str, customer: bool):
     return {
         "model": {
             "id": model_id,
@@ -337,9 +336,10 @@ def test_a_windowed_call_reads_the_lookalike_by_its_own_clock(shop):
     query = {**CAMPAIGN_REVENUE, "time": {"grain": "month", "start": "2026-08-01"}}
     (row,) = _refusal(_validate(shop(), query))["details"]["lookalike_measures"]
     assert row["temporal_role"] == "temporal_role.shop_attributed_order_ordered_at"
-    assert "by 'temporal_role.shop_attributed_order_ordered_at'" in _hint(
-        _refusal(_validate(shop(), query))
-    )["message"]
+    assert (
+        "by 'temporal_role.shop_attributed_order_ordered_at'"
+        in _hint(_refusal(_validate(shop(), query)))["message"]
+    )
 
 
 def test_a_lookalike_that_totals_another_number_is_never_named(shop):
@@ -411,15 +411,13 @@ def test_enriching_again_keeps_only_what_the_view_sees_and_says_it_once(shop):
 
 
 def test_plan_s_own_drafts_offer_no_lookalikes(shop):
-    # plan validates its drafts with the caller's identity; their refusals stay as they were.
+    # plan validates its drafts under the caller's identity; their refusals stay as they were.
     runtime = shop()
-    payload = plan_payload(
-        runtime,
-        intent="revenue by campaign",
-        partial_query={"select": [REVENUE], "group_by": [CAMPAIGN], "policy_context": {}},
-    )
-    assert payload["status"] != "ok"
-    assert "lookalike" not in json.dumps(payload)
+    report = _validate_query(runtime, Call.from_call(CAMPAIGN_REVENUE, runtime._config.measures))
+    (error,) = report["errors"]
+    assert error["code"] == "PATH_NOT_FOUND"
+    assert "lookalike_measures" not in error["details"]
+    assert ATTRIBUTED_REVENUE not in json.dumps(report)
 
 
 # --- The card says where a measure reaches -------------------------------------------------------

@@ -184,6 +184,7 @@
   "tests/semantic_rails/test_package_snapshot.py": 18.94,
   "tests/semantic_rails/test_package_writer.py": 2.155,
   "tests/semantic_rails/test_path_not_found_gaps.py": 3.4,
+  "tests/semantic_rails/test_path_not_found_lookalikes.py": 1.2,
   "tests/semantic_rails/test_percentile_threshold.py": 3.63,
   "tests/semantic_rails/test_plan.py": 24.477,
   "tests/semantic_rails/test_plan_accuracy_guard.py": 60.323,
