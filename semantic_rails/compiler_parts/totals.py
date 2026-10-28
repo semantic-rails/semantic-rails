@@ -9,12 +9,13 @@ at that grain, so a distinct count or an average is never added up from the rows
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import replace
 from typing import Any
 
 from ..ast import TIME_AXIS, time_output_alias
 from ..errors import SemanticLayerError
+from ..expressions import _expression_children
 from ..ir import LogicalPlan
 from ..schema import PackageConfig
 from ..sql_ast import (
@@ -263,15 +264,37 @@ def total_sources(
     return ctes, joins, values
 
 
+def _shares(node: Any) -> Iterator[Mapping[str, Any]]:
+    """Every share in an engine expression, at any depth."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _shares(item)
+    elif isinstance(node, Mapping):
+        if node.get("kind") == "share":
+            yield node
+        for _, child in _expression_children(node):
+            yield from _shares(child)
+
+
 def coarser_calls(
     config: PackageConfig, query: Mapping[str, Any]
-) -> list[tuple[str, dict[str, Any]]]:
-    """Each total's coarser call in the caller's terms (``query`` is the engine's form of the
-    call, before binding), by the first total it answers, for the request's policies to hold
-    it to as a call of its own."""
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """The calls a call reads at a coarser grain, in the caller's terms (``query`` is the
+    engine's form of the call, before binding), for the request's policies to hold each to as
+    a call of its own: ``("total", alias, call)`` for each total's coarser call, by the first
+    total it answers, and ``("share", alias, call)`` for each share's denominator, its input in
+    the call without the share's ``over`` columns, by the select item the share is in."""
+    select = list(query.get("select") or [])
     out = []
-    for over, items in _over_groups(selected_totals(query.get("select") or [])).items():
-        sources = _row_sources(query.get("select") or [], over)
-        select = [{"expression": source, "as": f"value_{n}"} for n, source in enumerate(sources, 1)]
-        out.append((items[0][0], coarse_call(query, over, select, config)))
+    for over, items in _over_groups(selected_totals(select)).items():
+        sources = _row_sources(select, over)
+        reads = [{"expression": source, "as": f"value_{n}"} for n, source in enumerate(sources, 1)]
+        out.append(("total", items[0][0], coarse_call(query, over, reads, config)))
+    for row in select:
+        for share in _shares(row.get("expression")):
+            source = share.get("input")
+            source = dict(source) if isinstance(source, Mapping) else source
+            reads = [{"expression": source, "as": "value_1"}]
+            payload = coarse_call(query, share.get("over") or [], reads, config)
+            out.append(("share", str(row.get("as")), payload))
     return out

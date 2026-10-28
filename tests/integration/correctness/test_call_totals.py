@@ -332,6 +332,65 @@ def test_a_total_over_a_required_grouping_is_refused(per_store_revenue):
     assert allowed["rows"]
 
 
+SHARE_OF_STORES = {"kind": "share", "input": REVENUE, "over": [STORE]}
+PERCENT_OF_STORES = {
+    "kind": "arithmetic",
+    "op": "multiply",
+    "left": SHARE_OF_STORES,
+    "right": {"kind": "literal", "value": 100},
+}
+
+
+@pytest.mark.parametrize("expression", [SHARE_OF_STORES, PERCENT_OF_STORES])
+def test_a_share_over_a_required_grouping_is_refused_as_its_total_is(per_store_revenue, expression):
+    """A share's denominator is its input across the ``over`` columns: revenue across stores,
+    the total the policy refuses. The share is refused with the total's code and words, bare or
+    inside another expression, at validate as at execute."""
+    for item, word in (
+        ({"expression": expression, "as": "part"}, "share"),
+        (_total(REVENUE, [STORE], "part"), "total"),
+    ):
+        call = {"select": [REVENUE, item], "group_by": [STORE]}
+        with pytest.raises(SemanticLayerError) as raised:
+            per_store_revenue.query(call)
+        assert raised.value.code == "POLICY_DENIED"
+        assert (
+            f"{REVENUE} can only be read grouped by {STORE}, and the {word} in 'part' reads it "
+            "across them" in str(raised.value)
+        )
+        assert raised.value.details["recovery_hints"][0]["message"] == (
+            f"Take {STORE} out of the {word}'s over, or remove the {word}."
+        )
+        assert [row["code"] for row in per_store_revenue.validate(call)["errors"]] == [
+            "POLICY_DENIED"
+        ]
+
+
+def test_a_share_that_keeps_the_required_grouping_answers(per_store_revenue):
+    """Over the period, each store's denominator is that store's revenue, still grouped by
+    store. A share of orders across stores reads no revenue there, so it answers beside
+    revenue."""
+    call = {
+        "select": [REVENUE, {"expression": {**SHARE_OF_STORES, "over": ["period"]}, "as": "part"}],
+        "group_by": [STORE],
+        "time": QUARTER,
+    }
+    rows = per_store_revenue.query(call)["rows"]
+    stores = {row[STORE]: Decimal(0) for row in rows}
+    for row in rows:
+        stores[row[STORE]] += Decimal(row["revenue"] or 0)
+    assert len(stores) > 1
+    assert [row["part"] for row in rows] == [
+        None
+        if row["revenue"] is None
+        else pytest.approx(float(Decimal(row["revenue"]) / stores[row[STORE]]))
+        for row in rows
+    ]
+    orders = {"expression": {"kind": "share", "input": ORDERS, "over": [STORE]}, "as": "part"}
+    answer = per_store_revenue.query({"select": [REVENUE, orders], "group_by": [STORE]})
+    assert sum(row["part"] for row in answer["rows"]) == pytest.approx(1)
+
+
 SEATS = "measure.shop.seats"
 PLAN = "dimension.shop_account_day_plan"
 SNAPSHOT_DAY = "temporal_role.shop_account_day_snapshot_day"
