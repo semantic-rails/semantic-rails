@@ -1117,7 +1117,10 @@ def _foldable_leaf_signature(
 ) -> tuple[Any, ...] | None:
     measures = _measure_index(config)
     measure = measures[measure_plan.bound_measure.measure_id]
-    if measure.measure_class == "semi_additive" or measure_plan.rewrite_strategy == "parent_lookup":
+    if measure.measure_class == "semi_additive" or measure_plan.rewrite_strategy in {
+        "parent_lookup",
+        "parent_value",
+    }:
         return None
     if _all_metric_predicates(plan, measure_plan):
         return None

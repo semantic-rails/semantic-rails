@@ -127,6 +127,8 @@ def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str
     measures = _measure_index(config)
     zero: dict[str, str] = {}
     for row in rows:
+        if row.rewrite_strategy == "parent_value":
+            continue  # a group's rows name no parent: no data, NULL (``parent_values``)
         bound = row.bound_measure
         measure = measures.get(bound.measure_id)
         if measure is not None and resolves_to_zero(bound.aggregation, measure):

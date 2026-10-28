@@ -65,6 +65,13 @@ from .lowering_common import (
     _plan_requires_agent_dag_lowering,
     _validate_metric_predicate_filter_envelope,
 )
+from .parent_values import (
+    PARENT_VALUE,
+    parent_rows,
+    parent_value_selections,
+    parent_value_step,
+    parent_values_active,
+)
 from .paths import (
     _expression_root_entity,
     _leaf_time_role,
@@ -236,7 +243,9 @@ def _plan_query(
     measure_plans: list[MeasurePlan] = []
     leaf_strategies: list[str] = []  # each leaf's strategy before rollup routing
     if bound_measures:
-        root_entity = measures[bound_measures[0].measure_id].entity
+        # A call bound with parent values reads them from the rows it groups by.
+        rows = parent_rows(query, config, bound_measures) if parent_values_active() else ""
+        root_entity = rows or measures[bound_measures[0].measure_id].entity
         selected_paths, candidate_paths, rewrite_steps, root_analyses = _root_path_summary(
             root_entity, bound_measures, config, query
         )
@@ -263,9 +272,14 @@ def _plan_query(
                     )
 
         for index, bound in enumerate(bound_measures):
-            path_selections, required_entities, crossing = _leaf_path_selections(
-                bound, config, query
-            )
+            parent = parent_value_selections(config, query, rows, bound) if rows else None
+            if parent is not None:
+                path_selections, required_entities = parent
+                crossing = PARENT_VALUE
+            else:
+                path_selections, required_entities, crossing = _leaf_path_selections(
+                    bound, config, query
+                )
             grain_keys = [*query.group_by]
             if query.time is not None:
                 grain_keys.append(time_output_alias(query.time))
@@ -278,19 +292,29 @@ def _plan_query(
                 rewrite_strategy = "fanout_dedup"
             if measures[bound.measure_id].lookup_from:
                 rewrite_strategy = "parent_lookup"
-            # Every leaf that crosses a one-to-many hop says how.
-            rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config, query))
-            aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(
-                bound=bound,
-                query=query,
-                config=config,
-                path_selections=path_selections,
-            )
+            source_entity = measures[bound.measure_id].entity
+            if parent is not None:
+                # Read from the rows, never a rollup of its own model.
+                rewrite_strategy, source_entity = PARENT_VALUE, rows
+                rewrite_steps.append(
+                    parent_value_step(config, query, rows, bound, path_selections[0].chosen_path)
+                )
+                aggregate_relation_id = ""
+                aggregate_relation_rejections: dict[str, str] = {}
+            else:
+                # Every leaf that crosses a one-to-many hop says how.
+                rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config, query))
+                aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(
+                    bound=bound,
+                    query=query,
+                    config=config,
+                    path_selections=path_selections,
+                )
             measure_plans.append(
                 MeasurePlan(
                     cte_name=f"leaf_{index + 1}",
                     bound_measure=bound,
-                    source_entity=measures[bound.measure_id].entity,
+                    source_entity=source_entity,
                     path_selections=path_selections,
                     grain_keys=grain_keys,
                     rewrite_strategy="aggregate_relation"
