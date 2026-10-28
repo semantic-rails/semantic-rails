@@ -873,7 +873,7 @@ def create_architect_mcp_server(
             "package starts with setup_project_dialog, then create_project (expected_revision: "
             "absent).\n"
             "Order: project_status (note its revision); explore a DuckDB warehouse (list_tables, "
-            "describe_table, profile_columns, suggest_model) or a dbt target "
+            "describe_table, profile_columns, suggest_model, suggest_one_per_key) or a dbt target "
             "(suggest_models_from_dbt); write (upsert_model, upsert_relationship, upsert_metric, "
             "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object, "
             "record_route_decision, upgrade_project); "
@@ -1722,6 +1722,37 @@ def create_architect_mcp_server(
         try:
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 return {"ok": True, **introspection.suggest_model(warehouse, relation)}
+        except Exception as exc:
+            return _report_error(exc)
+
+    @mcp.tool(
+        annotations=_read_only_annotations("Suggest a one-per-key model"),
+        description=(
+            "For a table with no key of its own, propose reading it one row per a key it repeats "
+            "(one_per_key): per candidate key, the rows, NULL-key rows, distinct keys, keys with "
+            "several rows, and each column fixed or varying within a key; the proposal's "
+            "coverage, draft upsert_model arguments and, with project_path, the "
+            "upsert_relationship that links the table's row-grain model to it. key tries one "
+            "column set. Read-only: apply the drafts with dry_run, then expected_revision."
+        ),
+    )
+    def suggest_one_per_key(
+        relation: str,
+        key: list[str] | None = None,
+        project_path: str = "",
+        duckdb_path: str = "",
+    ) -> dict[str, Any]:
+        try:
+            context = (
+                ArchitectProject(project_path, workspace_root=root).one_per_key_context(relation)
+                if project_path
+                else {}
+            )
+            with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
+                return {
+                    "ok": True,
+                    **introspection.suggest_one_per_key(warehouse, relation, key, **context),
+                }
         except Exception as exc:
             return _report_error(exc)
 

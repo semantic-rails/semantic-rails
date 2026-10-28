@@ -2755,6 +2755,33 @@ class ArchitectProject:
             and not _as_list(dict(row.spec.get("keys") or {}).get("primary"))
         }
 
+    def one_per_key_context(self, relation: str) -> dict[str, Any]:
+        """What ``suggest_one_per_key`` reads from the package for ``relation``: the entity and
+        model names in use (``taken``), the row-grain model over the same relation, whose rows
+        would link to the one-per-key rows (``link_model``), and each single-column entity key
+        by its lowercased column name (``parents``)."""
+        raw = self._raw_inventory()
+
+        def bare(name: Any) -> str:
+            return str(name or "").replace('"', "").strip().lower().rpartition(".")[2]
+
+        row_grain = self._row_grain_models(raw)
+        link = next(
+            (
+                key
+                for key, row in row_grain.items()
+                if bare(row.spec.get("relation")) == bare(relation)
+            ),
+            "",
+        )
+        parents = {
+            str(keys[0]).lower(): (row.key, str(keys[0]))
+            for row in raw["entities"]
+            if len(keys := _as_list(row.spec.get("key"))) == 1
+        }
+        taken = {row.key for row in raw["entities"]} | {row.key for row in raw["models"]}
+        return {"taken": frozenset(taken), "link_model": link, "parents": parents}
+
     def _entity_names(
         self, raw: dict[str, list[_RawObject]], row_grain: Mapping[str, _RawObject]
     ) -> dict[str, str]:
