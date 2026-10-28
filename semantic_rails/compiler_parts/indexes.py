@@ -197,6 +197,9 @@ def _measure_has_source_row_key(measure: MeasureConfig, entity: EntityConfig) ->
 
 
 def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:
+    """The dimensions the rollup table may be grouped by: the ones its `columns:` names, and
+    every other dimension of its model it doesn't exclude (an `id` one only when named). A
+    query reads only the named ones (``dimension_columns``)."""
     return {str(item) for item in [*row.dimensions, *row.dimension_columns]}
 
 

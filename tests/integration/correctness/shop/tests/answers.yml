@@ -162,6 +162,29 @@ tests:
         FROM orders WHERE ordered_at >= TIMESTAMP '2023-11-20' AND ordered_at < TIMESTAMP '2023-11-27'
         GROUP BY 1, 2
       ) per_customer GROUP BY 1
+  shop/rollup-without-a-measure-column-leaves-it-on-the-base-table:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The monthly rollup's columns hold revenue but no store-a amount, so the store-a amount reads the orders table beside the rollup's revenue.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_amount, tests/integration/correctness/shop/models/orders.yml#model.variants.monthly.columns, docs/PACKAGE_AUTHORING.md#physical-variants-and-aggregate-routing]
+    query:
+      select:
+        - {as: store_a, expression: measure.shop.store_a_amount}
+        - {as: revenue, expression: measure.shop.revenue}
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+    expected_rows:
+      - {period: '2023-11-01', store_a: 10, revenue: 15}
+      - {period: '2023-12-01', store_a: 7, revenue: 7}
+      - {period: '2024-01-01', store_a: 20, revenue: 20}
+      - {period: '2024-03-01', store_a: 4, revenue: 12}
+      - {period: '2024-05-01', store_a: 0, revenue: 6}
+      - {period: '2024-06-01', store_a: 0, revenue: 3}
+      - {period: '2024-07-01', store_a: 0, revenue: 9}
+      - {period: '2024-08-01', store_a: 2, revenue: 2}
+    reference_sql: |
+      SELECT date_trunc('month', ordered_at), SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END),
+        SUM(amount)
+      FROM orders GROUP BY 1
   shop/window-total-observes-a-conditional-count-outside-the-window:
     kind: query_matches_snapshot
     expect: answer

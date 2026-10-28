@@ -410,6 +410,7 @@ class AggregateRelationConfig:
     relation: str
     source_entity: str
     measures: list[str] = field(default_factory=list)
+    # Every dimension the table may be grouped by; a query reads only `dimension_columns`.
     dimensions: list[str] = field(default_factory=list)
     temporal_role: str = ""
     grain: str = ""

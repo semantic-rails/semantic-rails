@@ -2896,8 +2896,12 @@ warehouse.
 Use `model.variants:` when one semantic model is physically stored at multiple
 time grains, such as transaction, daily, weekly, and monthly tables. The model
 continues to own the measures, dimensions, entities, and default time role. Each
-non-transaction variant declares what the rollup table covers and which columns
-or dimensions differ from the transaction table.
+non-transaction variant declares what the rollup table covers, and its `columns:`
+names every measure and dimension column a query may read from it. A query that
+needs a measure or dimension it doesn't name reads the base tables, so the model's
+`relation:` must hold every measure and dimension, whatever its rollups hold. A
+variant that inherits another's `columns:` (`inherits_from`) leaves one out with
+`excludes: {measures: [...], dimensions: [...]}`.
 
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
@@ -2994,7 +2998,10 @@ Routing is conservative in the MVP:
   added up across rollup rows. A column declared `holds: count_distinct` still
   answers them at the rollup's own time grain when every rollup dimension is
   grouped or pinned to one value by an `is` condition, so each result row is one
-  rollup row. The rollup must have one row per time bucket and dimension columns
+  rollup row. A rollup dimension is each one `columns:` names and every other
+  dimension of the model (but an `id` one) the variant doesn't exclude, since the
+  table may be grouped by a column it doesn't name: `excludes:` the dimensions the
+  table isn't grouped by. The rollup must have one row per time bucket and dimension columns
   (and per key of any `grain.entities`); an `is` list of several values or a range on a rollup
   dimension that isn't grouped runs on the base tables.
 - A time role whose `column_timezone` differs from its `timezone` runs on the
@@ -3020,10 +3027,10 @@ Routing is conservative in the MVP:
   group or filter by that column; the base path doesn't join it otherwise and keeps
   such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
-- Every selected measure must have a column in the variant.
-- Every grouped or filtered dimension must be covered by the variant. If a
-  query groups by `customer_id` and the monthly table excludes that dimension,
-  the planner scans the raw relation.
+- Every selected measure must be named in the variant's `columns:`.
+- Every grouped or filtered dimension must be named in the variant's `columns:`.
+  If a query groups by `customer_id` and the monthly table doesn't name that
+  dimension, the planner scans the raw relation.
 - Entity filters on aggregates (`{entity, having, over}`) and other `metric_predicate`
   shapes, including one inside an aggregate's `filter`, do not route through variants yet.
 
