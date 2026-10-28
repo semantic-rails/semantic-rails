@@ -415,8 +415,8 @@ def _measure_names(measure: Any, entity: Any) -> tuple[str, str]:
 
 
 def _alike(asked: Any, other: Any, entities: dict[str, Any]) -> bool:
-    """The same key or label (each without its model's tag) that totals the same number: the
-    same default aggregation, measure class, additivity, value type and currency."""
+    """The same key or label (each without its model's table name) that totals the same way:
+    the same default aggregation, measure class, additivity, value type and currency."""
     asked_key, asked_label = _measure_names(asked, entities.get(asked.entity))
     other_key, other_label = _measure_names(other, entities.get(other.entity))
     named = asked_key == other_key or bool(asked_label) and asked_label == other_label
@@ -453,9 +453,9 @@ def lookalike_swaps(
 ) -> list[tuple[str, dict[str, str]]]:
     """Each other entity that holds a look-alike of every one of ``measure_ids`` (the call's
     measures on ``start``), with each measure's look-alike there. A look-alike is a published
-    measure on another entity with the same key or label, each without its model's tag, that
-    totals the same way (``_alike``). An entity with two look-alikes of one measure has no one
-    look-alike, so it is left out."""
+    measure on another entity with the same key or label, each without its model's table name,
+    that totals the same way (``_alike``). An entity with two look-alikes of one measure has no
+    one look-alike, so it is left out."""
     entities = {row.id: row for row in config.entities}
     asked = [row for row in config.measures if row.id in set(measure_ids) and row.entity == start]
     if not asked:
