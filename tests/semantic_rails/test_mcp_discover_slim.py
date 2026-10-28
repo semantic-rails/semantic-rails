@@ -3,7 +3,8 @@
 Full cards (match reasons, starter patches, comparison metadata) made
 discover over half of a typical agent session's context. verbosity="minimal"
 (the default) returns slim cards, which leave out their bucket's kind,
-available=true and empty fields; verbosity="compact" keeps slim cards without blocked metadata; "full" returns full cards.
+available=true, empty fields and a label whose every word is already in the id;
+verbosity="compact" keeps slim cards without blocked metadata; "full" returns full cards.
 When the question names an object outright ("revenue by store"), that object
 outranks near-duplicates that add a qualifier the question never used
 ("delivered revenue", "drink revenue").
@@ -17,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.mcp import SemanticLayerMCPAdapter, _label_restates_id, list_tool_definitions
 from semantic_rails.metadata import _slim_discover_minimal, discover_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -49,7 +50,7 @@ def test_explicit_minimal_discover_returns_five_slim_cards_per_kind(
         assert 0 < len(rows) <= 5, bucket
         for row in rows:
             assert set(row) <= SLIM_KEYS - {"kind", "available"}, (bucket, sorted(set(row)))
-            assert {"id", "label"} <= set(row), (bucket, row)
+            assert "id" in row, (bucket, row)
     assert "terms" not in response and "verbosity" not in response
     for row in response["dimension_values"]:
         assert set(row) <= VALUE_KEYS | {"blocked_reason"}
@@ -122,6 +123,67 @@ def test_direct_metadata_minimal_projection_is_unchanged(adapter: SemanticLayerM
                     description[:119].rstrip() + "…" if len(description) > 120 else description
                 )
                 assert slim["description"] == expected
+
+
+@pytest.mark.parametrize(
+    ("label", "object_id", "restates"),
+    [
+        ("Store name", "dimension.jaffle_store_name", True),
+        ("Item revenue (USD)", "measure.jaffle.item_revenue_usd", True),
+        ("Month-over-month revenue growth", "metric.sales.month_over_month_revenue_growth", True),
+        ("REVENUE", "measure.jaffle.revenue_usd", True),
+        # A word the id lacks is information the card keeps.
+        ("Orders", "measure.jaffle.order_count", False),
+        ("Rolling 28-day revenue", "metric.sales.rolling_28d_revenue", False),
+        ("Food", "dimension.jaffle_item_product_type", False),
+        # The kind prefix isn't part of what the id says about the object.
+        ("Measure", "measure.jaffle.revenue_usd", False),
+        ("", "measure.jaffle.revenue_usd", False),
+        ("—", "measure.jaffle.revenue_usd", False),
+    ],
+)
+def test_label_restates_id_only_when_the_id_holds_every_word(
+    label: str, object_id: str, restates: bool
+) -> None:
+    assert _label_restates_id(label, object_id) is restates
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact"])
+def test_slim_cards_keep_a_label_only_when_it_adds_a_word_to_the_id(
+    adapter: SemanticLayerMCPAdapter, verbosity: str
+) -> None:
+    args = {"terms": "revenue by store", "limit": 10}
+    full = adapter.call_tool("discover", {**args, "verbosity": "full"})
+    slim = adapter.call_tool("discover", {**args, "verbosity": verbosity})
+    labels = {
+        row["id"]: row["label"]
+        for bucket in ("measures", "metrics", "dimensions", "entities")
+        for row in full[bucket]
+    }
+    kept = dropped = 0
+    for bucket in ("measures", "metrics", "dimensions", "entities"):
+        for row in slim[bucket]:
+            label = labels.get(row["id"])
+            if label is None:  # a metric card standing in for its measure
+                continue
+            if _label_restates_id(label, row["id"]):
+                assert "label" not in row, row
+                dropped += 1
+            else:
+                assert row["label"] == label, row
+                kept += 1
+    assert kept and dropped
+    rolling = next(
+        row for row in slim["metrics"] if row["id"] == "metric.sales.rolling_28d_revenue"
+    )
+    assert rolling["label"] == "Rolling 28-day revenue"
+    assert all("label" in row for bucket in ("measures", "dimensions") for row in full[bucket])
+
+
+def test_blocked_cards_keep_their_label(adapter: SemanticLayerMCPAdapter) -> None:
+    response = adapter.call_tool("discover", {"terms": "store", "query": SESSION_STARTS})
+    assert response["blocked"]
+    assert all(row["label"] for row in response["blocked"])
 
 
 def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter) -> None:
