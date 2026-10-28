@@ -4,7 +4,7 @@ refusals, and the root entity a query without a measure reads.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from ..ast import (
@@ -230,10 +230,15 @@ def _mixed_grain_error(
 
 
 def _anchored_refusal(
-    exc: SemanticLayerError, query: NormalizedQuery, config: PackageConfig, anchor: str
+    exc: SemanticLayerError,
+    query: NormalizedQuery,
+    config: PackageConfig,
+    anchor: str,
+    measures: Sequence[str] = (),
 ) -> SemanticLayerError:
-    """A ``PATH_NOT_FOUND`` that says how its start was chosen (``anchor``) and which of the
-    query's own items sit on the entity it can't reach (``unreachable_items``)."""
+    """A ``PATH_NOT_FOUND`` that says how its start was chosen (``anchor``), which of the
+    query's own items sit on the entity it can't reach (``unreachable_items``) and the measures
+    whose rows the start holds (``measures``)."""
     target = str(exc.details.get("target", "") or "")
     dimensions = _dimension_index(config)
 
@@ -251,6 +256,8 @@ def _anchored_refusal(
         if role is not None and on_target(role.dimension):
             items.append(role.id)
     details = {**exc.details, "anchor": anchor, "unreachable_items": list(dict.fromkeys(items))}
+    if measures:
+        details["measures"] = list(dict.fromkeys(measures))
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
@@ -363,7 +370,7 @@ def _root_path_summary(
                 anchor = (
                     f"{root_entity} holds the rows of {', '.join(read)}, so routes start there."
                 )
-                raise _anchored_refusal(exc, query, config, anchor) from None
+                raise _anchored_refusal(exc, query, config, anchor, read) from None
             if exc.code == "AMBIGUOUS_PATH":
                 # A calendar date reached through another fact's rows is not the question's
                 # date either way: keep the time-block recovery a calendar group_by gets.
