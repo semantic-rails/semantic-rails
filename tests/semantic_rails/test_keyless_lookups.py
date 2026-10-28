@@ -625,8 +625,21 @@ def test_two_groupings_across_one_link_read_one_stored_row(shop):
             {"select": [HEADCOUNT], "group_by": ["dimension.shop_room_bookings_booker"]},
             "is many-to-many (a lookup before the one-to-many hop",
         ),
-        (
-            {"select": [ROOM_COUNT], "group_by": ["dimension.shop_room_bookings_booker"]},
+        (  # a room counts whole under each of its bookers (the ledger's
+            # shop/fanout-rooms-by-booker); its largest area has no such reading
+            {
+                "select": [
+                    {
+                        "as": "largest",
+                        "expression": {
+                            "kind": "measure",
+                            "measure": "measure.shop.room_area",
+                            "aggregation": "max",
+                        },
+                    }
+                ],
+                "group_by": ["dimension.shop_room_bookings_booker"],
+            },
             "is ambiguous across a one-to-many hop",
         ),
         (

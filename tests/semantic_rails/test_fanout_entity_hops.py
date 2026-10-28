@@ -2,9 +2,10 @@
 
 An order-grain measure filtered or grouped by an item dimension (orders -> order_items) used to
 be refused with MIXED_GRAIN_INVALID. The leaf now keeps one row per (order key, output grain)
-before it aggregates: filtered, an order counts once at all (EXISTS); grouped, a distinct count
-counts it once in every product type it contains ("orders that included it"). Every answer is
-checked on DuckDB against reference SQL written independently of the engine.
+before it aggregates: filtered, an order counts once at all (EXISTS); grouped, it counts once,
+with its whole value, in every product type it contains ("orders that included it"): a distinct
+count, a sum, a count or an average, the groups overlapping. Every answer is checked on DuckDB
+against reference SQL written independently of the engine.
 
 The item -> order relationship here is inferred, with no ``rollup_safe`` opt-in, so the
 entity_in_terms_of shortcut does not apply.
@@ -27,11 +28,19 @@ from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import ColumnRefExpr
+from semantic_rails.planner import plan_payload
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PathPreferenceConfig, SemanticPolicyConfig
 from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.hidden_absent import (
+    CALLER,
+    absent,
+    envelope,
+    visibility_policy,
+    with_policies,
+)
 from tests.semantic_rails.result_helpers import typed_rows
 
 # Order 1 has two beverages (the double-count trap), order 2 a beverage and a jaffle, order 3
@@ -96,6 +105,8 @@ orders:
       accumulation: {kind: event}, value_type: count}
     revenue: {label: Revenue, kind: aggregate, expr: total, accumulation: {kind: flow},
       value_type: currency}
+    order_rows: {label: Stored orders, kind: aggregate, expr: {kind: literal, value: 1},
+      accumulation: {kind: flow}, value_type: count}
 order_items:
   entities: {item: {}, order: {}, product: {expr: sku}}
   dimensions:
@@ -1118,6 +1129,298 @@ def test_a_lookup_after_the_hop_and_a_second_hop_down(package: Path) -> None:
     assert _rows(package, buyers) == _reference(package, reference)
 
 
+# --- Grouped across the hop, an order counts once, whole, in every group ---------------------
+# Beverage holds orders 1, 2, 4 and 6 (totals 10, 20, 40 and NULL), jaffle orders 2 and 3 (20 and
+# 30): order 2 is in both, so the groups add up to 120 while the orders with an item total 100.
+# Order 5 has no item and is in no group; the two orders with a NULL key join none. Each
+# reference joins every order to its distinct (order, group) pairs, written without the engine.
+def _whole(value: str, pairs: str, group: str = "t.product_type", key: str = "order_id") -> str:
+    entity = "customers c" if key == "customer_id" else "orders o"
+    alias = entity[-1]
+    return (
+        f"SELECT {group}, {value} FROM {entity} JOIN ({pairs}) t ON t.{key} = {alias}.{key} "
+        "GROUP BY ALL"
+    )
+
+
+TYPES = "SELECT DISTINCT order_id, product_type FROM order_items"
+CATEGORIES = (
+    "SELECT DISTINCT i.order_id, p.category FROM order_items i JOIN products p ON p.sku = i.sku"
+)
+CUSTOMER_TYPES = (
+    "SELECT DISTINCT o.customer_id, i.product_type FROM orders o "
+    "JOIN order_items i ON i.order_id = o.order_id"
+)
+REVENUE = {"kind": "measure", "measure": "measure.hop.revenue"}
+ORDERS = {"kind": "measure", "measure": "measure.hop.order_count"}
+ITEM_REVENUE = {"kind": "measure", "measure": "measure.hop.item_revenue"}
+LARGE_ORDERS_IF = _if("count", _compare("total", ">", 15))
+WHOLE = {
+    "sum": (_ask(group_by=[TYPE]), _whole("SUM(o.total)", TYPES)),
+    "row_count": (_ask("order_rows", group_by=[TYPE]), _whole("COUNT(*)", TYPES)),
+    "avg": (_ask("revenue", "avg", group_by=[TYPE]), _whole("AVG(o.total)", TYPES)),
+    "conditional_count": (
+        _conditional(LARGE_ORDERS_IF, group_by=[TYPE]),
+        _whole("COUNT(CASE WHEN o.total > 15 THEN 1 END)", TYPES),
+    ),
+    "conditional_sum": (
+        _conditional(OWN_REVENUE_IF, group_by=[TYPE]),
+        _whole("SUM(CASE WHEN o.customer_id = 10 THEN o.total END)", TYPES),
+    ),
+    # Average order revenue: both parts are the order's own, read from the same orders.
+    "ratio_of_its_own_measures": (
+        _conditional(_ratio(REVENUE, ORDERS), group_by=[TYPE]),
+        _whole("SUM(o.total) / COUNT(DISTINCT o.order_id)", TYPES),
+    ),
+    # orders -> items -> products: a lookup after the hop.
+    "lookup_after_the_hop": (
+        _ask(group_by=[CATEGORY]),
+        _whole("SUM(o.total)", CATEGORIES, group="t.category"),
+    ),
+    # customers -> orders -> items: customer 10 counts once under beverage, though it bought
+    # beverages in two orders.
+    "two_hops_down": (
+        _ask("credit", group_by=[TYPE]),
+        _whole("SUM(c.credit)", CUSTOMER_TYPES, key="customer_id"),
+    ),
+    "beside_a_lookup": (
+        _ask(group_by=[TYPE, COUPON]),
+        _whole("SUM(o.total)", TYPES, group="t.product_type, c.coupon_id").replace(
+            " GROUP BY", " LEFT JOIN coupons c ON c.code = o.coupon_code GROUP BY"
+        ),
+    ),
+    # Q4 2016 holds orders 1, 2, 3, 5 and 6: beverage 30 (1, 2 and 6), jaffle 50 (2 and 3).
+    "in_a_window": (
+        {**_ask(group_by=[TYPE]), "time": Q4_2016},
+        _whole("SUM(o.total)", TYPES).replace(" GROUP BY", f" WHERE {IN_Q4} GROUP BY"),
+    ),
+    "having": (
+        {**_ask(group_by=[TYPE]), "having": [{"field": "revenue", "op": "gt", "value": 60}]},
+        _whole("SUM(o.total)", TYPES) + " HAVING SUM(o.total) > 60",
+    ),
+}
+
+
+@pytest.mark.parametrize(("query", "reference"), WHOLE.values(), ids=WHOLE)
+def test_a_grouping_across_the_hop_counts_each_order_whole_in_every_group(
+    package: Path, query: dict[str, Any], reference: str
+) -> None:
+    assert _rows(package, query) == _reference(package, reference)
+
+
+def test_the_groups_overlap_and_add_up_to_more_than_the_orders(package: Path) -> None:
+    assert _rows(package, _ask(group_by=[TYPE])) == [("beverage", 70.0), ("jaffle", 50.0)]
+    assert _rows(package, _ask(where=[_is(TYPE, ["beverage", "jaffle"], "is")])) == [(100.0,)]
+    # Item revenue splits the orders' values over their items instead: 59 and 47.
+    assert _rows(package, _ask("item_revenue", group_by=[TYPE])) == [
+        ("beverage", 59.0),
+        ("jaffle", 47.0),
+    ]
+
+
+def test_the_disclosure_names_the_hop_and_says_the_groups_overlap(package: Path) -> None:
+    [warning] = _disclosed(_run(package, _ask(group_by=[TYPE])))
+    hop = "relationship.order_items_order"
+    assert warning["details"]["overlapping_groups"] == {
+        "group_by": [TYPE],
+        "relationships": [hop],
+        "whole_amounts": True,
+    }
+    assert warning["message"].endswith(
+        f" Grouped by '{TYPE}' across the one-to-many hop '{hop}', each '{ORDER}' counts once, "
+        "with its whole value, in every group it has a row in, so the groups can overlap and "
+        f"need not add up to the total; a measure of '{ITEM}' splits values over those rows "
+        "instead."
+    )
+    # A count has one reading: the groups overlap, and no amount could be split.
+    [count] = _disclosed(_run(package, GROUPED_COUNT))
+    assert count["details"]["overlapping_groups"] == {"group_by": [TYPE], "relationships": [hop]}
+    assert "the groups can overlap" in count["message"]
+    # A filter splits nothing.
+    [filtered] = _disclosed(_run(package, FILTERED_SUM))
+    assert "overlapping_groups" not in filtered["details"]
+    assert "Grouped by" not in filtered["message"]
+
+
+def test_plan_shows_the_disclosure_of_a_whole_amount(package: Path) -> None:
+    """A drafted sum of order totals by an item dimension could have meant item revenue, so plan
+    shows what the number counts; a count of orders has one reading and needs no note."""
+    revenue = plan_payload(_RUNTIMES[package], intent="revenue by item product type")
+    assert revenue["best"]["query"]["select"] == ["measure.hop.revenue"]
+    assert [warning["code"] for warning in revenue["warnings"]] == ["REWRITE_APPLIED"]
+    assert revenue["warnings"][0]["details"]["overlapping_groups"]["whole_amounts"] is True
+    orders = plan_payload(_RUNTIMES[package], intent="order count by item product type")
+    assert orders["best"]["query"]["select"] == ["measure.hop.order_count"]
+    assert orders["status"] == "ok"
+    assert not orders.get("warnings")
+
+
+ALLOCATION = (
+    "is ambiguous across a one-to-many hop: the amount split over the child rows and the full "
+    "amount of every row that has one differ. Use a measure at the child's grain, group by a "
+    "dimension of the measure's own grain, or filter on the child dimension (each row then "
+    "counts once)."
+)
+
+
+def _grouped(aggregation: str, measure: str = "measure.hop.revenue") -> str:
+    return f"'{aggregation}' of measure '{measure}' grouped by a dimension of '{ITEM}' {ALLOCATION}"
+
+
+# Shapes without one whole-value reading keep their refusal, word for word.
+KEPT = {
+    "median": (_ask("revenue", "median", group_by=[TYPE]), _grouped("median")),
+    "non_additive": (_ask("score", "avg", group_by=[TYPE]), _grouped("avg", "measure.hop.score")),
+    # Each order's whole total over the item revenue split across its items.
+    "mixed_grain_ratio": (
+        _conditional(_ratio(REVENUE, ITEM_REVENUE), group_by=[TYPE]),
+        _grouped("sum"),
+    ),
+    "mixed_grain_difference": (
+        _conditional(
+            {"kind": "arithmetic", "op": "subtract", "left": REVENUE, "right": ITEM_REVENUE},
+            group_by=[TYPE],
+        ),
+        _grouped("sum"),
+    ),
+    "cumulative": (
+        _conditional(
+            {"kind": "cumulative", "input": "measure.hop.revenue"}, group_by=[TYPE], time=MONTHLY
+        ),
+        _grouped("sum"),
+    ),
+    "group_and_filter_one_child": ({**_ask(group_by=[TYPE]), "where": [HOT_ITEM]}, _grouped("sum")),
+}
+
+
+@pytest.mark.parametrize(("query", "why"), KEPT.values(), ids=KEPT)
+def test_shapes_without_a_whole_value_reading_keep_their_refusal(
+    package: Path, query: dict[str, Any], why: str
+) -> None:
+    error = _refusal(package, query)
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert error["why_invalid"] == why
+
+
+def test_totals_over_the_grouping_count_each_order_once(package: Path) -> None:
+    """Each total is the call without the grouping: every order's total once, the two with a
+    NULL key and order 5 with no item included (290), never the 120 the groups add up to."""
+    [total] = _reference(package, "SELECT SUM(total) FROM orders")
+    assert total == (290.0,)
+    rows = typed_rows(_run(package, {**_ask(group_by=[TYPE]), "totals": []}))
+    assert _normal((row[TYPE], row["revenue"]) for row in rows) == _normal(
+        [("beverage", 70.0), ("jaffle", 50.0), (None, 290.0)]
+    )
+    beside = {
+        "select": [
+            _measure("revenue"),
+            {"expression": {"kind": "total", "input": "measure.hop.revenue", "over": [TYPE]},
+             "as": "all_orders"},
+        ],
+        "group_by": [TYPE],
+    }  # fmt: skip
+    assert _rows(package, beside) == [("beverage", 70.0, 290.0), ("jaffle", 50.0, 290.0)]
+
+
+def _share(measure: str, over: list[str]) -> dict[str, Any]:
+    return {
+        "expression": {"kind": "share", "input": f"measure.hop.{measure}", "over": over},
+        "as": "share",
+    }
+
+
+@pytest.mark.parametrize("measure", ["revenue", "order_count"])
+def test_a_share_over_the_overlapping_groups_is_refused(package: Path, measure: str) -> None:
+    """Its total would be the sum of the groups: 6 orders for 5 with an item."""
+    query = {"select": [_measure(measure), _share(measure, [TYPE])], "group_by": [TYPE]}
+    error = _refusal(package, query)
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert error["why_invalid"] == (
+        f"A share over '{TYPE}' is not supported: each '{ORDER}' counts in every group it has "
+        f"a '{ITEM}' row in, so the groups overlap and the share's total, their sum, counts it "
+        "once per group. Select a total over the same columns beside the groups (kind: total), "
+        "which counts each once, and divide by its column after the call."
+    )
+
+
+def test_a_share_within_each_group_stays_answered(package: Path) -> None:
+    """Inside one product type each order appears once, so its coupons' shares add up to 1."""
+    query = {
+        "select": [_measure("revenue"), _share("revenue", [COUPON])],
+        "group_by": [TYPE, COUPON],
+    }
+    reference = """
+        SELECT t.product_type, c.coupon_id, SUM(o.total),
+          SUM(o.total) / SUM(SUM(o.total)) OVER (PARTITION BY t.product_type)
+        FROM orders o JOIN (SELECT DISTINCT order_id, product_type FROM order_items) t
+          ON t.order_id = o.order_id
+        LEFT JOIN coupons c ON c.code = o.coupon_code GROUP BY 1, 2
+    """
+    assert _rows(package, query) == _reference(package, reference)
+
+
+@pytest.mark.parametrize("measure", ["order_count", "revenue"])
+def test_a_child_row_policy_holds_the_grouping_as_it_holds_a_count(
+    package: Path, measure: str
+) -> None:
+    """A filter on items reaches no order, so counting or summing orders under it is held."""
+    with pytest.raises(SemanticLayerError) as caught:
+        _under_row_policy(package, HOT_ITEMS, {"hot": True}, _ask(measure, group_by=[TYPE]))
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details["reason"] == "row_filter_uncovered_root"
+
+
+def test_a_parent_row_policy_filters_the_grouped_orders(package: Path) -> None:
+    """A filter on orders reaches their items: customer 10's orders 1 and 2 alone."""
+    query = {"observation_scope": "query", **_ask(group_by=[TYPE])}
+    prepared = _under_row_policy(package, OWN_ORDERS, {"customer": 10}, query)["prepared_query"]
+    actual = _reference(package, prepared.sql, [10] * len(prepared.parameters))
+    reference = _whole("SUM(o.total)", TYPES).replace(
+        " GROUP BY", " WHERE o.customer_id = 10 GROUP BY"
+    )
+    assert actual == _reference(package, reference) == [("beverage", 30.0), ("jaffle", 20.0)]
+
+
+def test_a_hidden_item_reads_as_a_package_without_items(package: Path) -> None:
+    """The route to a product passes an item: hidden, it is no route, as if items didn't exist."""
+    base = load_package_config(str(package))
+    config = with_policies(base, visibility_policy("hidden", ITEM))
+    query = {"observation_scope": "query", **_ask(group_by=[CATEGORY])}
+    # What hiding the entity hides with it, for the package without items.
+    gone = [
+        ITEM,
+        *(row.id for row in base.relationships if ITEM in (row.source_entity, row.target_entity)),
+        *(row.id for row in [*base.dimensions, *base.measures] if row.entity == ITEM),
+    ]
+    reader = RequestContext(roles=CALLER["roles"])
+
+    def validate(package_config: Any, **kwargs: Any) -> dict[str, Any]:
+        runtime = opened(Runtime.from_config(package_config, source_path=str(package)))
+        try:
+            return runtime.validate(query, **kwargs)
+        finally:
+            runtime.close()
+
+    assert validate(config)["ok"] is True  # the author's view answers
+    hidden = validate(config, context=reader)
+    assert hidden["ok"] is False
+    assert hidden["errors"][0]["code"] == "PATH_NOT_FOUND"
+    assert envelope(hidden) == envelope(validate(absent(config, gone), context=reader))
+
+
+@pytest.mark.parametrize("warehouse", ["postgres", "clickhouse"])
+def test_other_dialects_render_the_same_whole_value_leaf(package: Path, warehouse: str) -> None:
+    """Postgres's and ClickHouse's SQL keep one row per (order, type) before they sum, and
+    return DuckDB's rows when DuckDB runs them (the live Postgres check is the shop ledger)."""
+    query = {"observation_scope": "query", **_ask(group_by=[TYPE])}
+    sql = _compile(_config(package, warehouse), query)["sql"].removesuffix(
+        "\nSETTINGS join_use_nulls = 1"
+    )
+    assert "SELECT DISTINCT\n  orders.order_id AS __entity_key_1," in sql
+    assert "SUM(leaf_1__leaf_1_entity_rows.__entity_value)" in sql
+    assert _reference(package, sql) == _rows(package, query)
+
+
 RUNNING_REVENUE = {"kind": "cumulative", "input": "measure.hop.revenue"}
 NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
 TWO_CONDITIONS = "both cross a one-to-many hop"
@@ -1126,9 +1429,9 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
 @pytest.mark.parametrize(
     ("query", "reason"),
     [
-        # Order revenue by product type: split over the items, or each order's full total?
-        (_ask(group_by=[TYPE]), "is ambiguous across"),
-        (_ask("revenue", "avg", group_by=[TYPE]), "is ambiguous across"),
+        # A median or a maximum by product type is no whole-value count (see WHOLE below).
+        (_ask("revenue", "median", group_by=[TYPE]), "is ambiguous across"),
+        (_ask("revenue", "max", group_by=[TYPE]), "is ambiguous across"),
         # A measure's own filter has no child scope to state (query filters do: see below).
         (_bound_filter(_is(TYPE, "beverage", "!=")), NEGATED),
         # At most one condition may cross a one-to-many hop: with two, one row may have to meet
@@ -1154,14 +1457,17 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
             "not supported across a one-to-many hop",
         ),
         # A conditional aggregate, alone or inside a ratio, refuses what its measure refuses.
-        (_conditional(OWN_REVENUE_IF, group_by=[TYPE]), "is ambiguous across"),
+        (
+            _conditional(_if("max", _compare("customer_id", "=", 10), "total"), group_by=[TYPE]),
+            "is ambiguous across",
+        ),
         (_conditional(OWN_REVENUE_IF, where=[BEVERAGE, WEB]), TWO_CONDITIONS),
         (_conditional(OWN_SHARE, group_by=[TYPE], where=[HOT_ITEM]), TWO_CONDITIONS),
         (_conditional(OWN_ORDERS_IF, group_by=[CHANNEL]), "many-to-many"),
     ],
     ids=[
-        "sum",
-        "avg",
+        "median",
+        "max",
         "measure_filter",
         "group_and_filter_one_child",
         "group_and_filter_through_a_lookup",
@@ -1175,7 +1481,7 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "off_key_join",
         "non_additive",
         "cumulative",
-        "conditional_grouped_sum",
+        "conditional_grouped_max",
         "conditional_two_filters",
         "conditional_ratio_group_and_filter",
         "conditional_many_to_many",
@@ -1348,7 +1654,7 @@ def test_a_refusal_names_the_path_at_fault(package: Path) -> None:
 
 def test_a_refusal_never_offers_a_different_measure(package: Path) -> None:
     """A recovery used to hand back item revenue in place of order revenue, ready to run."""
-    error = _refusal(package, _ask(group_by=[TYPE]))
+    error = _refusal(package, _ask("revenue", "median", group_by=[TYPE]))
     assert "measure.hop.item_revenue" in error["details"]["compatible_measures"]  # named only
     queries = [error.get("closest_valid_query") or {}]
     queries += [hint.get("closest_valid_query") or {} for hint in error["recovery_hints"]]

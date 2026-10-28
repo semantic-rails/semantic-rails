@@ -8715,16 +8715,105 @@ tests:
     query:
       select: [measure.shop.scanned_orders]
       group_by: [dimension.shop_refund_refund_type]
-  shop/row-grain-parent-sum-by-child-column-refuses:
-    kind: validate_fails_with_code
-    expect: refuse
-    code: MIXED_GRAIN_INVALID
-    why: Revenue by scan type would split or repeat each order's amount over its scans, as for any child.
-    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#group_by]
-    tags: [row-grain, refusal]
+  shop/row-grain-parent-sum-by-child-column:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue by scan type counts each order once, with its whole amount, under every type it has a scan of. Pickup holds orders 1, 2, 4, 6 and 8 (45), delivery orders 1 and 4 (30), so the groups add up to 75 of the 74 in all; order 1's duplicate pickup scan counts once, and the scans with no order or an unknown one reach none.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop]
+    tags: [row-grain]
     query:
       select: [measure.shop.revenue]
       group_by: [dimension.shop_shipment_scans_scan_type]
+    expected_rows:
+      - {dimension.shop_shipment_scans_scan_type: pickup, revenue: 45}
+      - {dimension.shop_shipment_scans_scan_type: delivery, revenue: 30}
+    reference_sql: |
+      SELECT s.scan_type, SUM(o.amount) FROM orders AS o
+      JOIN (SELECT DISTINCT order_id, scan_type FROM shipment_scans) AS s ON s.order_id = o.order_id
+      GROUP BY s.scan_type
+  shop/row-grain-parent-sum-by-child-column-with-a-grand-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The grand total is the call without the grouping, every order once (74, orders with no scan included), never the 75 the overlapping groups add up to.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop, docs/QUERY_CALL.md#totals]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_shipment_scans_scan_type]
+      totals: []
+    expected_rows:
+      - {dimension.shop_shipment_scans_scan_type: pickup, revenue: 45, total_over: null}
+      - {dimension.shop_shipment_scans_scan_type: delivery, revenue: 30, total_over: null}
+      - {dimension.shop_shipment_scans_scan_type: null, revenue: 74, total_over: dimension.shop_shipment_scans_scan_type}
+    reference_sql: |
+      SELECT s.scan_type, SUM(o.amount), CAST(NULL AS VARCHAR(64)) FROM orders AS o
+      JOIN (SELECT DISTINCT order_id, scan_type FROM shipment_scans) AS s ON s.order_id = o.order_id
+      GROUP BY s.scan_type
+      UNION ALL
+      SELECT NULL, SUM(amount), 'dimension.shop_shipment_scans_scan_type' FROM orders
+  shop/bridge-parent-sum-by-tag:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue by tag through the order tags link table counts each order's whole amount once under each of its tags. Gift holds orders 1 and 4 (order 1's link stored twice counts once), rush orders 1 and 2, fragile orders 4 and 9.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/tags.yml#model.dimensions.tag_name, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop]
+    tags: [row-grain]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_tag_tag_name]
+    expected_rows:
+      - {dimension.shop_tag_tag_name: gift, revenue: 30}
+      - {dimension.shop_tag_tag_name: rush, revenue: 15}
+      - {dimension.shop_tag_tag_name: fragile, revenue: 23}
+    reference_sql: |
+      SELECT t.tag_name, SUM(o.amount) FROM orders AS o
+      JOIN (SELECT DISTINCT l.order_id, g.tag_name FROM order_tags AS l JOIN tags AS g ON g.tag_id = l.tag_id) AS t
+        ON t.order_id = o.order_id
+      GROUP BY t.tag_name
+  shop/keyed-child-parent-sum-by-refund-type:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue by refund type counts each order's whole amount once per type it has a refund of. Goods holds orders 2 (two goods refunds, counted once), 6 and 7 (no amount), shipping orders 4 and 7.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_refund_refund_type]
+    expected_rows:
+      - {dimension.shop_refund_refund_type: goods, revenue: 9}
+      - {dimension.shop_refund_refund_type: shipping, revenue: 20}
+    reference_sql: |
+      SELECT r.refund_type, SUM(o.amount) FROM orders AS o
+      JOIN (SELECT DISTINCT order_id, refund_type FROM refunds) AS r ON r.order_id = o.order_id
+      GROUP BY r.refund_type
+  shop/one-per-key-rooms-by-booker:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each room counts once under every booker of it. Ana booked r1 twice and r2 (2 rooms), Ben r3, Cy r5; Dee's r9 is no room and Eve's booking has none, so neither is a group.
+    cites: [tests/integration/correctness/shop/models/rooms.yml#model.measures.room_count, tests/integration/correctness/shop/models/room_bookings.yml#model.dimensions.booker, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop]
+    tags: [one-per-key, row-grain]
+    query:
+      select: [measure.shop.room_count]
+      group_by: [dimension.shop_room_bookings_booker]
+    expected_rows:
+      - {dimension.shop_room_bookings_booker: ana, room_count: 2}
+      - {dimension.shop_room_bookings_booker: ben, room_count: 1}
+      - {dimension.shop_room_bookings_booker: cy, room_count: 1}
+    reference_sql: |
+      SELECT b.booker, COUNT(*) FROM (SELECT DISTINCT room_id FROM room_rows WHERE room_id IS NOT NULL) AS r
+      JOIN (SELECT DISTINCT room_id, booker FROM room_bookings) AS b ON b.room_id = r.room_id
+      GROUP BY b.booker
+  shop/share-over-overlapping-groups-refuses:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: MIXED_GRAIN_INVALID
+    why: Each order counts under every tag it has, so a share's total over the tags, the sum of the groups (6), is not the 5 tagged orders; the share is refused rather than read below each tag's fraction.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop]
+    tags: [refusal]
+    query:
+      select:
+        - measure.shop.order_count
+        - {as: tag_share, expression: {kind: share, input: measure.shop.order_count, over: [dimension.shop_tag_tag_name]}}
+      group_by: [dimension.shop_tag_tag_name]
   shop/row-grain-entity-filter-on-its-rows-refuses:
     kind: validate_fails_with_code
     expect: refuse
@@ -9162,6 +9251,28 @@ tests:
       select: *row_filter_revenue
     expected_rows: [{revenue: 74}]
     reference_sql: SELECT SUM(amount) FROM orders
+  shop/row-filter-revenue-by-tag:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A West manager sees Elm's orders and their tag links alone, so gift holds orders 1 and 4 (30), rush order 1 (10) and fragile order 4 (20); Oak's orders 2 and 9 drop out of rush and fragile.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/tags.yml#model.dimensions.tag_name, docs/QUERY_CALL.md#groups-across-a-one-to-many-hop, docs/PACKAGE_AUTHORING.md#policiesyml]
+    tags: [row-filter]
+    context: *west
+    query:
+      select: [measure.shop.revenue]
+      group_by: [dimension.shop_tag_tag_name]
+    expected_rows:
+      - {dimension.shop_tag_tag_name: gift, revenue: 30}
+      - {dimension.shop_tag_tag_name: rush, revenue: 10}
+      - {dimension.shop_tag_tag_name: fragile, revenue: 20}
+    reference_sql: |
+      WITH visible_stores AS (SELECT store_id FROM stores WHERE region = 'West'),
+      visible_orders AS (SELECT * FROM orders WHERE store_id IN (SELECT store_id FROM visible_stores)),
+      visible_links AS (SELECT * FROM order_tags WHERE order_id IN (SELECT order_id FROM visible_orders))
+      SELECT t.tag_name, SUM(o.amount) FROM visible_orders AS o
+      JOIN (SELECT DISTINCT l.order_id, g.tag_name FROM visible_links AS l JOIN tags AS g ON g.tag_id = l.tag_id) AS t
+        ON t.order_id = o.order_id
+      GROUP BY t.tag_name
   shop/row-filter-revenue-by-store:
     kind: query_matches_snapshot
     expect: answer

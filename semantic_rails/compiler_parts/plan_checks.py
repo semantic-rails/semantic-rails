@@ -30,6 +30,7 @@ from ..expressions import (
     ConversionExpr,
     DistributionExpr,
     EntityValueExpr,
+    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
@@ -726,8 +727,8 @@ def _entity_in_terms_of_rewrite_supported(
 
 
 # Query roles a de-duplicated leaf serves across a one-to-many hop, and the aggregations it
-# answers: any one-value-per-row aggregation under a filter, and only a distinct count when the
-# child dimension splits the output ("orders that included it").
+# answers: any one-value-per-row aggregation under a filter, and, when the child dimension splits
+# the output, the ones below.
 _FANOUT_DEDUP_PURPOSES = frozenset({"group_by", "where", "metric_filter", "child_group"})
 
 
@@ -736,13 +737,18 @@ _FANOUT_DEDUP_AGGREGATIONS = frozenset(
 )
 
 
+# Grouped, a distinct count counts each row once in every group it has a child row in
+# ("orders that included it"), whatever the call reads beside it.
 _FANOUT_GROUPED_AGGREGATIONS = frozenset({"count_distinct"})
 
 
-# Grouped across link hops only (a one-per-key model to the rows of its own relation), each
-# entity counts once in every group its key has a row in: a link carries no amount to split,
-# so sums, counts and averages over the de-duplicated rows have one reading.
-_LINK_GROUPED_AGGREGATIONS = frozenset({"sum", "count", "avg", "count_distinct"})
+# Grouped, each row counts once, with its whole value, in every group it has a child row in, so
+# sums, counts and averages over the de-duplicated rows have one reading: a room in two
+# departments counts in each, an order in each of its items' product types. Across a link (a
+# one-per-key model to the rows of its own relation) always; across any other one-to-many
+# descent unless a select item weighs the measure against one of another entity
+# (``_beside_another_entity``).
+_WHOLE_GROUPED_AGGREGATIONS = frozenset({"sum", "count", "avg", "count_distinct"})
 
 
 def crosses_link(selection: PathSelection) -> bool:
@@ -796,14 +802,118 @@ def _fanout_dedup_refusal(
     (measure-entity key, output grain) before aggregation, so each row counts once in every
     group it has a matching child in.
 
-    Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
-    item dimension reads as the item-level split ("revenue by product type") as often as the
-    orders-that-included-it total, and the two differ, so that shape stays refused.
+    Grouped, a distinct count is answered, and so is a sum, count or average that counts each
+    row with its whole value in every group (``_WHOLE_GROUPED_AGGREGATIONS``): order revenue by
+    item product type is the revenue of the orders that included each type, and the groups can
+    overlap (the disclosure says so). That answer is tried only where the narrower check
+    refuses, and any shape it doesn't answer keeps the narrower check's refusal as it was. A
+    share over such a grouping is refused (``_overlapping_share``): its total would add up the
+    overlapping groups.
 
     Every leaf is checked here: an authored measure, a query's ``aggregate_if`` (a synthetic
     measure over its entity's table) and each operand of a ratio or arithmetic, so each one
     gets the same rewrite and the same refusals.
     """
+    args = (measure, bound, selections, config, query)
+    refusal = _dedup_refusal(*args, whole=False)
+    if refusal is not None and not _beside_another_entity(measure, config, query):
+        try:
+            if _dedup_refusal(*args, whole=True) is None:
+                refusal = None
+        except SemanticLayerError:  # a refusal the narrower check never reached
+            pass
+    return refusal or _overlapping_share(*args)
+
+
+def _beside_another_entity(
+    measure: MeasureConfig, config: PackageConfig, query: NormalizedQuery
+) -> bool:
+    """Whether a select item or result filter that reads ``measure`` also reads a measure of
+    another entity (order revenue per item revenue): grouped across a one-to-many hop, the whole
+    value of each row would meet values split over its child rows."""
+    measures = _measure_index(config)
+    for root in _query_roots(query):
+        read = _measures_inside(root, (), config, inside=True)
+        if measure.id in read and any(
+            other in measures and measures[other].entity != measure.entity for other in read
+        ):
+            return True
+    return False
+
+
+def _query_roots(query: NormalizedQuery) -> list[Any]:
+    """The expressions of the call's select items and result filters."""
+    return [
+        item.expression
+        for item in [*query.select, *query.metric_filters]
+        if item.expression is not None
+    ]
+
+
+def _shares(expr: Any, config: PackageConfig) -> Iterable[ShareExpr]:
+    """Every share ``expr`` reads, recipes expanded."""
+    if isinstance(expr, ShareExpr):
+        yield expr
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        if recipe is not None:
+            yield from _shares(recipe.expression, config)
+        return
+    if is_dataclass(expr):
+        for item in fields(expr):
+            value = getattr(expr, item.name)
+            for child in value if isinstance(value, list) else [value]:
+                if is_dataclass(child):
+                    yield from _shares(child, config)
+
+
+def _overlapping_share(
+    measure: MeasureConfig,
+    bound: BoundMeasure,
+    selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> tuple[str, PathSelection] | None:
+    """A share of the leaf over a dimension it is grouped by across a one-to-many hop. Each row
+    counts in every group it has a child row in, so the share's total, the sum of those groups,
+    counts a row once per group. A share over a column of the row's own within each group
+    stays: inside one group each row appears once. Across a link every share is refused before
+    this (``_dedup_refusal``)."""
+    crossing = [row for row in selections if row.analysis.get("status") != "ok"]
+    across = {
+        dim.id: hop
+        for dim, _, hop in _hop_conditions(bound, crossing, config, query)
+        if hop.purpose == "group_by" and _link_hops(hop) is None
+    }
+    if not across:
+        return None
+    for root in _query_roots(query):
+        for share in _shares(root, config):
+            over = [item for item in share.over if item in across]
+            if over and bound.measure_id in _measures_inside(share.input, (), config, True):
+                hop = across[over[0]]
+                return (
+                    f"A share over '{over[0]}' is not supported: each '{measure.entity}' counts "
+                    f"in every group it has a '{hop.target_entity}' row in, so the groups overlap "
+                    "and the share's total, their sum, counts it once per group. Select a total "
+                    "over the same columns beside the groups (kind: total), which counts each "
+                    "once, and divide by its column after the call.",
+                    hop,
+                )
+    return None
+
+
+def _dedup_refusal(
+    measure: MeasureConfig,
+    bound: BoundMeasure,
+    selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+    *,
+    whole: bool,
+) -> tuple[str, PathSelection] | None:
+    """``_fanout_dedup_refusal``'s checks, grouped aggregations widened to
+    ``_WHOLE_GROUPED_AGGREGATIONS`` when ``whole``."""
     subject = (
         f"an aggregate_if over '{measure.entity}'"
         if is_conditional_aggregate(measure)
@@ -854,7 +964,7 @@ def _fanout_dedup_refusal(
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     links = bool(grouped) and all(_link_hops(row) is not None for row in grouped)
     if grouped and aggregation not in (
-        _LINK_GROUPED_AGGREGATIONS if links else _FANOUT_GROUPED_AGGREGATIONS
+        _WHOLE_GROUPED_AGGREGATIONS if links or whole else _FANOUT_GROUPED_AGGREGATIONS
     ):
         return (
             f"'{aggregation}' of {subject} grouped by a dimension of "
@@ -900,8 +1010,7 @@ def _fanout_dedup_refusal(
             "declare a measure on that model.",
             (grouped or selections)[0],
         )
-    roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
-    roots += [item.expression for item in query.metric_filters if item.expression is not None]
+    roots = _query_roots(query)
     if (
         bound.window_spec
         or _bound_metric_predicates(bound)
@@ -1334,6 +1443,10 @@ def _hop_steps(
         for row in path_selections
         if row.analysis.get("status") != "ok"
     )
+    details: dict[str, Any] = {"paths": crossed}
+    overlap = None if linked else _overlapping_groups(entity, bound, path_selections, config, query)
+    if overlap is not None:
+        details["overlapping_groups"] = overlap[1]
     return [
         RewriteStep(
             kind="fanout_dedup",
@@ -1348,12 +1461,54 @@ def _hop_steps(
                     " Across a link it counts in every group it has a row in, so the groups "
                     "can overlap and need not add up to the total."
                     if linked
-                    else ""
+                    else (overlap[0] if overlap is not None else "")
                 )
             ),
-            details={"paths": crossed},
+            details=details,
         )
     ]
+
+
+def _overlapping_groups(
+    entity: str,
+    bound: BoundMeasure,
+    path_selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> tuple[str, dict[str, Any]] | None:
+    """The disclosure of a grouping across a one-to-many hop that isn't a link: which hops fan
+    out, and that each row counts whole in every group, so the groups can overlap. The sentence
+    and its details (``group_by``, ``relationships``, and ``whole_amounts`` for a sum or average
+    of a value, which a measure of the child could split instead: plan repeats that one), or
+    None for a leaf that only filters across the hop."""
+    crossing = [row for row in path_selections if row.analysis.get("status") != "ok"]
+    grouped = [
+        (dim.id, hop)
+        for dim, _, hop in _hop_conditions(bound, crossing, config, query)
+        if hop.purpose == "group_by"
+    ]
+    if not grouped:
+        return None
+    hops: dict[str, str] = {}
+    for _, selection in grouped:
+        for row in selection.analysis.get("relationships", []) or []:
+            if row.get("directional_safety") == "requires_rewrite":
+                far = row["target_entity" if row.get("traversal") == "forward" else "source_entity"]
+                hops.setdefault(str(row["id"]), str(far))
+    children = " or ".join(repr(child) for child in sorted(set(hops.values())))
+    sentence = (
+        f" Grouped by {', '.join(repr(dim) for dim, _ in grouped)} across the one-to-many "
+        f"{'hop' if len(hops) == 1 else 'hops'} {', '.join(repr(rel) for rel in hops)}, each "
+        f"'{entity}' counts once, with its whole value, in every group it has a row in, so the "
+        f"groups can overlap and need not add up to the total; a measure of {children} splits "
+        "values over those rows instead."
+    )
+    details: dict[str, Any] = {"group_by": [dim for dim, _ in grouped], "relationships": list(hops)}
+    measure = _measure_index(config)[bound.measure_id]
+    aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
+    if aggregation in {"sum", "avg"} and not isinstance(measure.expr, LiteralExpr):
+        details["whole_amounts"] = True
+    return sentence, details
 
 
 def _range_crosses_window_boundary(
