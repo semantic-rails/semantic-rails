@@ -95,7 +95,10 @@ _ACROSS_PERIODS = (
     "each total row keeps its period, so none is the grand total across the periods (ask "
     "without the period for it, or for each group's total across the periods)"
 )
-_OF_TOTAL = re.compile(r"\bof\s+(?:the\s+)?(?:grand\s+|overall\s+)?(?:total|all)\b", re.IGNORECASE)
+_OF_TOTAL = re.compile(
+    r"\bof\s+(?:the\s+)?(?:grand\s+|overall\s+)?(?:total|all)\b|\bacross\s+all\b", re.IGNORECASE
+)
+_OF_VALUE = re.compile(r"\s+of\s+\w", re.IGNORECASE)
 _FILTERED_TOTAL = (
     "the draft filters its rows, and a share's total counts only the rows the call keeps, while "
     "'of the total' may mean every row (ask for each group's share without 'of the total' for "
@@ -155,13 +158,21 @@ def asked_totals(question: str, config: Any) -> TotalsAsk | None:
         words = (groups.get("words") or groups.get("by") or groups.get("per") or "").strip()
         words = "" if words.lower() in _PRONOUNS else words  # "each one's share"
         before = _FILLER_END.sub("", question[: match.start()])
-        after = _FILLER_START.sub("", question[match.end() :])
+        trailing = question[match.end() :]
         also = ""
         if kind == "subtotals":
             # Subtotal levels end at the grand total: "and a grand total" asks nothing more, but
             # the phrase keeps it, since a series' grand total is no total row.
-            also = " ".join(row[0].strip() for row in _ROWS.finditer(f"{before} {after}"))
-            before, after = _FILLER_END.sub("", _ROWS.sub("", before)), _ROWS.sub("", after)
+            also = " ".join(row[0].strip() for row in _ROWS.finditer(f"{before} {trailing}"))
+            before, trailing = _FILLER_END.sub("", _ROWS.sub("", before)), _ROWS.sub("", trailing)
+        # The total is the question's last clause, a share's own "of <value>" aside: a phrase in
+        # mid-question is never cut out ("with the grand total and orders" would join "orders"
+        # to the grouping), and a second total phrase asks what one call can't answer.
+        if trailing.strip(" ,.;:!?") and not (kind == "share" and _OF_VALUE.match(trailing)):
+            return None
+        after = _FILLER_START.sub("", trailing)
+        if any(other.search(f"{before} {after}") for _kind, other in _PHRASES):
+            return None
         rest = re.sub(r"\s+(?=,)", "", re.sub(r"\s+", " ", f"{before} {after}")).strip(" ,;")
         if kind in {"share", "beside"} and words and words.lower() not in rest.lower():
             # "each store's share of revenue": the question is revenue by store.
@@ -204,6 +215,10 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
     named = _named_list(config, group_by, asked.words, grain) if asked.words else []
     if asked.words and not named:
         return None, f"the draft groups by nothing '{asked.words}' names"
+    if asked.kind == "share" and call.where and _OF_TOTAL.search(f"{asked.phrase} {asked.rest}"):
+        # "Each store's share of the total revenue for new customers": a share's total counts the
+        # rows the call keeps, and "of the total" or "across all" may mean every row.
+        return None, _FILTERED_TOTAL
     if not group_by:
         if asked.kind == "rows" and not grain:
             return call, ""  # a call grouped by nothing is its own grand total
@@ -245,10 +260,6 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
             return None, _WHICH_GROUPING_TOTAL
         if len(call.select) > 1:
             return None, "the draft selects several values, and a share is of one"
-        if call.where and _OF_TOTAL.search(asked.phrase):
-            # "Percent of total revenue by store for new customers": a share's total counts the
-            # rows the call keeps, and "of total revenue" may mean every row.
-            return None, _FILTERED_TOTAL
         return _with_items(config, call, "share", named or group_by)
     if not named:
         return None, "the question names no grouping whose total to show"

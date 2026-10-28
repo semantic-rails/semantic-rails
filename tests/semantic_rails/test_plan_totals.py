@@ -47,7 +47,6 @@ def _items(query: dict[str, Any]) -> list[dict[str, Any]]:
     [
         ("revenue by store with the grand total", "rows", "", "revenue by store"),
         ("revenue by store, plus a total row", "rows", "", "revenue by store"),
-        ("grand total revenue last year", "rows", "", "revenue last year"),
         (
             "revenue by store and channel with subtotals by store and a grand total",
             "subtotals",
@@ -74,7 +73,6 @@ def _items(query: dict[str, Any]) -> list[dict[str, Any]]:
         ),
         ("revenue total for each store", "beside", "store", "revenue by store"),
         ("each store's share of revenue", "share", "store", "revenue by store"),
-        ("each store's share of the total revenue", "share", "store", "revenue by store"),
     ],
 )
 def test_a_question_s_total_words_are_read_apart_from_the_rest(
@@ -104,6 +102,13 @@ def test_a_question_s_total_words_are_read_apart_from_the_rest(
         "each store's share of food revenue",
         "revenue by store as a share of the total",
         "revenue by store as a share of the grand total",
+        # A total phrase is the question's last clause; in mid-question it is never cut out.
+        "revenue by store with the grand total and number of orders",
+        "revenue by store with each store's share and orders",
+        "revenue by store with the grand total, last year",
+        "grand total revenue last year",
+        "each store's share of the total revenue",
+        "revenue by store with the grand total and each store's share",
     ],
 )
 def test_a_total_that_is_a_measure_s_own_word_asks_for_no_total(runtime, question):
@@ -311,7 +316,7 @@ def test_listed_subtotals_are_levels_in_the_phrase_s_order(runtime, question, to
             None,
         ),
         # "Of the total" may mean every row; the share's total counts the filtered ones.
-        ("each store's share of the total revenue for new customers", None),
+        ("each store's share of revenue out of the total for new customers", None),
         # "Customer" names the customer, never "Customer type".
         ("revenue by customer type and store with each customer's total", None),
         # No grouping named: of each period's total or the window's, each store's or everything?
@@ -405,8 +410,43 @@ def test_withheld_values_refuse_a_total_beside_their_rank(runtime):
 
 
 def test_a_draft_held_for_something_else_says_it_carries_no_total(runtime):
-    """Two totals in one call: the plan's own hold stays, and the warning says why no total."""
-    plan = _plan(runtime, "revenue by store with the grand total and each store's share")
-    assert plan["status"] == "low_confidence"
+    """A balance by store asks which day: the plan's own hold stays, and the warning says why
+    no total."""
+    plan = _plan(runtime, "inventory on hand by store with the grand total")
+    assert plan["status"] != "ok"
     assert plan["why"]["code"] != "PLAN_TOTALS_NOT_DRAFTED"
     assert "PLAN_TOTALS_NOT_DRAFTED" in [row["code"] for row in plan["warnings"]]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # "And orders" would join the grouping (one row per order, every share 1.0).
+        "revenue by store with each store's share and orders",
+        "revenue by store with the grand total and number of orders",
+        "revenue by store with the grand total and each store's share",
+    ],
+)
+def test_a_total_phrase_in_mid_question_is_planned_as_asked(runtime, question):
+    plan = _plan(runtime, question)
+    assert plan["status"] != "ok"
+    query = (plan["best"] or {}).get("query") or {}
+    assert "totals" not in query and not _items(query)
+
+
+def test_a_share_by_period_beside_a_filter_and_the_total_is_held(runtime):
+    """The share-by-period branch reads the filtered-total rule too, on the whole question."""
+    from semantic_rails.planner.call import Call
+    from semantic_rails.planner.totals import TotalsAsk, shaped_call
+
+    call = Call.from_call(
+        {
+            "select": [REVENUE],
+            "where": [{"field": "dimension.jaffle_customer_type", "op": "is", "value": "new"}],
+            "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        },
+        runtime._config.measures,
+    )
+    asked = TotalsAsk("share", "month", "each month's share", "revenue across all months by month")
+    shaped, reason = shaped_call(runtime._config, call, asked)
+    assert shaped is None and "filters its rows" in reason
