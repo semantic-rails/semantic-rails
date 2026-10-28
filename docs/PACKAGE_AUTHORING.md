@@ -3149,8 +3149,13 @@ its period reads `NULL` like any other period the load hasn't reached. Such a me
 base table, never a rollup, whose buckets can't stop at an instant. A clock on another model
 than the measure's own is not capped.
 
-The edge is only the upper bound: a period before the table's first row still reads `NULL`,
-and `observation_scope` decides what counts as observed, as before. Balances, averages,
+The edge is only the upper bound: a period before the table's first row still reads `NULL`.
+Up to the edge, the table is observed whether or not a metric's `filter` matches any of its
+rows: a count filtered to enterprise accounts reads `0` in every loaded week before the first
+enterprise account signs up (data of nothing), and `NULL` with `NO_DATA_YET` after the edge, so
+no `COALESCE(..., 0)` is needed (it would also read the weeks after the edge as a silent `0`).
+A call's `where` counts as before: under `observation_scope: "query"` a week is observed only if
+the `where` keeps a row of the table. Balances, averages,
 distinct populations and `additive: false` measures never read `0` for an empty period, edge or
 not. A caller row filter never
 filters the load log (it records how far the whole load ran); a `row_filter` policy on the

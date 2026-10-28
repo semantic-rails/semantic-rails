@@ -191,9 +191,10 @@ def test_the_load_log_mark_compiles_beside_coverage_on_every_warehouse_that_read
 
 # Long tickets (over 480 minutes, metric.shop.long_tickets): no ticket has run that long.
 LONG = "metric.shop.long_tickets"
-MONTH = {"start": "2024-09-02", "end": "2024-10-07", "grain": "week"}
+FIVE_WEEKS = {"start": "2024-09-02", "end": "2024-10-07", "grain": "week"}
 LOADED_THEN_NOT = [0, 0, 0, 0, None]  # the weeks of Sep 2 to 23, then the week after the log
 TOUCHED = {"field": "dimension.shop_ticket_minutes", "op": "gt", "value": 0}  # every ticket
+ANY_MINUTES = {"entity": "entity.shop_ticket", "over": "all_time", "having": [{"field": "measure.shop.ticket_minutes", "op": "gt", "value": 0}]}  # fmt: skip
 
 
 def _query(package: Path, call: dict[str, Any], now: str = NOW) -> dict[str, Any]:
@@ -234,25 +235,14 @@ def test_the_load_log_observes_every_loaded_day_a_filter_never_matched(shop):
         pytest.param(
             {"where": [TOUCHED], "observation_scope": "query"}, id="a where, observed inside it"
         ),
-        pytest.param(
-            {
-                "where": [
-                    {
-                        "entity": "entity.shop_ticket",
-                        "having": [{"field": "measure.shop.ticket_minutes", "op": "gt", "value": 0}],
-                        "over": "all_time",
-                    }
-                ]
-            },
-            id="an entity filter",
-        ),
+        pytest.param({"where": [ANY_MINUTES]}, id="an entity filter"),
         pytest.param({"select": [LONG, "measure.shop.ticket_minutes"]}, id="beside another leaf"),
     ],
 )
 def test_a_filter_never_matched_reads_zero_in_every_loaded_week(shop, call):
     """Whatever else the call says, the load log decides which weeks are observed; the week
     after it reads NULL, no data yet."""
-    result = _query(shop, {"select": [LONG], "time": MONTH, **call})
+    result = _query(shop, {"select": [LONG], "time": FIVE_WEEKS, **call})
     assert _column(result, "long_tickets") == LOADED_THEN_NOT
     assert "NO_DATA_IN_SCOPE" not in _codes(result)
     assert "NO_DATA_YET" in _codes(result)
@@ -262,23 +252,25 @@ def test_a_where_the_call_observes_inside_still_reads_null_where_it_keeps_no_row
     """``observation_scope: query`` judges inside the call's own filters: one that keeps no
     ticket observes nothing, so every week reads NULL, as before."""
     nothing = {"field": "dimension.shop_ticket_minutes", "op": "gt", "value": 5000}
-    call = {"select": [LONG], "time": MONTH, "where": [nothing], "observation_scope": "query"}
+    call = {"select": [LONG], "time": FIVE_WEEKS, "where": [nothing], "observation_scope": "query"}
     assert _column(_query(shop, call), "long_tickets") == [None] * 5
 
 
 def test_a_filter_that_matched_somewhere_reads_as_before(shop):
     """Tickets under 25 minutes: ticket 3 (September 11) and the stray ticket 4, after the load
     log. The week of September 9 counts ticket 3, the quiet loaded weeks read 0 and the week
-    after the log NULL, with or without this change."""
+    after the log NULL, as they did before the log decided which weeks are observed."""
     quick = {
         "expression": {
             "kind": "aggregate",
             "measure": "measure.shop.tickets_opened",
-            "filter": {"all": [{"field": "dimension.shop_ticket_minutes", "op": "lt", "value": 25}]},
+            "filter": {
+                "all": [{"field": "dimension.shop_ticket_minutes", "op": "lt", "value": 25}]
+            },
         },
         "as": "quick",
     }
-    result = _query(shop, {"select": [quick], "time": MONTH})
+    result = _query(shop, {"select": [quick], "time": FIVE_WEEKS})
     assert _column(result, "quick") == [0, 1, 0, 0, None]
 
 
@@ -286,7 +278,7 @@ def test_an_always_loaded_table_reads_a_filter_never_matched_as_zero_up_to_now(s
     """``zero_through: now`` observes every week up to now, the week after the last ticket
     included, and says so (ZERO_AFTER_LAST_ROW)."""
     _tickets(shop, "now")
-    result = _query(shop, {"select": [LONG], "time": MONTH})
+    result = _query(shop, {"select": [LONG], "time": FIVE_WEEKS})
     assert _column(result, "long_tickets") == [0, 0, 0, 0, 0]
     assert _codes(result) == ["ZERO_AFTER_LAST_ROW"]
 
@@ -306,7 +298,7 @@ def test_the_unfiltered_probe_compiles_on_every_warehouse_that_reads_coverage(sh
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     runtime = Runtime.from_config(config, source_path=str(shop))
     try:
-        sql = runtime.compile({"select": [LONG], "time": MONTH}, now=NOW)["rendered_sql"]
+        sql = runtime.compile({"select": [LONG], "time": FIVE_WEEKS}, now=NOW)["rendered_sql"]
     finally:
         runtime.close()
     assert sql.count("> 480") == 1

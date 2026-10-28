@@ -11,8 +11,10 @@ A table's declared edge (``zero_through``: ``now``, or a load log's loaded-throu
 caps what its measures read (``declared_cap``): no row past the edge exists for any leaf,
 nested or not. It also replaces the last row as the upper bound of loaded coverage: an empty
 period reads 0 only when it ends at or before that edge (or, under a load log that reached
-today, starts before it), and NULL after it. The lower bound (the first row) and observation
-are unchanged.
+today, starts before it), and NULL after it. The lower bound (the first row) is unchanged.
+The edge, not a matching row, says such a period is observed: its probes read the table's rows
+without the measure's authored filter conditions (``LeafScope.source_where``), so a filter that
+never matched reads 0 there.
 
 ``observation_scope`` says where "observed" is judged: ``dataset`` (the default) in the
 measure's own rows under its authored conditions, ``query`` inside the query's filters too.
