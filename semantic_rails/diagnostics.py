@@ -353,6 +353,18 @@ def recovery_hints_for_error(
                 "rows": list(details.get("rows", []) or []),
             }
         ]
+    if code == "PATH_NOT_FOUND" and details.get("unknown_entity"):
+        unknown_entity = _echo(str(details["unknown_entity"]))
+        matches = list(details.get("closest_matches", []) or [])
+        return [
+            {
+                "kind": "fix_entity_id",
+                "audience": "caller",
+                "message": f"'{unknown_entity}' is not an entity of this package"
+                + (f"; did you mean {matches}?" if matches else "; discover lists entity ids."),
+                "closest_matches": matches,
+            }
+        ]
     if code == "PATH_NOT_FOUND":
         start = str(details.get("start", "") or "")
         target = str(details.get("target", "") or "")
@@ -382,8 +394,6 @@ def recovery_hints_for_error(
                 f" Split the query, or drop what needs '{target}'{dropped}; or group by a "
                 f"dimension on '{start}' itself."
             )
-            if not row_grain:
-                message += f" Or author a relationship from '{start}' to '{target}'."
             hints.append(
                 {
                     "kind": "isolated_source_entity",
@@ -418,14 +428,20 @@ def recovery_hints_for_error(
         # either case the start entity may have local dimensions worth
         # naming.
         compatible_dims = list(details.get("compatible_group_by_dimensions", []) or [])
+        closest = list(details.get("closest_dimensions", []) or [])
         if compatible_dims:
+            message = f"Dimensions reachable from '{start}' (cap 15): {compatible_dims}."
+            if closest:
+                message = (
+                    f"Closest to what was asked, reachable from '{start}': {closest}. Each is a "
+                    "different dimension, so ask the user before grouping by one. " + message
+                )
             hints.append(
                 {
                     "kind": "switch_group_by_dimension",
-                    "message": (
-                        f"Dimensions reachable from '{start}' (cap 15): {compatible_dims}."
-                    ),
+                    "message": message,
                     "compatible_group_by_dimensions": compatible_dims,
+                    **({"closest_dimensions": closest} if closest else {}),
                 }
             )
         if items and reachable:
@@ -446,23 +462,43 @@ def recovery_hints_for_error(
                     "message": (
                         f"'{target}' is a row-grain model (no key): nothing can look up one of "
                         "its rows, so no relationship leads into it. Group its own measures by "
-                        "its columns, or declare a key on it if its rows have one."
+                        "its columns."
+                    ),
+                    "unreachable_target": target,
+                }
+            )
+            hints.append(
+                {
+                    "kind": "declare_key",
+                    "message": (
+                        f"For the package author: declare a key on '{target}' if its rows have "
+                        "one, so a relationship can lead into it."
                     ),
                     "unreachable_target": target,
                 }
             )
         else:
+            from .path_gap import missing_link_fix
+
+            fix = missing_link_fix(dict(details.get("missing_link") or {}))
             hints.append(
                 {
                     "kind": "author_relationship",
-                    "message": (
-                        f"If '{target}' should be reachable, author a relationship in "
-                        "configs/.../relationships/ connecting it to a reachable entity."
+                    "message": "For the package author: "
+                    + (
+                        fix[:1].lower() + fix[1:]
+                        or (
+                            f"if '{target}' should be reachable, add a graph.relationships row "
+                            f"connecting it to an entity '{start}' reaches."
+                        )
                     ),
                     "start": start,
                     "unreachable_target": target,
                 }
             )
+        for hint in hints:
+            author = hint["kind"] in {"author_relationship", "declare_key"}
+            hint["audience"] = "author" if author else "caller"
         return hints
     if code == "INVALID_EXPRESSION_KEY":
         unknown = list(details.get("unknown_keys", []) or [])
@@ -1399,15 +1435,55 @@ def enrich_column_expression(exc: SemanticLayerError, config: PackageConfig) -> 
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
+_GAP_KEYS = (
+    "missing_link",
+    "nearest_entity",
+    "closest_dimensions",
+    "unknown_entity",
+)
+# A caller's own id is echoed at most this long (a refusal's own message names it whole).
+_ECHO_CHARS = 120
+
+
+def _echo(text: str) -> str:
+    return text if len(text) <= _ECHO_CHARS else text[: _ECHO_CHARS - 1] + "…"
+
+
+def _unknown_entity_fact(target: str) -> str:
+    return f"'{_echo(target)}' is not an entity of this package"
+
+
+def _closest_entity_ids(config: PackageConfig, missing: str) -> list[str]:
+    """Entity ids near a misspelled one, scored on the part after the kind: an entity slot is
+    offered entities only, never the dimension or measure id that was put there."""
+    by_tail = {row.id.partition(".")[2] or row.id: row.id for row in config.entities}
+    tail = missing.rpartition(".")[2] if "." in missing else missing
+    matches = get_close_matches(tail[:_ECHO_CHARS], list(by_tail), n=3, cutoff=0.5)
+    return [by_tail[match] for match in matches if by_tail[match] != missing]
+
+
 def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     """Attach reachable-target context to ``PATH_NOT_FOUND``.
 
     Shared path eligibility approves alternatives: relationship
     directions, hop limits, and route decisions apply to hints too.
+    Enriching again (under another view) rebuilds the gap from scratch, so nothing an earlier
+    view saw survives.
     """
     if exc.code != "PATH_NOT_FOUND":
         return exc
     details = dict(exc.details or {})
+    message = str(exc)
+    # Undo an earlier enrichment: its facts were appended to the message, after the base text.
+    prior = {key: details.pop(key, None) for key in _GAP_KEYS}
+    from .path_gap import missing_link_fact
+
+    for fact in (
+        missing_link_fact(prior["missing_link"] or {}),
+        _unknown_entity_fact(str(prior["unknown_entity"])) if prior["unknown_entity"] else "",
+    ):
+        if fact:
+            message = message.replace(f": {fact}.", "")
     start = str(details.get("start", "") or "")
     target = str(details.get("target", "") or "")
     if not start or not target:
@@ -1459,7 +1535,34 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
         details["target_row_grain"] = True
     if not reachable_sorted:
         details.update(_isolated_start(config, start, target, str(details.get("reason") or "")))
-    return SemanticLayerError(exc.code, str(exc), details=details)
+    reason = str(details.get("reason") or "")
+    if reason == "excluded_by_decision":
+        return SemanticLayerError(exc.code, message, details=details)
+    from .path_gap import closest_dimensions, path_gap
+
+    entity_ids = [row.id for row in config.entities]
+    if target not in entity_ids:
+        # A misspelled (or, for this caller, nonexistent) entity: there is no gap to name, and
+        # a relationship into it can't be authored. Say so, with the ids it may have meant.
+        for key in ("reachable_targets", "compatible_group_by_dimensions"):
+            details.pop(key, None)
+        details["unknown_entity"] = _echo(target)
+        details["closest_matches"] = _closest_entity_ids(config, target)
+        message = f"{message}: {_unknown_entity_fact(target)}."
+        return SemanticLayerError(exc.code, message, details=details)
+    # What one change would connect the pair (said in the message too, which an agent reads
+    # first), and the closest things the caller could ask for instead. Read from the caller's
+    # view; none of it changes a route or an answer.
+    if reason == "no_relationship_chain" and "relationship" not in details:
+        details.update(path_gap(config, start, target, reachable_sorted))
+    fact = missing_link_fact(details.get("missing_link") or {})
+    if fact:
+        message = f"{message}: {fact}."
+    items = list(details.get("unreachable_items") or [])
+    closest = closest_dimensions(config, start, reachable_sorted, target, items)
+    if closest:
+        details["closest_dimensions"] = closest
+    return SemanticLayerError(exc.code, message, details=details)
 
 
 def _isolated_start(config: PackageConfig, start: str, target: str, reason: str) -> dict[str, Any]:

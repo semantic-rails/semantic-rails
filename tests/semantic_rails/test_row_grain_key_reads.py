@@ -45,6 +45,9 @@ SWITCHED = {
     ("diagnostics.py", "_isolated_start"),
     ("diagnostics.py", "enrich_path_not_found"),
     ("fanout.py", "pass_through_disclosure"),
+    # Refusal context only: a row-grain target gets no missing link, and holds no key to match.
+    ("path_gap.py", "_Columns.__init__"),
+    ("path_gap.py", "path_gap"),
     ("interop/ossie/export.py", "_Exporter.datasets"),
     ("interop/package_writer.py", "_Writer.dimensions"),
     ("interop/package_writer.py", "_Writer.graph"),
