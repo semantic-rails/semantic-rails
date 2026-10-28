@@ -15,6 +15,7 @@ import os
 import re
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -72,20 +73,62 @@ ArchitectTransport = Literal["stdio", "streamable-http"]
 ARCHITECT_TOKEN_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN"
 ARCHITECT_TOKEN_FILE_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE"
 MIN_ARCHITECT_TOKEN_LENGTH = 32
-# Response caps for unnarrowed listings: narrow with schema, or with select.
-MAX_LISTED_TABLES = 200
-MAX_UNSELECTED_DBT_SUGGESTIONS = 20
 MAX_PREVIEW_ROWS = 200
+# Long lists come in pages, counted in items from offset as the query server's discover and
+# valid-values count them: a page holds what fits in PAGE_CHARS characters of compact JSON (at
+# least one item; limit lowers it). Paging is not a limit: full_report: true returns every item.
+PAGE_CHARS = 16_000
+# A profile_columns page profiles at most this many columns before it is cut to fit.
+PROFILE_PAGE_COLUMNS = 50
 # A default response is a summary an MCP client shows whole; full_report returns everything.
 SUMMARY_WARNINGS = 10
 SUMMARY_UNDECIDED_ROUTES = 3
 SUMMARY_DIFF_CHARS = 12_000
+# Any other summary list keeps the first items that fit in this many characters (at least one).
+SUMMARY_LIST_CHARS = 2_000
+
+
+@dataclass(frozen=True)
+class _Cut:
+    """How much of each list a summary keeps."""
+
+    warnings: int = SUMMARY_WARNINGS
+    list_chars: int = SUMMARY_LIST_CHARS
+    diff_chars: int = SUMMARY_DIFF_CHARS
+
+
+# A summary that passes PAGE_CHARS is cut again, each time to half as much (the fewest: one
+# warning, and the first row of each list), so a large package's summary still fits a page.
+_CUTS = tuple(
+    _Cut(
+        max(1, SUMMARY_WARNINGS >> level), SUMMARY_LIST_CHARS >> level, SUMMARY_DIFF_CHARS >> level
+    )
+    for level in range(4)
+)
+# Refusals and the files a write changed are never cut.
+_NEVER_CUT = frozenset({"error", "errors", "changed_files"})
 _SUMMARY_NOTE = (
     "summary: the first warnings without details, the route census's counts and first undecided "
-    "pairs, failing checks only, and diffs without file contents; pass full_report: true for all"
+    "pairs, failing checks only, the first items of long lists; pages names each list cut short, "
+    "with its total_count and next_offset: pass page (its path), offset and limit for the rest, "
+    "or full_report: true for the whole report"
+)
+_WRITE_SUMMARY_NOTE = (
+    "summary: the first warnings without details, the route census's counts and first undecided "
+    "pairs, the first items of long lists, and the first file changes, their diffs without file "
+    "contents; pages counts each list cut short. The same call with full_report: true returns "
+    "everything (a retry with the same idempotency_key replays a write)"
 )
 FullReport = Annotated[
     bool, Field(description="true: the whole report (default: a summary; see its report field)")
+]
+FullList = Annotated[bool, Field(description="true: every item in one response, unpaged")]
+Offset = Annotated[int, Field(ge=0, description="the page's first item: the last next_offset")]
+Limit = Annotated[
+    int | None, Field(ge=1, description="at most this many items (default: what fits a page)")
+]
+Page = Annotated[
+    str, Field(description="a list the summary cut short, by its path in the summary's pages")
 ]
 # RFC 6750 b64token: what a client can send in an Authorization header.
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._~+/-]+=*")
@@ -288,22 +331,53 @@ def _report_error(exc: Exception) -> dict[str, Any]:
 _UPGRADE_ACTION = "call upgrade_project (dry_run)"
 
 
-def _summary(report: Any) -> Any:
+def _json_size(value: Any) -> int:
+    """Characters of ``value`` as compact JSON, as an MCP client receives it."""
+    return len(json.dumps(value, separators=(",", ":"), default=str))
+
+
+def _is_receipt(row: Any) -> bool:
+    """Transaction receipts and archives under dot-directories aren't package files."""
+    return isinstance(row, dict) and bool(re.match(r"\.[^/]*/", str(row.get("path"))))
+
+
+def _failing(row: Any) -> bool:
+    return not (isinstance(row, dict) and row.get("ok") is True)
+
+
+# Summary lists that show only some rows: package files, and the checks that failed.
+_SUMMARY_ROWS = {
+    "files": lambda row: not _is_receipt(row),
+    "probes": _failing,
+    "examples": _failing,
+    "tests": _failing,
+}
+
+
+def _summary(
+    report: Any, pages: dict[str, Any] | None = None, path: str = "", cut: _Cut = _CUTS[0]
+) -> Any:
     """``report`` as a default response: each ``warnings`` list as its counts by code and its
-    first warnings without details, a ``route_census`` as its counts and first undecided pairs
-    (whole, with the options that record them), ``files`` without those under dot-directories,
-    and only the failing ``probes``, ``examples`` and ``tests``. Errors, and everything else,
-    stay as they are."""
+    first warnings without details, a ``route_census`` as its counts and first undecided pairs,
+    ``files`` without those under dot-directories, only the failing ``probes``, ``examples`` and
+    ``tests``, and every list as the first rows that fit in ``cut.list_chars`` characters.
+    ``pages`` (by path) gets each list the summary leaves rows out of, with its ``total_count``
+    and ``next_offset``, the first row it leaves out. Errors and ``changed_files`` stay whole."""
     if not isinstance(report, dict):
         return report
+    pages = {} if pages is None else pages
     out: dict[str, Any] = {}
     for key, value in report.items():
-        if key == "warnings" and isinstance(value, list):
+        where = f"{path}{key}"
+        if key in _NEVER_CUT or not isinstance(value, (dict, list)):
+            out[key] = value
+        elif key == "warnings" and isinstance(value, list):
+            shown = _first_warnings(value, cut.warnings)
             out[key] = [
-                {name: item for name, item in row.items() if name != "details"}
-                if isinstance(row, dict)
-                else row
-                for row in _first_warnings(value)
+                {name: item for name, item in value[index].items() if name != "details"}
+                if isinstance(value[index], dict)
+                else value[index]
+                for index in shown
             ]
             out["warning_counts"] = dict(
                 Counter(
@@ -311,64 +385,119 @@ def _summary(report: Any) -> Any:
                     for row in value
                 )
             )
-            if len(value) > SUMMARY_WARNINGS:
-                out["warnings_omitted"] = len(value) - SUMMARY_WARNINGS
+            if len(value) > len(shown):
+                out["warnings_omitted"] = len(value) - len(shown)
+            _note_page(pages, where, len(value), shown)
         elif key == "route_census" and isinstance(value, dict):
             undecided = list(value.get("undecided") or [])
+            shown = list(range(min(len(undecided), SUMMARY_UNDECIDED_ROUTES)))
             out[key] = {
                 "counts": {
                     **{name: len(rows) for name, rows in value.items()},
                     "undecided_needed": sum(bool(row.get("needed_by")) for row in undecided),
                 },
-                "undecided": undecided[:SUMMARY_UNDECIDED_ROUTES],
+                # Each pair whole but for its long lists, such as its options' first ones.
+                "undecided": [
+                    _summary(undecided[index], pages, f"{where}.undecided.{index}.", cut)
+                    for index in shown
+                ],
             }
-        elif key == "files" and isinstance(value, list):
-            # Transaction receipts and archives under dot-directories aren't package files.
-            out[key] = [
-                row
-                for row in value
-                if not (isinstance(row, dict) and re.match(r"\.[^/]*/", str(row.get("path"))))
-            ]
-        elif key in {"probes", "examples", "tests"} and isinstance(value, list):
-            out[key] = [
-                _summary(row)
-                for row in value
-                if not (isinstance(row, dict) and row.get("ok") is True)
-            ]
+            for name, rows in value.items():
+                if isinstance(rows, list):
+                    _note_page(
+                        pages, f"{where}.{name}", len(rows), shown if name == "undecided" else []
+                    )
+        elif isinstance(value, list):
+            keep = _SUMMARY_ROWS.get(key)
+            rows = [index for index, row in enumerate(value) if keep is None or keep(row)]
+            out[key], shown = _first_rows(value, rows, pages, where, cut)
+            _note_page(pages, where, len(value), shown)
         else:
-            out[key] = _summary(value)
+            out[key] = _summary(value, pages, f"{where}.", cut)
     return out
 
 
-def _first_warnings(warnings: list[Any]) -> list[Any]:
-    """The first warning of each code, then the next ones, up to ``SUMMARY_WARNINGS``, in report
-    order: a new kind of warning never hides behind many of another."""
+def _first_rows(
+    rows: list[Any], indexes: list[int], pages: dict[str, Any], where: str, cut: _Cut
+) -> tuple[list[Any], list[int]]:
+    """The summaries of ``rows[indexes]`` that fit in ``cut.list_chars`` (at least one), and
+    their indexes; ``pages`` gets the lists each of those rows leaves rows out of."""
+    kept: list[Any] = []
+    shown: list[int] = []
+    used = 0
+    for index in indexes:
+        nested: dict[str, Any] = {}
+        row = _summary(rows[index], nested, f"{where}.{index}.", cut)
+        size = _json_size(row)
+        if kept and used + size > cut.list_chars:
+            break
+        kept.append(row)
+        shown.append(index)
+        pages.update(nested)
+        used += size + 1
+    return kept, shown
+
+
+def _note_page(pages: dict[str, Any], where: str, total: int, shown: Any) -> None:
+    """Record the list at ``where`` in ``pages`` when the summary leaves a row of it out."""
+    shown = set(shown)
+    first_left_out = next((index for index in range(total) if index not in shown), total)
+    if first_left_out < total:
+        pages[where] = {"total_count": total, "next_offset": first_left_out}
+
+
+def _first_warnings(warnings: list[Any], count: int = SUMMARY_WARNINGS) -> list[int]:
+    """The indexes of the first warning of each code, then the next ones, up to ``count``, in
+    report order: a new kind of warning never hides behind many of another."""
     firsts: dict[str, int] = {}
     for index, row in enumerate(warnings):
         firsts.setdefault(row.get("code", "") if isinstance(row, dict) else "", index)
-    shown = set(list(firsts.values())[:SUMMARY_WARNINGS])
+    shown = set(list(firsts.values())[:count])
     for index in range(len(warnings)):
-        if len(shown) >= SUMMARY_WARNINGS:
+        if len(shown) >= count:
             break
         shown.add(index)
-    return [warnings[index] for index in sorted(shown)]
+    return sorted(shown)
 
 
-def _summary_changes(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """File changes without their proposed contents, their diffs cut to one shared budget."""
-    budget, rows = SUMMARY_DIFF_CHARS, []
+def _summary_changes(
+    changes: list[dict[str, Any]], pages: dict[str, Any], cut: _Cut
+) -> list[dict[str, Any]]:
+    """File changes without their proposed contents, in order while they fit in one shared
+    budget: the last one's diff cut to fit. ``pages`` counts the ones left out."""
+    budget, rows = cut.diff_chars, list[dict[str, Any]]()
     for change in changes:
         row = {**change, "proposed_content": None}
+        room = budget - _json_size({**row, "diff": ""})
+        if rows and room <= 0:
+            break
         diff = str(row.get("diff") or "")
-        if len(diff) > budget:
-            row.update(diff=diff[: diff.rfind("\n", 0, budget) + 1], diff_truncated=True)
-        budget -= len(row["diff"])
+        if len(diff) > room:
+            row.update(diff=diff[: diff.rfind("\n", 0, max(room, 0)) + 1], diff_truncated=True)
+        budget -= _json_size(row)
         rows.append(row)
+    _note_page(pages, "changes", len(changes), range(len(rows)))
     return rows
 
 
+def _fitted(build: Any) -> dict[str, Any]:
+    """The first of ``build(cut, pages)`` over ``_CUTS`` that fits in ``PAGE_CHARS``, else the
+    most cut one."""
+    out: dict[str, Any] = {}
+    for cut in _CUTS:
+        pages: dict[str, Any] = {}
+        out = build(cut, pages)
+        if pages:
+            out["pages"] = pages
+        if _json_size(out) <= PAGE_CHARS:
+            break
+    return out
+
+
 def _full_or_summary(report: dict[str, Any], full_report: bool) -> dict[str, Any]:
-    return report if full_report else {**_summary(report), "report": _SUMMARY_NOTE}
+    if full_report:
+        return report
+    return _fitted(lambda cut, pages: {**_summary(report, pages, "", cut), "report": _SUMMARY_NOTE})
 
 
 def _mutation_result(
@@ -378,9 +507,227 @@ def _mutation_result(
         hint = legacy_form_hint(payload["project_path"], _UPGRADE_ACTION)
         payload = {**payload, "next_actions": [*payload.get("next_actions", []), *hint]}
     if not full_report:
-        payload = _full_or_summary(payload, False)
-        payload["changes"] = _summary_changes(list(payload.get("changes") or []))
+        changes = list(payload.get("changes") or [])
+        rest = {key: value for key, value in payload.items() if key != "changes"}
+        payload = _fitted(
+            lambda cut, pages: {
+                **_summary(rest, pages, "", cut),
+                "changes": _summary_changes(changes, pages, cut),
+                "report": _WRITE_SUMMARY_NOTE,
+            }
+        )
     return ArchitectMutationResult.model_validate(payload)
+
+
+def _page_fields(offset: int, shown: int, total: int) -> dict[str, Any]:
+    end = offset + shown
+    return {
+        "offset": offset,
+        "total_count": total,
+        "has_more": end < total,
+        "next_offset": end if end < total else None,
+    }
+
+
+def _check_offset(offset: int, total: int, what: str) -> None:
+    if offset and offset >= total:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            f"offset {offset} is past the last of the {total} {what}: pass the next_offset the "
+            "previous page returned, or 0 for the first page",
+            details={"offset": offset, "total_count": total},
+        )
+
+
+def _check_list_paging(offset: int, limit: int | None, full_report: bool, what: str) -> None:
+    if full_report and (offset or limit is not None):
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            f"full_report returns every {what} in one response: drop offset and limit, or drop "
+            "full_report to page",
+            details={"offset": offset, "limit": limit},
+        )
+
+
+def _check_report_paging(page: str, offset: int, limit: int | None, full_report: bool) -> None:
+    if page and full_report:
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "full_report returns the whole report and page one list of it: pass one of them",
+            details={"page": page},
+        )
+    if not page and (offset or limit is not None):
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "offset and limit page the list that page names: pass page, a path from the "
+            "summary's pages",
+            details={"offset": offset, "limit": limit},
+        )
+
+
+def _fill(sizes: Any, limit: int | None, room: int) -> int:
+    """How many items, in order, a page holds: at most ``limit``, as many as fit in ``room``
+    characters, and at least one."""
+    count = used = 0
+    for size in sizes:
+        if (limit is not None and count >= limit) or (count and used + size > room):
+            break
+        count, used = count + 1, used + size + 1
+    return count
+
+
+def _paged(
+    payload: dict[str, Any],
+    key: str,
+    offset: int,
+    limit: int | None,
+    full_report: bool,
+    what: str,
+) -> dict[str, Any]:
+    """``payload`` with the page of its ``key`` list that starts at ``offset``, and the paging
+    fields; every item when ``full_report``."""
+    items = list(payload[key])
+    _check_offset(offset, len(items), what)
+    if full_report:
+        return {**payload, **_page_fields(0, len(items), len(items))}
+    room = PAGE_CHARS - _json_size({**payload, key: [], **_page_fields(offset, 0, len(items))})
+    shown = _fill((_json_size(item) for item in items[offset:]), limit, room)
+    return {
+        **payload,
+        key: items[offset : offset + shown],
+        **_page_fields(offset, shown, len(items)),
+    }
+
+
+def _paged_groups(
+    payload: dict[str, Any],
+    groups: tuple[str, ...],
+    offset: int,
+    limit: int | None,
+    full_report: bool,
+    what: str,
+    *,
+    extra: Any = None,
+) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
+    """Page several lists of ``payload`` as one, ``groups`` in order: the payload with each list
+    cut to the page's items, and those ``(group, item)`` pairs. ``extra(group, item)`` is what
+    else the page carries for an item, counted in its size."""
+    items = [(group, item) for group in groups for item in payload.get(group) or []]
+    _check_offset(offset, len(items), what)
+    if full_report:
+        return {**payload, **_page_fields(0, len(items), len(items))}, items
+    envelope = {key: value for key, value in payload.items() if key not in groups}
+    room = PAGE_CHARS - _json_size({**envelope, **_page_fields(offset, 0, len(items))})
+    sizes = (
+        _json_size(item) + (_json_size(extra(group, item)) if extra else 0)
+        for group, item in items[offset:]
+    )
+    page = items[offset : offset + _fill(sizes, limit, room)]
+    return {
+        **{
+            key: [item for group, item in page if group == key] if key in groups else value
+            for key, value in payload.items()
+        },
+        **_page_fields(offset, len(page), len(items)),
+    }, page
+
+
+_ROLES = ("times", "dimensions", "measures")
+_LINK_BUCKETS = ("proposals", "below_threshold", "not_proposed")
+
+
+def _paged_suggestion(
+    suggestion: dict[str, Any], offset: int, limit: int | None, full_report: bool
+) -> dict[str, Any]:
+    """``suggestion`` with one page of its times, then dimensions, then measures, and its draft
+    ``upsert_model`` arguments for those: applied in turn, the pages' drafts merge into one
+    model. Low-confidence suggestions are in no draft, as on the whole suggestion."""
+    draft = suggestion["upsert_model"]
+    if full_report:
+        return _paged_groups(suggestion, _ROLES, offset, limit, True, "suggestions")[0]
+
+    def key(role: str, item: dict[str, Any]) -> str:
+        return str(item["key"] if role == "measures" else item["column"])
+
+    skeleton = {name: value for name, value in draft.items() if name not in _ROLES}
+    paged, page = _paged_groups(
+        {**suggestion, "upsert_model": skeleton},
+        _ROLES,
+        offset,
+        limit,
+        False,
+        "suggestions",
+        # The draft's entry for the item, under its key, as the page's draft carries it.
+        extra=lambda role, item: {key(role, item): draft[role].get(key(role, item))},
+    )
+    keys = {(role, key(role, item)) for role, item in page}
+    paged["upsert_model"] = {
+        name: {k: v for k, v in value.items() if (name, k) in keys} if name in _ROLES else value
+        for name, value in draft.items()
+    }
+    return paged
+
+
+def _report_or_page(
+    report: dict[str, Any],
+    project: Path,
+    full_report: bool,
+    page: str,
+    offset: int,
+    limit: int | None,
+) -> dict[str, Any]:
+    """The report's summary, the whole report, or one page of a list in it."""
+    if not page:
+        return _full_or_summary(report, full_report)
+    envelope = {"ok": report.get("ok"), "project_path": str(project)}
+    return _report_page(
+        report, page, offset, limit, {**envelope, "revision": project_revision(project)}
+    )
+
+
+def _report_page(
+    report: dict[str, Any], page: str, offset: int, limit: int | None, envelope: dict[str, Any]
+) -> dict[str, Any]:
+    """One page of the list at ``page`` (dotted keys and list indexes) in ``report``: its items
+    as the summary shows rows, and the lists each of them leaves rows out of in ``pages``."""
+    target: Any = report
+    for part in page.split("."):
+        if isinstance(target, dict) and part in target:
+            target = target[part]
+        elif isinstance(target, list) and part.isdigit() and int(part) < len(target):
+            target = target[int(part)]
+        else:
+            target = None
+            break
+    if not isinstance(target, list):
+        listed: dict[str, Any] = {}
+        _summary(report, listed)
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            f"page {page!r} names no list in this report: pass a path from the summary's pages",
+            details={"page": page, "pages": sorted(listed)},
+        )
+    _check_offset(offset, len(target), f"items in {page}")
+    head = {**envelope, "page": page, **_page_fields(offset, 0, len(target))}
+    room, used = PAGE_CHARS - _json_size(head), 0
+    items: list[Any] = []
+    pages: dict[str, Any] = {}
+    for index in range(offset, len(target)):
+        nested: dict[str, Any] = {}
+        item = _summary(target[index], nested, f"{page}.{index}.")
+        size = _json_size(item) + _json_size(nested)
+        if (limit is not None and len(items) >= limit) or (items and used + size > room):
+            break
+        items.append(item)
+        pages.update(nested)
+        used += size + 1
+    return {
+        **envelope,
+        "page": page,
+        "items": items,
+        **_page_fields(offset, len(items), len(target)),
+        **({"pages": pages} if pages else {}),
+    }
 
 
 def _mutation_error_result(
@@ -886,7 +1233,9 @@ def create_architect_mcp_server(
             "write_project_files call. A write the package can't parse is "
             "rolled back, and a stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
             "write_project_files. Writes, validate_project and project_status answer with a "
-            "summary; full_report: true returns every detail. This server doesn't manage cloud "
+            "summary; full_report: true returns every detail. Long lists come in pages: pass "
+            "the answer's next_offset as offset for the next; a summary's pages names each list "
+            "it cut short, which page (its path) pages. This server doesn't manage cloud "
             "services."
         ),
         host=host,
@@ -1053,9 +1402,15 @@ def create_architect_mcp_server(
         ),
     )
     def project_status(
-        project_path: str, include_runtime_checks: bool = False, full_report: FullReport = False
+        project_path: str,
+        include_runtime_checks: bool = False,
+        full_report: FullReport = False,
+        page: Page = "",
+        offset: Offset = 0,
+        limit: Limit = None,
     ) -> dict[str, Any]:
         try:
+            _check_report_paging(page, offset, limit, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             parse = _parse_report(project)
             census = parse.pop("route_census", None)
@@ -1079,7 +1434,8 @@ def create_architect_mcp_server(
                             f"Decide the {needed} join route{'s' if needed > 1 else ''} the "
                             "package's own metrics, examples or tests need: the first pairs in "
                             "route_census.undecided, each naming them in needed_by (a summary "
-                            f"lists the first; full_report: true lists all). {DECIDE_ROUTES_ACTION}"
+                            "lists the first; page: route_census.undecided lists the rest). "
+                            f"{DECIDE_ROUTES_ACTION}"
                         ]
                         if needed
                         else []
@@ -1097,21 +1453,28 @@ def create_architect_mcp_server(
                     and out["examples"].get("ok")
                     and out["tests"].get("ok")
                 )
+            if page:
+                envelope = {key: out[key] for key in ("ok", "project_path", "revision")}
+                return _report_page(out, page, offset, limit, envelope)
             return _full_or_summary(out, full_report)
         except Exception as exc:
             return _report_error(exc)
 
     @mcp.tool(annotations=_read_only_annotations("List project files"))
-    def list_project_files(project_path: str) -> dict[str, Any]:
-        """List files inside a Semantic Rails project directory."""
+    def list_project_files(
+        project_path: str, offset: Offset = 0, limit: Limit = None, full_report: FullList = False
+    ) -> dict[str, Any]:
+        """List files inside a Semantic Rails project directory, a page at a time."""
         try:
+            _check_list_paging(offset, limit, full_report, "file")
             project = _resolve_project_path(project_path, workspace_root=root)
-            return {
+            payload = {
                 "ok": True,
                 "project_path": str(project),
                 "revision": project_revision(project),
                 "files": _project_files(project),
             }
+            return _paged(payload, "files", offset, limit, full_report, "files")
         except Exception as exc:
             return _report_error(exc)
 
@@ -1654,29 +2017,40 @@ def create_architect_mcp_server(
 
     @mcp.tool(annotations=_read_only_annotations("List warehouse tables"))
     def list_tables(
-        project_path: str = "", duckdb_path: str = "", schema: str = ""
+        project_path: str = "",
+        duckdb_path: str = "",
+        schema: str = "",
+        offset: Offset = 0,
+        limit: Limit = None,
+        full_report: FullList = False,
     ) -> dict[str, Any]:
         """List tables and views (read-only) in a DuckDB package's database or a DuckDB file."""
         try:
+            _check_list_paging(offset, limit, full_report, "table")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 tables = introspection.list_tables(warehouse, schema=schema)
-            return {
-                "ok": True,
-                "tables": tables[:MAX_LISTED_TABLES],
-                "truncated": len(tables) > MAX_LISTED_TABLES,
-                **({"hint": "narrow with schema"} if len(tables) > MAX_LISTED_TABLES else {}),
-            }
+            return _paged(
+                {"ok": True, "tables": tables}, "tables", offset, limit, full_report, "tables"
+            )
         except Exception as exc:
             return _report_error(exc)
 
     @mcp.tool(annotations=_read_only_annotations("Describe warehouse table"))
     def describe_table(
-        relation: str, project_path: str = "", duckdb_path: str = ""
+        relation: str,
+        project_path: str = "",
+        duckdb_path: str = "",
+        offset: Offset = 0,
+        limit: Limit = None,
+        full_report: FullList = False,
     ) -> dict[str, Any]:
-        """Columns (type, nullability, default) and declared primary, unique and foreign keys."""
+        """Columns (type, nullability, default), a page at a time, and declared primary, unique
+        and foreign keys."""
         try:
+            _check_list_paging(offset, limit, full_report, "column")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
-                return {"ok": True, **introspection.describe_table(warehouse, relation)}
+                described = {"ok": True, **introspection.describe_table(warehouse, relation)}
+            return _paged(described, "columns", offset, limit, full_report, "columns")
         except Exception as exc:
             return _report_error(exc)
 
@@ -1684,7 +2058,7 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Profile table columns"),
         description=(
             "Per-column counts, min/max and up to 20 samples (sample_limit=0 for none), sampling "
-            "tables above max_rows (at most one million). Read-only."
+            "tables above max_rows (at most one million), a page of columns at a time. Read-only."
         ),
     )
     def profile_columns(
@@ -1694,19 +2068,30 @@ def create_architect_mcp_server(
         max_rows: int = introspection.DEFAULT_PROFILE_ROWS,
         project_path: str = "",
         duckdb_path: str = "",
+        offset: Offset = 0,
+        limit: Limit = None,
+        full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
+            _check_list_paging(offset, limit, full_report, "column")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
-                return {
-                    "ok": True,
-                    **introspection.profile_columns(
-                        warehouse,
-                        relation,
-                        columns,
-                        sample_limit=sample_limit,
-                        max_rows=max_rows,
-                    ),
-                }
+                described = introspection.describe_table(warehouse, relation)
+                names = [column["name"] for column in described["columns"]]
+                wanted = list(columns or names)
+                if full_report or set(wanted) - set(names):
+                    # Every column, or the refusal naming the unknown ones.
+                    chunk = wanted
+                else:
+                    _check_offset(offset, len(wanted), "columns")
+                    # Profile only this page's columns: what fits is known once they are.
+                    chunk = wanted[offset : offset + (limit or PROFILE_PAGE_COLUMNS)]
+                profile = introspection.profile_columns(
+                    warehouse, relation, chunk, sample_limit=sample_limit, max_rows=max_rows
+                )
+            if full_report:
+                return _paged({"ok": True, **profile}, "columns", 0, None, True, "columns")
+            page = _paged({"ok": True, **profile}, "columns", 0, limit, False, "columns")
+            return {**page, **_page_fields(offset, len(page["columns"]), len(wanted))}
         except Exception as exc:
             return _report_error(exc)
 
@@ -1714,15 +2099,24 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Suggest a model"),
         description=(
             "Propose a key, times, dimensions, measures and foreign keys for a relation, with "
-            "confidences, reasons and draft upsert_model arguments. Read-only."
+            "confidences, reasons and draft upsert_model arguments. Pages hold the times, then "
+            "the dimensions, then the measures; each page's draft holds that page's, so apply "
+            "the drafts in turn (they merge), or pass full_report: true for one draft. Read-only."
         ),
     )
     def suggest_model(
-        relation: str, project_path: str = "", duckdb_path: str = ""
+        relation: str,
+        project_path: str = "",
+        duckdb_path: str = "",
+        offset: Offset = 0,
+        limit: Limit = None,
+        full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
+            _check_list_paging(offset, limit, full_report, "suggestion")
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
-                return {"ok": True, **introspection.suggest_model(warehouse, relation)}
+                suggestion = {"ok": True, **introspection.suggest_model(warehouse, relation)}
+            return _paged_suggestion(suggestion, offset, limit, full_report)
         except Exception as exc:
             return _report_error(exc)
 
@@ -1766,7 +2160,8 @@ def create_architect_mcp_server(
             "(default 0.95, stated as threshold); below_threshold lists the rest with the same "
             "evidence for you to decide. columns tries those columns against every key whatever "
             "their names. With project_path the targets are the package's entities and each "
-            "carries draft upsert_relationship arguments. Read-only."
+            "carries draft upsert_relationship arguments. Pages hold the proposals, then "
+            "below_threshold, then not_proposed; counts has each list's total. Read-only."
         ),
     )
     def suggest_links(
@@ -1775,20 +2170,29 @@ def create_architect_mcp_server(
         min_coverage: float = introspection.DEFAULT_LINK_COVERAGE,
         project_path: str = "",
         duckdb_path: str = "",
+        offset: Offset = 0,
+        limit: Limit = None,
+        full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
+            _check_list_paging(offset, limit, full_report, "candidate")
             context = (
                 ArchitectProject(project_path, workspace_root=root).link_context(relation)
                 if project_path
                 else {}
             )
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
-                return {
-                    "ok": True,
-                    **introspection.suggest_links(
-                        warehouse, relation, columns, min_coverage=min_coverage, **context
-                    ),
-                }
+                links = introspection.suggest_links(
+                    warehouse, relation, columns, min_coverage=min_coverage, **context
+                )
+            payload = {
+                "ok": True,
+                **links,
+                "counts": {bucket: len(links[bucket]) for bucket in _LINK_BUCKETS},
+            }
+            return _paged_groups(payload, _LINK_BUCKETS, offset, limit, full_report, "candidates")[
+                0
+            ]
         except Exception as exc:
             return _report_error(exc)
 
@@ -1829,8 +2233,8 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Suggest models from dbt"),
         description=(
             "suggest_model for each dbt model, from manifest.json and catalog.json (dbt never "
-            "runs); keys, links and value sets come from dbt tests and contracts. select narrows "
-            "by model name. Read-only."
+            "runs), a page of models at a time; keys, links and value sets come from dbt tests "
+            "and contracts. select narrows by model name. Read-only."
         ),
     )
     def suggest_models_from_dbt(
@@ -1838,20 +2242,21 @@ def create_architect_mcp_server(
         manifest_path: str = "",
         catalog_path: str = "",
         select: list[str] | None = None,
+        offset: Offset = 0,
+        limit: Limit = None,
+        full_report: FullList = False,
     ) -> dict[str, Any]:
         try:
+            _check_list_paging(offset, limit, full_report, "model")
             project = _dbt_project(target_dir, manifest_path, catalog_path)
-            models = dbt_artifacts.suggest_models_from_dbt(project, list(select or []))
-            limit = len(models) if select else MAX_UNSELECTED_DBT_SUGGESTIONS
-            return {
+            payload = {
                 "ok": True,
                 "dbt_project": project.project_name,
                 "adapter_type": project.adapter_type,
-                "models": models[:limit],
-                "truncated": len(models) > limit,
-                **({"hint": "narrow with select"} if len(models) > limit else {}),
+                "models": dbt_artifacts.suggest_models_from_dbt(project, list(select or [])),
                 "dbt_warnings": project.warnings,
             }
+            return _paged(payload, "models", offset, limit, full_report, "models")
         except Exception as exc:
             return _report_error(exc)
 
@@ -1932,8 +2337,12 @@ def create_architect_mcp_server(
         compare_path: str = "",
         base_ref: str = "",
         full_report: FullReport = False,
+        page: Page = "",
+        offset: Offset = 0,
+        limit: Limit = None,
     ) -> dict[str, Any]:
         try:
+            _check_report_paging(page, offset, limit, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             ref = _package_ref(project)
             check = str(mode or "parse").strip().lower()
@@ -1966,37 +2375,53 @@ def create_architect_mcp_server(
                 raise SemanticLayerError(
                     "INVALID_CONFIG", "Unsupported validation mode", details={"mode": mode}
                 )
-            return _full_or_summary(report, full_report)
+            return _report_or_page(report, project, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
     @mcp.tool(annotations=_read_only_annotations("Diff project"))
     def diff_project(
-        project_path: str, compare_path: str = "", base_ref: str = ""
+        project_path: str,
+        compare_path: str = "",
+        base_ref: str = "",
+        full_report: FullReport = False,
+        page: Page = "",
+        offset: Offset = 0,
+        limit: Limit = None,
     ) -> dict[str, Any]:
         """Diff one project against another path or a git base ref."""
         try:
+            _check_report_paging(page, offset, limit, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
-            return diff_package_report(
+            report = diff_package_report(
                 _package_ref(project),
                 compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                 base_ref=base_ref,
             )
+            return _report_or_page(report, project, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
     @mcp.tool(annotations=_read_only_annotations("Impact of a change"))
     def impact_project(
-        project_path: str, compare_path: str = "", base_ref: str = ""
+        project_path: str,
+        compare_path: str = "",
+        base_ref: str = "",
+        full_report: FullReport = False,
+        page: Page = "",
+        offset: Offset = 0,
+        limit: Limit = None,
     ) -> dict[str, Any]:
         """Return behavior-change impact, reviewer teams, and risk for a package change."""
         try:
+            _check_report_paging(page, offset, limit, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
-            return impact_report(
+            report = impact_report(
                 _package_ref(project),
                 compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                 base_ref=base_ref,
             )
+            return _report_or_page(report, project, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
@@ -2014,8 +2439,12 @@ def create_architect_mcp_server(
         compare_path: str = "",
         base_ref: str = "",
         full_report: FullReport = False,
+        page: Page = "",
+        offset: Offset = 0,
+        limit: Limit = None,
     ) -> dict[str, Any]:
         try:
+            _check_report_paging(page, offset, limit, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             report = promote_package_report(
                 _package_ref(project),
@@ -2023,7 +2452,7 @@ def create_architect_mcp_server(
                 compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                 base_ref=base_ref,
             )
-            return _full_or_summary(report, full_report)
+            return _report_or_page(report, project, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
