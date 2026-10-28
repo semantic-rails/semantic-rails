@@ -192,7 +192,9 @@ policies. Callers cannot select those measures or columns independently. Groupin
 filters, and explicit time roles require corresponding dimension grants. Raw measures,
 column/conditional aggregates, runtime expression composition, entity filters, `having`,
 and dimension-only queries are unavailable in this bounded contract. Denial occurs before
-compilation or warehouse access, including cache hits. Metric and dimension grants do not
+compilation or warehouse access, including cache hits. The call is read against what the grant
+names, so an id outside the grant gets exactly the answer an id the package lacks would get:
+a refusal never tells a caller which ids exist. Metric and dimension grants do not
 authorize caller-selected entity scopes; an `any`/`none` entity filter is denied even when all
 its condition dimensions are granted.
 

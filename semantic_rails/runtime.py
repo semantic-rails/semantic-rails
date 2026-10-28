@@ -1716,21 +1716,24 @@ class Runtime:
         instant = parse_now(now)
         policy = _context_mapping(context)
         clock = self._default_clock
-        if policy.get("metric_allowlist") is not None:
-            granted = frozenset(policy["metric_allowlist"])
+        granted = policy.get("metric_allowlist") is not None
+        if granted:
+            metrics = frozenset(policy["metric_allowlist"])
 
             def clock(object_id: str) -> str:
-                # A metric grant: an id outside it has no clock, like an id the package lacks,
-                # so a call with a grain or window is refused the same way for both.
-                return self._default_clock(object_id) if object_id in granted else ""
+                # A granted metric's clock comes from its whole definition (its measures).
+                return self._default_clock(object_id) if object_id in metrics else ""
 
         with self.request_scope():
             # The request boundary's order: the environment first, then the caller's view.
             check_request_environment(self.package_config, str(policy.get("environment") or ""))
             with visible_view.request_view(self, policy):
+                # A metric grant reads the call in what it grants, so an id outside it answers
+                # exactly like an id the package lacks, wherever the reading looks it up.
+                config = visible_view.grant_view(self._config, policy) if granted else self._config
                 internal, notes = read_call(
                     query,
-                    config=self._config,
+                    config=config,
                     now=instant,
                     default_clock=clock,
                     text_dimension=text_dimension,
