@@ -7948,6 +7948,75 @@ tests:
       FROM generate_series(TIMESTAMP '2024-09-23', TIMESTAMP '2024-10-14', INTERVAL '7 days') AS g(b)
       LEFT JOIN loaded AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
       GROUP BY g.b
+  shop/weeks-a-filter-never-matched-read-zero-through-the-load-log-then-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Four weeks to October 7, 2024 of long tickets (over 480 minutes): no ticket has ever run that long, but the load log says the load ran through Sunday September 29, so the weeks of September 9, 16 and 23 are loaded and read 0 (data of nothing), as the unfiltered count does there; the week of September 30 is after it, so it reads NULL (no data yet), never 0.'
+    cites: &long_cites [tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_tickets, tests/integration/correctness/shop/models/tickets.yml#model.dimensions.minutes, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [metric.shop.long_tickets]
+      time: {last: {unit: week, value: 4}, grain: week}
+    now: '2024-10-07T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-09', long_tickets: 0}
+      - {period: '2024-09-16', long_tickets: 0}
+      - {period: '2024-09-23', long_tickets: 0}
+      - {period: '2024-09-30', long_tickets: null}
+    reference_sql: |
+      SELECT g.b,
+        CASE WHEN COUNT(CASE WHEN t.minutes > 480 THEN 1 END) > 0
+            OR (g.b >= (SELECT date_trunc('week', MIN(opened_at)) FROM tickets)
+              AND g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads))
+          THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END
+      FROM generate_series(TIMESTAMP '2024-09-09', TIMESTAMP '2024-09-30', INTERVAL '7 days') AS g(b)
+      LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+      GROUP BY g.b
+  shop/a-loaded-week-a-filter-never-matched-reads-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The week of September 23 to 29, 2024, which the load log covers: no long ticket (over 480 minutes) has ever been opened, that week or any other, so the loaded week reads 0, not NULL with NO_DATA_IN_SCOPE.'
+    cites: *long_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [metric.shop.long_tickets]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-09-30T06:00:00Z'
+    expected_rows: [{long_tickets: 0}]
+    reference_sql: |
+      SELECT CASE WHEN COUNT(CASE WHEN t.minutes > 480 THEN 1 END) > 0
+          OR ((SELECT MAX(through_day) FROM ticket_loads) >= DATE '2024-09-29'
+            AND EXISTS (SELECT 1 FROM tickets WHERE opened_at < TIMESTAMP '2024-09-30'))
+        THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-09-23' AND t.opened_at < TIMESTAMP '2024-09-30'
+  shop/the-share-of-long-tickets-reads-zero-where-tickets-opened-and-null-where-none-did:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Four weeks to October 7, 2024 of the share of tickets that ran long: each operand settles first, then the ratio. Long tickets read 0 in the three loaded weeks; the week of September 9 opened ticket 3, so its share is 0 / 1 = 0; the weeks of September 16 and 23 opened none, so 0 / 0 is NULL (no tickets, never 0.0); the week of September 30 is after the load log, so both operands are NULL and so is the share.'
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_ticket_share, tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_tickets, tests/integration/correctness/shop/models/tickets.yml#model.measures.tickets_opened, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [metric.shop.long_ticket_share]
+      time: {last: {unit: week, value: 4}, grain: week}
+    now: '2024-10-07T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-09', long_ticket_share: 0.0}
+      - {period: '2024-09-16', long_ticket_share: null}
+      - {period: '2024-09-23', long_ticket_share: null}
+      - {period: '2024-09-30', long_ticket_share: null}
+    reference_sql: |
+      WITH weeks AS (
+        SELECT g.b,
+          CASE WHEN g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+            THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END AS long_tickets,
+          CASE WHEN g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+            THEN COUNT(DISTINCT t.ticket_id) END AS opened
+        FROM generate_series(TIMESTAMP '2024-09-09', TIMESTAMP '2024-09-30', INTERVAL '7 days') AS g(b)
+        LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+        GROUP BY g.b
+      )
+      SELECT b, CAST(long_tickets AS DOUBLE PRECISION) / NULLIF(opened, 0) FROM weeks
   shop/a-quiet-week-under-an-empty-load-log-reads-null:
     kind: query_matches_snapshot
     expect: answer

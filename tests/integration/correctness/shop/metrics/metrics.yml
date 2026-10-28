@@ -36,3 +36,24 @@ metrics:
       matching_mode: first_converted_after_base
       base: {kind: aggregate, measure: signup_count}
       converted: {kind: aggregate, measure: order_count}
+  # Tickets that took over a working day (480 minutes): none has yet, so the filter has never
+  # matched a row. The tickets model names its load log, which says which weeks are loaded.
+  long_tickets:
+    as: metric.shop.long_tickets
+    label: Long tickets
+    kind: derived
+    value_type: count
+    temporal_role: temporal_role.shop_ticket_opened_at
+    expression:
+      kind: aggregate
+      measure: measure.shop.tickets_opened
+      aggregation: count_distinct
+      filter: {all: [{field: dimension.shop_ticket_minutes, op: gt, value: 480}]}
+  long_ticket_share:
+    as: metric.shop.long_ticket_share
+    label: Share of tickets that ran long
+    kind: ratio
+    numerator: long_tickets
+    denominator: tickets_opened
+    value_type: number
+    temporal_role: temporal_role.shop_ticket_opened_at

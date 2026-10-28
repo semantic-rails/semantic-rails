@@ -156,6 +156,50 @@ def test_last_nights_load_covers_the_month_so_far_but_not_today(request, backend
     assert not _warnings(week, "PARTIAL_DATA")
 
 
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_filter_no_row_has_matched_reads_zero_in_loaded_weeks_and_no_data_yet_after(
+    request, backend_name
+):
+    """No ticket has run over 480 minutes yet: the load log, not a matching row, says which
+    weeks are observed, so its weeks read 0 with no NO_DATA_IN_SCOPE, and the week after it
+    reads NULL, named as no data yet."""
+    case_id = "weeks-a-filter-never-matched-read-zero-through-the-load-log-then-null"
+    result = _answer(request, backend_name, case_id)
+    assert [row["long_tickets"] for row in result["rows"]] == [0, 0, 0, None]
+    assert result["window"]["data_through"] == "2024-09-29"
+    assert result["window"]["data_through_source"] == "ticket_loads.through_day"
+    assert not _warnings(result, "NO_DATA_IN_SCOPE")
+    [warning] = _warnings(result, "NO_DATA_YET")
+    assert warning["details"]["measures"] == [
+        {"id": "measure.shop.tickets_opened", "edge": "2024-09-29", "edge_source": "loaded"}
+    ]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_single_loaded_week_a_filter_never_matched_reads_zero(request, backend_name):
+    """One loaded week, as a window total and as a one-period series: 0, with no warning."""
+    total = _answer(request, backend_name, "a-loaded-week-a-filter-never-matched-reads-zero")
+    assert total["rows"] == [{"long_tickets": 0}]
+    assert not total.get("warnings")
+    runtime = _backend(request, backend_name).runtimes["utc_authored"]
+    week = {"start": "2024-09-23", "end": "2024-09-30", "grain": "week"}
+    series = runtime.query(
+        {"select": ["metric.shop.long_tickets"], "time": week}, now="2024-09-30T06:00:00Z"
+    )
+    assert [row["long_tickets"] for row in series["rows"]] == [0]
+    assert not series.get("warnings")
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_share_of_a_filter_never_matched_divides_its_settled_operands(request, backend_name):
+    """0 / 1 is 0 where a ticket opened, 0 / 0 is NULL where none did, and past the load log
+    both operands are NULL."""
+    case_id = "the-share-of-long-tickets-reads-zero-where-tickets-opened-and-null-where-none-did"
+    result = _answer(request, backend_name, case_id)
+    assert [row["long_ticket_share"] for row in result["rows"]] == [0, None, None, None]
+    assert not _warnings(result, "NO_DATA_IN_SCOPE")
+
+
 def test_a_caller_who_cant_see_the_load_log_reads_loaded(packages):
     base = _runtime(packages["utc_authored"])
     config, source_path = base.config, base.source_path
