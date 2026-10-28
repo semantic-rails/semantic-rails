@@ -21,6 +21,7 @@ from semantic_rails.expressions import (
 from semantic_rails.query_call import read_call
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime_parts.assumptions import split_hidden
 from semantic_rails.schema import (
     DimensionConfig,
     EntityConfig,
@@ -755,7 +756,8 @@ def test_duckdb_synthetic_parent_geo_total_messages_matches_oracle():
             INSERT INTO parent_account_dim VALUES ('p1', 'US'), ('p2', 'EU'), ('p3', 'US');
             """
         )
-        actual = db.query(compiled["sql"])
+        # The answer's rows, without the columns the runtime reads and strips.
+        actual, _ = split_hidden(db.query(compiled["sql"]), compiled)
         oracle = db.query(
             """
             WITH channel_rows AS (
