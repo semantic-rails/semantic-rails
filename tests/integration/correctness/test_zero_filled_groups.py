@@ -279,6 +279,7 @@ def test_a_marked_group_that_reads_null_is_no_zero_filled_group(shop):
         | {"m1_absent": 0, "m2_absent": 1, "m3_absent": 1},
     ]
     rows, hidden = split_hidden(returned, compiled)
+    assert rows == [{CUSTOMER: 107, "signup_count": 1, "order_count": None, "revenue": None}]
     assert zero_filled_groups_notes(shop, compiled, rows, hidden) == []
 
 
