@@ -125,6 +125,32 @@ def test_a_measure_query_says_its_start_is_the_measures_entity(runtime):
     assert error["details"]["unreachable_items"] == [MEMBERSHIP]
 
 
+@pytest.mark.parametrize(
+    ("select", "anchor"),
+    [
+        (
+            ["measure.jaffle.revenue_usd", "measure.jaffle.customer_count"],
+            "entity.jaffle_order holds the rows of measure.jaffle.revenue_usd, so routes start "
+            "there; entity.jaffle_customer holds those of measure.jaffle.customer_count.",
+        ),
+        (
+            ["measure.jaffle.revenue_usd", "measure.jaffle.item_count", ORDERS],
+            "entity.jaffle_order holds the rows of measure.jaffle.revenue_usd, "
+            "measure.jaffle.order_count, so routes start there; entity.jaffle_item holds those "
+            "of measure.jaffle.item_count.",
+        ),
+    ],
+    ids=["two-entities", "first-entity-twice"],
+)
+def test_a_refusal_names_each_measures_own_entity(runtime, select, anchor):
+    """Revenue and customers by membership status: the refusal says where each measure's rows
+    live, never that the customer count reads the orders' rows."""
+    error = _error(runtime, {"select": select, "group_by": [MEMBERSHIP]})
+    assert error["code"] == "PATH_NOT_FOUND"
+    assert error["details"]["anchor"] == anchor
+    assert anchor in _hints(error)
+
+
 def _isolated(package_config_factory, *, target_key: list[str]) -> Any:
     config, _ = package_config_factory("jaffle_shop")
     keys = {"S": ["s_id"], "B": ["b_id"], "T": target_key}

@@ -1130,7 +1130,8 @@ def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> 
     """The fields a conditional aggregate's condition reads: the dimensions over each column,
     or ``<entity>.<column>`` for a column no dimension declares (which no allowed_where lists)."""
     out: list[str] = []
-    for ref in collect_column_refs(expr.condition):
+    refs = collect_column_refs(expr.condition) if expr.condition is not None else []
+    for ref in refs:
         entity = _resolve_column_entity(ref, config)
         over = [row.id for row in dimensions_over_column(entity, ref.column, config)]
         out.extend(over or [f"{entity}.{ref.column}"])

@@ -1157,12 +1157,23 @@ def recovery_hints_for_error(
         if kind and details.get("supported_kinds"):
             # A row-level kind (a raw column, ...) as a query value (see ast).
             message = (
-                f"'{kind}' reads row values, and a query reads measures and metrics: write an id, "
-                f"or one of the kinds {list(details['supported_kinds'])}."
+                f"'{kind}' reads row values, and a select item aggregates rows: write an id or one "
+                f"of the kinds {list(details['supported_kinds'])} (aggregate_if aggregates row "
+                "values)."
             )
             if kind == "column":
+                owner = {key: details[key] for key in ("entity", "table") if details.get(key)}
+                column = {"kind": "column", "column": details.get("column") or "<column>"}
+                shape = {
+                    "kind": "aggregate_if",
+                    "aggregation": "sum",
+                    "value": {**column, **(owner or {"entity": "<entity id>"})},
+                }
                 message += (
-                    " To split or filter by a column, name a dimension on it in group_by or where."
+                    f" To aggregate this column, write {json.dumps(shape)}, with count, avg, "
+                    "min, max or another aggregation; its value may also be a case or a call such "
+                    "as LENGTH over columns, and a condition keeps only the rows it matches. To "
+                    "split or filter by a column, name a dimension on it in group_by or where."
                 )
             return [{"code": "FIX_QUERY_CALL", "message": message}]
         return list(details.get("recovery_hints", []) or [])

@@ -180,7 +180,7 @@ KIND_REQUIRED: dict[str, tuple[str, ...]] = {
     "prior_period": ("input", "offset"),
     "period_to_date": ("input", "period"),
     "metric_predicate": ("entity", "input", "op", "value", "over"),
-    "aggregate_if": ("aggregation", "condition"),
+    "aggregate_if": ("aggregation",),
     "ratio": ("numerator", "denominator"),
     "share": ("input", "over"),
     "total": ("input", "over"),
@@ -304,15 +304,15 @@ EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
     {
         "name": "aggregate_if",
         "description": (
-            "shorthand for <AGG>(CASE WHEN cond THEN value END). Column refs "
+            "shorthand for <AGG>(CASE WHEN cond THEN value END); with no `condition`, "
+            "<AGG>(value) over every row. Column refs "
             "inside `condition` / `value` must specify `entity` or `table` "
             "(no surrounding measure to inherit from). It aggregates the rows "
             "of the value's entity; `condition` may also read entities that "
             "entity reaches over many-to-one relationships. A value row with no "
             "match there never satisfies it; a condition such a row could "
-            "satisfy (a missing test, OR with the value's own column) is refused. Compiles to "
-            "COUNT_IF / SUM_IF natively on Snowflake; portable CASE WHEN "
-            "elsewhere. `value` may be omitted when aggregation=count."
+            "satisfy (a missing test, OR with the value's own column) is refused. "
+            "`value` may be omitted when aggregation=count."
         ),
         "example": {
             "kind": "aggregate_if",

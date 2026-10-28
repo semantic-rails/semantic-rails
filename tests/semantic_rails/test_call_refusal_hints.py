@@ -438,6 +438,35 @@ def test_a_raw_column_names_the_query_kinds_and_its_dimensions(
         assert runtime.validate({"select": [ORDERS], "group_by": dimensions}, now=NOW)["ok"] is True
 
 
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ({"column": "order_total_cents", "entity": "entity.jaffle_order"}, 74_589_303),
+        ({"column": "order_total_cents", "table": "jaffle_order"}, 74_589_303),
+        ({"column": "order_total_cents"}, None),
+    ],
+    ids=["entity", "table", "no-entity"],
+)
+def test_a_raw_column_hint_writes_the_aggregate_if_that_aggregates_it(
+    runtime: Runtime, column: dict[str, str], value: int | None
+) -> None:
+    """Total order value straight from its column: the hint writes the aggregate_if over that
+    column, which answers, instead of saying a query reads only measures and metrics."""
+    select = [{"expression": {"kind": "column", **column}, "as": "total"}]
+    hint = _hint(_error(runtime, {"select": select}))
+    owner = {key: column[key] for key in ("entity", "table") if key in column}
+    shape = {
+        "kind": "aggregate_if",
+        "aggregation": "sum",
+        "value": {"kind": "column", "column": "order_total_cents", **(owner or {"entity": "<entity id>"})},
+    }  # fmt: skip
+    assert json.dumps(shape) in hint
+    assert "measures and metrics" not in hint and "LENGTH" in hint and "group_by" in hint
+    if value is not None:
+        answer = runtime.query({"select": [{"expression": shape, "as": "total"}]}, now=NOW)
+        assert answer["rows"] == [{"total": value}]
+
+
 def test_a_raw_column_in_a_draft_names_its_path() -> None:
     draft = {"select": [{"expression": {"kind": "column", "column": "store_id"}, "as": "x"}]}
     with pytest.raises(SemanticLayerError) as raised:

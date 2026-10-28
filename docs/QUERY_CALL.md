@@ -917,7 +917,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own |
 | `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
-| `aggregate_if` | `{kind: aggregate_if, aggregation, condition, value?}` |
+| `aggregate_if` | `{kind: aggregate_if, aggregation, condition?, value?}`: no `condition` reads every row |
 | `scoped_aggregate` | `{kind: scoped_aggregate, measure, where?, predicates?, anchor?, window?, ...}`; each predicate carries `over` |
 | `metric_predicate` | `{kind: metric_predicate, entity, input, op, value, over, window?}` |
 | `entity_value` | `{kind: entity_value, entity, input, where?}` |
@@ -927,13 +927,25 @@ every kind with its keys (`$defs/Kind_<kind>`).
 
 A part that reads row values (`column`, `in`, `date_add`) is not a query value on its own: it is
 refused at its path with the kinds a select item can be (`supported_kinds`), and a raw `column`
-with the dimensions on it in `closest_matches`.
+with the dimensions on it in `closest_matches` and, in its hint, the `aggregate_if` that
+aggregates it. `aggregate_if` computes from row values: its `value` is a column or a row
+expression over them (a `case`, or a `call` such as `LENGTH`), and its optional `condition` keeps
+only the rows it matches.
+
+```json
+{"select": [{"expression": {"kind": "aggregate_if", "aggregation": "avg",
+                            "value": {"kind": "call", "name": "LENGTH", "args": [{"kind": "column", "column": "customer_name", "entity": "entity.jaffle_customer"}]}},
+             "as": "average_name_length"}]}
+```
 
 Conditions inside a kind (`aggregate.filter.all`, `scoped_aggregate.where`, ...) use the
 [filter words](#filter-words); `over` uses the [entity filter](#entity-filters) words. Every
 inline condition passes the caller's allowed filters, as a `where` condition does. Comparison
 expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NULL compares
-unknown. A `comparison` also takes a text word as its `op`, with a text literal `right`
+unknown. A `comparison`'s `op` is a SQL comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`) or a filter
+word, read as in `where`: `gt`, `gte`, `lt`, `lte` and `is` as `>`, `>=`, `<`, `<=` and `=`; `not`
+as `<>` that keeps rows with no value; and `missing`, with a literal `true` or `false` `right`, as
+a test for no value. It also takes a text word as its `op`, with a text literal `right`
 (`{"kind": "comparison", "op": "starts_with", "left": <column>, "right": {"kind": "literal",
 "value": "K"}}`). Its `left` is a column that exactly one dimension declares, named as the
 warehouse names columns (the exact name first, then an unquoted name in any ASCII case on every

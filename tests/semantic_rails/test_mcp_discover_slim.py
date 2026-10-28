@@ -200,6 +200,24 @@ def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter) -> None:
         assert response[bucket] == original[bucket]
 
 
+def test_full_measure_cards_name_the_aggregations_inspect_lists(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    """A median order value is a statistic of revenue: the full card lists every one the measure
+    reads, as inspect does, not only the sum its description names; slim cards leave it out."""
+    arguments = {"terms": "revenue", "limit": 10}
+    full = adapter.call_tool("discover", {**arguments, "verbosity": "full"})
+    assert full["measures"]
+    for card in full["measures"]:
+        inspected = adapter.call_tool("inspect", {"object_id": card["id"]})["card"]
+        assert card["allowed_aggregations"] == inspected["allowed_aggregations"], card["id"]
+    revenue = next(card for card in full["measures"] if card["id"] == "measure.jaffle.revenue_usd")
+    assert {"sum", "median"} <= set(revenue["allowed_aggregations"])
+    for verbosity in ("minimal", "compact"):
+        slim = adapter.call_tool("discover", {**arguments, "verbosity": verbosity})
+        assert not any("allowed_aggregations" in card for card in slim["measures"]), verbosity
+
+
 @pytest.mark.parametrize("terms", ["revenue by store", "store"])
 def test_compact_discover_keeps_slim_descriptions_without_blocked_metadata(
     adapter: SemanticLayerMCPAdapter, terms: str

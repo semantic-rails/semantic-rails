@@ -359,9 +359,18 @@ def _root_path_summary(
                 preaggregate(target_entity, _SEPARATE_FAMILIES, {"target_entity": target_entity})
                 continue
             if exc.code == "PATH_NOT_FOUND":
-                read = [row.measure_id for row in bound_measures]
+                # Each measure under its own entity; routes start at the first one's.
+                held: dict[str, list[str]] = {}
+                for row in bound_measures:
+                    held.setdefault(measures[row.measure_id].entity, []).append(row.measure_id)
+                others = "".join(
+                    f"; {entity} holds those of {', '.join(ids)}"
+                    for entity, ids in held.items()
+                    if entity != root_entity
+                )
                 anchor = (
-                    f"{root_entity} holds the rows of {', '.join(read)}, so routes start there."
+                    f"{root_entity} holds the rows of {', '.join(held[root_entity])}, so routes "
+                    f"start there{others}."
                 )
                 raise _anchored_refusal(exc, query, config, anchor) from None
             if exc.code == "AMBIGUOUS_PATH":

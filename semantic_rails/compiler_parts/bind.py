@@ -1100,11 +1100,14 @@ def _resolve_column_entity(ref: ColumnRefExpr, config: PackageConfig) -> str:
 def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: PackageConfig) -> str:
     """The base entity: the one entity of the value's columns, else of the condition's."""
     value_refs = collect_column_refs(expr.value) if expr.value is not None else []
-    condition_refs = collect_column_refs(expr.condition)
+    condition_refs = collect_column_refs(expr.condition) if expr.condition is not None else []
     if not value_refs and not condition_refs:
         raise SemanticLayerError(
             "UNSUPPORTED_CONDITIONAL_AGGREGATE",
             "aggregate_if expressions must reference at least one column",
+            details={
+                "hint": "Name the column to aggregate in 'value'; to count an entity's rows, its key."
+            },
         )
     value_entities = {_resolve_column_entity(ref, config) for ref in value_refs}
     condition_entities = {_resolve_column_entity(ref, config) for ref in condition_refs}
@@ -1193,6 +1196,8 @@ def _require_null_rejecting_condition(
     comparing a bare column of it, so that such a row fails the condition whether its lookup
     joins LEFT or INNER, and the join kind never changes a value.
     """
+    if expr.condition is None:
+        return
     terms = _and_terms(expr.condition)
     rejected = {entity for term in terms for entity in _null_rejected_entities(term, config)}
     read = {_resolve_column_entity(ref, config) for ref in collect_column_refs(expr.condition)}
@@ -1374,11 +1379,12 @@ def _synthetic_conditional_measure(
     # For COUNT_IF (value omitted) the body is literal 1 so COUNT()
     # only counts matching rows. Note: we do NOT add an ELSE branch —
     # the implicit NULL behaviour is what every aggregation needs to
-    # ignore non-matching rows correctly.
+    # ignore non-matching rows correctly. With no condition it reads every row: the value.
     body_value: SemanticExpr = expr.value if expr.value is not None else LiteralExpr(value=1)
-    expr_for_measure = CaseExpr(
-        whens=[CaseWhenExpr(when=expr.condition, then=body_value)],
-        else_expr=None,
+    expr_for_measure: SemanticExpr = (
+        body_value
+        if expr.condition is None
+        else CaseExpr(whens=[CaseWhenExpr(when=expr.condition, then=body_value)], else_expr=None)
     )
 
     payload = json.dumps(

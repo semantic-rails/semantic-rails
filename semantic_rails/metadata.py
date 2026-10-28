@@ -2412,6 +2412,10 @@ def discover_payload(
         # Reachability stays on the inspect card: it follows the package's routes.
         for row in entities:
             row["relationships"] = entity_relationships(config, row["id"])
+        # The statistics each measure reads (the aggregation override), not only its default.
+        measure_index = _config_maps(config)["measures"]
+        for row in measures:
+            row["allowed_aggregations"] = list(measure_index[row["id"]].allowed_aggregations)
 
     payload = {
         "terms": terms,

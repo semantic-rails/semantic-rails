@@ -525,8 +525,7 @@
       },
       "required": [
         "kind",
-        "aggregation",
-        "condition"
+        "aggregation"
       ],
       "type": "object"
     },
