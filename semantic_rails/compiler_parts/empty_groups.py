@@ -36,7 +36,6 @@ from ..expressions import (
     AggregateExpr,
     ArithmeticExpr,
     CaseExpr,
-    ColumnRefExpr,
     MeasureRefExpr,
     MetricRecipeRefExpr,
     SemanticExpr,
@@ -61,7 +60,12 @@ from ..sql_ast import (
     SqlWindow,
     sql_nodes,
 )
-from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
+from .bind import (
+    _measure_count_distinct_key_columns,
+    _parse_public_expr,
+    earlier_settlement_applies,
+    is_conditional_case,
+)
 from .dependencies import holding, plan_is_root, settles_as_a_call
 from .indexes import _measure_index, _recipe_index
 from .temporal import _source_filter_refusals
@@ -128,17 +132,13 @@ def counts_its_own_key(
     aggregation: str, measure: MeasureConfig | None, config: PackageConfig
 ) -> bool:
     """Whether a count of the measure is at least 1 in every group its rows reach: it counts its
-    own entity's key, which every row holds. Only then is a 0 a group its rows never reached; a
-    conditional count, a count of another column and a sum read a real 0 as well."""
-    if measure is None or aggregation not in _COUNTING:
-        return False
-    expr = measure.expr
-    keys = next((row.key_columns for row in config.entities if row.id == measure.entity), [])
+    own entity's key, which every row holds (``_measure_count_distinct_key_columns``). Only then
+    is a 0 a group its rows never reached; a conditional count, a count of another column and a
+    sum read a real 0 as well."""
     return (
-        isinstance(expr, ColumnRefExpr)
-        and not expr.table
-        and expr.entity in ("", measure.entity)
-        and expr.column in keys
+        measure is not None
+        and aggregation in _COUNTING
+        and bool(_measure_count_distinct_key_columns(measure, config))
     )
 
 
