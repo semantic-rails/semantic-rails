@@ -1996,10 +1996,12 @@ class Runtime:
                             },
                         }
                     )
+                cap = limits.get("max_rows") if probe is not None else None
                 rows = _adapter_query(
                     adapter,
                     probe if probe is not None else compiled["prepared_query"],
-                    limits=limits,
+                    # The boundary probe's extra row takes no slot of the transport's cap.
+                    limits={**limits, "max_rows": cap + 1} if cap else limits,
                     policy_context=policy_context,
                 )
             if probe is not None:
@@ -2010,10 +2012,11 @@ class Runtime:
                 own = [row for row in rows if not totaled or row.get(TOTAL_OVER) is None]
                 assert limit is not None  # a boundary probe exists only under a limit
                 cut, tie_warnings = limit_rows(own, limit, compiled["limit_order_keys"])
-                rows = QueryRows(
-                    [*cut, *(row for row in rows if totaled and row.get(TOTAL_OVER) is not None)],
-                    truncated=bool(getattr(rows, "truncated", False)),
-                )
+                kept = [*cut, *(row for row in rows if totaled and row.get(TOTAL_OVER) is not None)]
+                truncated = bool(getattr(rows, "truncated", False))
+                if cap and len(kept) > cap:
+                    kept, truncated = kept[:cap], True
+                rows = QueryRows(kept, truncated=truncated)
             rows, hidden = split_hidden(rows, compiled)
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
@@ -2045,9 +2048,19 @@ class Runtime:
                     details["path"] = paths[0]
             raise query_execution_error(details) from exc
         mark_partial_periods(rows, compiled, now=now, zone=zone or "UTC")
+        # Disclosures about the call's rows read only those: total rows are the call at
+        # coarser grains, and their rolled-up NULLs are no group of the call's.
+        own_rows = (
+            QueryRows(
+                [row for row in rows if row.get(TOTAL_OVER) is None],
+                truncated=bool(getattr(rows, "truncated", False)),
+            )
+            if compiled["logical_plan"].query.get("totals") is not None
+            else rows
+        )
         coverage = _coverage_read(self, compiled, payload) if compiled["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
-            compiled, rows, payload, coverage, zone=zone or "UTC", excluded_outputs=withheld
+            compiled, own_rows, payload, coverage, zone=zone or "UTC", excluded_outputs=withheld
         )
         coverage_outputs = [
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
@@ -2074,13 +2087,13 @@ class Runtime:
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
                 *coverage_warnings,
-                *_partial_data_warnings(compiled, rows, coverage, now=now, zone=zone or "UTC"),
+                *_partial_data_warnings(compiled, own_rows, coverage, now=now, zone=zone or "UTC"),
                 *_zero_after_last_row_notes(
                     compiled, coverage, now=now, zone=zone or "UTC", excluded_outputs=withheld
                 ),
                 *_no_data_in_scope_warnings(
                     compiled,
-                    rows,
+                    own_rows,
                     excluded_outputs=[*withheld, *coverage_outputs],
                     dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
                     runtime=self,
@@ -2132,7 +2145,7 @@ class Runtime:
         # storefront_session fact only spans Sept 2016, but there was
         # no signal to distinguish that from a silent row-drop. Surface
         # the applied time bounds and point at inspect for freshness.
-        if not rows and not coverage_warnings:
+        if not own_rows and not coverage_warnings:
             time_block = dict(payload.get("time", {}) or {})
             has_time_filter = (
                 time_block.get("start") or time_block.get("end") or time_block.get("temporal_role")

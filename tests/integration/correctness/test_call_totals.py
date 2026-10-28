@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
@@ -512,3 +513,147 @@ def test_a_companion_the_coarser_call_cant_answer_is_named_at_the_total(duckdb_b
     assert error["details"]["path"] == "select[1].expression"
     assert error["details"]["companion"] == "signup_to_order_7d"
     assert "coarse_total" not in json.dumps(error)
+
+
+def test_a_total_over_the_period_states_its_partial_window(duckdb_backend):
+    """Daily orders by store, with each store's total over July and August: orders end on
+    August 1, so the total, like the call without the period, covers 32 of 62 days."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    window = {"temporal_role": ORDERED_AT, "start": "2024-07-01", "end": "2024-09-01"}
+    now = "2024-10-15T00:00:00Z"
+    answer = runtime.query(
+        {
+            "select": [_total(ORDERS, ["period"])],
+            "group_by": [STORE],
+            "time": {**window, "grain": "day"},
+        },
+        now=now,
+    )
+    [partial] = [w for w in answer["warnings"] if w["code"] == "PARTIAL_DATA"]
+    alone = runtime.query({"select": [ORDERS], "group_by": [STORE], "time": window}, now=now)
+    [expected] = [w for w in alone["warnings"] if w["code"] == "PARTIAL_DATA"]
+    assert partial["details"] == {**expected["details"], "column": "total"}
+    assert "the total in 'total'" in partial["message"]
+
+
+def test_a_metric_total_of_several_measures_states_its_unloaded_periods(tmp_path):
+    """Net revenue is revenue less goods refunded: its total by month reads NULL once revenue
+    ends, and says why, as the metric does on its own."""
+    from .conftest import _runtime, _write_variant
+
+    package = _write_variant(tmp_path, "utc_authored")
+    path = package / "metrics" / "metrics.yml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["metrics"]["shop.net_revenue"] = {
+        "as": "metric.shop.net_revenue",
+        "label": "Net revenue",
+        "kind": "derived",
+        "value_type": "currency",
+        "expression": {
+            "kind": "arithmetic",
+            "op": "subtract",
+            "left": {"measure": REVENUE},
+            "right": {"measure": "measure.shop.goods_refunded"},
+        },
+    }
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    try:
+        answer = runtime.query(
+            {
+                "select": [_total("metric.shop.net_revenue", [STORE])],
+                "group_by": [STORE],
+                "time": {**MONTHS, "start": "2024-06-01", "end": "2024-11-01"},
+            },
+            now="2024-10-15T00:00:00Z",
+        )
+    finally:
+        runtime.close()
+    assert {row["period"] for row in answer["rows"] if row["total"] is None} == {
+        "2024-09-01",
+        "2024-10-01",
+    }
+    [no_data] = [w for w in answer["warnings"] if w["code"] == "NO_DATA_YET"]
+    assert no_data["details"]["outputs"] == ["total"]
+
+
+def test_a_total_over_the_period_reads_its_own_inputs_edge(tmp_path):
+    """Accounts are counted on the account days, loaded through now; seats are a stock whose
+    snapshots end on January 15. Beside seats, the accounts' total over January covers what the
+    accounts alone cover (all of it, so nothing is said), never the seats' edge."""
+    from .conftest import _runtime, _write_variant
+
+    package = _write_variant(tmp_path, "utc_authored")
+    path = package / "models" / "account_days.yml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["model"]["zero_through"] = "now"
+    document["model"]["measures"]["accounts"] = {
+        "kind": "entity_count",
+        "entity_key": "account_id",
+        "accumulation": {"kind": "flow"},
+    }
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    window = {"temporal_role": SNAPSHOT_DAY, "start": "2024-01-01", "end": "2024-02-01"}
+    now = "2024-10-15T00:00:00Z"
+    try:
+        answer = runtime.query(
+            {
+                "select": [SEATS, _total("measure.shop.accounts", ["period"])],
+                "group_by": [PLAN],
+                "time": {**window, "grain": "day"},
+            },
+            now=now,
+        )
+        alone = runtime.query(
+            {"select": ["measure.shop.accounts"], "group_by": [PLAN], "time": window}, now=now
+        )
+    finally:
+        runtime.close()
+    totals = [
+        w["details"]
+        for w in answer["warnings"]
+        if w["code"] == "PARTIAL_DATA" and w["details"].get("column") == "total"
+    ]
+    expected = [w["details"] for w in alone.get("warnings") or [] if w["code"] == "PARTIAL_DATA"]
+    assert totals == [{**row, "column": "total"} for row in expected]
+
+
+def test_a_lone_total_over_the_last_months_says_they_are_not_loaded(duckdb_backend):
+    """Orders end in August: the total over the last two months of a December answer reads
+    NULL, and says no data is loaded yet there, as the call without the period does."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    time = {"temporal_role": ORDERED_AT, "grain": "month", "last": {"unit": "month", "value": 2}}
+    answer = runtime.query(
+        {"select": [_total(ORDERS, ["period"])], "time": time}, now="2024-12-15T00:00:00Z"
+    )
+    codes = {w["code"] for w in answer.get("warnings") or []}
+    assert "NO_DATA_YET" in codes
+    assert "NO_DATA_IN_SCOPE" not in codes
+
+
+def test_a_stock_total_over_the_period_states_its_partial_window(duckdb_backend):
+    """Seats across the plans and January: the snapshots end on January 15, so the total
+    covers 15 of the window's 31 days, beside the closing day's missing series."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    answer = runtime.query(
+        {
+            "select": [_total(SEATS, ["period", PLAN])],
+            "group_by": [PLAN],
+            "time": {
+                "temporal_role": SNAPSHOT_DAY,
+                "grain": "day",
+                "start": "2024-01-01",
+                "end": "2024-02-01",
+            },
+        },
+        now="2024-10-15T00:00:00Z",
+    )
+    [partial] = [w for w in answer["warnings"] if w["code"] == "PARTIAL_DATA"]
+    assert partial["details"] == {
+        "through": "2024-01-15",
+        "days_covered": 15,
+        "days": 31,
+        "column": "total",
+    }
+    assert "BALANCE_SERIES_MISSING_ON_CLOSING_DAY" in {w["code"] for w in answer["warnings"]}

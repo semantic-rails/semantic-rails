@@ -819,7 +819,10 @@ total. The call's own rows, and each level's, come in the call's `order_by` (by 
 period first), then the period and group keys ascending with NULLs last. `having` and `limit`
 cut only the call's own rows: total rows always come back, and they count the rows `having` and
 `limit` leave out (ties at a `limit` are broken and reported as usual). A transport's row cap
-counts total rows too, so a truncated answer can end before them.
+counts total rows too, so a truncated answer can end before them; a returned total row shows
+every row of the call's own came back. Every warning about the call's rows (`NO_DATA_YET`,
+`NO_DATA_IN_SCOPE`, `EMPTY_RESULT_WINDOW`, `NULL_PRESERVING_HISTORY`, `TIES_AT_LIMIT`) reads
+those rows only, as without `totals`.
 
 `totals` is refused at its path when an item is not a `group_by` id of the call (once each),
 when the call has no `group_by`, when a select item is named `total_over`, and beside a `share`
