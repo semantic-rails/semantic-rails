@@ -26,6 +26,7 @@ These tests pin the enrichment contract added in
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -52,8 +53,10 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
         entity="entity.orders",
         row_grain=["order_id"],
         expr=ColumnRefExpr(column="amount"),
-        default_aggregation="sum",
-        allowed_aggregations=["sum"],
+        # A median by a line dimension has no reading across the hop (a sum counts each order
+        # whole in every group), so the call is refused and its recovery ranked.
+        default_aggregation="median",
+        allowed_aggregations=["median"],
         compatible_temporal_roles=[],
         name=naming.get("name", ""),
         label=naming.get("label", ""),
@@ -127,9 +130,12 @@ def _first_error(report: dict) -> dict:
     return errors[0]
 
 
-def _validate(runtime, *, measure: str, group_by: list[str], time: dict | None = None) -> dict:
+def _validate(
+    runtime, *, measure: str, group_by: list[str], time: dict | None = None, aggregation: str = ""
+) -> dict:
+    expression: Any = {"kind": "measure", "measure": measure, "aggregation": aggregation}
     payload: dict = {
-        "select": [{"expression": measure, "as": "value"}],
+        "select": [{"expression": expression if aggregation else measure, "as": "value"}],
         "group_by": group_by,
     }
     if time is not None:
@@ -138,14 +144,16 @@ def _validate(runtime, *, measure: str, group_by: list[str], time: dict | None =
 
 
 def test_revenue_by_product_name_suggests_item_revenue(runtime_factory) -> None:
-    """revenue_usd x jaffle_product_name must name item_revenue_usd as
-    a compatible measure and surface it in a replace_measure hint."""
+    """A median of revenue_usd x jaffle_product_name (its sum counts each order whole under
+    every product) must name item_revenue_usd as a compatible measure and surface it in a
+    replace_measure hint."""
     runtime = runtime_factory("jaffle_shop")
     try:
         report = _validate(
             runtime,
             measure="measure.jaffle.revenue_usd",
             group_by=["dimension.jaffle_product_name"],
+            aggregation="median",
         )
         err = _first_error(report)
         assert err["code"] == "MIXED_GRAIN_INVALID"
