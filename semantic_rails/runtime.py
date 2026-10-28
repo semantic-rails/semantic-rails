@@ -1936,6 +1936,7 @@ class Runtime:
             _partial_data_warnings,
             _zero_after_last_row_notes,
             closing_day_disclosures,
+            zero_filled_groups_notes,
         )
 
         refusal = _scope_refusal(payload)
@@ -2101,6 +2102,9 @@ class Runtime:
                     dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
                     runtime=self,
                     payload=payload,
+                ),
+                *zero_filled_groups_notes(
+                    self._config, compiled, rows, hidden, excluded_outputs=withheld
                 ),
                 *closing_warnings,
                 *_filter_value_warnings(self, compiled, payload),

@@ -21,10 +21,12 @@ from ..schema import PackageConfig, base_of
 
 
 def hidden_columns(compiled: dict[str, Any]) -> list[str]:
-    """The columns the SQL carries for the answer's assumptions, never for its rows."""
+    """The columns the SQL carries for the answer's assumptions and notes, never for its rows."""
+    absent = dict(compiled.get("absent_rows") or {}).values()
     return [
         *dict(compiled.get("override_rows") or {}).values(),
         *dict(compiled.get("share_groups") or {}).values(),
+        *dict.fromkeys(name for names in absent for name in names),
     ]
 
 

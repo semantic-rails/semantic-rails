@@ -163,11 +163,17 @@ def compile_query(
     sql_ast = with_call_rows(bound.sql_ast, own)
     outputs = {field.alias for field in sql_ast.select}
     # The hidden columns the runtime reads and removes: each re-aggregated measure's row count,
-    # and the rows each share's total spans.
+    # the rows each share's total spans, and, by output, the columns marking the groups the
+    # measures it reads never reached (``ZERO_FILLED_GROUPS``).
     override_rows, share_groups = (
         {alias: column for alias, column in names.items() if column in outputs}
         for names in (override_row_counts(plan, config), share_group_counts(plan, config))
     )
+    absent_rows = {
+        item["output"]: list(item["absent"])
+        for item in bound.zero_outputs
+        if item.get("absent") and outputs.issuperset(item["absent"])
+    }
     dialect = dialect_for_warehouse(config.package.warehouse)
     sql_profile = str(payload.get("sql_profile", "audit") or "audit")
 
@@ -235,6 +241,7 @@ def compile_query(
         "limit_order_keys": limit_order_keys,
         "override_rows": override_rows,
         "share_groups": share_groups,
+        "absent_rows": absent_rows,
         "explain": explain,
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,
