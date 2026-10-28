@@ -1026,9 +1026,15 @@ for a share. A `having` may filter on a total's column.
 Every measure kind is computed at that grain from its own rows, never added up from the rows:
 a distinct count counts distinct values, an average averages every row, a ratio divides the
 totals, and across a [link](#groups-across-a-link) each entity counts once. Several totals over
-the same columns share one coarser call, and the call stays one statement. A row whose coarser
-group has no rows of the input at all reads what the input reads in that group's rows (`0` or
-`null`, by the [empty-group rules](#empty-groups-null-or-0)).
+the same columns share one coarser call, and the call stays one statement. The coarser call
+selects everything the call does (a share or total as its input), so it has a row wherever the
+call has one, and it settles its [empty groups](#empty-groups-null-or-0) as that call would on
+its own: data of nothing reads `0`, a period not loaded yet `null`, and a group it has no row
+for `null` (a stock over the period whose closing day has no snapshot). A name the coarser call
+keeps groups by its entity's key beside it, as any call's does, so a total over a customer key
+that keeps the customer's name keeps namesakes apart. A call that can't be answered without the
+`over` columns (a running total without its period) refuses the total, as it would refuse on
+its own.
 
 ```json
 {"select": ["measure.jaffle.ordering_customer_count",

@@ -80,7 +80,7 @@ from .bind import (
 )
 from .dependencies import (
     holding,
-    plan_is_root,
+    settles_as_a_call,
 )
 from .empty_groups import (
     LeafScope,
@@ -404,7 +404,7 @@ def _preserves_filtered_series(plan: LogicalPlan, row: MeasurePlan, config: Pack
     return bool(
         _dialect(config).has_time_coverage
         and row.rewrite_strategy == "direct"
-        and plan_is_root()
+        and settles_as_a_call()
         and not earlier_settlement_applies()
         and not row.aggregate_relation_id
         and reads_every_row(measure)

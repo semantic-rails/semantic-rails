@@ -61,7 +61,7 @@ from ..sql_ast import (
     sql_nodes,
 )
 from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
-from .dependencies import holding, plan_is_root
+from .dependencies import holding, plan_is_root, settles_as_a_call
 from .indexes import _measure_index, _recipe_index
 from .temporal import _source_filter_refusals
 
@@ -213,7 +213,7 @@ def recording_leaf_scopes() -> Iterator[dict[str, LeafScope]]:
 
 def record_leaf_scope(alias: str, scope: LeafScope) -> None:
     scopes = _leaf_scopes.get()
-    if scopes is not None and plan_is_root():
+    if scopes is not None and settles_as_a_call():
         scopes[alias] = scope
 
 
@@ -247,7 +247,7 @@ def observing(query: Mapping[str, Any], config: PackageConfig) -> Iterator[None]
 
 def observes_dataset() -> bool:
     """Whether the guard being built settles the request's own outputs under ``dataset``."""
-    return _dataset_observation.get() and plan_is_root()
+    return _dataset_observation.get() and settles_as_a_call()
 
 
 def guard_empty_groups(
@@ -799,12 +799,17 @@ def recording_zero_outputs() -> Iterator[list[dict[str, Any]]]:
 
 @contextmanager
 def recording_outputs_as(names: Mapping[str, str]) -> Iterator[None]:
-    """Record a nested compile's guarded outputs under the request's names for them."""
+    """Record a nested compile's guarded outputs under the request's names for them; its other
+    outputs are internal, with no column in the answer, and are dropped."""
     outputs = _zero_outputs.get()
     start = len(outputs) if outputs is not None else 0
     yield
-    for item in (outputs or [])[start:]:
-        item["output"] = names.get(item["output"], item["output"])
+    if outputs is not None:
+        outputs[start:] = [
+            {**item, "output": names[item["output"]]}
+            for item in outputs[start:]
+            if item["output"] in names
+        ]
 
 
 def record_zero_output(output: str, measure_ids: Iterable[str]) -> None:

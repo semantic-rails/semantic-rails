@@ -63,9 +63,9 @@ from .dependencies import (
     cut_owners,
     leaf_predicate_roles,
     measure_objects,
-    plan_is_root,
     project_is_cut,
     record_bound_object,
+    settles_as_a_call,
 )
 from .empty_groups import (
     LeafScope,
@@ -1006,7 +1006,7 @@ def _measure_leaf_select(
     if (
         owned_reads is not None
         and owned_predicates
-        and plan_is_root()
+        and settles_as_a_call()
         and all(predicate.scope_mode != "contextual" for predicate in owned_predicates)
     ):
         owned_reads[measure_plan.bound_measure.alias] = LeafScope(

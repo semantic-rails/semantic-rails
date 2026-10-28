@@ -107,7 +107,7 @@ def with_total_rows(plan: LogicalPlan, config: PackageConfig, detail: SqlSelect)
             time=plan.time,
         )
         name = _unique("total_level", taken)
-        level = nested.query_sql(config, payload, collapse_window=True)
+        level = nested.query_sql(config, payload, standalone=True)
         ctes.append(SqlCte(name=name, query=_namespace_sql_select(level, f"{name}__")))
         produced = {field.alias for field in level.select}
         branches.append(branch(name, produced, index, _named(rolled, config)))

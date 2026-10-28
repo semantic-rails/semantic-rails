@@ -10,7 +10,6 @@ at that grain, so a distinct count or an average is never added up from the rows
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
 from typing import Any
 
 from ..ast import TIME_AXIS, time_output_alias
@@ -18,19 +17,11 @@ from ..errors import SemanticLayerError
 from ..ir import LogicalPlan
 from ..schema import PackageConfig
 from ..sql_ast import (
-    SqlCall,
-    SqlCase,
-    SqlCaseWhen,
     SqlCte,
     SqlExpr,
-    SqlField,
     SqlIdentifier,
-    SqlIsNull,
     SqlJoin,
-    SqlLiteral,
     SqlTableRef,
-    SqlWindow,
-    sql_nodes,
 )
 from . import nested
 from .empty_groups import recording_outputs_as
@@ -57,9 +48,16 @@ def coarse_group_by(
     group_by: Iterable[str], over: Iterable[str], config: PackageConfig
 ) -> list[str]:
     """The group_by of the coarser call: without the ``over`` columns, nor the entity key a
-    name groups by beside it."""
-    dropped = {*over, *filter(None, (display_key(config, column) for column in over))}
-    return [column for column in group_by if column not in dropped]
+    rolled-up name groups by beside it. A name the coarser call keeps groups by its entity's key
+    beside it, as any call's does, so namesakes never merge: that key stays, ``over`` or not."""
+    group_by, over = list(group_by), set(over)
+    keys = {display_key(config, column) for column in group_by if column not in over} - {""}
+    rolled = {display_key(config, column) for column in over} - {""} - keys
+    return [
+        column
+        for column in group_by
+        if (column not in over or column in keys) and column not in rolled
+    ]
 
 
 def coarse_call(
@@ -117,47 +115,71 @@ def _unique_name(base: str, taken: set[str]) -> str:
     return name
 
 
+def _row_sources(select: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The call's select items as its coarser call reads them: a share or a total is its input
+    there (the same rows), every other item itself. The coarser call keeps every row source the
+    call has, so it has a row wherever the call does, and settles the input's empty groups
+    there as the call without the ``over`` columns would."""
+    out = []
+    for row in select:
+        expression = row.get("expression")
+        if isinstance(expression, Mapping) and expression.get("kind") in {"share", "total"}:
+            expression = expression["input"]
+        out.append(dict(expression or {}))
+    return out
+
+
 def total_sources(
     plan: LogicalPlan, config: PackageConfig, taken: set[str], *, table_alias: str = "base"
-) -> tuple[list[SqlCte], list[SqlJoin], dict[str, tuple[str, str, str, list[str]]]]:
+) -> tuple[list[SqlCte], list[SqlJoin], dict[str, SqlExpr]]:
     """The coarser calls of the plan's totals as CTEs, each LEFT-joined to the call's rows on
-    the keys it keeps (NULL-safe, so a NULL group meets its own total), and by total alias:
-    the CTE, its value column, the column marking a joined row, and the keys."""
+    the keys it keeps (NULL-safe, so a NULL group meets its own total), and each total's value
+    by its alias.
+
+    A coarser call is the call itself without the ``over`` columns: every select item (a share
+    or total as its input), compiled standalone, so its empty groups settle as that call's do
+    (loaded coverage, observation, data of nothing). A call that can't be answered at that
+    grain refuses the total, as it would refuse on its own."""
     totals = selected_totals(plan.query.get("select") or [])
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
-    sources: dict[str, tuple[str, str, str, list[str]]] = {}
+    values: dict[str, SqlExpr] = {}
     time_alias = time_output_alias(plan.time) if plan.time else ""
+    sources = _row_sources(plan.query.get("select") or [])
     for over, items in _over_groups(totals).items():
         keys = coarse_group_by(plan.group_by, over, config)
         if time_alias and TIME_AXIS not in over and not plan.time.get("window_total"):
             keys.append(time_alias)  # a window total's time is no column
         name = _unique_name("coarse_total", taken)
         # Columns of the engine's own naming: a caller's alias could be an internal one.
-        values = {alias: f"{name}_{index}" for index, (alias, _) in enumerate(items, start=1)}
-        hit = f"{name}_row"
+        columns = [f"{name}_{index}" for index in range(1, len(sources) + 1)]
+        by_alias = {
+            str(row.get("as")): column
+            for row, column in zip(plan.query.get("select") or [], columns, strict=True)
+        }
+        mine = {alias: by_alias[alias] for alias, _ in items}
         payload = coarse_call(
             plan.query,
             over,
             [
-                {"expression": expression["input"], "as": values[alias]}
-                for alias, expression in items
+                {"expression": source, "as": column}
+                for source, column in zip(sources, columns, strict=True)
             ],
             config,
             group_by=plan.group_by,
             time=plan.time,
         )
-        with recording_outputs_as({value: alias for alias, value in values.items()}):
-            select = nested.query_sql(config, payload, collapse_window=True)
-        if sorted(field.alias for field in select.select) != sorted([*keys, *values.values()]):
+        with recording_outputs_as({column: alias for alias, column in mine.items()}):
+            select = nested.query_sql(config, payload, standalone=True)
+        produced = {field.alias for field in select.select}
+        if produced - set(columns) != set(keys):
             raise SemanticLayerError(
                 "REWRITE_NOT_SUPPORTED",
                 f"The total in '{items[0][0]}' can't be computed at its coarser grain: the call "
                 f"without {', '.join(sorted(over))} doesn't answer one row per "
                 f"{' and '.join(keys) or 'call'}. Ask for that grain in its own call.",
-                details={"totals": list(values), "over": sorted(over), "keys": keys},
+                details={"totals": [alias for alias, _ in items], "over": sorted(over)},
             )
-        select = replace(select, select=[*select.select, SqlField(SqlLiteral(1), hit)])
         ctes.append(SqlCte(name=name, query=_namespace_sql_select(select, f"{name}__")))
         joins.append(
             SqlJoin(
@@ -166,28 +188,7 @@ def total_sources(
                 on=_join_condition(keys, table_alias, name, dialect=_dialect(config)),
             )
         )
-        sources.update((alias, (name, value, hit, keys)) for alias, value in values.items())
-    return ctes, joins, sources
-
-
-def total_column(
-    source: tuple[str, str, str, list[str]],
-    fine: SqlExpr,
-    *,
-    table_alias: str = "base",
-) -> SqlExpr:
-    """The total's value: the coarser call's, or, in a row whose coarser group has no rows of
-    the input at all (no row to join), what the input reads in that group's rows: each reads
-    its empty-group value (0 or NULL by the call's own rules), and the largest is taken."""
-    name, column, hit, keys = source
-    value = SqlIdentifier(parts=[name, column])
-    if any(isinstance(node, SqlWindow) for node in sql_nodes(fine)):
-        return value  # a windowed input has no per-group reading to carry: NULL
-    empty = SqlWindow(
-        function=SqlCall("MAX", [fine]),
-        partition_by=[SqlIdentifier(parts=[table_alias, key]) for key in keys],
-    )
-    return SqlCase(
-        whens=[SqlCaseWhen(SqlIsNull(SqlIdentifier(parts=[name, hit])), empty)],
-        else_expr=value,
-    )
+        values.update(
+            (alias, SqlIdentifier(parts=[name, column])) for alias, column in mine.items()
+        )
+    return ctes, joins, values

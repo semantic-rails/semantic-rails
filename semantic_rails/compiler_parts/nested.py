@@ -26,11 +26,11 @@ class NestedCompiler(Protocol):
         *,
         project_cut: bool = False,
         guard_empty: bool = True,
-        collapse_window: bool = False,
+        standalone: bool = False,
     ) -> SqlSelect:
         """A nested query's SQL; ``guard_empty=False`` for a distribution's per-entity values,
-        ``collapse_window`` for a call of its own (a total's), whose window with no grain is
-        one total as the request's would be."""
+        ``standalone`` for a call of its own (a total's coarser call): its window with no grain
+        is one total, and it settles its empty groups, as the request would."""
         ...
 
     def predicate_source_sql(self, config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
@@ -58,14 +58,14 @@ def query_sql(
     *,
     project_cut: bool = False,
     guard_empty: bool = True,
-    collapse_window: bool = False,
+    standalone: bool = False,
 ) -> SqlSelect:
     return _registered().query_sql(
         config,
         payload,
         project_cut=project_cut,
         guard_empty=guard_empty,
-        collapse_window=collapse_window,
+        standalone=standalone,
     )
 
 
