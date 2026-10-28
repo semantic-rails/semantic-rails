@@ -24,6 +24,8 @@ SWITCHED = {
     ("compiler_parts/indexes.py", "_measure_has_source_row_key"),
     # A distinct count across links needs no row key; every other aggregation reads `.key`.
     ("compiler_parts/leaves.py", "_fanout_dedup_leaf_select"),
+    # A listing's start row is told apart by its key; a row-grain start by its own columns.
+    ("compiler_parts/listings.py", "listing_rows"),
     ("compiler_parts/lowering_common.py", "_entity_in_terms_of_anchor_plan"),
     ("compiler_parts/paths.py", "_direct_dimension_source_expr"),
     ("compiler_parts/paths.py", "display_key"),
