@@ -726,9 +726,6 @@ def _settled_by(compiled, outputs):
             if output not in totals:
                 names &= by_output.get(output, set())
                 edges &= edge_output.get(output, set())
-            elif len(item["measures"]) == 1 and by_output.get(output):
-                # A total of one measure: exactly the probes its coarser call settled it with.
-                names, edges = by_output[output], edge_output.get(output, set())
             # Combined plans can settle the output itself instead of its leaf aliases.
             if not names and len(item["measures"]) == 1:
                 names, edges = by_output.get(output, set()), edge_output.get(output, set())
@@ -1010,10 +1007,16 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
 
 
 def _total_probes(compiled, column: str) -> set[str]:
-    """The coverage and declared-edge probes a total's coarser call settled its column with."""
+    """The coverage, declared-edge and balance probes a total's column is settled with."""
     _, coverage = _guard_probe_names(compiled, "coverage_")
     _, edges = _guard_probe_names(compiled, "edge_")
-    return coverage.get(column, set()) | edges.get(column, set())
+    balances = {
+        probe
+        for item in compiled.get("balance_edges") or ()
+        if item["output"] == column
+        for probe in item["probes"]
+    }
+    return coverage.get(column, set()) | edges.get(column, set()) | balances
 
 
 def _totals_over_period(compiled) -> list[str]:

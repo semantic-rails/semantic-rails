@@ -617,3 +617,43 @@ def test_a_total_over_the_period_reads_its_own_inputs_edge(tmp_path):
     ]
     expected = [w["details"] for w in alone.get("warnings") or [] if w["code"] == "PARTIAL_DATA"]
     assert totals == [{**row, "column": "total"} for row in expected]
+
+
+def test_a_lone_total_over_the_last_months_says_they_are_not_loaded(duckdb_backend):
+    """Orders end in August: the total over the last two months of a December answer reads
+    NULL, and says no data is loaded yet there, as the call without the period does."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    time = {"temporal_role": ORDERED_AT, "grain": "month", "last": {"unit": "month", "value": 2}}
+    answer = runtime.query(
+        {"select": [_total(ORDERS, ["period"])], "time": time}, now="2024-12-15T00:00:00Z"
+    )
+    codes = {w["code"] for w in answer.get("warnings") or []}
+    assert "NO_DATA_YET" in codes
+    assert "NO_DATA_IN_SCOPE" not in codes
+
+
+def test_a_stock_total_over_the_period_states_its_partial_window(duckdb_backend):
+    """Seats across the plans and January: the snapshots end on January 15, so the total
+    covers 15 of the window's 31 days, beside the closing day's missing series."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    answer = runtime.query(
+        {
+            "select": [_total(SEATS, ["period", PLAN])],
+            "group_by": [PLAN],
+            "time": {
+                "temporal_role": SNAPSHOT_DAY,
+                "grain": "day",
+                "start": "2024-01-01",
+                "end": "2024-02-01",
+            },
+        },
+        now="2024-10-15T00:00:00Z",
+    )
+    [partial] = [w for w in answer["warnings"] if w["code"] == "PARTIAL_DATA"]
+    assert partial["details"] == {
+        "through": "2024-01-15",
+        "days_covered": 15,
+        "days": 31,
+        "column": "total",
+    }
+    assert "BALANCE_SERIES_MISSING_ON_CLOSING_DAY" in {w["code"] for w in answer["warnings"]}
