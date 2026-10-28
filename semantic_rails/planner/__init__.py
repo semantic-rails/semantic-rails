@@ -17,7 +17,7 @@ Module map:
 * ``orchestrator`` — run the pattern registry over the IR (``compose``).
 * ``plan`` — ``plan_payload``: drafts, readiness holds and the payload.
 * ``snapshot`` — the one day a balance draft reads, and the day grouping a policy requires.
-* ``totals`` — the grand total, subtotals, group totals and shares a question asks for.
+* ``totals`` — the hint a held plan carries for the total its question asks for.
 * ``plan_query`` — the caller's partial query: merge, validate, trim errors.
 * ``plan_trace`` — the best draft by semantic drift; trace and slim payloads.
 * ``grouping_checks`` — groupings the question asks for that the draft dropped.

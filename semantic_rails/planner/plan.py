@@ -34,7 +34,7 @@ from .answer_shape import _answer_shape_why, _listed_entity_terms
 from .call import Call, Order, QueryBuilder
 from .consumed_spans import unconsumed_terms
 from .coverage import CoverageGap, _coverage_why
-from .examples import _match, example_plan
+from .examples import example_plan
 from .faithfulness import (
     hidden_governor_why,
     intent_faithfulness_why,
@@ -78,7 +78,7 @@ from .plan_trace import (
 from .question_parts import MAX_PARTS, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
-from .totals import asked_totals, with_totals
+from .totals import with_totals_hint
 from .unasked_groupings import _unasked_grouping_why
 from .unmatched_words import _unconsumed_words, unconsumed_unknown_words, unmatched_intent_terms
 from .visibility import caller_hidden_ids, require_visible_objects, with_dimension_visibility
@@ -179,16 +179,10 @@ def plan_payload(
         detail_level = "best"
 
     def plan_question(text: str) -> dict[str, Any]:
-        # A total the question asks for is planned without its words, then shaped onto the
-        # ready draft (planner/totals.py).
-        authored = any(
-            _match(text, _normalize_question(question, _apostrophe_names(catalog_config)))
-            for question in _example_questions(runtime)
-        )
-        asked = None if authored else asked_totals(text, catalog_config)
-        planned = asked.rest if asked else text
-        payload = _question_payload(runtime, planned, caller, detail_level, limit, catalog_config)
-        return with_totals(runtime, payload, asked, text) if asked else payload
+        payload = _question_payload(runtime, text, caller, detail_level, limit, catalog_config)
+        # A held plan whose question asks for a total says how to add it (planner/totals.py);
+        # plan never drafts one.
+        return with_totals_hint(catalog_config, payload, text)
 
     payload = plan_question(intent)
     # A question asking several things that one plan can't answer is planned part by part.
@@ -201,15 +195,6 @@ def plan_payload(
     with suppress(SemanticLayerError):
         payload = _parts_payload(payload, split, plan_question, detail_level) if split else payload
     return _query_detail_payload(payload) if detail_level == "query" else payload
-
-
-def _example_questions(runtime: Any) -> list[str]:
-    """The questions the package's examples author, each answered only as authored."""
-    return [
-        str(entry["question"])
-        for _example_id, entry in runtime._get_package_examples()
-        if isinstance(entry.get("question"), str)
-    ]
 
 
 def _caller_call(runtime: Any, partial_query: dict[str, Any] | None, now: Any) -> Call | None:

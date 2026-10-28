@@ -6,16 +6,6 @@ metrics:
     value_type: count
     compatible_temporal_roles: [temporal_role.shop_order_ordered_at, temporal_role.shop_order_closed_at]
     expression: {measure: measure.shop.window_order_count, temporal_role: temporal_role.shop_order_closed_at}
-  # Large orders over every order: a share of one measure within another, declared once.
-  large_order_share:
-    as: metric.shop.large_order_share
-    label: Large order share
-    description: Share of all orders that are large orders.
-    kind: ratio
-    numerator: large_order_count
-    denominator: order_count
-    value_type: percent
-    temporal_role: temporal_role.shop_order_ordered_at
   shop.order_revenue_median:
     as: metric.shop.order_revenue_median
     label: Median order revenue

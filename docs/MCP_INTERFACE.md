@@ -963,61 +963,17 @@ or "every" ends at the first word that names nothing more ("each plan make" grou
 readiness checks read the same stand-ins, so a draft grouped by another entity's column stays
 held.
 
-**How plan drafts a total.** A question that asks for a total in its last clause is planned without
-its total words, then its ready draft takes the call shape that answers it, validated as `execute`
-reads it, on the request's clock and identity. A total phrase anywhere else ("revenue by store with
-the grand total and orders", "… with the grand total, last year"), or a second one, is never cut
-out, and plan reads the question as asked. The shapes:
-
-- "with the grand total", "with a total row", "and the overall total", "plus totals":
-  [`totals: []`](QUERY_CALL.md#totals), one grand-total row (per period under a grain). A call
-  grouped by nothing is its own grand total;
-- "with subtotals by store", "with totals by store": `totals` keeping the named grouping, or the
-  call's first one when none is named, down to the grand total. An entity's name stands alone
-  where its key is grouped beside it, since a level keeps the key of each name it keeps. When
-  the named grouping is all the call groups by and the call has a grain, each group's total
-  across the periods is drafted beside its rows instead. "And a grand total" beside a series
-  is held, as below;
-- "with each store's total", "the total for each store": a
-  [`total`](QUERY_CALL.md#coarser-totals) item for each measure or metric the draft selects, as
-  `<column>_total`, over the call's other groupings and `period` under a grain ("each month's
-  total" keeps the period). "Across" or "over" names what it adds up across ("each store's total
-  across months" is over `period` alone); a word that names none of the call's other groupings
-  ("over the year" on a monthly call) is held;
-- "each store's share of revenue": a [`share`](QUERY_CALL.md#share-of-a-total) item of the one
-  value the draft selects, as `<column>_share`, over the named grouping ("each month's share":
-  `period`). One measure within another ("food revenue as a share of total revenue by store",
-  "what share of total revenue was food revenue"), any "percent", "percentage" or "proportion",
-  and a share the package declares (every word of a ratio metric's label, or of one named with
-  "share") read no share item: plan reads the question as asked, so the declared metric
-  answers. A share is held when the question names no grouping and the draft is a series or
-  groups by several groupings ("each one's share": of each group's total, or of everything?),
-  when the draft selects several values, and when it is "of the total" beside a filter ("each
-  store's share of the total revenue for new customers"), since its total counts only the rows
-  the call keeps.
-
-A phrase's grouping words may list several ("across types and months", "subtotals by store and
-channel": store subtotals, outermost first in the phrase's order, then the grand total; a listed
-period is held, since every total row keeps it); each names an entity's key and name when it is the
-entity's whole name ("each customer's total" never reads "Customer type"), else a grouped dimension
-by its own words ("across types"), and an item that names none of the call's columns holds the plan.
-A package example authored for the whole question, total words included, answers it as authored.
-
-A total row beside a `limit` or `having` adds up every row the call keeps before them, and
-`assumptions` says so ("top 3 stores with the grand total" totals every store).
-
-"Total" before a measure word ("total revenue by store") and a metric named with "share" ask for
-none. A series' "grand" or "overall" total is one number across its periods, which no total row is
-unless the window holds one period (a balance read on its one day), so plan doesn't draft it. When
-the engine refuses the shaped call (a share of an average or a balance, `ROLLUP_UNSAFE`; a policy
-that requires a grouping or withholds values, `POLICY_DENIED`), or the draft has no place for it (no
-grouping, or none the phrase names), `best.query` is the question without its total, held
-`low_confidence` with `why.code="PLAN_TOTALS_NOT_DRAFTED"` and `why.details` `{kind, phrase,
-refusal}` (`refusal` is the engine's `{code, message, path}`, when it refused). A draft held for
-something else carries the same code as a warning. Plan reads one total per question; a second
-("with the grand total and each store's share") stays in the question's words and holds the draft.
-With `detail="best"`, `intent_ir.intent` is the question without its total words and
-`intent_ir.totals` the phrase read.
+**Totals: a hint, never a draft.** `plan` doesn't draft a total, subtotals, each group's total
+or a share: its status and `best.query` are the question's own. When the question asks for one
+("with the grand total", "with subtotals by store", "with each store's total across months",
+"each store's share of revenue") and the plan isn't `ok`, `warnings` carries
+`PLAN_TOTALS_HINT` (severity `info`). Its `details.add` holds the call fields that add the
+total, named with `best.query`'s ids: `{"totals": []}`, `{"totals": [<ids>]}`, or a
+`select` item of kind [`total`](QUERY_CALL.md#coarser-totals) or
+[`share`](QUERY_CALL.md#share-of-a-total). Once `best.query` answers the rest of the
+question, add them and validate before executing. A catalog name holding a total's word ("Food
+revenue share"), one value as a part of another ("food revenue as a share of total revenue"),
+and any "percent" wording get no hint.
 
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
@@ -1107,7 +1063,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, the message names the dimension and says no values were read, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query: true`, which a first call may pass too. No warehouse lookup runs without that argument; a declared empty domain remains a successful empty result |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
-| `PLAN_TOTALS_NOT_DRAFTED` | `plan` | The question asks for a total (`details.kind`: `rows`, `subtotals`, `beside` or `share`, in `details.phrase`) that `best.query` doesn't carry: the engine refuses it (`details.refusal`) or the draft has no place for it. As a `why` (status `low_confidence`, no `next.ready_for`) when the draft is otherwise ready. See [Plan](#plan) |
+| `PLAN_TOTALS_HINT` | `plan` | Severity `info`, on a plan that isn't `ok` whose question asks for a total (`details.kind`: `rows`, `subtotals`, `beside` or `share`, in `details.phrase`): `details.add` is the call shape that adds it, named with `best.query`'s ids. plan drafts no total, so this never changes the status. See [Plan](#plan) |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned the first `max_rows` rows; more exist — narrow the query or raise `max_rows` |
 | `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`: `edge` is the date of the measure's last visible row (`edge_source` `last_row`), or of its declared edge (`zero_through`: `loaded`, with a null `edge` when the load log holds no date, or `now`). Both are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
 | `ZERO_AFTER_LAST_ROW` | `execute` | A note: a sum or count whose package says its table is always loaded (`zero_through: now`) read days after its last row as `0`, as a stalled load would. `details.measures` lists `{id, last_row}`. See [Empty periods](PACKAGE_AUTHORING.md#empty-periods) |
