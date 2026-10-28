@@ -1355,12 +1355,29 @@ _DISCOVER_BUCKETS = (
 )
 
 
+_WORDS = re.compile(r"[^\W_]+")
+
+
+def _label_restates_id(label: Any, object_id: Any) -> bool:
+    """Whether every word of ``label`` is already a word of ``object_id`` past its kind.
+
+    "Store name" restates ``dimension.store_name``; "Orders" doesn't restate
+    ``measure.order_count``, and "Food" doesn't restate ``dimension.product_type``.
+    """
+
+    if not isinstance(label, str) or not isinstance(object_id, str):
+        return False
+    words = set(_WORDS.findall(label.casefold()))
+    return bool(words) and words <= set(_WORDS.findall(object_id.partition(".")[2].casefold()))
+
+
 def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
     """State each fact of a minimal discover response once.
 
-    A card in a kind's bucket leaves out its kind, ``available: true`` and empty fields; blocked
-    and dimension-value cards keep their explicit fields. The terms and verbosity echoes and an
-    empty query state or selection context go too. Compact uses this projection without blocked cards.
+    A card in a kind's bucket leaves out its kind, ``available: true``, empty fields and a label
+    whose every word is already in its id; blocked and dimension-value cards keep their explicit
+    fields. The terms and verbosity echoes and an empty query state or selection context go too.
+    Compact uses this projection without blocked cards.
     """
 
     if payload.get("verbosity") != "minimal":
@@ -1373,7 +1390,9 @@ def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             key: value
             for key, value in row.items()
-            if value not in _EMPTY and not (key in repeats and value == repeats[key])
+            if value not in _EMPTY
+            and not (key in repeats and value == repeats[key])
+            and not (key == "label" and _label_restates_id(value, row.get("id")))
         }
 
     for key in ("terms", "verbosity"):
