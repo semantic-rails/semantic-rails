@@ -314,3 +314,93 @@ def test_a_total_over_a_required_grouping_is_refused(per_store_revenue):
     # Over the period, each store's total is still grouped by store.
     allowed = per_store_revenue.query({**call, "select": [REVENUE, _total(REVENUE, ["period"])]})
     assert allowed["rows"]
+
+
+SEATS = "measure.shop.seats"
+PLAN = "dimension.shop_account_day_plan"
+SNAPSHOT_DAY = "temporal_role.shop_account_day_snapshot_day"
+MONTHS = {"temporal_role": ORDERED_AT, "grain": "month"}
+
+# (the call's select, group_by, time, the total's input and over, now)
+STANDALONE = {
+    # No refund in July or August: the call without the store reads 0 (refunds have data).
+    "data-of-nothing": (
+        [ORDERS, "measure.shop.refund_count"],
+        [STORE],
+        {**MONTHS, "start": "2024-07-01", "end": "2024-09-01"},
+        ("measure.shop.refund_count", [STORE]),
+        None,
+    ),
+    # Orders end in August: September and October aren't loaded yet, so they read NULL.
+    "not-loaded-yet": (
+        [ORDERS],
+        [STORE],
+        {**MONTHS, "start": "2024-06-01", "end": "2024-11-01"},
+        (ORDERS, [STORE]),
+        "2024-10-15T00:00:00Z",
+    ),
+    # A conditional count with no qualifying order reads 0 where orders are observed.
+    "conditional-count": (
+        ["measure.shop.large_order_count"],
+        [STORE],
+        {**MONTHS, "start": "2024-04-01", "end": "2024-08-01"},
+        ("measure.shop.large_order_count", [STORE]),
+        "2024-10-15T00:00:00Z",
+    ),
+    # A stock over the period is its closing day's: the team plan has no January 7 snapshot,
+    # so the call without the period has no team row, and the team's total is NULL.
+    "stock-closing-day": (
+        [SEATS],
+        [PLAN],
+        {"temporal_role": SNAPSHOT_DAY, "grain": "day", "start": "2024-01-01", "end": "2024-01-08"},
+        (SEATS, ["period"]),
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", STANDALONE)
+def test_a_total_reads_what_the_call_without_its_columns_reads(duckdb_backend, case):
+    """A total is the call without its ``over`` columns, settled as that call is: data of
+    nothing reads 0, a period not loaded yet NULL, and a group the coarser call has no row for
+    NULL, never a reading of this call's own rows."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    select, group_by, time, (input_id, over), now = STANDALONE[case]
+    call = {
+        "select": [*select, _total(input_id, over)],
+        "group_by": group_by,
+        "time": time,
+    }
+    rows = runtime.query(call, now=now)["rows"]
+    kept = [column for column in group_by if column not in over]
+    alone_time = {key: value for key, value in time.items() if key != "grain"}
+    if "period" not in over:
+        alone_time = time
+        kept.append("period")
+    alone = runtime.query(
+        {
+            "select": list(dict.fromkeys([*select, input_id])),
+            "group_by": [c for c in kept if c != "period"],
+            "time": alone_time,
+        },
+        now=now,
+    )["rows"]
+    name = input_id.rsplit(".", 1)[-1]
+    expected = {tuple(row.get(column) for column in kept): row[name] for row in alone}
+    assert rows
+    for row in rows:
+        assert row["total"] == expected.get(tuple(row.get(column) for column in kept)), row
+
+
+def test_a_total_over_a_key_keeps_its_name_s_namesakes_apart(duckdb_backend):
+    """Two customers named Ann: grouped by the name, a call groups by each customer's key
+    too, so a total over the key, keeping the name, still reads each Ann's own revenue."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {
+        "select": [REVENUE, _total(REVENUE, ["dimension.shop_customer_id"])],
+        "group_by": ["dimension.shop_customer_name", "dimension.shop_customer_id"],
+    }
+    anns = [
+        row for row in runtime.query(call)["rows"] if row["dimension.shop_customer_name"] == "Ann"
+    ]
+    assert [(row["revenue"], row["total"]) for row in anns] == [("23", "23"), ("23", "23")]

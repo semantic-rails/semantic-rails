@@ -51,6 +51,7 @@ from .dependencies import (
     plan_is_root,
     project_is_cut,
     record_retained_filtered_series,
+    settles_as_a_call,
 )
 from .distribution import _lower_agent_dag_to_sql
 from .empty_groups import (
@@ -129,7 +130,7 @@ from .time_series import (
     _series_base_ctes,
     _tier_internal_aliases,
 )
-from .totals import selected_totals, total_column, total_sources
+from .totals import selected_totals, total_sources
 
 
 def _namespaced_scope(scope: LeafScope, leaf: SqlSelect, prefix: str) -> LeafScope:
@@ -230,7 +231,7 @@ def _refuse_per_period_total(plan: LogicalPlan) -> None:
     """
     time = plan.time
     if (
-        not plan_is_root()
+        not settles_as_a_call()
         or not time
         or time.get("grain")
         or time.get("window_total")
@@ -337,7 +338,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 )
                 if (
                     guard_empty
-                    and plan_is_root()
+                    and settles_as_a_call()
                     and _needs_time_scope(plan, config)
                     and not leaf_select.ctes
                     and isinstance(leaf_select.from_table, SqlTableRef)
@@ -524,18 +525,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     total_columns: list[tuple[dict[str, Any], Any]] = []  # a having reads the same column
     for alias, post_expr in plan.post_aggregation_exprs.items():
         if alias in totaled:
-            with binding_cut() if project_is_cut() else nullcontext():
-                fine = _compile_post_expr(
-                    _parse_public_expr(dict(post_expr["input"])),
-                    config,
-                    time_alias=time_alias,
-                    group_aliases=group_aliases,
-                    query_grain=str(plan.time.get("grain", "") if plan.time else ""),
-                    table_alias="base",
-                )
-            total_columns.append((post_expr, total_column(totaled[alias], fine)))
-            projected_fields.append(SqlField(total_columns[-1][1], alias))
-            record_output_reads(alias, base_reads(fine))
+            # The coarser call's value: never a reading of this call's rows.
+            total_columns.append((post_expr, totaled[alias]))
+            projected_fields.append(SqlField(totaled[alias], alias))
             continue
         with binding_cut() if project_is_cut() else nullcontext():
             compiled_output = _compile_post_expr(
