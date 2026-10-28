@@ -189,6 +189,9 @@ def _anchor_measure_id(
     )
 
 
+_UNSEARCHABLE_HINT = "Send the call without search; offset pages through every value."
+
+
 def _check_search(dim: DimensionConfig, search: str) -> None:
     """Refuse, before any read, a search the warehouse can't run as the ``contains`` word."""
     operators.check_value("contains", search, path="search")
@@ -199,12 +202,7 @@ def _check_search(dim: DimensionConfig, search: str) -> None:
             details={
                 "path": "search",
                 "data_type": dim.data_type,
-                "recovery_hints": [
-                    {
-                        "code": "FIX_QUERY_CALL",
-                        "message": "Send the call without search; offset pages through every value.",
-                    }
-                ],
+                "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": _UNSEARCHABLE_HINT}],
             },
         )
 

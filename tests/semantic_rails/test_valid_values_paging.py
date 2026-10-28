@@ -27,19 +27,19 @@ from semantic_rails.schema import SemanticPolicyConfig
 from semantic_rails.sql_ast import SqlField, SqlIdentifier, SqlOrder, SqlSelect, SqlTableRef
 
 NAME = "dimension.accounts_account_name"
-TENANT = "dimension.accounts_account_tenant"
+REGION = "dimension.accounts_account_region"
 
 
 @pytest.fixture
 def accounts(tmp_path: Path) -> tuple[Any, Path]:
-    """236 accounts, Account 001 to Account 236: tenant a holds the odd ones, b the even."""
+    """236 accounts, Account 001 to Account 236: the east holds the odd ones, the west the even."""
     path = tmp_path / "package.yml"
     model = {
         "relation": "accounts",
         "entities": {"account": {}},
         "dimensions": {
             "name": {"kind": "categorical", "column": "account_name"},
-            "tenant": {"kind": "categorical"},
+            "region": {"kind": "categorical"},
         },
         "measures": {"account_count": {"kind": "entity_count", "entity_key": "account_id"}},
     }
@@ -60,21 +60,21 @@ def accounts(tmp_path: Path) -> tuple[Any, Path]:
         db.execute(
             "CREATE TABLE accounts AS SELECT i AS account_id, "
             "'Account ' || LPAD(CAST(i AS VARCHAR), 3, '0') AS account_name, "
-            "CASE WHEN i % 2 = 1 THEN 'a' ELSE 'b' END AS tenant "
+            "CASE WHEN i % 2 = 1 THEN 'east' ELSE 'west' END AS region "
             "FROM generate_series(1, 236) AS g(i)"
         )
     row_filter = SemanticPolicyConfig(
-        id="policy.accounts.tenant",
+        id="policy.accounts.region",
         kind="row_filter",
-        config={"dimension": TENANT, "attribute": "tenant"},
+        config={"dimension": REGION, "attribute": "region"},
     )
     config = load_package_config(str(path))
     return replace(config, semantic_policies=[row_filter]), path
 
 
-def _tenant_values(accounts: tuple[Any, Path], tenant: str, **arguments: Any) -> dict[str, Any]:
+def _region_values(accounts: tuple[Any, Path], region: str, **arguments: Any) -> dict[str, Any]:
     config, path = accounts
-    context = RequestContext(attributes={"tenant": tenant}).to_policy_context()
+    context = RequestContext(attributes={"region": region}).to_policy_context()
     runtime = Runtime.from_config(config, source_path=str(path))
     try:
         return valid_values_payload(
@@ -93,12 +93,12 @@ def _values(out: dict[str, Any]) -> list[Any]:
 
 
 def test_a_row_filtered_value_never_matches_or_counts(accounts):
-    # Account 235 is tenant a's 118th name, past a first hundred; Account 236 is tenant b's.
-    found = _tenant_values(accounts, "a", search="account 235")
+    # Account 235 is the east's 118th name, past a first hundred; Account 236 is the west's.
+    found = _region_values(accounts, "east", search="account 235")
     assert (_values(found), found["total_count"], found["has_more"]) == (["Account 235"], 1, False)
-    hidden = _tenant_values(accounts, "a", search="account 236")
+    hidden = _region_values(accounts, "east", search="account 236")
     assert (_values(hidden), hidden["total_count"], hidden["has_more"]) == ([], 0, False)
-    first, last = (_tenant_values(accounts, "a", offset=offset) for offset in (0, 100))
+    first, last = (_region_values(accounts, "east", offset=offset) for offset in (0, 100))
     assert _values(first) + _values(last) == [f"Account {i:03d}" for i in range(1, 237, 2)]
     assert (first["has_more"], first["total_count"]) == (True, None)
     assert (last["has_more"], last["total_count"]) == (False, 118)
