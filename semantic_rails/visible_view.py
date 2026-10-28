@@ -116,7 +116,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     EntityConfig: _classes(
         "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
         "allowed_as_root freshness_sla_seconds bridge model one_per_key",
-        text="label description freshness_source freshness_as_of display",
+        text="label description model_description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names",
         identity="name aliases",
     ),

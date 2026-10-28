@@ -63,7 +63,7 @@ from .expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
-from .fanout import entity_label, query_route_decisions
+from .fanout import eligible_path_targets, entity_label, query_route_decisions
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
@@ -2599,6 +2599,15 @@ def inspect_payload(
         payload["card"].update(
             entity_graph(runtime._config, object_id, minimal=verbosity == "minimal")
         )
+    if payload["card"]["kind"] == "measure" and verbosity == "full":
+        # Whose dimensions a call reading this measure can group by, besides its own entity's:
+        # each entity a declared route reaches one row per measure row, as the caller sees them.
+        root = payload["card"]["root_entity"]
+        payload["card"]["grouping_entities"] = [
+            target
+            for target in eligible_path_targets(runtime._config, start=root)
+            if _path_reach(runtime._config, root, target).available
+        ]
     if verbosity == "minimal":
         payload["card"] = _slim_inspect_card(payload["card"])
         if not payload["query_state"]:

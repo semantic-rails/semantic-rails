@@ -6,6 +6,10 @@ holds both sides' keys, or an identifier both share that is a key of neither (a 
 join, which needs a link entity). ``closest_dimensions`` ranks the reachable dimensions the
 caller could group by instead, each a different dimension to confirm with them first.
 
+``lookalike_swaps`` pairs the call's measures on the start with the measures of the same name
+on another model (``lookalike_fact`` and ``lookalike_rows_in_view`` state them). The runtime
+keeps a pair only when the call compiles with it, in the caller's own request scope.
+
 Nothing here chooses, caches or renders a route: it reads the package's entities, columns and
 walkable relationship graph, and the targets route resolution already proved reachable. The
 config is the caller's view, so it never names an object the caller can't see, and an answer
@@ -16,7 +20,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter, deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from .schema import PackageConfig
@@ -369,3 +375,209 @@ def closest_dimensions(
         if dim.entity in order and dim.id not in asked
     )
     return _ranked(rows, wanted, population)[:CLOSEST_DIMENSIONS]
+
+
+# --- The same measure on another model ---------------------------------------------------------
+
+_LOOKALIKES_OFF: ContextVar[bool] = ContextVar("lookalikes_off", default=False)
+# The call keys that read a measure's value; ``where`` (dimensions, entity filters) never swaps.
+_VALUE_KEYS = ("select", "metric_filters", "order_by")
+
+
+@contextmanager
+def without_lookalikes() -> Iterator[None]:
+    """Refusals raised inside name no look-alike measures (``plan`` validating its own drafts)."""
+    token = _LOOKALIKES_OFF.set(True)
+    try:
+        yield
+    finally:
+        _LOOKALIKES_OFF.reset(token)
+
+
+def lookalikes_off() -> bool:
+    return _LOOKALIKES_OFF.get()
+
+
+def _source_tags(entity: Any) -> set[str]:
+    """The names a measure's key or label may carry for its model: its table, name and label."""
+    table = str(getattr(entity, "table", "") or "").rpartition(".")[2]
+    names = (table, getattr(entity, "name", ""), getattr(entity, "label", ""))
+    return {str(name).casefold() for name in names if name}
+
+
+def _measure_names(measure: Any, entity: Any) -> tuple[str, str]:
+    """A measure's key (its name's last part) and label, each without the tag of its own model:
+    a ``<table>_`` key prefix (``rooms_hist_area``) or a ``(<table>)`` label suffix (``Area
+    (ROOMS_HIST)``), as a package mirrored from warehouse tables writes them."""
+    tags = _source_tags(entity)
+    key = str(measure.name or measure.id).rpartition(".")[2].casefold()
+    for tag in sorted(tags, key=len, reverse=True):
+        prefix = re.sub(r"\W+", "_", tag) + "_"
+        if key.startswith(prefix) and len(key) > len(prefix):
+            key = key[len(prefix) :]
+            break
+    label = str(measure.label or "").strip()
+    tagged = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", label)
+    if tagged and tagged.group(2).strip().casefold() in tags:
+        label = tagged.group(1)
+    return key, label.casefold()
+
+
+def _alike(asked: Any, other: Any, entities: dict[str, Any]) -> bool:
+    """The same key or label (each without its model's tag) that totals the same number: the
+    same default aggregation, measure class, additivity, value type and currency."""
+    asked_key, asked_label = _measure_names(asked, entities.get(asked.entity))
+    other_key, other_label = _measure_names(other, entities.get(other.entity))
+    named = asked_key == other_key or bool(asked_label) and asked_label == other_label
+    return named and all(
+        getattr(asked, field) == getattr(other, field)
+        for field in (
+            "default_aggregation",
+            "measure_class",
+            "additive",
+            "value_type",
+            "currency",
+        )
+    )
+
+
+def call_measures(call: dict[str, Any]) -> list[str]:
+    """The measure ids a call's values read (select, having and order_by), in order."""
+
+    def walk(value: Any) -> Iterator[str]:
+        if isinstance(value, str) and value.startswith("measure."):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from walk(item)
+
+    return list(dict.fromkeys(ref for key in _VALUE_KEYS for ref in walk(call.get(key))))
+
+
+def lookalike_swaps(
+    config: PackageConfig, measure_ids: Sequence[str], start: str
+) -> list[tuple[str, dict[str, str]]]:
+    """Each other entity that holds a look-alike of every one of ``measure_ids`` (the call's
+    measures on ``start``), with each measure's look-alike there. A look-alike is a published
+    measure on another entity with the same key or label, each without its model's tag, that
+    totals the same way (``_alike``). An entity with two look-alikes of one measure has no one
+    look-alike, so it is left out."""
+    entities = {row.id: row for row in config.entities}
+    asked = [row for row in config.measures if row.id in set(measure_ids) and row.entity == start]
+    if not asked:
+        return []
+    found: dict[str, dict[str, list[str]]] = {}
+    for other in config.measures:
+        if other.entity == start or not other.publish:
+            continue
+        for measure in asked:
+            if _alike(measure, other, entities):
+                found.setdefault(other.entity, {}).setdefault(measure.id, []).append(other.id)
+    wanted = {measure.id for measure in asked}
+    return [
+        (entity, {measure_id: ids[0] for measure_id, ids in sorted(swaps.items())})
+        for entity, swaps in sorted(found.items())
+        if set(swaps) == wanted and all(len(ids) == 1 for ids in swaps.values())
+    ]
+
+
+def swapped_call(
+    call: dict[str, Any], swaps: dict[str, str], temporal_role: str = ""
+) -> dict[str, Any]:
+    """``call`` (the engine's form) reading each swapped measure's look-alike in its place, in
+    its values only; its group_by, where and time stay as they are, but for ``temporal_role``.
+    A column named by default after a swapped measure (its id's last part) is named after its
+    look-alike, as the call would name it, and so is an order_by of that name."""
+
+    def swap(value: Any) -> Any:
+        if isinstance(value, str):
+            return swaps.get(value, value)
+        if isinstance(value, dict):
+            return {key: swap(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [swap(item) for item in value]
+        return value
+
+    names = {old.rpartition(".")[2]: new.rpartition(".")[2] for old, new in swaps.items()}
+    out = {key: value for key, value in call.items() if key != "_call_notes"}
+    out.update({key: swap(call[key]) for key in _VALUE_KEYS if key in call})
+    out["select"] = [
+        {**item, "as": names.get(item["as"], item["as"])}
+        if isinstance(item, dict) and isinstance(item.get("as"), str)
+        else item
+        for item in out.get("select") or []
+    ]
+    if out.get("order_by"):
+        out["order_by"] = [
+            {**item, "field": names.get(item["field"], item["field"])}
+            if isinstance(item, dict) and isinstance(item.get("field"), str)
+            else item
+            for item in out["order_by"]
+        ]
+    if temporal_role:
+        out["time"] = {**dict(call.get("time") or {}), "temporal_role": temporal_role}
+    return out
+
+
+def model_population(entity: Any) -> str:
+    """What an entity's rows are, as its author states it: its model's description, else its own
+    authored description (one that isn't just its label). Empty when neither says."""
+    if entity.model_description:
+        return str(entity.model_description)
+    return "" if entity.description in ("", entity.label) else str(entity.description)
+
+
+def lookalike_rows_in_view(config: PackageConfig, rows: Sequence[Any]) -> list[dict[str, Any]]:
+    """The look-alike rows whose entity and measures ``config`` (a caller's view) shows, each
+    with its model's description as this view reads it."""
+    entities = {row.id: row for row in config.entities}
+    measures = {row.id for row in config.measures}
+    kept = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("entity") not in entities:
+            continue
+        pairs = dict(row.get("measures") or {})
+        if not pairs or not set(pairs) | set(pairs.values()) <= measures:
+            continue
+        out: dict[str, Any] = {"entity": row["entity"], "measures": pairs}
+        population = model_population(entities[row["entity"]])
+        if population:
+            out["description"] = population
+        if row.get("temporal_role"):
+            out["temporal_role"] = row["temporal_role"]
+        kept.append(out)
+    return kept
+
+
+def _lookalike_clause(row: dict[str, Any]) -> str:
+    pairs = ", ".join(f"'{new}' in place of '{old}'" for old, new in row["measures"].items())
+    clock = f", by '{row['temporal_role']}'" if row.get("temporal_role") else ""
+    return f"{pairs} (on '{row['entity']}'{clock})"
+
+
+def lookalike_fact(rows: Sequence[dict[str, Any]]) -> str:
+    """The refusal's sentence naming the look-alikes that answer the call, or ""."""
+    if not rows:
+        return ""
+    return (
+        "The same-named measures of another model answer this call as it stands: "
+        + "; ".join(_lookalike_clause(row) for row in rows)
+        + "."
+    )
+
+
+def lookalike_advice(rows: Sequence[dict[str, Any]]) -> str:
+    """The caller hint: each look-alike, what its model says its rows are, and the caveat."""
+    readings = []
+    for row in rows:
+        said = f": {row['description']}" if row.get("description") else ""
+        readings.append(_lookalike_clause(row) + said.rstrip(".") + ".")
+    return (
+        "Read the same measure from another model, keeping this call's group_by, where and time. "
+        + " ".join(readings)
+        + " Each model holds its own rows, which may not be every row the user asked about: "
+        "tell the user which model the answer reads."
+    )

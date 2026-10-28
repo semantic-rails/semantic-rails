@@ -372,6 +372,17 @@ def recovery_hints_for_error(
         items = list(details.get("unreachable_items", []) or [])
         row_grain = bool(details.get("target_row_grain"))
         hints = []
+        lookalikes = list(details.get("lookalike_measures", []) or [])
+        if lookalikes:
+            from .path_gap import lookalike_advice
+
+            hints.append(
+                {
+                    "kind": "use_lookalike_measure",
+                    "message": lookalike_advice(lookalikes),
+                    "lookalike_measures": lookalikes,
+                }
+            )
         if not reachable:
             blocked = {
                 "direction": f"by direction, each relationship of '{start}' leads only to it",
@@ -1474,9 +1485,15 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
         return exc
     details = dict(exc.details or {})
     message = str(exc)
+    from .path_gap import lookalike_fact, lookalike_rows_in_view, missing_link_fact
+
+    # The look-alikes were checked in the request's scope; a view shows those it can see.
+    lookalikes = list(details.pop("lookalike_measures", None) or [])
+    if lookalikes:
+        message = message.replace(f" {lookalike_fact(lookalikes)}", "")
+        lookalikes = lookalike_rows_in_view(config, lookalikes)
     # Undo an earlier enrichment: its facts were appended to the message, after the base text.
     prior = {key: details.pop(key, None) for key in _GAP_KEYS}
-    from .path_gap import missing_link_fact
 
     for fact in (
         missing_link_fact(prior["missing_link"] or {}),
@@ -1558,6 +1575,9 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
     fact = missing_link_fact(details.get("missing_link") or {})
     if fact:
         message = f"{message}: {fact}."
+    if lookalikes:
+        details["lookalike_measures"] = lookalikes
+        message = f"{message} {lookalike_fact(lookalikes)}"
     items = list(details.get("unreachable_items") or [])
     closest = closest_dimensions(config, start, reachable_sorted, target, items)
     if closest:

@@ -200,6 +200,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 name=entity_name,
                 label=entity_label,
                 description=str(entity_spec.get("description", entity_label)),
+                model_description=str(model.get("description", "") or ""),
                 calendar_id=str(model.get("calendar_id", "")),
                 allowed_as_root=bool(entity_spec.get("allowed_as_root", True)),
                 freshness_source=str(model.get("freshness_source", "")),

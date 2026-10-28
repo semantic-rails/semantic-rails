@@ -88,6 +88,8 @@ class EntityConfig:
     name: str = ""
     label: str = ""
     description: str = ""
+    # The description of the model the entity is homed on, which states what its rows are.
+    model_description: str = ""
     topics: list[str] = field(default_factory=list)
     calendar_id: str = ""
     allowed_as_root: bool = True
