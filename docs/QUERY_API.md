@@ -147,7 +147,7 @@ Hosted operators must replace the resolver with one that derives these fields fr
 authenticated identity (JWT, mTLS cert, signed session, etc.) before reaching the runtime:
 
 ```python
-from semantic_rails.request_context import (
+from semantic_rails.embedding import (
     PolicyContextResolver,
     RequestContext,
     set_policy_context_resolver,

@@ -1,8 +1,9 @@
 # Embedding the Engine
 
-Hosts import supported integration seams from `semantic_rails.embedding`.
-Implementation modules remain available to the engine itself, but are not the
-cross-repository compatibility boundary.
+`semantic_rails.embedding` is the engine's one public Python surface: hosts import from it
+and nothing else. Every other module is internal; it stays importable for the engine itself
+but can change in any release. From 0.4.0 the facade follows Semantic Versioning (see
+[Stability](#stability)).
 
 ```python
 from semantic_rails.embedding import (
@@ -270,6 +271,26 @@ risk. `base_ref` runs the `git` executable in the repository that holds the pack
 host serving untrusted callers must not pass it, and must resolve `compare_path` to a
 directory it owns rather than take it from the caller.
 
+## Stability
+
+The facade is the names in `semantic_rails.embedding.__all__`, with the call shapes the
+[facade reference](#facade-reference) lists. The CLI, the `/api/v1` HTTP API and the MCP
+servers are public too, but [CONTRACTS.md](CONTRACTS.md) versions those through their JSON
+contracts.
+
+From 0.4.0 the facade follows [Semantic Versioning](https://semver.org). While the version
+starts with 0, the minor number does the major's job:
+
+- A patch release (0.4.1, 0.4.2, …) never removes a facade name or changes one incompatibly.
+- A removal, rename or incompatible change waits for a new minor release (0.5.0), after an
+  earlier release deprecated it (see [Changing the facade](#changing-the-facade)). The
+  changelog lists it under Removed or Changed.
+- New names, and new parameters with defaults, can come in any release.
+
+The promise applies from 0.4.0 forward. Releases before 0.4.0 can still change the facade in one
+step, and no compatibility shims are added for those changes. `tests/semantic_rails/test_ratchets.py`
+pins the exported names, so adding or removing one is always a deliberate edit.
+
 ## Changing the facade
 
 `tests/semantic_rails/test_embedding_consumer_contract.py` checks the facade uses
@@ -303,9 +324,9 @@ When the test fails, stage the change across releases instead of making it in on
 3. Remove the old form in that release, once the embedder has moved, and regenerate the
    list.
 
-Until the first release with external embedders, the engine and its known embedder move
-together: a facade change lands in one step with the embedder's update, and the uses file
-is edited to the new form in the same change.
+Before 0.4.0, the engine and its known embedder move together: a facade change lands in one
+step with the embedder's update, and the uses file is edited to the new form in the same
+change. From 0.4.0, every removal or incompatible change takes the steps above.
 
 Hosts should test for a capability, such as `hasattr(embedding, "Name")` or a parameter
 in `inspect.signature(...)`, rather than compare engine versions.
@@ -367,6 +388,7 @@ create_warehouse_adapter(package, *, db_path=, confine_to=)
 dialect_for_warehouse(warehouse)
 diff_semantic_contract(package, committed)
 emit_audit_event(event, **payload)
+export_semantic_contract(path, *, physical_types=)
 get_audit_sink()
 get_policy_context_resolver()
 handle_jsonrpc_message(adapter, message, *, request_context=, session=)

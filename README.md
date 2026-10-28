@@ -189,7 +189,8 @@ reach warehouses Semantic Rails doesn't support yet: Cube alone [connects
 to](https://docs.cube.dev/admin/connect-to-data/data-sources) Redshift, SQL Server,
 Microsoft Fabric, MySQL and Trino. dbt, Cube and Looker also connect to far more BI
 tools and offer caching or pre-aggregation. Semantic Rails is narrower: an engine
-built around the agent loop above, which you can run locally or embed.
+built around the agent loop above, which you can run locally or embed in Python through
+`semantic_rails.embedding`.
 
 The [comparison pack](https://github.com/semantic-rails/semantic-rails/tree/main/comparisons/semantic_layers/)
 asks the same 24 questions of six modeled layers: Semantic Rails, MetricFlow, Cube, Malloy, Snowflake Semantic Views
@@ -298,6 +299,7 @@ Questions and proposals are welcome in
 - [Architect MCP](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECT_MCP.md)
 - [The query call](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_CALL.md)
 - [Query API](https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_API.md)
+- [Embedding the engine](https://github.com/semantic-rails/semantic-rails/blob/main/docs/EMBEDDING.md): `semantic_rails.embedding`, the one public Python API
 - [Capabilities](https://github.com/semantic-rails/semantic-rails/blob/main/docs/CAPABILITIES.md)
 - [Architecture](https://github.com/semantic-rails/semantic-rails/blob/main/docs/ARCHITECTURE.md)
 - [Benchmark evidence](https://github.com/semantic-rails/semantic-rails/blob/main/docs/BENCHMARK_EVIDENCE.md)

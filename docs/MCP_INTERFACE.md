@@ -1,8 +1,8 @@
 # MCP Interface
 
-`semantic_rails.mcp` exposes a dependency-free Model Context Protocol interface over the same
-runtime that serves `/api/v1/*`. The canonical implementation remains the in-process
-`SemanticLayerMCPAdapter`. The ASGI app serves stateless MCP Streamable HTTP at `/mcp`, while the
+The engine serves a dependency-free Model Context Protocol interface over the same runtime that
+serves `/api/v1/*`. The canonical implementation remains the in-process
+`SemanticLayerMCPAdapter`, which hosts import from `semantic_rails.embedding`. The ASGI app serves stateless MCP Streamable HTTP at `/mcp`, while the
 CLI supports stdio and stateless Streamable HTTP through `semantic-rails serve` at `/mcp`.
 
 For `semantic-rails mcp stdio`, stdout contains only newline-delimited JSON-RPC messages;
@@ -37,7 +37,7 @@ MCP-Protocol-Version: 2025-11-25
 ## Runtime Adapter
 
 ```python
-from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.embedding import SemanticLayerMCPAdapter
 
 adapter = SemanticLayerMCPAdapter.from_package("jaffle_shop")
 try:

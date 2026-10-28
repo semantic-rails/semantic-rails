@@ -26,7 +26,7 @@ from .config_validation import (
     validate_config_report,
     validate_runtime_package,
 )
-from .contracts import diff_semantic_contract
+from .contracts import diff_semantic_contract, export_semantic_contract
 from .db import (
     ConnectionCredentialProvider,
     Database,
@@ -125,6 +125,7 @@ __all__ = [
     "dialect_for_warehouse",
     "diff_semantic_contract",
     "emit_audit_event",
+    "export_semantic_contract",
     "get_audit_sink",
     "get_policy_context_resolver",
     "handle_jsonrpc_message",
