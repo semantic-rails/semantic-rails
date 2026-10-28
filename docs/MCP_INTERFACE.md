@@ -217,13 +217,16 @@ and blocked metadata are retained with `verbosity="full"`, subject to the respon
 question uses an object's whole name ("revenue by store"), that object ranks
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 `kinds` takes an array or a comma-separated string, and also a JSON array sent as a string; its
-schema accepts both forms and lists singular and plural ranked and catalog kinds
-(including `temporal_role` and `value_domain` for empty terms). A plural (`measures`,
-`relationships`) means its singular; the handler checks which kinds the call can produce.
+schema accepts both forms and lists each kind the handler takes, singular and plural, with
+terms or without. A plural (`measures`, `relationships`) means its singular.
 Relationships are ranked only when `kinds` names `relationship` (the response then has a
 `relationships` bucket): each card keeps `source_entity`, `target_entity`, `cardinality`,
 `allowed_directions`, `source_columns` and `target_columns` at every verbosity, and a search
-matches a relationship's label, description and its two entities' labels. At `verbosity="full"` an
+matches a relationship's label, description and its two entities' labels. Time roles and value
+domains are too: a `temporal_roles` card keeps the `dimension` it times and its
+`supported_grains`, and a search matches its label and its dimension's label; a `value_domains`
+card keeps the `dimensions` it describes, and a search matches its label, description, its
+dimensions' labels and its values' labels. At `verbosity="full"` an
 entity card also carries its `relationships`, as `inspect` returns them; reachability follows the
 package's routes and stays on the `inspect` card.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
@@ -276,9 +279,9 @@ the call sent beside `query` (`limit`, say) is refused with the hint to move it 
 has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `lt`, `lte`,
 `contains`, `starts_with`, `ends_with`, `not_contains`, `not_starts_with`, `not_ends_with`,
 `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused with the
-word form (a `LIKE` with the text word for its pattern). A `"dimension.<id>"` string in `select` moves to `group_by` (a
-`QUERY_SHORTHAND_NORMALIZED` warning with `details.canonical`); beside another grouping it is
-refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
+word form (a `LIKE` with the text word for its pattern). Each `"dimension.<id>"` string in `select` moves to `group_by`
+(one `QUERY_SHORTHAND_NORMALIZED` warning, whose `details.canonical` lists them all); beside
+another grouping it is refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
 structured tool error. Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
 closest visible matches.
 
@@ -1087,7 +1090,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
 
-`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). With `terms` the ranked kinds are `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value` and `relationship` (ranked only when named), and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. The id listing (empty `terms`) exists on MCP only and accepts the catalog kinds instead (which include `temporal_role`, `relationship` and `value_domain` but not `dimension_value`); over HTTP, empty `terms` run the ranked search and take the ranked kinds. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
+`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). Every kind the tool schema lists is accepted: `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value`, `relationship`, `temporal_role` and `value_domain`, and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. With `terms`, `relationship`, `temporal_role` and `value_domain` are ranked only when named, each in its own bucket (`relationships`, `temporal_roles`, `value_domains`) whose cards keep what the object joins, times (`dimension`, `supported_grains`) or holds (`dimensions`) at every verbosity. The id listing (empty `terms`) exists on MCP only and lists each requested kind's ids, `dimension_value_ids` included; over HTTP, empty `terms` run the ranked search. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
 
 Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) when the boundary contract is violated outright — e.g. wrong arg name, wrong type, value outside a declared enum. The full envelope shape is identical across all six tools.
 

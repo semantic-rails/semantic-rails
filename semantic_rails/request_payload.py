@@ -80,9 +80,6 @@ def checked_string_list(value: Any, *, field: str) -> list[str]:
         ) from exc
 
 
-DISCOVER_RANKED_KINDS: frozenset[str] = frozenset(
-    {"measure", "metric", "segment", "dimension", "entity", "dimension_value", "relationship"}
-)
 # A kind may also be named by its results' bucket: ``measures`` means ``measure``.
 _KIND_PLURALS = {
     "measures": "measure",
@@ -97,8 +94,11 @@ _KIND_PLURALS = {
 }
 
 
-# Every spelling accepted by ranked discovery or the empty-terms catalog listing.
-DISCOVER_KIND_NAMES = frozenset(_KIND_PLURALS) | frozenset(_KIND_PLURALS.values())
+# Every kind discover takes, ranked (with terms) and listed (empty terms) alike. The tool
+# schema's ``kinds`` enum is these and their plurals (``DISCOVER_KIND_NAMES``), so a kind the
+# schema offers is one the handler accepts.
+DISCOVER_KINDS: frozenset[str] = frozenset(_KIND_PLURALS.values())
+DISCOVER_KIND_NAMES = frozenset(_KIND_PLURALS) | DISCOVER_KINDS
 
 
 def singular_kinds(kinds: Sequence[str] | None) -> list[str]:

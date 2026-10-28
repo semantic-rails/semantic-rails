@@ -144,6 +144,65 @@ def test_pieces_that_dont_connect_are_named_without_a_draft(
     _no_draft(payload)
 
 
+@pytest.mark.parametrize(
+    ("question", "dimension", "code"),
+    [
+        (
+            "count of customers by store name and product type and supply name",
+            "dimension.jaffle_supply_name",
+            "MIXED_GRAIN_INVALID",
+        ),
+        (
+            "count of customers by store name and membership status",
+            "dimension.jaffle_membership_status",
+            "PATH_NOT_FOUND",
+        ),
+    ],
+)
+def test_a_one_item_seed_names_the_pieces_that_dont_connect(
+    jaffle: Runtime, question: str, dimension: str, code: str
+) -> None:
+    """A seed that selects the metric over the measure plan would draft (both answer as
+    ``customer_count``) reads as that metric: the plan names the pieces that don't connect, as
+    it does without the seed, and never refuses its own draft for a repeated column."""
+    metric = "metric.sales.customer_count"
+    unseeded = _plan(jaffle, question)
+    payload = plan_payload(
+        jaffle, intent=question, partial_query={"select": [metric], "policy_context": NOW}
+    )
+    assert payload["status"] == "unrealizable", payload.get("why")
+    why = payload["why"]
+    assert why["code"] == unseeded["why"]["code"] == "PLAN_UNCONNECTED"
+    assert why["details"]["subjects"] == [metric]
+    assert why["details"]["dimensions"] == [dimension]
+    assert why["details"]["error"]["code"] == code
+    assert metric in why["message"] and dimension in why["message"]
+    _no_draft(payload)
+
+
+def test_a_one_item_seed_that_connects_drafts_on_the_seed_alone(jaffle: Runtime) -> None:
+    metric = "metric.sales.customer_count"
+    payload = plan_payload(
+        jaffle,
+        intent="count of customers by store name and customer type",
+        partial_query={"select": [metric], "policy_context": NOW},
+    )
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["best"]["query"]["select"] == [metric]
+
+
+def test_a_draft_that_repeats_a_column_names_it(jaffle: Runtime) -> None:
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.planner.call import QueryBuilder
+
+    builder = QueryBuilder(jaffle._config).select("metric.sales.customer_count")
+    with pytest.raises(SemanticLayerError) as raised:
+        builder.select("measure.jaffle.customer_count").build()
+    assert raised.value.code == "DUPLICATE_OUTPUT_ALIAS"
+    assert raised.value.details["alias"] == "customer_count"
+    assert "'customer_count' names two" in str(raised.value)
+
+
 def test_a_route_fork_with_one_runnable_reading_asks_and_names_the_other(
     jaffle: Runtime,
 ) -> None:

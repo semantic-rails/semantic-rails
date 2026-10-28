@@ -104,7 +104,7 @@ from .naming import governed_names, unclaimed_name
 from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
 from .request_context import policy_identity
-from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
+from .request_payload import DISCOVER_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig, RelationshipConfig
 from .scope import classify_question
@@ -550,6 +550,8 @@ def _recommended_actions(kind: str) -> list[str]:
         "row_grain_entity": ["inspect related measures"],  # no key to group its rows by
         "dimension_value": ["apply as a filter", "discover related measures"],
         "segment": ["validate segment", "preview members", "explain derived query"],
+        "temporal_role": ["use as the time axis", "inspect supported grains"],
+        "value_domain": ["list valid values", "filter its dimension"],
     }
     return actions.get(kind, ["inspect object"])
 
@@ -1797,6 +1799,12 @@ _DISCOVER_BUCKETS = (
     "entities",
     "blocked",
 )
+# Kinds ranked only when ``kinds`` names them, so every other search keeps its shape.
+_ASKED_BUCKETS = {
+    "relationship": "relationships",
+    "temporal_role": "temporal_roles",
+    "value_domain": "value_domains",
+}
 
 
 @runtime_request_scope
@@ -1811,7 +1819,7 @@ def discover_payload(
     limit: int = 10,
     enforce_scope: bool = False,
 ) -> dict[str, Any]:
-    kinds = checked_discover_kinds(kinds, DISCOVER_RANKED_KINDS)
+    kinds = checked_discover_kinds(kinds, DISCOVER_KINDS)
     if limit < 1:
         # The buckets are cut to ``limit``, so a zero limit would empty them
         # and read as "no match" for a search that found something.
@@ -1825,8 +1833,7 @@ def discover_payload(
     search_terms = SearchTerms.from_text(terms)
     partial_query = dict(partial_query or {})
     validate_temporal_support(runtime._config, partial_query)
-    # Relationships are ranked only when asked for, so every other search keeps its shape.
-    ranks_relationships = "relationship" in kinds
+    asked = {kind: bucket for kind, bucket in _ASKED_BUCKETS.items() if kind in kinds}
     # When invoked from the HTTP boundary (``enforce_scope=True``), gate
     # the response on the same classifier ``validate``/``compile`` use
     # and a content-token relevance floor against the package catalog.
@@ -1847,7 +1854,7 @@ def discover_payload(
                     "selected_metric_recipe_ids": [],
                 },
                 **{bucket: [] for bucket in _DISCOVER_BUCKETS},
-                **({"relationships": []} if ranks_relationships else {}),
+                **{bucket: [] for bucket in asked.values()},
                 key: block,
             }
 
@@ -2080,7 +2087,7 @@ def discover_payload(
         row.update({"score": score, "match_reasons": reasons, "object_type": "entity"})
         records.append(row)
 
-    if ranks_relationships:
+    if "relationship" in asked:
         labels = {entity.id: entity.label for entity in config.entities}
         for rel in config.relationships:
             row = {
@@ -2108,6 +2115,56 @@ def discover_payload(
             )
             row.update({"score": score, "match_reasons": reasons, "object_type": "relationship"})
             records.append(row)
+
+    # A time role reads as the dimension it times, and a value domain as the dimensions it
+    # describes and its values' labels: "order date" finds the order clock, "Food" its domain.
+    described = [
+        *(
+            (role, "temporal_role", [role.dimension], list(role.aliases))
+            for role in config.temporal_roles
+            if "temporal_role" in asked
+        ),
+        *(
+            (domain, "value_domain", list(domain.dimensions), [v.label for v in domain.values])
+            for domain in config.value_domains
+            if "value_domain" in asked
+        ),
+    ]
+    for obj, kind, dimension_ids, words in described:
+        dims = [
+            maps["dimensions"][dim_id] for dim_id in dimension_ids if dim_id in maps["dimensions"]
+        ]
+        if not dims:
+            continue
+        availability = _availability_for_object(config, root_entity, dims[0].id, "dimension")
+        row = {
+            "id": obj.id,
+            "kind": kind,
+            "name": obj.name,
+            "label": obj.label,
+            "description": str(getattr(obj, "description", "") or ""),
+            "topics": [*(dim.label for dim in dims), *words],
+            "available": availability.available,
+            "blocked_reason": availability.reason,
+            "root_entity": dims[0].entity,
+            "default_temporal_role": "",
+            "recommended_next_actions": _recommended_actions(kind),
+            **(
+                {"dimension": obj.dimension, "supported_grains": list(obj.supported_grains)}
+                if kind == "temporal_role"
+                else {"dimensions": list(obj.dimensions)}
+            ),
+        }
+        score, reasons = _relevance_score(
+            terms,
+            row,
+            preferred_kind=kind,
+            stage=stage,
+            token_doc_freq=token_doc_freq,
+            search_terms=search_terms,
+        )
+        row.update({"score": score, "match_reasons": reasons, "object_type": kind})
+        records.append(row)
 
     dimension_values: list[dict[str, Any]] = []
     for domain in config.value_domains:
@@ -2195,11 +2252,14 @@ def discover_payload(
     segments = _sort([row for row in records if row["kind"] == "segment"])
     dimensions = _sort([row for row in records if row["kind"] == "dimension"])
     entities = _sort([row for row in records if row["kind"] == "entity"])
-    relationships = _sort([row for row in records if row["kind"] == "relationship"])
+    extra = {
+        bucket: _sort([row for row in records if row["kind"] == kind])
+        for kind, bucket in asked.items()
+    }
     values = _sort(dimension_values)
     blocked = _sort([row for row in [*records, *dimension_values] if row["blocked_reason"]])
     no_matches = has_real_term and not (
-        measures or metrics or segments or dimensions or values or entities or relationships
+        measures or metrics or segments or dimensions or values or entities or any(extra.values())
     )
 
     # Token-AND fallback: when the holistic single-string match returns
@@ -2317,9 +2377,10 @@ def discover_payload(
                 segments = _sort([row for row in fallback_records if row["kind"] == "segment"])
                 dimensions = _sort([row for row in fallback_records if row["kind"] == "dimension"])
                 entities = _sort([row for row in fallback_records if row["kind"] == "entity"])
-                relationships = _sort(
-                    [row for row in fallback_records if row["kind"] == "relationship"]
-                )
+                extra = {
+                    bucket: _sort([row for row in fallback_records if row["kind"] == kind])
+                    for kind, bucket in asked.items()
+                }
                 values = _sort(fallback_dimvals)
                 blocked = _sort(
                     [row for row in [*fallback_records, *fallback_dimvals] if row["blocked_reason"]]
@@ -2331,7 +2392,7 @@ def discover_payload(
                     or dimensions
                     or values
                     or entities
-                    or relationships
+                    or any(extra.values())
                 )
 
     # Ship a single ready-to-run starter_query_patch on each selectable
@@ -2368,7 +2429,7 @@ def discover_payload(
         "dimensions": dimensions,
         "dimension_values": values,
         "entities": entities,
-        **({"relationships": relationships} if ranks_relationships else {}),
+        **extra,
         "blocked": blocked,
     }
     if fallback_token_match_reason is not None and not no_matches:
@@ -2429,6 +2490,13 @@ _RELATIONSHIP_ROW_KEYS = (
     "source_columns",
     "target_columns",
 )
+# A row of a kind ranked only when asked for is what it joins, times or holds: those fields
+# stay at every verbosity.
+_ASKED_ROW_KEYS = {
+    "relationships": _RELATIONSHIP_ROW_KEYS,
+    "temporal_roles": ("dimension", "supported_grains"),
+    "value_domains": ("dimensions",),
+}
 # Enough of a description to tell near-duplicates apart ("Revenue" vs
 # "Delivered revenue"), without shipping the whole card.
 _MINIMAL_DESCRIPTION_CHARS = 120
@@ -2561,12 +2629,12 @@ def _slim_discover_minimal(
     for bucket in ("measures", "metrics", "segments", "dimensions", "entities", "blocked"):
         rows = payload.get(bucket) or []
         payload[bucket] = [_slim(row) for row in rows if isinstance(row, dict)]
-    if "relationships" in payload:
-        # A relationship row is what it joins: its join fields stay at every verbosity.
-        payload["relationships"] = [
-            {**_slim(row), **{key: row[key] for key in _RELATIONSHIP_ROW_KEYS if key in row}}
-            for row in payload["relationships"]
-        ]
+    for bucket, keys in _ASKED_ROW_KEYS.items():
+        if bucket in payload:
+            payload[bucket] = [
+                {**_slim(row), **{key: row[key] for key in keys if key in row}}
+                for row in payload[bucket]
+            ]
     payload["dimension_values"] = [
         _slim(row) for row in payload.get("dimension_values") or [] if isinstance(row, dict)
     ]
