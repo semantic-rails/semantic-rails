@@ -40,16 +40,29 @@ class AliasRegistry:
         measure_aliases: Iterable[str],
         metric_filter_aliases: Iterable[str] = (),
     ) -> AliasRegistry:
+        """Short internal names for the query's keys, measures and result filters. The call's
+        own column names stay as they are inside the statement, so an internal name never takes
+        one of them (case-folded, as a warehouse may compare them): a column the call names
+        ``t`` or ``g1`` would otherwise read the period or a group key."""
+        taken = {alias.casefold() for alias in plan.post_aggregation_exprs}
+
+        def fresh(name: str) -> str:
+            unique, suffix = name, 2
+            while unique.casefold() in taken:
+                unique, suffix = f"{name}_{suffix}", suffix + 1
+            taken.add(unique.casefold())
+            return unique
+
         aliases: dict[str, str] = {}
         for group_count, alias in enumerate(list(plan.group_by), start=1):
-            aliases[alias] = f"g{group_count}"
+            aliases[alias] = fresh(f"g{group_count}")
         if plan.time:
             time_alias = time_output_alias(plan.time)
-            aliases[time_alias] = "t"
+            aliases[time_alias] = fresh("t")
         for index, alias in enumerate(list(dict.fromkeys(measure_aliases)), start=1):
-            aliases[alias] = f"m{index}"
+            aliases[alias] = fresh(f"m{index}")
         for index, alias in enumerate(list(dict.fromkeys(metric_filter_aliases)), start=1):
-            aliases[alias] = f"p{index}"
+            aliases[alias] = fresh(f"p{index}")
         return cls(aliases=aliases)
 
     def internal(self, alias: str) -> str:

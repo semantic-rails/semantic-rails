@@ -164,3 +164,37 @@ def test_conversions_that_differ_by_an_operand_filter_keep_their_own_columns(run
     for result in together:
         assert result == alone
     assert alone["to_repeat"] != alone["to_any"]
+
+
+_STORE = "dimension.jaffle_store_name"
+
+
+@pytest.mark.parametrize("name", ["t", "T", "g1", "m1", "m2", "p1"])
+@pytest.mark.parametrize("limited", [False, True], ids=["all", "top-1"])
+def test_a_column_named_like_an_internal_name_reads_its_own_values(runtime, name, limited):
+    """The statement names the period, group keys, measures and result filters ``t``, ``g1``,
+    ``m1`` and ``p1``. A call's column of one of those names used to read the period or a key
+    (store names for an order count), or be refused beside a having and a limit; it reads its
+    own values, as under any other name."""
+
+    def call(alias: str) -> dict:
+        query = {
+            "select": [
+                {"expression": "measure.jaffle.order_count", "as": alias},
+                "measure.jaffle.revenue_usd",
+            ],
+            "group_by": [_STORE],
+            "time": {"grain": "month", "start": "2017-01-01", "end": "2017-04-01"},
+            "having": [{"field": alias, "op": "gte", "value": 2}],
+        }
+        if limited:
+            query.update(order_by=[{"field": alias, "direction": "desc"}], limit=1)
+        return query
+
+    def rows(alias: str) -> list:
+        answer = runtime.query(call(alias), now="2017-09-04T12:00:00Z")
+        return [
+            (row[_STORE], row["period"], row[alias], row["revenue_usd"]) for row in answer["rows"]
+        ]
+
+    assert rows(name) == rows("orders")
