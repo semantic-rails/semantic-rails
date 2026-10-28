@@ -22,9 +22,11 @@ from typing import Any
 
 from .compiler_parts.indexes import RouteRefusal, RouteResolution, get_package_analysis
 from .config_parts.route_rows import (
+    RowPaths,
     conflicting_rows,
     disagreeing_row,
     hop_is_functional,
+    row_paths,
     walk_entities,
 )
 from .errors import SemanticLayerError
@@ -505,7 +507,8 @@ def route_basis(config: PackageConfig, start: str, target: str) -> str:
     """The rung of the route ladder that chose the pair's route (``resolve_path``):
     ``"query"`` (the query's own row), ``"decided"`` (the pair's own row),
     ``"colocated_key"`` (the start's own key), ``"inherited"`` (rows for pairs its routes walk
-    through) or ``"only_route"``. ``""`` when the pair is refused."""
+    through), ``"only_route"`` or ``"default"`` (the one lookup among several routes). ``""``
+    when the pair is refused."""
     try:
         return resolve_route(config, start=start, target=target).basis
     except SemanticLayerError:
@@ -531,7 +534,8 @@ def route_note(
     if resolution.routes[0] != tuple(route):
         return None
     if resolution.basis != "decided":
-        return resolution if len(resolution.routes) > 1 else None
+        # A default is named even when a view hides every route it was chosen over.
+        return resolution if len(resolution.routes) > 1 or resolution.basis == "default" else None
     analysis = get_package_analysis(config)
     pair = (start, target)
     if pair not in analysis.route_note_cache:
@@ -634,12 +638,20 @@ def resolve_path(
        through a row's pair by another part than the row's path (or, walked the other way,
        than that path reversed, when every hop allows it) is dropped.
     4. **Only route.** One route remains: it is used.
-    5. Two or more remain: ``AMBIGUOUS_PATH`` (``reason: route_decision_required``), whatever
+    5. **Lookup default.** Two or more remain, and exactly one of them is a lookup (it reaches
+       one row at every hop: a to-one hop, or a hop into a validity window, judged from the
+       package alone): it is used (``default``, ``by: lookup``). Two or more lookups: the
+       entities' own keys are rows (a route walking X..Y by another part than X's one to-one
+       relationship to Y is dropped, as rung 3 drops one), and when exactly one lookup agrees
+       with them it is used (``by: own_keys``). A route reading "any of" rows is never a
+       default, and a rung never refuses a pair it can't settle: the next rung asks.
+    6. Two or more remain: ``AMBIGUOUS_PATH`` (``reason: route_decision_required``), whatever
        their lengths, with ``details.clarification``: the question in business words and,
        per route, its meaning and the row that decides it (``route_clarification``).
-    6. The rows dropped every route: ``PATH_NOT_FOUND`` (``reason: excluded_by_decision``),
+    7. The rows dropped every route: ``PATH_NOT_FOUND`` (``reason: excluded_by_decision``),
        naming the rows.
 
+    Rung 5 answers only pairs rungs 1-4 refuse, so no pair they answer changes route.
     Resolutions and refusals are cached per pair, keyed by package inputs only.
     """
     resolution = resolve_route(config, start=start, target=target)
@@ -737,6 +749,7 @@ def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolut
         tuple(path for path in resolution.routes if visible(path)),
         resolution.basis,
         tuple(row for row in resolution.rows if row in recorded),
+        resolution.by,
     )
 
 
@@ -790,6 +803,15 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
             return RouteResolution((kept[0],), "only_route")
         return RouteResolution((kept[0], *others), "inherited", tuple(sorted(excluded_by)))
     if kept:
+        default = _lookup_default(config, start, kept)
+        if default is not None:
+            chosen, by = default
+            return RouteResolution(
+                (chosen, *(path for path in kept if path != chosen)),
+                "default",
+                tuple(sorted(excluded_by)),
+                by,
+            )
         raise _route_decision_required(config, start, target, kept)
     rows = [route_pin(*pair, analysis.path_preferences[pair]) for pair in sorted(excluded_by)]
     raise SemanticLayerError(
@@ -810,6 +832,131 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
                 "route follows them, or change the rows."
             ),
         },
+    )
+
+
+def _lookup_hop(config: PackageConfig, rel_id: str, near: str) -> bool:
+    """Whether walking ``rel_id`` from ``near`` reaches one row of the far entity, judged from the
+    package alone: a to-one hop, or a hop into a validity window whose relationship has a "1"
+    side, so the rows it enters are versions of one row and the one valid at the time is read.
+    A many-to-many relationship is never a lookup, validity window or not: rows valid at once
+    can overlap, and each would count."""
+    analysis = get_package_analysis(config)
+    rel = analysis.relationships[rel_id]
+    reach = hop_reach(rel, near, analysis.entities[near].table)
+    return reach == "one" or (
+        reach == "as_of" and "1" in rel.cardinality.replace(" ", "").split(":")
+    )
+
+
+def _reaches_one_row(config: PackageConfig, start: str, path: Sequence[str]) -> bool:
+    """Whether ``path`` is a lookup: every hop reaches one row of the next entity
+    (``_lookup_hop``)."""
+    entities = walk_entities(get_package_analysis(config).relationships, start, path)
+    return all(
+        _lookup_hop(config, rel_id, near) for rel_id, near in zip(path, entities, strict=False)
+    )
+
+
+def _own_key_rows(config: PackageConfig) -> dict[tuple[str, str], RowPaths]:
+    """Each entity's own keys as route rows: ``(X, Y)`` when exactly one relationship walks from
+    X to Y and reaches at most one row, with its path and reverse walk as a recorded row has
+    (``row_paths``). Two such relationships (an origin and a destination) are no row."""
+    analysis = get_package_analysis(config)
+    if analysis.own_key_rows is None:
+        keys: dict[tuple[str, str], list[str]] = {}
+        for near, edges in analysis.graph.items():
+            for far, rel_id in edges:
+                if far != near and hop_is_functional(analysis.relationships[rel_id], near):
+                    keys.setdefault((near, far), []).append(rel_id)
+        analysis.own_key_rows = {
+            pair: row_paths(analysis.relationships, pair[0], ids)
+            for pair, ids in keys.items()
+            if len(ids) == 1
+        }
+    return analysis.own_key_rows
+
+
+def _lookup_default(
+    config: PackageConfig, start: str, kept: Sequence[tuple[str, ...]]
+) -> tuple[tuple[str, ...], str] | None:
+    """Rung 5 of ``resolve_path`` over the routes rungs 1-4 left: the one lookup among them
+    (``"lookup"``), else the one lookup that agrees with every entity's own key
+    (``"own_keys"``), else None, and the pair is asked."""
+    lookups = [path for path in kept if _reaches_one_row(config, start, path)]
+    if len(lookups) == 1:
+        return lookups[0], "lookup"
+    relationships, rows = get_package_analysis(config).relationships, _own_key_rows(config)
+    agreeing = [
+        path
+        for path in lookups
+        if disagreeing_row(walk_entities(relationships, start, path), path, rows) is None
+    ]
+    return (agreeing[0], "own_keys") if len(agreeing) == 1 else None
+
+
+def _reached(graph: dict[str, list[tuple[str, str]]], start: str, hop_limit: int) -> set[str]:
+    """The entities ``graph`` reaches from ``start`` within ``hop_limit`` hops."""
+    reached, pending = {start}, deque([(start, 0)])
+    while pending:
+        node, hops = pending.popleft()
+        if hops >= hop_limit:
+            continue
+        for neighbor, _rel_id in graph.get(node, []):
+            if neighbor not in reached:
+                reached.add(neighbor)
+                pending.append((neighbor, hops + 1))
+    return reached
+
+
+def _lookup_graph(config: PackageConfig) -> dict[str, list[tuple[str, str]]]:
+    """The package graph's hops that reach one row (``_lookup_hop``): the walks of lookups."""
+    return {
+        near: [(far, rel_id) for far, rel_id in edges if _lookup_hop(config, rel_id, near)]
+        for near, edges in get_package_analysis(config).graph.items()
+    }
+
+
+def _agreeing_routes(
+    config: PackageConfig,
+    graph: dict[str, list[tuple[str, str]]],
+    start: str,
+    target: str,
+    rows: Sequence[Mapping[tuple[str, str], RowPaths]],
+) -> int:
+    """How many routes of ``graph`` from ``start`` to ``target`` within the hop ceiling agree
+    with every row in ``rows``, counted up to two. A prefix that disagrees with a row disagrees
+    in every extension, so it is never extended; nothing is cached or rendered."""
+    hop_limit = package_hop_limit(config)
+    distances = hops_to_target(graph, target, hop_limit)
+
+    def routes(entities: list[str], path: list[str]) -> Iterator[None]:
+        if entities[-1] == target:
+            yield None
+            return
+        left = hop_limit - len(path) - 1
+        for neighbor, rel_id in graph.get(entities[-1], []):
+            if neighbor in entities or distances.get(neighbor, left + 1) > left:
+                continue
+            following, extended = [*entities, neighbor], [*path, rel_id]
+            if all(disagreeing_row(following, extended, kept) is None for kept in rows):
+                yield from routes(following, extended)
+
+    found = routes([start], [])
+    return sum(1 for _ in zip(range(2), found, strict=False))
+
+
+def _answered_by_lookup_default(
+    config: PackageConfig, graph: dict[str, list[tuple[str, str]]], start: str, target: str
+) -> bool:
+    """Whether rung 5 answers a pair rungs 1-4 leave two or more routes for, decided over
+    lookups alone (``graph`` is ``_lookup_graph``): one lookup agrees with the recorded rows,
+    or, of several, one also agrees with the entities' own keys (``_lookup_default``)."""
+    recorded = get_package_analysis(config).route_rows
+    lookups = _agreeing_routes(config, graph, start, target, [recorded])
+    return lookups == 1 or (
+        lookups == 2
+        and _agreeing_routes(config, graph, start, target, [recorded, _own_key_rows(config)]) == 1
     )
 
 
@@ -863,8 +1010,22 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
     other targets need at most ``hop_limit + 1`` BFS scans. With rows, reverse distances
     prune prefixes that cannot reach the target within the remaining hops, and the search
     stops at the second agreeing route. Neither search writes caches or builds refusals.
+    A target with two or more routes that a lookup reaches (one more BFS over the hops that
+    reach one row) may be answered by a lookup default: the same bounded search, over those
+    hops only, counts up to two agreeing lookups (``_answered_by_lookup_default``).
+
+    A caller's view answers by the whole package's route (``_visible_route``), so its targets
+    are the whole package's that the view's resolution answers: a default is decided from the
+    whole package, never from what the view alone would choose.
     """
     analysis = get_package_analysis(config)
+    if analysis.view is not None:
+        base = analysis.view[0]
+        return [
+            target
+            for target in eligible_path_targets(base, start=start)
+            if target in analysis.entities and _resolves(config, start, target)
+        ]
     hop_limit = package_hop_limit(config)
     pending = deque([(start, 0)])
     reachable = {start}
@@ -888,6 +1049,8 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
         for target, rel_id in analysis.graph.get(start, []):
             if target != start and hop_is_functional(analysis.relationships[rel_id], start):
                 direct.setdefault(target, []).append([rel_id])
+    lookup_graph = _lookup_graph(config)
+    lookups = _reached(lookup_graph, start, hop_limit)
     eligible: list[str] = []
     for target in sorted(analysis.entities):
         if target == start:
@@ -899,14 +1062,15 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
         elif len(direct.get(target, [])) == 1:
             # The start's unique own key wins before inherited decisions.
             eligible.append(target)
-        elif inherited:
-            if _has_unique_inherited_route(config, start, target, hop_limit, reverse_graph):
-                eligible.append(target)
-        elif not _has_multiple_routes(analysis.graph, start, target, hop_limit):
+        elif (
+            _has_unique_inherited_route(config, start, target, hop_limit, reverse_graph)
+            if inherited
+            else not _has_multiple_routes(analysis.graph, start, target, hop_limit)
+        ) or (
+            # Two or more routes, and a lookup among them: the lookup default may answer.
+            target in lookups and _answered_by_lookup_default(config, lookup_graph, start, target)
+        ):
             eligible.append(target)
-    if analysis.view is not None:
-        # A view offers a target only when its route resolution answers the pair.
-        eligible = [target for target in eligible if _resolves(config, start, target)]
     return eligible
 
 

@@ -429,7 +429,8 @@ Which route between two entities a question means is a business definition (see
   (pass an option's `decision` to `record_route_decision`) and `needed_by`, the package's own
   metrics, examples and tests that walk it (those pairs come first; the summary's
   `counts.undecided_needed` counts them); `assumed` lists the multi-route pairs
-  answered by the start entity's own key, to confirm. While a metric, example or test needs an
+  answered by the start entity's own key, to confirm; `defaults` lists the multi-route pairs
+  a lookup default answers, each with its `meaning` and `other_routes`. While a metric, example or test needs an
   undecided pair, `next_actions` starts with deciding those pairs; the others need nothing until
   a question asks about one. `create_project` and `setup_project_dialog` say to decide the ones
   the examples need once entities are related.

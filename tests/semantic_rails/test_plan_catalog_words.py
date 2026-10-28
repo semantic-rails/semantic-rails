@@ -369,7 +369,9 @@ def test_es_does_not_invent_short_or_unrelated_catalog_names(jaffle: Runtime) ->
         jaffle, ("us", "US", "store_id"), ("on", "On", "store_id")
     ) as runtime:
         payload = plan_payload(runtime, intent="revenue by store uses ones")
-        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        # Every draft groups by the customer history's preferred store, which needs a time to
+        # pick the version valid at each row's time, so none validates and nothing runs.
+        assert_plan_held(payload, "VALIDATION_FAILED")
         assert _catalog_words(runtime, payload["intent"], payload["best"]["query"]) == []
         assert _unknown_words(runtime, payload["intent"], payload["best"]["query"]) == [
             "uses",

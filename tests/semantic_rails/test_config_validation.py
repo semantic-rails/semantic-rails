@@ -744,7 +744,7 @@ def test_jaffle_reference_package_has_release_authoring_profile():
     # Its undecided join routes and crossings are reviewed in test_route_census.py. None of its
     # metrics, examples or tests walks one, so the census lists them and nothing warns.
     census = report["route_census"]
-    assert (len(census["undecided"]), len(census["pass_through"])) == (18, 5)
+    assert (len(census["undecided"]), len(census["pass_through"])) == (16, 5)
     assert not any(row["needed_by"] for row in [*census["undecided"], *census["pass_through"]])
     assert not [w for w in report["warnings"] if w["code"].startswith("ROUTE")]
     collision_warnings = [

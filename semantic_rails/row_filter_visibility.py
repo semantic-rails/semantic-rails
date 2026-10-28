@@ -76,7 +76,7 @@ def _coverage(base: PackageConfig, entity_id: str) -> Coverage:
             filtered.append(model)
             continue
         try:
-            route = tuple(package_route(base, start=model, target=entity_id).routes[0])
+            resolution = package_route(base, start=model, target=entity_id)
         except SemanticLayerError as exc:
             options = (exc.details.get("clarification") or {}).get("options") or []
             if exc.code == "AMBIGUOUS_PATH" and any(
@@ -88,6 +88,18 @@ def _coverage(base: PackageConfig, entity_id: str) -> Coverage:
             else:
                 uncovered.append(model)
             continue
+        # A lookup default is no recorded decision: ownership follows only a route the package
+        # decides, so its routes (those an undecided pair offers) count as they did undecided.
+        if resolution.basis == "default":
+            if any(
+                _route_ownership(analysis, model, path)[0] != "uncovered"
+                for path in resolution.routes
+            ):
+                unsupported_models[model] = "its route to the filtered model is undecided"
+            else:
+                uncovered.append(model)
+            continue
+        route = tuple(resolution.routes[0])
         status, hop = _route_ownership(analysis, model, route)
         if status == "covered" and hop is not None:
             routes[model], first[model] = route, hop

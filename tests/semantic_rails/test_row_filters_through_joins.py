@@ -590,17 +590,25 @@ def test_a_restricted_models_declared_values_are_read_live_under_the_filter(runt
     assert "Pine" not in str(card)
 
 
-@pytest.fixture
-def home_stores(tmp_path):
+def _home_stores(root, *, pickup: bool = False) -> Runtime:
     """Customers have a home store too (c1 Pine, c2 Elm, c3 Pine), so the region filter
-    reaches customers through their home store, which isn't how an order is owned."""
-    root = _package(tmp_path / "rj_home")
+    reaches customers through their home store, which isn't how an order is owned. With
+    ``pickup``, an order also names the store it is picked up from (o1 at Oak)."""
+    root = _package(root)
     graph = yaml.safe_load((root / "graph.yml").read_text())
     graph["graph"]["relationships"]["customers_home_store"] = {
         "as": "relationship.customers_home_store",
         "entities": ["customer", "store"],
         "cardinality": "many_to_one",
     }
+    if pickup:
+        graph["graph"]["relationships"]["orders_pickup_store"] = {
+            "as": "relationship.orders_pickup_store",
+            "entities": ["order", "store"],
+            "cardinality": "many_to_one",
+            "via": ["pickup_store_id"],
+            "target": ["store_id"],
+        }
     _put(root, "graph.yml", graph)
     model = yaml.safe_load((root / "models/customers.yml").read_text())
     model["model"]["entities"]["store"] = {}
@@ -611,7 +619,14 @@ def home_stores(tmp_path):
         connection.execute(
             "UPDATE customer_dim SET store_id = CASE customer_id WHEN 'c2' THEN 's1' ELSE 's3' END"
         )
+        connection.execute("ALTER TABLE order_fact ADD COLUMN pickup_store_id VARCHAR")
+        connection.execute("UPDATE order_fact SET pickup_store_id = 's2' WHERE order_id = 'o1'")
     return Runtime.from_path(str(root))
+
+
+@pytest.fixture
+def home_stores(tmp_path):
+    return _home_stores(tmp_path / "rj_home")
 
 
 def test_a_lookup_that_is_not_the_owners_route_is_held(home_stores, monkeypatch):
@@ -630,13 +645,32 @@ def test_a_lookup_that_is_not_the_owners_route_is_held(home_stores, monkeypatch)
     ]
 
 
-def test_an_ambiguous_route_is_offered_only_if_every_option_answers(home_stores):
+def test_a_lookup_default_is_held_under_a_filter_its_routes_carry(home_stores):
+    """A line's store is its order's store (the order's own key) or its customer's home store.
+    Unfiltered, the order's store answers by default and says so. A default is no recorded
+    decision, so the region filter can't be traced to the line by one package route: under
+    the filter the question is held, as it was while the pair was asked, offering nothing."""
     by_store = _query({"qty": QTY}, ["dimension.rj_store_store_name"])
-    with pytest.raises(SemanticLayerError) as asked:
-        home_stores.compile(by_store, context=EVERYONE)
-    assert asked.value.code == "AMBIGUOUS_PATH"
+    out = home_stores.query(by_store, context=EVERYONE)
+    # Lines l1, l2 (o1, Elm), l4 (o3, Oak) and l3 (o4, Pine), by each order's own store.
+    assert sorted(_rows(out)) == [("Elm", 3), ("Oak", 1), ("Pine", 5)]
+    (route,) = out["routes"]
+    assert route["via"] == ["relationship.lines_order", "relationship.orders_store"]
+    assert route["meaning"] == "the Store of the Line's Order"
     with pytest.raises(SemanticLayerError) as held:
         home_stores.compile(by_store, context=WEST)
+    assert held.value.code == "POLICY_DENIED" and "clarification" not in held.value.details
+
+
+def test_an_ambiguous_route_is_offered_only_if_every_option_answers(tmp_path):
+    # An order's store, or the store it is picked up from: no one lookup, so it is asked.
+    pickup = _home_stores(tmp_path / "rj_pickup", pickup=True)
+    by_store = _query({"qty": QTY}, ["dimension.rj_store_store_name"])
+    with pytest.raises(SemanticLayerError) as asked:
+        pickup.compile(by_store, context=EVERYONE)
+    assert asked.value.code == "AMBIGUOUS_PATH"
+    with pytest.raises(SemanticLayerError) as held:
+        pickup.compile(by_store, context=WEST)
     assert held.value.code == "POLICY_DENIED" and "clarification" not in held.value.details
 
 

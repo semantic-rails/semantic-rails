@@ -693,7 +693,7 @@ Response keys:
 - `query_state`
 - `card`
 
-Measure cards expose aggregation guidance, default time behavior, recommended dimensions, and related curated metrics. Dimension cards expose categorical semantics, preferred filter operators, and sample values when available. Entity cards list the entity's `relationships` (seen from its side) and its `reachable_entities` within the hop ceiling, with each route and whether recorded route rows chose it or the call must choose one; see [Catalog And Metadata](MCP_INTERFACE.md#catalog-and-metadata).
+Measure cards expose aggregation guidance, default time behavior, recommended dimensions, and related curated metrics. Dimension cards expose categorical semantics, preferred filter operators, and sample values when available. Entity cards list the entity's `relationships` (seen from its side) and its `reachable_entities` within the hop ceiling, with each route and whether recorded route rows or a lookup default chose it, or the call must choose one; see [Catalog And Metadata](MCP_INTERFACE.md#catalog-and-metadata).
 History-backed cards can also expose:
 
 - `coverage_notes`
@@ -1264,12 +1264,18 @@ each ready to send as `routes`, with `more_routes` counting the rest. Validate
 the call without `routes` to receive every option without a warehouse query;
 alternatives are never executed. A compact or full answer adds how each route
 was chosen (`basis`): `routes` (the call's, with `replaced`: `decided`,
-`colocated_key`, `inherited`, `only_route` or `undecided`), `own_key` (the
-start entity's own key, with `alternatives`, the row that would make each other
-route the default when it would load beside the package's rows, and
-`conflicts_with`, any other route with the rows its row would disagree with) or
+`colocated_key`, `inherited`, `only_route`, `default` or `undecided`), `own_key`
+(the start entity's own key, with `alternatives`, the row that would make each
+other route the default when it would load beside the package's rows, and
+`conflicts_with`, any other route with the rows its row would disagree with),
 `recorded` (the package's `graph.path_preferences` rows, with `recorded_for`
-naming the pairs whose rows an inherited route follows). Route clarifications,
+naming the pairs whose rows an inherited route follows) or `default` (the one
+lookup among the routes, [rule 5](PACKAGE_AUTHORING.md#the-route-rule): `by` is
+`lookup` or `own_keys`, with `alternatives` and `conflicts_with` as for
+`own_key`). A default's route also carries its `meaning`, `other_routes`,
+`basis` and `by` at every verbosity, minimal included, so an answer never hides
+the reading it took. When the caller's view hides every route a default was
+chosen over, its entry is `{from, to, via, meaning}` alone. Route clarifications,
 conflict rows, switches and plan candidates name only routes whose
 relationships and every waypoint are visible to the caller. Routes are never re-chosen per caller: when the
   package's route for a pair reads a hidden entity or relationship, the pair has

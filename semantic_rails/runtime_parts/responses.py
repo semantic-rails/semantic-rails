@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from ..answer import MINIMAL_ROUTE_KEYS
+from ..answer import minimal_route
 from ..ast import PERIOD_PARTIAL, is_child_group, time_output_alias
 from ..dialects import dialect_for_warehouse
 from ..expressions import (
@@ -131,10 +131,7 @@ def apply_response_verbosity(
             allowed = _MINIMAL_KEYS_NONEXECUTE
         out = {key: value for key, value in out.items() if key in allowed or key in _ANSWER_KEYS}
         if out.get("routes"):
-            out["routes"] = [
-                {key: route[key] for key in MINIMAL_ROUTE_KEYS if key in route}
-                for route in out["routes"]
-            ]
+            out["routes"] = [minimal_route(route) for route in out["routes"]]
     elif verbosity == "compact":
         for key in _COMPACT_DROP_KEYS:
             out.pop(key, None)

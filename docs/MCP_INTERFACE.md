@@ -249,7 +249,9 @@ An entity's card shows its place in the join graph, read from the caller's visib
 - `reachable_entities`: every entity a query rooted on it reaches within the package's hop
   ceiling, nearest first, with `via`, the package's route (the relationship ids a call's `routes`
   names), `recorded: true` when recorded `graph.path_preferences` rows chose that route among
-  the routes the caller can take (an answer's route `basis: recorded`), or
+  the routes the caller can take (an answer's route `basis: recorded`), `default: "lookup"` or
+  `"own_keys"` when a lookup default chose it among routes the caller can see (`basis:
+  default`), or
   `route_decision_required: true`
   when two routes answer differently and the call has to choose one with `routes`. An entity
   whose package route reads an object hidden from the caller is not listed: another route is a

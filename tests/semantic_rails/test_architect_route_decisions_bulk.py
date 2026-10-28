@@ -133,7 +133,7 @@ def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_p
     assert (
         route_census(changed)
         == route_census(config)
-        == {"undecided": [], "assumed": [], "pass_through": []}
+        == {"undecided": [], "assumed": [], "defaults": [], "pass_through": []}
     )
     assert _impact(base, pkg)["route_changes"] == []
     assert _answers(pkg) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
@@ -176,6 +176,18 @@ def _refused_own_key_package(root):
     graph["graph"]["relationships"]["invoices_account"]["rollup_safe"] = {
         "reverse": ["count_distinct"]
     }
+    # An account has two owners (the holder and a co-owner), so no one lookup answers a
+    # membership's owner until the membership holds its own owner key; the branch region is
+    # read only from the account, so a row keeping a membership's region holds one way only.
+    graph["graph"]["relationships"]["accounts_co_owner"] = {
+        "as": "relationship.accounts_co_owner",
+        "entities": ["account", "owner"],
+        "cardinality": "many_to_one",
+        "via": ["co_owner_id"],
+        "target": ["owner_id"],
+        "allowed_directions": ["forward", "reverse"],
+    }
+    graph["graph"]["relationships"]["accounts_branch_region"]["allowed_directions"] = ["forward"]
     # A second invoice role provides another previously answered pair to preserve.
     graph["graph"]["entities"]["receipt"] = {"key": ["invoice_id"], "model": "receipts"}
     (pkg / "models/receipts.yml").write_text(
@@ -207,6 +219,7 @@ def _refused_own_key_package(root):
     seed.write_text(
         seed.read_text() + "\nALTER TABLE memberships ADD COLUMN owner_id INTEGER;\n"
         "UPDATE memberships SET owner_id = 10;\n"
+        "ALTER TABLE accounts ADD COLUMN co_owner_id INTEGER;\nUPDATE accounts SET co_owner_id = 12;\n"
     )
     return pkg
 
@@ -322,14 +335,15 @@ def test_keep_choice_cannot_open_an_inherited_answer_with_generated_pins(tmp_pat
             keep_existing_routes=True,
         )
     assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert refused.value.details["route_changes"] == [
-        {
-            "source_entity": OWNER,
-            "target_entity": MEMBERSHIP,
-            "base": {"refused": "AMBIGUOUS_PATH"},
-            "head": {"relationship_path": ["relationship.memberships_owner"]},
-        }
-    ]
+    changes = refused.value.details["route_changes"]
+    assert {
+        "source_entity": OWNER,
+        "target_entity": MEMBERSHIP,
+        "base": {"refused": "AMBIGUOUS_PATH"},
+        "head": {"relationship_path": ["relationship.memberships_owner"]},
+    } in changes
+    # Each listed change is a refused pair the generated rows would answer.
+    assert all(change["base"] == {"refused": "AMBIGUOUS_PATH"} for change in changes)
     assert _files_and_receipts(project) == files
 
 

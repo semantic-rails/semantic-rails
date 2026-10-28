@@ -28,8 +28,10 @@ class RouteResolution(NamedTuple):
 
     routes: tuple[tuple[str, ...], ...]
     basis: str
-    # The rows that excluded a considered route (``inherited`` only).
+    # The rows that excluded a considered route (``inherited`` and ``default``).
     rows: tuple[tuple[str, str], ...] = ()
+    # Which lookup default chose it (``default`` only): ``lookup`` or ``own_keys``.
+    by: str = ""
 
 
 class ViewOf(NamedTuple):
@@ -74,6 +76,8 @@ class PackageAnalysis:
     path_cache: dict[tuple[str, str], RouteResolution | RouteRefusal] = field(default_factory=dict)
     # Pinned-pair notes need only whether two routes fit the hop ceiling.
     route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
+    # Each entity's own keys as route rows, for the lookup defaults (``fanout._own_key_rows``).
+    own_key_rows: dict[tuple[str, str], RowPaths] | None = None
     # (root, target) -> the catalog's reach of the pair (``path_coverage._path_reach``).
     # Keyed only by package inputs: never written while a query's own route decisions apply.
     path_reach: dict[tuple[str, str], Any] = field(default_factory=dict)

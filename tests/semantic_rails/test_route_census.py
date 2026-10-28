@@ -71,6 +71,7 @@ from tests.semantic_rails.test_route_resolution import (
     ROUTE_DECISIONS,
     SHIPPED_PACKAGES,
     TIER,
+    TWO_KEYS,
     _gold,
     _pin,
     _query,
@@ -105,20 +106,23 @@ def _base_decisions(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 # Every entity may start a query, including owners and memberships without measures.
 DIAMOND_UNDECIDED = [
-    (ACCOUNT, MEMBERSHIP),
-    (INVOICE, MEMBERSHIP),
-    (INVOICE, OWNER),
-    (INVOICE, REGION),
     (MEMBERSHIP, INVOICE),
-    (MEMBERSHIP, OWNER),
-    (MEMBERSHIP, REGION),
-    (OWNER, ACCOUNT),
     (OWNER, INVOICE),
     (REGION, ACCOUNT),
     (REGION, INVOICE),
     (REGION, MEMBERSHIP),
     (REGION, OWNER),
 ]
+# Pairs with two or more routes that one lookup answers (the rung that chose it, its meaning).
+DIAMOND_DEFAULTS = {
+    (ACCOUNT, MEMBERSHIP): ("lookup", "the Membership of the Account's Owner"),
+    (INVOICE, MEMBERSHIP): ("lookup", "the Membership of the Owner of the Invoice's Account"),
+    (INVOICE, OWNER): ("lookup", "the Owner of the Invoice's Account"),
+    (INVOICE, REGION): ("own_keys", "the Region of the Invoice's Account"),
+    (MEMBERSHIP, OWNER): ("lookup", "the Owner of the Membership's Account"),
+    (MEMBERSHIP, REGION): ("own_keys", "the Region of the Membership's Account"),
+    (OWNER, ACCOUNT): ("lookup", "the Account of the Owner's Membership"),
+}
 # A question for each pair: a measure of the start grouped by a dimension of the target.
 MEASURE = {ACCOUNT: BALANCE, INVOICE: AMOUNT, REGION: REGION_COUNT}
 DIMENSION = {
@@ -203,8 +207,17 @@ def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tm
             "basis": "colocated_key",
         },
     ]
-    # A pair with one route is in neither list.
-    listed = {*undecided, *_pairs(census["assumed"])}
+    # Pairs a lookup answers, each with what it reads and the routes it was chosen over.
+    assert {
+        pair: (row["by"], row["meaning"])
+        for pair, row in zip(_pairs(census["defaults"]), census["defaults"], strict=True)
+    } == DIAMOND_DEFAULTS
+    for row in census["defaults"]:
+        start, target = row["source_entity"], row["target_entity"]
+        chosen, considered = resolve_path(config, start=start, target=target)
+        assert [row["relationship_path"], *row["other_routes"]] == [chosen, *considered[1:]]
+    # A pair with one route is in none of the lists.
+    listed = {*undecided, *_pairs(census["assumed"]), *_pairs(census["defaults"])}
     assert {(ACCOUNT, INVOICE), (INVOICE, ACCOUNT)} <= set(census_pairs(config)) - listed
 
 
@@ -246,16 +259,17 @@ def test_the_census_asks_the_resolver_once_per_pair_and_reuses_its_cache(tmp_pat
     # A second census, and a query's own resolution (an answer or a refusal), read the cache.
     assert route_census(config) == census
     assert resolve_path(config, start=ACCOUNT, target=REGION)[0] == BRANCH
+    assert resolve_path(config, start=INVOICE, target=REGION)[0] == INVOICE_BRANCH
     with pytest.raises(SemanticLayerError):
-        resolve_path(config, start=INVOICE, target=REGION)
+        resolve_path(config, start=REGION, target=INVOICE)
     assert enumerated == pairs
 
 
 # Shipped packages whose relationships leave pairs undecided. Each needs a business decision
 # recorded in the package (a follow-up), so they are pinned here to the reviewed snapshot.
 SHIPPED_UNDECIDED = {
-    "configs/semantic_rails/jaffle_shop": 18,
-    "comparisons/semantic_layers/semantic_rails/package": 25,
+    "configs/semantic_rails/jaffle_shop": 16,
+    "comparisons/semantic_layers/semantic_rails/package": 23,
 }
 
 
@@ -339,26 +353,28 @@ def test_resolved_crossings_are_object_warnings_only_where_a_query_walks_them(tm
 
 
 AMOUNT_BY_REGION = _query(AMOUNT, group_by=[REGION_NAME])
+# Regions by account kind: any of a region's accounts, or of its owners' accounts.
+REGIONS_BY_KIND = _query(REGION_COUNT, group_by=[ACCOUNT_KIND])
 
 
 def test_only_the_pairs_a_query_of_the_package_walks_are_warned_about(tmp_path):
-    """Thirteen pairs have two routes and no row; none needs anything until a query walks it.
-    An example that asks for invoice amounts by region walks one, and only that one is warned
-    about, with the example that needs it and the rows that would decide it."""
+    """Six pairs have two routes, no row and no lookup default; none needs anything until a
+    query walks it. An example that asks for regions by account kind walks one, and only that
+    one is warned about, with the example that needs it and the rows that would decide it."""
     pkg = _write_package(tmp_path / "bank")
     report, _ = parse_config_report(PackageReference(source_path=str(pkg)))
     assert _pairs(report["route_census"]["undecided"]) == DIAMOND_UNDECIDED
     assert all(row["needed_by"] == [] for row in report["route_census"]["undecided"])
     assert "ROUTES_UNDECIDED" not in {row["code"] for row in report["warnings"]}
 
-    copy = _with_examples(pkg, tmp_path / "walked", amount_by_region=AMOUNT_BY_REGION)
+    copy = _with_examples(pkg, tmp_path / "walked", regions_by_kind=REGIONS_BY_KIND)
     report, _ = parse_config_report(PackageReference(source_path=str(copy)))
     undecided = report["route_census"]["undecided"]
     # The pair the example needs comes first; every other pair is still listed.
     assert sorted(_pairs(undecided)) == sorted(DIAMOND_UNDECIDED)
     assert (_pairs(undecided)[0], undecided[0]["needed_by"]) == (
-        (INVOICE, REGION),
-        ["example.amount_by_region"],
+        (REGION, ACCOUNT),
+        ["example.regions_by_kind"],
     )
     assert all(row["needed_by"] == [] for row in undecided[1:])
     (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTES_UNDECIDED"]
@@ -367,19 +383,19 @@ def test_only_the_pairs_a_query_of_the_package_walks_are_warned_about(tmp_path):
         "count": 1,
         "pairs": [
             {
-                "source_entity": INVOICE,
-                "target_entity": REGION,
-                "needed_by": ["example.amount_by_region"],
+                "source_entity": REGION,
+                "target_entity": ACCOUNT,
+                "needed_by": ["example.regions_by_kind"],
             }
         ],
-        "unwalked": 12,
+        "unwalked": 5,
     }
     assert sorted(row["relationship_path"] for row in rows) == sorted(
         option["relationship_path"]
         for option in undecided[0]["details"]["clarification"]["options"]
     )
-    assert "for example.amount_by_region" in warning["message"]
-    assert "The 12 other undecided pairs need nothing now" in warning["message"]
+    assert "for example.regions_by_kind" in warning["message"]
+    assert "The 5 other undecided pairs need nothing now" in warning["message"]
 
 
 def test_a_query_past_a_fork_is_walked_to_its_end(tmp_path):
@@ -387,12 +403,15 @@ def test_a_query_past_a_fork_is_walked_to_its_end(tmp_path):
     first route for that query alone and keeps walking, so both forks are needed."""
     config = load_package_config(str(_write_package(tmp_path)))
     both = _query(
-        AMOUNT,
-        group_by=[REGION_NAME],
+        REGION_COUNT,
+        group_by=[ACCOUNT_KIND],
         where=[{"field": OWNER_NAME, "op": "is", "value": "Ann"}],
     )
+    with pytest.raises(SemanticLayerError) as refused:
+        Runtime.from_path(str(_write_package(tmp_path / "asked"))).query(both)
+    assert refused.value.code == "AMBIGUOUS_PATH"
     walked = census_module.walked_pairs(config, [("example.both", [both], None)])
-    assert walked[(INVOICE, REGION)] == walked[(INVOICE, OWNER)] == ["example.both"]
+    assert walked[(REGION, ACCOUNT)] == walked[(REGION, OWNER)] == ["example.both"]
     # A metric that reads periods is walked with a time block; a test that expects a refusal
     # is not walked at all.
     queries = census_module.package_queries(config)
@@ -458,10 +477,10 @@ def test_a_second_parse_of_the_same_package_reuses_its_walks(tmp_path, monkeypat
     again, _ = parse_config_report(ref)
     assert len(walks) == 1 and again["route_census"] == first["route_census"]
     examples = copy / "examples" / "walks.yml"
-    examples.write_text(yaml.safe_dump({"examples": {"amount": {"query": AMOUNT_BY_REGION}}}))
+    examples.write_text(yaml.safe_dump({"examples": {"regions": {"query": REGIONS_BY_KIND}}}))
     edited, _ = parse_config_report(ref)
     assert len(walks) == 2
-    assert edited["route_census"]["undecided"][0]["needed_by"] == ["example.amount"]
+    assert edited["route_census"]["undecided"][0]["needed_by"] == ["example.regions"]
 
 
 def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
@@ -473,7 +492,8 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     # No metric, example or test walks an undecided pair: nothing to decide now.
     assert not any(action.startswith("Decide") for action in status["next_actions"])
     summary = _mcp(server, "project_status", {"project_path": str(pkg)})["route_census"]
-    assert summary["counts"]["undecided"] == 13
+    assert summary["counts"]["undecided"] == len(DIAMOND_UNDECIDED)
+    assert summary["counts"]["defaults"] == len(DIAMOND_DEFAULTS)
     assert summary["counts"]["undecided_needed"] == 0
     for result in (
         _mcp(server, "setup_project_dialog", {"package_id": "fresh"}),
@@ -487,14 +507,14 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     promotion = promote_package_report(PackageReference(source_path=str(pkg)), environment="dev")
     assert promotion["advisories"] == []
 
-    copy = _with_examples(pkg, tmp_path / "walked", amount_by_region=AMOUNT_BY_REGION)
+    copy = _with_examples(pkg, tmp_path / "walked", regions_by_kind=REGIONS_BY_KIND)
     server = create_architect_mcp_server(workspace_root=tmp_path / "walked")
     status = _mcp(server, "project_status", {"project_path": str(copy)})
     assert status["next_actions"][0].startswith(
         "Decide the 1 join route the package's own metrics, examples or tests need"
     )
     assert status["route_census"]["counts"]["undecided_needed"] == 1
-    assert status["route_census"]["undecided"][0]["needed_by"] == ["example.amount_by_region"]
+    assert status["route_census"]["undecided"][0]["needed_by"] == ["example.regions_by_kind"]
     promotion = promote_package_report(PackageReference(source_path=str(copy)), environment="dev")
     (advisory,) = promotion["advisories"]
     assert (advisory["code"], advisory["details"]["count"]) == ("ROUTES_UNDECIDED", 1)
@@ -507,11 +527,10 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
 
 # An invoice reaches a region through its account's branch: one route.
 BASE = ("invoices_account", "accounts_branch_region", "accounts_owner")
-# The owner's home region adds a second route wherever the owner lies between the two.
+# The owner's home region adds a second route wherever the owner lies between the two. An
+# invoice keeps its account's region and owner: the one lookup along the account's own keys.
 SECOND_ROUTE = (*BASE, "owners_home_region")
 MOVED = [
-    (INVOICE, OWNER),
-    (INVOICE, REGION),
     (OWNER, ACCOUNT),
     (OWNER, INVOICE),
     (OWNER, REGION),
@@ -550,17 +569,21 @@ def test_impact_lists_each_answer_a_second_route_moves_without_suggesting_rows(t
     head = _write_package(tmp_path / "head", relationships=SECOND_ROUTE)
     report = _impact(base, head)
     assert _pairs(report["route_changes"]) == MOVED
-    assert report["route_changes"][1] == {
-        "source_entity": INVOICE,
-        "target_entity": REGION,
-        "base": {"relationship_path": INVOICE_BRANCH},
+    assert report["route_changes"][MOVED.index((REGION, ACCOUNT))] == {
+        "source_entity": REGION,
+        "target_entity": ACCOUNT,
+        "base": {"relationship_path": BRANCH},
         "head": {"refused": "AMBIGUOUS_PATH"},
     }
+    # The invoice's region keeps its answer, now chosen by default over the owner's region.
+    amount = Runtime.from_path(str(head)).query(_query(AMOUNT, group_by=[REGION_NAME]))
+    assert _rows(amount, [REGION_NAME, "v"]) == _gold(AMOUNT_BY_BRANCH)
+    assert [(row["via"], row["basis"]) for row in amount["routes"]] == [(INVOICE_BRANCH, "default")]
     assert report["impact"]["risk"] == "high"
     diff_behavior = sum(1 for change in report["changes"] if change["behavior_change"])
     assert report["impact"]["changed_behavior_count"] == diff_behavior + len(MOVED)
     assert (
-        "- Invoice to Region: was the Region of the Invoice's Account, now refused (AMBIGUOUS_PATH)"
+        "- Region to Account: was any of the Region's Accounts, now refused (AMBIGUOUS_PATH)"
     ) in report["markdown_summary"].splitlines()
     # The author can explicitly record the base paths to preserve the reference-SQL answers.
     assert all("keep_base" not in change for change in report["route_changes"])
@@ -584,8 +607,11 @@ def test_impact_without_a_route_change_lists_none(tmp_path):
 
 
 def test_impact_lists_a_row_that_answers_a_pair_the_base_refused(tmp_path):
-    base = _write_package(tmp_path / "base")
-    head = _write_package(tmp_path / "head", pins=[_pin(INVOICE, REGION, INVOICE_HOME)])
+    # With two keys from the account to the region, no lookup default answers the invoice's.
+    base = _write_package(tmp_path / "base", relationships=TWO_KEYS)
+    head = _write_package(
+        tmp_path / "head", relationships=TWO_KEYS, pins=[_pin(INVOICE, REGION, INVOICE_HOME)]
+    )
     changes = _impact(base, head)["route_changes"]
     assert _pairs(changes) == [(INVOICE, REGION), (REGION, INVOICE)]
     assert changes[0] == {
@@ -649,7 +675,9 @@ def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     if from_entity == "invoice":
         assert changes[(INVOICE, REGION)]["head"] == {"relationship_path": new_route}
     else:
-        assert changes[(INVOICE, REGION)]["head"] == {"refused": "AMBIGUOUS_PATH"}
+        # The invoice keeps its account's region (a lookup default); the region's accounts don't.
+        assert (INVOICE, REGION) not in changes
+        assert changes[(REGION, ACCOUNT)]["head"] == {"refused": "AMBIGUOUS_PATH"}
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
@@ -832,8 +860,32 @@ def test_removing_an_issued_region_key_refuses_a_switch_to_branch_region(tmp_pat
     assert _invoice_amounts(project.project_path) == branch
 
 
-def test_removing_an_issued_region_key_may_leave_the_pair_ambiguous(tmp_path):
+@pytest.mark.parametrize("dry_run", [False, True], ids=["write", "preview"])
+def test_removing_an_issued_region_key_refuses_a_switch_to_the_lookup_default(tmp_path, dry_run):
+    """Without the invoice's own key, its region is the one lookup along the account's own keys
+    (the branch region, over the owner's home region): a default is an answer, so the removal
+    that would switch to it is refused like any other silent switch."""
     project = _architect(tmp_path, relationships=SECOND_ROUTE)
+    invoice = project.project_path / "models/invoices.yml"
+    model = yaml.safe_load(invoice.read_text())
+    model["model"]["entities"]["region"] = {"expr": "issued_region_id"}
+    invoice.write_text(yaml.safe_dump(model))
+    revision, before = project.revision(), _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
+        project.remove_object(kind="relationship", key="region", model="invoices", dry_run=dry_run)
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    changes = {
+        (row["source_entity"], row["target_entity"]): row
+        for row in raised.value.details["route_changes"]
+    }
+    assert changes[(INVOICE, REGION)]["head"] == {"relationship_path": INVOICE_BRANCH}
+    assert (project.revision(), _files_and_receipts(project)) == (revision, before)
+    assert _invoice_amounts(project.project_path) == _gold(AMOUNT_BY_ISSUED)
+
+
+def test_removing_an_issued_region_key_may_leave_the_pair_ambiguous(tmp_path):
+    # Two keys from the account to the region: no one lookup is left once the key goes.
+    project = _architect(tmp_path, relationships=(*SECOND_ROUTE, "accounts_billing_region"))
     invoice = project.project_path / "models/invoices.yml"
     model = yaml.safe_load(invoice.read_text())
     model["model"]["entities"]["region"] = {"expr": "issued_region_id"}
@@ -855,12 +907,15 @@ def test_record_route_decision_is_deliberate_and_reports_inherited_pairs(tmp_pat
     assert report["ok"] is True
     assert report["route_decisions_added"] == []
     assert _pairs(report["route_changes"]) == [
-        (INVOICE, OWNER),
         (INVOICE, REGION),
         (OWNER, INVOICE),
         (REGION, INVOICE),
     ]
-    assert all(row["base"] == {"refused": "AMBIGUOUS_PATH"} for row in report["route_changes"])
+    # The row overrides the invoice's lookup default (its account's branch region) and settles
+    # the two pairs whose routes walk through it.
+    base = {_pairs([row])[0]: row["base"] for row in report["route_changes"]}
+    assert base.pop((INVOICE, REGION)) == {"relationship_path": INVOICE_BRANCH}
+    assert set(map(str, base.values())) == {str({"refused": "AMBIGUOUS_PATH"})}
     out = Runtime.from_path(str(project.project_path)).query(_query(AMOUNT, group_by=[REGION_NAME]))
     assert _rows(out, [REGION_NAME, "v"]) == _gold(AMOUNT_BY_HOME)
 
@@ -1109,7 +1164,12 @@ def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
 
 def test_a_single_many_to_one_key_never_needs_confirmation(tmp_path):
     config = load_package_config(str(_write_package(tmp_path, relationships=("invoices_account",))))
-    assert route_census(config) == {"undecided": [], "assumed": [], "pass_through": []}
+    assert route_census(config) == {
+        "undecided": [],
+        "assumed": [],
+        "defaults": [],
+        "pass_through": [],
+    }
 
 
 def test_lowering_the_hop_ceiling_commits_without_undoing_the_cut(tmp_path):
@@ -1169,8 +1229,14 @@ def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path):
 
 
 def test_a_removal_reports_a_refused_pair_becoming_the_only_route(tmp_path):
-    project = _architect(tmp_path, relationships=SECOND_ROUTE)
-    report = project.remove_object(kind="model", key="owners").report
+    # Two keys from the account to the region; the billing key goes, the branch key stays.
+    project = _architect(
+        tmp_path,
+        relationships=("invoices_account", "accounts_branch_region", "accounts_billing_region"),
+    )
+    graph = _graph(project)
+    graph["graph"]["relationships"].pop("accounts_billing_region")
+    report = project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph)}]).report
     assert report["ok"] is True
     changes = {(row["source_entity"], row["target_entity"]): row for row in report["route_changes"]}
     assert changes[(INVOICE, REGION)]["base"] == {"refused": "AMBIGUOUS_PATH"}

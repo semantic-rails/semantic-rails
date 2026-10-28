@@ -4,7 +4,8 @@
 default four-hop ceiling: the shape of a real institution's warehouse once every foreign key is
 related. Each entity has one model with a name, a row count and a metric; the examples are the
 questions an analyst would author. ``copies=2`` writes a second campus beside the first, both
-belonging to one ``system``, for a 149-entity package.
+belonging to one ``system``, for a 149-entity package. ``traversal=["forward"]`` writes the
+package the way an author avoiding reverse hops would: each row looks up only its own keys.
 
 ``python -m tests.semantic_rails.campus_package DIR [COPIES]`` writes it to ``DIR``.
 """
@@ -98,7 +99,9 @@ def _label(name: str) -> str:
     return name.replace("_", " ").capitalize()
 
 
-def write_campus_package(root: Path, *, copies: int = 1) -> Path:
+def write_campus_package(
+    root: Path, *, copies: int = 1, traversal: list[str] | None = None
+) -> Path:
     """Write the package under ``root`` (``copies`` campuses) and return its directory."""
     package = root / ("campus" if copies == 1 else f"campus_x{copies}")
     (package / "models").mkdir(parents=True)
@@ -177,6 +180,7 @@ def write_campus_package(root: Path, *, copies: int = 1) -> Path:
                 "default_db": "campus.duckdb",
                 "seed": {"kind": "external"},
             },
+            **({"defaults": {"relationship": {"traversal": traversal}}} if traversal else {}),
         },
         "graph.yml": {"graph": {"entities": entities, "relationships": relationships}},
         "metrics/counts.yml": {"metrics": metrics},

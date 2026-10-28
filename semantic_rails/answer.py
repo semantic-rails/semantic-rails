@@ -41,6 +41,7 @@ from .fanout import (
     package_route,
     query_route_decisions,
     route_note,
+    route_reading,
 )
 from .issues import ASSUMPTION, CODES
 from .query_call import call_from_query, call_where
@@ -232,8 +233,11 @@ def routes_taken(config: Any, compiled: Mapping[str, Any]) -> list[dict[str, Any
     ``routes`` (with the package's basis it ``replaced``), by the start's own key
     (``own_key``, with the row that would make each other route the default in
     ``alternatives`` when it would load, else the rows it disagrees with in
-    ``conflicts_with``), or by the package's recorded rows (``recorded``, with the pairs whose
-    rows it follows in ``recorded_for`` when it inherits them)."""
+    ``conflicts_with``), by the package's recorded rows (``recorded``, with the pairs whose
+    rows it follows in ``recorded_for`` when it inherits them), or by a lookup default
+    (``default``, with the rung that chose it in ``by``, its ``meaning`` and the other routes
+    as ``other_routes`` and ``alternatives``). A default's ``meaning`` and ``other_routes`` stay
+    at every verbosity: the reading the engine chose is never silent."""
     taken: list[dict[str, Any]] = []
     for row in compiled.get("route_decisions") or []:
         start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
@@ -259,6 +263,25 @@ def routes_taken(config: Any, compiled: Mapping[str, Any]) -> list[dict[str, Any
         if resolution.basis == "colocated_key":
             alternatives, conflicts = offered_rows(config, start, target, resolution.routes[1:])
             route.update(basis="own_key", alternatives=alternatives, conflicts_with=conflicts)
+        elif resolution.basis == "default":
+            meaning = route_reading(config, start, resolution.routes[0])
+            others = sorted((list(path) for path in resolution.routes[1:]), key=_route_order)
+            if not others:
+                # The caller's view hides every route the default was chosen over: the reading
+                # is stated, and nothing says there were others.
+                route["meaning"] = meaning
+                taken.append(route)
+                continue
+            alternatives, conflicts = offered_rows(config, start, target, others)
+            route.update(
+                basis="default",
+                by=resolution.by,
+                meaning=meaning,
+                other_routes=[{"from": start, "to": target, "via": path} for path in others[:3]],
+                more_routes=len(others) - 3 if len(others) > 3 else None,
+                alternatives=alternatives,
+                conflicts_with=conflicts,
+            )
         else:
             inherited = [{"from": source, "to": end} for source, end in resolution.rows]
             route.update(basis="recorded", recorded_for=inherited)
@@ -266,8 +289,20 @@ def routes_taken(config: Any, compiled: Mapping[str, Any]) -> list[dict[str, Any
     return [{key: value for key, value in route.items() if value not in _EMPTY} for route in taken]
 
 
-# What a minimal response keeps of each route.
-MINIMAL_ROUTE_KEYS = ("from", "to", "via", "other_routes", "more_routes")
+# What a minimal response keeps of each route; a default also keeps how it was chosen.
+MINIMAL_ROUTE_KEYS = ("from", "to", "via", "meaning", "other_routes", "more_routes")
+_MINIMAL_DEFAULT_KEYS = ("basis", "by")
+
+
+def minimal_route(route: Mapping[str, Any]) -> dict[str, Any]:
+    """``route`` (an answer's ``routes`` entry) as a minimal response keeps it."""
+    keys = (*MINIMAL_ROUTE_KEYS, *(_MINIMAL_DEFAULT_KEYS if "by" in route else ()))
+    return {key: route[key] for key in keys if key in route}
+
+
+def _route_order(path: Sequence[str]) -> tuple[int, Sequence[str]]:
+    """Alternatives shortest first, then by relationship ids, whatever the authored order."""
+    return len(path), path
 
 
 def _offered(config: Any, start: str, target: str) -> list[list[str]]:
