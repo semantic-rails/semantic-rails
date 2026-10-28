@@ -486,6 +486,12 @@ def _compile_post_expr(
 
 
 def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bool:
+    """Whether ``expr`` reads a lag or rolling window, which must run over every period.
+
+    Over only the periods with rows, the prior of the month after an empty month would be the
+    last month with data. A share's input holds no window (refused), and a total's input runs
+    in its own call, which asks this on its own.
+    """
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_or_raise(config, expr.metric_recipe)
         return _expr_requires_dense_series(recipe.expression, config)
@@ -496,6 +502,10 @@ def _expr_requires_dense_series(expr: SemanticExpr, config: PackageConfig) -> bo
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _expr_requires_dense_series(expr.left, config) or _expr_requires_dense_series(
             expr.right, config
+        )
+    if isinstance(expr, RatioExpr):
+        return _expr_requires_dense_series(expr.numerator, config) or _expr_requires_dense_series(
+            expr.denominator, config
         )
     if isinstance(expr, InExpr):
         return _expr_requires_dense_series(expr.expr, config) or any(

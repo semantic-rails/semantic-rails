@@ -346,6 +346,10 @@ Core query rules:
 - a named window (`last`, `this`, `start` with `end`) plans a dense series over the window
   against the implicit Gregorian day spine generated in SQL; `time.fill` does the same for an
   open window between the answer's first and last periods
+- a `prior_period` or `rolling` window anywhere in a projected expression or a `having` (under
+  arithmetic, a ratio, a `case`, a call or a metric) plans the same dense series, so its lag
+  counts periods, never rows; a share's input holds no window, and a total's input is planned
+  in its own coarser call
 - a query with a time axis and no explicit `order_by` orders its final SQL projection by
   time ascending, then by `group_by` dimensions ascending in their stated order; this
   shared lowering rule also covers dense series and combined or accelerated plans.

@@ -1054,6 +1054,15 @@ ones they return, so a window that cuts their lookback is refused
 with `WINDOWED_TIME_FILTER_UNSUPPORTED` ("ask for a series with a grain and read the periods
 you need from it").
 
+A `prior_period` or `rolling` window counts periods on the calendar, never rows: wherever it sits
+(alone, in an `arithmetic`, a `ratio`, a `case` or a metric), the answer runs over every period
+from the first to the last and returns the empty ones too. The prior of the month after a month
+with no rows is that month, which reads by the [empty-group rule](#empty-groups-null-or-0) (`0`
+inside the data), so "revenue over the previous month" reads `NULL` there (÷0), never revenue
+over the last month that had any. Such an item is refused on ClickHouse, which has no day
+spine, and as a distribution's input, which would then count entities in periods where they
+have no rows (`REWRITE_NOT_SUPPORTED`).
+
 ### The `aggregation` override
 
 `{"kind": "measure", "measure": <id>, "aggregation": <statistic>}` (and the same key on
