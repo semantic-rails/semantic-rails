@@ -974,7 +974,8 @@ it, on the request's clock and identity:
   call's first one when none is named, down to the grand total. An entity's name stands alone
   where its key is grouped beside it, since a level keeps the key of each name it keeps. When
   the named grouping is all the call groups by and the call has a grain, each group's total
-  across the periods is drafted beside its rows instead;
+  across the periods is drafted beside its rows instead. "And a grand total" beside a series
+  is held, as below;
 - "with each store's total", "the total for each store": a
   [`total`](QUERY_CALL.md#coarser-totals) item for each measure or metric the draft selects, as
   `<column>_total`, over the call's other groupings and `period` under a grain ("each month's
@@ -984,7 +985,13 @@ it, on the request's clock and identity:
 - "each store's share", "as a share of the total", "what percent of total revenue comes from
   each store": a [`share`](QUERY_CALL.md#share-of-a-total) item for each measure or metric, as
   `<column>_share`, over the named grouping ("each month's share": `period`), or every grouping
-  within each period ("of the grand total": across the periods too).
+  within each period ("of the grand total": across the periods too). A share's total counts the
+  rows the call keeps, so a share "of the total" beside a filter ("percent of total revenue by
+  store for new customers") is held: "of total revenue" may mean every row.
+
+A phrase's grouping words name an entity's key and name when they are the entity's whole name
+("each customer's total" never reads "Customer type"), else a grouped dimension by its own
+words ("across types").
 
 A total row beside a `limit` or `having` adds up every row the call keeps before them, and
 `assumptions` says so ("top 3 stores with the grand total" totals every store).

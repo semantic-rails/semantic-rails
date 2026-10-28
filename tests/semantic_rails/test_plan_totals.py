@@ -191,6 +191,12 @@ def test_each_group_s_total_sits_beside_its_rows(runtime, question, over):
     assert query["order_by"] and runtime.query(query, now=NOW)["rows"]
 
 
+def test_each_group_s_share_among_the_filtered_rows_is_ready(runtime):
+    """Without "of the total", the filter names the rows the share is among."""
+    query = _ready(_plan(runtime, "each store's share of revenue for new customers"))
+    assert query["where"] and _items(query)[0]["expression"]["kind"] == "share"
+
+
 def test_each_period_s_share_is_over_the_periods(runtime):
     query = _ready(_plan(runtime, "each month's share of revenue"))
     [item] = _items(query)
@@ -230,6 +236,16 @@ def test_each_group_s_share_is_of_the_total_across_the_named_grouping(runtime):
         # "Over the year" names none of a monthly call's other groupings.
         ("revenue by store and month with each store's total over the year", None),
         ("revenue by store and customer type with each store's total across months", None),
+        # Subtotal levels end at a grand total, which a series' total rows aren't.
+        ("revenue by store and month with subtotals by store and a grand total", None),
+        (
+            "monthly revenue by store and customer type with subtotals by store and a grand total",
+            None,
+        ),
+        # "Of total revenue" may mean every row; the share's total counts the filtered ones.
+        ("share of total revenue by store for new customers", None),
+        # "Customer" names the customer, never "Customer type".
+        ("revenue by customer type and store with each customer's total", None),
     ],
 )
 def test_a_total_the_draft_cannot_carry_holds_the_plan(runtime, question, code):

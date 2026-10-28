@@ -80,6 +80,12 @@ _ACROSS_PERIODS = (
     "each total row keeps its period, so none is the grand total across the periods (ask "
     "without the period for it, or for each group's total across the periods)"
 )
+_OF_TOTAL = re.compile(r"\bof\s+(?:the\s+)?(?:grand\s+|overall\s+)?(?:total|all)\b", re.IGNORECASE)
+_FILTERED_TOTAL = (
+    "the draft filters its rows, and a share's total counts only the rows the call keeps, while "
+    "'of the total' may mean every row (ask for each group's share without 'of the total' for "
+    "the filtered rows' total, or without the filter for every row's)"
+)
 _BEFORE_THE_CUT = (
     "Each total row adds up every row the call keeps before its having and limit, not only the "
     "rows it returns."
@@ -120,8 +126,11 @@ def asked_totals(question: str, config: Any) -> TotalsAsk | None:
         words = "" if words.lower() in _PRONOUNS else words  # "each one's share"
         before = _FILLER_END.sub("", question[: match.start()])
         after = _FILLER_START.sub("", question[match.end() :])
+        also = ""
         if kind == "subtotals":
-            # Subtotal levels end at the grand total: "and a grand total" asks nothing more.
+            # Subtotal levels end at the grand total: "and a grand total" asks nothing more, but
+            # the phrase keeps it, since a series' grand total is no total row.
+            also = " ".join(row[0].strip() for row in _ROWS.finditer(f"{before} {after}"))
             before, after = _FILLER_END.sub("", _ROWS.sub("", before)), _ROWS.sub("", after)
         rest = re.sub(r"\s+(?=,)", "", re.sub(r"\s+", " ", f"{before} {after}")).strip(" ,;")
         if kind in {"share", "beside"} and words and words.lower() not in rest.lower():
@@ -129,7 +138,7 @@ def asked_totals(question: str, config: Any) -> TotalsAsk | None:
             rest = f"{rest} by {words}"
         if not re.search(r"\w", rest):
             return None
-        phrase = question[match.start() : match.end()].strip()
+        phrase = " ".join(filter(None, [question[match.start() : match.end()].strip(), also]))
         return TotalsAsk(kind, words, phrase, rest, (groups.get("across") or "").strip())
     return None
 
@@ -171,6 +180,8 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
             return None, _ACROSS_PERIODS
         return builder.totals([]).build(), ""
     if asked.kind == "subtotals":
+        if grand:
+            return None, _ACROSS_PERIODS
         if named == [TIME_AXIS]:
             return builder.totals([]).build(), ""  # each total row keeps its period
         kept = named or _with_partners(config, group_by, group_by[:1])
@@ -182,6 +193,10 @@ def shaped_call(config: Any, call: Call, asked: TotalsAsk) -> tuple[Call | None,
         # beside its rows.
         return _with_items(config, call, "total", [TIME_AXIS])
     if asked.kind == "share":
+        if call.where and _OF_TOTAL.search(asked.phrase):
+            # "Percent of total revenue by store for new customers": a share's total counts the
+            # rows the call keeps, and "of total revenue" may mean every row.
+            return None, _FILTERED_TOTAL
         over = named or [*group_by, *([TIME_AXIS] if grand else [])]
         return _with_items(config, call, "share", over)
     if not named:
@@ -216,13 +231,29 @@ def _one_period(time: Time | None) -> bool:
 
 
 def _named_columns(config: Any, group_by: list[str], words: str, grain: str) -> list[str]:
-    """The call's columns ``words`` name: a group_by dimension by its own words, or an
-    entity's key and name by the entity's; ``period`` by the grain's word."""
+    """The call's columns ``words`` name: ``period`` by the grain's word; an entity's key and
+    name when the words are the entity's whole name; else a group_by dimension by its own
+    words ("type" names "Customer type")."""
     wanted = _singulars(words)
     if not wanted:
         return []
     if grain and wanted <= {grain, "period"}:
         return [TIME_AXIS]
+    entities = [
+        entity
+        for entity in config.entities
+        if any(wanted == _singulars(name) for name in (entity.label, entity.name, *entity.aliases))
+    ]
+    if entities:
+        # "Each customer's total": the customer's key and name, never "Customer type".
+        ids = {entity.id for entity in entities}
+        named = [
+            column
+            for entity, keys, shown in _stand_ins(config, group_by)
+            if entity.id in ids
+            for column in (*keys, *shown)
+        ]
+        return _with_partners(config, group_by, named)
     dimensions = {row.id: row for row in config.dimensions}
     named = [
         column
@@ -230,9 +261,6 @@ def _named_columns(config: Any, group_by: list[str], words: str, grain: str) -> 
         if column in dimensions
         and wanted <= _singulars(" ".join([dimensions[column].label, dimensions[column].name]))
     ]
-    for entity, keys, shown in _stand_ins(config, group_by):
-        if wanted <= _singulars(" ".join([entity.label, entity.name, *entity.aliases])):
-            named.extend([*keys, *shown])
     return _with_partners(config, group_by, named)
 
 
