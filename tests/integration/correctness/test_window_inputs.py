@@ -1,9 +1,12 @@
 """Window answers checked against independent SQL; unsafe windows refuse."""
 
 import pytest
+import yaml
 
 from semantic_rails.errors import SemanticLayerError
 
+from .answer_ledger import load_entries
+from .conftest import _runtime, _write_variant
 from .test_correctness import (
     AVERAGE,
     CLOCK,
@@ -130,3 +133,31 @@ def test_rolling_statistic_refuses_before_sql(request, backend_name, input_expr,
     with pytest.raises(SemanticLayerError) as raised:
         runtime.query(query)
     assert raised.value.code == "ROLLUP_UNSAFE"
+
+
+def test_an_authored_ratio_over_a_prior_period_reads_every_period(tmp_path):
+    """A package metric written as a ratio over the prior month answers as the inline ratio
+    frozen in shop/ratio_over_prior_month: March 2024 follows a month with no orders, so it
+    reads NULL, never March over January."""
+    package = _write_variant(tmp_path, "utc_authored")
+    path = package / "metrics" / "metrics.yml"
+    metrics = yaml.safe_load(path.read_text(encoding="utf-8"))
+    revenue = {"kind": "aggregate", "measure": REVENUE}
+    prior = {"kind": "prior_period", "input": revenue, "offset": {"unit": "month", "value": 1}}
+    metrics["metrics"]["shop.revenue_vs_prior_month"] = {
+        "as": "metric.shop.revenue_vs_prior_month",
+        "label": "Revenue vs prior month",
+        "kind": "derived",
+        "value_type": "number",
+        "expression": {"kind": "ratio", "numerator": revenue, "denominator": prior},
+    }
+    path.write_text(yaml.safe_dump(metrics, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    try:
+        authored = runtime.query(_ask("month", "metric.shop.revenue_vs_prior_month"))
+        inline = runtime.query(dict(load_entries())["shop/ratio_over_prior_month"]["query"])
+    finally:
+        runtime.close()
+    rows = {row["period"]: row["revenue_vs_prior_month"] for row in authored["rows"]}
+    assert rows == {row["period"]: row["vs_prior"] for row in inline["rows"]}
+    assert rows["2024-02-01"] == 0 and rows["2024-03-01"] is None
