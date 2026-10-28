@@ -963,9 +963,11 @@ or "every" ends at the first word that names nothing more ("each plan make" grou
 readiness checks read the same stand-ins, so a draft grouped by another entity's column stays
 held.
 
-**How plan drafts a total.** A question that asks for a total is planned without its total
-words, then its ready draft takes the call shape that answers it, validated as `execute` reads
-it, on the request's clock and identity:
+**How plan drafts a total.** A question that asks for a total in its last clause is planned without
+its total words, then its ready draft takes the call shape that answers it, validated as `execute`
+reads it, on the request's clock and identity. A total phrase anywhere else ("revenue by store with
+the grand total and orders", "… with the grand total, last year"), or a second one, is never cut
+out, and plan reads the question as asked. The shapes:
 
 - "with the grand total", "with a total row", "and the overall total", "plus totals":
   [`totals: []`](QUERY_CALL.md#totals), one grand-total row (per period under a grain). A call
