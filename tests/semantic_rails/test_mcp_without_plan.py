@@ -53,7 +53,7 @@ INSTRUCTIONS_WITHOUT_PLAN = (
     "2. inspect(object_id) shows one object's card: its aggregations, values, time roles and "
     "related objects. valid-values(dimension_id) lists a dimension's values to filter on.\n"
     "3. execute(query) validates, compiles and runs the call and returns at most max_rows rows "
-    "(default 200); a capped result reports truncated. mode \"validate\" only checks the call; "
+    '(default 200); a capped result reports truncated. mode "validate" only checks the call; '
     'mode "sql" also returns its SQL.\n'
     "\n"
     "The call: select measure or metric ids, group_by dimension ids, where [{field, op, value}] "
@@ -91,7 +91,11 @@ CALLS: list[tuple[str, dict[str, Any], str | None]] = [
     ("execute", {"query": {"select": [REVENUE]}, "mode": "sql", "verbosity": "full"}, None),
     ("execute", {"query": {"select": [REVENUE]}, "mode": "validate"}, None),
     ("execute", {"query": {"select": ["measure.jaffle.revenu"]}}, "OBJECT_NOT_FOUND"),
-    ("execute", {"query": {"select": [REVENUE], "group_by": ["dimension.nope"]}}, "OBJECT_NOT_FOUND"),
+    (
+        "execute",
+        {"query": {"select": [REVENUE], "group_by": ["dimension.nope"]}},
+        "OBJECT_NOT_FOUND",
+    ),
     ("execute", {"query": {"select": [REVENUE], "time": {"grain": "month"}}}, None),
     ("execute", {"query": {}}, "INVALID_QUERY"),
     ("execute", {"select": [REVENUE]}, "INVALID_QUERY"),
@@ -200,8 +204,9 @@ def test_without_plan_the_surface_is_the_default_minus_plan(
     assert verbosity["description"] == "'compact' adds metadata; 'full' adds explain too."
     execute["inputSchema"]["properties"]["verbosity"] = verbosity
     assert {**served, "description": ""} == {**execute, "description": ""}
-    assert "Default verbosity='minimal' leaves out compiler detail; 'full' returns it." in (
-        tools["segment"]["description"]
+    assert (
+        "Default verbosity='minimal' leaves out compiler detail; 'full' returns it."
+        in (tools["segment"]["description"])
     )
     assert tools["segment"]["inputSchema"] == default["segment"]["inputSchema"]
     builder = next(
@@ -214,8 +219,9 @@ def test_without_plan_the_surface_is_the_default_minus_plan(
         "execute."
     )
     text = without_plan.get_prompt(builder["name"], {"intent": "revenue"})["messages"][0]
-    assert "Build the call from their ids, check filter values with valid-values" in (
-        text["content"]["text"]
+    assert (
+        "Build the call from their ids, check filter values with valid-values"
+        in (text["content"]["text"])
     )
     # The handler stays registered for hosts that read it; the tool just isn't served.
     assert "plan" in without_plan.tool_handlers
@@ -372,7 +378,9 @@ def test_stdio_refuses_an_unknown_switch_value(tmp_path: Path) -> None:
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
     for reply in _stdio(package, args=[], plan_env="of"):
         assert reply["error"]["data"]["code"] == "INVALID_CONFIG"
-        assert reply["error"]["message"] == "SEMANTIC_RAILS_MCP_PLAN must be 'on' or 'off', not 'of'."
+        assert (
+            reply["error"]["message"] == "SEMANTIC_RAILS_MCP_PLAN must be 'on' or 'off', not 'of'."
+        )
 
 
 def test_serve_passes_no_plan_to_the_server(monkeypatch: pytest.MonkeyPatch) -> None:

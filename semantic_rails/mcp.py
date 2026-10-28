@@ -171,9 +171,7 @@ _INSTRUCTIONS_CALL = (
     "\n"
 )
 _INSTRUCTIONS_SEGMENT = (
-    "segment(segment_id, action) validates, explains or previews a package-authored "
-    "segment.\n"
-    "\n"
+    "segment(segment_id, action) validates, explains or previews a package-authored segment.\n\n"
 )
 _INSTRUCTIONS_BUDGET = (
     "Responses share one character budget; omitted_fields names trimmed detail. Errors carry "
@@ -795,9 +793,7 @@ def list_tool_definitions(
 ) -> list[dict[str, Any]]:
     offered = _offered_tool_names(config is None or bool(config.segments), plan=plan)
     return [
-        definition.to_dict()
-        for definition in _tool_definitions(plan)
-        if definition.name in offered
+        definition.to_dict() for definition in _tool_definitions(plan) if definition.name in offered
     ]
 
 
@@ -1566,9 +1562,7 @@ class SemanticLayerMCPAdapter:
     ``plan=False`` serves it without the ``plan`` tool; ``None`` reads ``MCP_PLAN_ENV``.
     """
 
-    def __init__(
-        self, runtime: Runtime, *, interface: str | None = None, plan: bool | None = None
-    ):
+    def __init__(self, runtime: Runtime, *, interface: str | None = None, plan: bool | None = None):
         raw = interface or ""
         if str(raw).strip().lower() not in {"", _INTERFACE}:
             raise SemanticLayerError(

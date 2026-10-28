@@ -93,6 +93,7 @@ docker compose up --build
 | `SEMANTIC_RAILS_ALLOW_DB_RESEED` | Legacy flag with no effect on runtime bootstrap. The runtime never replaces an existing DuckDB file, even when this flag is set. Build missing relations with the database owner, or back up and explicitly remove a disposable seed database before restarting. |
 | `SEMANTIC_RAILS_MAX_VALID_VALUES_LIMIT` | Ceiling for caller-supplied `valid-values` `limit`, default `1000`. Values above the ceiling are clamped on every transport. |
 | `SEMANTIC_RAILS_MAX_VALID_VALUES_OFFSET` | Ceiling for caller-supplied `valid-values` `offset`, default `100000`. |
+| `SEMANTIC_RAILS_MCP_PLAN` | Set to `off` to serve the query MCP without the `plan` tool, so agents build each call from `discover` and `inspect` ([MCP_INTERFACE.md](MCP_INTERFACE.md#serving-without-plan)). Unset or `on` (default) serves it; another value refuses to start with `INVALID_CONFIG`. |
 | `SEMANTIC_RAILS_MAX_SEGMENT_PREVIEW_ROWS` | Ceiling for a caller-supplied segment preview `limit` (MCP `segment` with `action: "preview"`, HTTP `/api/v1/segment-preview`, CLI `segment-preview`), default `1000`. |
 
 Local CLI profiles are intentionally not deployment configuration. The

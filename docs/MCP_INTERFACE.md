@@ -172,6 +172,38 @@ to start from. `tests/semantic_rails/test_mcp_response_budget.py` caps each tool
 and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call without running it;
 a run checks the call too, so a call to answer is run directly, never validated first.
 
+### Serving without plan
+
+`plan` drafts a call from a natural-language question. To have agents build every call
+themselves from what `discover`, `inspect` and `valid-values` return, serve the query MCP
+without it:
+
+```bash
+semantic-rails mcp stdio --path "$PACKAGE_PATH" --no-plan
+semantic-rails serve --path "$PACKAGE_PATH" --no-plan
+SEMANTIC_RAILS_MCP_PLAN=off uv run --extra server uvicorn semantic_rails.asgi:app
+```
+
+A host passes `SemanticLayerMCPAdapter(runtime, plan=False)`. `SEMANTIC_RAILS_MCP_PLAN` takes
+`on` or `off` (or `true`/`false`, `yes`/`no`, `1`/`0`, in any case) and is read when the adapter
+is created; any other value stops the server from starting with `INVALID_CONFIG`. `--no-plan` and a
+host's `plan=` win over the variable. Unset, the server serves `plan` and nothing changes.
+
+Without plan:
+
+- `tools/list` has no `plan` tool. A call to it returns `UNKNOWN_MCP_TOOL`, whose hint points at
+  `discover` and `inspect` for ids and at `execute` to run the call (`mode="validate"` only checks it).
+- The `initialize` instructions give the steps discover, inspect or valid-values, then execute,
+  and the call's syntax. No instruction, tool description, prompt, resource or recovery hint
+  names plan: `execute`'s description says the call is built from `discover`'s ids, its
+  `verbosity="full"` adds `explain`, and the `segment` description calls the same detail compiler
+  detail. Response fields keep their names, `sql_plan` among them.
+- `mcp doctor` and `mcp setup` stop requiring a `plan` tool when the variable is `off`.
+- The HTTP API keeps `/api/v1/plan`; the option changes only the MCP.
+
+`tests/semantic_rails/test_mcp_without_plan.py` scans everything the server sends without plan
+for the word, and the context budgets pin the smaller surface (`query.v2.no_plan.*`).
+
 ### Writing Tool Descriptions
 
 The query MCP follows these rules, and other Semantic Rails MCP servers can reuse them:
@@ -1149,7 +1181,8 @@ uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 
 `mcp doctor` loads the package and adapter once, confirms the required tools are
 registered, and prints the exact stdio/http commands to run next. It does not
-bind a port.
+bind a port. `mcp stdio` and `serve` take `--no-plan` to serve the query MCP without
+`plan` (see [Serving without plan](#serving-without-plan)).
 
 The `serve` command runs a foreground server for both the HTTP API and
 stateless Streamable HTTP. Start it in a separate terminal and stop it with Ctrl-C:
@@ -1483,7 +1516,8 @@ uv run python scripts/mcp_context.py --eval-file PATH # score a copy of a frozen
 | Frozen eval set | `eval_jaffle.jsonl` no longer matches `DEV_SET_SHA256` in the script. |
 
 The budgets cover `tools/list` and the `initialize` instructions (`query.v2.tools_list.*`,
-`query.v2.instructions_tokens`), the resource and prompt lists and every resource read
+`query.v2.instructions_tokens`, and the same served without plan, `query.v2.no_plan.*`, which
+must stay smaller), the resource and prompt lists and every resource read
 (`query.resource*`, `query.prompts_list_tokens`), one call per tool and mode at its defaults,
 including a time window without a grain, and the largest of them (`query.v2.default.*`), two
 metadata calls behind an authenticated transport (`query.hosted.*`), four common mistakes

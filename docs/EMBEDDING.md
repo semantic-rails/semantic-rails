@@ -228,6 +228,10 @@ For query MCP repeat hints, pass a separate `MCPQuerySession` from
 `semantic_rails.mcp_session` as `session=` to `handle_jsonrpc_message` for each
 client session. See [MCP_INTERFACE.md](MCP_INTERFACE.md) for the hint fields.
 
+`SemanticLayerMCPAdapter(runtime, plan=False)` serves the query MCP without the `plan` tool;
+the default, `plan=None`, reads `SEMANTIC_RAILS_MCP_PLAN` (see
+[Serving without plan](MCP_INTERFACE.md#serving-without-plan)).
+
 To swap the body of one tool, for a test or a host's own implementation, call
 `replace_tool_handler(name, handler)` on a `SemanticLayerMCPAdapter`. It accepts only a
 tool the adapter lists and changes that adapter instance only. `call_tool` still validates
@@ -382,7 +386,7 @@ SNOWFLAKE_CLI_CONNECTION_OPTIONS
 SNOWFLAKE_NATIVE_CONNECTION_OPTIONS
 SemanticHTTPService(runtime, package_id=)
 SemanticLayerError(code, message, *, details=)
-SemanticLayerMCPAdapter(runtime, *, interface=)
+SemanticLayerMCPAdapter(runtime, *, interface=, plan=)
 SnowflakeCliAdapter(connection_name, options=)
 SnowflakeNativeAdapter(connection_name=, options=, *, credential_provider=)
 StderrAuditSink()
