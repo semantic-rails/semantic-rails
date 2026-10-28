@@ -803,6 +803,138 @@ tests:
       limit: 3
     expected_rows: [{dimension.shop_order_id: 4, revenue: 20}, {dimension.shop_order_id: 1, revenue: 10}, {dimension.shop_order_id: 10, revenue: 9}]
     reference_sql: SELECT order_id, SUM(amount) AS revenue FROM orders GROUP BY 1 ORDER BY revenue DESC NULLS LAST LIMIT 3
+  shop/plan-revenue-by-region-with-the-grand-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The West's orders are store a's (43) and the East's store b's (25); order 8 has no store, so no region (6). The grand-total row is the call grouped by nothing, 74, named by total_over.
+    cites: &region_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/QUERY_CALL.md#totals]
+    tags: [planner]
+    intent: revenue by region with the grand total
+    query: {select: *revenue, group_by: &region [dimension.shop_store_region], totals: []}
+    expected_rows:
+      - {dimension.shop_store_region: West, revenue: 43, total_over: null}
+      - {dimension.shop_store_region: East, revenue: 25, total_over: null}
+      - {dimension.shop_store_region: null, revenue: 6, total_over: null}
+      - {dimension.shop_store_region: null, revenue: 74, total_over: dimension.shop_store_region}
+    reference_sql: |
+      SELECT s.region, SUM(o.amount), CAST(NULL AS VARCHAR(64)) AS total_over
+      FROM orders AS o LEFT JOIN stores AS s ON s.store_id = o.store_id
+      GROUP BY s.region
+      UNION ALL
+      SELECT NULL, SUM(amount), 'dimension.shop_store_region' FROM orders
+  shop/plan-revenue-and-customers-by-region-and-channel-with-region-subtotals:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each region's subtotal across signup channels, then the grand total, each the call at its grain; the grand total counts 7 distinct buying customers, not the 10 its region subtotals add up to (customer 101 buys in the West and with no store, 102 and 103 in both regions).
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.buying_customers, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/QUERY_CALL.md#totals]
+    tags: [planner]
+    intent: revenue and buying customers by region and signup channel with subtotals by region
+    query:
+      select: [measure.shop.revenue, measure.shop.buying_customers]
+      group_by: [dimension.shop_store_region, dimension.shop_customer_channel]
+      totals: *region
+    expected_rows:
+      - {dimension.shop_store_region: West, dimension.shop_customer_channel: web, revenue: 37, buying_customers: 2, total_over: null}
+      - {dimension.shop_store_region: West, dimension.shop_customer_channel: store, revenue: 4, buying_customers: 1, total_over: null}
+      - {dimension.shop_store_region: West, dimension.shop_customer_channel: null, revenue: 2, buying_customers: 2, total_over: null}
+      - {dimension.shop_store_region: East, dimension.shop_customer_channel: web, revenue: 12, buying_customers: 2, total_over: null}
+      - {dimension.shop_store_region: East, dimension.shop_customer_channel: store, revenue: 13, buying_customers: 2, total_over: null}
+      - {dimension.shop_store_region: null, dimension.shop_customer_channel: web, revenue: 6, buying_customers: 1, total_over: null}
+      - {dimension.shop_store_region: West, dimension.shop_customer_channel: null, revenue: 43, buying_customers: 5, total_over: dimension.shop_customer_channel}
+      - {dimension.shop_store_region: East, dimension.shop_customer_channel: null, revenue: 25, buying_customers: 4, total_over: dimension.shop_customer_channel}
+      - {dimension.shop_store_region: null, dimension.shop_customer_channel: null, revenue: 6, buying_customers: 1, total_over: dimension.shop_customer_channel}
+      - {dimension.shop_store_region: null, dimension.shop_customer_channel: null, revenue: 74, buying_customers: 7, total_over: 'dimension.shop_store_region, dimension.shop_customer_channel'}
+    reference_sql: |
+      SELECT r.region, c.channel, SUM(o.amount), COUNT(DISTINCT o.customer_id),
+        CAST(NULL AS VARCHAR(64)) AS total_over
+      FROM orders AS o LEFT JOIN stores AS r ON r.store_id = o.store_id
+        LEFT JOIN signups AS c ON c.customer_id = o.customer_id
+      GROUP BY r.region, c.channel
+      UNION ALL
+      SELECT r.region, NULL, SUM(o.amount), COUNT(DISTINCT o.customer_id), 'dimension.shop_customer_channel'
+      FROM orders AS o LEFT JOIN stores AS r ON r.store_id = o.store_id
+      GROUP BY r.region
+      UNION ALL
+      SELECT NULL, NULL, SUM(amount), COUNT(DISTINCT customer_id),
+        'dimension.shop_store_region, dimension.shop_customer_channel'
+      FROM orders
+  shop/plan-region-customers-by-month-beside-each-region-total-across-months:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each region's distinct buying customers across all of its months, on each of its monthly rows; adding the months up would count customer 101 twice in the West (6, not 5). Order 8's customer has no region and meets its own total.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.buying_customers, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/QUERY_CALL.md#coarser-totals]
+    tags: [planner, time-window]
+    intent: buying customers by region and month with each region's total across months
+    query:
+      select:
+        - measure.shop.buying_customers
+        - {expression: {kind: total, input: measure.shop.buying_customers, over: [period]}, as: buying_customers_total}
+      group_by: *region
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+    expected_rows:
+      - {dimension.shop_store_region: West, period: '2023-11-01', period_partial: false, buying_customers: 1, buying_customers_total: 5}
+      - {dimension.shop_store_region: West, period: '2023-12-01', period_partial: false, buying_customers: 1, buying_customers_total: 5}
+      - {dimension.shop_store_region: West, period: '2024-01-01', period_partial: false, buying_customers: 1, buying_customers_total: 5}
+      - {dimension.shop_store_region: West, period: '2024-03-01', period_partial: false, buying_customers: 1, buying_customers_total: 5}
+      - {dimension.shop_store_region: West, period: '2024-05-01', period_partial: false, buying_customers: 1, buying_customers_total: 5}
+      - {dimension.shop_store_region: West, period: '2024-08-01', period_partial: false, buying_customers: 1, buying_customers_total: 5}
+      - {dimension.shop_store_region: East, period: '2023-11-01', period_partial: false, buying_customers: 1, buying_customers_total: 4}
+      - {dimension.shop_store_region: East, period: '2024-03-01', period_partial: false, buying_customers: 1, buying_customers_total: 4}
+      - {dimension.shop_store_region: East, period: '2024-06-01', period_partial: false, buying_customers: 1, buying_customers_total: 4}
+      - {dimension.shop_store_region: East, period: '2024-07-01', period_partial: false, buying_customers: 1, buying_customers_total: 4}
+      - {dimension.shop_store_region: null, period: '2024-05-01', period_partial: false, buying_customers: 1, buying_customers_total: 1}
+    reference_sql: |
+      SELECT r.region, CAST(date_trunc('month', o.ordered_at) AS DATE) AS period,
+        COUNT(DISTINCT o.customer_id), t.customers
+      FROM orders AS o LEFT JOIN stores AS r ON r.store_id = o.store_id
+      JOIN (SELECT r2.region, COUNT(DISTINCT o2.customer_id) AS customers
+            FROM orders AS o2 LEFT JOIN stores AS r2 ON r2.store_id = o2.store_id
+            GROUP BY r2.region) AS t ON t.region IS NOT DISTINCT FROM r.region
+      GROUP BY r.region, CAST(date_trunc('month', o.ordered_at) AS DATE), t.customers
+  shop/plan-each-region-share-of-orders:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each region's orders over the 11 orders of every region the call keeps, order 8's unknown region included; the shares add up to 1.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/stores.yml#model.dimensions.region, docs/QUERY_CALL.md#share-of-a-total]
+    tags: [planner]
+    intent: each region's share of orders
+    query:
+      select:
+        - measure.shop.order_count
+        - {expression: {kind: share, input: measure.shop.order_count, over: *region}, as: order_count_share}
+      group_by: *region
+    expected_rows:
+      - {dimension.shop_store_region: West, order_count: 6, order_count_share: 0.5454545454545454}
+      - {dimension.shop_store_region: East, order_count: 4, order_count_share: 0.36363636363636365}
+      - {dimension.shop_store_region: null, order_count: 1, order_count_share: 0.09090909090909091}
+    reference_sql: |
+      SELECT r.region, COUNT(o.order_id),
+        COUNT(o.order_id) / CAST(SUM(COUNT(o.order_id)) OVER () AS DOUBLE PRECISION)
+      FROM orders AS o LEFT JOIN stores AS r ON r.store_id = o.store_id
+      GROUP BY r.region
+  shop/plan-seats-by-plan-on-a-day-with-the-grand-total:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Seats is a balance read on its one day; across plans it adds up, so the total row is that day's seats on every plan (13 + 1003 + 100), keeping its period.
+    cites: [tests/integration/correctness/shop/models/account_days.yml#model.measures.seats, docs/QUERY_CALL.md#totals]
+    tags: [planner, time-window]
+    intent: seats by plan on 2024-01-04 with the grand total
+    query:
+      select: [measure.shop.seats]
+      group_by: [dimension.shop_account_day_plan]
+      time: {temporal_role: temporal_role.shop_account_day_snapshot_day, grain: day, start: '2024-01-04', end: '2024-01-05'}
+      totals: []
+    expected_rows:
+      - {dimension.shop_account_day_plan: builder, period: '2024-01-04', period_partial: false, seats: 1003, total_over: null}
+      - {dimension.shop_account_day_plan: pro, period: '2024-01-04', period_partial: false, seats: 13, total_over: null}
+      - {dimension.shop_account_day_plan: team, period: '2024-01-04', period_partial: false, seats: 100, total_over: null}
+      - {dimension.shop_account_day_plan: null, period: '2024-01-04', period_partial: false, seats: 1116, total_over: dimension.shop_account_day_plan}
+    reference_sql: |
+      SELECT plan, snapshot_day, SUM(seats), CAST(NULL AS VARCHAR(64)) AS total_over
+      FROM account_days WHERE snapshot_day = DATE '2024-01-04' GROUP BY plan, snapshot_day
+      UNION ALL
+      SELECT NULL, DATE '2024-01-04', SUM(seats), 'dimension.shop_account_day_plan'
+      FROM account_days WHERE snapshot_day = DATE '2024-01-04'
 
   shop/plan-refunds-must-say-same-refund-or-separate:
     kind: validate_fails_with_code

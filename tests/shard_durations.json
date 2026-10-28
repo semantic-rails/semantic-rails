@@ -226,6 +226,7 @@
   "tests/semantic_rails/test_plan_time_phrases_and_labels.py": 41.717,
   "tests/semantic_rails/test_plan_time_reference.py": 13.18,
   "tests/semantic_rails/test_plan_time_window_honesty.py": 46.705,
+  "tests/semantic_rails/test_plan_totals.py": 6.5,
   "tests/semantic_rails/test_plan_transport_context.py": 9.679,
   "tests/semantic_rails/test_plan_unasked_groupings.py": 9.783,
   "tests/semantic_rails/test_plan_value_lists.py": 36.781,

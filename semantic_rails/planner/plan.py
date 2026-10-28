@@ -78,6 +78,7 @@ from .plan_trace import (
 from .question_parts import MAX_PARTS, QuestionSplit, split_question
 from .snapshot import shape_snapshot, snapshot_read
 from .time_reference import with_time_reference
+from .totals import asked_totals, with_totals
 from .unasked_groupings import _unasked_grouping_why
 from .unmatched_words import _unconsumed_words, unconsumed_unknown_words, unmatched_intent_terms
 from .visibility import caller_hidden_ids, require_visible_objects, with_dimension_visibility
@@ -178,7 +179,12 @@ def plan_payload(
         detail_level = "best"
 
     def plan_question(text: str) -> dict[str, Any]:
-        return _question_payload(runtime, text, caller, detail_level, limit, catalog_config)
+        # A total the question asks for is planned without its words, then shaped onto the
+        # ready draft (planner/totals.py).
+        asked = asked_totals(text, catalog_config)
+        planned = asked.rest if asked else text
+        payload = _question_payload(runtime, planned, caller, detail_level, limit, catalog_config)
+        return with_totals(runtime, payload, asked, text) if asked else payload
 
     payload = plan_question(intent)
     # A question asking several things that one plan can't answer is planned part by part.
