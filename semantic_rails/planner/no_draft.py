@@ -158,14 +158,17 @@ def unmatched_subject_why(
             + "; plan again naming one of them, or ask the user."
         )
     if others:
-        named = " and ".join(
+        shown = [
             f"{item['kind'].replace('_', ' ')} {item['label']} ({item['id']})" for item in others
+        ]
+        named = f"{', '.join(shown[:-1])} and {shown[-1]}" if len(shown) > 1 else shown[0]
+        not_a_measure = "isn't a measure" if len(shown) == 1 else "aren't measures"
+        lead, end = (
+            ("They also", ".")
+            if candidates
+            else ("These words", "; name the measure or metric to count, or ask the user.")
         )
-        closest.append(
-            f"{'They also' if candidates else 'These words'} match {named}, which can group or "
-            f"filter but {"isn't a measure" if len(others) == 1 else "aren't measures"}"
-            + ("." if candidates else "; name the measure or metric to count, or ask the user.")
-        )
+        closest.append(f"{lead} match {named}, which can group or filter but {not_a_measure}{end}")
     return {
         "code": "PLAN_SUBJECT_UNMATCHED",
         "message": (

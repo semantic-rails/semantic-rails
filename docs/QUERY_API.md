@@ -915,8 +915,9 @@ answer. Two holds offer no draft (`best: null`): `PLAN_UNCONNECTED` (`unrealizab
 draft's measure can't reach a dimension it groups or filters by (`why.details` names the
 `subjects`, the `dimensions` and the engine's `error`), and `PLAN_SUBJECT_UNMATCHED` when no
 word the question asks about names the measure or metric the draft would read
-(`why.details.terms`, with the `candidates` whose names or descriptions mention them;
-`unrealizable` when there are none).
+(`why.details.terms`, with the measure and metric `candidates` whose names or descriptions
+mention them and the dimensions, time roles, segments and entities that do, in
+`other_matches` with their `kind`; `unrealizable` when no object of any kind mentions them).
 Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort
 and time scope can be proven. Grouping by entity keys or selecting a key count alone does not
 prove that the qualification was applied. Store grouping terms use the same

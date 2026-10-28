@@ -753,9 +753,13 @@ is one to fix:
   aggregation words ("count", "total", "average"), units of time and numbers; a measure is
   named when one of them is a word of its label, id or synonyms, never its description. Only
   the catch-all drafts are read this way, and never when the caller's `query` selects. The why
-  names the words that name nothing in the catalog (`details.terms`) and the measures and
-  metrics whose names or descriptions mention them (`details.candidates`); with none, the
-  status is `unrealizable`, else `low_confidence`. A measure sharing any word the question asks
+  names the words that name nothing in the catalog (`details.terms`), the measures and
+  metrics whose names or descriptions mention them (`details.candidates`), and the dimensions,
+  time roles, segments and entities that do (`details.other_matches`, each with its `kind`,
+  `id` and `label`: they can group or filter, but none is a measure). Every kind the caller can
+  see is checked, and an object hidden from the caller is never matched. When nothing of any
+  kind mentions them, the message says so and the status is `unrealizable`; otherwise it is
+  `low_confidence`. A measure sharing any word the question asks
   about counts as named, even an entity's name ("customer satisfaction score" names Customer
   count): that draft stays held, with the words it misses.
 A plan that is `ok` never changes this way. A fallback draft that `detail="full"` still shows on
