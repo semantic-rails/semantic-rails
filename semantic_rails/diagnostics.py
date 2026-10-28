@@ -1164,13 +1164,13 @@ def recovery_hints_for_error(
             if kind == "column":
                 owner = {key: details[key] for key in ("entity", "table") if details.get(key)}
                 column = {"kind": "column", "column": details.get("column") or "<column>"}
-                shape: dict[str, Any] = {
+                call: dict[str, Any] = {
                     "kind": "aggregate_if",
                     "aggregation": "sum",
                     "value": {**column, **(owner or {"entity": "<entity id>"})},
                 }
                 message += (
-                    f" To aggregate this column, write {json.dumps(shape)}, with count, avg, "
+                    f" To aggregate this column, write {json.dumps(call)}, with count, avg, "
                     "min, max or another aggregation; its value may also be a case or a call such "
                     "as LENGTH over columns, and a condition keeps only the rows it matches. To "
                     "split or filter by a column, name a dimension on it in group_by or where."
