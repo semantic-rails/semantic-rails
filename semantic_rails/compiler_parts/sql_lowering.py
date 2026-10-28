@@ -7,6 +7,7 @@ from it. A nested compile goes through :mod:`.nested`.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any, cast
@@ -136,17 +137,22 @@ from .totals import selected_totals, total_sources
 
 def _namespaced_scope(scope: LeafScope, leaf: SqlSelect, prefix: str) -> LeafScope:
     """A nested leaf's scope reading its CTEs by the names they take inside the leaf's CTE."""
-    named = _namespace_sql_select(
-        SqlSelect(
-            select=[],
-            from_table=scope.from_table,
-            joins=list(scope.joins),
-            where=list(scope.where),
-            ctes=list(leaf.ctes),
-        ),
-        prefix,
-    )
-    return replace(scope, joins=tuple(named.joins), where=tuple(named.where))
+
+    def named(where: Iterable[Any]) -> SqlSelect:
+        return _namespace_sql_select(
+            SqlSelect(
+                select=[],
+                from_table=scope.from_table,
+                joins=list(scope.joins),
+                where=list(where),
+                ctes=list(leaf.ctes),
+            ),
+            prefix,
+        )
+
+    full = named(scope.where)
+    source = None if scope.source_where is None else tuple(named(scope.source_where).where)
+    return replace(scope, joins=tuple(full.joins), where=tuple(full.where), source_where=source)
 
 
 def lower_to_sql(
