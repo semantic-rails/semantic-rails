@@ -119,30 +119,17 @@ tests:
         grain: month
     code: INVALID_QUERY
 
-  product_grouping_through_item_fanout_rejected:
-    # Grouping `revenue_usd` (orders-grain) by `product_name`
-    # (item-grain dimension) requires a many_to_many rewrite that
-    # the planner refuses without explicit safety hints.
-    kind: validate_fails_with_code
-    query:
-      select:
-        - expression: measure.jaffle.revenue_usd
-          as: r
-      group_by: [dimension.jaffle_product_name]
-    code: MIXED_GRAIN_INVALID
-
-  order_revenue_by_product_type_requires_attribution_policy:
-    # The new entity-in-terms-of rewrite is intentionally limited to
-    # safe parent-key count_distinct shapes. Additive order-grain
-    # revenue cannot be grouped by item/product dimensions without an
-    # attribution rule or an item-grain revenue measure.
+  order_revenue_median_by_product_type_rejected:
+    # Grouped by a product dimension, an order's sum, count or average
+    # counts its whole value in every type it holds (advanced.yml); a
+    # median of order totals has no such reading across the item hop.
     kind: validate_fails_with_code
     query:
       select:
         - expression:
             kind: measure
             measure: measure.jaffle.revenue_usd
-            aggregation: sum
+            aggregation: median
           as: revenue
       group_by: [dimension.jaffle_product_type]
     code: MIXED_GRAIN_INVALID

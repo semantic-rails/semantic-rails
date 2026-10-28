@@ -1,6 +1,6 @@
 {
  "eval_set_sha256": "add4819581e4426cf30eb672c1e4bcb7deb52470ebde29c3a1d2bc7f8c13ef01",
- "summary": {"cases": 40, "pass": 25, "pass_flagged": 3, "wrong_flagged": 12, "wrong_warned": 0, "wrong_silent": 0},
+ "summary": {"cases": 40, "pass": 25, "pass_flagged": 3, "wrong_flagged": 11, "wrong_warned": 1, "wrong_silent": 0},
  "cases": {
   "J01": {"outcome": "pass", "mismatched": []},
   "J02": {"outcome": "pass", "mismatched": []},
@@ -11,9 +11,9 @@
   "J07": {"outcome": "pass", "mismatched": []},
   "J08": {"outcome": "pass", "mismatched": []},
   "J09": {"outcome": "pass", "mismatched": []},
-  "J10": {"outcome": "wrong_flagged", "mismatched": ["refused"]},
+  "J10": {"outcome": "wrong_warned", "mismatched": ["select", "group_by", "order"]},
   "J11": {"outcome": "pass", "mismatched": []},
-  "J12": {"outcome": "wrong_flagged", "mismatched": ["refused"]},
+  "J12": {"outcome": "wrong_flagged", "mismatched": ["select", "group_by", "order"]},
   "J13": {"outcome": "wrong_flagged", "mismatched": ["select", "group_by", "order"]},
   "J14": {"outcome": "wrong_flagged", "mismatched": ["grain"]},
   "J15": {"outcome": "pass", "mismatched": []},

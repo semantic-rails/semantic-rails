@@ -948,8 +948,9 @@ def test_a_window_with_no_open_end_states_no_assumption(text: str) -> None:
         ("Item revenue (USD) in 2017", "measure.jaffle.item_revenue_usd", []),
         ("revenue in 2017", "measure.jaffle.revenue_usd", []),
         # The words are not a name when they are not adjacent, or name another thing. "item" names
-        # the Item entity, and validation refuses revenue, read per order, by an item's key.
-        ("revenue by item in 2017", "measure.jaffle.revenue_usd", None),
+        # the Item entity: revenue, read per order, by an item's key counts each order's whole
+        # total under each of its items.
+        ("revenue by item in 2017", "measure.jaffle.revenue_usd", []),
         ("food revenue in 2017", "measure.jaffle.food_revenue_usd", []),
         # A name inside other words is not the ask: this is revenue, not the count of large orders.
         # The draft doesn't filter on the large-order flag, so it isn't ready.
@@ -961,15 +962,9 @@ def test_a_window_with_no_open_end_states_no_assumption(text: str) -> None:
     ],
 )
 def test_an_exact_multi_word_label_outranks_a_partial_one(
-    runtime: Runtime, text: str, measure: str, unconsumed: list[str] | None
+    runtime: Runtime, text: str, measure: str, unconsumed: list[str]
 ) -> None:
     payload = plan_payload(runtime, intent=text, detail="query")
-    if unconsumed is None:
-        # Revenue, read per order, can't reach an item: plan names the pair, no draft.
-        assert payload["status"] == "unrealizable", payload
-        assert payload["why"]["code"] == "PLAN_UNCONNECTED"
-        assert payload["why"]["details"]["subjects"] == [measure]
-        return
     assert _measures(payload) == [measure]
     assert payload["status"] == ("low_confidence" if unconsumed else "ok"), payload.get("why")
     assert (payload.get("why") or {}).get("details", {}).get("terms", []) == unconsumed

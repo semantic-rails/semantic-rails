@@ -57,6 +57,7 @@ from .plan_checks import (
     _fanout_dedup_refusal,
     _hop_conditions,
     _one_link_conditions,
+    _overlapping_share,
     _two_hop_conditions,
     _validate_where_value_type,
     child_group_route,
@@ -164,9 +165,13 @@ def _leaf_path_selections(
     ):
         conditions = _hop_conditions(bound, unsupported, config, query)
         if len(conditions) <= 1:
-            return selections, sorted(required_entities), "entity_in_terms_of"
-        # Conditions on one link read one row together, which the de-duplicated leaf answers.
-        refusal = None if _one_link_conditions(conditions) else _two_hop_conditions(conditions)
+            # Its groups overlap as the de-duplicated leaf's do, so a share over them is refused.
+            refusal = _overlapping_share(measure, bound, selections, config, query)
+            if refusal is None:
+                return selections, sorted(required_entities), "entity_in_terms_of"
+        else:
+            # Conditions on one link read one row together, which the de-duplicated leaf answers.
+            refusal = None if _one_link_conditions(conditions) else _two_hop_conditions(conditions)
     else:
         refusal = None
     if refusal is None:
