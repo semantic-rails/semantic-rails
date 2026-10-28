@@ -72,6 +72,7 @@ _PART_OF = re.compile(
     r"\b(?:percent(?:age)?|proportion|fraction)\b",
     re.IGNORECASE,
 )
+_GRAND = re.compile(r"\b(?:grand|overall)\b", re.IGNORECASE)
 _PRONOUNS = {"one", "it", "its", "their", "them"}
 _TOTAL_WORDS = {"total", "subtotal", "share", "percent", "percentage", "proportion"}
 _WHAT = {
@@ -93,6 +94,9 @@ def with_totals_hint(config: Any, payload: dict[str, Any], question: str) -> dic
         return payload
     kind, words, across, phrase = asked
     query = (payload.get("best") or {}).get("query") or {}
+    add = _shape(config, query, kind, words, across, phrase)
+    if add is None:
+        return payload  # no one call shape answers it: no hint rather than a wrong one
     hint = {
         "code": "PLAN_TOTALS_HINT",
         "severity": "info",
@@ -104,7 +108,7 @@ def with_totals_hint(config: Any, payload: dict[str, Any], question: str) -> dic
         "details": {
             "kind": kind,
             "phrase": phrase,
-            "add": _shape(config, query, kind, words, across),
+            "add": add,
         },
     }
     return {**payload, "warnings": [*payload.get("warnings", []), hint]}
@@ -148,18 +152,21 @@ def _declared_share(config: Any, said: set[str]) -> bool:
 
 
 def _shape(
-    config: Any, query: dict[str, Any], kind: str, words: str, across: str
-) -> dict[str, Any]:
-    """The call fields that add the total to ``query``, with its ids where it has them."""
+    config: Any, query: dict[str, Any], kind: str, words: str, across: str, phrase: str
+) -> dict[str, Any] | None:
+    """The call fields that add the total to ``query``, with its ids where it has them, or
+    None when no one shape answers it."""
     group_by = list(query.get("group_by") or [])
     grain = str((query.get("time") or {}).get("grain") or "")
     named = _named_list(config, group_by, words, grain) if words else []
     if kind == "rows":
-        return {"totals": []}
+        if grain and _GRAND.search(phrase):
+            # A series' grand total is the call without its groupings and grain, over the same
+            # window: beside each row, a total over every column and the period.
+            return _items(query, "total", [*group_by, TIME_AXIS])
+        return {"totals": []} if group_by else None
     if kind == "subtotals":
-        kept = [column for column in named if column != TIME_AXIS]
-        kept = kept or _with_partners(config, group_by, group_by[:1])
-        return {"totals": _levels(config, group_by, kept) or [_GROUPING]}
+        return _subtotals(config, group_by, words, grain)
     if kind == "share":
         over = named or group_by or [_GROUPING]
     else:
@@ -168,6 +175,11 @@ def _shape(
         if grain and not across and TIME_AXIS not in named:
             over.append(TIME_AXIS)
         over = over or [_GROUPING]
+    return _items(query, "share" if kind == "share" else "total", over)
+
+
+def _items(query: dict[str, Any], item_kind: str, over: list[str]) -> dict[str, Any]:
+    """A ``share`` or ``total`` select item over ``over`` for each value ``query`` selects."""
     sources = [
         item if isinstance(item, str) else item.get("expression")
         for item in query.get("select") or []
@@ -177,7 +189,6 @@ def _shape(
         for source in sources
         if isinstance(source, str) and source.startswith(("measure.", "metric."))
     ] or [_VALUE]
-    item_kind = "share" if kind == "share" else "total"
     items = (
         Select(
             {"kind": item_kind, "input": value, "over": over},
@@ -186,6 +197,35 @@ def _shape(
         for value in values
     )
     return Call(select=tuple(items)).to_call()
+
+
+def _subtotals(config: Any, group_by: list[str], words: str, grain: str) -> dict[str, Any] | None:
+    """``totals`` for subtotals by the named groupings, outermost first in the phrase's order
+    ("subtotals by channel and region" keeps the channel first); a bare "with subtotals" keeps
+    the call's first grouping. None when a word names none of the call's groupings, when a
+    period is listed beside a grouping, or when the levels would only repeat the call's rows."""
+    if not group_by:
+        return None
+    if words:
+        items = []
+        for item in re.split(r"\s*,\s*|\s+and\s+", words.strip()):
+            columns = _named_columns(config, group_by, item, grain)
+            if not columns:
+                return None
+            if columns not in items:
+                items.append(columns)
+    else:
+        items = [_with_partners(config, group_by, group_by[:1])]
+    if items == [[TIME_AXIS]]:
+        return {"totals": []}  # each total row keeps its period: the period's subtotals
+    if any(TIME_AXIS in columns for columns in items):
+        return None
+    if set().union(*map(set, items)) >= set(group_by):
+        items = items[:-1]  # the level keeping every grouping is the call's own rows
+    levels = [column for columns in items for column in _levels(config, group_by, columns)]
+    if not levels:
+        return None
+    return {"totals": levels}
 
 
 def _named_list(config: Any, group_by: list[str], words: str, grain: str) -> list[str]:

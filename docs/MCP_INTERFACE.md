@@ -970,7 +970,11 @@ or a share: its status and `best.query` are the question's own. When the questio
 `PLAN_TOTALS_HINT` (severity `info`). Its `details.add` holds the call fields that add the
 total, named with `best.query`'s ids: `{"totals": []}`, `{"totals": [<ids>]}`, or a
 `select` item of kind [`total`](QUERY_CALL.md#coarser-totals) or
-[`share`](QUERY_CALL.md#share-of-a-total). Once `best.query` answers the rest of the
+[`share`](QUERY_CALL.md#share-of-a-total). A series' grand total is a `total` over every column
+and the period; subtotals keep the named groupings in the phrase's order ("by month" on a series
+is `{"totals": []}`, since each total row keeps its period). When no one shape answers the
+question (a word that names none of `best.query`'s groupings, a listed period, or a level that
+would only repeat the call's rows), there is no hint. Once `best.query` answers the rest of the
 question, add them and validate before executing. A catalog name holding a total's word ("Food
 revenue share"), one value as a part of another ("food revenue as a share of total revenue"),
 and any "percent" wording get no hint.

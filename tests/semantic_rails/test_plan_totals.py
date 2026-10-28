@@ -77,6 +77,43 @@ def test_a_held_plan_hints_the_total_its_question_asks_for(runtime, question, ki
     assert "plan doesn't draft" in hint["message"]
 
 
+@pytest.mark.parametrize(
+    "question,add",
+    [
+        # A series' grand total is the call without its groupings and grain, over the window.
+        (
+            "revenue by store and month with the grand total",
+            {
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "total",
+                            "input": "measure.jaffle.revenue_usd",
+                            "over": [*STORES, "period"],
+                        },
+                        "as": "revenue_usd_total",
+                    }
+                ]
+            },
+        ),
+        # Subtotals keep the phrase's order: customer type first.
+        (
+            "revenue by store and customer type with subtotals by customer type and store",
+            {"totals": ["dimension.jaffle_customer_type"]},
+        ),
+        # Each total row keeps its period: the month's subtotals are the total rows.
+        ("monthly revenue by store and customer type with subtotals by month", {"totals": []}),
+        # A word naming none of the call's groupings, or a level that is the call's own rows.
+        ("revenue by store and customer type with subtotals by product", None),
+        ("revenue by store and month with subtotals by store", None),
+    ],
+)
+def test_a_hint_is_exactly_the_shape_asked_for_or_none(runtime, question, add):
+    plan = _plan(runtime, question)
+    assert plan["status"] != "ok"
+    assert [hint["details"]["add"] for hint in _hints(plan)] == ([add] if add else [])
+
+
 def test_a_share_hint_names_the_draft_s_value_and_grouping(runtime):
     plan = _plan(runtime, "each store's share of revenue")
     [hint] = _hints(plan)
