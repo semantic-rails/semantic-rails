@@ -1337,8 +1337,7 @@ def suggest_links(
     rows, and reads NULL through the link). Each carries draft ``upsert_relationship`` arguments
     when ``from_entity`` (the package's entity or row-grain model over ``relation``) and the
     target's entity are known: ``one_to_one`` when the column is unique and never null too,
-    else ``many_to_one``. Targets already linked (``linked``) are skipped, and so is the
-    table's own key unless ``columns`` names it. Nothing is written,
+    else ``many_to_one``. Targets already linked (``linked``) are skipped. Nothing is written,
     and nothing checks data at query time.
     """
     if not 0 < min_coverage <= 1:
@@ -1371,17 +1370,6 @@ def suggest_links(
         "below_threshold": [],
         "not_proposed": [],
     }
-    # The table's own key refers to its own rows, never to another table's.
-    own_keys = {
-        str(row["column"]).lower()
-        for rows in _declared_keys(warehouse).values()
-        for row in rows
-        if _split_relation(str(row["relation"])) == (schema, name)
-    } | {
-        str(target["key"]).lower()
-        for target in targets
-        if _split_relation(str(target["relation"])) == (schema, name)
-    }
     described_targets: dict[str, dict[str, str]] = {}
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
     try:
@@ -1406,9 +1394,7 @@ def suggest_links(
             for column in columns or list(types):
                 if not _fk_types_compatible(types[column], target_types[key]):
                     continue
-                if not columns and (
-                    column.lower() in own_keys or not _names_link(column, key, entity)
-                ):
+                if not columns and not _names_link(column, key, entity):
                     continue
                 target_schema, target_name = _split_relation(str(target["relation"]))
                 evidence = _link_evidence(

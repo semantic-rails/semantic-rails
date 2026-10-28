@@ -243,9 +243,8 @@ def test_a_proposed_link_applies_and_answers_as_the_reference_sql_reads(tmp_path
     assert set(targets) == {"building", "fac_building"}
     to_building = targets["building"]
     assert to_building["upsert_relationship"]["to_entity"] == "building"
-    # A room's own key is never paired; a visit's room is, and the loads' key repeats, so
-    # nothing can look a load up.
-    assert room["not_proposed"] == []
+    # The loads' key repeats, so nothing can look a load up.
+    assert [row["target"]["entity"] for row in room["not_proposed"]] == ["room_load"]
     assert [row["target"]["entity"] for row in visit["not_proposed"]] == ["room_load"]
     assert [row["target"]["entity"] for row in visit["proposals"]] == ["room"]
 
@@ -370,3 +369,43 @@ def test_a_link_starts_from_the_model_over_the_same_schema_and_table(tmp_path):
     assert project.link_context("reporting.buildings")["from_entity"] == "reporting_building"
     assert project.link_context("buildings")["from_entity"] == "building"
     assert project.link_context("main.buildings")["from_entity"] == "building"
+
+
+def test_a_table_keyed_like_its_twin_or_parent_still_links(tmp_path):
+    """A table's own key may name another table's rows: the reporting buildings table keyed by
+    building_key is the facilities table's twin (in a package, where building_key is the
+    building entity's key), and an extension table keyed by order_id is one row per order."""
+    pkg = _package(tmp_path)
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    context = project.link_context("buildings")
+    assert context["from_entity"] == "building"
+    with open_duckdb(pkg / "data" / "warehouse.duckdb") as warehouse:
+        twin = suggest_links(
+            warehouse,
+            "buildings",
+            targets=context["targets"],
+            from_entity=context["from_entity"],
+            linked=context["linked"],
+        )
+    (proposal,) = twin["proposals"]
+    assert (proposal["column"], proposal["target"]["entity"], proposal["cardinality"]) == (
+        "building_key",
+        "fac_building",
+        "one_to_one",
+    )
+    path = tmp_path / "extension.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, total INTEGER);"
+            "INSERT INTO orders SELECT i, i * 10 FROM range(1, 6) AS t(i);"
+            "CREATE TABLE order_lifecycle (order_id INTEGER PRIMARY KEY, shipped DATE);"
+            "INSERT INTO order_lifecycle SELECT i, DATE '2024-01-01' FROM range(1, 5) AS t(i);"
+        )
+    with open_duckdb(path) as warehouse:
+        extension = suggest_links(warehouse, "order_lifecycle")
+    (proposal,) = extension["proposals"]
+    assert (proposal["column"], proposal["target"]["relation"], proposal["cardinality"]) == (
+        "order_id",
+        "orders",
+        "one_to_one",
+    )

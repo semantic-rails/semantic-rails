@@ -263,8 +263,9 @@ never create, seed or change it.
     one-column key (with `project_path`), else every declared single-column primary key. A column
     is paired when it is named like the key (the same name, one ending in the other, or the
     target entity's name with a key suffix). A generic key (`id`, `key`, `code`) is paired only
-    by that last form (`customer_id` with `customers.id`), and the table's own key is never
-    paired. `columns` tries those columns against every key of a compatible type, whatever their
+    by that last form (`customer_id` with `customers.id`), so a table's own `id` pairs with no
+    other table's; a key named for its table (`order_id` on an `order_lifecycle` extension table)
+    still pairs with the table it names. `columns` tries those columns against every key of a compatible type, whatever their
     names. Columns are compared only with keys of their type.
   - **Evidence.** `rows`, `rows_with_value`, `distinct_values`, `distinct_found` and `rows_found`
     (the column's values that are target keys), `coverage` (by distinct value) and `row_coverage`,

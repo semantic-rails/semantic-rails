@@ -4,11 +4,11 @@
   "23 of 25 distinct subject_id values (92.0%) are subjects.subject_id keys". Pairs at or over
   the stated threshold (`min_coverage`, default 95%) are proposed and the rest are listed with the
   same evidence, so a partial link is the author's call rather than a hidden cut. A generic key
-  (`id`) pairs only with a column named for its table (`customer_id` with `customers.id`), and a
-  table's own key is never paired. `columns` tries columns named like no key (an office location
-  holding room keys). With `project_path` each pair
-  carries draft `upsert_relationship` arguments (`one_to_one` when both sides are unique). It
-  writes nothing: apply the drafts with `dry_run`, then `expected_revision`.
+  (`id`) pairs only with a column named for its table (`customer_id` with `customers.id`), so a
+  table's own `id` pairs with no other table's. `columns` tries columns named like no key (an
+  office location holding room keys). With `project_path` each pair carries draft
+  `upsert_relationship` arguments (`one_to_one` when both sides are unique). It writes nothing:
+  apply the drafts with `dry_run`, then `expected_revision`.
 - The package authoring guide says what an explicit `safety: safe` on a `many_to_many` history
   states: its versions never overlap, and nothing checks that at query time (where they do, a row
   counts once per overlapping version).
