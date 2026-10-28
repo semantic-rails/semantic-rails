@@ -619,25 +619,47 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
 
 
 def _guard_probe_names(compiled, prefix):
+    """The probes (CTEs named ``prefix``...) each guarded column reads, by the guard's column
+    (``by_alias``), and by the answer's output (``by_output``). A total's output reads its
+    coarser call, whose own guard (``<cte>__guarded_base``) and probes stand at the top too."""
     from ..sql_ast import SqlIdentifier
 
     ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
-    guard = ctes.get(GUARDED_BASE)
     projection = ctes["projected"].query if "projected" in ctes else call_rows(compiled["sql_ast"])
-    by_alias = (
-        {
-            field.alias: {
-                node.parts[0]
-                for node in sql_nodes(field.expression)
-                if isinstance(node, SqlIdentifier) and node.parts[0].startswith(prefix)
+
+    def probes(guard_name: str, start: str) -> dict[str, set[str]]:
+        guard = ctes.get(guard_name)
+        return (
+            {
+                field.alias: {
+                    node.parts[0]
+                    for node in sql_nodes(field.expression)
+                    if isinstance(node, SqlIdentifier) and node.parts[0].startswith(start)
+                }
+                for field in guard.query.select
             }
-            for field in guard.query.select
-        }
-        if guard is not None
-        else {}
-    )
+            if guard is not None
+            else {}
+        )
+
+    by_alias = probes(GUARDED_BASE, prefix)
+    # Each coarser call's columns, by (its CTE, its column): the probes its own guard read.
+    nested: dict[tuple[str, str], set[str]] = {}
+    for name, cte in ctes.items():
+        inner = probes(f"{name}__{GUARDED_BASE}", f"{name}__{prefix}")
+        for field in cte.query.select if inner else ():
+            read = set().union(*(inner.get(a, set()) for a in base_reads(field.expression)))
+            nested[(name, field.alias)] = read
+            by_alias[f"{name}.{field.alias}"] = read
     by_output = {
-        field.alias: set().union(*(by_alias.get(a, set()) for a in base_reads(field.expression)))
+        field.alias: set().union(
+            *(by_alias.get(a, set()) for a in base_reads(field.expression)),
+            *(
+                nested.get((node.parts[0], node.parts[1]), set())
+                for node in sql_nodes(field.expression)
+                if isinstance(node, SqlIdentifier) and len(node.parts) == 2
+            ),
+        )
         for field in projection.select
     }
     return by_alias, by_output

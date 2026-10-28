@@ -101,6 +101,7 @@ from .temporal import (
     _source_filter_refusals,
     _validate_restrictive_time_semantics,
 )
+from .totals import keyed_totals
 
 
 def _record_bound_plan(
@@ -250,9 +251,11 @@ def _keyed_by_entity(config: PackageConfig, payload: dict[str, Any]) -> dict[str
     group_by = list(payload.get("group_by") or [])
     named = {row.get("as"): index for index, row in enumerate(payload.get("select") or [])}
     keyed = list(group_by)
+    added: dict[str, str] = {}
     for dimension in group_by:
         key = display_key(config, str(dimension))
         if key and key not in keyed:
+            added[str(dimension)] = key
             if key in named:
                 raise refusal(
                     f"select[{named[key]}]",
@@ -262,7 +265,11 @@ def _keyed_by_entity(config: PackageConfig, payload: dict[str, Any]) -> dict[str
                     alias=key,
                 )
             keyed.insert(keyed.index(dimension), key)
-    return payload if keyed == group_by else {**payload, "group_by": keyed}
+    if keyed == group_by:
+        return payload
+    # A total over the name rolls up the key the engine added for it, too.
+    select = keyed_totals(list(payload.get("select") or []), added)
+    return {**payload, "group_by": keyed, "select": select}
 
 
 def bind_query(

@@ -8,6 +8,7 @@ no rows of the input, links, refusals and the policy that requires a grouping.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from decimal import Decimal
 from typing import Any
@@ -304,6 +305,20 @@ def per_store_revenue(duckdb_backend):
         runtime.close()
 
 
+def test_a_total_beside_a_governed_item_is_held_to_its_policy(per_store_revenue):
+    """The coarser call reads every select item: revenue, which may only be read grouped by
+    store, is read across stores by the total of orders, so the call is refused as the call
+    without the store is."""
+    call = {"select": [REVENUE, _total(ORDERS, [STORE])], "group_by": [STORE]}
+    with pytest.raises(SemanticLayerError) as raised:
+        per_store_revenue.query(call)
+    assert raised.value.code == "POLICY_DENIED"
+    assert "the total in 'total' reads it across them" in str(raised.value)
+    with pytest.raises(SemanticLayerError) as plain:
+        per_store_revenue.query({"select": [REVENUE, ORDERS]})
+    assert plain.value.code == "POLICY_DENIED"
+
+
 def test_a_total_over_a_required_grouping_is_refused(per_store_revenue):
     """The total's coarser call reads revenue across stores, which the policy forbids."""
     call = {"select": [REVENUE, _total(REVENUE, [STORE])], "group_by": [STORE], "time": QUARTER}
@@ -359,12 +374,13 @@ STANDALONE = {
 }
 
 
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
 @pytest.mark.parametrize("case", STANDALONE)
-def test_a_total_reads_what_the_call_without_its_columns_reads(duckdb_backend, case):
+def test_a_total_reads_what_the_call_without_its_columns_reads(request, backend, case):
     """A total is the call without its ``over`` columns, settled as that call is: data of
     nothing reads 0, a period not loaded yet NULL, and a group the coarser call has no row for
     NULL, never a reading of this call's own rows."""
-    runtime = duckdb_backend.runtimes["utc_authored"]
+    runtime = request.getfixturevalue(f"{backend}_backend").runtimes["utc_authored"]
     select, group_by, time, (input_id, over), now = STANDALONE[case]
     call = {
         "select": [*select, _total(input_id, over)],
@@ -404,3 +420,95 @@ def test_a_total_over_a_key_keeps_its_name_s_namesakes_apart(duckdb_backend):
         row for row in runtime.query(call)["rows"] if row["dimension.shop_customer_name"] == "Ann"
     ]
     assert [(row["revenue"], row["total"]) for row in anns] == [("23", "23"), ("23", "23")]
+
+
+CUSTOMER_NAME, CUSTOMER_ID = "dimension.shop_customer_name", "dimension.shop_customer_id"
+
+
+def test_a_key_the_call_groups_by_stays_when_its_name_rolls_up(duckdb_backend):
+    """Grouped by the name and, explicitly, the key, a total over the name keeps the key: each
+    Ann reads her own revenue. Grouped by the name alone, the key is the engine's, and rolls up
+    with the name: the total across every customer."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    total = _total(REVENUE, [CUSTOMER_NAME])
+    kept = runtime.query({"select": [REVENUE, total], "group_by": [CUSTOMER_NAME, CUSTOMER_ID]})
+    anns = [row for row in kept["rows"] if row[CUSTOMER_NAME] == "Ann"]
+    assert [(row["revenue"], row["total"]) for row in anns] == [("23", "23"), ("23", "23")]
+    rolled = runtime.query({"select": [REVENUE, total], "group_by": [CUSTOMER_NAME]})
+    [[everything]] = duckdb_backend.reference("SELECT SUM(amount) FROM orders")
+    assert {Decimal(row["total"]) for row in rolled["rows"]} == {everything}
+
+
+def test_a_total_alone_states_why_its_unloaded_periods_are_null(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {
+        "select": [_total(ORDERS, [STORE])],
+        "group_by": [STORE],
+        "time": {**MONTHS, "start": "2024-06-01", "end": "2024-11-01"},
+    }
+    answer = runtime.query(call, now="2024-10-15T00:00:00Z")
+    assert {row["period"] for row in answer["rows"] if row["total"] is None} == {
+        "2024-09-01",
+        "2024-10-01",
+    }
+    [no_data] = [row for row in answer["warnings"] if row["code"] == "NO_DATA_YET"]
+    assert "total" in json.dumps(no_data)
+
+
+def test_a_stock_total_names_only_the_calls_own_columns(duckdb_backend):
+    """Seats across the plans and the month: 220 on every row, and no disclosure names a
+    column the answer doesn't have."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {
+        "select": [_total(SEATS, ["period", PLAN])],
+        "group_by": [PLAN],
+        "time": {
+            "temporal_role": SNAPSHOT_DAY,
+            "grain": "day",
+            "start": "2024-01-01",
+            "end": "2024-02-01",
+        },
+    }
+    answer = runtime.query(call, now="2024-10-15T00:00:00Z")
+    assert {row["total"] for row in answer["rows"]} == {220}
+    assert "coarse_total" not in json.dumps(answer.get("warnings"))
+    assert "NO_DATA_YET" not in {row["code"] for row in answer.get("warnings") or []}
+
+
+def test_a_window_over_earlier_periods_beside_a_total_over_the_period_answers(duckdb_backend):
+    """Without the period, the month before reads its input's rows: each store's customers
+    across every month still answer (a 5, b 4, no store 1)."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    month_before = {
+        "kind": "prior_period",
+        "input": REVENUE,
+        "offset": {"unit": "month", "value": 1},
+    }
+    call = {
+        "select": [
+            ORDERS,
+            {"expression": month_before, "as": "month_before"},
+            _total(CUSTOMERS, ["period"]),
+        ],
+        "group_by": [STORE],
+        "time": MONTHS,
+    }
+    rows = runtime.query(call)["rows"]
+    assert _by_key(rows, STORE) == {"a": 5, "b": 4, None: 1}
+
+
+def test_a_companion_the_coarser_call_cant_answer_is_named_at_the_total(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {
+        "select": [
+            "metric.shop.signup_to_order_7d",
+            _total("measure.shop.signup_count", ["period"]),
+        ],
+        "group_by": ["dimension.shop_customer_channel"],
+        "time": {"grain": "month", "start": "2024-01-01", "end": "2024-06-01"},
+    }
+    [error] = runtime.validate(call)["errors"]
+    assert error["code"] == "REWRITE_NOT_SUPPORTED"
+    assert error["details"]["path"] == "select[1].expression"
+    assert error["details"]["companion"] == "signup_to_order_7d"
+    assert "coarse_total" not in json.dumps(error)

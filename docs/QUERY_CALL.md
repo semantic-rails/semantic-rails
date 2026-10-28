@@ -1032,11 +1032,13 @@ the same columns share one coarser call, and the call stays one statement. The c
 selects everything the call does (a share or total as its input), so it has a row wherever the
 call has one, and it settles its [empty groups](#empty-groups-null-or-0) as that call would on
 its own: data of nothing reads `0`, a period not loaded yet `null`, and a group it has no row
-for `null` (a stock over the period whose closing day has no snapshot). A name the coarser call
-keeps groups by its entity's key beside it, as any call's does, so a total over a customer key
-that keeps the customer's name keeps namesakes apart. A call that can't be answered without the
-`over` columns (a running total without its period) refuses the total, as it would refuse on
-its own.
+for `null` (a stock over the period whose closing day has no snapshot). Rolled up across the
+period, a window over earlier periods (`prior_period`, `cumulative`, ...) reads as its input
+there. A name the coarser call keeps groups by its entity's key beside it, as any call's does,
+so a total over a customer key that keeps the customer's name keeps namesakes apart; a key the
+call groups by stays unless `over` names it, and the key the engine adds beside a name rolls up
+with the name. A call that can't be answered without the `over` columns (a conversion read per
+period) refuses the total with `REWRITE_NOT_SUPPORTED` at its path, naming the item.
 
 ```json
 {"select": ["measure.jaffle.ordering_customer_count",
@@ -1062,9 +1064,10 @@ The input is one measure or metric id, and each `over` item a `group_by` id of t
 `period` when `time` has a grain, or it is refused at its path; `over` may name every column, for
 the grand total on every row. A total is a select item of its own: inside another expression it
 is refused at its path (compute with its column after the call). A total of a distribution, or
-beside one, is refused with `REWRITE_NOT_SUPPORTED`. A policy that requires a grouping holds
-for the total's coarser call too: a total over a required column is refused with
-`POLICY_DENIED`.
+beside one, is refused with `REWRITE_NOT_SUPPORTED`. The coarser call is held to the caller's
+policies as a call of its own, for every select item it reads: a total that would read a
+governed item across a grouping its policy requires is refused with `POLICY_DENIED`, and a
+total beside withheld values is refused.
 
 ### Per-entity value filters
 

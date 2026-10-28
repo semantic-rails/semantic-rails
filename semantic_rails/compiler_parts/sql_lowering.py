@@ -534,6 +534,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             # The coarser call's value: never a reading of this call's rows.
             total_columns.append((post_expr, totaled[alias]))
             projected_fields.append(SqlField(totaled[alias], alias))
+            record_output_reads(alias, set())  # its coarser call's reads answer for it
             continue
         with binding_cut() if project_is_cut() else nullcontext():
             compiled_output = _compile_post_expr(

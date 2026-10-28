@@ -33,7 +33,7 @@ from .compiler_parts.bind import (
     measure_column_ref,
 )
 from .compiler_parts.paths import dimensions_over_column
-from .compiler_parts.totals import coarse_group_by
+from .compiler_parts.totals import coarser_calls
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -45,7 +45,6 @@ from .expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
-    TotalExpr,
     collect_column_refs,
     parse_semantic_expression,
     resolve_filter_dimension,
@@ -244,6 +243,8 @@ def enforce_query_policies(
         binding=binding,
     )
     blocking = [row for row in effects if row["action"] in {"deny", "hidden"}]
+    if query is not None and not blocking:
+        blocking = _coarser_blocking(config, query, scope)
     if blocking:
         # The objects this query reads that a blocking policy lists; all it lists when the
         # query reads none of them directly (a caller's aggregate over a governed column).
@@ -279,6 +280,27 @@ def enforce_query_policies(
                 row["withheld_objects"] = sorted(withheld)
                 row["withheld_column"] = column
     return effects
+
+
+def _coarser_blocking(
+    config: PackageConfig, query: Mapping[str, Any], scope: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """The effects that refuse a total: its coarser call (the call without its ``over``
+    columns) is held to the request's policies as a call of its own would be, every select item
+    it reads included. Each violation names the total."""
+    blocking: list[dict[str, Any]] = []
+    for total, payload in coarser_calls(config, query):
+        try:
+            binding = bind_query(config, None, payload)
+        except SemanticLayerError:
+            continue  # the call's own compile refuses the total, at the total
+        for row in query_policy_effects(
+            config, binding.object_ids, **scope, query=payload, binding=binding
+        ):
+            if row["action"] in {"deny", "hidden"}:
+                violations = [{**item, "total": total} for item in row.get("violations") or []]
+                blocking.append({**row, **({"violations": violations} if violations else {})})
+    return blocking
 
 
 def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLayerError:
@@ -564,6 +586,8 @@ def withheld_shape(
         return refuse("withheld_ungrouped", "a rank needs group_by keys.")
     if query.get("totals") is not None:
         return refuse("withheld_totals", "total rows would add them up.")
+    if any((item.get("expression") or {}).get("kind") == "total" for item in query["select"]):
+        return refuse("withheld_totals", "a total's coarser call would read them.")
     direction = order[0]["direction"]
     if [(_order_field(query, item["field"]), item["direction"]) for item in order[1:]] != [
         (key, direction) for key in keys
@@ -896,22 +920,6 @@ def _by_time(missing: list[str], bound: BoundQuery) -> dict[str, Any]:
     return {}
 
 
-def _totals_reading(
-    query: NormalizedQuery, bound: Callable[[], BoundQuery], object_id: str
-) -> Iterator[tuple[str, list[str], bool]]:
-    """Each selected total whose input reads ``object_id``: its column, its coarser call's
-    group_by, and whether that call keeps the period."""
-    for item in query.select:
-        total = item.expression
-        if not isinstance(total, TotalExpr):
-            continue
-        config = bound().config
-        source = getattr(total.input, "measure", "") or getattr(total.input, "metric_recipe", "")
-        if source and object_id in {source, *bind_metadata_objects(config, [source])}:
-            group_by = coarse_group_by(query.group_by, total.over, config)
-            yield item.as_, group_by, "period" not in total.over
-
-
 def _metric_constraint_violations(
     policy: SemanticPolicyConfig,
     query_payload: Mapping[str, Any],
@@ -948,22 +956,6 @@ def _metric_constraint_violations(
                     "total": "totals",
                 }
             )
-        # A total reads its input at its coarser call's grain, which must meet it too.
-        for column, group_by, by_period in _totals_reading(query, bound, object_id):
-            missing = [
-                field
-                for field in required
-                if field not in group_by and not (by_period and _period_is(field, bound()))
-            ]
-            if missing:
-                violations.append(
-                    {
-                        "kind": "missing_required_group_by",
-                        "missing": missing,
-                        "present_group_by": group_by,
-                        "total": column,
-                    }
-                )
 
     if "allowed_group_by" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_group_by"))
