@@ -182,13 +182,19 @@ def _known(exprs: list[SqlExpr]) -> SqlExpr:
 
 def listing_rows(select: SqlSelect, plan: Any, config: PackageConfig) -> SqlSelect:
     """A listing's distinct rows (``select``) without a start row's blank row beside its real
-    ones: a row whose requested columns beyond the start's own entity all read NULL is kept
-    only for a start row (by its key) that has no other row. A department with no rooms lists
-    once, with NULL; one with rooms in two cities and a unit with no room lists its two
-    cities; a room the call lists with no building keeps its row."""
+    ones: a row whose requested columns across a one-to-many hop all read NULL is kept only for
+    a start row (by its key) that has no other row. The start's own columns and its lookups (one
+    value per start row, such as a department's school) never count as reached. A department
+    with no rooms lists once, with NULL; one with rooms in two cities and a unit with no room
+    lists its two cities; a room the call lists with no building keeps its row."""
     dimensions, root = _dimension_index(config), _entity_index(config)[plan.root_entity]
     pairs = list(zip(select.select, plan.group_by, strict=True))
-    far = [field for field, dim_id in pairs if dimensions[dim_id].entity != plan.root_entity]
+    paths = (plan.fanout_strategy or {}).get("root_paths") or {}
+    far = [
+        field
+        for field, dim_id in pairs
+        if (paths.get(dimensions[dim_id].entity) or {}).get("status") == "rewrite_required"
+    ]
     if not far:
         return select
     own = [field.expression for field, dim_id in pairs if field not in far]

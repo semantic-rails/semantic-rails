@@ -36,8 +36,10 @@ from tests.semantic_rails.hidden_absent import (
 )
 
 SEED = """
+CREATE TABLE school AS SELECT * FROM (VALUES (1, 'Science'), (2, 'Humanities'))
+ t(school_id, school_name);
 CREATE TABLE department AS SELECT * FROM (VALUES
- (1, 'Physics'), (2, 'History'), (3, 'Music')) t(dept_id, department_name);
+ (1, 'Physics', 1), (2, 'History', 2), (3, 'Music', 2)) t(dept_id, department_name, school_id);
 CREATE TABLE org_unit AS SELECT * FROM (VALUES
  (11, 1, 'Physics Lab'), (12, 1, 'Physics Office'), (13, 1, 'Physics Admin'),
  (21, 2, 'History Office')
@@ -59,6 +61,7 @@ DEPARTMENT_NAME = "dimension.campus_department_name"
 BUILDING_KEY = "dimension.campus_building_building_key"
 CITY = "dimension.campus_building_address_city"
 ROOM_CODE = "dimension.campus_room_room_code"
+SCHOOL_NAME = "dimension.campus_school_name"
 UNIT_DEPARTMENT, ROOM_UNIT = "relationship.unit_department", "relationship.room_unit"
 ROOM_BUILDING, ADDRESS_BUILDING = "relationship.room_building", "relationship.address_building"
 OFFICE_DEPARTMENT, OFFICE_BUILDING = (
@@ -115,11 +118,12 @@ def _write_package(root: Path, *, traversal: list[str], offices: bool = False) -
         "defaults": {"relationship": {"traversal": traversal},
                      "dimension": {"groupable": True, "filterable": True}},
     })  # fmt: skip
-    keys = {"department": "dept_id", "org_unit": "org_unit_id", "room": "room_id",
+    keys = {"school": "school_id", "department": "dept_id", "org_unit": "org_unit_id", "room": "room_id",
             "building": "building_id", "building_address": "address_id", "office": "office_id"}  # fmt: skip
     if not offices:
         keys.pop("office")
     edges = {
+        "department_school": ("department", "school", "school_id"),
         "unit_department": ("org_unit", "department", "dept_id"),
         "room_unit": ("room", "org_unit", "org_unit_id"),
         "room_building": ("room", "building", "building_id"),
@@ -146,6 +150,7 @@ def _write_package(root: Path, *, traversal: list[str], offices: bool = False) -
     }})  # fmt: skip
     count = {"kind": "entity_count", "value_type": "count"}
     dimensions = {
+        "school": {"name": {"column": "school_name", "kind": "categorical"}},
         "department": {"name": {"column": "department_name", "kind": "categorical"}},
         "org_unit": {"unit_name": {"kind": "categorical"}},
         "room": {"room_code": {"kind": "categorical"}, "access": {"kind": "categorical"}},
@@ -249,6 +254,20 @@ def test_a_start_row_lists_a_blank_row_only_when_it_reaches_nothing(runtime):
         ("Physics", "R-102", "Shelbyville"),
         ("Physics", "R-102", "Springfield"),
         ("Physics", "R-103", None),
+    ]
+
+
+def test_a_lookup_of_the_start_never_makes_its_blank_row_a_real_one(runtime):
+    """Each department with its school (one per department) and its buildings' cities: the
+    school is the department's own lookup, so Physics, which reaches two cities, lists them
+    with its school and no blank city beside them; Music, which reaches none, lists once with
+    its school and NULL."""
+    query = {"group_by": [DEPARTMENT_NAME, SCHOOL_NAME, CITY]}
+    assert _rows(runtime.query(query), DEPARTMENT_NAME, SCHOOL_NAME, CITY) == [
+        ("History", "Humanities", "Springfield"),
+        ("Music", "Humanities", None),
+        ("Physics", "Science", "Shelbyville"),
+        ("Physics", "Science", "Springfield"),
     ]
 
 

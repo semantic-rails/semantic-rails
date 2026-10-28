@@ -237,8 +237,8 @@ the call is answered as a listing through that route:
 - The rows are the distinct values of exactly the requested dimensions, ordered and capped
   (`limit`, `max_rows`) as for any call. Every hop joins as a lookup does (a left join, inner
   on ClickHouse), so each row of the start is listed. A start row that reaches nothing lists
-  once, with NULL in the columns beyond its own entity (no data is NULL): a department with no
-  rooms. One that reaches rows lists only those: a department with rooms in two cities and a
+  once, with NULL in the columns past a one-to-many hop (no data is NULL) and its own and its
+  lookups' values, such as its school: a department with no rooms. One that reaches rows lists only those: a department with rooms in two cities and a
   unit with no room lists its two cities, with no blank row beside them. A row the call asks
   for keeps its own NULLs, as a lookup with no match does: a room with no building lists with
   no city.
