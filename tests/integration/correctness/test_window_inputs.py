@@ -161,3 +161,21 @@ def test_an_authored_ratio_over_a_prior_period_reads_every_period(tmp_path):
     rows = {row["period"]: row["revenue_vs_prior_month"] for row in authored["rows"]}
     assert rows == {row["period"]: row["vs_prior"] for row in inline["rows"]}
     assert rows["2024-02-01"] == 0 and rows["2024-03-01"] is None
+
+
+@pytest.mark.parametrize("case_id", ["ratio_over_prior_month", "divide_by_prior_month"])
+def test_a_ratio_over_a_prior_period_refuses_without_a_day_spine(packages, case_id):
+    """ClickHouse has no implicit calendar to list the empty months, so a ratio over a prior
+    period refuses as division does, instead of reading only the months with orders."""
+    runtime = _runtime(packages["utc_implicit"], warehouse="clickhouse")
+    try:
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.compile(dict(load_entries())[f"shop/{case_id}"]["query"])
+    finally:
+        runtime.close()
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert str(raised.value) == (
+        "Warehouse 'clickhouse' has no implicit calendar, so time.fill, rolling and "
+        "prior_period are not supported on it yet"
+    )
+    assert raised.value.details == {"warehouse": "clickhouse", "rewrite": "day_series"}
