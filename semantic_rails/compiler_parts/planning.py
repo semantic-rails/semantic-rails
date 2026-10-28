@@ -50,6 +50,7 @@ from .bind import (
 from .dependencies import (
     candidate_planning,
 )
+from .governed_names import refuse_impersonating_aliases
 from .indexes import (
     _measure_index,
     get_package_analysis,
@@ -126,7 +127,11 @@ def plan_query(
     )
 
     with candidate_planning(), earlier_settlement(distribution):
-        return _plan_query(config, registry, raw_query, collapse_window=True, top_level=True)
+        plan = _plan_query(config, registry, raw_query, collapse_window=True, top_level=True)
+    # Last, so a query that fails for any other reason (an unknown or hidden object, a route, a
+    # policy) is refused for that reason first.
+    refuse_impersonating_aliases(raw_query, config)
+    return plan
 
 
 def _plan_query(

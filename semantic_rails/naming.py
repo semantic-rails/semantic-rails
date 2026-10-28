@@ -36,22 +36,29 @@ def semantic_token(value: str, *, fallback: str = "value") -> str:
     return slug(token, fallback=fallback)
 
 
+def object_names(row: Any) -> set[str]:
+    """The names a metric or measure answers to, case-folded: its id, name, the id's last
+    segment (the column a select of it answers under) and its authored synonyms (`aliases`)."""
+    values = (row.id, row.name, last_token(row.id), *(getattr(row, "aliases", None) or ()))
+    return {str(value).casefold() for value in values if value}
+
+
 def governed_names(config: Any) -> frozenset[str]:
-    """Every name a package's metrics and measures answer to: id, name and the id's last
-    segment (the column a select of it answers under)."""
+    """Every name a package's metrics and measures answer to (``object_names``)."""
     names: set[str] = set()
     for row in [*config.metric_recipes, *config.measures]:
-        names.update(value for value in (row.id, row.name, last_token(row.id)) if value)
+        names.update(object_names(row))
     return frozenset(names)
 
 
 def unclaimed_name(candidates: Sequence[str], taken: Collection[str]) -> str:
     """The first of ``candidates`` that ``taken`` doesn't hold, else the first one numbered: a
     generated column never answers under a name a governed object answers to."""
+    folded = {str(name).casefold() for name in taken}
     for candidate in candidates:
-        if candidate not in taken:
+        if candidate.casefold() not in folded:
             return candidate
     number = 2
-    while f"{candidates[0]}_{number}" in taken:
+    while f"{candidates[0]}_{number}".casefold() in folded:
         number += 1
     return f"{candidates[0]}_{number}"
