@@ -1725,6 +1725,44 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
     assert _normal(tuple(row.values()) for row in typed_rows(result)) == _normal(expected)
 
 
+JAFFLE_TYPE = "dimension.jaffle_product_type"
+JAFFLE_TYPE_SHARE = {
+    "expression": {"kind": "share", "input": "measure.jaffle.order_count", "over": [JAFFLE_TYPE]},
+    "as": "type_share",
+}
+
+
+@pytest.mark.parametrize(
+    "select",
+    [
+        ["measure.jaffle.order_count", JAFFLE_TYPE_SHARE],
+        ["measure.jaffle.revenue_usd", JAFFLE_TYPE_SHARE],
+    ],
+    ids=["alone", "beside_revenue"],
+)
+def test_rollup_safe_package_refuses_a_share_over_the_overlapping_groups(
+    runtime_factory, select: list[Any]
+) -> None:
+    """The distinct count's entity_in_terms_of leaf overlaps as the de-duplicated one does: a
+    share of the orders that included each product type over the types would divide by the
+    74,235 memberships of 58,533 orders that have an item, so it is refused on that leaf too."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        report = runtime.validate({"select": select, "group_by": [JAFFLE_TYPE]})
+    finally:
+        runtime.close()
+    assert report["ok"] is False
+    error = report["errors"][0]
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert error["why_invalid"] == (
+        f"A share over '{JAFFLE_TYPE}' is not supported: each 'entity.jaffle_order' counts in "
+        "every group it has a 'entity.jaffle_product' row in, so the groups overlap and the "
+        "share's total, their sum, counts it once per group. Select a total over the same "
+        "columns beside the groups (kind: total), which counts each once, and divide by its "
+        "column after the call."
+    )
+
+
 # A customer's items and sessions: the items of its orders and the sessions it held (not the
 # items or sessions of orders its sessions converted to).
 _CUSTOMER_CHILD_PINS = [
