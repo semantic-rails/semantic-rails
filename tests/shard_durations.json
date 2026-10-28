@@ -128,6 +128,7 @@
   "tests/semantic_rails/test_inspect_closest_matches.py": 0.275,
   "tests/semantic_rails/test_inspect_starter_patches.py": 0.493,
   "tests/semantic_rails/test_keyless_lookups.py": 14.373,
+  "tests/semantic_rails/test_listings_one_to_many.py": 10.3,
   "tests/semantic_rails/test_load_runs_authoring_checks.py": 6.27,
   "tests/semantic_rails/test_lookup_joins.py": 3.548,
   "tests/semantic_rails/test_lookup_measures.py": 7.837,

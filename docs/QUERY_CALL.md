@@ -259,6 +259,52 @@ one, each entity counts once in every group it has a row in.
 
 Their limits are listed under [Known limitations](#links-and-one-per-key-models).
 
+### Listings through one-to-many routes
+
+A call of dimensions alone (`group_by`, with no `select`, `time` or `metric_filters`) lists
+distinct rows. It reads the rows of an entity that reaches every entity the call reads by
+lookups, one row at every hop. When none does, because the entities connect only through a
+one-to-many hop (a store reaches the supplies its menu uses only through its orders' items),
+the call is answered as a listing through that route:
+
+```json
+{"group_by": ["dimension.jaffle_store_name", "dimension.jaffle_supply_name"],
+ "where": [{"field": "dimension.jaffle_supply_is_perishable", "op": "is", "value": true}]}
+```
+
+- The listing starts at the first entity the call reads (its first `group_by` dimension's,
+  then its `where` fields'), and reaches each other entity by the [route rules](#routes): the
+  call's `routes`, the package's recorded rows, the start's own key, the only route, or the one
+  lookup among several. Two or more routes none of these chooses are refused with
+  `AMBIGUOUS_PATH`, asking which route the question means, and nothing runs. When that question
+  with every route would not fit the response budget (a package of many facts over shared
+  dimensions can offer dozens), the call keeps the refusal it had without listings, which names
+  what blocks the pair. A listing walks a relationship either way, whatever its
+  `allowed_directions`: nothing is counted, so a hop to many rows only lists more rows.
+- The rows are the distinct values of exactly the requested dimensions, ordered and capped
+  (`limit`, `max_rows`) as for any call. Every hop joins as a lookup does (a left join, inner
+  on ClickHouse), so each row of the start is listed. A start row that reaches nothing lists
+  once, with NULL in the columns past a one-to-many hop (no data is NULL) and its own and its
+  lookups' values, such as its school: a department with no rooms. One that reaches rows lists only those: a department with rooms in two cities and a
+  unit with no room lists its two cities, with no blank row beside them. A row the call asks
+  for keeps its own NULLs, as a lookup with no match does: a room with no building lists with
+  no city.
+- The answer's `assumptions` carries `LISTED_THROUGH {message, routes}` at every verbosity:
+  each route from the start that crosses a one-to-many hop, as `{from, to, via, meaning}`, and
+  the message reads the longest ones in business words ("any of the Supplies of the Product of
+  any of the Items of any of the Store's Orders"). A listing states no `ROUTE_PASS_THROUGH`:
+  nothing counts under several groups.
+- The caller's view and the package's policies hold as for any call. A route through an object
+  hidden from the caller is no route for them, so the call is refused as it is for a package
+  without that object. A row filter applies to each table the route reads, where it joins, a
+  listing that starts at a model no row filter reaches is held (`POLICY_DENIED`,
+  `row_filter_uncovered_root`), and a denied object on the route refuses the call.
+- A call with a measure or a metric keeps every fan-out guard: departments counted by the
+  cities their rooms reach would count each department once per city, so that call is refused
+  as before.
+
+Its limits are listed under [Known limitations](#listings).
+
 ## `where`
 
 Items are ANDed. Each is a condition on a dimension or an [entity filter](#entity-filters).
@@ -1280,6 +1326,21 @@ The engine trusts the data as it is stored in three cases:
   hop](#groups-across-a-one-to-many-hop)), so the totals across
   groups can exceed the whole, and a parent with no child rows is left out of that grouping.
   Combined labels ("Lab + Office") are a possible future option.
+
+### Listings
+
+- A call of dimensions with a `time` window keeps the refusal it had: only a call of
+  dimensions alone (`where` filters allowed) is answered through a one-to-many route.
+- `plan` drafts every question with a measure or metric, so it never drafts a listing: send the
+  call of dimensions alone to `execute`.
+- A package row (`graph.path_preferences`) can record only the walks a relationship's
+  `allowed_directions` allow, so a listing route that walks one the other way is chosen per
+  call (`routes`), or after allowing that direction.
+- Where a call starts decides whether a department with no rooms is listed. A listing
+  through a one-to-many route starts at the first entity it reads, the department, and lists
+  it with NULL; a call whose entities one model reaches by lookups (rooms that hold both their
+  department and their building) reads that model's rows, and a department with no rooms has
+  none there.
 
 ### Links and one-per-key models
 

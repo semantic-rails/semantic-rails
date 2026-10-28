@@ -636,6 +636,11 @@ def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: Package
     return _reaches_at_most_one(rel, current_entity)
 
 
+def _outer_joins(config: PackageConfig) -> bool:
+    """Whether the warehouse's outer join reads NULL, not a type default, for an unmatched row."""
+    return dialect_for_warehouse(config.package.warehouse).outer_lookup_joins
+
+
 def _is_link_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
     """True when the hop walks a link in reverse, from a one-per-key model to the rows of its
     own relation, on a warehouse whose outer join reads NULL (as for a lookup)."""
@@ -712,7 +717,8 @@ def _joins_for_paths(
     (``inner_lookups``), on the path to a dimension a rollup of the measure's model holds
     pre-joined (so the base answers as the rollup does), or on a warehouse whose outer join
     reads a type default instead of NULL (``_is_lookup_hop``). Hops that fan out join INNER,
-    and every hop after a temporal-validity hop joins LEFT.
+    except a listing's (``listings``), which keep their rows as its lookups do, and every hop
+    after a temporal-validity hop joins LEFT.
 
     ``measure_entity`` is the model of the measure the leaf aggregates, or None for dimensions
     alone and conversions. A rollup belongs to the measures of the model it aggregates, so
@@ -802,7 +808,10 @@ def _joins_for_paths(
             existing = joined_via.get(right_table)
             if existing is None:
                 kept = (keep_rows or rel.id in keeps_rows) and join_key not in inner_hops
-                lookup = kept and _is_lookup_hop(rel, current_entity, config)
+                lookup = kept and (
+                    _is_lookup_hop(rel, current_entity, config)
+                    or (selection.purpose == "listing" and _outer_joins(config))
+                )
                 # A grouping across a link keeps a key with no row there (an orphan the lookup
                 # before it kept): it reads the NULL group, not no group.
                 link = (
