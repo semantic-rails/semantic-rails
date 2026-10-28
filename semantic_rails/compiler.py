@@ -169,8 +169,9 @@ def value_page(
     """``compiled``, a call listing ``column``'s values under a limit, as one page of them: the
     known values that contain ``search`` (the ``contains`` word: literal, ignoring case), in
     ascending order, from ``offset`` on. The page filters the listed rows, after grouping, so a
-    value matches by itself on every route (a ``where`` across a to-many hop would keep every
-    value of a matching row), and the warehouse skips, counts and limits matching values only.
+    value matches by itself on every route (a call's ``where`` filters the rows a value comes
+    from: across a to-many hop it is refused or keeps every value of a matching row), and the
+    warehouse skips and limits matching values only.
     """
     statement = compiled["sql_ast"]
     own = call_rows(statement)
