@@ -28,6 +28,7 @@ from ..fanout import (
     reads_end_of_day,
     route_hops,
 )
+from ..query_call import TOTAL_OVER
 from ..sql_ast import filter_rejects_null
 from ..temporal_support import _date_key, _range_intersects
 from .disclosures import mixed_time_role_warnings
@@ -127,6 +128,9 @@ def _history_result_warnings(config, compiled, rows, warnings, *, truncated=Fals
     root, measures = plan.root_entity, {row.id: row for row in config.measures}
     root_key = getattr(get_package_analysis(config).entities.get(root), "key_columns", ())
     complete = not (truncated or getattr(rows, "truncated", False))
+    if plan.query.get("totals") is not None:
+        # A total row's rolled-up columns read NULL by design: the empty group is the call's.
+        rows = [row for row in rows if row.get(TOTAL_OVER) is None]
     complete = complete and call_rows(compiled["sql_ast"]).limit is None
     complete = complete and not plan.query.get("metric_filters")
     visible_outputs = {output for row in rows for output in row}

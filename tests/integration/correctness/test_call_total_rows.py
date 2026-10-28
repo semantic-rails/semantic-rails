@@ -307,3 +307,55 @@ def test_a_column_named_like_the_level_order_keeps_the_order(duckdb_backend):
         (None, None),
         (None, STORE),
     ]
+
+
+OWN_DISCLOSURES = {
+    # The empty history group is the call's: total rows' rolled-up NULLs are not its rows.
+    "empty-history-group": (
+        {
+            "select": [REVENUE],
+            "group_by": ["dimension.shop_customer_history_customer_id"],
+            "time": MONTHS,
+        },
+        "NULL_PRESERVING_HISTORY",
+        "2024-12-01T00:00:00Z",
+    ),
+    # Stores a and b tie at the limit of 1.
+    "tie-at-the-limit": (
+        {
+            "select": [ORDERS],
+            "group_by": [STORE],
+            "time": {"temporal_role": ORDERED_AT, "start": "2023-11-01", "end": "2023-12-01"},
+            "order_by": [{"field": "order_count", "direction": "desc"}],
+            "limit": 1,
+        },
+        "TIES_AT_LIMIT",
+        None,
+    ),
+    # One of three seat series has no snapshot on the closing day: the call's seats column.
+    "closing-day": (
+        {
+            "select": ["measure.shop.seats"],
+            "group_by": ["dimension.shop_account_day_plan"],
+            "time": {
+                "temporal_role": "temporal_role.shop_account_day_snapshot_day",
+                "start": "2024-01-01",
+                "end": "2024-02-01",
+            },
+        },
+        "BALANCE_SERIES_MISSING_ON_CLOSING_DAY",
+        "2024-12-01T00:00:00Z",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", OWN_DISCLOSURES)
+def test_total_rows_keep_the_calls_own_disclosures(duckdb_backend, case):
+    """The call's own rows say what they said without totals."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call, code, now = OWN_DISCLOSURES[case]
+    found = [
+        [row.get("details") for row in answer.get("warnings") or [] if row["code"] == code]
+        for answer in (runtime.query({**call, "totals": []}, now=now), runtime.query(call, now=now))
+    ]
+    assert found[0] == found[1] != []

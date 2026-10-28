@@ -33,8 +33,8 @@ from ..sql_ast import (
     SqlTableRef,
     sql_nodes,
 )
-from ..top_n import limit_order
 from . import nested
+from .dependencies import reading_for
 from .empty_groups import recording_outputs_as
 from .lowering_common import _query_key_aliases
 from .namespacing import _namespace_sql_select
@@ -69,7 +69,6 @@ def with_total_rows(plan: LogicalPlan, config: PackageConfig, detail: SqlSelect)
     """``detail`` (the call's own rows, with its order and limit), then its total rows."""
     levels = total_levels(plan, config)
     keys = [key for key in _query_key_aliases(plan) if key in {f.alias for f in detail.select}]
-    detail = limit_order(detail, keys)[0]
     outputs = [field.alias for field in detail.select]
     taken = {
         node.name.casefold()
@@ -115,7 +114,8 @@ def with_total_rows(plan: LogicalPlan, config: PackageConfig, detail: SqlSelect)
         )
         name = _unique("total_level", taken)
         # The call's own outputs carry its disclosures; a level's are the same columns again.
-        with recording_outputs_as({}):
+        outputs_read = [str(row.get("as")) for row in plan.query.get("select") or []]
+        with reading_for(*outputs_read), recording_outputs_as({}):
             level = nested.query_sql(config, payload, standalone=True)
         ctes.append(SqlCte(name=name, query=_namespace_sql_select(level, f"{name}__")))
         produced = {field.alias for field in level.select}
@@ -185,3 +185,15 @@ def call_rows(statement: SqlSelect) -> SqlSelect:
         if isinstance(detail, SqlSelect):
             return detail
     return statement
+
+
+def with_call_rows(statement: SqlSelect, own: SqlSelect) -> SqlSelect:
+    """``statement`` with the call's own rows' statement replaced by ``own`` (its tie-broken
+    order, or the boundary probe's limit); its total rows unchanged."""
+    current = call_rows(statement)
+    if current is statement:
+        return own
+    return replace(
+        statement,
+        ctes=[replace(cte, query=own) if cte.query is current else cte for cte in statement.ctes],
+    )

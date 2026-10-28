@@ -815,10 +815,11 @@ call's own rows), so a total row never reads as a NULL group:
 `total_over` lists every rolled-up id, joined with `, `, in `group_by` order. A level keeps the
 entity key of each name it keeps, as any call does, and a key `totals` names stays on its level
 while its name rolls up. The total rows come after the call's own rows, level by level from the finest to the grand
-total, each level in the call's `order_by` and then its group keys ascending. `having` and
-`limit` cut only the call's own rows: total rows always come back, and they count the rows
-`having` and `limit` leave out (ties at a `limit` are broken as usual but not reported). A
-transport's row cap counts total rows too, so a truncated answer can end before them.
+total. The call's own rows, and each level's, come in the call's `order_by` (by default the
+period first), then the period and group keys ascending with NULLs last. `having` and `limit`
+cut only the call's own rows: total rows always come back, and they count the rows `having` and
+`limit` leave out (ties at a `limit` are broken and reported as usual). A transport's row cap
+counts total rows too, so a truncated answer can end before them.
 
 `totals` is refused at its path when an item is not a `group_by` id of the call (once each),
 when the call has no `group_by`, when a select item is named `total_over`, and beside a `share`
