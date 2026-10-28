@@ -10,6 +10,7 @@ at that grain, so a distinct count or an average is never added up from the rows
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from ..ast import TIME_AXIS, time_output_alias
@@ -24,6 +25,7 @@ from ..sql_ast import (
     SqlTableRef,
 )
 from . import nested
+from .dependencies import reading_for
 from .empty_groups import recording_outputs_as
 from .lowering_common import _dialect
 from .namespacing import _namespace_sql_select
@@ -47,17 +49,27 @@ def selected_totals(select: Iterable[Mapping[str, Any]]) -> list[tuple[str, dict
 def coarse_group_by(
     group_by: Iterable[str], over: Iterable[str], config: PackageConfig
 ) -> list[str]:
-    """The group_by of the coarser call: without the ``over`` columns, nor the entity key a
-    rolled-up name groups by beside it. A name the coarser call keeps groups by its entity's key
-    beside it, as any call's does, so namesakes never merge: that key stays, ``over`` or not."""
+    """The group_by of the coarser call: without the ``over`` columns. A name the coarser call
+    keeps groups by its entity's key beside it, as any call's does, so namesakes never merge:
+    that key stays, ``over`` or not. A key the engine added beside a name (``keyed_totals``) is
+    in ``over`` with its name; a key the caller grouped by stays unless ``over`` names it."""
     group_by, over = list(group_by), set(over)
     keys = {display_key(config, column) for column in group_by if column not in over} - {""}
-    rolled = {display_key(config, column) for column in over} - {""} - keys
-    return [
-        column
-        for column in group_by
-        if (column not in over or column in keys) and column not in rolled
-    ]
+    return [column for column in group_by if column not in over or column in keys]
+
+
+def keyed_totals(select: list[Any], added: Mapping[str, str]) -> list[Any]:
+    """``select`` with each total over a name also over the key the engine grouped by beside
+    it (``added``: the key by name), so rolling up the name rolls up the key it brought."""
+    out = []
+    for row in select:
+        expression = row.get("expression") if isinstance(row, Mapping) else None
+        if isinstance(expression, Mapping) and expression.get("kind") == "total":
+            over = list(expression.get("over") or [])
+            over += [added[name] for name in over if name in added and added[name] not in over]
+            row = {**row, "expression": {**expression, "over": over}}
+        out.append(row)
+    return out
 
 
 def coarse_call(
@@ -115,18 +127,64 @@ def _unique_name(base: str, taken: set[str]) -> str:
     return name
 
 
-def _row_sources(select: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+# Items that read earlier periods: without the period, their rows are their input's.
+_PERIOD_READERS = frozenset({"cumulative", "rolling", "prior_period", "period_to_date"})
+
+
+def _row_sources(select: Iterable[Mapping[str, Any]], over: Iterable[str]) -> list[Any]:
     """The call's select items as its coarser call reads them: a share or a total is its input
-    there (the same rows), every other item itself. The coarser call keeps every row source the
-    call has, so it has a row wherever the call does, and settles the input's empty groups
-    there as the call without the ``over`` columns would."""
+    there (the same rows), and so is a window over earlier periods when ``over`` rolls up the
+    period; every other item is itself. The coarser call keeps every row source the call has,
+    so it has a row wherever the call does, and settles the input's empty groups there as the
+    call without the ``over`` columns would."""
+    inputs = {"share", "total", *(_PERIOD_READERS if TIME_AXIS in set(over) else ())}
     out = []
     for row in select:
         expression = row.get("expression")
-        if isinstance(expression, Mapping) and expression.get("kind") in {"share", "total"}:
+        while isinstance(expression, Mapping) and expression.get("kind") in inputs:
             expression = expression["input"]
-        out.append(dict(expression or {}))
+        out.append(dict(expression) if isinstance(expression, Mapping) else expression)
     return out
+
+
+# Refusals the coarser call raises that are the call's own to answer, as they are.
+_PASSED_ON = frozenset(
+    {"AMBIGUOUS_PATH", "AMBIGUOUS_CHILD_SCOPE", "POLICY_DENIED", "OBJECT_NOT_FOUND"}
+)
+
+
+def _coarse_refusal(
+    exc: SemanticLayerError, plan: LogicalPlan, total: str, over: Iterable[str], columns: list[str]
+) -> SemanticLayerError:
+    """The coarser call's refusal restated at the total: which select item can't be answered
+    without the ``over`` columns, never the engine's own column names."""
+    aliases = [str(row.get("as")) for row in plan.query.get("select") or []]
+    message = str(exc)
+    for column, alias in zip(columns, aliases, strict=True):
+        message = message.replace(column, alias)
+    message = message.rstrip(". ") + "."
+    path = str((exc.details or {}).get("path") or "")
+    others = [alias for alias in aliases if alias != total]
+    companion = next(
+        (alias for index, alias in enumerate(aliases) if path.startswith(f"select[{index}]")),
+        "",
+    ) or next((alias for alias in others if f"'{alias}'" in message), "")
+    companion = "" if companion == total else companion
+    item = f"'{companion}'" if companion else "the call"
+    index = aliases.index(total)
+    return SemanticLayerError(
+        "REWRITE_NOT_SUPPORTED",
+        f"The total in '{total}' is this call without {', '.join(sorted(over))}, and {item} "
+        f"can't be answered there: {message} Ask for '{total}' in a call of its own"
+        + (f", or remove '{companion}'." if companion else "."),
+        details={
+            "path": f"select[{index}].expression",
+            "total": total,
+            "over": sorted(over),
+            **({"companion": companion} if companion else {}),
+            "cause": exc.code,
+        },
+    )
 
 
 def total_sources(
@@ -145,8 +203,8 @@ def total_sources(
     joins: list[SqlJoin] = []
     values: dict[str, SqlExpr] = {}
     time_alias = time_output_alias(plan.time) if plan.time else ""
-    sources = _row_sources(plan.query.get("select") or [])
     for over, items in _over_groups(totals).items():
+        sources = _row_sources(plan.query.get("select") or [], over)
         keys = coarse_group_by(plan.group_by, over, config)
         if time_alias and TIME_AXIS not in over and not plan.time.get("window_total"):
             keys.append(time_alias)  # a window total's time is no column
@@ -169,8 +227,17 @@ def total_sources(
             group_by=plan.group_by,
             time=plan.time,
         )
-        with recording_outputs_as({column: alias for alias, column in mine.items()}):
-            select = nested.query_sql(config, payload, standalone=True)
+        try:
+            # Its reads answer for the totals; its disclosures are theirs, by their names.
+            with (
+                reading_for(*mine),
+                recording_outputs_as({column: alias for alias, column in mine.items()}),
+            ):
+                select = nested.query_sql(config, payload, standalone=True)
+        except SemanticLayerError as exc:
+            if exc.code in _PASSED_ON:
+                raise
+            raise _coarse_refusal(exc, plan, items[0][0], over, columns) from exc
         produced = {field.alias for field in select.select}
         if produced - set(columns) != set(keys):
             raise SemanticLayerError(
@@ -180,7 +247,9 @@ def total_sources(
                 f"{' and '.join(keys) or 'call'}. Ask for that grain in its own call.",
                 details={"totals": [alias for alias, _ in items], "over": sorted(over)},
             )
-        ctes.append(SqlCte(name=name, query=_namespace_sql_select(select, f"{name}__")))
+        # Its CTEs stand at the top, where the answer's coverage readers find them.
+        coarse = _namespace_sql_select(select, f"{name}__")
+        ctes.extend([*coarse.ctes, SqlCte(name=name, query=replace(coarse, ctes=[]))])
         joins.append(
             SqlJoin(
                 join_type="LEFT",
@@ -192,3 +261,17 @@ def total_sources(
             (alias, SqlIdentifier(parts=[name, column])) for alias, column in mine.items()
         )
     return ctes, joins, values
+
+
+def coarser_calls(
+    config: PackageConfig, query: Mapping[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Each total's coarser call in the caller's terms (``query`` is the engine's form of the
+    call, before binding), by the first total it answers, for the request's policies to hold
+    it to as a call of its own."""
+    out = []
+    for over, items in _over_groups(selected_totals(query.get("select") or [])).items():
+        sources = _row_sources(query.get("select") or [], over)
+        select = [{"expression": source, "as": f"value_{n}"} for n, source in enumerate(sources, 1)]
+        out.append((items[0][0], coarse_call(query, over, select, config)))
+    return out

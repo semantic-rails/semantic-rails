@@ -131,6 +131,14 @@ def owning(*aliases: str) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def reading_for(*outputs: str) -> Iterator[None]:
+    """Attribute the reads of a nested compile lowered in this block to these outputs of the
+    request (a total's coarser call answers for the total)."""
+    with holding(_read_owners, frozenset(outputs)):
+        yield
+
+
 def current_read_owners() -> frozenset[str] | None:
     """Whom a read lowered now answers for (see ``owning``); None when nobody declared it."""
     return _read_owners.get()

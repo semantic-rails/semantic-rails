@@ -799,17 +799,20 @@ def recording_zero_outputs() -> Iterator[list[dict[str, Any]]]:
 
 @contextmanager
 def recording_outputs_as(names: Mapping[str, str]) -> Iterator[None]:
-    """Record a nested compile's guarded outputs under the request's names for them; its other
-    outputs are internal, with no column in the answer, and are dropped."""
+    """Record a nested compile's guarded and balance outputs under the request's names for them;
+    its other outputs are internal, with no column in the answer, and are dropped."""
     outputs = _zero_outputs.get()
+    edges = _balance_edges.get()
     start = len(outputs) if outputs is not None else 0
+    edge_start = len(edges["outputs"]) if edges is not None else 0
     yield
-    if outputs is not None:
-        outputs[start:] = [
-            {**item, "output": names[item["output"]]}
-            for item in outputs[start:]
-            if item["output"] in names
-        ]
+    for recorded, first in ((outputs, start), (edges["outputs"] if edges else None, edge_start)):
+        if recorded is not None:
+            recorded[first:] = [
+                {**item, "output": names[item["output"]]}
+                for item in recorded[first:]
+                if item["output"] in names
+            ]
 
 
 def record_zero_output(output: str, measure_ids: Iterable[str]) -> None:
