@@ -69,15 +69,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs run Python 3.12 (the version with the warehouse extras) on eight shards.
-        # The merge queue runs the oldest supported Python, 3.12 and the newest on five
-        # shards each: with its four other gates, 19 jobs, inside the GitHub plan's 20
-        # concurrent jobs. Manual runs add 3.13, and the nightly release gate runs it.
+        # PRs run Python 3.12 (the version with the warehouse extras) on five shards,
+        # with one sixth of the visible-view sweep chosen by the head commit
+        # (scripts/test_sharding.py). The merge queue runs the oldest supported Python,
+        # 3.12 and the newest on five shards each, with the whole sweep: with its four
+        # other gates, 19 jobs, inside the GitHub plan's 20 concurrent jobs. Manual runs
+        # add 3.13, and the nightly release gate runs it.
         python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || github.event_name == 'merge_group' && '["3.11", "3.12", "3.14"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0, 1, 2, 3, 4, 5, 6, 7]' || '[0, 1, 2, 3, 4]') }}
+        shard: [0, 1, 2, 3, 4]
     env:
-      SR_SHARD_COUNT: ${{ github.event_name == 'pull_request' && '8' || '5' }}
+      SR_SHARD_COUNT: '5'
       SR_SHARD_INDEX: ${{ matrix.shard }}
+      SR_SWEEP_SEED: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

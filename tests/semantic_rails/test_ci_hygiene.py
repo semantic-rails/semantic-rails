@@ -657,6 +657,55 @@ def test_file_shards_partition_complete_collection(monkeypatch, tmp_path, count)
     assert set.union(*partitions) == {item.nodeid for item in items}
 
 
+def test_the_sweep_files_are_the_visible_view_sweep_and_hidden_as_unknown():
+    # Every slice file of the sweep on disk, so a new slice file joins the pull request sixth.
+    sweep = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests/semantic_rails").glob("test_visible_view_sweep_*.py")
+    }
+    assert {"tests/semantic_rails/test_hidden_as_unknown.py", *sweep} == test_sharding.SWEEP_FILES
+
+
+def test_a_seeded_run_takes_one_sixth_of_the_sweep_and_every_other_test(monkeypatch):
+    sweep = sorted(test_sharding.SWEEP_FILES)
+    nodeids = [f"{file}::test_case[{case}]" for file in sweep for case in range(120)]
+    always = [f"{file}::test_coverage" for file in sweep] + [
+        f"tests/semantic_rails/test_other.py::test_case[{case}]" for case in range(30)
+    ]
+    monkeypatch.delenv("SR_SWEEP_SEED", raising=False)
+    assert test_sharding.sweep_slice() is None
+    assert all(test_sharding.in_sweep_slice(node) for node in nodeids + always)
+    slices = {}
+    for number in range(200):
+        monkeypatch.setenv("SR_SWEEP_SEED", f"{number:040x}")
+        chosen = test_sharding.sweep_slice()
+        if chosen in slices:
+            continue
+        assert all(test_sharding.in_sweep_slice(node) for node in always)
+        slices[chosen] = {node for node in nodeids if test_sharding.in_sweep_slice(node)}
+    # Some commit selects each sixth; the sixths partition every parametrized sweep case.
+    assert sorted(slices) == list(range(test_sharding.SWEEP_SLICES))
+    assert sum(map(len, slices.values())) == len(nodeids)
+    assert set.union(*slices.values()) == set(nodeids)
+    assert all(len(nodeids) / 12 < len(kept) < len(nodeids) / 3 for kept in slices.values())
+
+
+def test_a_seeded_run_balances_its_shards_on_a_sixth_of_the_sweep():
+    durations = json.loads(test_sharding.DURATIONS.read_text())
+
+    def heaviest(sliced):
+        owners = test_sharding.shard_owners(ROOT, 5, sliced)
+        loads = [0.0] * 5
+        for file, index in owners.items():
+            cost = durations.get(file, 0.0)
+            loads[index] += cost / 6 if sliced and file in test_sharding.SWEEP_FILES else cost
+        return max(loads)
+
+    # Balanced on sliced costs, a pull request's heaviest shard carries well under the
+    # merge queue's.
+    assert heaviest(True) < 0.7 * heaviest(False)
+
+
 @pytest.mark.parametrize("count,index", [("0", "0"), ("3", "-1"), ("3", "3"), ("x", "0")])
 def test_shards_reject_invalid_configuration(monkeypatch, count, index):
     monkeypatch.setenv("SR_SHARD_COUNT", count)
@@ -679,8 +728,12 @@ def test_backend_matrix_and_push_policy():
     jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     backend = jobs["backend"]
     assert backend["env"] == {
-        "SR_SHARD_COUNT": "${{ github.event_name == 'pull_request' && '8' || '5' }}",
+        "SR_SHARD_COUNT": "5",
         "SR_SHARD_INDEX": "${{ matrix.shard }}",
+        # Only a pull request runs one sixth of the sweep, seeded by its head commit.
+        "SR_SWEEP_SEED": (
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}"
+        ),
     }
     assert "github.event_name != 'push'" in backend["if"]
     assert "github.event_name == 'merge_group'" in backend["if"]
@@ -716,7 +769,7 @@ def _evaluate(expression: str, event: str):
 @pytest.mark.parametrize(
     "event, versions, shards, jobs_count",
     [
-        ("pull_request", ["3.12"], 8, 8),
+        ("pull_request", ["3.12"], 5, 5),
         # The oldest and newest supported Pythons and 3.12: 3.13 runs nightly and per release.
         ("merge_group", ["3.11", "3.12", "3.14"], 5, 15),
         ("workflow_dispatch", ["3.11", "3.12", "3.13", "3.14"], 5, 20),
@@ -726,8 +779,8 @@ def test_backend_matrix_covers_versions_for_each_event(event, versions, shards, 
     jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     matrix = jobs["backend"]["strategy"]["matrix"]
     assert _evaluate(matrix["python-version"], event) == versions
-    assert _evaluate(matrix["shard"], event) == list(range(shards))
-    assert _evaluate(jobs["backend"]["env"]["SR_SHARD_COUNT"], event) == str(shards)
+    assert matrix["shard"] == list(range(shards))
+    assert jobs["backend"]["env"]["SR_SHARD_COUNT"] == str(shards)
     assert len(versions) * shards == jobs_count
     if event == "merge_group":
         # With lint, security, docs and Postgres: within GitHub Free's 20 concurrent jobs.
