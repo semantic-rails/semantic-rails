@@ -29,7 +29,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -926,3 +926,305 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
             entity=entity, relation=described["relation"], key_columns=key_columns, **roles
         ),
     }
+
+
+# Candidate keys a one-per-key search tries, singles first; the first this many by naming order.
+MAX_ONE_PER_KEY_CANDIDATES = 12
+
+
+def _key_base(columns: list[str], fallback: str) -> str:
+    """The entity a key names: its first column without a key suffix (``room_id`` -> ``room``)."""
+    base = re.sub(r"(?:_id|_key|_code|_sk)$", "", columns[0].lower()) if columns else ""
+    return entity_name(base) if base not in {"", "id"} else fallback
+
+
+def _one_per_key_candidates(profile: dict[str, Any], entity: str) -> list[list[str]]:
+    """Column sets that could name one row per key: the entity-named and key-like columns, each
+    alone, then pairs of key-like columns. NULLs are allowed (a NULL-key row is no entity, and is
+    counted, not refused); floats, containers and columns with fewer than two values are not."""
+    usable = [
+        str(column["name"])
+        for column in profile["columns"]
+        if column["rows_profiled"]
+        and int(column["distinct_count"]) >= 2
+        and not _is_container_type(str(column["type"]))
+        and not re.match(r"FLOAT|DOUBLE|REAL", _type_head(str(column["type"])))
+    ]
+    named = {"id", f"{entity}_id", f"{entity}_key", f"{entity}key", f"{entity}id"}
+    links = [name for name in usable if name.lower() in named or _key_like(name)]
+    links.sort(key=lambda name: name.lower() not in named)
+    singles = [[name] for name in links]
+    pairs = [list(pair) for pair in itertools.combinations(links[:MAX_SUGGESTION_KEY_COLUMNS], 2)]
+    return [*singles, *pairs][:MAX_ONE_PER_KEY_CANDIDATES]
+
+
+def _key_evidence(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    key: list[str],
+    others: list[str],
+    deadline: float,
+) -> dict[str, Any]:
+    """What the rows of ``relation`` say about reading it one row per ``key``: rows, rows with a
+    NULL key, distinct keys, keys with several rows and the most rows a key has, and each other
+    column ``fixed`` (one non-null value in every key) or ``varying`` (the keys holding two or
+    more). NULLs never count as a value, as a one-per-key read takes the key's one non-null value."""
+    _in_time(deadline)
+    keys = ", ".join(quote_identifier(column) for column in key)
+    set_ = " AND ".join(f"{quote_identifier(column)} IS NOT NULL" for column in key)
+    counted = "".join(
+        f", system.main.count(DISTINCT {quote_identifier(column)}) AS d{index}"
+        for index, column in enumerate(others)
+    )
+    several = "".join(
+        f", system.main.count(*) FILTER (WHERE d{index} > 1)" for index in range(len(others))
+    )
+    rows, keyed = warehouse.execute(
+        f"SELECT system.main.count(*), system.main.count(*) FILTER (WHERE {set_}) FROM {relation}"
+    )[1][0]
+    _in_time(deadline)
+    distinct, repeated, most, *varying = warehouse.execute(
+        f"SELECT system.main.count(*), system.main.count(*) FILTER (WHERE n > 1), "
+        f"system.main.max(n){several} FROM (SELECT system.main.count(*) AS n{counted} "
+        f"FROM {relation} WHERE {set_} GROUP BY {keys}) AS g"
+    )[1][0]
+    return {
+        "columns": list(key),
+        "rows": int(rows),
+        "null_key_rows": int(rows) - int(keyed),
+        "distinct_keys": int(distinct),
+        "keys_with_several_rows": int(repeated),
+        "most_rows_per_key": int(most or 0),
+        "fixed": [column for column, count in zip(others, varying, strict=True) if not count],
+        "varying": [
+            {"column": column, "keys": int(count)}
+            for column, count in zip(others, varying, strict=True)
+            if count
+        ],
+    }
+
+
+def _one_per_key_qualifies(evidence: dict[str, Any]) -> bool:
+    """A key one-per-key reading adds something to: some column is fixed per key, and the key
+    repeats or is missing on some rows (a key every row holds once is a plain key)."""
+    return bool(evidence["fixed"]) and bool(
+        evidence["keys_with_several_rows"] or evidence["null_key_rows"]
+    )
+
+
+def _coverage(evidence: dict[str, Any]) -> list[str]:
+    """The proposal's coverage and what stays row grain, in words."""
+    rows, nulls = evidence["rows"], evidence["null_key_rows"]
+    notes = [
+        f"{rows - nulls} of {rows} rows have a key and read as {evidence['distinct_keys']} "
+        f"one-per-key rows; {evidence['keys_with_several_rows']} keys have several rows (at most "
+        f"{evidence['most_rows_per_key']})."
+    ]
+    if nulls:
+        notes.append(
+            f"{nulls} rows have no key: no lookup reaches them, and the row-grain model over the "
+            "same relation still counts them."
+        )
+    if evidence["varying"]:
+        listed = ", ".join(f"{row['column']} ({row['keys']} keys)" for row in evidence["varying"])
+        notes.append(
+            f"These columns hold two or more values within a key and stay on the row-grain model, "
+            f"reached one to many: {listed}."
+        )
+    return notes
+
+
+def suggest_one_per_key(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    key: list[str] | None = None,
+    *,
+    taken: frozenset[str] = frozenset(),
+    link_model: str = "",
+    parents: Mapping[str, tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Propose reading a keyless ``relation`` one row per a key it repeats, from its data.
+
+    ``status`` says what the rows support:
+    - ``keyed``: one column is unique and never null on the whole relation, so the table can be
+      looked up by it: model it keyed (``suggest_model``). A composite key doesn't stop a
+      proposal (nothing can look a row up by one of its parts), and is reported as
+      ``primary_key``;
+    - ``proposed``: ``proposal`` holds the key, its evidence and coverage, the draft
+      ``upsert_model`` arguments (``one_per_key: true``, the columns fixed per key) and, with
+      ``link_model`` (the row-grain model over the same relation), the ``upsert_relationship``
+      arguments that link its rows to the one-per-key rows;
+    - ``none``: no candidate key has a column fixed per key (``reason`` says why);
+    - ``timed_out``: the search ran out of time.
+
+    ``candidates`` lists each key tried with its evidence: rows, NULL-key rows, distinct keys,
+    keys with several rows, and each other column fixed or varying within a key. ``key`` tries
+    only that column set. Above a million rows the candidates are compared on the profile's
+    sample and the proposal is confirmed on the whole relation. ``taken`` holds entity and model
+    names in use, which the draft's names avoid; ``parents`` maps a lowercased column name to the
+    (entity, key column) it names, so a key column fixed per key becomes the draft's parent
+    entity. Nothing is written, and nothing here checks data at query time: the author decides.
+    """
+    described = describe_table(warehouse, relation)
+    schema, name = _split_relation(relation)
+    source = _qualified(warehouse, schema, name)
+    entity = entity_name(name)
+    columns = [str(column["name"]) for column in described["columns"]]
+    asked = list(key or [])
+    unknown = [column for column in asked if column not in columns]
+    if unknown:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND",
+            f"columns not in {described['relation']}: {', '.join(unknown)}",
+            details={"relation": described["relation"], "unknown_columns": unknown},
+        )
+    answer: dict[str, Any] = {"relation": described["relation"], "row_count": None}
+    deadline = time.monotonic() + KEY_SEARCH_SECONDS
+    try:
+        with _sample(warehouse, source, MAX_PROFILE_ROWS, deadline) as (scan, row_count):
+            profile = _profile(
+                warehouse, described, columns, scan, row_count, MAX_PROFILE_ROWS, 0, deadline
+            )
+            answer.update(row_count=profile["row_count"], sampled=profile["sampled"])
+            if not row_count:
+                return {**answer, "status": "none", "reason": "the relation has no rows"}
+            plain = None
+            if not asked:
+                plain, _ = _suggest_key(
+                    warehouse, described, profile, entity, source, scan, deadline
+                )
+                if plain is not None:
+                    answer["primary_key"] = plain
+                    if len(plain["columns"]) == 1:
+                        return {**answer, "status": "keyed", "reason": _KEYED}
+            candidates = [asked] if asked else _one_per_key_candidates(profile, entity)
+            readable = {
+                str(column["name"])
+                for column in profile["columns"]
+                if not _is_container_type(str(column["type"]))
+            }
+            tried = [
+                _key_evidence(
+                    warehouse,
+                    scan,
+                    candidate,
+                    [
+                        column
+                        for column in columns
+                        if column in readable and column not in candidate
+                    ],
+                    deadline,
+                )
+                for candidate in candidates
+            ]
+            ranked = sorted(
+                (row for row in tried if _one_per_key_qualifies(row)),
+                key=lambda row: (len(row["columns"]), -len(row["fixed"]), row["null_key_rows"]),
+            )
+            best = ranked[0] if ranked else None
+            if best is not None and profile["sampled"]:
+                others = [
+                    column
+                    for column in columns
+                    if column in readable and column not in best["columns"]
+                ]
+                best = _key_evidence(warehouse, source, best["columns"], others, deadline)
+                best = best if _one_per_key_qualifies(best) else None
+    except _OutOfTime:
+        return {**answer, "status": "timed_out", "reason": "the search ran out of time"}
+    answer["candidates"] = tried
+    if best is None and plain is not None:
+        return {**answer, "status": "keyed", "proposal": None, "reason": _KEYED}
+    if best is None:
+        if not candidates:
+            reason = "no column is named like a key; pass key to try a column set"
+        elif any(row["fixed"] for row in tried):
+            reason = "each key that fixes a column is held once by every row: a plain key"
+        else:
+            reason = "every other column holds two or more values within every candidate key"
+        return {**answer, "status": "none", "proposal": None, "reason": reason}
+    return {
+        **answer,
+        "status": "proposed",
+        "proposal": _one_per_key_proposal(
+            described,
+            profile,
+            best,
+            entity,
+            taken=taken,
+            link_model=link_model,
+            parents=parents or {},
+        ),
+    }
+
+
+_KEYED = (
+    "the relation has a key of its own: model it keyed (suggest_model drafts it), not one per key"
+)
+
+
+def _one_per_key_proposal(
+    described: dict[str, Any],
+    profile: dict[str, Any],
+    evidence: dict[str, Any],
+    entity: str,
+    *,
+    taken: frozenset[str],
+    link_model: str,
+    parents: Mapping[str, tuple[str, str]],
+) -> dict[str, Any]:
+    key = list(evidence["columns"])
+    base = _key_base(key, entity)
+    target = f"{base}_one_per_key" if base in taken or base == link_model else base
+    model_id = f"{base}_one_per_key"
+    # A key column fixed per key names a parent: the package's entity it names, else a dimension.
+    fixed = [column for column in evidence["fixed"] if column not in key]
+    named = {column: parents[column.lower()] for column in fixed if column.lower() in parents}
+    unnamed = [column for column in fixed if _key_like(column) and column not in named]
+    stats = [
+        column
+        for column in profile["columns"]
+        if column["name"] in key or (column["name"] in fixed and column["name"] not in named)
+    ]
+    roles, _ = draft_roles(target, key, [], stats, rows=profile["row_count"])
+    for column in unnamed:
+        roles["dimensions"].append(
+            {
+                "column": column,
+                "kind": "categorical",
+                "confidence": "high",
+                "reason": "fixed per key",
+            }
+        )
+    draft = upsert_model_draft(
+        entity=target,
+        relation=described["relation"],
+        key_columns=key,
+        description=f"One row per {', '.join(key)} of {described['relation']}: the columns "
+        "fixed per key.",
+        **roles,
+    )
+    draft.update(model_id=model_id, one_per_key=True)
+    if named:
+        draft["entities"] = {
+            parent: {} if column == parent_key else {"expr": column}
+            for column, (parent, parent_key) in named.items()
+        }
+    coverage = _coverage(evidence)
+    if unnamed:
+        coverage.append(
+            f"{', '.join(unnamed)} {'is' if len(unnamed) == 1 else 'are'} fixed per key and "
+            "named like another table's key: relate it (upsert_relationship) once that table is "
+            "modelled."
+        )
+    proposal: dict[str, Any] = {
+        "key": key,
+        "evidence": evidence,
+        "coverage": coverage,
+        "upsert_model": draft,
+    }
+    if link_model:
+        proposal["link"] = {
+            "upsert_relationship": {"from_entity": link_model, "to_entity": target, "columns": key}
+        }
+    return proposal

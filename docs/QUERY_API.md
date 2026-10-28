@@ -481,20 +481,22 @@ Windowed kinds need `time.grain`:
     {"expression": {"kind": "cumulative", "input": "measure.jaffle.order_count"}, "as": "orders_to_date"},
     {"expression": {"kind": "rolling", "input": "measure.jaffle.revenue_usd", "window": {"unit": "month", "value": 3}}, "as": "revenue_3m"},
     {"expression": {"kind": "prior_period", "input": "measure.jaffle.revenue_usd", "offset": {"unit": "month", "value": 1}}, "as": "revenue_month_before"},
-    {"expression": {"kind": "period_to_date", "input": "measure.jaffle.revenue_usd", "period": "year"}, "as": "revenue_ytd"}
+    {"expression": {"kind": "period_to_date", "input": "measure.jaffle.revenue_usd", "period": "year"}, "as": "revenue_year_to_date"}
   ],
   "time": {"grain": "month", "end": "2016-12-01"}
 }
 ```
 
 ```jsonc
-{"rows": [{"period": "2016-09-01", "period_partial": false, "orders_to_date": 1367, "revenue_3m": 18053.279999999995, "revenue_month_before": null, "revenue_ytd": 18053.279999999995},
-          {"period": "2016-10-01", "period_partial": false, "orders_to_date": 3052, "revenue_3m": 39977.229999999996, "revenue_month_before": 18053.279999999995, "revenue_ytd": 39977.229999999996},
-          {"period": "2016-11-01", "period_partial": false, "orders_to_date": 5332, "revenue_3m": 67894.04999999999, "revenue_month_before": 21923.949999999997, "revenue_ytd": 67894.04999999999}]}
+{"rows": [{"period": "2016-09-01", "period_partial": false, "orders_to_date": 1367, "revenue_3m": 18053.279999999995, "revenue_month_before": null, "revenue_year_to_date": 18053.279999999995},
+          {"period": "2016-10-01", "period_partial": false, "orders_to_date": 3052, "revenue_3m": 39977.229999999996, "revenue_month_before": 18053.279999999995, "revenue_year_to_date": 39977.229999999996},
+          {"period": "2016-11-01", "period_partial": false, "orders_to_date": 5332, "revenue_3m": 67894.04999999999, "revenue_month_before": 21923.949999999997, "revenue_year_to_date": 67894.04999999999}]}
 ```
 
 They read periods before the ones they return, so a `time.start` (or a `where` on a date) that
-would cut that lookback is refused; an `end` alone runs. See
+would cut that lookback is refused; an `end` alone runs. A `rolling` window takes only `unit` and
+`value`; any other key, such as `exclude_current`, is refused (`INVALID_EXPRESSION_AST`) instead of
+being ignored. See
 [Windows that read earlier periods](QUERY_CALL.md#windows-that-read-earlier-periods).
 
 ### Predicates
@@ -579,7 +581,9 @@ after the base event, not at the end of the 7th calendar day, and `month`, `quar
 windows add calendar months (January 31 plus one month is the last day of February). An event at
 the base instant counts and one exactly at the end does not, like the half-open `time` range. When
 the event times are dates, a 7-day window covers the base date and the 6 dates after it. These are
-MetricFlow's conversion bounds.
+MetricFlow's conversion bounds. The window takes only `unit` and `value`: there are no bound
+options, and any other key is refused (`CONVERSION_WINDOW_REQUIRED`, naming the key) instead of
+being ignored.
 
 Current limit:
 

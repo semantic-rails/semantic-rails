@@ -1172,9 +1172,12 @@ def _cardinality_status(rel: RelationshipConfig, *, current_entity: str, time_bo
     card = rel.cardinality.upper()
     if ":" not in card:
         return rel.safety
-    if time_bound and rel.temporal_validity and rel.safety != "unsafe":
-        return "safe"
     left, right = [part.strip() for part in card.split(":", 1)]
+    # A history read at the query's time gives each row the one version valid then, but only
+    # when its relationship has a one side: a many-to-many history's versions valid at one time
+    # can overlap, and each would count, so it stays what its cardinality and safety say.
+    if time_bound and rel.temporal_validity and rel.safety != "unsafe" and "1" in (left, right):
+        return "safe"
     forward = current_entity == rel.source_entity
     if left == "1" and right == "1":
         return "safe"

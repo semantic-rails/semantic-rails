@@ -17,6 +17,7 @@ import contextlib
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
+from functools import lru_cache
 from typing import Any
 
 from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query, time_output_alias
@@ -99,6 +100,7 @@ from .metadata_parts.relevance import (
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
+from .naming import governed_names, unclaimed_name
 from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
 from .request_context import policy_identity
@@ -386,8 +388,14 @@ def _stage_kind_bonus(stage: str, kind: str) -> float:
     return 0.0
 
 
+@lru_cache(maxsize=256)
+def _search_token_set(terms: str) -> frozenset[str]:
+    """The question's search tokens, read once for a whole catalog pass, not per candidate."""
+    return frozenset(tokenize_search_value(terms))
+
+
 def _business_priority_adjustment(terms: str, candidate: dict[str, Any]) -> tuple[float, list[str]]:
-    tokens = set(tokenize_search_value(terms))
+    tokens = _search_token_set(terms)
     if not tokens or not tokens <= {"sale", "sales"}:
         return 0.0, []
     title = " ".join(
@@ -1262,6 +1270,8 @@ def _relevance_score(
         score += 25.0
         reasons.append("search-term match")
 
+    # A repeated token scores again, with the same steps: work them out once per token.
+    token_steps: dict[str, list[tuple[float, str]]] = {}
     for token in tokens:
         # Skip stopwords ("in", "by", "the", "of", ...) — they substring-match
         # too liberally (e.g. "in" inside "drink" inflated `drink_revenue_usd`
@@ -1270,28 +1280,30 @@ def _relevance_score(
         # of compound-prefix measures outranking their unqualified parent.
         if token in _INTENT_STOPWORDS:
             continue
-        # IDF-style weight: rare tokens (e.g. "aov" in a single metric)
-        # get a 2.0 multiplier, common tokens (e.g. "customer" in a
-        # customer-centric package) get 0.5, otherwise 1.0. Without this
-        # the term-bag scorer ranks candidates that match a common token
-        # multiple times above one that matches a rare token once.
-        idf_weight = _token_idf_weight(token, token_doc_freq)
-        token_variants = {token}
-        if token.endswith("s") and len(token) > 3:
-            token_variants.add(token[:-1])
-        for candidate_token in token_variants:
-            if _contains_token(document.name_label_fields, candidate_token):
-                score += 12.0 * idf_weight
-                reasons.append(f"label/name matched '{candidate_token}'")
-            if _contains_token(document.derived_tokens, candidate_token):
-                score += 10.0 * idf_weight
-                reasons.append(f"derived-token matched '{candidate_token}'")
-            if _contains_token(document.topic_fields, candidate_token):
-                score += 8.0 * idf_weight
-                reasons.append(f"topic matched '{candidate_token}'")
-            if _contains_token(document.description_fields, candidate_token):
-                score += 6.0 * idf_weight
-                reasons.append(f"description matched '{candidate_token}'")
+        steps = token_steps.get(token)
+        if steps is None:
+            steps = token_steps[token] = []
+            # IDF-style weight: rare tokens (e.g. "aov" in a single metric)
+            # get a 2.0 multiplier, common tokens (e.g. "customer" in a
+            # customer-centric package) get 0.5, otherwise 1.0. Without this
+            # the term-bag scorer ranks candidates that match a common token
+            # multiple times above one that matches a rare token once.
+            idf_weight = _token_idf_weight(token, token_doc_freq)
+            token_variants = {token}
+            if token.endswith("s") and len(token) > 3:
+                token_variants.add(token[:-1])
+            for candidate_token in token_variants:
+                if _contains_token(document.name_label_fields, candidate_token):
+                    steps.append((12.0 * idf_weight, f"label/name matched '{candidate_token}'"))
+                if _contains_token(document.derived_tokens, candidate_token):
+                    steps.append((10.0 * idf_weight, f"derived-token matched '{candidate_token}'"))
+                if _contains_token(document.topic_fields, candidate_token):
+                    steps.append((8.0 * idf_weight, f"topic matched '{candidate_token}'"))
+                if _contains_token(document.description_fields, candidate_token):
+                    steps.append((6.0 * idf_weight, f"description matched '{candidate_token}'"))
+        for amount, reason in steps:
+            score += amount
+            reasons.append(reason)
     coverage = _name_coverage(candidate, tokens)
     if coverage:
         # The candidate's whole name is in the question ("revenue by store"
@@ -2770,6 +2782,28 @@ def build_options_payload(
         )
 
 
+def _selected_columns(call: dict[str, Any], measure_id: str) -> set[str]:
+    """The names a call's order_by or having can use for its select of ``measure_id``."""
+    names = {measure_id, measure_id.split(".")[-1]}
+    for item in list(call.get("select") or []):
+        if isinstance(item, dict) and item.get("as"):
+            expression = item.get("expression")
+            reads = expression if isinstance(expression, str) else (expression or {}).get("measure")
+            if reads == measure_id:
+                names.add(str(item["as"]))
+    return names
+
+
+def _follow_column_rename(patch: dict[str, Any], old: set[str], new: str) -> None:
+    """Point the patch's order_by and having at ``new`` where they named the replaced column."""
+    for key in ("order_by", "having"):
+        if patch.get(key):
+            patch[key] = [
+                {**row, "field": new} if isinstance(row, dict) and row.get("field") in old else row
+                for row in patch[key]
+            ]
+
+
 def _build_options_payload(
     runtime: Runtime,
     *,
@@ -2957,7 +2991,19 @@ def _build_options_payload(
             if agg == "percentile" and isinstance(expression, dict):
                 # A percentile needs its p; the median is the neutral starting point.
                 expression["parameters"] = {"p": 0.5}
-            alias = focus_measure.id.split(".")[-1]
+            # Another aggregation is another number than the governed measure, so it answers
+            # under a name of its own (avg_revenue_usd, p50_revenue_usd) that no governed metric
+            # or measure answers to, and an order or having on the old column follows it.
+            measure_name = focus_measure.id.split(".")[-1]
+            label = "p50" if agg == "percentile" else agg
+            alias = (
+                measure_name
+                if isinstance(expression, str)
+                else unclaimed_name(
+                    [f"{label}_{measure_name}", f"{measure_name}_{label}"], governed_names(config)
+                )
+            )
+            _follow_column_rename(patch, _selected_columns(call, focus_measure.id), alias)
             patch["select"] = [
                 expression
                 if isinstance(expression, str)

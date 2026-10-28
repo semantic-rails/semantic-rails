@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from functools import lru_cache
 from typing import Any
 
 from .. import operators
@@ -15,11 +16,14 @@ from ._base import (
     _matching,
     _object_by_id,
     _strip_leading_rank_count,
+    _tokens,
 )
 from .call import Call, Order, QueryBuilder
 from .generators import _grouping_term_matches
 from .groupings import (
     _EXCEPT_AFTER_RE,
+    _TEMPORAL_TERMS,
+    _TEMPORAL_WORDS,
     _entity_stand_ins,
     _grouping_matches,
     _is_temporal_grouping_term,
@@ -30,7 +34,7 @@ from .groupings import (
     _term_matches_value_domain,
 )
 from .plan_query import _validate_query
-from .time_phrases import _names_time_axis
+from .time_phrases import _GRAIN_WORDS, _TIME_AXIS_WORDS, _names_time_axis
 from .time_windows import _time_window
 from .visibility import (
     discovery_query,
@@ -183,6 +187,14 @@ def _reads_grouping(term: str, ids: set[str] | None, row: Any) -> bool:
 
 # A word asking for the rows at the level of the groupings it follows ("store name levels").
 _LEVEL_WORD_RE = re.compile(r"\b(?:levels?|grains?)\b")
+_LONGEST_TEMPORAL_TERM = max(len(term.split()) for term in _TEMPORAL_TERMS)
+
+
+@lru_cache(maxsize=8192)
+def _name_pattern(pattern: str) -> re.Pattern[str]:
+    """A declared name's compiled pattern. A package has more name patterns than ``re``
+    caches (512), so without this every plan compiled each of them again."""
+    return re.compile(pattern)
 
 
 def _declared_name_spans(
@@ -220,7 +232,7 @@ def _declared_name_spans(
                         for body in (re.escape(spelling), r"[\s_]+".join(map(re.escape, words)))
                     }
                 for pattern in patterns:
-                    for match in re.finditer(pattern, lowered):
+                    for match in _name_pattern(pattern).finditer(lowered):
                         found.setdefault(match.span(), []).append((kind, row))
     return {
         (low, high): named
@@ -231,18 +243,51 @@ def _declared_name_spans(
 
 def _clock_spans(config: Any, lowered: str, query: Call) -> list[tuple[int, int]]:
     """Where the question names a clock, the time block's: "week", or "order date" for Order
-    time. A clock phrase is words joined by spaces only, never with a level word."""
+    time. A clock phrase is words joined by spaces only, never with a level word.
 
-    clocks = _query_clocks(config, query)
+    One span per word that ends a clock phrase: the longest phrase ending there. Every clock
+    phrase lies inside one of these and ends where one of them ends, which is all a caller
+    reads. A phrase is a temporal grouping term (``_is_temporal_grouping_term``: one of a few
+    fixed terms, or a run of time words) or names the clock (``_names_time_axis``: only
+    time-axis, grain and label words, with at least one time-axis word and one other label
+    word). Apart from the fixed terms, both depend only on the words a phrase holds, so one
+    pass over the words finds every longest phrase: linear in the question's length.
+    """
+
+    labels = [set(_tokens(clock)) for clock in _query_clocks(config, query) if clock]
     words = list(re.finditer(r"[^\W_]+", lowered))
     spans: list[tuple[int, int]] = []
-    for index, first in enumerate(words):
-        for last in words[index:]:
-            text = lowered[first.start() : last.end()]
-            if _LEVEL_WORD_RE.search(text) or not re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+)*", text):
-                break
-            if _is_temporal_grouping_term(text) or any(_names_time_axis(text, c) for c in clocks):
-                spans.append((first.start(), last.end()))
+    time_from: int | None = None
+    # Per clock, over the current run of its words: where the run starts, and whether it
+    # holds a time-axis word and a label word that is neither time-axis nor grain.
+    runs: list[list[Any]] = [[None, False, False] for _ in labels]
+    for index, word in enumerate(words):
+        text = word.group()
+        joined = index > 0 and lowered[words[index - 1].end() : word.start()].isspace()
+        if not joined or _LEVEL_WORD_RE.fullmatch(text):
+            time_from = None
+            runs = [[None, False, False] for _ in labels]
+            if _LEVEL_WORD_RE.fullmatch(text):
+                continue
+        tokens = set(_tokens(text))
+        time_word = bool(tokens) and tokens <= _TEMPORAL_WORDS
+        time_from = (index if time_from is None else time_from) if time_word else None
+        starts = [] if time_from is None else [time_from]
+        for start in range(max(0, index + 1 - _LONGEST_TEMPORAL_TERM), index + 1):
+            phrase = lowered[words[start].start() : word.end()]
+            if phrase in _TEMPORAL_TERMS and not _LEVEL_WORD_RE.search(phrase):
+                starts.append(start)
+        for run, label in zip(runs, labels, strict=True):
+            if tokens <= _TIME_AXIS_WORDS | _GRAIN_WORDS | label:
+                run[0] = index if run[0] is None else run[0]
+                run[1] = run[1] or bool(tokens & _TIME_AXIS_WORDS)
+                run[2] = run[2] or bool(tokens - _TIME_AXIS_WORDS - _GRAIN_WORDS)
+                if run[1] and run[2]:
+                    starts.append(run[0])
+            else:
+                run[:] = [None, False, False]
+        if starts:
+            spans.append((words[min(starts)].start(), word.end()))
     return spans
 
 

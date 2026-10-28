@@ -2868,7 +2868,7 @@ tests:
             kind: column
             column: order_id
             entity: entity.shop_order
-        as: store_a_orders
+        as: orders_at_store_a
       - expression:
           kind: aggregate_if
           aggregation: count
@@ -2912,8 +2912,8 @@ tests:
                 COUNT(CASE WHEN o.amount >= 5 THEN 1 END), CASE WHEN COUNT(CASE WHEN o.store_id = 'b' THEN 1 END) = 0 THEN 0 ELSE SUM(CASE WHEN o.store_id = 'b' THEN o.amount END) END
               FROM orders AS o WHERE EXISTS (SELECT 1 FROM refunds AS r WHERE r.order_id = o.order_id AND r.refund_type = 'goods') GROUP BY 1
     expected_rows:
-      - {dimension.shop_customer_channel: store, store_a_orders: 1, orders_of_5: 1, store_b_revenue: 5}
-      - {dimension.shop_customer_channel: null, store_a_orders: 1, orders_of_5: 0, store_b_revenue: 0}
+      - {dimension.shop_customer_channel: store, orders_at_store_a: 1, orders_of_5: 1, store_b_revenue: 5}
+      - {dimension.shop_customer_channel: null, orders_at_store_a: 1, orders_of_5: 0, store_b_revenue: 0}
   shop/child_filter-conditional_ratios_by_channel:
     kind: query_matches_snapshot
     expect: answer
@@ -3020,7 +3020,7 @@ tests:
             kind: column
             column: amount
             entity: entity.shop_order
-        as: revenue
+        as: matching_revenue
       - expression:
           kind: aggregate_if
           aggregation: avg
@@ -3049,8 +3049,8 @@ tests:
       SELECT (SELECT s.channel FROM signups AS s WHERE s.customer_id = o.customer_id), CASE WHEN COUNT(CASE WHEN o.store_id = 'a' THEN 1 END) = 0 THEN 0 ELSE SUM(CASE WHEN o.store_id = 'a' THEN o.amount END) END, AVG(CASE WHEN o.store_id = 'a' THEN o.amount END)
               FROM orders AS o WHERE EXISTS (SELECT 1 FROM refunds AS r WHERE r.order_id = o.order_id AND r.refund_type = 'shipping') GROUP BY 1
     expected_rows:
-      - {dimension.shop_customer_channel: web, revenue: 20, average: 20}
-      - {dimension.shop_customer_channel: null, revenue: null, average: null}
+      - {dimension.shop_customer_channel: web, matching_revenue: 20, average: 20}
+      - {dimension.shop_customer_channel: null, matching_revenue: null, average: null}
   shop/child_filter-conditional_aggregates_of_nothing:
     kind: query_matches_snapshot
     expect: answer
@@ -3082,7 +3082,7 @@ tests:
             kind: column
             column: amount
             entity: entity.shop_order
-        as: revenue
+        as: matching_revenue
       - expression:
           kind: aggregate_if
           aggregation: count
@@ -3109,7 +3109,7 @@ tests:
                 COUNT(CASE WHEN o.store_id = 'b' THEN 1 END)
               FROM orders AS o WHERE EXISTS (SELECT 1 FROM refunds AS r WHERE r.order_id = o.order_id AND r.refund_type = 'shipping')
     expected_rows:
-      - {revenue: 0, orders: 0}
+      - {matching_revenue: 0, orders: 0}
   shop/utc-march_bounds_by_day:
     kind: query_matches_snapshot
     expect: answer
@@ -3776,7 +3776,7 @@ tests:
     tags: [null-vs-zero, time-window]
     query:
       select:
-        - as: revenue
+        - as: qualifying_revenue
           expression:
             kind: scoped_aggregate
             measure: measure.shop.revenue
@@ -3797,8 +3797,8 @@ tests:
           AND x.ordered_at >= TIMESTAMP '2024-01-01' AND x.ordered_at < TIMESTAMP '2024-04-01')
       GROUP BY 1, 2
     expected_rows:
-      - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 24}
-      - {dimension.shop_order_store_id: b, period: '2024-01-01', revenue: 8}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', qualifying_revenue: 24}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', qualifying_revenue: 8}
   shop/scoped-period-predicate-beside-a-where-answers-by-dataset:
     kind: query_matches_snapshot
     expect: answer
@@ -3807,7 +3807,7 @@ tests:
     tags: [null-vs-zero, time-window]
     query:
       select:
-        - as: revenue
+        - as: qualifying_revenue
           expression:
             kind: scoped_aggregate
             measure: measure.shop.revenue
@@ -3826,7 +3826,7 @@ tests:
           AND x.ordered_at >= TIMESTAMP '2024-01-01' AND x.ordered_at < TIMESTAMP '2024-04-01')
       GROUP BY 1, 2
     expected_rows:
-      - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 24}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', qualifying_revenue: 24}
   shop/scoped-predicate-unknown-aggregate-fails-not:
     kind: query_matches_snapshot
     expect: answer

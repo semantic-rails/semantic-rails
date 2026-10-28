@@ -19,6 +19,7 @@
   "tests/semantic_rails/test_architect_key_inference.py": 9.534,
   "tests/semantic_rails/test_architect_mcp.py": 6.649,
   "tests/semantic_rails/test_architect_mcp_transport_security.py": 21.349,
+  "tests/semantic_rails/test_architect_one_per_key.py": 5.0,
   "tests/semantic_rails/test_architect_relationships.py": 7.738,
   "tests/semantic_rails/test_architect_remove.py": 16.254,
   "tests/semantic_rails/test_architect_replace.py": 1.458,
@@ -111,6 +112,7 @@
   "tests/semantic_rails/test_filter_security.py": 8.493,
   "tests/semantic_rails/test_filtered_series_buckets.py": 6.229,
   "tests/semantic_rails/test_first_last_value_nulls.py": 0.102,
+  "tests/semantic_rails/test_generated_names.py": 1.5,
   "tests/semantic_rails/test_grain_validation.py": 0.214,
   "tests/semantic_rails/test_hidden_as_unknown.py": 331.452,
   "tests/semantic_rails/test_http_and_smoke.py": 17.817,
@@ -185,6 +187,7 @@
   "tests/semantic_rails/test_plan_answer_shape.py": 31.709,
   "tests/semantic_rails/test_plan_calendar_windows.py": 36.396,
   "tests/semantic_rails/test_plan_catalog_words.py": 29.791,
+  "tests/semantic_rails/test_plan_clock_spans.py": 0.5,
   "tests/semantic_rails/test_plan_conjoined_metrics.py": 13.924,
   "tests/semantic_rails/test_plan_declared_selection.py": 4.105,
   "tests/semantic_rails/test_plan_dimension_visibility.py": 104.51,
@@ -332,6 +335,7 @@
   "tests/semantic_rails/test_window_filter_sources.py": 17.048,
   "tests/semantic_rails/test_window_inputs.py": 12.902,
   "tests/semantic_rails/test_window_total.py": 20.701,
+  "tests/semantic_rails/test_window_unknown_keys.py": 1.5,
   "tests/semantic_rails/test_withheld_rank.py": 17.308,
   "tests/semantic_rails/test_zero_through.py": 4.422
 }
