@@ -626,7 +626,7 @@ def test_two_groupings_across_one_link_read_one_stored_row(shop):
             "is many-to-many (a lookup before the one-to-many hop",
         ),
         (  # a room counts whole under each of its bookers (the ledger's
-            # shop/fanout-rooms-by-booker); its largest area has no such reading
+            # shop/one-per-key-rooms-by-booker); its largest area has no such reading
             {
                 "select": [
                     {
