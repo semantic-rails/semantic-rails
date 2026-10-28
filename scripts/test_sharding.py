@@ -1,10 +1,19 @@
-"""Deterministic cost-balanced whole-file partitioning for CI and its flake guard."""
+"""Deterministic cost-balanced whole-file partitioning for CI and its flake guard.
+
+A pull request also runs one sixth of the visible-view sweep (``SWEEP_FILES``): set
+``SR_SWEEP_SEED`` (CI passes the pull request's head commit) and only the parametrized
+cases whose node ID hashes to that seed's slice run there. Each push picks a slice from
+its own commit, so a pull request's pushes cover different sixths; the merge queue and
+every other run leave the seed unset and run every case.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import zlib
 from functools import cache
 from pathlib import Path
 from statistics import median
@@ -13,6 +22,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DURATIONS = ROOT / "tests/shard_durations.json"
+# The visible-view sweep and the hidden-as-unknown matrix: about half the suite's summed
+# test time, in parametrized cases that each check one object or one request shape.
+SWEEP_FILES = frozenset(
+    {
+        "tests/semantic_rails/test_hidden_as_unknown.py",
+        *(f"tests/semantic_rails/test_visible_view_sweep_{index}.py" for index in range(6)),
+    }
+)
+SWEEP_SLICES = 6
 
 
 def assign_files(files: list[str], durations: dict[str, float], count: int) -> dict[str, int]:
@@ -41,9 +59,34 @@ def test_files(root: Path) -> list[str]:
 
 
 @cache
-def shard_owners(root: Path, count: int) -> dict[str, int]:
+def shard_owners(root: Path, count: int, sliced: bool = False) -> dict[str, int]:
     durations = json.loads(DURATIONS.read_text(encoding="utf-8"))
+    if sliced:  # A sweep file costs a sixth of its full run.
+        durations = {
+            file: cost / SWEEP_SLICES if file in SWEEP_FILES else cost
+            for file, cost in durations.items()
+        }
     return assign_files(test_files(root), durations, count)
+
+
+def sweep_slice() -> int | None:
+    """The sweep slice this run takes, or None to run every sweep case."""
+    seed = os.environ.get("SR_SWEEP_SEED", "")
+    if not seed:
+        return None
+    return int(hashlib.sha256(seed.encode()).hexdigest(), 16) % SWEEP_SLICES
+
+
+def in_sweep_slice(nodeid: str, root: Path = ROOT) -> bool:
+    """Whether this run takes the test: every test outside the sweep's parametrized cases,
+    and those cases whose node ID hashes to this run's slice."""
+    chosen = sweep_slice()
+    path, _, name = nodeid.partition("::")
+    if chosen is None or not name.endswith("]"):
+        return True
+    if Path(path).is_absolute():
+        path = Path(path).relative_to(root.resolve()).as_posix()
+    return path not in SWEEP_FILES or zlib.crc32(nodeid.encode()) % SWEEP_SLICES == chosen
 
 
 def _shard() -> tuple[int, int]:
@@ -67,7 +110,7 @@ def in_shard(nodeid: str, root: Path = ROOT) -> bool:
     path = nodeid.split("::", 1)[0]
     if Path(path).is_absolute():
         path = Path(path).relative_to(root).as_posix()
-    return shard_owners(root, count).get(path, 0) == index
+    return shard_owners(root, count, sweep_slice() is not None).get(path, 0) == index
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
@@ -81,7 +124,7 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
         path = collection_path.resolve().relative_to(root).as_posix()
     except ValueError:
         return None
-    owner = shard_owners(root, count).get(path)
+    owner = shard_owners(root, count, sweep_slice() is not None).get(path)
     return True if owner is not None and owner != index else None
 
 
@@ -90,6 +133,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     # Quarantine validates this shard's entries before this wrapper partitions the items.
     yield
     in_shard("")  # Validate configuration even for an empty collection.
-    deselected = [item for item in items if not in_shard(item.nodeid, config.rootpath)]
-    items[:] = [item for item in items if in_shard(item.nodeid, config.rootpath)]
+    root = config.rootpath
+    keep = [in_shard(item.nodeid, root) and in_sweep_slice(item.nodeid, root) for item in items]
+    deselected = [item for item, kept in zip(items, keep, strict=True) if not kept]
+    items[:] = [item for item, kept in zip(items, keep, strict=True) if kept]
     config.hook.pytest_deselected(items=deselected)
+
+
+def pytest_report_header(config: pytest.Config) -> str | None:
+    chosen = sweep_slice()
+    if chosen is None:
+        return None
+    seed = os.environ["SR_SWEEP_SEED"]
+    return f"visible-view sweep: slice {chosen} of {SWEEP_SLICES} (SR_SWEEP_SEED={seed})"

@@ -69,15 +69,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs run Python 3.12 (the version with the warehouse extras) on eight shards.
-        # The merge queue runs the oldest supported Python, 3.12 and the newest on five
-        # shards each: with its four other gates, 19 jobs, inside the GitHub plan's 20
-        # concurrent jobs. Manual runs add 3.13, and the nightly release gate runs it.
+        # PRs run Python 3.12 (the version with the warehouse extras) on five shards,
+        # with one sixth of the visible-view sweep chosen by the head commit
+        # (scripts/test_sharding.py). The merge queue runs the oldest supported Python,
+        # 3.12 and the newest on five shards each, with the whole sweep: with its four
+        # other gates, 19 jobs, inside the GitHub plan's 20 concurrent jobs. Manual runs
+        # add 3.13, and the nightly release gate runs it.
         python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || github.event_name == 'merge_group' && '["3.11", "3.12", "3.14"]' || '["3.11", "3.12", "3.13", "3.14"]') }}
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0, 1, 2, 3, 4, 5, 6, 7]' || '[0, 1, 2, 3, 4]') }}
+        shard: [0, 1, 2, 3, 4]
     env:
-      SR_SHARD_COUNT: ${{ github.event_name == 'pull_request' && '8' || '5' }}
+      SR_SHARD_COUNT: '5'
       SR_SHARD_INDEX: ${{ matrix.shard }}
+      SR_SWEEP_SEED: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -170,7 +173,7 @@ jobs:
           path: backend-results.xml
       - name: Upload coverage data
         if: github.event_name != 'pull_request' && matrix.python-version == '3.14'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: coverage-${{ matrix.shard }}
           path: .coverage.shard-${{ matrix.shard }}
@@ -325,13 +328,13 @@ jobs:
       - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           prune-cache: true
           cache-dependency-glob: uv.lock
       - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-*
           merge-multiple: true

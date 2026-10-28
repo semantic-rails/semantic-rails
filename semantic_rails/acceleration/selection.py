@@ -239,7 +239,7 @@ def _aggregate_relation_rejection_reason(
         return "missing_measure"
     if measure_id not in row.measure_columns:
         return "missing_measure_column"
-    if leaf.dimensions - _aggregate_dimension_coverage(row):
+    if leaf.dimensions - set(row.dimension_columns):  # a query reads only the named columns
         return "missing_dimension"
     prejoined = _prejoined_dimensions(row, config)
     if (

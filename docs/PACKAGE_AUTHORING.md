@@ -1239,6 +1239,13 @@ graph:
         # as_of: end_of_day                     # read at the end of the row's day (default: time)
 ```
 
+The cardinality says whether the window's rows are versions of one row. Declare a history
+whose rows can overlap at one time (an account with two owners at once) `many_to_many`: a time
+then doesn't pick one row, its hop reads "any of" the rows, it is never a route default, and a
+query that would count a row once per overlapping row is refused, unless the relationship
+declares `safety: safe`, which asserts its versions never overlap. Any cardinality with a one
+side reads the version valid at the time.
+
 A query that joins into the table holding the window needs a `time`, so each row reads the
 version valid at its time. Without one, a many-to-one hop into it is refused with
 `FANOUT_UNSAFE`, naming the relationship and the entity, because joining every version would
@@ -1257,6 +1264,12 @@ workspace would read an empty Plan. The day's last version is the one read: a wo
 signs up on Pro and moves to Builder the same day reads Builder, and one whose only version ends
 that day reads none. Route readings and `NULL_PRESERVING_HISTORY` say "valid at the end of the
 day". An unknown key is refused, and so is `as_of` with neither `valid_from` nor `valid_to`.
+
+A `many_to_many` history read at a query's time keeps its cardinality's rule: its versions
+valid at one time can overlap, so a query that would count a row once per overlapping version
+is refused. An explicit `safety: safe` on such a relationship states that its versions never
+overlap: the engine then joins it as one version per row, and nothing checks the data at query
+time, so where versions do overlap, a row counts once per overlapping version.
 
 The end of the day is a wall-clock timestamp in the role's zone, compared with the validity
 columns as the row's own time is:
@@ -2585,7 +2598,8 @@ counts under both. Every response that reads such a route (`validate`,
 `plan` draft using it, carries a
 `ROUTE_PASS_THROUGH` warning: the meaning, what it does to the count, and the
 fixes. `details.route` and `details.meaning` give the route, `details.route_basis`
-its resolution basis (`only_route` or `inherited`),
+its resolution basis (`only_route` or `inherited`; `only_route` in a caller's view that keeps
+one route),
 `details.through` each crossed entity (`entity`, `enters_by`, `leaves_by`
 relationship), and `details.fixes`:
 
@@ -2869,9 +2883,10 @@ their existing behavior.
 
 Every compile/query response carries a `hop_profile`: the root entity, the
 chosen relationship chain per target entity with per-hop direction /
-cardinality / safety and the rule that chose it (`route_basis`: `decided`,
-`colocated_key`, `inherited` or `only_route`, the route rule's rungs 1-4), the
-hop ceiling, and `long_hop_targets` (targets 3+ hops out). Operators can log this to find questions that repeatedly cross
+cardinality / safety and the rule that chose it (`route_basis`: `query` for the call's own
+`routes` row, then `decided`, `colocated_key`, `inherited`, `only_route` or `default`, the
+route rule's rungs 1-5; `only_route` whenever the caller's view keeps one route, whatever
+chose it among routes the caller can't see), the hop ceiling, and `long_hop_targets` (targets 3+ hops out). Operators can log this to find questions that repeatedly cross
 many entities — those are the candidates for a shortcut relationship, an
 authored `model.variants:` rollup, or physical colocation in the
 warehouse.
@@ -2881,8 +2896,12 @@ warehouse.
 Use `model.variants:` when one semantic model is physically stored at multiple
 time grains, such as transaction, daily, weekly, and monthly tables. The model
 continues to own the measures, dimensions, entities, and default time role. Each
-non-transaction variant declares what the rollup table covers and which columns
-or dimensions differ from the transaction table.
+non-transaction variant declares what the rollup table covers, and its `columns:`
+names every measure and dimension column a query may read from it. A query that
+needs a measure or dimension it doesn't name reads the base tables, so the model's
+`relation:` must hold every measure and dimension, whatever its rollups hold. A
+variant that inherits another's `columns:` (`inherits_from`) leaves one out with
+`excludes: {measures: [...], dimensions: [...]}`.
 
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
@@ -2979,7 +2998,10 @@ Routing is conservative in the MVP:
   added up across rollup rows. A column declared `holds: count_distinct` still
   answers them at the rollup's own time grain when every rollup dimension is
   grouped or pinned to one value by an `is` condition, so each result row is one
-  rollup row. The rollup must have one row per time bucket and dimension columns
+  rollup row. A rollup dimension is each one `columns:` names and every other
+  dimension of the model (but an `id` one) the variant doesn't exclude, since the
+  table may be grouped by a column it doesn't name: `excludes:` the dimensions the
+  table isn't grouped by. The rollup must have one row per time bucket and dimension columns
   (and per key of any `grain.entities`); an `is` list of several values or a range on a rollup
   dimension that isn't grouped runs on the base tables.
 - A time role whose `column_timezone` differs from its `timezone` runs on the
@@ -3005,10 +3027,10 @@ Routing is conservative in the MVP:
   group or filter by that column; the base path doesn't join it otherwise and keeps
   such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
-- Every selected measure must have a column in the variant.
-- Every grouped or filtered dimension must be covered by the variant. If a
-  query groups by `customer_id` and the monthly table excludes that dimension,
-  the planner scans the raw relation.
+- Every selected measure must be named in the variant's `columns:`.
+- Every grouped or filtered dimension must be named in the variant's `columns:`.
+  If a query groups by `customer_id` and the monthly table doesn't name that
+  dimension, the planner scans the raw relation.
 - Entity filters on aggregates (`{entity, having, over}`) and other `metric_predicate`
   shapes, including one inside an aggregate's `filter`, do not route through variants yet.
 

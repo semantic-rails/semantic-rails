@@ -139,8 +139,16 @@ Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
 `join`/`wait` take a timeout; `tests/semantic_rails/test_bounded_waits.py`
 enforces it.
 
-Backend CI partitions whole test files into deterministic shards: eight on pull
-requests, which run Python 3.12 only, and five per version elsewhere. Merge groups
+Backend CI partitions whole test files into deterministic shards: five per Python
+version. Pull requests run Python 3.12 only, and one sixth of the visible-view sweep
+(`SWEEP_FILES` in `scripts/test_sharding.py`: the six `test_visible_view_sweep_*` files
+and `test_hidden_as_unknown.py`, about half the suite's test time). The pull request's
+head commit seeds the choice: a parametrized case in those files runs when its node ID
+hashes to that commit's sixth, so each push covers a different sixth, and every
+unparametrized test there always runs. The merge queue and manual runs take the whole
+sweep, so a regression a pull request's sixth missed still stops the merge. Set
+`SR_SWEEP_SEED` to a pull request's head commit to rerun its sixth locally; the test
+report header names the slice. Merge groups
 cover the oldest and newest supported Pythons, 3.11 and 3.14, plus 3.12; a failure
 on any of them ejects the change before merging. Python 3.13 runs in every release's
 publish suite (`publish.yml` tests 3.12 and 3.13 before anything is uploaded), in
