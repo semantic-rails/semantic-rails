@@ -116,7 +116,10 @@ tool/schema drift cannot be merged silently.
 
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
-- `valid-values`: a dimension's governed values.
+- `valid-values`: a dimension's governed values. `search` keeps the values containing its
+  text, ignoring case, and `limit`/`offset` page them in the warehouse; `has_more` says
+  whether another page follows, and `total_count` is exact once a page holds the last match
+  (`null` before). See [valid-values](QUERY_API.md#post-apiv1valid-values).
 - `plan`: draft a query call from a natural-language question. A fully matched
   package example uses its validated authored query (`best.pattern:
   package_example`), including its groupings, filters and limit. An example
