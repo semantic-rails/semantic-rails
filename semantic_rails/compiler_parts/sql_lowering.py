@@ -689,10 +689,15 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         # When there are no metric filters (final_where empty), the CTE adds
         # only a layer of `projected.X AS X` aliasing. ORDER BY still works
         # because Snowflake and DuckDB both allow ordering by output alias —
-        # we rewrite `projected.X` → bare `X` in the ORDER BY clause.
+        # we rewrite `projected.X` → bare `X` in the ORDER BY clause. A total's coarser
+        # call, joined beside the rows, holds the keys it keeps too: a key reads `base.X`.
         inlined_order_by = [
             SqlOrder(
-                SqlIdentifier(parts=[item.expression.parts[-1]])
+                SqlIdentifier(
+                    parts=["base", item.expression.parts[-1]]
+                    if total_joins and item.expression.parts[-1] in key_aliases
+                    else [item.expression.parts[-1]]
+                )
                 if isinstance(item.expression, SqlIdentifier)
                 and len(item.expression.parts) == 2
                 and item.expression.parts[0] == "projected"

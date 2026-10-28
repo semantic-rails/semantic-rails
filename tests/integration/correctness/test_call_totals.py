@@ -151,6 +151,33 @@ def test_a_total_reads_the_rows_the_call_keeps(duckdb_backend):
     assert {row[STORE] for row in over_ten["rows"]} == {"a"}
 
 
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_rows_beside_a_total_come_in_the_order_of_their_own_keys(request, backend):
+    """The coarser call joined beside the rows holds keys of its own (here the period): an
+    order_by on the call's period and group keys reads the call's."""
+    source = request.getfixturevalue(f"{backend}_backend")
+    call = {
+        "select": [REVENUE, _total(REVENUE, [STORE])],
+        "group_by": [STORE],
+        "time": QUARTER,
+        "order_by": [
+            {"field": "period", "direction": "desc"},
+            {"field": STORE, "direction": "desc"},
+        ],
+    }
+    rows = source.runtimes["utc_authored"].query(call)["rows"]
+    reference = source.reference(
+        "SELECT CAST(date_trunc('quarter', o.ordered_at) AS DATE), o.store_id, q.total "
+        "FROM orders AS o JOIN (SELECT date_trunc('quarter', ordered_at) AS quarter, "
+        "SUM(amount) AS total FROM orders GROUP BY 1) AS q "
+        "ON q.quarter = date_trunc('quarter', o.ordered_at) "
+        "GROUP BY 1, 2, 3 ORDER BY 1 DESC, 2 DESC NULLS LAST"
+    )
+    assert [(row["period"], row[STORE], Decimal(row["total"])) for row in rows] == [
+        (_period(period), store, Decimal(total)) for period, store, total in reference
+    ]
+
+
 def test_a_total_over_a_window_and_a_filled_series(duckdb_backend):
     runtime = duckdb_backend.runtimes["utc_authored"]
     window = {"temporal_role": ORDERED_AT, "start": "2024-01-01", "end": "2024-07-01"}
