@@ -14,6 +14,7 @@ import copy
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from collections import Counter
@@ -41,6 +42,7 @@ from .request_context import (
 )
 from .request_payload import (
     DISCOVER_KIND_NAMES,
+    DISCOVER_KINDS,
     checked_discover_kinds,
     parse_string_list,
     singular_kinds,
@@ -406,14 +408,14 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "kinds": {
                     "type": ["string", "array"],
                     "items": {"type": "string", "enum": sorted(DISCOVER_KIND_NAMES)},
-                    "description": "Default: all but relationship.",
+                    "description": "Unset: all but relationship, temporal_role, value_domain.",
                 },
                 "query": QUERY_SEED_SCHEMA,
                 "stage": {
                     "type": "string",
                     "description": (
-                        "Builder stage that tunes ranking: initial, post_measure, "
-                        "post_dimension or comparison. Inferred when omitted."
+                        "Ranking stage: initial, post_measure, post_dimension or "
+                        "comparison; inferred if omitted."
                     ),
                 },
                 "verbosity": _VERBOSITY_MINIMAL,
@@ -423,8 +425,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "type": "integer",
                     "minimum": 1,
                     "description": (
-                        "Per kind (default 10); with empty terms, ids per kind "
-                        f"(default {_DISCOVER_ID_PAGE})."
+                        f"Per kind: default 10, or {_DISCOVER_ID_PAGE} ids with empty terms."
                     ),
                 },
                 "offset": {
@@ -704,20 +705,6 @@ def list_resource_definitions() -> list[dict[str, Any]]:
 
 def list_prompt_definitions() -> list[dict[str, Any]]:
     return [definition.to_dict() for definition in PROMPT_DEFINITIONS]
-
-
-_CATALOG_KIND_FILTERS: frozenset[str] = frozenset(
-    {
-        "entity",
-        "dimension",
-        "measure",
-        "segment",
-        "temporal_role",
-        "relationship",
-        "value_domain",
-        "metric",
-    }
-)
 
 
 def _argument_error(message: str, *, field: str, value: Any | None = None) -> SemanticLayerError:
@@ -1350,6 +1337,8 @@ _DISCOVER_BUCKETS = (
     "dimensions",
     "entities",
     "relationships",
+    "temporal_roles",
+    "value_domains",
     "dimension_values",
     "blocked",
 )
@@ -2021,7 +2010,7 @@ class SemanticLayerMCPAdapter:
                 # any other kind is refused, never answered with an empty list.
                 granted = policy_context.get("metric_allowlist") is not None
                 requested_kinds = checked_discover_kinds(
-                    requested_kinds, GRANT_DISCOVER_KINDS if granted else _CATALOG_KIND_FILTERS
+                    requested_kinds, GRANT_DISCOVER_KINDS if granted else DISCOVER_KINDS
                 )
                 catalog = operations.run(
                     "catalog",
@@ -2030,6 +2019,21 @@ class SemanticLayerMCPAdapter:
                     verbosity="summary",
                     policy_context=policy_context,
                 )
+                if "dimension_value" in requested_kinds:
+                    # The catalog lists no values; discover's own value cards (the caller's
+                    # view, unranked) are their ids.
+                    values = operations.run(
+                        "discover",
+                        self.runtime,
+                        terms="",
+                        kinds=["dimension_value"],
+                        partial_query={"policy_context": policy_context},
+                        verbosity="compact",
+                        limit=sys.maxsize,
+                    )
+                    catalog["dimension_value_ids"] = sorted(
+                        str(row["id"]) for row in values.get("dimension_values") or []
+                    )
                 kinds = set(requested_kinds)
                 size = _coerce_int(args.get("limit"), _DISCOVER_ID_PAGE, field="limit", minimum=1)
                 start = _coerce_int(args.get("offset"), 0, field="offset", minimum=0)

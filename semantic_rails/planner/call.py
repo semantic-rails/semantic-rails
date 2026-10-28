@@ -511,11 +511,13 @@ def _check(config: Any, call: Call) -> None:
             )
     aliases = call.aliases
     if len(set(aliases)) != len(aliases):
+        repeated = next(alias for index, alias in enumerate(aliases) if alias in aliases[:index])
         raise refusal(
             "select",
-            "every select item has its own alias",
+            f"every select item has its own alias; '{repeated}' names two",
             fix="Give each select item its own 'as'.",
             code="DUPLICATE_OUTPUT_ALIAS",
+            alias=repeated,
         )
     for index, row in enumerate(call.where):
         for item in row.conditions if isinstance(row, EntityFilter) else (row,):

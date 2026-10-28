@@ -19,6 +19,7 @@ import re
 from dataclasses import replace
 from typing import Any
 
+from ..naming import last_token
 from ._base import RuntimeCompositionDraft
 from .call import Call, QueryBuilder, Time
 from .exclusions import exclusion_clauses, exclusion_regions
@@ -138,8 +139,12 @@ def _draft_for_choice(
     config = runtime._config
     # The caller's order_by may name a column this draft doesn't add; the merge restores it.
     builder = QueryBuilder(config, replace(partial_query or Call(), order_by=()))
-    if str(choice["id"]) not in {item.ref for item in builder.build().select}:
-        builder.select(str(choice["id"]))
+    seeded, chosen = builder.build(), str(choice["id"])
+    # A caller's select item that already answers under the choice's column name (a metric
+    # over the measure discover ranked, say) stands for it: a call names each column once.
+    taken = set(seeded.aliases)
+    if chosen not in {item.ref for item in seeded.select} and last_token(chosen) not in taken:
+        builder.select(chosen)
     builder.group(*_choose_group_dimensions(runtime, builder.build(), intent))
     if builder.build().time is None:
         builder.time(_time_from_text(runtime, intent, [str(choice["id"])]))

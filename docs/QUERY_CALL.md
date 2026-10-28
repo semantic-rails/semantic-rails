@@ -148,9 +148,9 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
   `OUTPUT_NAME_GOVERNED`, naming the governed object and a name to use instead, so its numbers
   never read as the governed one's. The object itself answers under its name however it is
   written: by id, as its default aggregate, or rounded with `ROUND`.
-- A `dimension.` id in `select` is moved to `group_by` when `group_by` is empty or already
-  lists it (the answer notes `QUERY_SHORTHAND_NORMALIZED`); beside a `group_by` that lists
-  other dimensions it is refused.
+- Each `dimension.` id in `select` is moved to `group_by` when the call's `group_by` is empty
+  or already lists it (one `QUERY_SHORTHAND_NORMALIZED` note lists every id moved); beside a
+  `group_by` that lists other dimensions it is refused.
 - Without `select`, a call with `group_by` lists the distinct rows:
 
 ```json

@@ -23,7 +23,12 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import discover_payload
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.request_context import context_from_policy_context
-from semantic_rails.request_payload import DISCOVER_RANKED_KINDS, parse_string_list
+from semantic_rails.request_payload import (
+    DISCOVER_KIND_NAMES,
+    DISCOVER_KINDS,
+    parse_string_list,
+    singular_kinds,
+)
 from semantic_rails.resource_access import GRANT_DISCOVER_KINDS
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
@@ -69,6 +74,8 @@ def _ids(response: dict[str, Any]) -> list[str]:
             "dimension_values",
             "entities",
             "relationships",
+            "temporal_roles",
+            "value_domains",
         )
         for card in response.get(bucket) or []
     ]
@@ -138,7 +145,6 @@ def test_string_encoded_kinds_filter_empty_terms_listing(adapter: SemanticLayerM
         ("revenue", ["metirc"]),
         ("revenue", '["metirc"]'),
         ("revenue", "metric,bogus"),
-        ("revenue", "temporal_role"),  # a catalog kind, but never ranked
         ("", ["bogus"]),
         ("revenue", '["metric"'),
         ("revenue", '{"kind": "metric"}'),
@@ -215,12 +221,12 @@ def test_refusal_hint_for_an_unknown_kind_names_the_valid_kinds(
 ) -> None:
     out = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["metirc"]})
     assert out["errors"][0]["details"]["unknown_kinds"] == ["metirc"]
-    assert out["errors"][0]["details"]["valid_kinds"] == sorted(DISCOVER_RANKED_KINDS)
+    assert out["errors"][0]["details"]["valid_kinds"] == sorted(DISCOVER_KINDS)
     hints = out["errors"][0]["recovery_hints"]
     (hint,) = [h for h in hints if h["kind"] == "use_valid_kind"]
     assert "['metirc']" in hint["message"]
-    assert all(kind in hint["message"] for kind in DISCOVER_RANKED_KINDS)
-    assert hint["details"]["valid_kinds"] == sorted(DISCOVER_RANKED_KINDS)
+    assert all(kind in hint["message"] for kind in DISCOVER_KINDS)
+    assert hint["details"]["valid_kinds"] == sorted(DISCOVER_KINDS)
     assert not [h for h in hints if h["kind"] == "use_string_or_array"]
     assert "argument_type" not in out["errors"][0]["details"]
 
@@ -406,11 +412,11 @@ def test_a_limit_that_would_empty_the_buckets_is_refused(runtime: Any, limit: in
     assert raised.value.details["field"] == "limit"
 
 
-def test_http_empty_terms_ranks_and_refuses_what_it_cannot_rank(runtime: Any) -> None:
+def test_http_empty_terms_ranks_every_kind(runtime: Any) -> None:
     service = SemanticHTTPService(runtime)
-    with pytest.raises(SemanticLayerError) as raised:
-        service.handle("POST", "/discover", {"terms": "", "kinds": ["temporal_role"]})
-    assert raised.value.details["unknown_kinds"] == ["temporal_role"]
+    out, status = service.handle("POST", "/discover", {"terms": "", "kinds": ["temporal_role"]})
+    assert status == 200 and out["temporal_roles"]
+    assert not out["dimensions"] and "relationships" not in out
 
 
 class _FakeRuntime:
@@ -548,6 +554,9 @@ def test_relationships_are_ranked_only_when_kinds_names_them(
         ("customer", "segment", "segments"),
         ("store", "dimension_value", "dimension_values"),
         ("store", "relationship", "relationships"),
+        ("order time", "temporal_role", "temporal_roles"),
+        ("product type", "value_domain", "value_domains"),
+        ("", "dimension_value", "dimension_values"),
         ("", "temporal_role", "temporal_roles"),
         ("", "value_domain", "value_domains"),
         ("", "relationship", "relationships"),
@@ -574,7 +583,83 @@ def test_advertised_discover_schema_accepts_supported_kinds(
     response = adapter.call_tool("discover", arguments)
     assert response["ok"] is True, response
     if not terms:
-        assert f"{kind}_ids" in response["catalog"]
+        assert response["catalog"][f"{kind}_ids"], kind
+    else:
+        assert isinstance(response[plural], list), kind
+
+
+def test_the_schema_offers_exactly_the_kinds_discover_takes() -> None:
+    """One source of truth: the schema's enum is the handler's kinds and their plurals."""
+    tool = next(row for row in list_tool_definitions() if row["name"] == "discover")
+    enum = tool["inputSchema"]["properties"]["kinds"]["items"]["enum"]
+    assert enum == sorted(DISCOVER_KIND_NAMES)
+    assert set(enum) >= DISCOVER_KINDS and set(singular_kinds(enum)) == DISCOVER_KINDS
+    # Every other spelling is a kind's plural.
+    assert all(singular_kinds([name]) != [name] for name in set(enum) - DISCOVER_KINDS)
+
+
+@pytest.mark.parametrize("name", sorted(DISCOVER_KIND_NAMES))
+@pytest.mark.parametrize("terms", ["order time", ""], ids=["ranked", "listed"])
+def test_every_kind_the_schema_offers_is_accepted(
+    adapter: SemanticLayerMCPAdapter, name: str, terms: str
+) -> None:
+    out = adapter.call_tool("discover", {"terms": terms, "kinds": [name]})
+    assert out["ok"] is True, out
+
+
+def test_a_time_role_search_ranks_the_roles_beside_the_dimensions(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    """A search for a time axis by its words finds the time role and the dimension it times."""
+    arguments = {"terms": "order time", "kinds": ["dimension", "temporal_role"]}
+    out = adapter.call_tool("discover", arguments)
+    assert out["ok"] is True, out
+    assert out["temporal_roles"][0] == {
+        "id": "temporal_role.jaffle_order_time",
+        "dimension": "dimension.jaffle_order_ordered_at",
+        "supported_grains": ["day", "week", "month", "quarter", "year"],
+    }
+    assert out["dimensions"][0]["id"] == "dimension.jaffle_order_ordered_at"
+    assert not out["measures"] and not out["metrics"]
+    assert NO_MATCH not in _hints_text(out)
+
+
+def test_a_value_domain_search_ranks_the_domain_by_its_values(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    out = adapter.call_tool("discover", {"terms": "Food", "kinds": "value_domains"})
+    assert out["ok"] is True, out
+    rows = {row["id"]: row for row in out["value_domains"]}
+    assert rows["value_domain.jaffle_item_product_type"]["dimensions"] == [
+        "dimension.jaffle_item_product_type"
+    ]
+    miss = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["temporal_role"]})
+    assert miss["ok"] is True and not miss["temporal_roles"]
+    assert "No semantic objects of kind ['temporal_role'] matched" in _hints_text(miss)
+
+
+def test_time_roles_and_value_domains_are_ranked_only_when_named(
+    adapter: SemanticLayerMCPAdapter, runtime: Any
+) -> None:
+    for out in (
+        adapter.call_tool("discover", {"terms": "order time"}),
+        discover_payload(runtime, terms="order time"),
+    ):
+        assert "temporal_roles" not in out and "value_domains" not in out
+
+
+def test_the_id_listing_lists_dimension_values(adapter: SemanticLayerMCPAdapter) -> None:
+    out = adapter.call_tool("discover", {"terms": "", "kinds": ["dimension_value"], "limit": 3})
+    listed = out["catalog"]["dimension_value_ids"]
+    assert listed == sorted(listed) and len(listed) == 3
+    everything = adapter.call_tool(
+        "discover", {"terms": "", "kinds": ["dimension_value"], "limit": 1000}
+    )["catalog"]["dimension_value_ids"]
+    ranked = adapter.call_tool("discover", {"terms": "Food", "kinds": ["dimension_value"]})
+    assert {row["id"] for row in ranked["dimension_values"]} <= set(everything)
+    (warning,) = out["warnings"]
+    assert warning["code"] == "DISCOVER_IDS_TRUNCATED"
+    assert warning["details"]["remaining"] == {"dimension_value": len(everything) - 3}
 
 
 def test_advertised_discover_schema_accepts_comma_separated_kinds(

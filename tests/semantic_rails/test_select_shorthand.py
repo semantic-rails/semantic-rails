@@ -3,6 +3,8 @@ refused with the reference to send."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from semantic_rails.ast import normalize_partial_query, normalize_query
@@ -78,6 +80,47 @@ def test_runtime_lifts_a_dimension_in_select_into_group_by_and_reports_it(runtim
         runtime.close()
 
 
+TYPE = "dimension.jaffle_customer_type"
+
+
+def test_runtime_lifts_every_dimension_in_select_with_one_notice(runtime_factory):
+    """Two dimensions in select move to group_by like one does, in their order, and one
+    notice lists both with the group_by to send."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        canonical = runtime.compile(_call([METRIC], group_by=[DIM, TYPE]), sql_profile="audit")
+        shorthand = runtime.compile(_call([DIM, METRIC, TYPE]), sql_profile="audit")
+        assert shorthand["rendered_sql"] == canonical["rendered_sql"]
+        (note,) = [w for w in shorthand["warnings"] if w["code"] == "QUERY_SHORTHAND_NORMALIZED"]
+        assert note["path"] == "select"
+        assert note["details"] == {
+            "path": "select",
+            "received": [DIM, TYPE],
+            "canonical": {"group_by": [DIM, TYPE]},
+        }
+        assert note["message"].startswith("select[0] and select[2] were accepted as shorthand")
+        assert json.dumps({"group_by": [DIM, TYPE]}, separators=(",", ":")) in note["message"]
+        # An error after the lifted dimensions keeps the caller's index.
+        ratio = {"kind": "ratio", "numerator": MEASURE}
+        (error,) = runtime.validate(_call([DIM, TYPE, {"expression": ratio, "as": "x"}]))["errors"]
+        assert error["details"]["path"] == "select[2].expression"
+    finally:
+        runtime.close()
+
+
+def test_a_dimension_in_select_beside_another_grouping_is_still_refused(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        (error,) = runtime.validate(_call([METRIC, DIM, TYPE], group_by=[TYPE]))["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "select[1]"
+    assert error["message"] == "select[1]: a dimension splits the answer; it belongs in group_by"
+    (hint,) = error["recovery_hints"]
+    assert hint["message"] == f"Add '{DIM}' to group_by and remove it from select."
+
+
 @pytest.mark.parametrize(("shorthand", "canonical"), ACCEPTED)
 def test_runtime_refuses_a_bare_select_item_with_the_reference_to_send(
     runtime_factory, shorthand, canonical
@@ -95,9 +138,10 @@ def test_runtime_refuses_a_bare_select_item_with_the_reference_to_send(
     assert canonical["expression"].get("metric", MEASURE) in hint["message"]
 
 
-def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory):
-    shorthand = {"select": [METRIC, DIM]}
-    canonical = {"select": [METRIC], "group_by": [DIM]}
+@pytest.mark.parametrize("dimensions", [[DIM], [DIM, TYPE]], ids=["one", "two"])
+def test_plan_accepts_the_shorthand_execute_accepts(runtime_factory, dimensions):
+    shorthand = {"select": [METRIC, *dimensions]}
+    canonical = {"select": [METRIC], "group_by": dimensions}
     runtime = runtime_factory("jaffle_shop")
     try:
         planned = plan_payload(runtime, intent="revenue by store", partial_query=shorthand)

@@ -363,7 +363,7 @@ def test_unsupported_expression_reports_received_kind_and_request_path(
 # execute embeds the call's schema with each expression kind's keys as one line of a table.
 # A budget may only shrink.
 TOOL_MAX_BYTES = {
-    "discover": 1_751,
+    "discover": 1_732,
     "inspect": 1_123,
     "valid-values": 1_388,
     "plan": 1_887,
@@ -382,7 +382,7 @@ def test_each_tool_definition_fits_its_byte_budget() -> None:
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= 13_922  # the call's totals field
+    assert len(json_text({"tools": list_tool_definitions()})) <= 13_910  # discover's kinds
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without

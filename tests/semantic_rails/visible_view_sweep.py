@@ -129,6 +129,11 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
         out.append(
             (f"http /discover {terms!r}", http("/discover", {"terms": terms, "limit": 50}), terms)
         )
+    # The kinds discover ranks only when named, and (empty terms) the value ids its listing gives.
+    named = ["relationship", "temporal_role", "value_domain", "dimension_value"]
+    for terms in ("", "time", "store"):
+        arguments = {"terms": terms, "kinds": named, "limit": 50}
+        out.append((f"mcp discover {terms!r} named kinds", mcp("discover", arguments), terms))
     for row in object_rows(config):
         if row.id not in visible:
             continue
