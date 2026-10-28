@@ -163,6 +163,7 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
                 for item in node.order_by
             ],
             limit=node.limit,
+            offset=node.offset,
             ctes=[
                 SqlCte(
                     name=rename.get(cte.name, cte.name),

@@ -1,0 +1,7 @@
+schema_version: 1
+package:
+  id: vendors
+  namespace: vendors
+  warehouse: duckdb
+  default_db: data/warehouse.duckdb
+  seed: {kind: sql_script, source: data/seed.sql}

@@ -1375,5 +1375,6 @@ def attach_relation_ctes(config: PackageConfig, query: SqlSelect) -> SqlSelect:
         qualify=query.qualify,
         order_by=query.order_by,
         limit=query.limit,
+        offset=query.offset,
         ctes=[*relation_ctes, *query.ctes],
     )

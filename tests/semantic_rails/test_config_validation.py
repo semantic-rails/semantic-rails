@@ -16,6 +16,7 @@ from semantic_rails import config as config_module
 from semantic_rails.cli.reports import project_validation_report
 from semantic_rails.config import resolve_repo_path
 from semantic_rails.config_validation import (
+    PackageReference,
     _run_probe,
     parse_config_report,
     resolve_package_reference,
@@ -1264,7 +1265,37 @@ def test_validate_config_generates_query_time_for_time_required_metrics(tmp_path
 def test_validation_warns_on_a_filter_value_the_data_lacks(
     tmp_path: Path, op: str, value: str | list[str], suggestions: list[str | None]
 ):
-    package_dir = tmp_path / "status_filter"
+    ref = _status_filter_package(tmp_path / "status_filter", op, value)
+    assert _suggested(project_validation_report(ref, mode="parse")["warnings"]) == []
+    for mode in ("runtime", "full"):
+        report = project_validation_report(ref, mode=mode)
+        assert report["ok"] is True, report["errors"]
+        assert _suggested(report["warnings"]) == suggestions, mode
+
+
+@pytest.mark.parametrize(("ceiling", "suggestions"), [(2, ["completed"]), (1, [])])
+def test_filter_values_are_checked_only_when_every_value_was_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ceiling: int, suggestions: list[str]
+):
+    # Two statuses: a valid-values ceiling of two reads both, so the typo is caught; a ceiling
+    # of one leaves a value unread, so the dimension is skipped.
+    monkeypatch.setenv("SEMANTIC_RAILS_MAX_VALID_VALUES_LIMIT", str(ceiling))
+    ref = _status_filter_package(tmp_path / "status_filter", "=", "Completed")
+    report = project_validation_report(ref, mode="runtime")
+    assert report["ok"] is True, report["errors"]
+    assert _suggested(report["warnings"]) == suggestions
+
+
+def _suggested(warnings: list) -> list[str | None]:
+    return [
+        w["details"]["suggestion"]
+        for w in warnings
+        if isinstance(w, dict) and w.get("code") == "FILTER_VALUE_NOT_FOUND"
+    ]
+
+
+def _status_filter_package(package_dir: Path, op: str, value: str | list[str]) -> PackageReference:
+    """Orders, completed and pending, and a metric whose filter compares their status."""
     _write_minimal_package(
         package_dir,
         extra_dimensions={
@@ -1295,20 +1326,7 @@ def test_validation_warns_on_a_filter_value_the_data_lacks(
         "INSERT INTO order_fact VALUES (1, '2024-01-01', 'completed'), (2, '2024-01-02', 'pending');",
         encoding="utf-8",
     )
-    ref = resolve_package_reference(path=str(package_dir))
-
-    def suggested(warnings: list) -> list[str | None]:
-        return [
-            w["details"]["suggestion"]
-            for w in warnings
-            if isinstance(w, dict) and w.get("code") == "FILTER_VALUE_NOT_FOUND"
-        ]
-
-    assert suggested(project_validation_report(ref, mode="parse")["warnings"]) == []
-    for mode in ("runtime", "full"):
-        report = project_validation_report(ref, mode=mode)
-        assert report["ok"] is True, report["errors"]
-        assert suggested(report["warnings"]) == suggestions, mode
+    return resolve_package_reference(path=str(package_dir))
 
 
 def test_validate_config_continues_after_failures_and_reports_execution_errors(tmp_path: Path):

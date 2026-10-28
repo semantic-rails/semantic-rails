@@ -1355,8 +1355,7 @@ def _data_values(runtime: Runtime, dimension_id: str) -> list[str]:
         )
     except SemanticLayerError:
         return []
-    # A full page, one slot of which a NULL row can take, may hide more values.
-    if payload["total_count"] >= limit - 1:
+    if payload["has_more"]:
         return []
     return [str(row["value"]) for row in payload["values"]]
 

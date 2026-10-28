@@ -610,6 +610,8 @@ class SqlSelect:
     qualify: list[SqlExpr] = field(default_factory=list)
     order_by: list[SqlOrder] = field(default_factory=list)
     limit: int | None = None
+    # Rows the statement skips before its first (engine-only: a valid-values page).
+    offset: int | None = None
     ctes: list[SqlCte] = field(default_factory=list)
     distinct: bool = False
     observation_scan: bool = False  # Engine-only coverage/observation scan, filter every read.

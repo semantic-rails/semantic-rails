@@ -72,6 +72,7 @@ from .compiler import (
     bind_query,
     compile_query,
 )
+from .compiler import value_page as page_values
 from .compiler_parts.empty_groups import (
     CoverageClock,
     observation_scope,
@@ -1938,7 +1939,12 @@ class Runtime:
         )
 
     @runtime_request_scope
-    def query_internal(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def query_internal(
+        self, payload: dict[str, Any], *, value_page: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Run an engine payload. ``value_page`` (valid-values' ``column``, ``search`` and
+        ``offset``) runs a value listing as one page of its matching values
+        (:func:`semantic_rails.compiler.value_page`)."""
         from .runtime_parts.answer_warnings import (
             _compiled_warnings,
             _no_data_yet_warnings,
@@ -1955,6 +1961,8 @@ class Runtime:
         policy_context = _policy_context(payload)
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
+            if value_page is not None:
+                compiled = page_values(compiled, self._config, **value_page)
         except SemanticLayerError as exc:
             raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
         zone = _time_zone(self._config, compiled)

@@ -190,6 +190,12 @@ _KIND_TYPES = {
 }
 
 
+def reads_text(data_type: Any) -> bool:
+    """Whether a text word reads values of ``data_type``: text, or a type nothing classified."""
+    canonical = str(data_type or "").strip().lower()
+    return _KIND_TYPES.get(canonical, canonical) in {"string", ""}
+
+
 def check_text_operand(
     word: str, data_type: Any, path: str, subject: str, *, comparison: bool = False
 ) -> None:
@@ -200,7 +206,7 @@ def check_text_operand(
     if comparison:
         use = "a comparison with = or <> and the exact values"
     text_op = word in TEXT_WORDS or _compact(word).replace("_", " ") in LIKE_SPELLINGS
-    if text_op and canonical not in {"string", ""}:
+    if text_op and not reads_text(data_type):
         raise SemanticLayerError(
             "INVALID_QUERY",
             f"{path}: '{word}' matches text, and {subject} is {data_type}",

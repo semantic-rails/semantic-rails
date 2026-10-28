@@ -135,6 +135,8 @@ class SqlDialect:
     # Whether LIKE needs an explicit ``ESCAPE '\\'`` (BigQuery and ClickHouse escape with a
     # backslash by default and have no ESCAPE clause).
     like_escape_clause = True
+    # Whether OFFSET comes before LIMIT (Trino's order); elsewhere ``LIMIT n OFFSET m``.
+    offset_before_limit = False
     # Whether names the SQL leaves unquoted are case-sensitive (ClickHouse); elsewhere a warehouse
     # reads them in any ASCII case.
     identifiers_case_sensitive = False
@@ -1199,6 +1201,7 @@ class AthenaDialect(SqlDialect):
 
     name: str = "athena"
     reads_coverage = True
+    offset_before_limit = True
     boolean_bounds = ("BOOL_AND", "BOOL_OR")
     call_names = PORTABLE_CALL_NAMES | {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"}
     date_diff_units = ()  # its native date_diff counts complete elapsed units
