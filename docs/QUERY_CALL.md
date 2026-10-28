@@ -186,22 +186,20 @@ carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
 ### Groups across a one-to-many hop
 
-A dimension of a child entity (an order's items, a department's rooms) holds several values per
-row of the measure's entity. Grouped by one, each row of the measure's entity counts once, with
-its whole value, in every group it has a child row in: order revenue by item product type is the
-revenue of the orders that included each type, and a room in two departments counts in each.
+A dimension of a child entity (an order's tags or items, a department's courses) holds several
+values per row of the measure's entity. Grouped by one, each row of the measure's entity counts
+once, with its whole value, in every group it has a child row in: departments by course level
+counts a department under each level it teaches, and order revenue by tag is the revenue of the
+orders that carry each tag.
 
-```json
-{"select": ["measure.jaffle.revenue_usd"], "group_by": ["dimension.jaffle_product_type"]}
-```
-
-An order holding a beverage and a jaffle counts its whole total under both, so the two groups
-add up to more than all revenue (691,101.53 and 485,267.73 of 745,893.03). Item revenue
-(`measure.jaffle.item_revenue_usd`) splits the totals over the items instead.
-
-- A sum, count, average or distinct count of the entity's own measure is over one row per
-  (entity key, group). An average is over the rows in each group, and a ratio of two measures of
-  the entity divides each group's own totals.
+- A count of the rows (a `count`, a distinct count, or a sum of a constant such as a row count)
+  has that one reading and is answered. A sum or average of a value is answered while no measure
+  of an entity across the hop adds a value: an order's tags carry none, so revenue by tag counts
+  each order's whole amount. Where the child carries one (items with their own revenue), the
+  question reads as that measure as often ("revenue by product type"), so the call is refused
+  with `MIXED_GRAIN_INVALID` as before, and its hint names the measure at the child's grain.
+- Each is over one row per (entity key, group); an average is over the rows in each group, and a
+  ratio of two measures of the entity divides each group's own totals.
 - The hops must be one-to-many from the measure's entity, each joined on the declared key of its
   one side, before any lookup: orders to their items, then each item's product, is answered;
   orders to their customer, then the customer's sessions, is many-to-many and refused.
@@ -209,18 +207,16 @@ add up to more than all revenue (691,101.53 and 485,267.73 of 745,893.03). Item 
   with no value is the NULL group.
 - The groups can overlap, so their sum can exceed the total. The answer's `REWRITE_APPLIED`
   (`fanout_dedup`) says so and names the hop: `details.overlapping_groups` holds the `group_by`
-  ids and the one-to-many `relationships`, and `whole_amounts: true` marks a sum or average of
-  a value, which a measure of the child could split instead. `plan` repeats that one in its
-  `warnings`, so a draft of "revenue by product type" says which revenue it counts.
+  ids and the one-to-many `relationships`.
 - A [total](#coarser-totals) or [`totals`](#totals) row is the call without the grouping, so it
-  counts each row once (all revenue above). A share over such a grouping is refused with
-  `MIXED_GRAIN_INVALID`: its total would add up the overlapping groups. A share over a column of
-  the entity's own within each group (each coupon's share within a product type) stays.
-- Still refused with `MIXED_GRAIN_INVALID`: a median, minimum, maximum or other statistic; a
-  non-additive measure, a stock, or a measure whose rows are finer than its entity's key; a
-  window, per-entity value, distribution or metric predicate over it; an item that combines it
-  with a measure of another entity (order revenue per item revenue); and a second grouping or
-  filter across a one-to-many hop beside it.
+  counts each row once. A share over such a grouping is refused with `MIXED_GRAIN_INVALID`: its
+  total would add up the overlapping groups. A share over a column of the entity's own within
+  each group (each coupon's share within a tag) stays.
+- Also refused as before: a median, minimum, maximum or other statistic; a non-additive measure,
+  a stock, or a measure whose rows are finer than its entity's key; a window, per-entity value,
+  distribution or metric predicate over it; an item that combines it with a measure of another
+  entity (order revenue per item); and a second grouping or filter across a one-to-many hop
+  beside it.
 - A relationship authored `allowed_directions: [forward]` is never walked from its one side, so
   such a grouping is refused with `PATH_NOT_FOUND` naming it.
 
@@ -1263,7 +1259,7 @@ The engine trusts the data as it is stored in three cases:
   Keep join columns the same type.
 - **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
   their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
-  children carry, with its whole value in a sum ([groups across a one-to-many
+  children carry, with its whole value ([groups across a one-to-many
   hop](#groups-across-a-one-to-many-hop)), so the totals across
   groups can exceed the whole, and a parent with no child rows is left out of that grouping.
   Combined labels ("Lab + Office") are a possible future option.
@@ -1315,7 +1311,7 @@ The engine trusts the data as it is stored in three cases:
   Keep join columns the same type.
 - **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
   their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
-  children carry, with its whole value in a sum ([groups across a one-to-many
+  children carry, with its whole value ([groups across a one-to-many
   hop](#groups-across-a-one-to-many-hop)), so the totals across
   groups can exceed the whole, and a parent with no child rows is left out of that grouping.
   Combined labels ("Lab + Office") are a possible future option.

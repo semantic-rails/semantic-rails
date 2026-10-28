@@ -1327,6 +1327,21 @@ def test_shapes_without_one_whole_value_reading_keep_their_refusal(
     assert error["why_invalid"] == why
 
 
+# Where items carry no value, the orders' whole totals are the one reading of a sum, and these
+# still refuse as they did: each refusal is the narrower check's, word for word.
+KEPT_BARE = {name: KEPT[name] for name in ("median", "cumulative", "group_and_filter_one_child")}
+KEPT_BARE["max"] = (_ask("revenue", "max", group_by=[TYPE]), _grouped("max"))
+
+
+@pytest.mark.parametrize(("query", "why"), KEPT_BARE.values(), ids=KEPT_BARE)
+def test_without_an_item_amount_the_other_shapes_keep_their_refusal(
+    bare: Path, query: dict[str, Any], why: str
+) -> None:
+    error = _refusal(bare, query)
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert error["why_invalid"] == why
+
+
 def test_a_ratio_with_a_measure_of_another_entity_keeps_its_refusal(bare: Path) -> None:
     """With no item amount, order revenue by type answers, but order revenue per item row
     still sets an order's whole total against counts split over its items."""

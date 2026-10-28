@@ -882,11 +882,8 @@ def _beside_another_entity(
 
 def _query_roots(query: NormalizedQuery) -> list[Any]:
     """The expressions of the call's select items and result filters."""
-    return [
-        item.expression
-        for item in [*query.select, *query.metric_filters]
-        if item.expression is not None
-    ]
+    roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
+    return roots + [item.expression for item in query.metric_filters if item.expression is not None]
 
 
 def _shares(expr: Any, config: PackageConfig) -> Iterable[ShareExpr]:
