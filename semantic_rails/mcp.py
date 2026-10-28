@@ -3,7 +3,8 @@
 Exposes :class:`SemanticLayerMCPAdapter`, which presents six governed
 tools backed by a single ``Runtime`` (interface v2): ``discover``,
 ``inspect``, ``valid-values``, ``plan``, ``execute(mode)`` and
-``segment(action)``. The transport — stdio vs HTTP — lives in
+``segment(action)``; served without plan (``plan=False``), the other five. The
+transport — stdio vs HTTP — lives in
 :mod:`semantic_rails.mcp_server`; this module is the protocol-agnostic
 adapter.
 """
@@ -127,7 +128,7 @@ _PLAN_SWITCH = {
 }
 
 
-def plan_served(plan: bool | None = None) -> bool:
+def _plan_served(plan: bool | None = None) -> bool:
     """Whether the query MCP serves ``plan``: the host's ``plan``, else ``MCP_PLAN_ENV``."""
     if plan is not None:
         return bool(plan)
@@ -1572,7 +1573,7 @@ class SemanticLayerMCPAdapter:
                 details={"interface": str(raw), "valid_values": [_INTERFACE]},
             )
         self.interface = _INTERFACE
-        self.serves_plan = plan_served(plan)
+        self.serves_plan = _plan_served(plan)
         self.runtime = runtime
         self.package_id = runtime.package_id
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
