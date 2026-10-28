@@ -310,6 +310,36 @@ def test_a_column_named_like_the_level_order_keeps_the_order(duckdb_backend):
 
 
 OWN_DISCLOSURES = {
+    # Both detail sums are unknown (each refund type has only the other amount): the grand
+    # total's 16 is no answer for the call's own column.
+    "no-data-in-scope": (
+        {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "arithmetic",
+                        "op": "add",
+                        "left": "measure.shop.goods_refunded",
+                        "right": "measure.shop.shipping_refunded",
+                    },
+                    "as": "total_refunded",
+                }
+            ],
+            "group_by": ["dimension.shop_refund_refund_type"],
+        },
+        "NO_DATA_IN_SCOPE",
+        None,
+    ),
+    # No refund in July or August: the call has no rows, whatever its total rows read.
+    "empty-result-window": (
+        {
+            "select": ["measure.shop.refund_count"],
+            "group_by": [STORE],
+            "time": {**MONTHS, "start": "2024-07-01", "end": "2024-09-01"},
+        },
+        "EMPTY_RESULT_WINDOW",
+        "2024-10-15T00:00:00Z",
+    ),
     # The empty history group is the call's: total rows' rolled-up NULLs are not its rows.
     "empty-history-group": (
         {
@@ -359,3 +389,50 @@ def test_total_rows_keep_the_calls_own_disclosures(duckdb_backend, case):
         for answer in (runtime.query({**call, "totals": []}, now=now), runtime.query(call, now=now))
     ]
     assert found[0] == found[1] != []
+
+
+def test_the_limit_probe_takes_no_slot_of_the_row_cap(duckdb_backend):
+    """Limited to its top store, with a cap of two rows: the store and the grand total come
+    back, and nothing was cut."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {
+        "select": [ORDERS],
+        "group_by": [STORE],
+        "time": {"temporal_role": ORDERED_AT, "start": "2023-11-01", "end": "2023-12-01"},
+        "order_by": [{"field": "order_count", "direction": "desc"}],
+        "limit": 1,
+        "totals": [],
+    }
+    answer = runtime.query(call, limits={"max_rows": 2})
+    assert [(row[STORE], row["order_count"], row["total_over"]) for row in answer["rows"]] == [
+        ("a", 1, None),
+        (None, 2, STORE),
+    ]
+    assert answer["truncated"] is False
+    assert "TIES_AT_LIMIT" in {row["code"] for row in answer["warnings"]}
+
+
+def test_a_returned_total_row_proves_the_calls_rows_complete(duckdb_backend):
+    """Capped after the first total row, the answer still holds every row of the call's own,
+    so the empty history group's share is stated as without totals."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call = {
+        "select": [REVENUE],
+        "group_by": ["dimension.shop_customer_history_customer_id"],
+        "time": MONTHS,
+    }
+    found = []
+    for query in (call, {**call, "totals": []}):
+        answer = runtime.query(query, now="2024-12-01T00:00:00Z", limits={"max_rows": 11})
+        [history] = [w for w in answer["warnings"] if w["code"] == "NULL_PRESERVING_HISTORY"]
+        found.append(history["details"])
+    assert found[1] == found[0]
+    assert found[0]["null_rows"] == 7
+
+
+def test_an_empty_window_keeps_its_diagnostics_beside_total_rows(duckdb_backend):
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    call, _, now = OWN_DISCLOSURES["empty-result-window"]
+    plain = runtime.query(call, now=now)
+    totaled = runtime.query({**call, "totals": []}, now=now)
+    assert totaled["data_diagnostics"] == plain["data_diagnostics"]

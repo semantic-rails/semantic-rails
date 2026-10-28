@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
@@ -512,3 +513,65 @@ def test_a_companion_the_coarser_call_cant_answer_is_named_at_the_total(duckdb_b
     assert error["details"]["path"] == "select[1].expression"
     assert error["details"]["companion"] == "signup_to_order_7d"
     assert "coarse_total" not in json.dumps(error)
+
+
+def test_a_total_over_the_period_states_its_partial_window(duckdb_backend):
+    """Daily orders by store, with each store's total over July and August: orders end on
+    August 1, so the total, like the call without the period, covers 32 of 62 days."""
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    window = {"temporal_role": ORDERED_AT, "start": "2024-07-01", "end": "2024-09-01"}
+    now = "2024-10-15T00:00:00Z"
+    answer = runtime.query(
+        {
+            "select": [_total(ORDERS, ["period"])],
+            "group_by": [STORE],
+            "time": {**window, "grain": "day"},
+        },
+        now=now,
+    )
+    [partial] = [w for w in answer["warnings"] if w["code"] == "PARTIAL_DATA"]
+    alone = runtime.query({"select": [ORDERS], "group_by": [STORE], "time": window}, now=now)
+    [expected] = [w for w in alone["warnings"] if w["code"] == "PARTIAL_DATA"]
+    assert partial["details"] == {**expected["details"], "column": "total"}
+    assert "the total in 'total'" in partial["message"]
+
+
+def test_a_metric_total_of_several_measures_states_its_unloaded_periods(tmp_path):
+    """Net revenue is revenue less goods refunded: its total by month reads NULL once revenue
+    ends, and says why, as the metric does on its own."""
+    from .conftest import _runtime, _write_variant
+
+    package = _write_variant(tmp_path, "utc_authored")
+    path = package / "metrics" / "metrics.yml"
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document["metrics"]["shop.net_revenue"] = {
+        "as": "metric.shop.net_revenue",
+        "label": "Net revenue",
+        "kind": "derived",
+        "value_type": "currency",
+        "expression": {
+            "kind": "arithmetic",
+            "op": "subtract",
+            "left": {"measure": REVENUE},
+            "right": {"measure": "measure.shop.goods_refunded"},
+        },
+    }
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    try:
+        answer = runtime.query(
+            {
+                "select": [_total("metric.shop.net_revenue", [STORE])],
+                "group_by": [STORE],
+                "time": {**MONTHS, "start": "2024-06-01", "end": "2024-11-01"},
+            },
+            now="2024-10-15T00:00:00Z",
+        )
+    finally:
+        runtime.close()
+    assert {row["period"] for row in answer["rows"] if row["total"] is None} == {
+        "2024-09-01",
+        "2024-10-01",
+    }
+    [no_data] = [w for w in answer["warnings"] if w["code"] == "NO_DATA_YET"]
+    assert no_data["details"]["outputs"] == ["total"]

@@ -132,6 +132,8 @@ def _history_result_warnings(config, compiled, rows, warnings, *, truncated=Fals
     root_key = getattr(get_package_analysis(config).entities.get(root), "key_columns", ())
     complete = not (truncated or getattr(rows, "truncated", False))
     if plan.query.get("totals") is not None:
+        # Total rows follow every row of the call's own: one returned proves those complete.
+        complete = complete or any(row.get(TOTAL_OVER) is not None for row in rows)
         # A total row's rolled-up columns read NULL by design: the empty group is the call's.
         rows = [row for row in rows if row.get(TOTAL_OVER) is None]
     complete = complete and call_rows(compiled["sql_ast"]).limit is None
@@ -706,6 +708,13 @@ def _settled_by(compiled, outputs):
     aliases = AliasRegistry.for_plan(
         compiled["logical_plan"], measure_aliases=[b.alias for b in bound]
     )
+    # A total's coarser call reads its measures in its own namespace; their loaded edges are
+    # the call's own leaves', which read the same measures under the same window and filters.
+    totals = {
+        str(row.get("as"))
+        for row in compiled["logical_plan"].query.get("select") or []
+        if (row.get("expression") or {}).get("kind") == "total"
+    }
     for output, item in outputs.items():
         for measure in item["measures"]:
             if "probes" in item:  # a balance's own coverage: a stock declares no edge
@@ -714,8 +723,9 @@ def _settled_by(compiled, outputs):
             leaves = [aliases.internal(b.alias) for b in bound if b.measure_id == measure]
             names = set().union(*(by_alias.get(a, set()) for a in leaves))
             edges = set().union(*(edge_alias.get(a, set()) for a in leaves))
-            names &= by_output.get(output, set())
-            edges &= edge_output.get(output, set())
+            if output not in totals:
+                names &= by_output.get(output, set())
+                edges &= edge_output.get(output, set())
             # Combined plans can settle the output itself instead of its leaf aliases.
             if not names and len(item["measures"]) == 1:
                 names, edges = by_output.get(output, set()), edge_output.get(output, set())
@@ -935,10 +945,11 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
     today = local_now(now, zone).date()
     window = engine_window(time, now=now, timezone=zone)
     first, last = _first_day(window.start, zone), _last_day(window.end, zone)
-    spans: list[tuple[date | None, date, date]] = []
+    # (the period, or None for the window; the total's column over the window, or ""; days)
+    spans: list[tuple[date | None, str, date, date]] = []
     if time.get("window_total"):
         if first is not None and last is not None:
-            spans.append((None, first, last))
+            spans.append((None, "", first, last))
     else:
         for period in dict.fromkeys(_period_day(row.get(TIME_AXIS), zone) for row in rows):
             if period is not None:
@@ -946,15 +957,24 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
                     end = period_end(period, grain) - timedelta(days=1)
                 except (ValueError, OverflowError):
                     end = date.max  # the calendar's last period ends with it
-                spans.append((period, max(period, first or period), min(end, last or end)))
+                spans.append((period, "", max(period, first or period), min(end, last or end)))
+        # A total over the period spans the window, as the call without the period does.
+        if first is not None and last is not None:
+            spans.extend((None, column, first, last) for column in _totals_over_period(compiled))
     warnings = []
-    for period, start, end in spans:
+    for period, column, start, end in spans:
         end = min(end, today)
         # A whole day after the edge and before today, inside the span.
         if edge < start or edge >= min(end, today - timedelta(days=1)):
             continue
         days, covered = (end - start).days + 1, (min(edge, end) - start).days + 1
-        span = "this total" if period is None else f"the {grain} of {period.isoformat()}"
+        span = (
+            f"the total in '{column}'"
+            if column
+            else "this total"
+            if period is None
+            else f"the {grain} of {period.isoformat()}"
+        )
         whole = "the window's" if period is None else "its"
         warnings.append(
             semantic_issue(
@@ -967,10 +987,21 @@ def _partial_data_warnings(compiled, rows, coverage, *, now, zone="UTC"):
                     "days_covered": covered,
                     "days": days,
                     **({"period": period.isoformat()} if period is not None else {}),
+                    **({"column": column} if column else {}),
                 },
             )
         )
     return warnings
+
+
+def _totals_over_period(compiled) -> list[str]:
+    """The columns of the call's totals over the period: each one total over the window."""
+    return [
+        str(row.get("as"))
+        for row in compiled["logical_plan"].query.get("select") or []
+        if (row.get("expression") or {}).get("kind") == "total"
+        and TIME_AXIS in ((row.get("expression") or {}).get("over") or [])
+    ]
 
 
 def _first_day(value: str | None, zone: str) -> date | None:
