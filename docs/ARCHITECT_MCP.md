@@ -262,13 +262,16 @@ never create, seed or change it.
   - **Candidates.** Each column paired with another table's key: the package's entities with a
     one-column key (with `project_path`), else every declared single-column primary key. A column
     is paired when it is named like the key (the same name, one ending in the other, or the
-    target entity's name with a key suffix); `columns` tries those columns against every key of a
-    compatible type, whatever their names. Columns are compared only with keys of their type.
+    target entity's name with a key suffix). A generic key (`id`, `key`, `code`) is paired only
+    by that last form (`customer_id` with `customers.id`), and the table's own key is never
+    paired. `columns` tries those columns against every key of a compatible type, whatever their
+    names. Columns are compared only with keys of their type.
   - **Evidence.** `rows`, `rows_with_value`, `distinct_values`, `distinct_found` and `rows_found`
     (the column's values that are target keys), `coverage` (by distinct value) and `row_coverage`,
     up to five `missing_samples`, and whether the target key names one row (`target_key_unique`)
     and the column is unique (`column_unique`), with `reason` saying it in words.
-  - **`threshold`.** `min_coverage` (default `0.95`) is stated in the answer. A pair at or over it
+  - **`threshold`.** `min_coverage` (default `0.95`, over 0 and at most 1) is stated in the
+    answer. A pair at or over it
     is in `proposals`; one under it is in `below_threshold` with the same evidence and drafts, for
     you to decide. A row whose value isn't found keeps its row, and reads NULL through the link.
     A target key that repeats or is missing on some rows names no one row and is in

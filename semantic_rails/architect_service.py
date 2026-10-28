@@ -55,6 +55,7 @@ from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
 from .route_census import resolve_pairs, route_census, route_changes
 from .schema import PackageConfig, PathPreferenceConfig
+from .sql_identifiers import relation_parts
 from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
@@ -610,6 +611,15 @@ class _RawObject:
     wrapper: str
     spec: dict[str, Any]
     model_key: str = ""
+
+
+def _relation_place(name: Any) -> tuple[str, str]:
+    """A model's relation as (schema, table), lowercased, ``main`` when unqualified: two schemas
+    can hold tables of one name, so a relation is never matched by its table name alone."""
+    parts = [
+        part.replace('"', "").strip().lower() for part in relation_parts(str(name or "")) or [""]
+    ]
+    return ("main", parts[0]) if len(parts) == 1 else (parts[-2], parts[-1])
 
 
 class ArchitectProject:
@@ -2762,15 +2772,12 @@ class ArchitectProject:
         by its lowercased column name (``parents``)."""
         raw = self._raw_inventory()
 
-        def bare(name: Any) -> str:
-            return str(name or "").replace('"', "").strip().lower().rpartition(".")[2]
-
         row_grain = self._row_grain_models(raw)
         link = next(
             (
                 key
                 for key, row in row_grain.items()
-                if bare(row.spec.get("relation")) == bare(relation)
+                if _relation_place(row.spec.get("relation")) == _relation_place(relation)
             ),
             "",
         )
@@ -2789,18 +2796,15 @@ class ArchitectProject:
         (``from_entity``); and the entities that model already links to (``linked``)."""
         raw = self._raw_inventory()
 
-        def bare(name: Any) -> str:
-            return str(name or "").replace('"', "").strip().lower().rpartition(".")[2]
-
         models = {row.key: row for row in raw["models"]}
         targets: list[dict[str, str]] = []
-        homed: dict[str, tuple[str, _RawObject]] = {}
+        homed: dict[tuple[str, str], tuple[str, _RawObject]] = {}
         for row in raw["entities"]:
             model = models.get(str(row.spec.get("model") or row.key))
             keys = _as_list(row.spec.get("key"))
             if model is None:
                 continue
-            homed.setdefault(bare(model.spec.get("relation")), (row.key, model))
+            homed.setdefault(_relation_place(model.spec.get("relation")), (row.key, model))
             if len(keys) == 1:
                 targets.append(
                     {
@@ -2809,14 +2813,14 @@ class ArchitectProject:
                         "entity": row.key,
                     }
                 )
-        start = homed.get(bare(relation))
+        start = homed.get(_relation_place(relation))
         if start is None:
             row_grain = self._row_grain_models(raw)
             start = next(
                 (
                     (key, model)
                     for key, model in row_grain.items()
-                    if bare(model.spec.get("relation")) == bare(relation)
+                    if _relation_place(model.spec.get("relation")) == _relation_place(relation)
                 ),
                 None,
             )

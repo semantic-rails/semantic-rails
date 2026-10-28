@@ -1233,14 +1233,21 @@ def _one_per_key_proposal(
 # A link is proposed when at least this share of the column's distinct values are target keys.
 DEFAULT_LINK_COVERAGE = 0.95
 MAX_MISSING_SAMPLES = 5
+# Key names every table may use for its own key: they say nothing about which table a column
+# refers to.
+_GENERIC_KEYS = frozenset({"id", "key", "code", "sk", "pk", "uuid"})
 
 
 def _names_link(column: str, key: str, entity: str = "") -> bool:
     """Whether ``column`` is named like a reference to ``key`` (of ``entity``): the same name, one
     name ending in the other (``office_room_id`` and ``room_id``; ``building_key`` and
-    ``fac_building_key``), or the entity's own name with a key suffix."""
+    ``fac_building_key``), or the entity's own name with a key suffix. A generic key (``id``)
+    is named only that last way (``customer_id`` for ``customers.id``): every table's ``id`` and
+    every ``*_id`` column would otherwise pair with it."""
     column, key = column.lower(), key.lower()
     named = {f"{entity}{suffix}" for suffix in _KEY_SUFFIXES} if entity else set()
+    if key in _GENERIC_KEYS:
+        return column in named
     return (
         column == key or column.endswith(f"_{key}") or key.endswith(f"_{column}") or column in named
     )
@@ -1330,9 +1337,16 @@ def suggest_links(
     rows, and reads NULL through the link). Each carries draft ``upsert_relationship`` arguments
     when ``from_entity`` (the package's entity or row-grain model over ``relation``) and the
     target's entity are known: ``one_to_one`` when the column is unique and never null too,
-    else ``many_to_one``. Targets already linked (``linked``) are skipped. Nothing is written,
+    else ``many_to_one``. Targets already linked (``linked``) are skipped, and so is the
+    table's own key unless ``columns`` names it. Nothing is written,
     and nothing checks data at query time.
     """
+    if not 0 < min_coverage <= 1:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"min_coverage is a share of distinct values, over 0 and at most 1 (got {min_coverage})",
+            details={"min_coverage": min_coverage},
+        )
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
     source = _qualified(warehouse, schema, name)
@@ -1356,6 +1370,17 @@ def suggest_links(
         "proposals": [],
         "below_threshold": [],
         "not_proposed": [],
+    }
+    # The table's own key refers to its own rows, never to another table's.
+    own_keys = {
+        str(row["column"]).lower()
+        for rows in _declared_keys(warehouse).values()
+        for row in rows
+        if _split_relation(str(row["relation"])) == (schema, name)
+    } | {
+        str(target["key"]).lower()
+        for target in targets
+        if _split_relation(str(target["relation"])) == (schema, name)
     }
     described_targets: dict[str, dict[str, str]] = {}
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
@@ -1381,7 +1406,9 @@ def suggest_links(
             for column in columns or list(types):
                 if not _fk_types_compatible(types[column], target_types[key]):
                     continue
-                if not columns and not _names_link(column, key, entity):
+                if not columns and (
+                    column.lower() in own_keys or not _names_link(column, key, entity)
+                ):
                     continue
                 target_schema, target_name = _split_relation(str(target["relation"]))
                 evidence = _link_evidence(

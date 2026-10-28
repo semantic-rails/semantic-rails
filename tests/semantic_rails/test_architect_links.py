@@ -220,7 +220,7 @@ def test_a_proposed_link_applies_and_answers_as_the_reference_sql_reads(tmp_path
     Once linked, the pair isn't proposed again."""
     pkg = _package(tmp_path)
     server = create_architect_mcp_server(workspace_root=tmp_path)
-    office, room = _session(
+    office, room, visit = _session(
         server,
         [
             (
@@ -228,6 +228,7 @@ def test_a_proposed_link_applies_and_answers_as_the_reference_sql_reads(tmp_path
                 {"project_path": str(pkg), "relation": "employees", "columns": ["office_location"]},
             ),
             ("suggest_links", {"project_path": str(pkg), "relation": "rooms"}),
+            ("suggest_links", {"project_path": str(pkg), "relation": "visits"}),
         ],
     )
     (to_room,) = office["below_threshold"]  # r9 isn't a room: 2 of 3
@@ -242,8 +243,11 @@ def test_a_proposed_link_applies_and_answers_as_the_reference_sql_reads(tmp_path
     assert set(targets) == {"building", "fac_building"}
     to_building = targets["building"]
     assert to_building["upsert_relationship"]["to_entity"] == "building"
-    # The loads' key repeats, so nothing can look a load up.
-    assert [row["target"]["entity"] for row in room["not_proposed"]] == ["room_load"]
+    # A room's own key is never paired; a visit's room is, and the loads' key repeats, so
+    # nothing can look a load up.
+    assert room["not_proposed"] == []
+    assert [row["target"]["entity"] for row in visit["not_proposed"]] == ["room_load"]
+    assert [row["target"]["entity"] for row in visit["proposals"]] == ["room"]
 
     project = ArchitectProject(pkg, workspace_root=tmp_path)
     before, revision = _files(pkg), project.revision()
@@ -290,3 +294,79 @@ def test_a_column_is_compared_only_with_keys_of_its_type(tmp_path):
     suggested = _suggest(tmp_path, "employees", columns=["badge"])
     compared = suggested["proposals"] + suggested["below_threshold"] + suggested["not_proposed"]
     assert {row["target"]["relation"] for row in compared} == {"subjects"}
+
+
+RAILS = """
+CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR);
+INSERT INTO customers SELECT i, 'Customer ' || i FROM range(1, 6) AS t(i);
+CREATE TABLE products (id INTEGER PRIMARY KEY, title VARCHAR);
+INSERT INTO products SELECT i, 'Product ' || i FROM range(1, 6) AS t(i);
+CREATE TABLE stores (id INTEGER PRIMARY KEY, city VARCHAR);
+INSERT INTO stores SELECT i, 'City ' || i FROM range(1, 6) AS t(i);
+-- Every table keyed by id, and every reference small integers that are ids of every table.
+CREATE TABLE orders (
+  id INTEGER PRIMARY KEY, customer_id INTEGER, product_id INTEGER, store_id INTEGER
+);
+INSERT INTO orders SELECT i, i, 6 - i, 1 + i % 2 FROM range(1, 6) AS t(i);
+"""
+
+
+def test_a_generic_id_key_pairs_only_with_a_column_named_for_its_table(tmp_path):
+    """Rails-style tables all keyed by id: each *_id column pairs with its own table, never with
+    every id-keyed table, and the table's own id pairs with none."""
+    path = tmp_path / "rails.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(RAILS)
+    with open_duckdb(path) as warehouse:
+        suggested = suggest_links(warehouse, "orders")
+    pairs = {
+        (row["column"], row["target"]["relation"], row["cardinality"])
+        for bucket in ("proposals", "below_threshold")
+        for row in suggested[bucket]
+    }
+    assert pairs == {
+        ("customer_id", "customers", "one_to_one"),
+        ("product_id", "products", "one_to_one"),
+        ("store_id", "stores", "many_to_one"),
+    }
+    # Named, the table's own id is tried by its values, as any named column is.
+    with open_duckdb(path) as warehouse:
+        named = suggest_links(warehouse, "orders", columns=["id"])
+    assert {row["target"]["relation"] for row in named["proposals"]} == {
+        "customers",
+        "products",
+        "stores",
+    }
+
+
+@pytest.mark.parametrize("min_coverage", [0, -0.5, 1.5])
+def test_a_coverage_threshold_is_a_share(tmp_path, min_coverage):
+    with pytest.raises(SemanticLayerError) as refused:
+        _suggest(tmp_path, "details", min_coverage=min_coverage)
+    assert refused.value.code == "INVALID_QUERY"
+
+
+def test_a_link_starts_from_the_model_over_the_same_schema_and_table(tmp_path):
+    """Two schemas hold a buildings table: the link from reporting.buildings starts from the
+    model over that relation, never from the one over main.buildings."""
+    pkg = _package(tmp_path)
+    _write(
+        pkg / "models" / "reporting_buildings.yml",
+        {
+            "model": {
+                "id": "reporting_buildings",
+                "relation": "reporting.buildings",
+                "entities": {"reporting_building": {}},
+            }
+        },
+    )
+    graph = yaml.safe_load((pkg / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["entities"]["reporting_building"] = {
+        "key": ["building_key"],
+        "model": "reporting_buildings",
+    }
+    _write(pkg / "graph.yml", graph)
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    assert project.link_context("reporting.buildings")["from_entity"] == "reporting_building"
+    assert project.link_context("buildings")["from_entity"] == "building"
+    assert project.link_context("main.buildings")["from_entity"] == "building"

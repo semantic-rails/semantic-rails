@@ -1262,7 +1262,7 @@ A `many_to_many` history read at a query's time keeps its cardinality's rule: it
 valid at one time can overlap, so a query that would count a row once per overlapping version
 is refused. An explicit `safety: safe` on such a relationship states that its versions never
 overlap: the engine then joins it as one version per row, and nothing checks the data at query
-time, so rows that do overlap count once each.
+time, so where versions do overlap, a row counts once per overlapping version.
 
 The end of the day is a wall-clock timestamp in the role's zone, compared with the validity
 columns as the row's own time is:
