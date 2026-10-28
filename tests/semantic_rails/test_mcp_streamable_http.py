@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.asgi import SemanticLayerASGIApp
+from semantic_rails.audit import get_audit_sink, set_audit_sink
 from semantic_rails.mcp import MCP_TOOL_DEFINITIONS
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION
 from semantic_rails.mcp_streamable_http import (
@@ -16,8 +17,6 @@ from semantic_rails.mcp_streamable_http import (
 from semantic_rails.request_context import (
     HeaderPolicyContextResolver,
     RequestContext,
-    get_audit_sink,
-    set_audit_sink,
     set_policy_context_resolver,
 )
 from semantic_rails.schema import SemanticPolicyConfig

@@ -329,8 +329,7 @@ When the test fails, stage the change across releases instead of making it in on
    today's behavior, and a moved name stays importable from its old place as the same
    object.
 2. Deprecate the old form in a `deprecated` changelog fragment that names the release
-   removing it, and pin that release with a test that fails once the version reaches it,
-   as `tests/semantic_rails/test_request_context_reexports.py` does.
+   removing it, and pin that release with a test that fails once the version reaches it.
 3. Remove the old form in that release, once the embedder has moved, and regenerate the
    list.
 
