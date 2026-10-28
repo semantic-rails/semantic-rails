@@ -170,11 +170,11 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
 
 Dimension ids. Each becomes a column named by its full id, so a reader keys on it without
 guessing. Time is never a `group_by` item: ask for `time.grain` and the answer has a `period`
-column. Groups with no rows stay absent: the engine never cross-joins dimension values. Beside another
-measure whose rows hold a group, a count or sum with no rows there reads `0`, and the answer
-says so ([Zero-filled groups](#empty-groups-null-or-0)). A
-policy's `required_group_by` on the clock's own date dimension is met by any `time.grain` at or
-below that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
+column. Groups with no rows stay absent: the engine never cross-joins dimension values.
+Beside another measure whose rows hold a group, a count or sum with no rows there reads `0`,
+and the answer says so ([Zero-filled groups](#empty-groups-null-or-0)). A policy's
+`required_group_by` on the clock's own date dimension is met by any `time.grain` at or below
+that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
 naming it ("measure.x can only be read by day: group by dimension.d, or set time.grain to
 day."), and the one hint's `patch.merge` is the call fragment that meets it
 (`{"time": {"grain": "day"}}`), built from the policy's own cuts.
