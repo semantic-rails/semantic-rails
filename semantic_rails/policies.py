@@ -33,6 +33,7 @@ from .compiler_parts.bind import (
     measure_column_ref,
 )
 from .compiler_parts.paths import dimensions_over_column
+from .compiler_parts.totals import coarse_group_by
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -44,6 +45,7 @@ from .expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    TotalExpr,
     collect_column_refs,
     parse_semantic_expression,
     resolve_filter_dimension,
@@ -333,6 +335,14 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
     kind = violation.get("kind")
     disallowed = _listed(violation.get("disallowed") or [])
     allowed = list(violation.get("allowed") or [])
+    if kind == "missing_required_group_by" and violation.get("total"):
+        missing = _listed(violation.get("missing") or [])
+        return (
+            f"can only be read grouped by {missing}, and the total in "
+            f"'{violation['total']}' reads it across them",
+            f"Take {missing} out of the total's over, or remove the total.",
+            {},
+        )
     if kind == "missing_required_group_by":
         period = dict(violation.get("by_time") or {})
         day, grain = period.get("dimension"), period.get("grain")
@@ -877,6 +887,22 @@ def _by_time(missing: list[str], bound: BoundQuery) -> dict[str, Any]:
     return {}
 
 
+def _totals_reading(
+    query: NormalizedQuery, bound: Callable[[], BoundQuery], object_id: str
+) -> Iterator[tuple[str, list[str], bool]]:
+    """Each selected total whose input reads ``object_id``: its column, its coarser call's
+    group_by, and whether that call keeps the period."""
+    for item in query.select:
+        total = item.expression
+        if not isinstance(total, TotalExpr):
+            continue
+        config = bound().config
+        source = getattr(total.input, "measure", "") or getattr(total.input, "metric_recipe", "")
+        if source and object_id in {source, *bind_metadata_objects(config, [source])}:
+            group_by = coarse_group_by(query.group_by, total.over, config)
+            yield item.as_, group_by, "period" not in total.over
+
+
 def _metric_constraint_violations(
     policy: SemanticPolicyConfig,
     query_payload: Mapping[str, Any],
@@ -901,6 +927,22 @@ def _metric_constraint_violations(
                     **_by_time(missing, bound()),
                 }
             )
+        # A total reads its input at its coarser call's grain, which must meet it too.
+        for column, group_by, by_period in _totals_reading(query, bound, object_id):
+            missing = [
+                field
+                for field in required
+                if field not in group_by and not (by_period and _period_is(field, bound()))
+            ]
+            if missing:
+                violations.append(
+                    {
+                        "kind": "missing_required_group_by",
+                        "missing": missing,
+                        "present_group_by": group_by,
+                        "total": column,
+                    }
+                )
 
     if "allowed_group_by" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_group_by"))

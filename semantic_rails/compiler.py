@@ -80,12 +80,13 @@ def _compile_query_sql_ast(
     *,
     project_cut: bool = False,
     guard_empty: bool = True,
+    collapse_window: bool = False,
 ) -> SqlSelect:
     """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values."""
     validate_temporal_support(config, payload)
     with candidate_planning():
         plan = _plan_query(
-            config, None, normalize_query(payload, config=config), collapse_window=False
+            config, None, normalize_query(payload, config=config), collapse_window=collapse_window
         )
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
@@ -119,9 +120,14 @@ class _NestedCompiles:
         *,
         project_cut: bool = False,
         guard_empty: bool = True,
+        collapse_window: bool = False,
     ) -> SqlSelect:
         return _compile_query_sql_ast(
-            config, payload, project_cut=project_cut, guard_empty=guard_empty
+            config,
+            payload,
+            project_cut=project_cut,
+            guard_empty=guard_empty,
+            collapse_window=collapse_window,
         )
 
     def predicate_source_sql(self, config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:

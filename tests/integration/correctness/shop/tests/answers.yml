@@ -269,6 +269,65 @@ tests:
         COUNT(order_id) / CAST(SUM(COUNT(order_id)) OVER () AS DOUBLE PRECISION) AS order_share
       FROM orders
       GROUP BY store_id
+  shop/store-customers-over-every-month-count-each-customer-once:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A total over period is the store's distinct buying customers across all of its months, on each of its monthly rows; adding the months up would count customer 101 twice at store a (6, not 5). The unknown store meets its own total.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.buying_customers, docs/QUERY_CALL.md#inline-expression-kinds]
+    query:
+      select:
+        - {expression: measure.shop.buying_customers, as: customers}
+        - {expression: {kind: total, input: measure.shop.buying_customers, over: [period]}, as: store_customers}
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2023-11-01', period_partial: false, customers: 1, store_customers: 5}
+      - {dimension.shop_order_store_id: a, period: '2023-12-01', period_partial: false, customers: 1, store_customers: 5}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', period_partial: false, customers: 1, store_customers: 5}
+      - {dimension.shop_order_store_id: a, period: '2024-03-01', period_partial: false, customers: 1, store_customers: 5}
+      - {dimension.shop_order_store_id: a, period: '2024-05-01', period_partial: false, customers: 1, store_customers: 5}
+      - {dimension.shop_order_store_id: a, period: '2024-08-01', period_partial: false, customers: 1, store_customers: 5}
+      - {dimension.shop_order_store_id: b, period: '2023-11-01', period_partial: false, customers: 1, store_customers: 4}
+      - {dimension.shop_order_store_id: b, period: '2024-03-01', period_partial: false, customers: 1, store_customers: 4}
+      - {dimension.shop_order_store_id: b, period: '2024-06-01', period_partial: false, customers: 1, store_customers: 4}
+      - {dimension.shop_order_store_id: b, period: '2024-07-01', period_partial: false, customers: 1, store_customers: 4}
+      - {dimension.shop_order_store_id: null, period: '2024-05-01', period_partial: false, customers: 1, store_customers: 1}
+    reference_sql: |
+      SELECT o.store_id, CAST(date_trunc('month', o.ordered_at) AS DATE) AS period,
+        COUNT(DISTINCT o.customer_id) AS customers, s.store_customers
+      FROM orders AS o
+      JOIN (SELECT store_id, COUNT(DISTINCT customer_id) AS store_customers FROM orders GROUP BY store_id) AS s
+        ON s.store_id IS NOT DISTINCT FROM o.store_id
+      GROUP BY o.store_id, CAST(date_trunc('month', o.ordered_at) AS DATE), s.store_customers
+  shop/quarter-revenue-across-stores-beside-each-store:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A total over the store is the quarter's revenue across every store the call keeps, the unknown store included, on each store's row. Store a's second-quarter revenue is unknown (its one order has no amount); the quarter's total sums the amounts it knows.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, docs/QUERY_CALL.md#inline-expression-kinds]
+    query:
+      select:
+        - {expression: measure.shop.revenue, as: revenue}
+        - {expression: {kind: total, input: measure.shop.revenue, over: [dimension.shop_order_store_id]}, as: quarter_revenue}
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: quarter}
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2023-10-01', period_partial: false, revenue: 17, quarter_revenue: 22}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', period_partial: false, revenue: 24, quarter_revenue: 32}
+      - {dimension.shop_order_store_id: a, period: '2024-04-01', period_partial: false, revenue: null, quarter_revenue: 9}
+      - {dimension.shop_order_store_id: a, period: '2024-07-01', period_partial: false, revenue: 2, quarter_revenue: 11}
+      - {dimension.shop_order_store_id: b, period: '2023-10-01', period_partial: false, revenue: 5, quarter_revenue: 22}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', period_partial: false, revenue: 8, quarter_revenue: 32}
+      - {dimension.shop_order_store_id: b, period: '2024-04-01', period_partial: false, revenue: 3, quarter_revenue: 9}
+      - {dimension.shop_order_store_id: b, period: '2024-07-01', period_partial: false, revenue: 9, quarter_revenue: 11}
+      - {dimension.shop_order_store_id: null, period: '2024-04-01', period_partial: false, revenue: 6, quarter_revenue: 9}
+    reference_sql: |
+      SELECT o.store_id, CAST(date_trunc('quarter', o.ordered_at) AS DATE) AS period,
+        SUM(o.amount) AS revenue, q.quarter_revenue
+      FROM orders AS o
+      JOIN (SELECT date_trunc('quarter', ordered_at) AS quarter, SUM(amount) AS quarter_revenue
+            FROM orders GROUP BY date_trunc('quarter', ordered_at)) AS q
+        ON q.quarter = date_trunc('quarter', o.ordered_at)
+      GROUP BY o.store_id, CAST(date_trunc('quarter', o.ordered_at) AS DATE), q.quarter_revenue
   shop/top-customers-by-name-rank-by-key-so-namesakes-stay-apart:
     kind: query_matches_snapshot
     expect: answer

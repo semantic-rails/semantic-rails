@@ -36,6 +36,7 @@ from ..sql_ast import (
     SqlTableRef,
     SqlWindow,
     build_filter_condition,
+    sql_nodes,
 )
 from .bind import (
     _bound_metric_predicates,
@@ -128,6 +129,7 @@ from .time_series import (
     _series_base_ctes,
     _tier_internal_aliases,
 )
+from .totals import selected_totals, total_column, total_sources
 
 
 def _namespaced_scope(scope: LeafScope, leaf: SqlSelect, prefix: str) -> LeafScope:
@@ -248,11 +250,33 @@ def _refuse_per_period_total(plan: LogicalPlan) -> None:
     )
 
 
+def _cte_names(ctes: list[SqlCte]) -> set[str]:
+    """The statement's CTE and table names so far, and those its projection adds, case-folded."""
+    names = {
+        node.name.casefold() for node in sql_nodes(ctes) if isinstance(node, (SqlCte, SqlTableRef))
+    }
+    return names | {GUARDED_BASE, "projected"}
+
+
+def _refuse_total_beside(what: str) -> SemanticLayerError:
+    return SemanticLayerError(
+        "REWRITE_NOT_SUPPORTED",
+        f"A total beside {what} isn't supported in one call. Ask for the total in a call of "
+        "its own, grouped by the columns it keeps.",
+        details={"unsupported_construct": "total"},
+    )
+
+
 def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: bool) -> SqlSelect:
+    totals = selected_totals(plan.query.get("select") or [])
     anchored_select = _anchored_entity_set_select(plan, config)
     if anchored_select is not None:
+        if totals:
+            raise _refuse_total_beside("a ratio of entity sets")
         return _tier_internal_aliases(plan, anchored_select, measure_aliases=[])
     if _plan_requires_agent_dag_lowering(plan, config):
+        if totals:
+            raise _refuse_total_beside("a distribution")
         # Arithmetic beside a distribution settles each branch, then their combine, before
         # it can tell an operand's unknown amounts from its empty groups: every branch keeps
         # the earlier settlement.
@@ -492,7 +516,27 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     projected_fields: list[SqlField] = [
         SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in key_aliases
     ]
+    # Each total's coarser call, joined to the rows on the keys it keeps.
+    total_ctes, total_joins, totaled = (
+        total_sources(plan, config, _cte_names(ctes)) if totals else ([], [], {})
+    )
+    ctes.extend(total_ctes)
+    total_columns: list[tuple[dict[str, Any], Any]] = []  # a having reads the same column
     for alias, post_expr in plan.post_aggregation_exprs.items():
+        if alias in totaled:
+            with binding_cut() if project_is_cut() else nullcontext():
+                fine = _compile_post_expr(
+                    _parse_public_expr(dict(post_expr["input"])),
+                    config,
+                    time_alias=time_alias,
+                    group_aliases=group_aliases,
+                    query_grain=str(plan.time.get("grain", "") if plan.time else ""),
+                    table_alias="base",
+                )
+            total_columns.append((post_expr, total_column(totaled[alias], fine)))
+            projected_fields.append(SqlField(total_columns[-1][1], alias))
+            record_output_reads(alias, base_reads(fine))
+            continue
         with binding_cut() if project_is_cut() else nullcontext():
             compiled_output = _compile_post_expr(
                 _parse_public_expr(post_expr),
@@ -576,6 +620,12 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             continue
         alias = _metric_filter_alias(index)
         metric_filter_aliases.append(alias)
+        selected_total = next(
+            (column for expr, column in total_columns if expr == item["expression"]), None
+        )
+        if selected_total is not None:
+            projected_fields.append(SqlField(selected_total, alias))
+            continue
         with binding_cut():
             compiled_expr = _compile_post_expr(
                 filter_expr,
@@ -659,6 +709,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 ctes=ctes,
                 select=projected_fields,
                 from_table=base_table,
+                joins=total_joins,
                 order_by=inlined_order_by,
                 limit=plan.query.get("limit"),
             ),
@@ -670,6 +721,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         ctes=ctes,
         select=projected_fields,
         from_table=base_table,
+        joins=total_joins,
     )
 
     final_fields = [

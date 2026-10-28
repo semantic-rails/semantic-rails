@@ -221,10 +221,16 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
         expr = dict(item.get("expression", {}) or {})
         lineage = list(dict.fromkeys(collect_object_references(expr)))
         semantic_id = lineage[0] if len(lineage) == 1 else ""
+        # A total is its input at another grain: not the input's column, in the input's unit.
+        typed_id = (
+            next(iter(collect_object_references(expr.get("input") or {})), "")
+            if expr.get("kind") == "total"
+            else semantic_id
+        )
         meta = labels.get(semantic_id, {})
-        value_type = str(meta.get("type", "") or "")
-        if not value_type and semantic_id.startswith("metric."):
-            recipe = next((row for row in config.metric_recipes if row.id == semantic_id), None)
+        value_type = str(labels.get(typed_id, {}).get("type", "") or "")
+        if not value_type and typed_id.startswith("metric."):
+            recipe = next((row for row in config.metric_recipes if row.id == typed_id), None)
             if recipe is not None:
                 source_ids = collect_object_references(expr_to_dict(recipe.expression))
                 source_measure = next(

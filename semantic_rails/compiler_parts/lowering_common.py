@@ -38,6 +38,7 @@ from ..expressions import (
     MetricRecipeRefExpr,
     OffsetWindowExpr,
     SemanticExpr,
+    TotalExpr,
     expr_to_dict,
 )
 from ..fanout import (
@@ -760,7 +761,7 @@ def _expr_contains_distribution(expr: SemanticExpr, config: PackageConfig) -> bo
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         return recipe is not None and _expr_contains_distribution(recipe.expression, config)
-    if isinstance(expr, EntityValueExpr):
+    if isinstance(expr, (EntityValueExpr, TotalExpr)):
         return _expr_contains_distribution(expr.input, config)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         return _expr_contains_distribution(expr.left, config) or _expr_contains_distribution(

@@ -220,6 +220,29 @@ def share_of_total(
     return out
 
 
+def total_over(compiled: dict[str, Any]) -> list[dict[str, Any]]:
+    """``TOTAL_OVER`` for every selected total: its input across the ``over`` columns in the
+    rows the call keeps, computed at that grain (a distinct count counts distinct values)."""
+    out: list[dict[str, Any]] = []
+    for row in compiled["logical_plan"].query.get("select") or []:
+        expression = row.get("expression") or {}
+        if expression.get("kind") != "total":
+            continue
+        source = expression.get("input") or {}
+        entry: dict[str, Any] = {
+            "code": "TOTAL_OVER",
+            "column": row.get("as"),
+            "input": source.get("measure") or source.get("metric"),
+            "over": list(expression.get("over") or []),
+        }
+        entry["message"] = (
+            f"{entry['column']} is {entry['input']} across {' and '.join(entry['over'])} in the "
+            "rows the call keeps, computed at that grain, not added up from the rows."
+        )
+        out.append(entry)
+    return out
+
+
 def _shares(node: Any) -> Iterable[dict[str, Any]]:
     """Select expression shares at any depth."""
     return (row for row in _expression_nodes(node) if row.get("kind") == "share")
@@ -278,5 +301,6 @@ def call_assumptions(
         *aggregation_override(config, compiled, hidden),
         *governed_metric_exists(config, compiled),
         *share_of_total(compiled, hidden),
+        *total_over(compiled),
         *grouped_by_key(config, compiled, payload),
     ]

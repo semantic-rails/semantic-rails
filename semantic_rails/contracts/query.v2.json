@@ -423,6 +423,18 @@
               "then": {
                 "$ref": "#/$defs/Kind_share"
               }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "total"
+                  }
+                }
+              },
+              "then": {
+                "$ref": "#/$defs/Kind_total"
+              }
             }
           ],
           "properties": {
@@ -455,7 +467,8 @@
                 "rolling",
                 "scoped_aggregate",
                 "semi_additive",
-                "share"
+                "share",
+                "total"
               ]
             }
           },
@@ -1102,6 +1115,30 @@
         },
         "kind": {
           "const": "share"
+        },
+        "over": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "over"
+      ],
+      "type": "object"
+    },
+    "Kind_total": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/Ref"
+        },
+        "kind": {
+          "const": "total"
         },
         "over": {
           "items": {

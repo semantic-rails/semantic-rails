@@ -797,6 +797,16 @@ def recording_zero_outputs() -> Iterator[list[dict[str, Any]]]:
         yield outputs
 
 
+@contextmanager
+def recording_outputs_as(names: Mapping[str, str]) -> Iterator[None]:
+    """Record a nested compile's guarded outputs under the request's names for them."""
+    outputs = _zero_outputs.get()
+    start = len(outputs) if outputs is not None else 0
+    yield
+    for item in (outputs or [])[start:]:
+        item["output"] = names.get(item["output"], item["output"])
+
+
 def record_zero_output(output: str, measure_ids: Iterable[str]) -> None:
     outputs = _zero_outputs.get()
     if outputs is not None:

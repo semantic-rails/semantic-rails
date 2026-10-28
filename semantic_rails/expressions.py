@@ -320,6 +320,15 @@ class ShareExpr:
 
 
 @dataclass(frozen=True)
+class TotalExpr:
+    """Its input at a coarser grain beside each row: the call itself with the ``over`` columns
+    (group_by ids or ``period``) removed, joined back on the others. Never a sum of the rows."""
+
+    input: SemanticExpr
+    over: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EntityValueExpr:
     entity: str
     input: SemanticExpr
@@ -365,6 +374,7 @@ SemanticExpr = (
     | ScopedAggregateExpr
     | RatioExpr
     | ShareExpr
+    | TotalExpr
     | EntityValueExpr
     | DistributionExpr
     | ConversionExpr
@@ -570,7 +580,7 @@ REFERENCE_KEYS = {
     "basis_metric",
     "temporal_role",
 }
-# A share's ``over`` lists group_by ids, and ``period`` (the time axis, not an object).
+# A share's or total's ``over`` lists group_by ids, and ``period`` (the time axis, not an object).
 REFERENCE_LISTS = {"partition_by", "constant_properties", "group_by", "preview_dimensions", "over"}
 
 
@@ -786,6 +796,8 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
         }
     if isinstance(expr, ShareExpr):
         return {"kind": "share", "input": expr_to_dict(expr.input), "over": list(expr.over)}
+    if isinstance(expr, TotalExpr):
+        return {"kind": "total", "input": expr_to_dict(expr.input), "over": list(expr.over)}
     if isinstance(expr, EntityValueExpr):
         return {
             "kind": "entity_value",
@@ -1005,6 +1017,7 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
     },
     "ratio": _COMMON_KEYS | {"numerator", "denominator"},
     "share": _COMMON_KEYS | {"input", "over"},
+    "total": _COMMON_KEYS | {"input", "over"},
     "entity_value": _COMMON_KEYS | {"entity", "input", "where"},
     "distribution": _COMMON_KEYS | {"function", "over", "p", "parameters"},
     "conversion": _COMMON_KEYS
@@ -2137,18 +2150,18 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             numerator=parse_semantic_expression(expr.get("numerator"), context=context),
             denominator=parse_semantic_expression(expr.get("denominator"), context=context),
         )
-    if kind == "share":
+    if kind in {"share", "total"}:
         over = expr.get("over")
         if context == "config":
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST",
-                "share is a query's own calculation; a package metric can't be one",
+                f"{kind} is a query's own calculation; a package metric can't be one",
             )
         if "input" not in expr or not isinstance(over, list) or not over:
             raise SemanticLayerError(
-                "INVALID_EXPRESSION_AST", "share expressions require input and a list over"
+                "INVALID_EXPRESSION_AST", f"{kind} expressions require input and a list over"
             )
-        return ShareExpr(
+        return (ShareExpr if kind == "share" else TotalExpr)(
             input=parse_semantic_expression(expr.get("input"), context=context),
             over=[str(item) for item in over],
         )

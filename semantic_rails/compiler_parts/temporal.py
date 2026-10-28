@@ -31,6 +31,7 @@ from ..expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
+    TotalExpr,
     expr_kind,
     expr_to_dict,
 )
@@ -187,7 +188,7 @@ def _expr_compatible_temporal_roles(
         if expr.else_expr is not None:
             role_sets.append(_expr_compatible_temporal_roles(expr.else_expr, config, query))
         return _combine_temporal_roles(role_sets)
-    if isinstance(expr, (OffsetWindowExpr, ShareExpr, EntityValueExpr)):
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
         return _expr_compatible_temporal_roles(expr.input, config, query)
     if isinstance(expr, ConversionExpr):
         return _expr_compatible_temporal_roles(expr.base, config, query)
@@ -305,7 +306,7 @@ def _expr_leaf_temporal_role_sets(
         if expr.else_expr is not None:
             case_out.extend(visit(expr.else_expr))
         return case_out
-    if isinstance(expr, (OffsetWindowExpr, ShareExpr, EntityValueExpr)):
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
         return visit(expr.input)
     if isinstance(expr, ConversionExpr):
         return [*visit(expr.base), *visit(expr.converted)]
@@ -489,6 +490,7 @@ def _collect_conversion_bindings(
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,
+            TotalExpr,
             EntityValueExpr,
         ),
     ):

@@ -36,6 +36,7 @@ from ..expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
+    TotalExpr,
     collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
@@ -966,7 +967,7 @@ def _collect_measure_refs(
         if expr.else_expr is not None:
             _collect_measure_refs(expr.else_expr, config, query, out)
         return
-    if isinstance(expr, (OffsetWindowExpr, ShareExpr, EntityValueExpr)):
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
         _collect_measure_refs(expr.input, config, query, out)
         return
     if isinstance(expr, (MetricPredicateExpr, ConversionExpr, LiteralExpr, ColumnRefExpr)):
@@ -1015,6 +1016,7 @@ def _collect_conversion_exprs(
             MetricPredicateExpr,
             OffsetWindowExpr,
             ShareExpr,
+            TotalExpr,
             EntityValueExpr,
         ),
     ):

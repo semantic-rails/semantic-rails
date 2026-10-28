@@ -13,8 +13,9 @@ def _kind_property(kind: str, key: str) -> dict[str, Any]:
     from semantic_rails.query_call import EXPRESSION_KEYS, EXPRESSION_LISTS, OVER
 
     expression = {"$ref": "#/$defs/Expression"}
-    if kind == "share":
-        # A share reads one id, over group_by ids or "period" (a parser rule checks which).
+    if kind in {"share", "total"}:
+        # A share or total reads one id, over group_by ids or "period" (a parser rule checks
+        # which).
         if key == "input":
             return {"$ref": "#/$defs/Ref"}
         if key == "over":
