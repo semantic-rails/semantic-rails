@@ -27,6 +27,7 @@ from ..expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
+    TotalExpr,
     expr_kind,
 )
 from ..fanout import (
@@ -398,6 +399,7 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
             OffsetWindowExpr,
             MetricPredicateExpr,
             ShareExpr,
+            TotalExpr,
         ),
     ):
         return _expression_root_entity(expr.input, config)

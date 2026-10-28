@@ -204,7 +204,8 @@ one, each entity counts once in every group it has a row in.
   beside a grouping, as across any one-to-many hop.
 - A share, a window (`cumulative`, `rolling`, ...), a per-entity value or a distribution across
   a link is refused with `MIXED_GRAIN_INVALID`: it would add overlapping groups. Ask for the
-  total in its own query.
+  total in its own query, or select it beside the groups as a [total](#coarser-totals), which
+  is the call without the grouping and counts each entity once.
 - A model with no key reaching a link answers a distinct count only; its sums and row counts are
   refused, since nothing tells its rows apart.
 
@@ -862,6 +863,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `cumulative` | `{kind: cumulative, input, partition_by?, window_scope?}` |
 | `ratio` | `{kind: ratio, numerator, denominator}` |
 | `share` | `{kind: share, input: <id>, over: [<group_by id> \| "period"]}` |
+| `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own |
 | `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition, value?}` |
@@ -965,6 +967,60 @@ returned row's total spans the same number:
 other select expression, for every share it contains. The disclosure describes the nested
 share's denominator; the enclosing expression can change the output's unit (for example,
 multiplying by 100 returns a percentage). Nested shares omit the optional row count.
+
+### Coarser totals
+
+`{"kind": "total", "input": <id>, "over": [<group_by id> | "period"]}` is its input at a
+coarser grain beside each row: the call itself without the `over` columns, joined back on the
+columns that remain (within each combination of the other `group_by` columns, and `period`
+unless `over` names it; a NULL group meets its own total). The coarser call keeps the call's
+`where`, `time` window, entity filters, routes, row filters and policies, so the total reads
+the rows the call keeps; `having`, `order_by` and `limit` act on the call's rows after it, as
+for a share. A `having` may filter on a total's column.
+
+Every measure kind is computed at that grain from its own rows, never added up from the rows:
+a distinct count counts distinct values, an average averages every row, a ratio divides the
+totals, and across a [link](#groups-across-a-link) each entity counts once. Several totals over
+the same columns share one coarser call, and the call stays one statement. The coarser call
+selects everything the call does (a share or total as its input), so it has a row wherever the
+call has one, and it settles its [empty groups](#empty-groups-null-or-0) as that call would on
+its own: data of nothing reads `0`, a period not loaded yet `null`, and a group it has no row
+for `null` (a stock over the period whose closing day has no snapshot). Rolled up across the
+period, a window over earlier periods (`prior_period`, `cumulative`, ...) reads as its input
+there. A name the coarser call keeps groups by its entity's key beside it, as any call's does,
+so a total over a customer key that keeps the customer's name keeps namesakes apart; a key the
+call groups by stays unless `over` names it, and the key the engine adds beside a name rolls up
+with the name. A call that can't be answered without the `over` columns (a conversion read per
+period) refuses the total with `REWRITE_NOT_SUPPORTED` at its path, naming the item.
+
+```json
+{"select": ["measure.jaffle.ordering_customer_count",
+            {"expression": {"kind": "total", "input": "measure.jaffle.ordering_customer_count", "over": ["period"]}, "as": "store_customers"}],
+ "group_by": ["dimension.jaffle_store_name"],
+ "time": {"grain": "month", "start": "2017-01-01", "end": "2017-04-01"},
+ "where": [{"field": "dimension.jaffle_store_name", "op": "is", "value": "Philadelphia"}]}
+```
+
+`store_customers` is the store's distinct customers over the whole window on each of its
+monthly rows: 366, where adding the months up would count 1012, a returning customer once a
+month. The answer states each total in `assumptions`:
+
+```jsonc
+{"rows": [{"dimension.jaffle_store_name": "Philadelphia", "period": "2017-01-01", "period_partial": false, "ordering_customer_count": 312, "store_customers": 366},
+          {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-02-01", "period_partial": false, "ordering_customer_count": 337, "store_customers": 366},
+          {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-03-01", "period_partial": false, "ordering_customer_count": 363, "store_customers": 366}],
+ "assumptions": [{"code": "TOTAL_OVER", "column": "store_customers", "input": "measure.jaffle.ordering_customer_count", "over": ["period"],
+                  "message": "store_customers is measure.jaffle.ordering_customer_count across period in the rows the call keeps, computed at that grain, not added up from the rows."}]}
+```
+
+The input is one measure or metric id, and each `over` item a `group_by` id of the call, or
+`period` when `time` has a grain, or it is refused at its path; `over` may name every column, for
+the grand total on every row. A total is a select item of its own: inside another expression it
+is refused at its path (compute with its column after the call). A total of a distribution, or
+beside one, is refused with `REWRITE_NOT_SUPPORTED`. The coarser call is held to the caller's
+policies as a call of its own, for every select item it reads: a total that would read a
+governed item across a grouping its policy requires is refused with `POLICY_DENIED`, and a
+total beside withheld values is refused.
 
 ### Per-entity value filters
 

@@ -51,6 +51,9 @@ class PlanBindings:
     retained_filtered_series: set[str] = field(default_factory=set)
     project_cut: bool = False
     root: bool = False
+    # Settles its empty groups as a call of its own (the request's, or a total's coarser call):
+    # loaded coverage, observation and time scopes, whatever it answers for.
+    settles: bool = False
 
 
 _plan: ContextVar[PlanBindings | None] = ContextVar("plan_bindings", default=None)
@@ -128,6 +131,14 @@ def owning(*aliases: str) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def reading_for(*outputs: str) -> Iterator[None]:
+    """Attribute the reads of a nested compile lowered in this block to these outputs of the
+    request (a total's coarser call answers for the total)."""
+    with holding(_read_owners, frozenset(outputs)):
+        yield
+
+
 def current_read_owners() -> frozenset[str] | None:
     """Whom a read lowered now answers for (see ``owning``); None when nobody declared it."""
     return _read_owners.get()
@@ -140,8 +151,14 @@ def measure_cut_owners(measure_id: str) -> AbstractContextManager[None]:
 
 
 @contextmanager
-def plan_bindings(plan: LogicalPlan, *, project_cut: bool = False) -> Iterator[PlanBindings]:
-    bindings = PlanBindings(project_cut=project_cut, root=_plan.get() is None)
+def plan_bindings(
+    plan: LogicalPlan, *, project_cut: bool = False, standalone: bool = False
+) -> Iterator[PlanBindings]:
+    """The bindings of a plan being lowered: the request's own (``root``), or nested in it. A
+    ``standalone`` nested plan settles its empty groups as a call of its own would, while its
+    reads still answer for the request's outputs."""
+    root = _plan.get() is None
+    bindings = PlanBindings(project_cut=project_cut, root=root, settles=root or standalone)
     for bound in plan.bound_measures:
         target = bindings.leaves.setdefault(bound.alias, set())
         bindings.measures.setdefault(bound.measure_id, []).append(target)
@@ -154,6 +171,13 @@ def plan_is_root() -> bool:
     """Whether the query being lowered is the request's own, not one nested inside it."""
     plan = _plan.get()
     return plan is not None and plan.root
+
+
+def settles_as_a_call() -> bool:
+    """Whether the query being lowered settles its empty groups as a call of its own (the
+    request's, or a standalone nested call: ``plan_bindings``)."""
+    plan = _plan.get()
+    return plan is not None and plan.settles
 
 
 def record_retained_filtered_series(alias: str) -> None:

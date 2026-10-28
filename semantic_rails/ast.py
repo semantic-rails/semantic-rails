@@ -36,6 +36,7 @@ from .expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
+    TotalExpr,
     _closest_key_matches,
     expr_to_dict,
     expression_field,
@@ -346,6 +347,7 @@ _QUERY_VALUE_KINDS: dict[type, tuple[str, ...]] = {
     CaseExpr: ("case",),
     OffsetWindowExpr: ("cumulative", "rolling", "prior_period", "period_to_date"),
     ShareExpr: ("share",),
+    TotalExpr: ("total",),
     EntityValueExpr: ("entity_value",),
     MetricPredicateExpr: (),
     ConversionExpr: ("conversion",),
@@ -383,6 +385,7 @@ def _validate_query_expr(expr: SemanticExpr) -> None:
         (
             OffsetWindowExpr,
             ShareExpr,
+            TotalExpr,
             EntityValueExpr,
             MetricPredicateExpr,
         ),

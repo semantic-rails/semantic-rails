@@ -32,6 +32,7 @@ from ..expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
+    TotalExpr,
     expr_to_dict,
     expression_field,
 )
@@ -267,6 +268,7 @@ def _expression_scan_specs(expr: SemanticExpr, config: PackageConfig) -> list[di
         (
             OffsetWindowExpr,
             ShareExpr,
+            TotalExpr,
             EntityValueExpr,
             MetricPredicateExpr,
         ),

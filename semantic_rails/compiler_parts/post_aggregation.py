@@ -27,6 +27,7 @@ from ..expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     ShareExpr,
+    TotalExpr,
     expr_to_dict,
     validate_boolean_argument_count,
 )
@@ -440,6 +441,13 @@ def _compile_post_expr(
             group_aliases=group_aliases,
             query_grain=query_grain,
             table_alias=table_alias,
+        )
+    if isinstance(expr, TotalExpr):
+        # Lowering joins a selected total's coarser call; inside an expression it has none.
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            "A total is a select item of its own; compute with it after the call.",
+            details={"unsupported_construct": "nested_total"},
         )
     if isinstance(expr, ShareExpr):
         # The total is a window over the rows the query keeps, before limit and having.

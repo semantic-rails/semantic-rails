@@ -133,7 +133,7 @@ def _cases():
             example["period"] = "month"
         if kind == "metric_predicate":
             example.update({"op": ">", "value": 0})
-        if kind == "share":
+        if kind in {"share", "total"}:
             example.update({"input": MEASURE, "over": [DIMENSION]})
         for key, spec in props.items():
             probes: list[tuple[Any, str, bool]] = []
@@ -159,10 +159,10 @@ def _cases():
                 probes.append(({"kind": "measure", "measure": measure_id}, measure_id, True))
             elif kind == "conversion" and key == "entity":
                 probes.append(("entity.jaffle_customer", "entity.jaffle_customer", True))
-            elif kind == "share" and key == "input":
+            elif kind in {"share", "total"} and key == "input":
                 # A call names the id; the engine's form, which the walkers read, is a ref.
                 probes.append((deepcopy(REF), MEASURE, False))
-            elif kind == "share" and key == "over":
+            elif kind in {"share", "total"} and key == "over":
                 probes.append(([DIMENSION], DIMENSION, True))
             elif kind == "entity_value" and key == "where":
                 continue  # value predicates are scalar data, not dimension references
@@ -363,7 +363,7 @@ def _schema_query(case, nested=False):
             query["group_by"] = list(expression["partition_by"])
     if kind == "conversion" and expression.get("dimension_bindings"):
         query["group_by"] = list(expression["dimension_bindings"])
-    if kind == "share":
+    if kind in {"share", "total"}:
         query["group_by"] = list(expression["over"])
     if kind == "entity_value":
         expression = {"kind": "distribution", "function": "avg", "over": expression}
@@ -383,10 +383,11 @@ def _schema_query(case, nested=False):
         }
         query["select"] = [{"expression": scoped, "as": "value"}]
     else:
-        if nested and kind not in {"distribution", "entity_value"}:
+        # A total is a select item of its own: it reads beside a sibling instead.
+        if nested and kind not in {"distribution", "entity_value", "total"}:
             expression = _in_case_else(expression)
         query["select"] = [{"expression": expression, "as": "value"}]
-        if nested and kind in {"distribution", "entity_value"}:
+        if nested and kind in {"distribution", "entity_value", "total"}:
             query["select"].append({"expression": deepcopy(REF), "as": "sibling"})
     return query
 

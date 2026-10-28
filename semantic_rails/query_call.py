@@ -13,6 +13,7 @@ options (``max_rows``, ``verbosity``, ...) are arguments beside the call.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -178,6 +179,7 @@ KIND_REQUIRED: dict[str, tuple[str, ...]] = {
     "aggregate_if": ("aggregation", "condition"),
     "ratio": ("numerator", "denominator"),
     "share": ("input", "over"),
+    "total": ("input", "over"),
     "entity_value": ("entity", "input"),
     "distribution": ("function", "over"),
     "conversion": ("base", "converted", "entity", "window", "matching_mode"),
@@ -815,8 +817,8 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
                     "each entity's value",
                     operators.NUMBER_WORDS,
                 )
-    if kind == "share":
-        _check_share(raw, path, context)
+    if kind in {"share", "total"}:
+        _check_share(raw, path, context, kind)
     _dimension_in_measure_slot(raw.get("measure"), f"{path}.measure", context)
     node: dict[str, Any] = {}
     for key, value in raw.items():
@@ -998,13 +1000,23 @@ def _prior_period(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _check_share(raw: Mapping[str, Any], path: str, context: CallContext) -> None:
-    """A share reads a measure or metric id, and takes its total over group_by ids or period."""
+def _check_share(
+    raw: Mapping[str, Any], path: str, context: CallContext, kind: str = "share"
+) -> None:
+    """A share or a total reads a measure or metric id, and takes its total over group_by ids
+    or period. A total is a select item of its own: its column is the input at another grain."""
     columns = [*context.group_by, *([TIME_AXIS] if context.timed else [])]
+    if kind == "total" and not re.fullmatch(r"select\[\d+\]\.expression", path):
+        raise refusal(
+            path,
+            "a total is a select item of its own",
+            fix='Select it as {"expression": {"kind": "total", ...}, "as": <name>}, and '
+            "compute with it after the call.",
+        )
     if not isinstance(raw.get("input"), str) or not raw["input"].startswith(REFERENCE_PREFIXES):
         raise refusal(
             f"{path}.input",
-            "a share's input is a measure or metric id",
+            f"a {kind}'s input is a measure or metric id",
             fix='Write "input": "measure.<id>" or "metric.<id>".',
         )
     over = raw.get("over")

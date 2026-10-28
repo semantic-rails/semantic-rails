@@ -35,6 +35,8 @@ surface.
 - period-to-date expressions
 - result thresholds (`having`) and entity filters (`any`, `none`, or `having` with `over`)
 - `share` of a total, with the denominator stated in `assumptions`
+- a coarser `total` beside each row (a store's distinct customers on each of its monthly rows),
+  computed at its own grain and stated in `assumptions`
 - a statistic override (`aggregation`) the measure allows, stated in `assumptions`
 - grouping by an entity's display name keyed by the entity, so namesakes stay apart
 - query-level time grain selection

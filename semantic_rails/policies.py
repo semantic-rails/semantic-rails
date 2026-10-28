@@ -33,6 +33,7 @@ from .compiler_parts.bind import (
     measure_column_ref,
 )
 from .compiler_parts.paths import dimensions_over_column
+from .compiler_parts.totals import coarser_calls
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -242,6 +243,8 @@ def enforce_query_policies(
         binding=binding,
     )
     blocking = [row for row in effects if row["action"] in {"deny", "hidden"}]
+    if query is not None and not blocking:
+        blocking = _coarser_blocking(config, query, scope)
     if blocking:
         # The objects this query reads that a blocking policy lists; all it lists when the
         # query reads none of them directly (a caller's aggregate over a governed column).
@@ -277,6 +280,27 @@ def enforce_query_policies(
                 row["withheld_objects"] = sorted(withheld)
                 row["withheld_column"] = column
     return effects
+
+
+def _coarser_blocking(
+    config: PackageConfig, query: Mapping[str, Any], scope: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """The effects that refuse a total: its coarser call (the call without its ``over``
+    columns) is held to the request's policies as a call of its own would be, every select item
+    it reads included. Each violation names the total."""
+    blocking: list[dict[str, Any]] = []
+    for total, payload in coarser_calls(config, query):
+        try:
+            binding = bind_query(config, None, payload)
+        except SemanticLayerError:
+            continue  # the call's own compile refuses the total, at the total
+        for row in query_policy_effects(
+            config, binding.object_ids, **scope, query=payload, binding=binding
+        ):
+            if row["action"] in {"deny", "hidden"}:
+                violations = [{**item, "total": total} for item in row.get("violations") or []]
+                blocking.append({**row, **({"violations": violations} if violations else {})})
+    return blocking
 
 
 def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLayerError:
@@ -333,6 +357,14 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
     kind = violation.get("kind")
     disallowed = _listed(violation.get("disallowed") or [])
     allowed = list(violation.get("allowed") or [])
+    if kind == "missing_required_group_by" and violation.get("total"):
+        missing = _listed(violation.get("missing") or [])
+        return (
+            f"can only be read grouped by {missing}, and the total in "
+            f"'{violation['total']}' reads it across them",
+            f"Take {missing} out of the total's over, or remove the total.",
+            {},
+        )
     if kind == "missing_required_group_by":
         period = dict(violation.get("by_time") or {})
         day, grain = period.get("dimension"), period.get("grain")
@@ -545,6 +577,8 @@ def withheld_shape(
     keys = rank_keys(query)
     if not keys:
         return refuse("withheld_ungrouped", "a rank needs group_by keys.")
+    if any((item.get("expression") or {}).get("kind") == "total" for item in query["select"]):
+        return refuse("withheld_totals", "a total's coarser call would read them.")
     direction = order[0]["direction"]
     if [(_order_field(query, item["field"]), item["direction"]) for item in order[1:]] != [
         (key, direction) for key in keys

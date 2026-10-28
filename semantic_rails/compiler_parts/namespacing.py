@@ -129,7 +129,8 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
         return SqlTableRef(name=rename.get(table.name, table.name), alias=table.alias)
 
     def _select(node: SqlSelect) -> SqlSelect:
-        if not isinstance(node.from_table, SqlTableRef) or not all(
+        # A one-row select reads no relation (a window total's spine).
+        if not isinstance(node.from_table, (SqlTableRef, SqlTableFunction, type(None))) or not all(
             isinstance(join.table, (SqlTableRef, SqlTableFunction)) for join in node.joins
         ):
             # Refuse any other relation rather than emit SQL that lost its arguments.
@@ -140,7 +141,7 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             )
         return SqlSelect(
             select=[SqlField(_expr(field.expression), field.alias) for field in node.select],
-            from_table=_table(node.from_table),
+            from_table=None if node.from_table is None else _table(node.from_table),
             joins=[
                 SqlJoin(
                     join_type=join.join_type,
