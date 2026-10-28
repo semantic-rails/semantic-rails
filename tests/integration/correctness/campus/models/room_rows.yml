@@ -1,0 +1,12 @@
+# A table with no key: nothing in graph.entities names this model, so every stored row counts,
+# exact duplicates included. Its rows look up their building and organization.
+model:
+  id: room_rows
+  label: Room rows
+  relation: room_rows
+  entities: {building: {}, organization: {}}
+  dimensions:
+    room_code: {label: Room row code, kind: categorical}
+    room_use: {label: Room row use, kind: categorical}
+  measures:
+    row_area: {label: Room row area, kind: aggregate, expr: area}

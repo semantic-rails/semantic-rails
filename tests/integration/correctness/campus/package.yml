@@ -1,0 +1,9 @@
+schema_version: 1
+package:
+  id: campus
+  namespace: campus
+  warehouse: duckdb
+  default_db: data/warehouse.duckdb
+  seed: {kind: sql_script, source: data/seed.sql}
+defaults:
+  relationship: {traversal: [forward]}

@@ -76,6 +76,9 @@ PARENT_VALUE = "parent_value"
 # (``PATH_NOT_FOUND``), several routes from M (``AMBIGUOUS_PATH``), or one that crosses a
 # one-to-many hop no other leaf answers (``MIXED_GRAIN_INVALID``).
 _RETRIED = frozenset({"PATH_NOT_FOUND", "AMBIGUOUS_PATH", "MIXED_GRAIN_INVALID"})
+# Under a row filter the route question is refused as a policy's (``binding``): the rows'
+# own key or a recorded route asks no question, so that refusal is retried too.
+_RETRIED_POLICY = "route_override_under_row_policy"
 # The route rungs that decide a pair without asking (``fanout.resolve_path``): the call's own
 # row, the package's recorded row, the start's own key. Any other rung stays the package's.
 _DECIDED = frozenset({"query", "decided", "colocated_key"})
@@ -104,7 +107,10 @@ def bind_parent_values(
     """The call bound once more with parent values (``bind``), when ``refusal`` is its own
     bind's refusal of a call that selects something; None when it isn't, or when that bind
     refuses too for any reason but a policy (the call's own refusal stands)."""
-    if refusal.code not in _RETRIED or not payload.get("select"):
+    retried = refusal.code in _RETRIED or (
+        refusal.code == "POLICY_DENIED" and refusal.details.get("reason") == _RETRIED_POLICY
+    )
+    if not retried or not payload.get("select"):
         return None
     with _binding():
         try:
@@ -268,17 +274,18 @@ def parent_value_step(
     filtered = any(
         dimensions[item.field].entity != measure.entity for item in plain_filters(query.where)
     )
-    population = "" if filtered else f", including any with no {child}"
+    population = "" if filtered else f", including those with no {child} rows"
     return RewriteStep(
         kind=PARENT_VALUE,
         status="applied",
         measure_id=bound.measure_id,
         reason=(
             f"Read on each {child} row from {route_reading(config, rows, route)}: each {parent} "
-            f"counts once, with its whole value, in every group it has a {child} in, so the "
-            f"column repeats on each of its {child} rows and doesn't add up across groups, and a "
-            f"group whose {child} rows have no {parent} reads NULL. A total (totals, or a total "
-            f"item) is the call without the grouping: it counts each {parent} once{population}."
+            "counts once, with its whole value, in every group that holds one of its "
+            f"{child} rows, so the column repeats on each of its {child} rows and doesn't add "
+            f"up across groups, and a group whose {child} rows have no {parent} reads NULL. A "
+            "total (totals, or a total item) is the call without the grouping: it counts each "
+            f"{parent} once{population}."
         ),
         details={"rows_entity": rows, "path": list(route), "group_by": list(query.group_by)},
     )

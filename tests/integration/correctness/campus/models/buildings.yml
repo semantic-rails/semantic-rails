@@ -1,0 +1,13 @@
+model:
+  id: buildings
+  label: Buildings
+  relation: buildings
+  entities: {building: {}}
+  dimensions:
+    building_name: {label: Building name, kind: categorical}
+    campus: {label: Campus, kind: categorical}
+  measures:
+    assignable_area: {label: Assignable area, kind: aggregate, expr: assignable_area}
+    building_count: {label: Buildings, kind: entity_count, entity_key: building_id}
+    peak_occupancy: {label: Peak occupancy, kind: aggregate, expr: occupants, default_agg: max,
+      additive: false}
