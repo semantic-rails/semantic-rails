@@ -145,7 +145,9 @@ def test_aggregate_requires_correctness_success(event, result):
     ci, _ = workflows()
     gate = ci["jobs"]["all-checks"]
     steps = gate["steps"]
-    assert len(steps) == 1
+    # The rest is the coverage floor, which only the merge queue and manual runs reach.
+    queue_only = "github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'"
+    assert all(later["if"] == queue_only for later in steps[1:])
     step = steps[0]
     assert not step.get("continue-on-error")
     assert step["env"]["RESULTS"] == "${{ toJSON(needs) }}"

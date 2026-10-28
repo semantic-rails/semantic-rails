@@ -99,7 +99,13 @@ jobs:
           uv sync --group dev --extra snowflake --extra snowflake-adbc --extra postgres --locked
           uv run --no-sync python -c "import pyarrow, adbc_driver_manager.dbapi, adbc_driver_postgresql.dbapi, snowflake.connector"
       - run: uv run python scripts/changelog_fragments.py check
-      - run: uv run pytest -q tests/semantic_rails -n auto --dist worksteal --validate-quarantine --junitxml=backend-results.xml
+      - env:
+          # The merge queue (and a manual run) measures line coverage on the 3.14 shards;
+          # all-checks combines their data and holds the floor. The options
+          # go on the command line, not PYTEST_ADDOPTS, which the tests' own pytest runs inherit.
+          COVERAGE_OPTIONS: ${{ github.event_name != 'pull_request' && matrix.python-version == '3.14' && '--cov --cov-report=' || '' }}
+          COVERAGE_FILE: .coverage.shard-${{ matrix.shard }}
+        run: uv run pytest -q tests/semantic_rails -n auto --dist worksteal --validate-quarantine --junitxml=backend-results.xml $COVERAGE_OPTIONS
       - name: Verify DuckDB confinement tests ran without skips
         run: |
           uv run --no-sync python - <<'PY'
@@ -162,6 +168,14 @@ jobs:
         with:
           name: backend-results-py${{ matrix.python-version }}-${{ matrix.shard }}
           path: backend-results.xml
+      - name: Upload coverage data
+        if: github.event_name != 'pull_request' && matrix.python-version == '3.14'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage-${{ matrix.shard }}
+          path: .coverage.shard-${{ matrix.shard }}
+          include-hidden-files: true
+          if-no-files-found: error
       - if: matrix.shard == 0
         run: uv run semantic-rails parse-config --package jaffle_shop
       - if: matrix.shard == 0
@@ -199,6 +213,21 @@ jobs:
       - name: mypy
         run: uv run mypy semantic_rails
       - run: uv run python scripts/benchmark_plan.py --gate
+      - name: Compile corpus is byte-identical across hash seeds and worker counts
+        # Every committed query (485) on every dialect (9), about 20 seconds a record: off the
+        # backend shards' critical path, and it fails on any compile crash too.
+        run: |
+          corpus=scripts/dev/compile_corpus.py
+          PYTHONHASHSEED=0 uv run python "$corpus" record "$RUNNER_TEMP/corpus-a.json" --jobs 4
+          PYTHONHASHSEED=12345 uv run python "$corpus" record "$RUNNER_TEMP/corpus-b.json" --jobs 2
+          uv run python "$corpus" compare "$RUNNER_TEMP/corpus-a.json" "$RUNNER_TEMP/corpus-b.json" --brief
+          uv run python - "$RUNNER_TEMP/corpus-a.json" <<'PY'
+          import json, sys
+
+          crashed = json.load(open(sys.argv[1]))["summary"]["crashed"]
+          if crashed:
+              raise SystemExit(f"{crashed} corpus results crashed the compiler")
+          PY
 
   security:
     name: Security audit
@@ -290,3 +319,25 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
+      # The coverage floor: the merge queue's (or a manual run's) 3.14 shards record line coverage
+      # of semantic_rails/, combined here. It sits a little under the measured 93.55% so that
+      # unrelated drift doesn't eject a merge; raise it as coverage grows.
+      - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-dependency-glob: uv.lock
+      - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+      - name: Coverage floor
+        if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+        run: |
+          uv sync --only-group dev --locked --python 3.12
+          uv run --no-sync coverage combine .coverage.shard-*
+          uv run --no-sync coverage report --precision=2 --skip-covered --sort=cover --fail-under=93

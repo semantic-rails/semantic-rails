@@ -188,7 +188,16 @@ dev = [
   "pexpect>=4.9.0",
   "questionary>=2.1.0",
   "rich>=14.0.0",
+  "pytest-cov>=7.1.0",
 ]
+
+[tool.coverage.run]
+# The merge queue measures the backend suite's line coverage of the engine on the Python 3.14
+# shards, and CI's all-checks job combines them and holds the floor (.github/workflows/ci.yml).
+# CLI subprocesses aren't traced. sys.monitoring keeps the overhead low.
+source = ["semantic_rails"]
+relative_files = true
+core = "sysmon"
 
 [tool.pytest.ini_options]
 tmp_path_retention_policy = "failed"
