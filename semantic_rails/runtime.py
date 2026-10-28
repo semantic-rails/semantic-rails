@@ -98,6 +98,7 @@ from .db import (
 )
 from .db_parts.base import QueryRows, query_with_limits, reject_parameters
 from .db_parts.duckdb_confinement import confinement_directory, require_inside
+from .db_parts.duckdb_setup import require_duckdb
 from .diagnostics import (
     enrich_column_expression,
     enrich_expression_ast_error,
@@ -1265,6 +1266,8 @@ class Runtime:
         """
         if self.warehouse != "duckdb":
             return
+        # Before probing or seeding: either would read a missing duckdb as a bad file.
+        require_duckdb()
         if self._confine_to:
             self.db_path = require_inside(self._confine_to, self.db_path, option="database path")
         seed = self._config.package.seed

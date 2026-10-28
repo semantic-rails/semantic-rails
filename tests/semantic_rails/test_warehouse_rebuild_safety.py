@@ -420,6 +420,24 @@ def test_unreadable_database_is_preserved(tmp_path: Path) -> None:
     assert db_path.read_bytes() == b"not a duckdb file"
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_missing_duckdb_is_named_and_never_read_as_a_bad_file(
+    tmp_path: Path, monkeypatch, existing: bool
+) -> None:
+    package_dir = write_orders_package(tmp_path, schema="")
+    db_path = package_dir / "data" / "warehouse.duckdb"
+    if existing:
+        _write_db(db_path, ORDERS_ONLY_SEED_SQL)
+        digest = file_digest(db_path)
+    monkeypatch.setitem(sys.modules, "duckdb", None)  # the import fails, as when not installed
+    with pytest.raises(SemanticLayerError) as excinfo:
+        _ensure_db(package_dir)
+    assert excinfo.value.code == "MISSING_DEPENDENCY"
+    assert excinfo.value.details["reason"] == "duckdb_not_installed"
+    assert "DuckDB isn't installed" in str(excinfo.value)
+    assert file_digest(db_path) == digest if existing else not db_path.exists()
+
+
 def test_missing_external_database_is_reported_not_created(tmp_path: Path) -> None:
     package_dir = write_orders_package(tmp_path, seed={"kind": "external"})
     with pytest.raises(SemanticLayerError) as excinfo:

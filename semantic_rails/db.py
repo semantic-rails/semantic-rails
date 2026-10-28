@@ -28,16 +28,12 @@ import os
 import re
 import sqlite3
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch semantic_rails.db.subprocess
+import sys
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
-
-try:
-    import duckdb
-except ImportError:  # pragma: no cover
-    duckdb = None  # type: ignore[assignment]  # optional dependency fallback
 
 from .db_parts.base import (
     ConnectionCredentialProvider,
@@ -96,6 +92,8 @@ def temporal_cast_error_value(exc: BaseException) -> str | None:
     """
     while isinstance(exc, SemanticLayerError) and exc.__cause__ is not None:
         exc = exc.__cause__
+    # Only a loaded DuckDB raises its own errors; compiling never imports it.
+    duckdb = sys.modules.get("duckdb")
     if duckdb is None or not isinstance(exc, duckdb.ConversionException):
         return None
     match = re.match(
@@ -185,10 +183,6 @@ class Database:
     @classmethod
     def connect(cls, db_path: str, *, engine: str = "duckdb", read_only: bool = False) -> Database:
         if engine == "duckdb":
-            if duckdb is None:
-                raise RuntimeError(
-                    "duckdb is not installed. Add it to your environment dependencies."
-                )
             return cls(
                 conn=connect_duckdb(db_path, read_only=read_only),
                 engine=engine,
@@ -513,8 +507,6 @@ def build_seed_database(
     """
     if kind not in {"sql_script", "csv_dir_duckdb"}:
         raise SemanticLayerError("INVALID_CONFIG", f"Unsupported seed kind '{kind}'")
-    if duckdb is None:
-        raise RuntimeError("duckdb is not installed. Add it to your environment dependencies.")
     # Hash before building: a seed edited mid-build then reads as stale, never as current.
     digest = seed_digest(kind, source, post_sql) if package_id else ""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)

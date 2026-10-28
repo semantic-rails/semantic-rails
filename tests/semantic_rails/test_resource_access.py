@@ -10,6 +10,7 @@ from dataclasses import replace
 import httpx
 import pytest
 
+from semantic_rails.api_keys import extract_bearer_or_api_key
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.catalog_service import resolve_catalog
 from semantic_rails.db import WarehouseAdapter
@@ -24,7 +25,6 @@ from semantic_rails.planner.plan import plan_payload
 from semantic_rails.request_context import (
     RequestContext,
     context_from_policy_context,
-    extract_bearer_or_api_key,
     get_policy_context_resolver,
     set_policy_context_resolver,
 )

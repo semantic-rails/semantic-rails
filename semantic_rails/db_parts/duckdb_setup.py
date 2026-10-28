@@ -6,9 +6,25 @@ import contextlib
 from collections.abc import Mapping
 from typing import Any
 
-import duckdb
-
 from ..errors import SemanticLayerError
+
+
+def require_duckdb() -> Any:
+    """The ``duckdb`` module, imported at the first DuckDB connection so that loading a package
+    and compiling never import it. Without it, ``MISSING_DEPENDENCY`` names the package to
+    install, so no caller mistakes it for an unreadable database."""
+    try:
+        import duckdb
+    except ModuleNotFoundError as exc:
+        if exc.name != "duckdb":
+            raise
+        raise SemanticLayerError(
+            "MISSING_DEPENDENCY",
+            "DuckDB isn't installed. Install the duckdb package (pip install duckdb), which "
+            "semantic-rails installs by default, to open a DuckDB database.",
+            details={"engine": "duckdb", "reason": "duckdb_not_installed"},
+        ) from exc
+    return duckdb
 
 
 def connect_duckdb(
@@ -20,6 +36,7 @@ def connect_duckdb(
     """Open a DuckDB connection with the engine's correctness settings. Every connection the
     engine opens (local files, MotherDuck, DuckLake, introspection, seeds) comes from here, so
     none can miss a setting; a cursor of it shares them."""
+    duckdb = require_duckdb()
     return configure_duckdb_connection(
         duckdb.connect(database, read_only=read_only, config=dict(config or {}))
     )

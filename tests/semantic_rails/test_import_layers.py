@@ -1,14 +1,20 @@
-"""Import-layer contract for ``semantic_rails``.
+"""Import-layer and embeddable-core contracts for ``semantic_rails``.
 
 Each module belongs to one layer, and imports may only point to the same or a lower layer.
 Imports inside functions and ``TYPE_CHECKING`` blocks count, because they couple modules as
 much as top-level ones. The known exceptions and import cycles are listed below; both lists
 may only shrink, so removing an exception or breaking a cycle means deleting its entry here.
+
+The embeddable core (``semantic_rails.embedding``: load a package, compile, enforce policies)
+imports neither DuckDB, the MCP SDK nor pydantic, and the separations below keep its
+modules apart, through any chain of imports.
 """
 
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[2] / "semantic_rails"
@@ -49,6 +55,25 @@ KNOWN_CYCLES = [
     "expressions schema",
     "config package_snapshot",
 ]
+
+# The module on the left reaches no module of the package on the right.
+SEPARATED = [
+    # Request identity is read without the transports' API-key auth.
+    ("request_context", "api_keys"),
+    # The compiler's limited order needs no warehouse adapter.
+    ("top_n", "db_parts"),
+]
+# Reaches kept on purpose, with the reason; an entry whose reach is gone fails, so delete it.
+ALLOWED_REACH = {
+    ("config_validation", "runtime"): (
+        "package checks run the package through a Runtime: runtime validation, warehouse "
+        "probes and the data values of filters"
+    ),
+    ("compiler", "row_filters"): (
+        "the compiler writes each row filter's predicate into the SQL it lowers, and "
+        "row_filters reads only errors, policy_rules, schema, sql_ast and sql_preparation"
+    ),
+}
 
 
 def _modules() -> dict[str, Path]:
@@ -104,8 +129,8 @@ def test_imports_point_down_the_layers():
     assert ALLOWED_UPWARD - upward == set(), "these exceptions are gone; delete them"
 
 
-def test_import_cycles_are_only_the_known_ones():
-    graph = _import_graph()
+def _reach(graph: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Map each module to every module it imports, directly or through others."""
     reach = {}
     for start in graph:
         seen, todo = set(), list(graph[start])
@@ -115,5 +140,32 @@ def test_import_cycles_are_only_the_known_ones():
                 seen.add(module)
                 todo.extend(graph[module])
         reach[start] = seen
+    return reach
+
+
+def test_import_cycles_are_only_the_known_ones():
+    graph = _import_graph()
+    reach = _reach(graph)
     cycles = {frozenset(m for m in reach[s] if s in reach[m]) for s in graph if s in reach[s]}
     assert cycles == {frozenset(cycle.split()) for cycle in KNOWN_CYCLES}, "import cycles changed"
+
+
+def test_separated_modules_stay_apart():
+    reach = _reach(_import_graph())
+
+    def reaches(source: str, target: str) -> bool:
+        return any(m == target or m.startswith(f"{target}.") for m in reach[source])
+
+    assert [pair for pair in SEPARATED if reaches(*pair)] == [], "these modules now reach"
+    assert [pair for pair in ALLOWED_REACH if not reaches(*pair)] == [], (
+        "these allowed reaches are gone; delete them"
+    )
+
+
+def test_the_embedding_core_imports_no_duckdb_mcp_or_pydantic():
+    # A fresh, isolated interpreter: the test session's DuckDB startup hook stays out of it.
+    script = PACKAGE.parent / "scripts" / "verify_embedding_core.py"
+    result = subprocess.run(
+        [sys.executable, "-I", str(script)], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr or result.stdout

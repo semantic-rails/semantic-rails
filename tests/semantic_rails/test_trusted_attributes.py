@@ -11,13 +11,13 @@ import httpx
 import pytest
 
 from semantic_rails import runtime as runtime_module
+from semantic_rails.api_keys import extract_bearer_or_api_key
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.embedding import RequestContext, TrustedAttributes
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION
 from semantic_rails.request_context import (
     context_from_headers,
     context_from_policy_context,
-    extract_bearer_or_api_key,
     get_audit_sink,
     get_policy_context_resolver,
     request_context_payload,

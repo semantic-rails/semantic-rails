@@ -33,6 +33,7 @@ from .http_core import (
     public_api_route,
     rebinding_refusal,
     request_id_from_parts,
+    warn_if_default_policy_resolver_exposed,
 )
 from .mcp import SemanticLayerMCPAdapter
 from .mcp_streamable_http import (
@@ -42,7 +43,6 @@ from .mcp_streamable_http import (
     handle_streamable_http_request,
     prepare_streamable_http_request,
 )
-from .request_context import warn_if_default_policy_resolver_exposed
 from .runtime import Runtime
 
 __all__ = ["API_VERSION", "CORS_ALLOW_HEADERS", "PUBLIC_V1_ROUTES", "AppState", "Handler", "serve"]

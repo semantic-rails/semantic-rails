@@ -20,7 +20,6 @@ import pytest
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.db import create_warehouse_adapter
-from semantic_rails.db_parts import duckdb_setup
 from semantic_rails.db_parts.motherduck import MotherDuckAdapter, create_adapter
 from semantic_rails.dialects import (
     DuckDbDialect,
@@ -149,7 +148,7 @@ def _fake_duckdb(monkeypatch, captured, *, fail_on=None):
         captured["conn"] = conn
         return conn
 
-    monkeypatch.setattr(duckdb_setup, "duckdb", SimpleNamespace(connect=connect))
+    monkeypatch.setattr("duckdb.connect", connect)
 
 
 def _options(**overrides):

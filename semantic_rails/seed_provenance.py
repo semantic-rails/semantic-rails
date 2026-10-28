@@ -18,8 +18,6 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-import duckdb
-
 from .db_parts.duckdb_confinement import confine_duckdb
 from .db_parts.duckdb_setup import connect_duckdb
 from .errors import SemanticLayerError
@@ -119,6 +117,8 @@ def missing_duckdb_relations(
 
 def record_seed_provenance(db_path: str, package_id: str, seed_digest: str = "") -> None:
     """Record which package and seed files built a new seed, without authorizing replacement."""
+    import duckdb
+
     conn = connect_duckdb(db_path)
     try:
         conn.execute("CREATE SCHEMA IF NOT EXISTS _semantic_rails")

@@ -49,6 +49,16 @@ The facade includes:
 - Package authoring: `ArchitectProject`, `ArchitectMutation`, `project_revision`,
   `ABSENT_PROJECT_REVISION`, and `impact_report`.
 
+Importing the facade, loading a package, compiling and enforcing its policies import neither
+DuckDB, the MCP Python SDK nor pydantic, though the default install includes all three. DuckDB
+loads at the first DuckDB connection, so a host that passes its own adapter to
+`Runtime.set_adapter` never loads it, and only the Architect MCP imports the MCP SDK and
+pydantic. A host can leave the three out of its environment: `pip install --no-deps
+semantic-rails` plus `PyYAML`, `pytz` and `tzdata`, or, in a uv project,
+`uv sync --no-install-package duckdb --no-install-package mcp --no-install-package pydantic`.
+There, opening a DuckDB database raises `MISSING_DEPENDENCY` naming DuckDB. CI compiles the
+bundled package with its policies in such an environment (`scripts/verify_embedding_core.py`).
+
 A multi-tenant host must derive `RequestContext` from authenticated identity and
 pass it to every remote MCP/HTTP request boundary. A request that says who is asking
 (`policy_context` anywhere in a body or in tool arguments) is refused with

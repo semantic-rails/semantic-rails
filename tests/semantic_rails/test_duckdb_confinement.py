@@ -280,7 +280,7 @@ def test_catalog_probe_refuses_before_binding_when_confinement_fails(
             )
         ),
     )
-    monkeypatch.setattr(seed_provenance.duckdb, "connect", connect)
+    monkeypatch.setattr(duckdb, "connect", connect)
     monkeypatch.setattr(seed_provenance, "confine_duckdb", refuse)
     monkeypatch.setattr(
         seed_provenance, "_missing_on_connection", lambda *a: pytest.fail("bound relations")

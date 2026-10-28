@@ -3,8 +3,8 @@
 Reads the configured keys (:func:`configured_api_keys`), pulls the
 supplied key from the request headers (:func:`extract_bearer_or_api_key`),
 and checks it in constant time (:func:`api_key_auth_result`,
-``hmac.compare_digest`` for free). Also holds the case-insensitive header
-lookup that :mod:`semantic_rails.request_context` shares.
+``hmac.compare_digest`` for free). Headers are read with
+:mod:`semantic_rails.request_context`'s case-insensitive lookup.
 """
 
 from __future__ import annotations
@@ -14,25 +14,9 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
+from .request_context import _header
+
 MISSING_API_KEY_FILE_SENTINEL = "__missing_api_key_file__"
-
-
-def _header(headers: Mapping[str, Any] | None, *names: str) -> str:
-    if headers is None:
-        return ""
-    for name in names:
-        try:
-            value = headers.get(name)
-        except AttributeError:
-            value = None
-        if value:
-            return str(value).strip()
-    lower = {str(key).lower(): value for key, value in dict(headers or {}).items()}
-    for name in names:
-        value = lower.get(name.lower())
-        if value:
-            return str(value).strip()
-    return ""
 
 
 def configured_api_keys() -> tuple[str, ...]:

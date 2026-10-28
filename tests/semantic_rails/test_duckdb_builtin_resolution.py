@@ -236,8 +236,6 @@ def test_csv_seed_ignores_file_macros_on_existing_connection(tmp_path: Path, nam
 
 
 def test_ducklake_refuses_macros_in_newly_attached_catalog(tmp_path: Path, monkeypatch) -> None:
-    from types import SimpleNamespace
-
     path = tmp_path / "warehouse.duckdb"
     with duckdb.connect(str(path)) as connection:
         connection.execute("CREATE MACRO row(x, y) AS error('file_macro_executed')")
@@ -258,10 +256,7 @@ def test_ducklake_refuses_macros_in_newly_attached_catalog(tmp_path: Path, monke
         def close(self):
             raw.close()
 
-    monkeypatch.setattr(
-        "semantic_rails.db_parts.duckdb_setup.duckdb",
-        SimpleNamespace(connect=lambda *a, **kw: Connection()),
-    )
+    monkeypatch.setattr(duckdb, "connect", lambda *a, **kw: Connection())
     adapter = DuckLakeAdapter({"catalog_path": str(path)})
     with pytest.raises(SemanticLayerError) as exc:
         adapter._create_connection()  # noqa: SLF001
