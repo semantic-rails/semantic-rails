@@ -335,6 +335,13 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
     kind = violation.get("kind")
     disallowed = _listed(violation.get("disallowed") or [])
     allowed = list(violation.get("allowed") or [])
+    if kind == "missing_required_group_by" and violation.get("total") == "totals":
+        missing = _listed(violation.get("missing") or [])
+        return (
+            f"can only be read grouped by {missing}, and the total rows add it up across them",
+            "Remove totals.",
+            {},
+        )
     if kind == "missing_required_group_by" and violation.get("total"):
         missing = _listed(violation.get("missing") or [])
         return (
@@ -555,6 +562,8 @@ def withheld_shape(
     keys = rank_keys(query)
     if not keys:
         return refuse("withheld_ungrouped", "a rank needs group_by keys.")
+    if query.get("totals") is not None:
+        return refuse("withheld_totals", "total rows would add them up.")
     direction = order[0]["direction"]
     if [(_order_field(query, item["field"]), item["direction"]) for item in order[1:]] != [
         (key, direction) for key in keys
@@ -925,6 +934,18 @@ def _metric_constraint_violations(
                     "missing": missing,
                     "present_group_by": list(query.group_by),
                     **_by_time(missing, bound()),
+                }
+            )
+        # The grand-total row reads every select column grouped by nothing but the period.
+        if query.totals is not None and (
+            missing := [field for field in required if not _period_is(field, bound())]
+        ):
+            violations.append(
+                {
+                    "kind": "missing_required_group_by",
+                    "missing": missing,
+                    "present_group_by": [],
+                    "total": "totals",
                 }
             )
         # A total reads its input at its coarser call's grain, which must meet it too.
