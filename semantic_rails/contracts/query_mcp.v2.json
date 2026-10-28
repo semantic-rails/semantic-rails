@@ -14,7 +14,7 @@
   },
   "producer": {
     "name": "semantic-rails",
-    "version": "0.3.2"
+    "version": "0.3.3"
   },
   "prompts": [
     {
@@ -224,7 +224,7 @@
         "additionalProperties": true,
         "properties": {
           "kinds": {
-            "description": "Default: all but relationship.",
+            "description": "Unset: all but relationship, temporal_role, value_domain.",
             "items": {
               "enum": [
                 "dimension",
@@ -254,7 +254,7 @@
             ]
           },
           "limit": {
-            "description": "Per kind (default 10); with empty terms, ids per kind (default 100).",
+            "description": "Per kind: default 10, or 100 ids with empty terms.",
             "minimum": 1,
             "type": "integer"
           },
@@ -269,7 +269,7 @@
             "type": "object"
           },
           "stage": {
-            "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
+            "description": "Ranking stage: initial, post_measure, post_dimension or comparison; inferred if omitted.",
             "type": "string"
           },
           "terms": {

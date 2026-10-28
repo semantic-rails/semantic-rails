@@ -11,13 +11,13 @@ from http.server import HTTPServer
 import pytest
 
 from semantic_rails.api import AppState, Handler
+from semantic_rails.api_keys import api_key_auth_result
 from semantic_rails.asgi import PackageLoadFailureApp, SemanticLayerASGIApp
 from semantic_rails.errors import UNEXPECTED_ERROR_MESSAGE
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.request_context import (
     HeaderPolicyContextResolver,
     RequestContext,
-    api_key_auth_result,
     set_policy_context_resolver,
 )
 

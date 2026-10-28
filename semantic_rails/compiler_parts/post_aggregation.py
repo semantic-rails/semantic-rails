@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any
 
@@ -309,6 +310,13 @@ def _compile_offset_window_expr(
     return sums[0]
 
 
+def share_over(over: Iterable[str], config: PackageConfig) -> set[str]:
+    """The columns a share's total is taken across: its ``over`` columns, and the key of each
+    ``over`` name, which the name groups by beside it."""
+    over = list(over)
+    return {*over, *filter(None, (display_key(config, column) for column in over))}
+
+
 def share_partition(
     expr: ShareExpr,
     table_alias: str,
@@ -316,9 +324,9 @@ def share_partition(
     time_alias: str,
     config: PackageConfig,
 ) -> list[SqlExpr]:
-    """The columns a share's total is taken within: every key the share is not ``over``. A
-    share over a name is over its entity's key too, which the name groups by beside it."""
-    over = {*expr.over, *filter(None, (display_key(config, column) for column in expr.over))}
+    """The columns a share's total is taken within: every key the share is not ``over``
+    (:func:`share_over`)."""
+    over = share_over(expr.over, config)
     keys = [*group_aliases, *([time_alias] if time_alias and "period" not in over else [])]
     return _window_partition_exprs(table_alias, [key for key in keys if key not in over])
 

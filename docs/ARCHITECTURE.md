@@ -90,7 +90,13 @@ outside the expression roots. The rule registry is empty; no command invokes it 
 - Modules import only their own or lower layers: entry points, transports, authoring,
   planner, metadata, runtime, compiler, warehouses, package loading, SQL, core.
   `tests/semantic_rails/test_import_layers.py` lists each module's layer and the known
-  exceptions and import cycles, which may only shrink.
+  exceptions and import cycles, which may only shrink. It also keeps some modules apart
+  through any chain of imports (`request_context` from `api_keys`, `top_n` from `db_parts`),
+  with the reaches kept on purpose and their reasons.
+- The embedding facade loads a package, compiles and enforces policies without importing
+  DuckDB, the MCP Python SDK or pydantic. DuckDB loads at the first DuckDB connection
+  (`db_parts/duckdb_setup.py`), and only the Architect MCP imports the MCP SDK and pydantic.
+  CI runs `scripts/verify_embedding_core.py` in an environment without the three.
 
 ## Semantic Primitives
 

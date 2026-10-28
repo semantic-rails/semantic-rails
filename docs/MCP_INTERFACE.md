@@ -217,13 +217,16 @@ and blocked metadata are retained with `verbosity="full"`, subject to the respon
 question uses an object's whole name ("revenue by store"), that object ranks
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 `kinds` takes an array or a comma-separated string, and also a JSON array sent as a string; its
-schema accepts both forms and lists singular and plural ranked and catalog kinds
-(including `temporal_role` and `value_domain` for empty terms). A plural (`measures`,
-`relationships`) means its singular; the handler checks which kinds the call can produce.
+schema accepts both forms and lists each kind the handler takes, singular and plural, with
+terms or without. A plural (`measures`, `relationships`) means its singular.
 Relationships are ranked only when `kinds` names `relationship` (the response then has a
 `relationships` bucket): each card keeps `source_entity`, `target_entity`, `cardinality`,
 `allowed_directions`, `source_columns` and `target_columns` at every verbosity, and a search
-matches a relationship's label, description and its two entities' labels. At `verbosity="full"` an
+matches a relationship's label, description and its two entities' labels. Time roles and value
+domains are too: a `temporal_roles` card keeps the `dimension` it times and its
+`supported_grains`, and a search matches its label and its dimension's label; a `value_domains`
+card keeps the `dimensions` it describes, and a search matches its label, description, its
+dimensions' labels and its values' labels. At `verbosity="full"` an
 entity card also carries its `relationships`, as `inspect` returns them; reachability follows the
 package's routes and stays on the `inspect` card.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
@@ -276,9 +279,9 @@ the call sent beside `query` (`limit`, say) is refused with the hint to move it 
 has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `lt`, `lte`,
 `contains`, `starts_with`, `ends_with`, `not_contains`, `not_starts_with`, `not_ends_with`,
 `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused with the
-word form (a `LIKE` with the text word for its pattern). A `"dimension.<id>"` string in `select` moves to `group_by` (a
-`QUERY_SHORTHAND_NORMALIZED` warning with `details.canonical`); beside another grouping it is
-refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
+word form (a `LIKE` with the text word for its pattern). Each `"dimension.<id>"` string in `select` moves to `group_by`
+(one `QUERY_SHORTHAND_NORMALIZED` warning, whose `details.canonical` lists them all); beside
+another grouping it is refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
 structured tool error. Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
 closest visible matches.
 
@@ -964,6 +967,23 @@ ratio) and a "which" naming a dimension rather than an entity draft no list. A t
 or "every" ends at the first word that names nothing more ("each plan make" groups by plan). The
 readiness checks read the same stand-ins, so a draft grouped by another entity's column stays
 held.
+
+**Totals: a hint, never a draft.** `plan` doesn't draft a total, subtotals, each group's total
+or a share: its status and `best.query` are the question's own. When the question asks for one
+("with the grand total", "with subtotals by store", "with each store's total across months",
+"each store's share of revenue") and the plan isn't `ok`, `warnings` carries
+`PLAN_TOTALS_HINT` (severity `info`). Its `details.add` holds the call fields that add the
+total, named with `best.query`'s ids: `{"totals": []}`, `{"totals": [<ids>]}`, or a
+`select` item of kind [`total`](QUERY_CALL.md#coarser-totals) or
+[`share`](QUERY_CALL.md#share-of-a-total). A series' grand total is a `total` over every column
+and the period; subtotals keep the named groupings in the phrase's order ("by month" on a series
+is `{"totals": []}`, since each total row keeps its period). When no one shape answers the
+question (a word that names none of `best.query`'s groupings, a listed period, or a level that
+would only repeat the call's rows), there is no hint. Once `best.query` answers the rest of the
+question, add them and validate before executing. A catalog name holding a total's word ("Food
+revenue share"), one value as a part of another ("food revenue as a share of total revenue"),
+and any "percent" wording get no hint.
+
 A select item the caller passes in `query` appears once, under the caller's alias (the draft's
 `order_by` follows it); a list field that isn't a list, or a `group_by` entry that isn't a
 dimension id, returns `INVALID_QUERY` with the path and a recovery hint.
@@ -993,6 +1013,11 @@ optional detail fits. `omitted_fields` names detail removed by verbosity or budg
 keeps `rows` as objects (`[{...}]`). The opt-in columnar form returns
 `columns: [...]`, `rows: [[...]]`, `row_format: "columns"`, and the same
 `row_count`, warnings, and errors while avoiding repeated field names.
+When a run sends no `row_format` and its rows as records exceed the response budget below but
+fit as columns, `execute` returns them as columns, exactly as `row_format="columns"` would,
+with the note `ROW_FORMAT_COLUMNS` in `warnings`. It decides from the rows it already fetched,
+so the warehouse runs once. Read `row_format` before reading `rows`. A caller that sends
+`row_format="records"` gets records or the refusal below, never columns.
 
 In mode `run`, `execute` returns at most `max_rows` rows (default 200, up to 100,000). It fetches
 only that many (the warehouse adapter reads one more row to tell whether more exist), so a larger
@@ -1011,8 +1036,9 @@ Optional compiler plans are removed first, then rendered SQL in mode `run`, then
 and query/context echoes if needed;
 `omitted_fields` lists what was removed. Compact responses exclude plan detail even when it
 would fit. Rows are shortened only by the row cap, never silently by the character budget.
-Rendered SQL remains required in mode `sql`. If required data (rows, SQL-mode text,
-a plan draft or diagnostics) still cannot fit,
+Rendered SQL remains required in mode `sql`. A run's rows as records that still cannot fit
+come back as columns when those fit (see `row_format` above). If required data (rows, SQL-mode
+text, a plan draft or diagnostics) still cannot fit,
 the tool returns a bounded `RESULT_TOO_LARGE` error. No partial rows or SQL are returned.
 Narrow the query, lower `max_rows`, select fewer columns, or request fewer catalog objects.
 Session hints are added only to responses that fit; their size is checked again before
@@ -1052,7 +1078,9 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, the message names the dimension and says no values were read, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query: true`, which a first call may pass too. No warehouse lookup runs without that argument; a declared empty domain remains a successful empty result |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
+| `PLAN_TOTALS_HINT` | `plan` | Severity `info`, on a plan that isn't `ok` whose question asks for a total (`details.kind`: `rows`, `subtotals`, `beside` or `share`, in `details.phrase`): `details.add` is the call shape that adds it, named with `best.query`'s ids. plan drafts no total, so this never changes the status. See [Plan](#plan) |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned the first `max_rows` rows; more exist — narrow the query or raise `max_rows` |
+| `ROW_FORMAT_COLUMNS` | `execute` | A note: the call sent no `row_format`, and its rows as records exceed the response budget, so they come back as columns (`columns`, array `rows`, `row_format: "columns"`). `details` `{max_result_chars, records_chars}`. See [Query Verbosity Tiers](#query-verbosity-tiers-execute-modes) |
 | `NO_DATA_YET` | `execute` | Guarded `NULL` series buckets beyond visible coverage, empty totals with coverage proven before the window, or no visible coverage. `details.outputs` lists output aliases; `details.measures` lists `{id, edge, edge_source}`: `edge` is the date of the measure's last visible row (`edge_source` `last_row`), or of its declared edge (`zero_through`: `loaded`, with a null `edge` when the load log holds no date, or `now`). Both are null with no visible coverage. Empty series with dated coverage keep existing warnings. Replaces `EMPTY_RESULT_WINDOW`; covered outputs are excluded from `NO_DATA_IN_SCOPE`. Granted only when every named measure is granted. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
 | `ZERO_AFTER_LAST_ROW` | `execute` | A note: a sum or count whose package says its table is always loaded (`zero_through: now`) read days after its last row as `0`, as a stalled load would. `details.measures` lists `{id, last_row}`. See [Empty periods](PACKAGE_AUTHORING.md#empty-periods) |
 | `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` | `execute` | A balance on an `as_of_time` clock is read on each period's closing day, and series seen earlier in a period had no snapshot that day, so they are not counted. `details` `{measure, outputs, nested, closing_day, periods, checked, series, series_missing, periods_missing}` (`closing_day` is the latest such day; `outputs` empty for the whole answer, `null` when the engine can't tell, and then dropped beside a withheld column; `nested` for a read inside an entity filter, predicate or branch). A series that stopped is right to leave out; one that takes its snapshots on other days, or a table that records only changes, is undercounted. Granted when the measure or a granted output reading it is; a measure not granted is named by those outputs, never by a column that doesn't read it. See [Balances](QUERY_CALL.md#balances) |
@@ -1069,7 +1097,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
 
-`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). With `terms` the ranked kinds are `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value` and `relationship` (ranked only when named), and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. The id listing (empty `terms`) exists on MCP only and accepts the catalog kinds instead (which include `temporal_role`, `relationship` and `value_domain` but not `dimension_value`); over HTTP, empty `terms` run the ranked search and take the ranked kinds. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
+`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). Every kind the tool schema lists is accepted: `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value`, `relationship`, `temporal_role` and `value_domain`, and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. With `terms`, `relationship`, `temporal_role` and `value_domain` are ranked only when named, each in its own bucket (`relationships`, `temporal_roles`, `value_domains`) whose cards keep what the object joins, times (`dimension`, `supported_grains`) or holds (`dimensions`) at every verbosity. The id listing (empty `terms`) exists on MCP only and lists each requested kind's ids, `dimension_value_ids` included; over HTTP, empty `terms` run the ranked search. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
 
 Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) when the boundary contract is violated outright — e.g. wrong arg name, wrong type, value outside a declared enum. The full envelope shape is identical across all six tools.
 

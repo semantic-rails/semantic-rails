@@ -4,35 +4,19 @@ Defines :class:`RequestContext` (actor, tenant, project, roles,
 environment, audience, request_id, host-only :class:`TrustedAttributes`)
 and the helpers that resolve it from headers, JSON payloads, or a
 pluggable :class:`PolicyContextResolver`. API-key auth lives in
-:mod:`semantic_rails.api_keys` and the audit sink in :mod:`semantic_rails.audit`;
-their public names are re-exported here until 0.3.3.
+:mod:`semantic_rails.api_keys`, which reads headers through :func:`_header`, and the audit
+sink in :mod:`semantic_rails.audit`.
 """
 
 from __future__ import annotations
 
 import ipaddress
-import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from types import MappingProxyType
 from typing import Any, NoReturn, Protocol, runtime_checkable
 
-from .api_keys import (  # noqa: F401 — API-key names are re-exported from their old home
-    MISSING_API_KEY_FILE_SENTINEL,
-    _header,
-    api_key_auth_result,
-    configured_api_keys,
-    extract_bearer_or_api_key,
-)
-from .audit import (  # noqa: F401 — audit names are re-exported from their old home
-    AuditSink,
-    StderrAuditSink,
-    audit_logging_enabled,
-    emit_audit_event,
-    get_audit_sink,
-    set_audit_sink,
-)
 from .sql_preparation import ATTRIBUTE_NAME
 
 AttributeValue = str | int | bool | tuple[str, ...] | tuple[int, ...] | tuple[bool, ...]
@@ -229,6 +213,26 @@ def without_trusted_attributes(payload: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _header(headers: Mapping[str, Any] | None, *names: str) -> str:
+    """The first of ``names`` present in ``headers`` with a value, matched exactly, then
+    case-insensitively; empty when none is."""
+    if headers is None:
+        return ""
+    for name in names:
+        try:
+            value = headers.get(name)
+        except AttributeError:
+            value = None
+        if value:
+            return str(value).strip()
+    lower = {str(key).lower(): value for key, value in dict(headers or {}).items()}
+    for name in names:
+        value = lower.get(name.lower())
+        if value:
+            return str(value).strip()
+    return ""
+
+
 def context_from_headers(
     headers: Mapping[str, Any] | None, *, request_id: str = ""
 ) -> RequestContext:
@@ -315,38 +319,6 @@ def loopback_host(host: str) -> bool:
         return text == "localhost"
     # Read ::ffff:127.0.0.1 as 127.0.0.1: Python 3.11.0 calls the mapped form not loopback.
     return (getattr(address, "ipv4_mapped", None) or address).is_loopback
-
-
-def warn_if_default_policy_resolver_exposed(host: str, *, transport: str) -> bool:
-    """Print a hard warning when binding beyond loopback with the default resolver.
-
-    The default ``HeaderPolicyContextResolver`` trusts caller-supplied
-    ``X-Semantic-Audience`` / ``X-Semantic-Environment`` headers, so any remote
-    caller can self-assert the context
-    that object visibility and access policies key on. Binding to a
-    non-loopback interface without replacing the resolver is the footgun
-    this warning exists for. Returns True when the warning fired.
-    """
-    if loopback_host(host):
-        return False
-    if type(get_policy_context_resolver()) is not HeaderPolicyContextResolver:
-        return False
-    auth_note = (
-        " API-key auth is enabled, but key holders can still self-assert policy context."
-        if configured_api_keys()
-        else " No API keys are configured, so this applies to any remote caller."
-    )
-    print(
-        f"WARNING: {transport} is binding to {host or 'all interfaces'!r} with the default "
-        "header-trusting policy-context resolver — callers can self-assert identity headers "
-        f"(audience, environment, roles, tenant) and bypass object policies.{auth_note} "
-        "For hosted or multi-tenant deployments, install an identity-aware resolver via "
-        "set_policy_context_resolver(...) before serving traffic. "
-        "See docs/QUERY_API.md (trusted upstream context).",
-        file=sys.stderr,
-        flush=True,
-    )
-    return True
 
 
 def request_context_payload(context: RequestContext | Mapping[str, Any] | None) -> dict[str, Any]:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import sys
 import time
 import uuid
 from collections import Counter
@@ -41,6 +42,7 @@ from .request_context import (
 from .request_payload import (
     DEFAULT_MAX_RESULT_CHARS,
     DISCOVER_KIND_NAMES,
+    DISCOVER_KINDS,
     MAX_RESULT_CHARS_ENV,
     MIN_RESULT_CHARS,
     checked_discover_kinds,
@@ -409,14 +411,14 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "kinds": {
                     "type": ["string", "array"],
                     "items": {"type": "string", "enum": sorted(DISCOVER_KIND_NAMES)},
-                    "description": "Default: all but relationship.",
+                    "description": "Unset: all but relationship, temporal_role, value_domain.",
                 },
                 "query": QUERY_SEED_SCHEMA,
                 "stage": {
                     "type": "string",
                     "description": (
-                        "Builder stage that tunes ranking: initial, post_measure, "
-                        "post_dimension or comparison. Inferred when omitted."
+                        "Ranking stage: initial, post_measure, post_dimension or "
+                        "comparison; inferred if omitted."
                     ),
                 },
                 "verbosity": _VERBOSITY_MINIMAL,
@@ -426,8 +428,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                     "type": "integer",
                     "minimum": 1,
                     "description": (
-                        "Per kind (default 10); with empty terms, ids per kind "
-                        f"(default {_DISCOVER_ID_PAGE})."
+                        f"Per kind: default 10, or {_DISCOVER_ID_PAGE} ids with empty terms."
                     ),
                 },
                 "offset": {
@@ -707,20 +708,6 @@ def list_resource_definitions() -> list[dict[str, Any]]:
 
 def list_prompt_definitions() -> list[dict[str, Any]]:
     return [definition.to_dict() for definition in PROMPT_DEFINITIONS]
-
-
-_CATALOG_KIND_FILTERS: frozenset[str] = frozenset(
-    {
-        "entity",
-        "dimension",
-        "measure",
-        "segment",
-        "temporal_role",
-        "relationship",
-        "value_domain",
-        "metric",
-    }
-)
 
 
 def _argument_error(message: str, *, field: str, value: Any | None = None) -> SemanticLayerError:
@@ -1219,17 +1206,12 @@ def _largest_field(result: Mapping[str, Any]) -> str:
     return sizes.most_common(1)[0][0] if sizes else ""
 
 
-def _bound_response(
-    payload: dict[str, Any], *, compact: bool, query: Mapping[str, Any], sql_required: bool = True
+def _without_optional_fields(
+    payload: Mapping[str, Any], *, compact: bool, sql_required: bool, limit: int
 ) -> dict[str, Any]:
-    """Budget the final tool payload without cutting rows or changing its outcome.
-
-    Both MCP representations serialize this same payload. Compiler detail and
-    echoes are optional; rows, SQL-mode text, query drafts and diagnostics are not.
-    If those required fields cannot fit, return a bounded, explicit refusal.
-    """
+    """``payload`` with optional fields omitted, in order, until it fits ``limit`` or none is
+    left; ``omitted_fields`` names them."""
     result = dict(payload)
-    limit = _max_result_chars()
     omitted = list(result.get("omitted_fields") or [])
 
     def omit(field: str) -> None:
@@ -1250,8 +1232,55 @@ def _bound_response(
         if len(json_text(result)) <= limit:
             return result
         omit(field)
+    return result
+
+
+def _as_columns(payload: Mapping[str, Any], *, limit: int, records_chars: int) -> dict[str, Any]:
+    """``payload``'s record rows as columns, with the ``ROW_FORMAT_COLUMNS`` note saying why."""
+    out = _columnar_rows(payload)
+    note = {
+        "code": "ROW_FORMAT_COLUMNS",
+        "severity": "info",
+        "message": (
+            f"Rows are returned as columns: as records they exceed the {limit:,}-character "
+            "response budget. Each row is an array in the order of 'columns'."
+        ),
+        "details": {"max_result_chars": limit, "records_chars": records_chars},
+    }
+    out["warnings"] = [*list(out.get("warnings") or []), note]
+    return out
+
+
+def _bound_response(
+    payload: dict[str, Any],
+    *,
+    compact: bool,
+    query: Mapping[str, Any],
+    sql_required: bool = True,
+    columns_fallback: bool = False,
+) -> dict[str, Any]:
+    """Budget the final tool payload without cutting rows or changing its outcome.
+
+    Both MCP representations serialize this same payload. Compiler detail and
+    echoes are optional; rows, SQL-mode text, query drafts and diagnostics are not.
+    With ``columns_fallback``, record rows that can't fit are returned as columns when
+    those fit, from the rows already fetched. If the required fields still cannot fit,
+    return a bounded, explicit refusal.
+    """
+    limit = _max_result_chars()
+
+    def trimmed(response: Mapping[str, Any]) -> dict[str, Any]:
+        return _without_optional_fields(
+            response, compact=compact, sql_required=sql_required, limit=limit
+        )
+
+    result = trimmed(payload)
     if len(json_text(result)) <= limit:
         return result
+    if columns_fallback and _record_rows(result):
+        columns = trimmed(_as_columns(payload, limit=limit, records_chars=len(json_text(result))))
+        if len(json_text(columns)) <= limit:
+            return columns
 
     largest = _largest_field(result)
     retry = {
@@ -1350,6 +1379,8 @@ _DISCOVER_BUCKETS = (
     "dimensions",
     "entities",
     "relationships",
+    "temporal_roles",
+    "value_domains",
     "dimension_values",
     "blocked",
 )
@@ -1596,18 +1627,24 @@ class SemanticLayerMCPAdapter:
             compact = _verbosity(args_dict) == "compact"
             raw = args_dict.get("query")
             query: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
-            sql_required = not (
-                name == "execute" and str(args_dict.get("mode") or "run").strip().lower() == "run"
-            )
-            response = _bound_response(
-                response, compact=compact, query=query, sql_required=sql_required
-            )
+            run = name == "execute" and str(args_dict.get("mode") or "run").strip().lower() == "run"
+            # Rows a caller asked for as records by name are never sent as columns.
+            columns_fallback = run and not str(args_dict.get("row_format") or "").strip()
+
+            def bound(payload: dict[str, Any]) -> dict[str, Any]:
+                return _bound_response(
+                    payload,
+                    compact=compact,
+                    query=query,
+                    sql_required=not run,
+                    columns_fallback=columns_fallback,
+                )
+
+            response = bound(response)
             if session is not None and response.get("ok") is True:
                 key = _call_key(args_dict) if name == "execute" else None
                 session.annotate(self, name, args_dict, response, query=key)
-                response = _bound_response(
-                    response, compact=compact, query=query, sql_required=sql_required
-                )
+                response = bound(response)
                 if key is not None:
                     session.record_run(self, args_dict, response, query=key)
             elif session is not None:
@@ -2021,7 +2058,7 @@ class SemanticLayerMCPAdapter:
                 # any other kind is refused, never answered with an empty list.
                 granted = policy_context.get("metric_allowlist") is not None
                 requested_kinds = checked_discover_kinds(
-                    requested_kinds, GRANT_DISCOVER_KINDS if granted else _CATALOG_KIND_FILTERS
+                    requested_kinds, GRANT_DISCOVER_KINDS if granted else DISCOVER_KINDS
                 )
                 catalog = operations.run(
                     "catalog",
@@ -2030,6 +2067,21 @@ class SemanticLayerMCPAdapter:
                     verbosity="summary",
                     policy_context=policy_context,
                 )
+                if "dimension_value" in requested_kinds:
+                    # The catalog lists no values; discover's own value cards (the caller's
+                    # view, unranked) are their ids.
+                    values = operations.run(
+                        "discover",
+                        self.runtime,
+                        terms="",
+                        kinds=["dimension_value"],
+                        partial_query={"policy_context": policy_context},
+                        verbosity="compact",
+                        limit=sys.maxsize,
+                    )
+                    catalog["dimension_value_ids"] = sorted(
+                        str(row["id"]) for row in values.get("dimension_values") or []
+                    )
                 kinds = set(requested_kinds)
                 size = _coerce_int(args.get("limit"), _DISCOVER_ID_PAGE, field="limit", minimum=1)
                 start = _coerce_int(args.get("offset"), 0, field="offset", minimum=0)

@@ -134,6 +134,10 @@ REFUSALS = {
         ),
         "value_dependency",
     ),
+    "share_selected": (
+        _select(_value({"kind": "share", "input": REVENUE, "over": [STORE]})),
+        "value_dependency",
+    ),
     "comparison_selected": (
         _select(
             _value(

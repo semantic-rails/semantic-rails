@@ -648,11 +648,14 @@ def _select(raw: Any, group_by: list[str], context: CallContext) -> list[dict[st
         raise refusal("select", "is a list", fix='Write ["metric.<id>", ...].')
     out: list[dict[str, Any]] = []
     sources: list[tuple[str, Any]] = []
+    # Each dimension in select is read against the caller's own group_by, never against
+    # the dimensions an earlier select item moved there.
+    written = list(group_by)
     for index, item in enumerate(raw):
         path = f"select[{index}]"
         if isinstance(item, str) and item.strip().startswith("dimension."):
             dimension = item.strip()
-            if group_by and dimension not in group_by:
+            if written and dimension not in written:
                 raise refusal(
                     path,
                     "a dimension splits the answer; it belongs in group_by",
@@ -854,6 +857,7 @@ def _expression(raw: Any, path: str, context: CallContext) -> Any:
             node[key] = _operand(value, child, context)
         else:
             node[key] = value
+    node["kind"] = kind
     if text_word:
         node["op"] = text_word
     if node.get("aggregation") and "measure" in node:

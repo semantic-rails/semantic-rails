@@ -293,20 +293,37 @@ def _compiled_warnings(
 
 
 def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Tell the caller which select shorthands were rewritten, with the canonical form."""
+    """Tell the caller in one notice which select items were moved to group_by, with the
+    canonical form: one item's own note, or, for several, every moved dimension at ``select``."""
+    if not notes:
+        return []
+    if len(notes) == 1:
+        (details,) = notes
+        moved = f"{details['path']} was"
+    else:
+        paths = [str(note["path"]) for note in notes]
+        moved = f"{', '.join(paths[:-1])} and {paths[-1]} were"
+        details = {
+            "path": "select",
+            "received": [note["received"] for note in notes],
+            "canonical": {
+                "group_by": list(
+                    dict.fromkeys(f for note in notes for f in note["canonical"]["group_by"])
+                )
+            },
+        }
     return [
         semantic_issue(
             code="QUERY_SHORTHAND_NORMALIZED",
             message=(
-                f"{note['path']} was accepted as shorthand and rewritten; next time send "
-                f"{json.dumps(note['canonical'], separators=(',', ':'))}."
+                f"{moved} accepted as shorthand and rewritten; next time send "
+                f"{json.dumps(details['canonical'], separators=(',', ':'))}."
             ),
             severity="warning",
             stage="compile",
-            path=note["path"],
-            details=note,
+            path=details["path"],
+            details=details,
         )
-        for note in notes
     ]
 
 

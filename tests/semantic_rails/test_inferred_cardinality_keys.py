@@ -111,6 +111,9 @@ PARENT_IDS_BY_CATEGORY = {"measure": "measure.nk.parent_ids", "by": "dimension.n
 AMOUNT_BY_SKU = {"measure": "measure.nk.amount", "by": "dimension.nk_line_sku"}
 QTY_BY_STATUS = {"measure": "measure.nk.qty", "by": "dimension.nk_ord_status"}
 REFUSED = {"refused": "MIXED_GRAIN_INVALID"}
+# Each order's whole amount once under every sku its lines carry: order 1 (100) holds A and B,
+# order 2 (50) A.
+ORDERS_BY_SKU = {"A": 150, "B": 100}
 
 
 def _package(root: Path, relationship: dict[str, Any], **keys: Any) -> Path:
@@ -344,12 +347,12 @@ def test_columns_holding_the_whole_key_and_more_are_still_unique(tmp_path: Path)
 
 @pytest.mark.parametrize("role", ["natural", "foreign"])
 def test_a_source_key_declared_non_unique_is_never_promoted(tmp_path: Path, role: str) -> None:
-    """A via on a key declared without uniqueness is a foreign key: the order amount over lines
-    is refused, never 250 for sku A."""
+    """A via on a key declared without uniqueness is a foreign key: the order amount by line sku
+    counts each order once per sku, never 250 for sku A."""
     root = _package(tmp_path, LINE_TO_ORDER, line={"columns": ["order_id"], "role": role})
     relationship = _probe(root)
     assert (relationship.source_key_role, relationship.cardinality) == ("foreign", "N:1")
-    assert _totals(root, AMOUNT_BY_SKU) == REFUSED
+    assert _totals(root, AMOUNT_BY_SKU) == ORDERS_BY_SKU
     assert _totals(root, QTY_BY_STATUS) == {"open": 4}
 
 
@@ -389,8 +392,8 @@ def test_a_via_on_part_of_a_composite_source_key_is_a_foreign_key(tmp_path: Path
     root = _package(tmp_path, LINE_TO_ORDER)
     relationship = _probe(root)
     assert (relationship.source_key_role, relationship.cardinality) == ("foreign", "N:1")
-    # Orders over their lines is a one-to-many hop: refused here, never 250 for sku A.
-    assert _totals(root, AMOUNT_BY_SKU) == REFUSED
+    # Orders over their lines is a one-to-many hop: each order once per sku, never 250 for A.
+    assert _totals(root, AMOUNT_BY_SKU) == ORDERS_BY_SKU
     assert _totals(root, QTY_BY_STATUS) == {"open": 4}
 
 

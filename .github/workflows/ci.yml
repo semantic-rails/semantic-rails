@@ -215,6 +215,12 @@ jobs:
         run: uv run ruff format --check .
       - name: mypy
         run: uv run mypy semantic_rails
+      - name: The embedding core compiles with policies without duckdb, mcp or pydantic
+        # A step, not a job: the merge queue already runs 19 jobs of the plan's 20 concurrent.
+        run: |
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/core" uv sync --locked --no-dev \
+            --no-install-package duckdb --no-install-package mcp --no-install-package pydantic
+          "$RUNNER_TEMP/core/bin/python" -I scripts/verify_embedding_core.py --absent
       - run: uv run python scripts/benchmark_plan.py --gate
       - name: Compile corpus is byte-identical across hash seeds and worker counts
         # Every committed query (485) on every dialect (9), about 20 seconds a record: off the

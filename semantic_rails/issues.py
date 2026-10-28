@@ -75,7 +75,10 @@ CODES: dict[str, str] = {
         UNKNOWN_ROWS_KEPT VALID_VALUES_NO_DOMAIN VALID_VALUES_UNKNOWN_ARG
         """,
     ),
-    **_codes(NOTE, "REWRITE_APPLIED VALUES_WITHHELD ZERO_AFTER_LAST_ROW"),
+    **_codes(
+        NOTE,
+        "PLAN_TOTALS_HINT REWRITE_APPLIED ROW_FORMAT_COLUMNS VALUES_WITHHELD ZERO_AFTER_LAST_ROW",
+    ),
     # One entry per disclosure an answer states under ``assumptions``.
     **_codes(
         ASSUMPTION,

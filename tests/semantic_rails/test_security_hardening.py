@@ -24,7 +24,11 @@ from semantic_rails.db_parts.bigquery import BigQueryNativeAdapter
 from semantic_rails.db_parts.clickhouse import ClickHouseAdapter
 from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.http_core import MAX_REQUEST_BODY_BYTES, SemanticHTTPService
+from semantic_rails.http_core import (
+    MAX_REQUEST_BODY_BYTES,
+    SemanticHTTPService,
+    warn_if_default_policy_resolver_exposed,
+)
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata_parts.valid_values import (
     max_valid_values_limit,
@@ -33,7 +37,6 @@ from semantic_rails.metadata_parts.valid_values import (
 from semantic_rails.request_context import (
     HeaderPolicyContextResolver,
     set_policy_context_resolver,
-    warn_if_default_policy_resolver_exposed,
 )
 
 # --- F2: default resolver exposure warning -------------------------------

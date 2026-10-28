@@ -285,20 +285,22 @@ def enforce_query_policies(
 def _coarser_blocking(
     config: PackageConfig, query: Mapping[str, Any], scope: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    """The effects that refuse a total: its coarser call (the call without its ``over``
-    columns) is held to the request's policies as a call of its own would be, every select item
-    it reads included. Each violation names the total."""
+    """The effects that refuse a total or a share: a total's coarser call (the call without its
+    ``over`` columns, every select item it reads included) and a share's denominator (its input
+    grouped as the share's window takes it, in a call with no entity filter or route decision)
+    are held to the request's policies as a call of its own would be. Each violation names the
+    total or the share (``coarser_calls``)."""
     blocking: list[dict[str, Any]] = []
-    for total, payload in coarser_calls(config, query):
+    for item, alias, payload in coarser_calls(config, query):
         try:
             binding = bind_query(config, None, payload)
         except SemanticLayerError:
-            continue  # the call's own compile refuses the total, at the total
+            continue  # unchecked here, as before; a total's compile refuses most such calls
         for row in query_policy_effects(
             config, binding.object_ids, **scope, query=payload, binding=binding
         ):
             if row["action"] in {"deny", "hidden"}:
-                violations = [{**item, "total": total} for item in row.get("violations") or []]
+                violations = [{**cut, item: alias} for cut in row.get("violations") or []]
                 blocking.append({**row, **({"violations": violations} if violations else {})})
     return blocking
 
@@ -364,12 +366,13 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
             "Remove totals.",
             {},
         )
-    if kind == "missing_required_group_by" and violation.get("total"):
+    reader = next((item for item in ("total", "share") if violation.get(item)), "")
+    if kind == "missing_required_group_by" and reader:
         missing = _listed(violation.get("missing") or [])
         return (
-            f"can only be read grouped by {missing}, and the total in "
-            f"'{violation['total']}' reads it across them",
-            f"Take {missing} out of the total's over, or remove the total.",
+            f"can only be read grouped by {missing}, and the {reader} in "
+            f"'{violation[reader]}' reads it across them",
+            f"Take {missing} out of the {reader}'s over, or remove the {reader}.",
             {},
         )
     if kind == "missing_required_group_by":

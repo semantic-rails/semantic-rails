@@ -77,6 +77,12 @@ beside `query` and `options` is refused. A tool argument sent inside the call (`
 key of the call sent beside `query` (`"limit"`, ...) with the hint to move it inside. MCP also
 reads a `query` sent as a JSON string.
 
+MCP `row_format` shapes the rows: `records` (objects, the default) or `columns` (`columns` once,
+each row an array). When a call sends no `row_format` and its rows as records exceed the MCP
+response budget but fit as columns, `execute` returns columns with the note
+`ROW_FORMAT_COLUMNS`, from the one warehouse run, so read `row_format` before `rows`
+([MCP interface](MCP_INTERFACE.md#query-verbosity-tiers-execute-modes)).
+
 ```bash
 uv run semantic-rails query --package jaffle_shop --now 2017-09-04T12:00:00Z \
   --query-json '{"select": ["measure.jaffle.order_count"], "time": {"last": {"unit": "week", "value": 1}}}'
@@ -148,9 +154,9 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
   `OUTPUT_NAME_GOVERNED`, naming the governed object and a name to use instead, so its numbers
   never read as the governed one's. The object itself answers under its name however it is
   written: by id, as its default aggregate, or rounded with `ROUND`.
-- A `dimension.` id in `select` is moved to `group_by` when `group_by` is empty or already
-  lists it (the answer notes `QUERY_SHORTHAND_NORMALIZED`); beside a `group_by` that lists
-  other dimensions it is refused.
+- Each `dimension.` id in `select` is moved to `group_by` when the call's `group_by` is empty
+  or already lists it (one `QUERY_SHORTHAND_NORMALIZED` note lists every id moved); beside a
+  `group_by` that lists other dimensions it is refused.
 - Without `select`, a call with `group_by` lists the distinct rows:
 
 ```json
@@ -183,6 +189,47 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 `assumptions` carries `GROUPED_BY_KEY {dimension, key, message}`. A call grouped by an entity's
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
+
+### Groups across a one-to-many hop
+
+A dimension of a child entity (an order's items or tags, a department's courses) holds several
+values per row of the measure's entity. Grouped by one, each row of the measure's entity counts
+once, with its whole value, in every group it has a child row in: departments by course level
+counts a department under each level it teaches, and order revenue by item product type is the
+revenue of the orders that included each type.
+
+```json
+{"select": ["measure.jaffle.revenue_usd"], "group_by": ["dimension.jaffle_product_type"]}
+```
+
+An order holding a beverage and a jaffle counts its whole total under both, so the two groups
+add up to more than all revenue (691,101.53 and 485,267.73 of 745,893.03). Item revenue
+(`measure.jaffle.item_revenue_usd`) splits the totals over the items instead: the call says
+which measure it reads.
+
+- A sum, count, average or distinct count of the entity's own measure is over one row per
+  (entity key, group). An average is over the rows in each group, and a ratio of two measures of
+  the entity divides each group's own totals.
+- The hops must be one-to-many from the measure's entity, each joined on the declared key of its
+  one side, before any lookup: orders to their items, then each item's product, is answered;
+  orders to their customer, then the customer's sessions, is many-to-many and refused.
+- A row with no child row is in no group, and a group no row reaches is absent; a child row
+  with no value is the NULL group.
+- The groups can overlap, so their sum can exceed the total. The answer's `REWRITE_APPLIED`
+  (`fanout_dedup`) says so and names the hop: `details.overlapping_groups` holds the `group_by`
+  ids and the one-to-many `relationships`, and `whole_amounts: true` marks a sum or average of a
+  value, which `plan` repeats in its `warnings` when it drafts one.
+- A [total](#coarser-totals) or [`totals`](#totals) row is the call without the grouping, so it
+  counts each row once (all revenue above). A share over such a grouping is refused with
+  `MIXED_GRAIN_INVALID`: its total would add up the overlapping groups. A share over a column of
+  the entity's own within each group (each coupon's share within a product type) stays.
+- Still refused with `MIXED_GRAIN_INVALID`, with the message they had: a median, minimum,
+  maximum or other statistic; a non-additive measure, a stock, or a measure whose rows are finer
+  than its entity's key; a window, per-entity value, distribution or metric predicate over it; an
+  item that combines it with a measure of another entity (order revenue per item revenue); and a
+  second grouping or filter across a one-to-many hop beside it.
+- A relationship authored `allowed_directions: [forward]` is never walked from its one side, so
+  such a grouping is refused with `PATH_NOT_FOUND` naming it.
 
 ### Groups across a link
 
@@ -1042,9 +1089,15 @@ columns (and `period`, unless `over` names it), among the rows the call keeps: a
 zero or NULL total reads NULL. The input is one measure or metric id whose values add up across
 rows (a sum or count of a flow, a count of distinct row keys, or sums and differences of
 them); a ratio, an average or other statistic, or a stock is refused with `ROLLUP_UNSAFE`. Each `over` item is a `group_by` id of
-the call, or `period` when `time` has a grain, or it is refused at its path. The answer names
-the denominator and the unit in `assumptions`, with how many rows the total spans when every
-returned row's total spans the same number:
+the call, or `period` when `time` has a grain, or it is refused at its path. The denominator is
+held to the caller's policies as a call of its own: its input grouped as the total is taken,
+without the `over` columns and the key beside each `over` name. A share over a grouping a policy
+requires is refused with `POLICY_DENIED` ("... and the share in 'store_share' reads it across
+them"), as a [total](#coarser-totals) over it is, bare or inside another expression, and a share
+of a withheld value is refused. In a call with an entity filter or `routes`, the denominator is
+not checked on its own (see [Known limitations](#shares-and-totals-under-a-required-grouping)).
+The answer names the denominator and the unit in `assumptions`, with how many rows the total
+spans when every returned row's total spans the same number:
 
 ```json
 {"select": ["measure.jaffle.revenue_usd",
@@ -1269,7 +1322,8 @@ The engine trusts the data as it is stored in three cases:
   Keep join columns the same type.
 - **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
   their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
-  children carry, so the totals across
+  children carry, with its whole value ([groups across a one-to-many
+  hop](#groups-across-a-one-to-many-hop)), so the totals across
   groups can exceed the whole, and a parent with no child rows is left out of that grouping.
   Combined labels ("Lab + Office") are a possible future option.
 
@@ -1298,6 +1352,14 @@ The engine trusts the data as it is stored in three cases:
   are refused.
 - On Postgres, a key with very many distinct values in a one-per-key column can fail the query
   (out of memory or array size) instead of reading NULL.
+
+### Shares and totals under a required grouping
+
+- In a call with an entity filter or `routes`, a share's denominator is held to the caller's
+  policies only by the call's own check, so a share over a grouping a policy requires
+  (`required_group_by`) can answer there, and its denominator is the total the policy refuses.
+- A total in a call with `routes` is not checked on its own when the call without the `over`
+  columns no longer walks the route.
 
 ### Text words
 
@@ -1335,7 +1397,8 @@ The engine trusts the data as it is stored in three cases:
   Keep join columns the same type.
 - **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
   their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
-  children carry, so the totals across
+  children carry, with its whole value ([groups across a one-to-many
+  hop](#groups-across-a-one-to-many-hop)), so the totals across
   groups can exceed the whole, and a parent with no child rows is left out of that grouping.
   Combined labels ("Lab + Office") are a possible future option.
 

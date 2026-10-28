@@ -174,18 +174,22 @@ In practice:
 - a measure filtered by a dimension across a one-to-many hop (order revenue where an
   item is a beverage) counts each of its rows once: the leaf keeps one row per
   (entity key, output grain) before it aggregates, so the filter means EXISTS
-- a distinct count grouped by such a dimension counts each row once in every group it
-  has a matching child in ("orders that included each product type"); both carry a
-  `REWRITE_APPLIED` note (severity `info`, `fanout_dedup`)
+- a distinct count, count, sum or average grouped by such a dimension counts each row once,
+  with its whole value, in every group it has a matching child in ("orders that included
+  each product type", "revenue of the orders that included it"); both carry a
+  `REWRITE_APPLIED` note (severity `info`, `fanout_dedup`), which for a grouping names the
+  one-to-many hop and says the groups can overlap. A share over such a grouping is refused;
+  a total counts each row once
 - an entity filter in `where` (`{entity, any | none}`) says whether its
   conditions apply to the same child row; it lowers to correlated `EXISTS` or
   `NOT EXISTS`. Two or more positive plain conditions on one child, or one `not` or
   `missing` one, are refused with `AMBIGUOUS_CHILD_SCOPE`, whose clarification offers each
   reading as a `where` list
 - unsupported grain-expanding shapes still fail fast rather than silently miscomputing:
-  other aggregations grouped across the hop (order revenue by item product type reads
-  as either an item split or each containing order's total), negated, null or `false`
-  tests in a measure's own filter across it, and many-to-many or off-key paths
+  other aggregations grouped across the hop (a median or maximum by item product type), an
+  item that sets such a sum against a measure of another entity (order revenue per item
+  revenue), negated, null or `false` tests in a measure's own filter across it, and
+  many-to-many or off-key paths
 
 Relevant statuses and codes:
 

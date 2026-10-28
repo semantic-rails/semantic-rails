@@ -161,7 +161,7 @@ def test_remote_factories_configure_real_duckdb_before_bootstrap(monkeypatch, tm
         calls.append((args, kwargs))
         return Connection()
 
-    monkeypatch.setattr(duckdb_setup, "duckdb", SimpleNamespace(connect=fake_connect))
+    monkeypatch.setattr(duckdb, "connect", fake_connect)
     if factory == "ducklake":
         adapter = ducklake.DuckLakeAdapter({"catalog_path": str(tmp_path / "catalog.ducklake")})
         connection = adapter._create_connection()  # noqa: SLF001

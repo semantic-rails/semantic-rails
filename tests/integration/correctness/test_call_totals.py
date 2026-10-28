@@ -151,6 +151,33 @@ def test_a_total_reads_the_rows_the_call_keeps(duckdb_backend):
     assert {row[STORE] for row in over_ten["rows"]} == {"a"}
 
 
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_rows_beside_a_total_come_in_the_order_of_their_own_keys(request, backend):
+    """The coarser call joined beside the rows holds keys of its own (here the period): an
+    order_by on the call's period and group keys reads the call's."""
+    source = request.getfixturevalue(f"{backend}_backend")
+    call = {
+        "select": [REVENUE, _total(REVENUE, [STORE])],
+        "group_by": [STORE],
+        "time": QUARTER,
+        "order_by": [
+            {"field": "period", "direction": "desc"},
+            {"field": STORE, "direction": "desc"},
+        ],
+    }
+    rows = source.runtimes["utc_authored"].query(call)["rows"]
+    reference = source.reference(
+        "SELECT CAST(date_trunc('quarter', o.ordered_at) AS DATE), o.store_id, q.total "
+        "FROM orders AS o JOIN (SELECT date_trunc('quarter', ordered_at) AS quarter, "
+        "SUM(amount) AS total FROM orders GROUP BY 1) AS q "
+        "ON q.quarter = date_trunc('quarter', o.ordered_at) "
+        "GROUP BY 1, 2, 3 ORDER BY 1 DESC, 2 DESC NULLS LAST"
+    )
+    assert [(row["period"], row[STORE], Decimal(row["total"])) for row in rows] == [
+        (_period(period), store, Decimal(total)) for period, store, total in reference
+    ]
+
+
 def test_a_total_over_a_window_and_a_filled_series(duckdb_backend):
     runtime = duckdb_backend.runtimes["utc_authored"]
     window = {"temporal_role": ORDERED_AT, "start": "2024-01-01", "end": "2024-07-01"}
@@ -286,24 +313,38 @@ def test_a_package_metric_cannot_be_a_total():
 
 
 @pytest.fixture
-def per_store_revenue(duckdb_backend):
-    """Revenue may only be read grouped by store."""
+def revenue_per(duckdb_backend):
+    """Runtimes where revenue may only be read grouped by a given dimension."""
     base = duckdb_backend.runtimes["utc_authored"]
-    policy = SemanticPolicyConfig(
-        id="policy.shop.revenue_per_store",
-        kind="metric_constraint",
-        object_ids=[REVENUE],
-        config={"required_group_by": [STORE]},
-    )
-    config = base.package_config
-    runtime = Runtime.from_config(
-        replace(config, semantic_policies=[*config.semantic_policies, policy]),
-        source_path=base.source_path,
-    )
+    opened: list[Runtime] = []
+
+    def runtime(dimension: str) -> Runtime:
+        policy = SemanticPolicyConfig(
+            id="policy.shop.revenue_per_store",
+            kind="metric_constraint",
+            object_ids=[REVENUE],
+            config={"required_group_by": [dimension]},
+        )
+        config = base.package_config
+        opened.append(
+            Runtime.from_config(
+                replace(config, semantic_policies=[*config.semantic_policies, policy]),
+                source_path=base.source_path,
+            )
+        )
+        return opened[-1]
+
     try:
         yield runtime
     finally:
-        runtime.close()
+        for runtime_ in opened:
+            runtime_.close()
+
+
+@pytest.fixture
+def per_store_revenue(revenue_per):
+    """Revenue may only be read grouped by store."""
+    return revenue_per(STORE)
 
 
 def test_a_total_beside_a_governed_item_is_held_to_its_policy(per_store_revenue):
@@ -330,6 +371,217 @@ def test_a_total_over_a_required_grouping_is_refused(per_store_revenue):
     # Over the period, each store's total is still grouped by store.
     allowed = per_store_revenue.query({**call, "select": [REVENUE, _total(REVENUE, ["period"])]})
     assert allowed["rows"]
+
+
+SHARE_OF_STORES = {"kind": "share", "input": REVENUE, "over": [STORE]}
+PERCENT_OF_STORES = {
+    "kind": "arithmetic",
+    "op": "multiply",
+    "left": SHARE_OF_STORES,
+    "right": {"kind": "literal", "value": 100},
+}
+
+
+@pytest.mark.parametrize("form", ["bare", "nested", "padded-kind"])
+def test_a_share_over_a_required_grouping_is_refused_as_its_total_is(per_store_revenue, form):
+    """A share's denominator is its input across the ``over`` columns: revenue across stores,
+    the total the policy refuses. The share is refused with the total's code and words, bare,
+    inside another expression or with its kind padded, at validate as at execute."""
+    share, total = dict(SHARE_OF_STORES), _total(REVENUE, [STORE], "part")
+    if form == "nested":
+        share = {**PERCENT_OF_STORES, "left": share}
+    if form == "padded-kind":
+        share["kind"], total["expression"]["kind"] = " share ", " total "
+    for item, word in (({"expression": share, "as": "part"}, "share"), (total, "total")):
+        call = {"select": [REVENUE, item], "group_by": [STORE]}
+        with pytest.raises(SemanticLayerError) as raised:
+            per_store_revenue.query(call)
+        assert raised.value.code == "POLICY_DENIED"
+        assert (
+            f"{REVENUE} can only be read grouped by {STORE}, and the {word} in 'part' reads it "
+            "across them" in str(raised.value)
+        )
+        assert raised.value.details["recovery_hints"][0]["message"] == (
+            f"Take {STORE} out of the {word}'s over, or remove the {word}."
+        )
+        assert [row["code"] for row in per_store_revenue.validate(call)["errors"]] == [
+            "POLICY_DENIED"
+        ]
+
+
+def test_a_share_that_keeps_the_required_grouping_answers(per_store_revenue):
+    """Over the period, each store's denominator is that store's revenue, still grouped by
+    store. A share of orders across stores reads no revenue there, so it answers beside
+    revenue."""
+    call = {
+        "select": [REVENUE, {"expression": {**SHARE_OF_STORES, "over": ["period"]}, "as": "part"}],
+        "group_by": [STORE],
+        "time": QUARTER,
+    }
+    rows = per_store_revenue.query(call)["rows"]
+    stores = {row[STORE]: Decimal(0) for row in rows}
+    for row in rows:
+        stores[row[STORE]] += Decimal(row["revenue"] or 0)
+    assert len(stores) > 1
+    assert [row["part"] for row in rows] == [
+        None
+        if row["revenue"] is None
+        else pytest.approx(float(Decimal(row["revenue"]) / stores[row[STORE]]))
+        for row in rows
+    ]
+    orders = {"expression": {"kind": "share", "input": ORDERS, "over": [STORE]}, "as": "part"}
+    answer = per_store_revenue.query({"select": [REVENUE, orders], "group_by": [STORE]})
+    assert sum(row["part"] for row in answer["rows"]) == pytest.approx(1)
+
+
+STORE_KEY, STORE_NAME = "dimension.shop_store_id", "dimension.shop_store_name"
+CUSTOMER_KEY, CUSTOMER_NAME = "dimension.shop_customer_id", "dimension.shop_customer_name"
+CHANNEL = "dimension.shop_customer_channel"
+
+
+def _share(input_id: str, over: list[str]) -> dict[str, Any]:
+    return {"expression": {"kind": "share", "input": input_id, "over": over}, "as": "part"}
+
+
+def _having(entity: str, field: str, over: str) -> dict[str, Any]:
+    """Each entity's own ``field`` of at least 10 (1 for a count), over ``over``."""
+    value = 1 if field == ORDERS else 10
+    having = [{"field": field, "op": "gte", "value": value}]
+    return {"entity": f"entity.shop_{entity}", "having": having, "over": over}
+
+
+# (the grouping revenue requires, the call, whether the share is refused)
+DENOMINATORS = {
+    # The window drops a name's key with the name: revenue across stores.
+    "over-a-name-grouped-with-its-key": (
+        STORE_KEY,
+        {"select": [REVENUE, _share(REVENUE, [STORE_NAME])], "group_by": [STORE_NAME, STORE_KEY]},
+        True,
+    ),
+    # The window keeps only the name: the two customers named Ann share one denominator.
+    "over-a-key-grouped-with-its-name": (
+        CUSTOMER_KEY,
+        {
+            "select": [REVENUE, _share(REVENUE, [CUSTOMER_KEY])],
+            "group_by": [CUSTOMER_NAME, CUSTOMER_KEY],
+        },
+        True,
+    ),
+    # Over the period, the window keeps the name and its key: each customer's own revenue.
+    "over-the-period-grouped-by-name-and-key": (
+        CUSTOMER_KEY,
+        {
+            "select": [REVENUE, _share(REVENUE, ["period"])],
+            "group_by": [CUSTOMER_NAME, CUSTOMER_KEY],
+            "time": QUARTER,
+        },
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", DENOMINATORS)
+def test_a_denominator_is_checked_as_the_call_computes_it(revenue_per, case):
+    """The check reads a share's denominator as its window takes it: without the ``over``
+    columns and each ``over`` name's key, never a key the window doesn't keep."""
+    required, call, refused = DENOMINATORS[case]
+    runtime = revenue_per(required)
+    if not refused:
+        _assert_parts_make_wholes(runtime.query(call)["rows"], call)
+        return
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(call)
+    assert raised.value.code == "POLICY_DENIED"
+    assert "the share in 'part' reads it across them" in str(raised.value)
+
+
+def _assert_parts_make_wholes(rows: list[dict[str, Any]], call: dict[str, Any]) -> None:
+    """Within each group the share keeps, the parts add up to the whole (a group with no
+    revenue has no parts)."""
+    over = call["select"][1]["expression"]["over"]
+    wholes: dict[tuple[Any, ...], float] = {}
+    for row in rows:
+        if row["part"] is not None:
+            group = tuple(row[column] for column in call["group_by"] if column not in over)
+            wholes[group] = wholes.get(group, 0) + row["part"]
+    assert wholes and all(whole == pytest.approx(1) for whole in wholes.values())
+
+
+# Calls with an entity filter or routes, checked as before: by the call's own check and, for a
+# total, its coarser call as it was. Each answers as it did. (the grouping revenue requires,
+# the call, the parts or totals by group)
+CHECKED_AS_BEFORE = {
+    # Orders of stores with revenue of at least 10: the filter reads each store's own revenue.
+    "orders-share-of-big-stores": (
+        STORE_KEY,
+        {
+            "select": [ORDERS, _share(ORDERS, [STORE_KEY])],
+            "group_by": [STORE_KEY],
+            "where": [_having("store", REVENUE, "all_time")],
+        },
+        {("a",): 0.6, ("b",): 0.4},
+    ),
+    # "Each store's share of orders from customers who have spent at least $10 overall."
+    "orders-share-of-big-customers": (
+        STORE,
+        {
+            "select": [ORDERS, _share(ORDERS, [STORE])],
+            "group_by": [STORE],
+            "where": [_having("customer", REVENUE, "all_time")],
+        },
+        {(None,): 0.2, ("a",): 0.6, ("b",): 0.2},
+    ),
+    # Each store's quarters, of customers with an order that quarter.
+    "share-over-the-period-of-buyers": (
+        STORE,
+        {
+            "select": [REVENUE, _share(REVENUE, ["period"])],
+            "group_by": [STORE],
+            "time": QUARTER,
+            "where": [_having("customer", ORDERS, "period")],
+        },
+        None,
+    ),
+    # "Orders by store and signup channel, with the overall total, for stores whose lifetime
+    # revenue is at least $10": the customer route is the channel's.
+    "total-by-store-and-channel-of-big-stores": (
+        STORE,
+        {
+            "select": [ORDERS, _total(ORDERS, [STORE, CHANNEL], "part")],
+            "group_by": [STORE, CHANNEL],
+            "where": [_having("store", REVENUE, "all_time")],
+            "routes": [
+                {
+                    "from": "entity.shop_order",
+                    "to": "entity.shop_customer",
+                    "via": ["relationship.orders_customer"],
+                }
+            ],
+        },
+        {
+            (store, channel): 10
+            for store, channel in [
+                ("a", None),
+                ("a", "store"),
+                ("a", "web"),
+                ("b", "store"),
+                ("b", "web"),
+            ]
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("case", CHECKED_AS_BEFORE)
+def test_a_call_with_an_entity_filter_or_routes_is_checked_as_before(revenue_per, case):
+    required, call, expected = CHECKED_AS_BEFORE[case]
+    rows = revenue_per(required).query(call)["rows"]
+    if expected is None:
+        _assert_parts_make_wholes(rows, call)
+        return
+    assert {tuple(row[column] for column in call["group_by"]): row["part"] for row in rows} == {
+        group: pytest.approx(value) for group, value in expected.items()
+    }
 
 
 SEATS = "measure.shop.seats"
