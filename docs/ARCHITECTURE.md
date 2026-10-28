@@ -95,9 +95,8 @@ outside the expression roots. The rule registry is empty; no command invokes it 
   with the reaches kept on purpose and their reasons.
 - The embedding facade loads a package, compiles and enforces policies without importing
   DuckDB, the MCP Python SDK or pydantic. DuckDB loads at the first DuckDB connection
-  (`db_parts/duckdb_setup.py`); the MCP SDK and pydantic serve only the Architect MCP, through
-  the `architect` extra. CI runs `scripts/verify_embedding_core.py` in an environment without
-  the three.
+  (`db_parts/duckdb_setup.py`), and only the Architect MCP imports the MCP SDK and pydantic.
+  CI runs `scripts/verify_embedding_core.py` in an environment without the three.
 
 ## Semantic Primitives
 

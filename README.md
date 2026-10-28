@@ -113,8 +113,7 @@ uv tool install semantic-rails
 `--client codex`, `--client claude-code` (registers the server at user scope),
 `--client cursor` (writes `~/.cursor/mcp.json`, so the manual Cursor config below is
 optional) and `--client both` (Claude Desktop and Codex) also work, and `--mcp both`
-adds the Architect MCP, which can edit package files and needs the `architect` extra
-(`uv tool install 'semantic-rails[architect]'`). Don't run `mcp setup --install`
+adds the Architect MCP, which can edit package files. Don't run `mcp setup --install`
 through `uvx`: the config would point into uv's cache, which `uv cache clean` deletes.
 
 **Cursor.** Install the command and print the two absolute paths the config needs:

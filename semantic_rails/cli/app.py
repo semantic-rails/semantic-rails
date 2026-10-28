@@ -657,11 +657,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_setup.add_argument(
         "--mcp",
         choices=MCP_KINDS,
-        default="",
-        help=(
-            "MCP server config to include: query, architect, or both. Default: both with "
-            "the architect extra installed, else query."
-        ),
+        default="both",
+        help="MCP server config to include: query, architect, or both.",
     )
     p_mcp_setup.add_argument(
         "--workspace-root",
@@ -691,11 +688,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_client_config.add_argument(
         "--mcp",
         choices=MCP_KINDS,
-        default="",
-        help=(
-            "MCP server config to include: query, architect, or both. Default: both with "
-            "the architect extra installed, else query."
-        ),
+        default="both",
+        help="MCP server config to include: query, architect, or both.",
     )
     p_mcp_client_config.add_argument(
         "--workspace-root",

@@ -142,7 +142,7 @@ def cmd_mcp_setup(args: argparse.Namespace) -> None:
         if install
         else (
             f"semantic-rails mcp setup {source_arg} --client {args.client} "
-            f"--mcp {config['mcp']} --install --yes"
+            f"--mcp {args.mcp} --install --yes"
         ),
         f"semantic-rails mcp doctor {source_arg}",
     ]

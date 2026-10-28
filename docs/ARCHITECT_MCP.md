@@ -6,10 +6,6 @@ reconfigure cloud services.
 
 ## Commands
 
-The Architect MCP runs on the MCP Python SDK, which the `architect` extra installs:
-`uv tool install 'semantic-rails[architect]'`, or `uv pip install 'semantic-rails[architect]'`
-in a project environment. Without the extra, the command stops and names it.
-
 ```bash
 semantic-rails-architect-mcp --transport stdio
 semantic-rails-architect-mcp --transport streamable-http --host 127.0.0.1 --port 8010 \

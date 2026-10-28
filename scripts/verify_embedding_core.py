@@ -3,8 +3,8 @@
 
 A host that embeds the engine to load a package, compile calls and enforce policies imports
 neither DuckDB, the MCP Python SDK nor pydantic: DuckDB loads at the first DuckDB connection,
-and the MCP SDK and pydantic belong to the Architect MCP (the `architect` extra). CI runs this
-script in an environment without them (`--absent`), where running the DuckDB package must also
+and only the Architect MCP imports the MCP SDK and pydantic. CI runs this script in an
+environment without the three (`--absent`), where running the DuckDB package must also
 stop with MISSING_DEPENDENCY naming DuckDB; the import contract tests run it beside them, where
 none may load.
 """

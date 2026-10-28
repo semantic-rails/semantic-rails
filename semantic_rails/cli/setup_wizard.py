@@ -9,7 +9,7 @@ from pathlib import Path
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from ..local_config import init_local_profile
-from ..mcp_manager import architect_installed, mcp_client_config_report
+from ..mcp_manager import mcp_client_config_report
 from .common import (
     _confirm,
     _package_ref_from_cwd,
@@ -51,12 +51,7 @@ def cmd_setup_interactive(args: argparse.Namespace) -> None:
         default="none",
     )
     if client != "none":
-        installed = architect_installed()
-        include_architect = installed and _confirm(
-            "Include Architect MCP for package authoring?", default=True
-        )
-        if not installed:
-            print("Install semantic-rails[architect] to add the Architect MCP.")
+        include_architect = _confirm("Include Architect MCP for package authoring?", default=True)
         preview = mcp_client_config_report(
             ref,
             client=client,

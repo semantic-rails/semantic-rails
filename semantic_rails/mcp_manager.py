@@ -7,7 +7,6 @@ change the MCP protocol server, hosted deployment behavior, or package format.
 from __future__ import annotations
 
 import importlib.metadata
-import importlib.util
 import json
 import os
 import re
@@ -28,30 +27,16 @@ CLIENTS = ("claude", "codex", "claude-code", "cursor", "both")
 MCP_KINDS = ("query", "architect", "both")
 
 
-def architect_installed() -> bool:
-    """Whether this install has the architect extra, which the Architect MCP runs on."""
-    return all(importlib.util.find_spec(name) is not None for name in ("mcp", "pydantic"))
-
-
 def mcp_client_config_report(
     ref: PackageReference,
     *,
     client: str = "both",
-    mcp: str = "",
+    mcp: str = "both",
     workspace_root: str = "",
     install: bool = False,
 ) -> dict[str, Any]:
-    """Preview or install client config for ``mcp``; by default, every MCP server this
-    install can run (the Architect MCP needs the architect extra)."""
-    mcp = mcp or ("both" if architect_installed() else "query")
     selected_clients = _selected(client, CLIENTS, field="client")
     selected_mcp = _selected(mcp, MCP_KINDS, field="mcp")
-    if "architect" in selected_mcp and not architect_installed():
-        raise SemanticLayerError(
-            "MISSING_DEPENDENCY",
-            "Install semantic-rails[architect] to run the Architect MCP, or pass --mcp query.",
-            details={"mcp": mcp, "extra": "architect"},
-        )
     workspace = Path(workspace_root or _workspace_root_for_ref(ref)).expanduser().resolve()
     servers = _client_servers(ref, selected_mcp=selected_mcp, workspace_root=workspace)
     previews = {

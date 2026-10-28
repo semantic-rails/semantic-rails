@@ -18,18 +18,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-try:
-    from mcp.server.fastmcp import Context, FastMCP
-    from mcp.server.transport_security import TransportSecuritySettings
-    from mcp.types import Tool as MCPTool
-    from mcp.types import ToolAnnotations
-    from pydantic import BaseModel, ConfigDict, Field
-    from starlette.applications import Starlette
-    from starlette.types import ASGIApp, Receive, Scope, Send
-except ModuleNotFoundError as exc:  # pragma: no cover - an install without the extra
-    raise ModuleNotFoundError(
-        "Install semantic-rails[architect] to run the Architect MCP.", name=exc.name
-    ) from exc
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import Tool as MCPTool
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.applications import Starlette
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import architect_introspection as introspection
 from . import dbt_artifacts
