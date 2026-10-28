@@ -641,12 +641,16 @@ _SHIP_TO_KEY = {
             "one_to_many_hop",
             id="rollup-pre-joined-one-to-many-filter",  # the base counts each order once
         ),
-        pytest.param(({"monthly": _MONTHLY}, {"ship_to": None}), _rollup_query("measure.weight", "sum", "month"), "join_path_mismatch", id="measure-read-from-another-model"),
+        pytest.param((_monthly(weight="revenue")[0], {"ship_to": None}), _rollup_query("measure.weight", "sum", "month"), "join_path_mismatch", id="measure-read-from-another-model"),
         # Reason codes that predate the rollup guards.
         pytest.param(({"monthly": {**_MONTHLY, "equivalence": {"kind": "approximate"}}},), _rollup_query(_REVENUE, "sum", "quarter"), "non_exact_equivalence", id="approximate-rollup"),
         pytest.param(_MONTHLY_ONLY, _grouped(_rollup_query(_REVENUE, "sum", "month"), "dimension.customer_id"), "missing_dimension", id="excluded-dimension"),
         pytest.param(({"monthly": {**_MONTHLY, "eligible_time_grains": ["day", "month"]}},), _rollup_query(_REVENUE, "sum", "day"), "aggregate_grain_too_coarse", id="day-from-a-month-rollup"),
         pytest.param(({"monthly": {**_MONTHLY, "excludes": {**_MONTHLY["excludes"], "measures": ["revenue"]}} },), _rollup_query(_REVENUE, "sum", "quarter"), "missing_measure", id="excluded-measure",),
+        # A rollup holds only what its `columns:` names; the weekly table has no order_count
+        # column and the buyer table no store_id, so each query reads the base table.
+        pytest.param(({"weekly": _WEEKLY},), _rollup_query("measure.order_count", "count_distinct", "week"), "missing_measure", id="measure-columns-leave-out"),
+        pytest.param(({"buyer": {**_MONTHLY, "relation": "order_buyer_monthly", "excludes": {}, "columns": {"revenue": "revenue"}}},), _grouped(_rollup_query(_REVENUE, "sum", "month"), _STORE), "missing_dimension", id="dimension-columns-leave-out"),
         pytest.param(({"no_role": {**_NO_ROLE, "time": _MONTHLY["time"], "columns": _UNDECLARED_COLUMNS}},), _rollup_query(_REVENUE, "sum", "quarter"), "unsupported_rollup", id="column-without-rollup-or-holds"),
         pytest.param(_MONTHLY_ONLY, _rollup_query(_REVENUE, "sum", "month", start="2026-02-01T00:00:00.0000000"), None, id="bound-with-zero-digits-past-microseconds"),
         # Exact rollup answers that must keep routing.

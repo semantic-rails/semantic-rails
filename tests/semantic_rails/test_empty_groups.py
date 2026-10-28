@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails import compiler
 from semantic_rails.compiler import compile_query
@@ -842,19 +843,12 @@ def test_an_exact_rollup_of_an_else_zero_sum_matches_the_base(
         "SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) AS store_a_amount "
         "FROM orders GROUP BY 1, 2",
     )
+    orders = shop_package / "models" / "orders.yml"
+    model = yaml.safe_load(orders.read_text(encoding="utf-8"))
+    model["model"]["variants"]["monthly"]["columns"]["store_a_amount"] = "store_a_amount"
+    orders.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
     config = load_package_config(str(shop_package))
     amount = {"kind": "measure", "measure": "measure.shop.store_a_amount"}
-    config = replace(
-        config,
-        aggregate_relations=[
-            replace(
-                relation,
-                measures=[*relation.measures, amount["measure"]],
-                measure_columns={**relation.measure_columns, amount["measure"]: "store_a_amount"},
-            )
-            for relation in config.aggregate_relations
-        ],
-    )
     query = {"select": _select(amount=amount), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
     if beside_distribution:
         query["select"] += REFUNDS_BESIDE_A_MEDIAN["select"][1:]

@@ -2890,8 +2890,11 @@ warehouse.
 Use `model.variants:` when one semantic model is physically stored at multiple
 time grains, such as transaction, daily, weekly, and monthly tables. The model
 continues to own the measures, dimensions, entities, and default time role. Each
-non-transaction variant declares what the rollup table covers and which columns
-or dimensions differ from the transaction table.
+non-transaction variant declares what the rollup table covers, and its `columns:`
+names every measure and dimension column the table holds. A measure or dimension
+it doesn't name is not in the rollup, and a query that needs one reads the base
+tables. A variant that inherits another's `columns:` (`inherits_from`) leaves one
+out with `excludes: {measures: [...], dimensions: [...]}`.
 
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
@@ -2944,9 +2947,7 @@ model:
       relation: order_monthly
       grain: { time: month, entities: [store] }
       time: { role: ordered_at, column: month_start }
-      excludes:
-        dimensions: [customer_id]
-      columns:
+      columns:                        # customer_id isn't named: it isn't in the table
         store_id: store_id
         revenue_usd: revenue_usd
       eligible_time_grains: [month, quarter, year]
@@ -3014,10 +3015,10 @@ Routing is conservative in the MVP:
   group or filter by that column; the base path doesn't join it otherwise and keeps
   such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
-- Every selected measure must have a column in the variant.
-- Every grouped or filtered dimension must be covered by the variant. If a
-  query groups by `customer_id` and the monthly table excludes that dimension,
-  the planner scans the raw relation.
+- Every selected measure must be named in the variant's `columns:`.
+- Every grouped or filtered dimension must be named in the variant's `columns:`.
+  If a query groups by `customer_id` and the monthly table doesn't name that
+  dimension, the planner scans the raw relation.
 - Entity filters on aggregates (`{entity, having, over}`) and other `metric_predicate`
   shapes, including one inside an aggregate's `filter`, do not route through variants yet.
 

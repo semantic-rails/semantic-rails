@@ -1192,16 +1192,20 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     _resolve_measure_ref(item, model_id=model_id)
                     for item in _ensure_list(excludes.get("measures"))
                 }
+                # The rollup holds only the measures and dimensions its `columns:` names: one it
+                # doesn't name has no column there, so a query that needs it reads the base table.
                 columns = dict(variant.get("columns", {}) or {})
                 measure_bindings: dict[str, dict[str, str]] = {}
                 for measure_key in sorted(model_measure_keys.get(model_id, set())):
                     measure_id = _resolve_measure_ref(measure_key, model_id=model_id)
-                    if measure_id in excluded_measures:
+                    if measure_id in excluded_measures or (
+                        measure_id not in columns and measure_key not in columns
+                    ):
                         continue
                     raw_measure_spec = dict(
                         dict(model.get("measures", {}) or {}).get(measure_key, {}) or {}
                     )
-                    raw_column = columns.get(measure_id, columns.get(measure_key, measure_key))
+                    raw_column = columns.get(measure_id, columns.get(measure_key))
                     if isinstance(raw_column, dict):
                         column = str(raw_column.get("column", "") or "").strip()
                         rollup = str(
@@ -1228,15 +1232,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 for dim_key in sorted(model_dimension_keys.get(model_id, set())):
                     dim_id = _resolve_dimension_ref(dim_key, model_id=model_id)
                     dim_cfg = next((row for row in dimensions if row.id == dim_id), None)
-                    raw_dim_spec = dict(
-                        dict(model.get("dimensions", {}) or {}).get(dim_key, {}) or {}
-                    )
-                    if dim_id in excluded_dimensions:
-                        continue
-                    if (
-                        str(raw_dim_spec.get("kind", "") or "").lower() == "id"
-                        and dim_key not in columns
-                        and dim_id not in columns
+                    if dim_id in excluded_dimensions or (
+                        dim_key not in columns and dim_id not in columns
                     ):
                         continue
                     raw_column = columns.get(dim_id, columns.get(dim_key, ""))
