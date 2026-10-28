@@ -966,7 +966,9 @@ A `prior_period` or `rolling` window counts periods on the calendar, never rows:
 from the first to the last and returns the empty ones too. The prior of the month after a month
 with no rows is that month, which reads by the [empty-group rule](#empty-groups-null-or-0) (`0`
 inside the data), so "revenue over the previous month" reads `NULL` there (÷0), never revenue
-over the last month that had any. On ClickHouse, which has no day spine, such an item is refused.
+over the last month that had any. Such an item is refused on ClickHouse, which has no day
+spine, and as a distribution's input, which would then count entities in periods where they
+have no rows (`REWRITE_NOT_SUPPORTED`).
 
 ### The `aggregation` override
 

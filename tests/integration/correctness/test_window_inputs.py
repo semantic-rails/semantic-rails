@@ -179,3 +179,25 @@ def test_a_ratio_over_a_prior_period_refuses_without_a_day_spine(packages, case_
         "prior_period are not supported on it yet"
     )
     assert raised.value.details == {"warehouse": "clickhouse", "rewrite": "day_series"}
+
+
+@pytest.mark.parametrize("form", ["ratio", "divide"])
+def test_a_distribution_of_a_ratio_over_a_prior_period_refuses(request, form):
+    """Each customer's revenue over their prior month needs every customer in every month, so
+    a distribution of it would count customers in months they have no rows: refused, whether
+    the input divides as a ratio or as arithmetic."""
+    runtime = _backend(request, "duckdb").runtimes["utc_authored"]
+    prior = {"kind": "prior_period", "input": REVENUE, "offset": {"unit": "month", "value": 1}}
+    inputs = {
+        "ratio": {"kind": "ratio", "numerator": REVENUE, "denominator": prior},
+        "divide": {"kind": "arithmetic", "op": "divide", "left": REVENUE, "right": prior},
+    }
+    over = {"kind": "entity_value", "entity": "entity.shop_customer", "input": inputs[form]}
+    query = _ask("month", _item({"kind": "distribution", "function": "median", "over": over}, "m"))
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.compile(query)
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert str(raised.value) == (
+        "A distribution is not supported when its input or a metric filter has a rolling or "
+        "prior-period window: it would count entities in periods where they have no rows."
+    )
