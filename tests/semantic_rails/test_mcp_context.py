@@ -178,6 +178,20 @@ def test_query_mcp_stays_within_context_budgets(query_measurement) -> None:
     )
 
 
+def test_serving_without_plan_costs_less_up_front(query_measurement) -> None:
+    metrics, _preview = query_measurement
+    for metric in (
+        "instructions_tokens",
+        "tools_list.tools",
+        "tools_list.model_visible_tokens",
+        "tools_list.wire_tokens",
+    ):
+        without, default = metrics[f"query.v2.no_plan.{metric}"], metrics[f"query.v2.{metric}"]
+        assert without < default, (metric, without, default)
+    largest = "tools_list.largest_tool_tokens"
+    assert metrics[f"query.v2.no_plan.{largest}"] <= metrics[f"query.v2.{largest}"]
+
+
 def test_session_hints_do_not_increase_first_call_costs(
     jaffle_package: Path, query_measurement, monkeypatch: pytest.MonkeyPatch
 ) -> None:
