@@ -1239,6 +1239,12 @@ graph:
         # as_of: end_of_day                     # read at the end of the row's day (default: time)
 ```
 
+The cardinality says whether the window's rows are versions of one row. Declare a history
+whose rows can overlap at one time (an account with two owners at once) `many_to_many`: a time
+then doesn't pick one row, its hop reads "any of" the rows, it is never a route default, and a
+query that would count a row once per overlapping row is refused. Any cardinality with a one
+side reads the version valid at the time.
+
 A query that joins into the table holding the window needs a `time`, so each row reads the
 version valid at its time. Without one, a many-to-one hop into it is refused with
 `FANOUT_UNSAFE`, naming the relationship and the entity, because joining every version would
@@ -2870,8 +2876,9 @@ their existing behavior.
 Every compile/query response carries a `hop_profile`: the root entity, the
 chosen relationship chain per target entity with per-hop direction /
 cardinality / safety and the rule that chose it (`route_basis`: `decided`,
-`colocated_key`, `inherited` or `only_route`, the route rule's rungs 1-4), the
-hop ceiling, and `long_hop_targets` (targets 3+ hops out). Operators can log this to find questions that repeatedly cross
+`colocated_key`, `inherited`, `only_route` or `default`, the route rule's rungs 1-5;
+`only_route` whenever the caller's view keeps one route, whatever chose it among routes the
+caller can't see), the hop ceiling, and `long_hop_targets` (targets 3+ hops out). Operators can log this to find questions that repeatedly cross
 many entities — those are the candidates for a shortcut relationship, an
 authored `model.variants:` rollup, or physical colocation in the
 warehouse.

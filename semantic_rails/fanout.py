@@ -182,10 +182,20 @@ def reads_end_of_day(rel: RelationshipConfig) -> bool:
     return (rel.temporal_validity or {}).get("as_of") == "end_of_day"
 
 
+def reads_one_version(rel: RelationshipConfig) -> bool:
+    """Whether ``rel``'s validity window holds versions of one row, so a time picks one of them:
+    its relationship has a one side. A many-to-many history's versions valid at one time can
+    overlap (an account with two owners at once), and each would count. The one rule for the
+    route ladder's lookups (``_lookup_hop``), the hop's reach (``hop_reach``) and its safety
+    at a query's time (``_cardinality_status``)."""
+    return "1" in rel.cardinality.replace(" ", "").split(":")
+
+
 def hop_reach(rel: RelationshipConfig, current_entity: str, near_table: str) -> str:
     """How many rows a ``current_entity`` row reaches over ``rel``: ``"as_of"`` (the far row's
-    version valid at the row's time), ``"one"`` (functional) or ``"many"``."""
-    if enters_validity_window(rel, near_table):
+    version valid at the row's time, ``reads_one_version``), ``"one"`` (functional) or
+    ``"many"``."""
+    if enters_validity_window(rel, near_table) and reads_one_version(rel):
         return "as_of"
     return "one" if hop_is_functional(rel, current_entity) else "many"
 
@@ -837,16 +847,11 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
 
 def _lookup_hop(config: PackageConfig, rel_id: str, near: str) -> bool:
     """Whether walking ``rel_id`` from ``near`` reaches one row of the far entity, judged from the
-    package alone: a to-one hop, or a hop into a validity window whose relationship has a "1"
-    side, so the rows it enters are versions of one row and the one valid at the time is read.
-    A many-to-many relationship is never a lookup, validity window or not: rows valid at once
-    can overlap, and each would count."""
+    package alone: a to-one hop, or a hop into a validity window holding versions of one row
+    (``reads_one_version``), where the one valid at the time is read. A many-to-many
+    relationship is never a lookup, validity window or not."""
     analysis = get_package_analysis(config)
-    rel = analysis.relationships[rel_id]
-    reach = hop_reach(rel, near, analysis.entities[near].table)
-    return reach == "one" or (
-        reach == "as_of" and "1" in rel.cardinality.replace(" ", "").split(":")
-    )
+    return hop_reach(analysis.relationships[rel_id], near, analysis.entities[near].table) != "many"
 
 
 def _reaches_one_row(config: PackageConfig, start: str, path: Sequence[str]) -> bool:
@@ -1094,13 +1099,15 @@ def build_hop_profile(
     One entry per non-root target entity: the chosen relationship chain,
     per-hop direction / cardinality / safety, how many alternates the
     chooser considered, and which rung of the route ladder chose it
-    (``route_basis``). The aggregate fields (``max_hop_count``,
+    (``route_basis``; ``only_route`` whenever the caller's view keeps one route, whatever chose
+    it among routes the caller can't see). The aggregate fields (``max_hop_count``,
     ``long_hop_targets``) are the acceleration-layer signal: queries that
     repeatedly cross 3+ relationships to reach the same target are the
     candidates for shortcut relationships, entity colocation, or authored
     aggregate relations.
     """
-    rel_index = get_package_analysis(config).relationships
+    analysis = get_package_analysis(config)
+    rel_index, view = analysis.relationships, analysis.view is not None
     candidates = candidate_paths or {}
     targets: dict[str, Any] = {}
     max_hop_count = 0
@@ -1125,12 +1132,17 @@ def build_hop_profile(
                 }
             )
             current = next_entity
+        basis = route_basis(config, root_entity, target)
+        if basis and view and len(pair_routes(config, root_entity, target)) == 1:
+            # The caller's view keeps one route: whatever chose it among routes the caller can't
+            # see, it is the only route the caller has.
+            basis = "only_route"
         targets[target] = {
             "hop_count": len(path),
             "path": list(path),
             "hops": hops,
             "alternates_considered": max(0, len(candidates.get(target, [])) - 1),
-            "route_basis": route_basis(config, root_entity, target),
+            "route_basis": basis,
         }
         label = route_label(config, root_entity, target, path)
         if label:
@@ -1174,9 +1186,9 @@ def _cardinality_status(rel: RelationshipConfig, *, current_entity: str, time_bo
         return rel.safety
     left, right = [part.strip() for part in card.split(":", 1)]
     # A history read at the query's time gives each row the one version valid then, but only
-    # when its relationship has a one side: a many-to-many history's versions valid at one time
-    # can overlap, and each would count, so it stays what its cardinality and safety say.
-    if time_bound and rel.temporal_validity and rel.safety != "unsafe" and "1" in (left, right):
+    # when its window holds versions of one row (``reads_one_version``); a many-to-many history
+    # stays what its cardinality and safety say.
+    if time_bound and rel.temporal_validity and rel.safety != "unsafe" and reads_one_version(rel):
         return "safe"
     forward = current_entity == rel.source_entity
     if left == "1" and right == "1":

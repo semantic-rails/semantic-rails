@@ -28,7 +28,14 @@ import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.fanout import eligible_path_targets, package_route, resolve_route
+from semantic_rails.fanout import (
+    build_hop_profile,
+    eligible_path_targets,
+    hop_reach,
+    package_route,
+    resolve_route,
+    route_reading,
+)
 from semantic_rails.runtime import Runtime
 from semantic_rails.visible_view import build_view
 from tests.semantic_rails.campus_package import write_campus_package
@@ -36,6 +43,8 @@ from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.hidden_absent import CALLER, visibility_policy, with_policies
 from tests.semantic_rails.test_route_resolution import (
     ACCOUNT,
+    BRANCH,
+    HOME,
     INVOICE,
     INVOICE_BRANCH,
     MEMBERSHIP,
@@ -304,3 +313,62 @@ def test_hints_in_a_view_offer_what_the_view_resolves(tmp_path):
     assert package_route(view, start=employee, target=region).routes[0] == resolution.routes[0]
     assert region in eligible_path_targets(view, start=employee)
     assert eligible_path_targets(view, start=employee) == _answered(view, employee)
+
+
+def _hidden_customer_route(tmp_path: Path) -> tuple[Path, Any]:
+    root = _jaffle(tmp_path)
+    return root, with_policies(
+        load_package_config(str(root)),
+        visibility_policy("hidden", "relationship.storefront_sessions_customer"),
+    )
+
+
+def test_a_hop_profile_in_a_view_with_one_route_says_only_route(tmp_path):
+    """A caller who can't see the session's customer has one route to the segment: the hop
+    profile says so (``only_route``), as the answer's routes do, and never that a default chose
+    it among routes the caller can't see; an unrestricted caller's profile says ``default``."""
+    root, config = _hidden_customer_route(tmp_path)
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        hidden = runtime.compile(SESSIONS_BY_SEGMENT, verbosity="full", context=CALLER)
+        seen = runtime.compile(SESSIONS_BY_SEGMENT, verbosity="full")
+    finally:
+        runtime.close()
+    assert hidden["hop_profile"]["targets"][HISTORY]["route_basis"] == "only_route"
+    assert hidden["hop_profile"]["targets"][HISTORY]["alternates_considered"] == 0
+    assert seen["hop_profile"]["targets"][HISTORY]["route_basis"] == "default"
+
+
+def test_a_hop_profile_in_a_view_says_only_route_whatever_the_basis(tmp_path):
+    """The account's own branch key is chosen over its owner's home region; a view that hides the
+    home region keeps one route, so the profile says only_route there too."""
+    base = load_package_config(str(_write_package(tmp_path)))
+    view = build_view(base, frozenset({HOME[-1]}))
+    paths = {REGION: BRANCH}
+    assert (
+        build_hop_profile(base, root_entity=ACCOUNT, selected_paths=paths)["targets"][REGION][
+            "route_basis"
+        ]
+        == "colocated_key"
+    )
+    assert (
+        build_hop_profile(view, root_entity=ACCOUNT, selected_paths=paths)["targets"][REGION][
+            "route_basis"
+        ]
+        == "only_route"
+    )
+
+
+def test_a_many_to_many_history_reads_any_of_its_rows_not_one_version(tmp_path):
+    """One rule says whether a validity window holds versions of one row: a relationship with a
+    one side. Declared many-to-many, the history's hop reaches many rows and reads "any of" them,
+    not "the one valid at the time"."""
+    for cardinality, reach, words in (
+        ("many_to_one", "as_of", "valid at the time"),
+        ("many_to_many", "many", "any of the Customer histories"),
+    ):
+        config = load_package_config(str(_jaffle(tmp_path / cardinality, cardinality)))
+        rel = next(row for row in config.relationships if row.id == SESSION_ORDER[-1])
+        order = next(row for row in config.entities if row.id == "entity.jaffle_order")
+        assert hop_reach(rel, order.id, order.table) == reach
+        assert words in route_reading(config, SESSION, SESSION_ORDER)
