@@ -182,10 +182,20 @@ def reads_end_of_day(rel: RelationshipConfig) -> bool:
     return (rel.temporal_validity or {}).get("as_of") == "end_of_day"
 
 
+def reads_one_version(rel: RelationshipConfig) -> bool:
+    """Whether ``rel``'s validity window holds versions of one row, so a time picks one of them:
+    its relationship has a one side. A many-to-many history's versions valid at one time can
+    overlap (an account with two owners at once), and each would count. The one rule for the
+    route ladder's lookups (``_lookup_hop``), the hop's reach (``hop_reach``) and its safety
+    at a query's time (``_cardinality_status``)."""
+    return "1" in rel.cardinality.replace(" ", "").split(":")
+
+
 def hop_reach(rel: RelationshipConfig, current_entity: str, near_table: str) -> str:
     """How many rows a ``current_entity`` row reaches over ``rel``: ``"as_of"`` (the far row's
-    version valid at the row's time), ``"one"`` (functional) or ``"many"``."""
-    if enters_validity_window(rel, near_table):
+    version valid at the row's time, ``reads_one_version``), ``"one"`` (functional) or
+    ``"many"``."""
+    if enters_validity_window(rel, near_table) and reads_one_version(rel):
         return "as_of"
     return "one" if hop_is_functional(rel, current_entity) else "many"
 
@@ -445,12 +455,48 @@ def pair_routes(config: PackageConfig, start: str, target: str) -> list[list[str
 
 def route_decision_basis(config: PackageConfig, start: str, target: str) -> str:
     """What a query's own row for the pair replaces: the rung of the package's ladder that
-    resolves it (``decided``, ``colocated_key``, ``inherited`` or ``only_route``), or
-    ``undecided`` when the package refuses it."""
+    resolves it (``decided``, ``colocated_key``, ``inherited``, ``default`` or ``only_route``,
+    as the caller's view states it: ``caller_basis``), or ``undecided`` when the package
+    refuses it."""
     try:
-        return package_route(config, start=start, target=target).basis
+        resolution = package_route(config, start=start, target=target)
     except SemanticLayerError:
         return "undecided"
+    return caller_basis(config, start, target, resolution)
+
+
+def caller_basis(
+    config: PackageConfig, start: str, target: str, resolution: RouteResolution
+) -> str:
+    """The basis an answer states for the pair's resolution. In a caller's view, a pair the
+    caller sees one route for says ``only_route``, whatever chose it among routes they can't
+    see; every basis a response serializes (the hop profile, ``ROUTE_PASS_THROUGH``, a
+    ``routes`` row's ``replaced``) goes through here, so none of them names a hidden choice.
+
+    A ``decided`` or ``query`` resolution holds its one route, so whether the view has
+    another is checked on the view's graph, bounded and cached as ``route_note`` checks it.
+    Every other resolution already holds the view's routes, with those a recorded row drops
+    gone (``default``) or kept (``colocated_key``, ``inherited``: the caller sees the route a
+    row dropped)."""
+    if get_package_analysis(config).view is None or resolution.basis == "only_route":
+        return resolution.basis
+    if resolution.basis in {"decided", "query"}:
+        multiple = _multiple_routes(config, start, target)
+    else:
+        multiple = len(resolution.routes) > 1
+    return resolution.basis if multiple else "only_route"
+
+
+def _multiple_routes(config: PackageConfig, start: str, target: str) -> bool:
+    """Whether two or more routes join the pair within the hop ceiling in ``config``'s graph
+    (the caller's view's, when it has one), without enumerating them; cached per pair."""
+    analysis = get_package_analysis(config)
+    pair = (start, target)
+    if pair not in analysis.route_note_cache:
+        analysis.route_note_cache[pair] = _has_multiple_routes(
+            analysis.graph, start, target, package_hop_limit(config)
+        )
+    return analysis.route_note_cache[pair]
 
 
 _query_routes: ContextVar[dict[tuple[str, str], tuple[str, ...]] | None] = ContextVar(
@@ -508,11 +554,12 @@ def route_basis(config: PackageConfig, start: str, target: str) -> str:
     ``"query"`` (the query's own row), ``"decided"`` (the pair's own row),
     ``"colocated_key"`` (the start's own key), ``"inherited"`` (rows for pairs its routes walk
     through), ``"only_route"`` or ``"default"`` (the one lookup among several routes). ``""``
-    when the pair is refused."""
+    when the pair is refused. In a caller's view, as the view states it (``caller_basis``)."""
     try:
-        return resolve_route(config, start=start, target=target).basis
+        resolution = resolve_route(config, start=start, target=target)
     except SemanticLayerError:
         return ""
+    return caller_basis(config, start, target, resolution)
 
 
 def route_note(
@@ -536,13 +583,7 @@ def route_note(
     if resolution.basis != "decided":
         # A default is named even when a view hides every route it was chosen over.
         return resolution if len(resolution.routes) > 1 or resolution.basis == "default" else None
-    analysis = get_package_analysis(config)
-    pair = (start, target)
-    if pair not in analysis.route_note_cache:
-        analysis.route_note_cache[pair] = _has_multiple_routes(
-            analysis.graph, start, target, package_hop_limit(config)
-        )
-    return resolution if analysis.route_note_cache[pair] else None
+    return resolution if _multiple_routes(config, start, target) else None
 
 
 def decision_conflicts(
@@ -837,16 +878,11 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
 
 def _lookup_hop(config: PackageConfig, rel_id: str, near: str) -> bool:
     """Whether walking ``rel_id`` from ``near`` reaches one row of the far entity, judged from the
-    package alone: a to-one hop, or a hop into a validity window whose relationship has a "1"
-    side, so the rows it enters are versions of one row and the one valid at the time is read.
-    A many-to-many relationship is never a lookup, validity window or not: rows valid at once
-    can overlap, and each would count."""
+    package alone: a to-one hop, or a hop into a validity window holding versions of one row
+    (``reads_one_version``), where the one valid at the time is read. A many-to-many
+    relationship is never a lookup, validity window or not."""
     analysis = get_package_analysis(config)
-    rel = analysis.relationships[rel_id]
-    reach = hop_reach(rel, near, analysis.entities[near].table)
-    return reach == "one" or (
-        reach == "as_of" and "1" in rel.cardinality.replace(" ", "").split(":")
-    )
+    return hop_reach(analysis.relationships[rel_id], near, analysis.entities[near].table) != "many"
 
 
 def _reaches_one_row(config: PackageConfig, start: str, path: Sequence[str]) -> bool:
@@ -1094,7 +1130,8 @@ def build_hop_profile(
     One entry per non-root target entity: the chosen relationship chain,
     per-hop direction / cardinality / safety, how many alternates the
     chooser considered, and which rung of the route ladder chose it
-    (``route_basis``). The aggregate fields (``max_hop_count``,
+    (``route_basis``; ``only_route`` whenever the caller's view keeps one route, whatever chose
+    it among routes the caller can't see). The aggregate fields (``max_hop_count``,
     ``long_hop_targets``) are the acceleration-layer signal: queries that
     repeatedly cross 3+ relationships to reach the same target are the
     candidates for shortcut relationships, entity colocation, or authored
@@ -1174,9 +1211,9 @@ def _cardinality_status(rel: RelationshipConfig, *, current_entity: str, time_bo
         return rel.safety
     left, right = [part.strip() for part in card.split(":", 1)]
     # A history read at the query's time gives each row the one version valid then, but only
-    # when its relationship has a one side: a many-to-many history's versions valid at one time
-    # can overlap, and each would count, so it stays what its cardinality and safety say.
-    if time_bound and rel.temporal_validity and rel.safety != "unsafe" and "1" in (left, right):
+    # when its window holds versions of one row (``reads_one_version``); a many-to-many history
+    # stays what its cardinality and safety say.
+    if time_bound and rel.temporal_validity and rel.safety != "unsafe" and reads_one_version(rel):
         return "safe"
     forward = current_entity == rel.source_entity
     if left == "1" and right == "1":
