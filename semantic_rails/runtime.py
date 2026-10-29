@@ -242,7 +242,12 @@ def _enrich_runtime_error(
     exc = _caller_select_paths(exc, notes)
     exc = enrich_object_not_found(exc, config)
     exc = enrich_expression_ast_error(exc, config)
-    exc = enrich_column_expression(exc, config)
+    # The caller the request pinned; without one, a hint assumes every policy's caller.
+    view = visible_view.pinned()
+    scope = None
+    if view is not None:
+        scope = dict(zip(("environment", "audience", "roles"), view.key, strict=True))
+    exc = enrich_column_expression(exc, config, scope)
     exc = enrich_path_not_found(exc, config)
     return exc
 

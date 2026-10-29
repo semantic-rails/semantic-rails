@@ -546,6 +546,29 @@ def withheld_measure_ids(
     return reads & measures
 
 
+def kept_measure_ids(config: PackageConfig, scope: Mapping[str, Any] | None) -> set[str]:
+    """Measures a ``deny`` or ``withhold_values`` policy keeps from the caller in ``scope``
+    (its ``environment``, ``audience`` and ``roles``), directly or as a kept metric's input;
+    with no caller known, those it keeps from anyone. Such a policy covers the measure, not
+    its columns."""
+
+    def keeps(policy: SemanticPolicyConfig, object_id: str) -> bool:
+        if _policy_action(policy) not in {"deny", WITHHOLD}:
+            return False
+        if scope is None:
+            return not policy.object_ids or object_id in policy.object_ids
+        return _policy_matches(policy, object_id=object_id, **scope)
+
+    measures = {row.id for row in config.measures}
+    kept = {
+        object_id
+        for object_id in [*measures, *(row.id for row in config.metric_recipes)]
+        if any(keeps(policy, object_id) for policy in config.semantic_policies)
+    }
+    recipes = kept - measures
+    return (kept | (bind_metadata_objects(config, recipes) if recipes else frozenset())) & measures
+
+
 def withheld_shape(
     config: PackageConfig, binding: BoundQuery | None, withheld: Mapping[str, int]
 ) -> SemanticLayerError | None:

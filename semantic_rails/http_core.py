@@ -360,10 +360,15 @@ class SemanticHTTPService:
                 config = self.runtime.view_for(context) if context is not None else None
             except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
                 config = None
-            if config is not None:
+            if config is not None and context is not None:
                 enriched = enrich_object_not_found(enriched, config)
                 enriched = enrich_expression_ast_error(enriched, config)
-                enriched = enrich_column_expression(enriched, config)
+                scope: dict[str, Any] = {
+                    "environment": context.environment,
+                    "audience": context.audience,
+                    "roles": context.roles,
+                }
+                enriched = enrich_column_expression(enriched, config, scope)
                 enriched = enrich_path_not_found(enriched, config)
             error_issue = exception_issue(enriched, stage=stage)
             return {

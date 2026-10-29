@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, timedelta
 from difflib import get_close_matches
 from typing import Any
 
 from .errors import SemanticLayerError
-from .schema import PackageConfig, RelationshipConfig
+from .schema import PackageConfig, RelationshipConfig, base_of
 
 
 def _shift_iso_date_backward(start: str, lookback: dict[str, Any]) -> str:
@@ -1156,12 +1156,19 @@ def recovery_hints_for_error(
         kind = str(details.get("expression_kind", "") or "")
         if kind and details.get("supported_kinds"):
             # A row-level kind (a raw column, ...) as a query value (see ast).
+            # A policy that keeps a measure over this column covers the measure, not the
+            # column: the hint offers no aggregate over it (see enrich_column_expression).
+            kept = bool(details.get("column_kept_by_policy"))
             message = (
                 f"'{kind}' reads row values, and a select item aggregates rows: write an id or one "
-                f"of the kinds {list(details['supported_kinds'])} (aggregate_if aggregates row "
-                "values)."
+                f"of the kinds {list(details['supported_kinds'])}"
             )
-            if kind == "column":
+            message += "." if kept else " (aggregate_if aggregates row values)."
+            if kept:
+                message += (
+                    " To split or filter by a column, name a dimension on it in group_by or where."
+                )
+            elif kind == "column":
                 owner = {key: details[key] for key in ("entity", "table") if details.get(key)}
                 column = {"kind": "column", "column": details.get("column") or "<column>"}
                 call: dict[str, Any] = {
@@ -1419,30 +1426,44 @@ def enrich_expression_ast_error(
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
-def enrich_column_expression(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
+def enrich_column_expression(
+    exc: SemanticLayerError, config: PackageConfig, scope: Mapping[str, Any] | None = None
+) -> SemanticLayerError:
     """Attach ``closest_matches`` to a refused raw ``column`` expression: the dimensions defined
-    on that column, those of its entity or table when it names one that has any."""
+    on that column, those of its entity or table when it names one that has any. When a measure
+    a policy keeps from the caller in ``scope`` reads a column of that name, mark it: its hint
+    then offers no aggregate over the column."""
+    from .expressions import collect_column_refs
+    from .policies import kept_measure_ids
+
     details = dict(exc.details or {})
     column = str(details.get("column") or "").lower()
-    if (
-        exc.code != "INVALID_QUERY"
-        or details.get("expression_kind") != "column"
-        or not column
-        or details.get("closest_matches")
+    if exc.code != "INVALID_QUERY" or details.get("expression_kind") != "column" or not column:
+        return exc
+    if not details.get("closest_matches"):
+        owners = {
+            entity.id
+            for entity in config.entities
+            if details.get("entity") in (entity.id, entity.name)
+            or details.get("table") == entity.table
+        }
+        on_column = [row for row in config.dimensions if row.column.lower() == column]
+        matches = sorted(
+            row.id for row in [row for row in on_column if row.entity in owners] or on_column
+        )
+        if matches:
+            details["closest_matches"] = matches[:10]
+    base = base_of(config)
+    kept = kept_measure_ids(base, scope)
+    if any(
+        ref.column.lower() == column
+        for row in base.measures
+        if row.id in kept
+        for ref in collect_column_refs(row.expr)
     ):
+        details["column_kept_by_policy"] = True
+    if details == dict(exc.details or {}):
         return exc
-    owners = {
-        entity.id
-        for entity in config.entities
-        if details.get("entity") in (entity.id, entity.name) or details.get("table") == entity.table
-    }
-    on_column = [row for row in config.dimensions if row.column.lower() == column]
-    matches = sorted(
-        row.id for row in [row for row in on_column if row.entity in owners] or on_column
-    )
-    if not matches:
-        return exc
-    details["closest_matches"] = matches[:10]
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 

@@ -23,6 +23,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.query_call import V2_POINTER, call_kinds
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config, opened
 
 NOW = "2017-09-04T12:00:00Z"
@@ -465,6 +466,46 @@ def test_a_raw_column_hint_writes_the_aggregate_if_that_aggregates_it(
     if value is not None:
         answer = runtime.query({"select": [{"expression": shape, "as": "total"}]}, now=NOW)
         assert answer["rows"] == [{"total": value}]
+
+
+@pytest.mark.parametrize("withheld", [False, True], ids=["denied", "withheld"])
+def test_a_raw_column_hint_offers_no_aggregate_over_a_kept_measures_column(
+    runtime: Runtime, withheld: bool
+) -> None:
+    """Revenue denied to partners, or withheld from support, is the measure only, not its
+    column: their raw-column hint offers no aggregate over order_total_cents, while a caller
+    the policy doesn't name is still offered one."""
+    engine, caller = runtime, RequestContext(audience="external_partner")
+    if withheld:
+        config = runtime.package_config
+        policy = SemanticPolicyConfig(
+            id="policy.test.withhold_revenue",
+            kind="object_access",
+            action="withhold_values",
+            object_ids=[REVENUE],
+            roles=["support"],
+            config={"max_rank": 3},
+        )
+        engine = Runtime.from_config(
+            replace(config, semantic_policies=[*config.semantic_policies, policy]),
+            source_path="configs/semantic_rails/jaffle_shop",
+        )
+        caller = RequestContext(roles=("support",))
+    column = {"kind": "column", "column": "order_total_cents", "entity": "entity.jaffle_order"}
+    call = {"select": [{"expression": column, "as": "total"}]}
+    try:
+        (error,) = engine.validate(call, now=NOW, context=caller)["errors"]
+        offered = _hint(_error(engine, call))
+    finally:
+        if engine is not runtime:
+            engine.close()
+    hint = _hint(error)
+    assert error["code"] == "INVALID_QUERY"
+    assert '"kind": "aggregate_if"' not in hint and "order_total_cents" not in hint
+    assert hint.endswith(
+        "To split or filter by a column, name a dimension on it in group_by or where."
+    )
+    assert '{"kind": "aggregate_if", "aggregation": "sum", "value": {"kind": "column", "column": "order_total_cents"' in offered  # fmt: skip
 
 
 def test_a_raw_column_in_a_draft_names_its_path() -> None:
