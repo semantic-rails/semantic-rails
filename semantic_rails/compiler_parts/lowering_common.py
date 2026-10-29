@@ -43,7 +43,6 @@ from ..expressions import (
 )
 from ..fanout import (
     analyze_fanout,
-    record_route_choice,
     recording_route_choices,
     resolve_path,
 )
@@ -68,7 +67,6 @@ from ..sql_ast import (
     SqlIdentifier,
     SqlInQuery,
     SqlIsNull,
-    SqlJoin,
     SqlLiteral,
     SqlSelect,
     SqlSetQuery,
@@ -503,17 +501,17 @@ def _edge_cap(
     cap = declared_cap(measure.zero_through, raw, local, zone, dialect)
     if direct is not None or dim.entity == source:
         return cap
-    hops = clock_hops(source, dim.entity, config) if untimed and source == measure.entity else None
-    if hops is None:
+    joins = clock_hops(source, dim.entity, config) if untimed and source == measure.entity else None
+    if joins is None:
         return []
-    route, ((on, table), *joins) = hops
-    record_route_choice(source, dim.entity, route)
-    rest = [SqlJoin("INNER", SqlTableRef(name=name), condition) for condition, name in joins]
+    first, *rest = joins
+    on = first.on
+    assert on is not None  # every hop joins on its keys
     if isinstance(on, SqlBinary) and on.op == "=":
         # A one-column key: the rows whose key a dating row inside the edge holds.
-        keys = SqlSelect([SqlField(on.right, "dated")], SqlTableRef(name=table), rest, where=cap)
+        keys = SqlSelect([SqlField(on.right, "dated")], first.table, rest, where=cap)
         return [SqlInQuery(on.left, keys)]
-    dated = SqlSelect([SqlField(SqlLiteral(1), "dated")], SqlTableRef(name=table), rest, [on, *cap])
+    dated = SqlSelect([SqlField(SqlLiteral(1), "dated")], first.table, rest, [on, *cap])
     return [SqlExists(dated)]
 
 
