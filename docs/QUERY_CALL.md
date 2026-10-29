@@ -1616,7 +1616,10 @@ so a month so far never reads as a change from the whole previous month.
 Summing windows (`rolling`, `cumulative`, `period_to_date`) need values that add up across
 periods: additive flows (`sum`, `count`), event counts (`count_distinct` of a complete row key),
 and sums, differences and literal multiples of them. A ratio windows its parts:
-`SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Inputs using `avg`, `min`,
+`SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. A window sums the rows of its
+periods as one group, so [All NULL reads NULL](#empty-groups-null-or-0) holds for it too: a
+window whose rows all have a NULL amount reads `NULL`, never the `0` its empty periods add up
+to, while a window with no rows adds up its periods by the empty-group rule. Inputs using `avg`, `min`,
 `max`, `median` or `percentile`, balances, distinct populations, distributions, products of
 measures, nested windows and ratios inside other arithmetic are refused with `ROLLUP_UNSAFE`
 before SQL runs, through derived metrics too.
