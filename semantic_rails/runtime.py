@@ -51,6 +51,7 @@ from .answer import (
     finish,
     load_log_name,
     mark_partial_periods,
+    read_from,
 )
 from .ast import (
     every_filter,
@@ -2289,6 +2290,10 @@ class Runtime:
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])
             out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
+        if value_page is None and policy_context.get("metric_allowlist") is None:
+            # First, where an agent reads before the rows: which model each value comes from.
+            # A grant names no measure or model (``visible_view.grant_view``), so it gets none.
+            out = {"ok": True, "read_from": read_from(self._config, compiled, out), **out}
         return apply_response_verbosity(
             finish(out, payload=payload, compiled=compiled),
             verbosity=verbosity,

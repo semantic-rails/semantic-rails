@@ -21,7 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import visible_view
-from .ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
+from .ast import PERIOD_PARTIAL, TIME_AXIS, every_filter, normalize_query
 from .caveats import _expr_children
 from .clock import (
     describe_window,
@@ -37,6 +37,7 @@ from .compiler_parts.listings import is_listing_plan, listing_config
 from .compiler_parts.parent_values import PARENT_VALUE
 from .diagnostics import lean_issue, semantic_issue
 from .errors import SemanticLayerError
+from .expressions import collect_object_references, expr_to_dict
 from .fanout import (
     build_hop_profile,
     offered_rows,
@@ -302,6 +303,81 @@ def minimal_route(route: Mapping[str, Any]) -> dict[str, Any]:
     """``route`` (an answer's ``routes`` entry) as a minimal response keeps it."""
     keys = (*MINIMAL_ROUTE_KEYS, *(_MINIMAL_DEFAULT_KEYS if "by" in route else ()))
     return {key: route[key] for key in keys if key in route}
+
+
+def read_from(
+    config: Any, compiled: Mapping[str, Any], out: Mapping[str, Any]
+) -> dict[str, list[str]]:
+    """Which model each value of the answer comes from, by id, as the compiled call reads it:
+    ``{entity: [ids]}``.
+
+    Each measure or metric the call selects is listed under its model's entity (under each, when
+    a metric reads several), and each group_by and where dimension under its own. When the SQL
+    reached a dimension's entity through relationships whose route the response doesn't state,
+    those relationship ids follow its values, in route order. A route is stated by ``routes``
+    (chosen among several), a ``ROUTE_PASS_THROUGH`` or ``LISTED_THROUGH`` note, or a fan-out
+    note's ``paths``. An entity ``routes`` names, with no unstated route into it, is left out:
+    the response already says the call reads it. ``config`` is the caller's view, which the call
+    compiled on, so nothing here names an object the caller can't see."""
+    query = dict(compiled["explain"].normalized_query or {})
+    measures = {row.id: row.entity for row in config.measures}
+    recipes = {row.id: row for row in config.metric_recipes}
+    dimensions = {row.id: row.entity for row in config.dimensions}
+    entities = {row.id for row in config.entities}
+    relationships = {row.id for row in config.relationships}
+
+    def models(ref: str, seen: frozenset[str] = frozenset()) -> set[str]:
+        if ref in measures:
+            return {measures[ref]}
+        recipe = recipes.get(ref)
+        if recipe is None or ref in seen:
+            return set()
+        inner = collect_object_references(expr_to_dict(recipe.expression))
+        return {entity for item in inner for entity in models(item, seen | {ref})}
+
+    values: dict[str, dict[str, None]] = {}
+    hops: dict[str, dict[str, None]] = {}
+    for item in query.get("select") or []:
+        for ref in collect_object_references(dict(item.get("expression") or {})):
+            for entity in sorted(models(ref) & entities):
+                values.setdefault(entity, {})[ref] = None
+    stated = _stated_routes(config, out)
+    reads = read_routes(compiled["logical_plan"], compiled.get("route_choices") or [])
+    fields = [
+        *(ref for ref in query.get("group_by") or [] if isinstance(ref, str)),
+        *(row.get("field") for row in every_filter(query.get("where")) if isinstance(row, Mapping)),
+    ]
+    for ref in dict.fromkeys(fields):
+        target = dimensions.get(ref)
+        if target not in entities:
+            continue
+        values.setdefault(target, {})[ref] = None
+        for start, end, path in reads:
+            if end == target and path and (start, end) not in stated and set(path) <= relationships:
+                hops.setdefault(target, {}).update(dict.fromkeys(path))
+    named = {entity for row in out.get("routes") or [] for entity in (row["from"], row["to"])}
+    return {
+        entity: [*ids, *hops.get(entity, {})]
+        for entity, ids in values.items()
+        if entity not in named or hops.get(entity)
+    }
+
+
+def _stated_routes(config: Any, out: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """The (from, to) pairs whose route the response already states: its ``routes`` and its
+    route notes (``ROUTE_PASS_THROUGH``, ``LISTED_THROUGH``, a fan-out note's ``paths``)."""
+    measures = {row.id: row.entity for row in config.measures}
+    pairs = {(row["from"], row["to"]) for row in out.get("routes") or []}
+    for note in out.get("warnings") or []:
+        details = dict(note.get("details") or {})
+        if note.get("code") == "ROUTE_PASS_THROUGH":
+            pairs.add(tuple(note["object_ids"][:2]))
+        elif note.get("code") == "LISTED_THROUGH":
+            pairs.update((row["from"], row["to"]) for row in details.get("routes") or [])
+        elif note.get("code") == "REWRITE_APPLIED" and isinstance(details.get("paths"), dict):
+            start = measures.get(next(iter(note.get("object_ids") or []), ""), "")
+            pairs.update((start, target) for target in details["paths"])
+    return pairs
 
 
 def _route_order(path: Sequence[str]) -> tuple[int, Sequence[str]]:

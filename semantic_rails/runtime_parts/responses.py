@@ -46,6 +46,7 @@ _MINIMAL_KEYS_EXECUTE: frozenset[str] = frozenset(
 # What the answer means survives the cheapest response (``answer.py``): verbosity never
 # removes a warning, an assumption or a route.
 _ANSWER_KEYS: tuple[str, ...] = (
+    "read_from",
     "window",
     "clock",
     "observation_scope",
