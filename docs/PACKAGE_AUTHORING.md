@@ -2748,7 +2748,14 @@ To decide a `decide_first` group, record **the asked pair's own route**. In Arch
 census, the group's `decide_first.parts` lists each of its routes from `via` on: its option
 `id`, its `meaning` read from `via` ("the Building of any of the Project's Tasks") and its
 `relationship_path` from there, with `decision`, the asked pair's row for the whole route
-through that part. Pass the chosen part's `decision` to `record_route_decision`. The pair
+through that part. Pass the chosen part's `decision` to `record_route_decision`. Preview it
+with `dry_run` and read `route_changes` before writing: a row holds wherever a route walks its
+pair, so other pairs whose routes walk the asked pair by another route move too. Such a pair
+that answered is refused when the route that follows the row is longer than `max_hops`
+(`PATH_NOT_FOUND`, `excluded_by_decision`), and an undecided pair whose other routes are all
+excluded is answered by the one left (`inherited`), which nobody chose. A part longer than the
+pair's shortest route is the usual cause; if a listed change isn't what the business means,
+choose another part. The pair
 `via` to the target stays undecided; a row recorded for it later must agree with this one
 (see "Rows must agree" below), so the asked pair keeps the route that was chosen. Don't record a row
 for the `decide_first` pair (`via` to the target) on its own: a route for that pair can
