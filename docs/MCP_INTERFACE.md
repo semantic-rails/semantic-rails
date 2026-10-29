@@ -1455,18 +1455,25 @@ expression kind names the received kind and its request path (for example,
 
 A `PATH_NOT_FOUND` with no relationship chain between its start and target, or whose start
 reaches no entity, also carries `details.shared_key_columns`: the columns of either side's
-declared key that both hold, each saying what it identifies (empty when they share none), and,
-with any, `shared_key_unique_on_target`: whether they hold the target's whole key, so that each
-start row matches at most one target row on them. When no missing link is named, the message
-says which: they share no key column, or they share columns on which one start row can match
-many target rows (part of the target's key, or a target with no key). The caller's split hint
-(`drop_or_split`, `isolated_source_entity`) names the shared columns and, when they aren't the
-target's whole key, says that a total across rows matched on them counts a start row once per
-target row. The author hint then says no many-to-one relationship joins the two on those
-columns (a `graph.relationships` row on them alone declares `cardinality: many_to_many`). With
-no link and no shared key, it says an entity the start reaches must hold the target's key,
-related by a foreign key in that model's `entities:` block or a `graph.relationships` row in
-`graph.yml`. A refusal naming a relationship that already joins the pair carries none of this.
+declared key that both hold, each saying what it identifies, spelled as the key declares them
+(empty when they share none), and, with any, `shared_key_unique_on_target`: whether they hold
+the target's whole key, so that each start row matches at most one target row on them. Columns
+that only date the rows (a load, snapshot or validity date, typed as a date or time on either
+side) are shared only when they are one side's whole key, as a calendar's date is. When no
+missing link is named, the message says which: they share no key column, or they share columns
+on which one start row can match many target rows (part of the target's key, or a target with no
+key). The caller's split hint (`drop_or_split`, `isolated_source_entity`) names the shared
+columns and, when they aren't the target's whole key, says that a total across rows matched on
+them counts a start row once per target row. The author hint then gives the
+`graph.relationships` row on those columns (`via:` and `target:`) and both cardinalities it can
+declare, since which one holds depends on rows the engine doesn't read: `many_to_one` when no
+two target rows hold the same values (or, for versions, none valid at the same time, with their
+window in `temporal_validity:`), so each start row meets one target row; otherwise
+`many_to_many`, which a call can't group or filter a measure of either side through
+(`MIXED_GRAIN_INVALID`). With no link and no shared key, it says an entity the start reaches
+must hold the target's key, related by a foreign key in that model's `entities:` block or a
+`graph.relationships` row in `graph.yml`. A refusal naming a relationship that already joins the
+pair carries none of this.
 
 ### Worked Example Envelopes
 
