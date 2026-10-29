@@ -1238,6 +1238,17 @@ def _name_coverage(candidate: Mapping[str, Any], tokens: Iterable[str]) -> float
     return best
 
 
+def _token_variants(token: str) -> tuple[str, ...]:
+    """A search token, then its singular ("stores", "store"), in that order.
+
+    A tuple, not a set: the reasons a token's matches add, and the order their amounts sum in,
+    must not follow the process's hash seed.
+    """
+    if token.endswith("s") and len(token) > 3:
+        return (token, token[:-1])
+    return (token,)
+
+
 def _relevance_score(
     terms: str,
     candidate: dict[str, Any],
@@ -1304,10 +1315,7 @@ def _relevance_score(
             # the term-bag scorer ranks candidates that match a common token
             # multiple times above one that matches a rare token once.
             idf_weight = _token_idf_weight(token, token_doc_freq)
-            token_variants = {token}
-            if token.endswith("s") and len(token) > 3:
-                token_variants.add(token[:-1])
-            for candidate_token in token_variants:
+            for candidate_token in _token_variants(token):
                 if _contains_token(document.name_label_fields, candidate_token):
                     steps.append((12.0 * idf_weight, f"label/name matched '{candidate_token}'"))
                 if _contains_token(document.derived_tokens, candidate_token):
@@ -1763,22 +1771,16 @@ def _dimension_builder_score(
         score += 6.0
         reasons.append("business grouping")
     for token in focus_tokens:
-        token_variants = {token}
-        if token.endswith("s") and len(token) > 3:
-            token_variants.add(token[:-1])
-        for candidate_token in token_variants:
+        for candidate_token in _token_variants(token):
             if candidate_token and candidate_token in label_norm:
                 score += 10.0
                 reasons.append(f"label matched '{candidate_token}'")
     if grouping_tokens:
         grouping_match = False
         for token in grouping_tokens:
-            token_variants = {token}
-            if token.endswith("s") and len(token) > 3:
-                token_variants.add(token[:-1])
             if any(
                 candidate_token and candidate_token in label_norm
-                for candidate_token in token_variants
+                for candidate_token in _token_variants(token)
             ):
                 grouping_match = True
                 score += 16.0

@@ -87,6 +87,7 @@
   "tests/semantic_rails/test_diff_detects_expr_and_relation_changes.py": 1.212,
   "tests/semantic_rails/test_discover.py": 0.732,
   "tests/semantic_rails/test_discover_has_more.py": 1.6,
+  "tests/semantic_rails/test_discover_hash_seed.py": 6.04,
   "tests/semantic_rails/test_discover_kinds_argument.py": 9.661,
   "tests/semantic_rails/test_discover_ranking.py": 0.593,
   "tests/semantic_rails/test_discover_terms_list.py": 1.7,
