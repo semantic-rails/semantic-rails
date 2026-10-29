@@ -2487,27 +2487,46 @@ def discover_payload(
 
 
 # The buckets whose rows are read from one model each (``root_entity``): among the rows a bucket
-# shows, a canonical model's come before those of the look-alikes its ``prefer_over`` lists.
+# shows, a canonical model's first row leads those of the look-alikes its ``prefer_over`` lists.
 _MARKED_BUCKETS = ("measures", "metrics", "segments", "dimensions", "dimension_values", "entities")
 
 
 def _canonical_first(
     rows: list[dict[str, Any]], marks: Mapping[str, tuple[str, int, str]]
 ) -> list[dict[str, Any]]:
-    """``rows`` with each canonical model's rows first among its look-alikes' (``marks``, from
-    ``preferred_marks``), in the places those rows held, and each look-alike's row marked
-    (``look_alike``). Other rows keep their places, and rows of one model keep their order."""
-    places: dict[str, list[int]] = {}
-    for index, row in enumerate(rows):
+    """``rows`` in their match order, each look-alike's row marked (``look_alike``) and led by
+    its canonical model's first row (``marks``, from ``preferred_marks``).
+
+    A look-alike's row that out-matched every row of its canonical model waits for the first of
+    them, then follows it; in a chain of lists, it waits for a row of each model nearer the
+    canonical one. Every other row keeps its match order, so a weak row of a canonical model
+    never moves ahead of a better match of another model, and rows of one model keep their
+    order."""
+
+    def family(row: Mapping[str, Any]) -> tuple[str, int]:
         entity = str(row.get("root_entity") or "")
-        head = marks[entity][0] if entity in marks else entity
-        places.setdefault(head, []).append(index)
-    ordered = list(rows)
-    for indexes in places.values():
-        family = [rows[index] for index in indexes]
-        family.sort(key=lambda row: marks.get(str(row.get("root_entity") or ""), ("", 0, ""))[1])
-        for index, row in zip(indexes, family, strict=True):
-            ordered[index] = row
+        head, distance, _ = marks.get(entity, (entity, 0, ""))
+        return head, distance
+
+    distances: dict[str, set[int]] = {}
+    for row in rows:
+        head, distance = family(row)
+        distances.setdefault(head, set()).add(distance)
+    listed: dict[str, set[int]] = {head: set() for head in distances}
+
+    def led(row: Mapping[str, Any]) -> bool:
+        head, distance = family(row)
+        return all(near in listed[head] for near in distances[head] if near < distance)
+
+    waiting = list(rows)
+    ordered: list[dict[str, Any]] = []
+    while waiting:
+        # The best match whose family's nearer models have each shown a row; the nearest rows
+        # of a family always qualify, so there always is one.
+        row = waiting.pop(next(index for index, row in enumerate(waiting) if led(row)))
+        head, distance = family(row)
+        listed[head].add(distance)
+        ordered.append(row)
     for row in ordered:
         if (entity := str(row.get("root_entity") or "")) in marks:
             row["look_alike"] = marks[entity][2]

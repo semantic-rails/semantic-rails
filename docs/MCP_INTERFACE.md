@@ -262,11 +262,13 @@ and measure-only requests retain separate cards. Grant-scoped discovery retains 
 including `starter_query_patch`, at every verbosity.
 
 When a model's [`prefer_over:`](PACKAGE_AUTHORING.md#prefer_over--the-canonical-model-of-look-alikes)
-names look-alike models, a bucket's rows from the canonical model come before those of its
-look-alikes, in the places those rows held, and each look-alike's card carries `look_alike`:
-`"history copy of entity.campus_room"` when its key is the canonical model's plus time columns
-of its own, else `"prefer entity.campus_room"`. The other rows keep their places, and `has_more`
-is unchanged. Slim cards (`minimal` and `compact`) carry the mark on a look-alike's measure,
+names look-alike models, each look-alike's card carries `look_alike`: `"history copy of
+entity.campus_room"` when its key is the canonical model's plus time columns of its own, else
+`"prefer entity.campus_room"`. Rows keep their match order, except that a look-alike's row never
+comes before the canonical model's first row in its bucket: one that matched better waits for that
+row and follows it (in a chain of lists, it follows a row of each model nearer the canonical one).
+So a weak match from the canonical model never moves ahead of a better match from another model,
+and `has_more` is unchanged. Slim cards (`minimal` and `compact`) carry the mark on a look-alike's measure,
 metric, segment and entity cards, about 50 characters each; its dimension cards there follow the
 canonical model's, unmarked, and `full` cards carry the mark on every one. A package that
 declares no `prefer_over:` gets the same response as before. A caller who can't see the
