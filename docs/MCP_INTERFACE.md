@@ -213,8 +213,8 @@ past the cap; descriptions repeating the label are omitted) and `default_tempora
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
 bucket leaves out its `kind`, and its `label` when every word of the label is already in the id
 past its kind ("Store name" on `dimension.store_name`; "Orders" on `measure.order_count` stays);
-blocked and dimension-value cards keep theirs. The response leaves out the `terms` and
-`verbosity` it was called with. `verbosity="compact"` keeps the same slim cards and descriptions but omits unavailable
+blocked and dimension-value cards keep theirs. The response leaves out the `terms` and `verbosity`
+it was called with, the ranking `stage`, and every empty bucket. `verbosity="compact"` keeps the same slim cards and descriptions but omits unavailable
 candidates and the blocked bucket. Match reasons, starter patches, companions, recommended actions
 and blocked metadata are retained with `verbosity="full"`, subject to the response budget. When the
 question uses an object's whole name ("revenue by store"), that object ranks
@@ -240,6 +240,14 @@ is named in a policy's `object_ids`. It carries `measure` with that measure's id
 metric replaces each measure; additional equivalent metrics keep their own cards. Other metrics
 and measure-only requests retain separate cards. Grant-scoped discovery retains its card fields,
 including `starter_query_patch`, at every verbosity.
+
+Each bucket lists at most `limit` matches (default 10). When a bucket had more, `has_more` names it
+with how many more matches it has, at every verbosity: `"has_more": {"dimensions": 5}` means five
+more dimensions match beyond the ten listed, so the list is not the whole catalog; raise `limit` or
+narrow `terms` to see them. A bucket that ends at or before `limit` has no entry, and `has_more` is
+left out when no bucket was cut. It counts every match the caller may see, available or not
+(compact names no cut `blocked` bucket, which it leaves out); an object hidden from them, or
+outside their grant, never counts.
 
 `inspect` (default `verbosity="minimal"`) states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats

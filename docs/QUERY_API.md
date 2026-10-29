@@ -640,6 +640,9 @@ Response groups:
 - `dimension_values`
 - `entities`
 - `blocked`
+- `has_more` — present when a group was cut at `limit`: each cut group with how many more
+  matches it has (`{"measures": 8}`: eight more beyond the `limit` listed). It counts only
+  objects the caller may see, never a hidden or ungranted one.
 
 Each result includes:
 

@@ -219,7 +219,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank objects by business terms; empty terms list ids (100 per kind; limit, offset). Default: id, label, description; compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank objects by business terms; empty terms list ids (100 per kind; limit, offset). Default: id, label, description; compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with no candidates; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
