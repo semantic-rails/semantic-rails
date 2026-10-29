@@ -285,3 +285,31 @@ def test_having_reads_a_window_over_unknown_amounts_as_null(request, backend_nam
         ("a", "2024-06-01", None),
         ("a", "2024-07-01", None),
     ]
+
+
+def test_having_on_an_unselected_window_metric_reads_its_null(tmp_path):
+    """A package's trailing-revenue metric read only by a `having` ("store-months whose trailing
+    revenue is unknown") counts each period's rows as the selected window does: exactly store
+    a's June and July 2024."""
+    package = _write_variant(tmp_path, "utc_authored")
+    path = package / "metrics" / "metrics.yml"
+    metrics = yaml.safe_load(path.read_text(encoding="utf-8"))
+    expression, _ = SUMMING_WINDOWS["rolling"]
+    metrics["metrics"]["shop.trailing_revenue"] = {
+        "as": "metric.shop.trailing_revenue",
+        "label": "Trailing revenue",
+        "kind": "derived",
+        "value_type": "currency",
+        "expression": {**expression, "input": {"kind": "aggregate", "measure": REVENUE}},
+    }
+    path.write_text(yaml.safe_dump(metrics, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    try:
+        missing = {"field": "metric.shop.trailing_revenue", "op": "missing", "value": True}
+        rows = runtime.query(_ask("month", REVENUE, group_by=[STORE], having=[missing]))["rows"]
+    finally:
+        runtime.close()
+    assert [(row[STORE], row["period"]) for row in rows] == [
+        ("a", "2024-06-01"),
+        ("a", "2024-07-01"),
+    ]
