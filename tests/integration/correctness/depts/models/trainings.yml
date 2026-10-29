@@ -1,0 +1,7 @@
+model:
+  id: trainings
+  label: Trainings
+  relation: trainings
+  entities: {training: {}, employee: {}}
+  measures:
+    trainings: {label: Trainings, kind: entity_count, entity_key: training_id}

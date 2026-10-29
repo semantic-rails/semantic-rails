@@ -48,6 +48,7 @@ from .conversion import _conversion_leaf_cte
 from .dependencies import (
     binding_cut,
     cut_owners,
+    lowers_entity_values,
     plan_is_root,
     project_is_cut,
     record_retained_filtered_series,
@@ -72,14 +73,15 @@ from .empty_groups import (
     refuse_shared_names,
     refuse_unsettled,
     require_time_scopes,
+    skips_rows,
     zero_aliases,
 )
 from .indexes import (
     _measure_index,
 )
 from .leaves import _distinct_value_select, _measure_group_leaf_select
-from .lowering_common import _apply_role_timezone as _apply_role_timezone
 from .lowering_common import (
+    WINDOW_TOTAL_BUCKET,
     _dataset_scope,
     _dialect,
     _emits_time_coverage,
@@ -97,12 +99,14 @@ from .lowering_common import (
     _retained_filtered_series,
     _time_alias_for_plan,
 )
+from .lowering_common import _apply_role_timezone as _apply_role_timezone
 from .lowering_common import _filtered_series_candidate as _filtered_series_candidate
 from .lowering_common import _snapshot_series_columns as _snapshot_series_columns
 from .lowering_common import _stock_clock_key_gap as _stock_clock_key_gap
 from .lowering_common import _stock_snapshot_refusal as _stock_snapshot_refusal
 from .lowering_common import _value_filter_condition as _value_filter_condition
 from .namespacing import _namespace_sql_select
+from .part_domain import DOMAIN, PRESENT, domain_ctes, part_domain
 from .paths import (
     _join_condition,
     _leaf_time_role,
@@ -275,6 +279,20 @@ def _cte_names(ctes: list[SqlCte]) -> set[str]:
     return names | {GUARDED_BASE, "projected"}
 
 
+def _rows_read(leaf: SqlSelect) -> tuple[Any, ...]:
+    """The rows ``leaf`` reads, and how it groups them: everything but what it computes."""
+    return (
+        leaf.from_table,
+        leaf.joins,
+        leaf.where,
+        leaf.group_by,
+        leaf.having,
+        leaf.qualify,
+        leaf.ctes,
+        leaf.distinct,
+    )
+
+
 def _refuse_total_beside(what: str) -> SemanticLayerError:
     return SemanticLayerError(
         "REWRITE_NOT_SUPPORTED",
@@ -318,6 +336,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # Whether the call's rows join two or more leaves on its keys, so a group can come from
     # another leaf's rows than a measure's own.
     joined = False
+    # What rows each leaf reads (its table, joins, conditions and grouping): two leaves that
+    # read the same rows hold the same groups.
+    leaf_rows: list[tuple[Any, ...]] = []
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -363,6 +384,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 ):
                     require_time_scopes((row.bound_measure.alias for row in measure_group), scopes)
                 _refuse_varying_time_key(plan, leaf_select)
+                leaf_rows.append(_rows_read(leaf_select))
                 for row in measure_group if leaf_select.ctes else ():
                     if (scope := scopes.get(row.bound_measure.alias)) is not None:
                         scopes[row.bound_measure.alias] = _namespaced_scope(
@@ -377,6 +399,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             with cut_owners(_expression_alias(expr, config)):
                 conversion_cte = _conversion_leaf_cte(expr, index=index, plan=plan, config=config)
             _refuse_varying_time_key(plan, conversion_cte.query)
+            leaf_rows.append((conversion_cte.name,))
             leaf_ctes.append(
                 SqlCte(
                     name=conversion_cte.name,
@@ -508,6 +531,23 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         base_name = "series_base"
         base_table = SqlTableRef(name=base_name, alias="base")
 
+    # A joined call's part reads its groups beside every key of the call, so the guard below
+    # settles a key only another part has as one of this part's groups (``part_domain``).
+    domain = part_domain()
+    if domain is not None:
+        window_total = bool(plan.time.get("window_total"))
+        ctes.extend(
+            domain_ctes(
+                domain,
+                base_table.name,
+                group_aliases if window_total else key_aliases,
+                [field.alias for field in base_leaf_select.select],
+                window_bucket=(time_alias, WINDOW_TOTAL_BUCKET) if window_total else None,
+            )
+        )
+        base_table = SqlTableRef(name=DOMAIN, alias="base")
+        joined = True
+
     # What the answer states beside its rows, in hidden columns the runtime reads and removes:
     # each re-aggregated measure's row count, how many rows each share's total spans, and the
     # groups a measure's own rows never reached (below).
@@ -516,6 +556,8 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         for name in overrides.values()
         if name in rows.values()
     ]
+    if domain is not None:
+        hidden.append(SqlField(SqlIdentifier(parts=["base", PRESENT]), PRESENT))
     kept = [field.alias for field in hidden]  # the guard passes these source columns through
     # A summing window reads each sum's row count beside its value, period by period, so a
     # window whose rows all hold NULL amounts reads NULL; the guard passes the counts through.
@@ -532,10 +574,29 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     )
     shares = share_group_counts(plan, config) if plan_is_root() else {}
     # The one place an empty group reads 0 instead of NULL: the projection reads every such
-    # measure through the guard below, so nothing after it can change what it sees.
-    zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
+    # measure through the guard below, so nothing after it can change what it sees. A
+    # distribution's per-entity values need it only where an entity can lack an operand's
+    # value: two or more leaves joined on its keys that read different rows, or an operand
+    # beside another whose sum skips rows (a CASE with no ELSE: "revenue less store b
+    # sales" reads 0 for store b at a customer with no store b order). Sums of the same rows
+    # that read every row (the declared average order value) need none, in one leaf or one per
+    # measure under an entity filter: an amount all NULL reads NULL either way.
+    measures = _measure_index(config)
+    settled = guard_empty and (
+        not lowers_entity_values()
+        or (joined and any(read != leaf_rows[0] for read in leaf_rows[1:]))
+        or (
+            len(plan.measure_plans) > 1
+            and any(
+                skips_rows(
+                    row.bound_measure.aggregation, measures.get(row.bound_measure.measure_id)
+                )
+                for row in plan.measure_plans
+            )
+        )
+    )
+    zero = zero_aliases(plan.measure_plans, config) if settled else {}
     if zero and plan.time:
-        measures = _measure_index(config)
         refuse_declared_edges(
             (
                 measures[row.bound_measure.measure_id]
@@ -630,9 +691,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     config,
                 ),
             )
-        elif guard_empty and (
-            lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)
-        ):
+        elif settled and (lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)):
             record_zero_output(alias, lookups)
         reads = base_reads(compiled_output)
         record_output_reads(alias, reads)
@@ -740,7 +799,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             )
         ]
 
-    if guard_empty:
+    if settled:
         refuse_unsettled(
             SqlSelect(select=projected_fields, from_table=base_table),
             plan,

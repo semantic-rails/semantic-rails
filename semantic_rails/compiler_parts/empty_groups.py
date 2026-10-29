@@ -145,6 +145,18 @@ def reads_every_row(measure: MeasureConfig) -> bool:
     return not (drops_rows_below_root(measure) or is_conditional_case(measure.expr))
 
 
+def skips_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
+    """Whether a sum of the measure can read NULL for a group it holds rows of because a CASE
+    with no ELSE (or ELSE NULL) gives them no value (``reads_every_row``): the guard reads such
+    a group 0 where the measure has data in scope. A count reads 0 there by itself."""
+    return (
+        measure is not None
+        and resolves_to_zero(aggregation, measure)
+        and (aggregation or measure.default_aggregation).lower() not in _COUNTING
+        and not reads_every_row(measure)
+    )
+
+
 def counts_its_own_key(
     aggregation: str, measure: MeasureConfig | None, config: PackageConfig
 ) -> bool:
@@ -827,6 +839,30 @@ def _unobserved_error(outputs: list[str]) -> SemanticLayerError:
         "with observation_scope 'query' to judge them inside the filters.",
         details={"outputs": outputs, "observation_scope": "dataset"},
     )
+
+
+@contextmanager
+def unobserved_as(inner: str, output: str) -> Iterator[None]:
+    """A refusal that a nested compile can't observe its output ``inner`` names ``output``, the
+    request's own, whether it is raised here or deferred until binding finishes."""
+    deferred = _source_filter_refusals.get()
+    start = len(deferred) if deferred is not None else 0
+
+    def named(error: SemanticLayerError) -> SemanticLayerError:
+        if error.code == "EMPTY_GROUPS_UNSETTLED" and error.details.get("outputs") == [inner]:
+            return _unobserved_error([output])
+        return error
+
+    try:
+        yield
+    except SemanticLayerError as error:
+        renamed = named(error)
+        if renamed is error:
+            raise
+        raise renamed from error
+    finally:
+        if deferred is not None:
+            deferred[start:] = [named(error) for error in deferred[start:]]
 
 
 def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:

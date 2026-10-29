@@ -347,7 +347,9 @@ An entity's card shows its place in the join graph, read from the caller's visib
   `"own_keys"` when a lookup default chose it among routes the caller can see (`basis:
   default`), or
   `route_decision_required: true`
-  when two routes answer differently and the call has to choose one with `routes`. An entity
+  when two routes answer differently and the call has to choose one with `routes` (with
+  `routes`, how many there are, and `groups`, how many distinct meanings the refusal asks
+  among; see [`AMBIGUOUS_PATH`](#error-code-catalog)). An entity
   whose package route reads an object hidden from the caller is not listed: another route is a
   different question and is never offered in its place.
 
@@ -377,7 +379,12 @@ closest visible matches.
 `execute` takes the call in `query` only; call fields sent as its own arguments, with no
 `query`, are refused (beside a `query` they are ignored with `EXECUTE_UNKNOWN_ARG`).
 An `AMBIGUOUS_PATH` refusal offers one complete call per route option
-(`details.clarification.options[i].query`, the call with `routes` filled in), ready to send.
+(`details.clarification.options[i].query`, the call with `routes` filled in), ready to send,
+and `details.clarification.groups`, the options by the entity their routes reach first. A
+refusal over the answer's budget is shortened, never replaced by `RESULT_TOO_LARGE`: first
+to the options the groups list; then to one `call` and, per option, the `route` to append to
+its `routes` (an option's `relationship_path` is then its route's `via`); then to the first
+groups that fit; then to the question and its counts. A `note` says which.
 Metadata tools read their `query` seed through the same front door.
 
 ### Plan
@@ -584,7 +591,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   `AMBIGUOUS_PATH`: `why.message` asks which route the question means in business words, and
   each `why.details.options[]` (`id`, `reads`, `call`, `decision`) is the draft with that route in
   `routes` (this question only) and the `graph.path_preferences` row that makes it the package
-  default. Only readings the engine answers are offered (`why.details.unrunnable` names the
+  default. `why.details.groups` groups them as the refusal does, and only the options its
+  groups list are offered (`listed`; `options_total` counts every route). Only readings the
+  engine answers are offered (`why.details.unrunnable` names the
   others); with none, plan holds the draft as before. Two or
   more questions for a
   value, "how many", "how much", "what is", "what was" or "what's", need a select of their
@@ -1470,7 +1479,7 @@ expression kind names the received kind and its request path (for example,
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
 | `PLAN_UNMATCHED_TERMS` | A grouping option also carries `group_by` and `order_by` to apply with its complete `where` for one unclear term. With several, in `best.query` remove each chosen option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`, keep `group_by` sorted, then validate. When two terms could replace the same grouping, plan offers no options; ask the user. |
-| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, its `decision` row, and `query`, the same call with that route in `routes`. Ask the person, then send that option's `query`. The clarification appears once in the error's details. Route and policy guards apply to every shape. A route in a call applies to that call only; record it with Architect `record_route_decision` and the option's `decision` (the package default; an option's `conflicts_with` names the package rows to change first). See [`routes`](QUERY_CALL.md#routes). |
+| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, its `decision` row, and `query`, the same call with that route in `routes`. `groups` lists the distinct meanings: the routes grouped by the entity they reach first after the hops they all share (`via`), each with its `routes` count and the `options` (ids) it offers; a group whose routes are too many to list has `decide_first` instead (the entity they pass through and the target) and no option to send: a package author decides which of its routes the asked pair means and records that route's option `decision` (see [the route rule](PACKAGE_AUTHORING.md#the-route-rule)). `options_total`, `groups_total` and `listed` count them; `ordered` says the order is not a preference. The message reads the groups. Ask the person among the groups' options, then send that option's `query`. The clarification appears once in the error's details. Route and policy guards apply to every shape. A route in a call applies to that call only; record it with Architect `record_route_decision` and the option's `decision` (the package default; an option's `conflicts_with` names the package rows to change first). See [`routes`](QUERY_CALL.md#routes). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `OUTPUT_NAME_GOVERNED` | A select names a home-made calculation after a governed metric or measure (its id, name or column); `details.governed_object` names it and `details.suggested_alias` a name to use instead, or select the governed object itself. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |

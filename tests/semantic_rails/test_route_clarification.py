@@ -445,7 +445,32 @@ def test_the_diamond_asks_in_business_words(tmp_path):
                 "query": _routed(BALANCE_BY_DISTRICT, DIAMOND_ROW),
             },
         ],
+        # Each route is a meaning of its own: one group each, by the entity it reaches first.
+        "options_total": 2,
+        "groups_total": 2,
+        "listed": 2,
+        "ordered": "by one-to-many hops, then hops, then id; not a preference",
+        "groups": [
+            {
+                "id": "branch_district",
+                "via": "entity.bank_branch",
+                "routes": 1,
+                "more_routes": 0,
+                "options": ["branch_district"],
+            },
+            {
+                "id": "owner_district",
+                "via": OWNER,
+                "routes": 1,
+                "more_routes": 0,
+                "options": ["owner_district"],
+            },
+        ],
     }
+    assert str(err) == (
+        f"Ambiguous path from '{ACCOUNT}' to '{DISTRICT}'. Which District does the question mean "
+        "for an Account? the District of the Account's Branch; the District of the Account's Owner"
+    )
     # Every entity on each route, in route order: the account, its branch or owner, the district.
     for option, waypoint in zip(clarification["options"], ("Branch", "Owner"), strict=True):
         meaning = option["meaning"]

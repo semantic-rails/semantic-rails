@@ -174,8 +174,9 @@ def test_reachable_entities_follow_the_package_routes(adapter):
         "via": [ORDERS_CUSTOMER, ITEMS_ORDER],
         "recorded": True,
     }
-    # An order is reached through its own orders or through sessions: the question chooses.
-    assert by_id[ORDER] == {"id": ORDER, "route_decision_required": True}
+    # An order is reached through its own orders or through sessions: the question chooses
+    # between 2 routes, each a meaning of its own (a group).
+    assert by_id[ORDER] == {"id": ORDER, "route_decision_required": True, "routes": 2, "groups": 2}
     # Only relationships a route may walk count: a lifecycle row looks a customer up, never
     # the reverse, and the calendars are not related at all.
     assert CUSTOMER not in by_id

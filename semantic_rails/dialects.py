@@ -148,6 +148,11 @@ class SqlDialect:
     text_cast = "CAST({} AS VARCHAR)"
     # The type a NULL boolean casts to.
     null_boolean_type = "BOOLEAN"
+    # How a ``uuid`` row-filter parameter ("{}", bound as canonical lower-case text) reads: as is
+    # where the driver's text takes the column's type (DuckDB) or the column holds that text
+    # (no UUID type), cast where text never compares with a UUID column (Postgres). Only the
+    # trusted value is cast, never a row's column, so no hidden row can fail the cast.
+    uuid_parameter = "{}"
     # Whether the adapter runs each query in the zone of its time role (the runtime's
     # ``_time_zone``), so zone-aware values bucket and compare in that zone.
     session_zone = False
@@ -606,6 +611,9 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     case_fold = 'LOWER(CAST({} AS TEXT) COLLATE "und-x-icu")'
     # The fold already reads any type as text.
     text_cast = "{}"
+    # ADBC binds the text as ``text``, and ``uuid = text`` has no operator; the cast keeps the
+    # column's index.
+    uuid_parameter = "CAST({} AS UUID)"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # Integer day offsets (DATE - DATE is an integer, DATE + integer a DATE), since

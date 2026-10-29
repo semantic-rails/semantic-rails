@@ -598,7 +598,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and ran, not that it answers the question. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time (time.end is exclusive), order_by (period: time column), limit inside it; max_rows and row_format go beside query.",
+      "description": "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and ran, not that it answers the question. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time (time.end is exclusive), order_by (period: time column), limit inside it; max_rows and row_format go beside query. Calls side by side, each with its own where: {parts: [call, ...], join: {on: [[id per part]]}}.",
       "inputSchema": {
         "$defs": {
           "Condition": {
@@ -795,6 +795,37 @@
                 },
                 "type": "array"
               },
+              "join": {
+                "additionalProperties": false,
+                "properties": {
+                  "keep": {
+                    "anyOf": [
+                      {
+                        "const": "all"
+                      },
+                      {
+                        "items": {
+                          "type": "integer"
+                        },
+                        "type": "array"
+                      }
+                    ]
+                  },
+                  "on": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/$defs/Text"
+                      },
+                      "type": "array"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "on"
+                ],
+                "type": "object"
+              },
               "limit": {
                 "minimum": 1,
                 "type": "integer"
@@ -822,6 +853,12 @@
                   "required": [
                     "field"
                   ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "parts": {
+                "items": {
                   "type": "object"
                 },
                 "type": "array"

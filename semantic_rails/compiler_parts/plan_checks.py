@@ -1450,6 +1450,10 @@ def _hop_steps(
     overlap = None if linked else _overlapping_groups(entity, bound, path_selections, config, query)
     if overlap is not None:
         details["overlapping_groups"] = overlap[1]
+    elif linked:
+        # Grouped across a link, an entity counts in every group it has a row in, so the groups
+        # overlap too (without ``whole_amounts``, plan's trace reads the note as before).
+        details["overlapping_groups"] = {"link": True}
     return [
         RewriteStep(
             kind="fanout_dedup",

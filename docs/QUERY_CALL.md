@@ -38,7 +38,9 @@ Ten fields, all optional, no other keys:
 | [`observation_scope`](#observation_scope) | `dataset` \| `query` | which rows count as "has data" | the package default |
 | [`totals`](#totals) | list of `group_by` ids, outermost first | subtotal and grand-total rows | no total rows |
 
-A call needs at least one of `select`, `group_by` or `time`. `version` is ignored, whatever
+A call needs at least one of `select`, `group_by` or `time`. Several calls answered side by
+side, each with its own `where`, are one joined call: see [Calls side by
+side](#calls-side-by-side-parts-and-join). `version` is ignored, whatever
 its value. Keys starting with `_` (such as `_note`) are annotations and are ignored. Any other
 key is refused with its path and the key it most likely meant (`filters` → `where`, `sort` →
 `order_by`, `measures` → `select`); a retired key is refused with where it went (see
@@ -483,6 +485,10 @@ cast and its reported value identifies one date filter, the redacted
   reads as its digits (`ends_with` `"03"` matches 103 and 203, never 3), and a UUID in lower
   case with hyphens (case is ignored, so `E2C0` matches). `is` and `not` still compare the id
   as it is stored, and `valid-values` `search` reads an id the same way.
+- An id stored as a float reads as the warehouse's float text: DuckDB (and so MotherDuck and
+  DuckLake), Databricks and Athena write `203.0`, while Postgres, Snowflake, BigQuery and
+  ClickHouse write `203`. So on DuckDB `ends_with` `"03"` finds nothing and `contains` `"0"`
+  matches every id. Store ids as integers or text.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
 ### Unknown values
@@ -1102,6 +1108,88 @@ With `"observation_scope": "query"` the same call reads `[{"order_count": null}]
 `NO_DATA_IN_SCOPE`: nothing in the call's filters holds a value. The answer always states the
 scope it used.
 
+## Calls side by side: `parts` and `join`
+
+Some questions are several calls answered side by side: each store's orders from new customers
+beside all its orders and revenue, headcount beside assigned area per department, the
+headcount of only the departments that have space in one building. Each call needs its own
+`where`, so one call can't ask it. A joined call sends the calls as `parts` and names the
+columns they share in `join.on`; the engine answers each part as the call it is and joins
+their rows in one statement:
+
+```json
+{"parts": [
+   {"select": [{"expression": "measure.jaffle.order_count", "as": "new_customer_orders"}],
+    "group_by": ["dimension.jaffle_store_name"],
+    "where": [{"field": "dimension.jaffle_order_is_new_customer_order", "op": "is", "value": true}]},
+   {"select": ["measure.jaffle.order_count", "measure.jaffle.revenue_usd"],
+    "group_by": ["dimension.jaffle_store_name"]}],
+ "join": {"on": [["dimension.jaffle_store_name", "dimension.jaffle_store_name"]]},
+ "time": {"grain": "year"}}
+```
+
+```jsonc
+{"rows": [{"dimension.jaffle_store_name": "Philadelphia", "period": "2016-01-01", "period_partial": false, "new_customer_orders": 277, "order_count": 8194, "revenue_usd": 103571.6500000047},
+          {"dimension.jaffle_store_name": "Brooklyn", "period": "2017-01-01", "period_partial": true, "new_customer_orders": 495, "order_count": 21465, "revenue_usd": 259424.84999999916},
+          {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-01-01", "period_partial": true, "new_customer_orders": 167, "order_count": 29993, "revenue_usd": 382896.52999990433}],
+ "warnings": [{"code": "PARTS_JOINED",
+               "message": "The answer joins 2 parts on dimension.jaffle_store_name, period, keeping every key of every part. parts[0] has 3 rows: 0 with no row in parts[1] and 0 with a NULL key (its own row, NULL in every other part). parts[1] has 3 rows: 0 with no row in parts[0] and 0 with a NULL key (its own row, NULL in every other part). Summed down the rows, revenue_usd adds up. new_customer_orders and order_count are not stated to add up: a distinct count, an average or a ratio can count a member of two rows twice. Each part was aggregated to its own groups before the join, so no row counts twice within a part. It does not check that the joined columns mean the same thing in both models; the join is the caller's.", ...}],
+ "parts": [{"part": 0, "query": {...}, "window": {...}, "clock": "temporal_role.jaffle_order_time", "observation_scope": "dataset", "routes": [...]},
+           {"part": 1, ...}]}
+```
+
+| Field | Shape | Meaning | When omitted |
+|---|---|---|---|
+| `parts` | list of calls, each with `select`, `group_by`, `where`, `routes`, `observation_scope` | the calls side by side | required |
+| `join.on` | list of tuples, one dimension id of every part each, in the order of `parts` | one key column per tuple | required |
+| `join.keep` | `"all"` or a list of part indexes | whose keys the answer keeps | `"all"` |
+| `time` | as a call's [`time`](#time) | one window and grain for every part | all time |
+| `order_by`, `limit` | as a call's, over the joined rows | ordering and the top N | engine order, every row |
+
+- **Each part is a request of its own.** It is bound, checked and refused exactly as the call
+  alone: the caller's view, every policy, the row filters (a part that counts a model no filter
+  reaches is refused as it is alone, unless the package lists that model `shared`), its
+  `routes`, the key a display name groups by (two people named Alex are two rows). A part's
+  refusal is the one it gives alone, its message prefixed `parts[i]: ` and its `details.part`
+  set. A part has no `having`, `time`, `order_by`, `limit` or `totals`, and two parts never
+  select the same output name (`DUPLICATE_OUTPUT_ALIAS`: name one with `as`). An entity filter
+  in a part (departments with more than 2 people) removes whole keys, a `having` by another
+  name, so a key it removed would read 0 beside the other parts: a part holding one is answered
+  only when `join.keep` names it (`part_filter_not_kept`).
+- **Which columns join.** A tuple names the same dimension in every part, or two columns the
+  package says hold the same values: a declared relationship's own two columns, each an
+  identifier (a code, key or id, named for what it identifies) of one type. Two models that
+  both hold a `dept_code` are not enough: declare the relationship between them, or join on a
+  dimension both parts reach. Refused with `INVALID_QUERY` (`details.reason`:
+  `join_key_not_shared`), the message naming the pair and why.
+- **Every part is grouped by its join keys only.** A part grouped by a further column would
+  repeat each of its rows beside the other parts' rows, so it is refused (`parts_grain_mismatch`);
+  so is a join column the part doesn't group by (`join_key_not_grouped`). The key a display name
+  adds joins with its name.
+- **Keys and NULL.** The parts join on plain equality: a key's row holds each part's values for
+  it. A key only another part has reads, in this part, what an empty group of the part alone
+  reads ([Empty groups: NULL or 0](#empty-groups-null-or-0)): a count or sum 0 where the part's
+  rows are in scope and loaded (data of nothing), NULL otherwise, an average NULL. A NULL key
+  never matches: each part's NULL-key row is its own row, NULL in every other part.
+- **`keep`.** `"all"` keeps every key of every part. `[1]` keeps the keys `parts[1]` has, its
+  NULL-key row included: headcount beside the departments with space in building 32 is those
+  departments' people, not every department's. `[0, 1]` keeps a key only where both parts have
+  it, so neither NULL-key row stays.
+- **`time`.** The call's one `time` block reads every part, each by its own clock and load edge
+  (work orders loaded through February read NULL in March beside March's reservations), and
+  the key includes `period` when it has a grain. A part with no clock beside a timed call is
+  refused (`part_untimed`): ask for it in a call of its own.
+- **The answer.** Every warning and assumption a part gives alone comes back, with `part` (in
+  `details` for a warning) and its message prefixed `parts[i]: `. `parts` holds each part's
+  `query`, `window`, `clock`, `observation_scope` and `routes`. `PARTS_JOINED` (every
+  verbosity) names the key columns and each part's column for them, `keep`, and per part its
+  rows, its NULL-key rows and its keys each other part lacks (`details.parts[].unmatched`),
+  counted over the whole joined result before `order_by` and `limit` and never counting a row
+  the caller can't see; `kept_rows`; and per column whether it adds up down the rows (a count
+  or sum of an additive measure does; a distinct count, an average, a ratio, or a column whose
+  part's groups overlap, as that part's own `REWRITE_APPLIED` says, is not stated to).
+  `validate` and `sql` state the join without counts. The warehouse runs once.
+
 ## Inline expression kinds
 
 Anywhere an expression goes (`select[].expression`, and inside a kind: `input`, `left`,
@@ -1518,6 +1606,14 @@ The engine trusts the data as it is stored in three cases:
   customer's orders) keeps its refusal (`MIXED_GRAIN_INVALID`).
 - On ClickHouse, which joins lookups inner, such a call keeps its refusal.
 
+### Joined calls
+
+- A joined call has no `having` or `totals`, and computes nothing across parts (an occupancy
+  ratio from a headcount part and a capacity part): it returns both columns.
+- A part grouped by more than the join keys (each list's owners beside its member count) and a
+  part with no clock beside a timed call are refused, not answered.
+- Two models that hold the same code join only through a declared relationship between them.
+
 ### Links and one-per-key models
 
 - An entity counts under each of its groups, so groups across a link don't add up to the
@@ -1647,7 +1743,11 @@ condition: a group whose rows all fail it reads `0`, one whose matching rows all
 amount reads `NULL`. A sum of a `CASE` with no `ELSE` follows that rule; an explicit non-NULL
 `ELSE` (including `ELSE 0`) contributes on every row. So does a `CASE` with an `ELSE` below a
 formula's root (`amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2 END`). Every output beside
-a `distribution` settles as it does without it. One shape can't tell the two apart: a `CASE`
+a `distribution` settles as it does without it, except in three shapes that read `NULL` beside it
+where they read `0` alone: a sum of two columns of one table (goods plus shipping refunds) under
+`observation_scope: "query"` when no group in the answer has both known; a `COALESCE` of a
+filtered sum over a bounded window, in its empty periods; and a filtered sum or count under a
+declared edge (`zero_through`), in its loaded periods. One shape can't tell the two apart: a `CASE`
 with no `ELSE` below the root (`1.1 * CASE WHEN store_id = 'a' THEN amount END`) reads `0` in a
 group whose matching amounts are all NULL, where the measure has a value in scope. Write the
 condition at the root instead (`CASE WHEN store_id = 'a' THEN amount * 1.1 END`).
@@ -1665,6 +1765,26 @@ filter's scope, and `NULL` where it has none. So `large_order_count is 0` ("cust
 large orders") keeps every customer without one when some order in scope is large, and keeps
 nobody when none is. `NULL` fails every threshold, `is 0`, `lt 1` and `not 0` included. Only a count or
 sum threshold that 0 passes reaches an entity with no rows at all.
+
+**Distributions.** A `distribution` settles each entity's value before it aggregates. An input
+over several measures reads each one as a sum grouped by the entity does: `0` for an entity with
+no rows of it where its measure has data in scope (outside a bounded window too, and under
+`dataset` outside the call's `where`), `NULL` where it has none. "Median net order value", revenue less goods refunds
+per order, counts an order with no refund row at its amount, in a month with no refund at all
+too. An order whose amount is unknown, or whose only refund has no goods amount, reads `NULL`
+and is left out. A percentile, `min` and `max` read the same values. An entity enters a period
+where one of the input's measures has rows for it there, after that measure's own `filter`: a
+bounded window never adds an order to a month it has no rows in, as a call grouped by order
+fills it in. A sum whose CASE has no ELSE skips the rows its conditions fail, so beside another
+measure it settles too: "median revenue excluding store b" per customer, revenue less store b
+sales, reads `0` for store b at a customer with no store b order, as grouped by customer.
+Measures that read the same rows, each of them every row (the declared average order value:
+revenue over order count), need no settling. Under `dataset`, a `where` beside an entity filter
+refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GROUPS_UNSETTLED`,
+naming it, as it refuses the call grouped by order. Its groups read their lookups as the call
+does: by store name, an order with no store, or whose store the stores table doesn't hold, is in
+the `NULL` group, alone or beside its count, as grouped by the store's id. Per store, an order
+with no store is no store of its own: "median revenue per store" reads only the stores.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an
@@ -1686,7 +1806,12 @@ column it sums holds a value yet: the metric reads `0` there and `NULL` with `NO
 after the edge. "Each week's refund rate", refunds over revenue, reads `0.0` in a loaded week of
 paid orders before the first refund; a refunded order whose amount is NULL leaves its week
 `NULL`. Under `observation_scope: "query"`, the call's
-`where` must still keep a row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+`where` must still keep a row. The edge is the measure's own table's, however far away the
+group's column is: "weekly revenue by customer region" (orders, then customers, then regions)
+reads `0` in a week the orders' load log covers with no order and `NULL` before the first order
+and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
+read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
+not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
@@ -1699,7 +1824,9 @@ before the first one, with no `NO_DATA_IN_SCOPE`. It needs a row the edge lets t
 so it reads `NULL`. Without a declared edge, the filter must match a row, as above. A measure
 dated by another model's clock (a refund by its order's time) is let through by that clock, so a
 refund whose order is after the edge isn't read
-([Empty periods](PACKAGE_AUTHORING.md#empty-periods)).
+([Empty periods](PACKAGE_AUTHORING.md#empty-periods)). An `aggregate_if` reads its table's rows
+as the table's measures do: "the value of orders over 50 we have ever had" leaves out an order
+after the load log, as revenue beside it does.
 
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
@@ -1921,7 +2048,8 @@ warehouse (`AVG` is DOUBLE on DuckDB and NUMERIC on Postgres); `column_types` re
 driver returned. An all-null column has type `null`; an empty result has `column_types: {}`.
 
 The Postgres adapter accepts only Arrow scalar types with exact mappings (integers, decimals,
-floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, NULL); other
-types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
+floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, UUIDs, NULL),
+so a uuid column groups, lists and is searched as its lower-case hyphenated text, as on DuckDB;
+other types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
 without exposing values. Unsupported values, non-finite numbers and conflicting non-null column
 types refuse with `RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error.

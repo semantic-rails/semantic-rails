@@ -1,0 +1,11 @@
+model:
+  id: reservations
+  label: Reservations
+  relation: reservations
+  entities: {reservation: {}, room: {}}
+  times:
+    reserved_at: {label: Reserved, column: reserved_at, kind: timestamp, class: event_time,
+      supported_grains: [month], default: true}
+  measures:
+    reservations: {label: Reservations, kind: entity_count, entity_key: reservation_id,
+      accumulation: {kind: flow}}

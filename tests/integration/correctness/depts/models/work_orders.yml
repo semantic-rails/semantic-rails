@@ -1,0 +1,11 @@
+model:
+  id: work_orders
+  label: Work orders
+  relation: work_orders
+  entities: {work_order: {}, room: {}}
+  times:
+    opened_at: {label: Opened, column: opened_at, kind: timestamp, class: event_time,
+      supported_grains: [month], default: true}
+  measures:
+    work_orders: {label: Work orders, kind: entity_count, entity_key: work_order_id,
+      accumulation: {kind: flow}}
