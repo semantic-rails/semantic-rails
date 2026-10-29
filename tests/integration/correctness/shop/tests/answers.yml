@@ -9295,23 +9295,70 @@ tests:
     kind: validate_fails_with_code
     expect: refuse
     code: MIXED_GRAIN_INVALID
-    why: Grouping scans by a refund dimension would split each scan over its order's refunds; the lookup before the one-to-many hop is refused.
+    why: Grouping scans by a refund dimension month by month crosses a lookup before the one-to-many hop over a time window, which stays refused; without the window each scan counts in every refund type of its order (shop/row-grain-pinned-route-grouped-by-refund-type).
     cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/QUERY_CALL.md#group_by]
     tags: [row-grain, refusal]
     query:
       select: [measure.shop.scan_weight]
       group_by: [dimension.shop_refund_refund_type]
       routes: [{from: entity.shop_shipment_scans, to: entity.shop_refund, via: [relationship.shipment_scans_order, relationship.refunds_order]}]
+      time: {temporal_role: temporal_role.shop_shipment_scans_scanned_at, grain: month}
+  shop/row-grain-pinned-route-grouped-by-refund-type:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Each scan counts once, with its whole weight, in every refund type its order has a refund of. Goods holds order 2's and order 6's scans (2.75), shipping order 4's two (6.50); the scans of orders with no refund (1 and 8), of order 99, which doesn't exist, and with no order are the NULL type (10.00). No scanned order has refunds of two types, so here the groups add up to all 19.25.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scan_weight, docs/QUERY_CALL.md#groups-by-a-childs-values-after-a-lookup]
+    tags: [row-grain, null-vs-zero]
+    query:
+      select: [measure.shop.scan_weight]
+      group_by: [dimension.shop_refund_refund_type]
+      routes: [{from: entity.shop_shipment_scans, to: entity.shop_refund, via: [relationship.shipment_scans_order, relationship.refunds_order]}]
+    expected_rows:
+      - {dimension.shop_refund_refund_type: goods, scan_weight: 2.75}
+      - {dimension.shop_refund_refund_type: shipping, scan_weight: 6.5}
+      - {dimension.shop_refund_refund_type: null, scan_weight: 10}
+    reference_sql: |
+      SELECT t.refund_type, SUM(s.weight) FROM shipment_scans AS s
+      JOIN (SELECT DISTINCT refund_type FROM refunds) AS t ON EXISTS (SELECT 1 FROM orders AS o
+        JOIN refunds AS r ON r.order_id = o.order_id
+        WHERE o.order_id = s.order_id AND r.refund_type = t.refund_type)
+      GROUP BY t.refund_type
+      UNION ALL
+      SELECT NULL, SUM(s.weight) FROM shipment_scans AS s WHERE NOT EXISTS (SELECT 1 FROM orders AS o
+        JOIN refunds AS r ON r.order_id = o.order_id WHERE o.order_id = s.order_id)
   shop/row-grain-distinct-count-across-a-lookup-and-fan-out-refuses:
     kind: validate_fails_with_code
     expect: refuse
     code: MIXED_GRAIN_INVALID
-    why: The scans' distinct orders grouped by refund type cross a lookup and then a one-to-many hop, which relates the two many-to-many.
+    why: The scans' distinct orders grouped by refund type month by month cross a lookup and then a one-to-many hop over a time window, which stays refused (without it, shop/row-grain-distinct-count-across-a-lookup-and-fan-out answers).
     cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scanned_orders, docs/QUERY_CALL.md#group_by]
     tags: [row-grain, refusal]
     query:
       select: [measure.shop.scanned_orders]
       group_by: [dimension.shop_refund_refund_type]
+      time: {temporal_role: temporal_role.shop_shipment_scans_scanned_at, grain: month}
+  shop/row-grain-distinct-count-across-a-lookup-and-fan-out:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The scans' distinct orders by the refund types of their order, by its one route. Goods holds orders 2 and 6, shipping order 4; the NULL type holds the scanned orders with no refund (1 and 8) and order 99, which names no order there is; the scan with no order counts none.
+    cites: [tests/integration/correctness/shop/models/shipment_scans.yml#model.measures.scanned_orders, docs/QUERY_CALL.md#groups-by-a-childs-values-after-a-lookup]
+    tags: [row-grain, null-vs-zero]
+    query:
+      select: [measure.shop.scanned_orders]
+      group_by: [dimension.shop_refund_refund_type]
+    expected_rows:
+      - {dimension.shop_refund_refund_type: goods, scanned_orders: 2}
+      - {dimension.shop_refund_refund_type: shipping, scanned_orders: 1}
+      - {dimension.shop_refund_refund_type: null, scanned_orders: 3}
+    reference_sql: |
+      SELECT t.refund_type, COUNT(DISTINCT s.order_id) FROM shipment_scans AS s
+      JOIN (SELECT DISTINCT refund_type FROM refunds) AS t ON EXISTS (SELECT 1 FROM orders AS o
+        JOIN refunds AS r ON r.order_id = o.order_id
+        WHERE o.order_id = s.order_id AND r.refund_type = t.refund_type)
+      GROUP BY t.refund_type
+      UNION ALL
+      SELECT NULL, COUNT(DISTINCT s.order_id) FROM shipment_scans AS s WHERE NOT EXISTS (SELECT 1
+        FROM orders AS o JOIN refunds AS r ON r.order_id = o.order_id WHERE o.order_id = s.order_id)
   shop/row-grain-parent-sum-by-child-column:
     kind: query_matches_snapshot
     expect: answer
@@ -9834,12 +9881,36 @@ tests:
     kind: validate_fails_with_code
     expect: refuse
     code: MIXED_GRAIN_INVALID
-    why: Bookings are not on the rooms' relation, so people grouped by booker cross a lookup and then a plain one-to-many hop, which stays refused.
+    why: Bookings are not on the rooms' relation, so people grouped by booker month by month cross a lookup and then a plain one-to-many hop over a time window, which stays refused (without it, shop/not-a-link-people-by-booker answers).
     cites: [tests/integration/correctness/shop/models/people.yml#model.measures.headcount, tests/integration/correctness/shop/models/room_bookings.yml#model.dimensions.booker]
     tags: [link, refusal]
     query:
       select: [measure.shop.headcount]
       group_by: [dimension.shop_room_bookings_booker]
+      time: {temporal_role: temporal_role.shop_person_started_on, grain: month}
+  shop/not-a-link-people-by-booker:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Bookings are not on the rooms' relation, so people grouped by booker are a lookup to their room, then its bookings. Each person counts once in every booker of their room - ana booked r1 (people 1 and 2) and r2 (person 3), ben r3 (person 4) - and r4's person, with no booking, person 6, in r9, which is no room (so not dee's), and person 7, with no room, are the NULL booker. Cy's r5 seats nobody.
+    cites: [tests/integration/correctness/shop/models/people.yml#model.measures.headcount, tests/integration/correctness/shop/models/room_bookings.yml#model.dimensions.booker, docs/QUERY_CALL.md#groups-by-a-childs-values-after-a-lookup]
+    tags: [one-per-key, row-grain, null-vs-zero]
+    query:
+      select: [measure.shop.headcount]
+      group_by: [dimension.shop_room_bookings_booker]
+    expected_rows:
+      - {dimension.shop_room_bookings_booker: ana, headcount: 3}
+      - {dimension.shop_room_bookings_booker: ben, headcount: 1}
+      - {dimension.shop_room_bookings_booker: null, headcount: 3}
+    reference_sql: |
+      SELECT b.booker, COUNT(*) FROM people AS p
+      JOIN (SELECT DISTINCT booker FROM room_bookings) AS b ON EXISTS (SELECT 1
+        FROM (SELECT DISTINCT room_id FROM room_rows) AS m JOIN room_bookings AS k ON k.room_id = m.room_id
+        WHERE m.room_id = p.room_id AND k.booker = b.booker)
+      GROUP BY b.booker
+      UNION ALL
+      SELECT NULL, COUNT(*) FROM people AS p WHERE NOT EXISTS (SELECT 1
+        FROM (SELECT DISTINCT room_id FROM room_rows) AS m JOIN room_bookings AS k ON k.room_id = m.room_id
+        WHERE m.room_id = p.room_id)
 
   # Row filters through joins. The regional policy (shop/policies.yml) filters stores by the
   # caller's trusted region, and an order is visible only when its store is: a West manager's

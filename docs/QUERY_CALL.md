@@ -213,8 +213,9 @@ which measure it reads.
   (entity key, group). An average is over the rows in each group, and a ratio of two measures of
   the entity divides each group's own totals.
 - The hops must be one-to-many from the measure's entity, each joined on the declared key of its
-  one side, before any lookup: orders to their items, then each item's product, is answered;
-  orders to their customer, then the customer's sessions, is many-to-many and refused.
+  one side, before any lookup: orders to their items, then each item's product, is answered.
+  Orders to their customer, then the customer's sessions, is a lookup before the hop: see
+  [groups by a child's values after a lookup](#groups-by-a-childs-values-after-a-lookup).
 - A row with no child row is in no group, and a group no row reaches is absent; a child row
   with no value is the NULL group.
 - The groups can overlap, so their sum can exceed the total. The answer's `REWRITE_APPLIED`
@@ -315,6 +316,54 @@ order that isn't large 58,458, of 59,652 in all: a customer with both kinds coun
   asked alone, unless the filter lists the parent as `shared`.
 
 Its limits are listed under [Known limitations](#parent-values).
+
+### Groups by a child's values after a lookup
+
+A grouping can reach its column by lookups, then one one-to-many hop: sessions by the product
+types of the items of the order each session converted to, rooms by the cities of their
+building's addresses. Each stored row of the measure counts once, with its whole value, in every
+group of values the child rows of its parent hold:
+
+```json
+{"select": ["measure.jaffle.session_starts"],
+ "group_by": ["dimension.jaffle_item_product_type"],
+ "routes": [{"from": "entity.jaffle_storefront_session", "to": "entity.jaffle_item",
+             "via": ["relationship.storefront_sessions_order", "relationship.order_items_order"]}],
+ "totals": []}
+```
+
+Of the 10 sessions, 8 converted to an order with a beverage and 1 to an order with a jaffle, and
+2 converted to no order: one session whose order holds both counts under both, so the groups add
+up to more than the total.
+
+- The route is decided: the call's `routes`, the package's `graph.path_preferences` row, or the
+  only route. Where two routes reach the child (a session's items through its order, or through
+  its customer's orders), the call asks which (`AMBIGUOUS_PATH`), offering each route's call.
+  Every hop but the last is a lookup, and the last is one to many, joined on the declared key of
+  its one side, with no validity window and no link.
+- Two child rows with the same values count once (a building's two addresses in one city), and
+  a row whose parent has no child row, or that names no parent, is the NULL group. Rows stored
+  twice, or with no key, each count.
+- The groups overlap, so they don't add up to the total. The answer's `REWRITE_APPLIED`
+  (`child_values`) says so at every verbosity and names the route (`details.path`):
+  `details.overlapping_groups` holds the `group_by` ids and the one-to-many `relationships`, and
+  `whole_amounts: true` marks a sum or average of a value.
+- A [total](#coarser-totals) or [`totals`](#totals) row is the call without the grouping: each
+  row once (the 10 sessions above).
+- It reads a sum, count, average or distinct count of an additive measure. Everything else keeps
+  the refusal the call had (`MIXED_GRAIN_INVALID`, or `PATH_NOT_FOUND` where the package walks
+  the hop from its many side only): a median, minimum, maximum or other statistic; a non-additive
+  measure or a stock; a conditional aggregate or a measure with its own filter or window; a
+  distribution over entity values (average room area per organization); a share over the
+  grouping; another entity's measure anywhere in the call (room area beside building area,
+  whose leaf reads the cities by its own route, where a building with no address is in no
+  city); a filter on the child, or a second grouping across a one-to-many hop; a `time` window,
+  `having` or an entity filter; and any such call on ClickHouse, which joins lookups inner, so a
+  row with no parent or no child row would drop out there instead of being the NULL group.
+- The caller's view and the package's policies hold as for any call: under a row filter the
+  package's recorded route reads, and a call can't give its own.
+
+Its limits are listed under [Known limitations](#child-values-after-a-lookup).
 
 ### Listings through one-to-many routes
 
@@ -1440,6 +1489,15 @@ The engine trusts the data as it is stored in three cases:
 - On ClickHouse, which joins lookups inner, such a call keeps its refusal.
 - A route recorded through an object hidden from the caller leaves that caller no route, as it
   does for any lookup, while a package without that object reads the rows' own key.
+
+### Child values after a lookup
+
+- A call with a `time` window keeps its refusal (`MIXED_GRAIN_INVALID`, "many-to-many"), even
+  where the same call without one answers.
+- The route must be lookups, then one one-to-many hop, last: a lookup after the hop (sessions by
+  the product of their order's items) or a second hop down (sessions by the items of their
+  customer's orders) keeps its refusal (`MIXED_GRAIN_INVALID`).
+- On ClickHouse, which joins lookups inner, such a call keeps its refusal.
 
 ### Links and one-per-key models
 

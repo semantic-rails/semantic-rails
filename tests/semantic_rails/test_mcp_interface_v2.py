@@ -397,7 +397,11 @@ def _unrealizable(monkeypatch: pytest.MonkeyPatch) -> None:
         ("discover", {"terms": "unladen swallow"}, "discover_low_relevance"),
         ("plan", {"intent": "unladen swallow airspeed", "detail": "best"}, "LOW_RELEVANCE"),
         # A drafted fallback that failed validation: status low_confidence at the default detail.
-        ("plan", {"intent": "session starts by product type"}, "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        (
+            "plan",
+            {"intent": "session starts by product type last month"},
+            "PLAN_FALLBACK_SEMANTIC_DRIFT",
+        ),
         # A measure that can't reach its grouping: no draft, the pair named.
         ("plan", {"intent": "orders by customer status"}, "PLAN_UNCONNECTED"),
         ("plan", {"intent": "revenue by store"}, "NO_PATTERN_MATCH"),

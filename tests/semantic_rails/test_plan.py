@@ -359,11 +359,29 @@ def test_plan_uses_planner_owned_catalog_fallback(runtime, monkeypatch) -> None:
     assert "query" in payload["best"]
 
 
+def test_plan_asks_which_route_when_one_reading_runs(runtime) -> None:
+    # A session's items through its order group the session by their values; through its
+    # customer's orders they can't: the plan asks, offering the reading that runs.
+    payload = plan_payload(runtime, intent="session starts by product type")
+    assert payload["status"] == "needs_clarification"
+    assert payload["why"]["code"] == "AMBIGUOUS_PATH"
+    (option,) = payload["why"]["details"]["options"]
+    assert option["call"]["routes"][0]["via"] == [
+        "relationship.storefront_sessions_order",
+        "relationship.order_items_order",
+    ]
+    assert payload["why"]["details"]["unrunnable"] == [
+        "any of the Items of any of the Orders of the Storefront session's Customer"
+    ]
+    assert runtime.query(option["call"])["rows"]
+
+
 def test_plan_best_detail_rejects_grouping_drift_fallback(runtime) -> None:
-    # Two routes reach an item from a session: the draft fails, and the fallback drops the
-    # grouping. (A measure that can't reach its grouping at all gets no draft:
-    # test_plan_no_draft.py.)
-    question = "session starts by product type"
+    # Two routes reach an item from a session, and over a time window neither runs (without
+    # one, the route through the session's order groups by its items' values): the draft
+    # fails, and the fallback drops the grouping. (A measure that can't reach its grouping at
+    # all gets no draft: test_plan_no_draft.py.)
+    question = "session starts by product type last month"
     best = plan_payload(runtime, intent=question, detail="best")
     query = plan_payload(runtime, intent=question, detail="query")
     full = plan_payload(runtime, intent=question, detail="full", limit=3)

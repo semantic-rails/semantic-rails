@@ -46,6 +46,7 @@ from .bind import (
     _freeze_payload,
     lift_conditional_aggregates,
 )
+from .child_values import CHILD_VALUES, child_values_step
 from .dependencies import (
     candidate_planning,
 )
@@ -279,8 +280,8 @@ def _plan_query(
                 if any(step.measure_id == bound.measure_id for step in rewrite_steps)
                 else "direct"
             )
-            if crossing == "fanout_dedup":
-                rewrite_strategy = "fanout_dedup"
+            if crossing in {"fanout_dedup", CHILD_VALUES}:
+                rewrite_strategy = crossing
             if measures[bound.measure_id].lookup_from:
                 rewrite_strategy = "parent_lookup"
             source_entity = measures[bound.measure_id].entity
@@ -292,6 +293,11 @@ def _plan_query(
                 )
                 aggregate_relation_id = ""
                 aggregate_relation_rejections: dict[str, str] = {}
+            elif crossing == CHILD_VALUES:
+                # The child's values join the measure's own rows, never a rollup of its model.
+                (route,) = [row for row in path_selections if row.analysis.get("status") != "ok"]
+                rewrite_steps.append(child_values_step(config, query, bound, route))
+                aggregate_relation_id, aggregate_relation_rejections = "", {}
             else:
                 # Every leaf that crosses a one-to-many hop says how.
                 rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config, query))

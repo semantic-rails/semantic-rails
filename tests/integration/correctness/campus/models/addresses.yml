@@ -1,0 +1,11 @@
+# A building's street addresses: several per building, in one city or two, and none for B-2.
+model:
+  id: addresses
+  label: Addresses
+  relation: addresses
+  entities: {address: {}}
+  dimensions:
+    city: {label: City, kind: categorical}
+    street: {label: Street, kind: categorical}
+  measures:
+    address_count: {label: Addresses, kind: entity_count, entity_key: address_id}
