@@ -501,6 +501,41 @@ def test_a_part_whose_groups_overlap_is_not_stated_to_add_up(depts):
     assert "so the groups overlap and don't add up to the total" in overlap["message"]
 
 
+# Rooms per department in the shop package, by hand: a room's department is on its rows (a
+# link), so a room with rows in two departments is in both.
+ROOMS_BY_DEPARTMENT = """
+SELECT department, COUNT(DISTINCT room_id) FROM room_rows WHERE room_id IS NOT NULL
+GROUP BY department"""
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_a_part_grouped_across_a_link_is_not_stated_to_add_up(request, backend):
+    """Rooms per department, where a room can belong to two: the rows sum to 6 of 5 rooms, so
+    the count is not stated to add up, alone or beside the rooms' area."""
+    source = request.getfixturevalue(f"{backend}_backend")
+    runtime = source.runtimes["utc_authored"]
+    department = "dimension.shop_room_rows_department"
+    rooms = {"select": ["measure.shop.room_count"], "group_by": [department]}
+    area = {"select": ["measure.shop.room_area"], "group_by": [department]}
+    one = runtime.query({"parts": [rooms], "join": {"on": [[department]]}}, now=NOW)
+    two = runtime.query(
+        {"parts": [rooms, area], "join": {"on": [[department, department]]}}, now=NOW
+    )
+
+    assert _values(one) == sorted(source.reference(ROOMS_BY_DEPARTMENT), key=repr)
+    assert sum(row["room_count"] for row in one["rows"]) == 6
+    assert source.reference("SELECT COUNT(DISTINCT room_id) FROM room_rows") == [(5,)]
+    assert _joined(one)["details"]["columns"] == [
+        {"column": "room_count", "part": 0, "adds_up": False}
+    ]
+    assert "Summed down the rows" not in _joined(one)["message"]
+    assert [row["adds_up"] for row in _joined(two)["details"]["columns"]] == [False, False]
+    assert "a row of parts[0] and parts[1] counts in every group" in _joined(two)["message"]
+    (link,) = [row for row in _note(one, "REWRITE_APPLIED") if row["details"]["part"] == 0]
+    assert link["details"]["overlapping_groups"] == {"link": True}
+    assert "Across a link it counts in every group it has a row in" in link["message"]
+
+
 def test_an_entity_filter_in_a_kept_part_answers_its_keys_only(depts):
     """Departments with more than 2 people, beside their area: with the filtered part named in
     keep, the answer is those departments, each with its real headcount and area."""
