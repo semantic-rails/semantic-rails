@@ -55,7 +55,7 @@ from .bind import (
     _measure_required_entities,
     is_conditional_aggregate,
 )
-from .indexes import _dimension_index, _entity_index, _measure_index
+from .indexes import _dimension_index, _entity_index, _measure_index, _relationship_index
 from .lowering_common import _edge_cap, _filter_condition_for_item
 from .paths import (
     _column_ref,
@@ -72,10 +72,12 @@ from .plan_checks import (
 from .temporal import _time_bound_relationship_ids
 
 PARENT_VALUE = "parent_value"
-# The refusals a call's own bind gives such a measure: no walk from M to the rows
-# (``PATH_NOT_FOUND``), several routes from M (``AMBIGUOUS_PATH``), or one that crosses a
-# one-to-many hop no other leaf answers (``MIXED_GRAIN_INVALID``).
-_RETRIED = frozenset({"PATH_NOT_FOUND", "AMBIGUOUS_PATH", "MIXED_GRAIN_INVALID"})
+# The refusals a call's own bind gives such a measure when M can't reach the rows: no walk
+# from M (``PATH_NOT_FOUND``) or several routes (``AMBIGUOUS_PATH``). Where M reaches them by
+# one route, the call's own bind reads M's rows across that one-to-many hop (``fanout_dedup``),
+# and what it refuses there (``MIXED_GRAIN_INVALID``: a grouping beside a filter on the same
+# child can mean two things) stays refused.
+_RETRIED = frozenset({"PATH_NOT_FOUND", "AMBIGUOUS_PATH"})
 # Under a row filter the route question is refused as a policy's (``binding``): the rows'
 # own key or a recorded route asks no question, so that refusal is retried too.
 _RETRIED_POLICY = "route_override_under_row_policy"
@@ -105,12 +107,14 @@ def bind_parent_values(
     payload: Mapping[str, Any], refusal: SemanticLayerError, bind: Callable[[], T]
 ) -> T | None:
     """The call bound once more with parent values (``bind``), when ``refusal`` is its own
-    bind's refusal of a call that selects something; None when it isn't, or when that bind
-    refuses too for any reason but a policy (the call's own refusal stands)."""
+    bind's refusal of a call that selects something by a grouping; None when it isn't, or when
+    that bind refuses too for any reason but a policy (the call's own refusal stands). A call
+    with no grouping asks about M's rows as a whole, so its route question stands; the coarser
+    calls a grouped call compiles (its totals) read from the same rows."""
     retried = refusal.code in _RETRIED or (
         refusal.code == "POLICY_DENIED" and refusal.details.get("reason") == _RETRIED_POLICY
     )
-    if not retried or not payload.get("select"):
+    if not retried or not payload.get("select") or not payload.get("group_by"):
         return None
     with _binding():
         try:
@@ -211,7 +215,13 @@ def parent_value_route(
     analysis = analyze_fanout(
         config, rows, route, time_bound_relationships=_time_bound_relationship_ids(query, config)
     )
-    if resolution.basis not in _DECIDED or analysis.get("status") != "ok":
+    relationships = _relationship_index(config)
+    if (
+        resolution.basis not in _DECIDED
+        or analysis.get("status") != "ok"
+        # A link's rows are its entity's own (groups across a link): they keep their rules.
+        or any(relationships[rel_id].link for rel_id in route)
+    ):
         return []
     return route
 

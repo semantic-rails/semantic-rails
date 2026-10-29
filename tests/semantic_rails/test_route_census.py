@@ -57,6 +57,7 @@ from tests.semantic_rails.test_route_resolution import (
     AMOUNT_BY_HOME,
     BALANCE,
     BRANCH,
+    CHECKING,
     INVOICE,
     INVOICE_ACCOUNT,
     INVOICE_BRANCH,
@@ -123,7 +124,8 @@ DIAMOND_DEFAULTS = {
     (MEMBERSHIP, REGION): ("own_keys", "the Region of the Membership's Account"),
     (OWNER, ACCOUNT): ("lookup", "the Account of the Owner's Membership"),
 }
-# A question for each pair: a measure of the start grouped by a dimension of the target.
+# A question for each pair: a measure of the start filtered by a dimension of the target.
+# (Grouped by one, a measure read on the target's rows by their own key asks nothing.)
 MEASURE = {ACCOUNT: BALANCE, INVOICE: AMOUNT, REGION: REGION_COUNT}
 DIMENSION = {
     REGION: REGION_NAME,
@@ -158,7 +160,8 @@ def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tm
     for (start, target), details in undecided.items():
         with pytest.raises(SemanticLayerError) as exc_info:
             if start in MEASURE:
-                runtime.query(_query(MEASURE[start], group_by=[DIMENSION[target]]))
+                kept = {"field": DIMENSION[target], "op": "missing", "value": False}
+                runtime.query(_query(MEASURE[start], where=[kept]))
             else:
                 resolve_path(config, start=start, target=target)
         assert exc_info.value.code == "AMBIGUOUS_PATH"
@@ -353,28 +356,29 @@ def test_resolved_crossings_are_object_warnings_only_where_a_query_walks_them(tm
 
 
 AMOUNT_BY_REGION = _query(AMOUNT, group_by=[REGION_NAME])
-# Regions by account kind: any of a region's accounts, or of its owners' accounts.
-REGIONS_BY_KIND = _query(REGION_COUNT, group_by=[ACCOUNT_KIND])
+# The regions with a checking account: any of a region's accounts, or of its owners' accounts.
+REGIONS_WITH_CHECKING = _query(REGION_COUNT, where=[CHECKING])
 
 
 def test_only_the_pairs_a_query_of_the_package_walks_are_warned_about(tmp_path):
     """Six pairs have two routes, no row and no lookup default; none needs anything until a
-    query walks it. An example that asks for regions by account kind walks one, and only that
-    one is warned about, with the example that needs it and the rows that would decide it."""
+    query walks it. An example that asks for the regions with a checking account walks one, and
+    only that one is warned about, with the example that needs it and the rows that would decide
+    it."""
     pkg = _write_package(tmp_path / "bank")
     report, _ = parse_config_report(PackageReference(source_path=str(pkg)))
     assert _pairs(report["route_census"]["undecided"]) == DIAMOND_UNDECIDED
     assert all(row["needed_by"] == [] for row in report["route_census"]["undecided"])
     assert "ROUTES_UNDECIDED" not in {row["code"] for row in report["warnings"]}
 
-    copy = _with_examples(pkg, tmp_path / "walked", regions_by_kind=REGIONS_BY_KIND)
+    copy = _with_examples(pkg, tmp_path / "walked", regions_with_checking=REGIONS_WITH_CHECKING)
     report, _ = parse_config_report(PackageReference(source_path=str(copy)))
     undecided = report["route_census"]["undecided"]
     # The pair the example needs comes first; every other pair is still listed.
     assert sorted(_pairs(undecided)) == sorted(DIAMOND_UNDECIDED)
     assert (_pairs(undecided)[0], undecided[0]["needed_by"]) == (
         (REGION, ACCOUNT),
-        ["example.regions_by_kind"],
+        ["example.regions_with_checking"],
     )
     assert all(row["needed_by"] == [] for row in undecided[1:])
     (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTES_UNDECIDED"]
@@ -385,7 +389,7 @@ def test_only_the_pairs_a_query_of_the_package_walks_are_warned_about(tmp_path):
             {
                 "source_entity": REGION,
                 "target_entity": ACCOUNT,
-                "needed_by": ["example.regions_by_kind"],
+                "needed_by": ["example.regions_with_checking"],
             }
         ],
         "unwalked": 5,
@@ -394,7 +398,7 @@ def test_only_the_pairs_a_query_of_the_package_walks_are_warned_about(tmp_path):
         option["relationship_path"]
         for option in undecided[0]["details"]["clarification"]["options"]
     )
-    assert "for example.regions_by_kind" in warning["message"]
+    assert "for example.regions_with_checking" in warning["message"]
     assert "The 5 other undecided pairs need nothing now" in warning["message"]
 
 
@@ -402,11 +406,7 @@ def test_a_query_past_a_fork_is_walked_to_its_end(tmp_path):
     """A query refused at one fork still needs the routes past it: the census takes the fork's
     first route for that query alone and keeps walking, so both forks are needed."""
     config = load_package_config(str(_write_package(tmp_path)))
-    both = _query(
-        REGION_COUNT,
-        group_by=[ACCOUNT_KIND],
-        where=[{"field": OWNER_NAME, "op": "is", "value": "Ann"}],
-    )
+    both = _query(REGION_COUNT, where=[CHECKING, {"field": OWNER_NAME, "op": "is", "value": "Ann"}])
     with pytest.raises(SemanticLayerError) as refused:
         Runtime.from_path(str(_write_package(tmp_path / "asked"))).query(both)
     assert refused.value.code == "AMBIGUOUS_PATH"
@@ -477,7 +477,7 @@ def test_a_second_parse_of_the_same_package_reuses_its_walks(tmp_path, monkeypat
     again, _ = parse_config_report(ref)
     assert len(walks) == 1 and again["route_census"] == first["route_census"]
     examples = copy / "examples" / "walks.yml"
-    examples.write_text(yaml.safe_dump({"examples": {"regions": {"query": REGIONS_BY_KIND}}}))
+    examples.write_text(yaml.safe_dump({"examples": {"regions": {"query": REGIONS_WITH_CHECKING}}}))
     edited, _ = parse_config_report(ref)
     assert len(walks) == 2
     assert edited["route_census"]["undecided"][0]["needed_by"] == ["example.regions"]
@@ -507,14 +507,14 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     promotion = promote_package_report(PackageReference(source_path=str(pkg)), environment="dev")
     assert promotion["advisories"] == []
 
-    copy = _with_examples(pkg, tmp_path / "walked", regions_by_kind=REGIONS_BY_KIND)
+    copy = _with_examples(pkg, tmp_path / "walked", regions_with_checking=REGIONS_WITH_CHECKING)
     server = create_architect_mcp_server(workspace_root=tmp_path / "walked")
     status = _mcp(server, "project_status", {"project_path": str(copy)})
     assert status["next_actions"][0].startswith(
         "Decide the 1 join route the package's own metrics, examples or tests need"
     )
     assert status["route_census"]["counts"]["undecided_needed"] == 1
-    assert status["route_census"]["undecided"][0]["needed_by"] == ["example.regions_by_kind"]
+    assert status["route_census"]["undecided"][0]["needed_by"] == ["example.regions_with_checking"]
     promotion = promote_package_report(PackageReference(source_path=str(copy)), environment="dev")
     (advisory,) = promotion["advisories"]
     assert (advisory["code"], advisory["details"]["count"]) == ("ROUTES_UNDECIDED", 1)

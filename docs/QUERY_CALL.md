@@ -259,6 +259,56 @@ one, each entity counts once in every group it has a row in.
 
 Their limits are listed under [Known limitations](#links-and-one-per-key-models).
 
+### A parent's value on its children's rows
+
+A call grouped by a child's columns can select a measure of the parent each child row names:
+each order with its customer's lifetime order count, each room with its building's area. From
+the parent's side that is a walk to its many children, which a package refuses where the
+relationship walks forward only (`PATH_NOT_FOUND`) or asks about where several routes reach the
+children (`AMBIGUOUS_PATH`, "Which Order does the question mean for a Customer?"). The engine
+reads it from the children's rows instead:
+
+```json
+{"select": ["measure.jaffle.lifetime_order_count"],
+ "group_by": ["dimension.jaffle_order_is_large_order"], "totals": []}
+```
+
+Customers with a large order have 13,538 lifetime orders between them, and customers with an
+order that isn't large 58,458, of 59,652 in all: a customer with both kinds counts under both.
+
+- The rows are those of the first entity the call groups by (then filters by) that reaches
+  every entity the call reads by lookups, one row at every hop. The parent is read along the
+  route the call's `routes` or the package's `graph.path_preferences` record from those rows,
+  else the rows' own key to it; the answer's `routes` names it. A route recorded from the
+  parent's side (a building's rooms through its floors), or one the call gives that way, is the
+  business's definition and stands: the call is answered or refused from the parent's side, as
+  without this rule.
+- Each parent counts once, with its whole value, in every group that holds one of its child
+  rows: two rooms of one building each show its whole area, and a group of rooms in two
+  buildings adds each building once. The column repeats per parent and doesn't add up across
+  groups. Child rows stored twice, or with no key, count their parent once.
+- A group whose rows name no parent reads NULL, a count too: no data, not zero.
+- A [total](#coarser-totals) or [`totals`](#totals) row is the call without the grouping: every
+  parent once, including those with no child rows (the customers who never ordered); with a
+  condition on the children, the parents with such a child.
+- The answer's `REWRITE_APPLIED` (`parent_value`) says so at every verbosity, naming the rows
+  (`details.rows_entity`) and the route (`details.path`).
+- It reads a sum, count, average or distinct count of an additive measure of an entity with a
+  key. Everything else keeps the refusal the call had: a median, minimum, maximum or other
+  statistic; a non-additive measure or a stock; a measure with its own filter or window, or
+  inside a share; an item that sets it against a measure of another entity (room area per
+  building area); a grouping the rows reach only one to many (buildings' area by organization
+  alone); rows that are a [link](#groups-across-a-link) of the parent; and a call with no
+  `group_by`, a `time` window, `having` or an entity filter. A call the parent's side reads by
+  one route ([groups across a one-to-many hop](#groups-across-a-one-to-many-hop)) keeps that
+  reading and its refusals.
+- The caller's view and the package's policies hold as for any call. A row filter on the
+  parents keeps the rows that name a visible parent; one on the children reaches no parent, so
+  the parent's measure is refused (`POLICY_DENIED`, `row_filter_uncovered_root`), as it is
+  asked alone, unless the filter lists the parent as `shared`.
+
+Its limits are listed under [Known limitations](#parent-values).
+
 ### Listings through one-to-many routes
 
 A call of dimensions alone (`group_by`, with no `select`, `time` or `metric_filters`) lists
@@ -1341,6 +1391,19 @@ The engine trusts the data as it is stored in three cases:
   it with NULL; a call whose entities one model reaches by lookups (rooms that hold both their
   department and their building) reads that model's rows, and a department with no rooms has
   none there.
+
+### Parent values
+
+- The side a call is read from decides who is in it. Read from the children's rows, a child
+  with no parent is a NULL group; read from the parent's side (a route recorded or given that
+  way, or one route from the parent), a child with no parent is in no group.
+- A grouping beside a filter on the same child is read on the children's rows where the parent
+  can't reach them, and refused (`MIXED_GRAIN_INVALID`) where it reaches them by one route,
+  since from the parent's side it can mean two things.
+- ClickHouse joins lookups inner, so there a child row with no parent is left out instead of
+  reading NULL.
+- A route recorded through an object hidden from the caller leaves that caller no route, as it
+  does for any lookup, while a package without that object reads the rows' own key.
 
 ### Links and one-per-key models
 
