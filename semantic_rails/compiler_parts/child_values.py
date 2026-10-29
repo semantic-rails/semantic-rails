@@ -110,7 +110,9 @@ def child_values_cte(
     measure_plan: MeasurePlan, group_by: list[str], config: PackageConfig
 ) -> tuple[str, SqlCte]:
     """The child entity a ``child_values`` leaf groups by, and the CTE of its distinct values
-    per parent: the child's columns to its parent, then each grouped column of the child."""
+    per parent: the child's columns to its parent, then each grouped dimension of the child, its
+    declared unknown spellings read as NULL before the rows are made distinct (two child rows
+    whose values both read unknown are one NULL value)."""
     route = _child_route(measure_plan)
     child = _entity_index(config)[route.target_entity]
     rel = _relationship_index(config)[route.chosen_path[-1]]
@@ -121,25 +123,37 @@ def child_values_cte(
     )
     dimensions = _dimension_index(config)
     grouped = [
-        dimensions[dim_id].column for dim_id in group_by if dimensions[dim_id].entity == child.id
+        SqlField(
+            unknown_as_null(
+                _column_ref(child.table, dimensions[dim_id].column), dimensions[dim_id]
+            ),
+            _value_alias(dim_id),
+        )
+        for dim_id in dict.fromkeys(group_by)
+        if dimensions[dim_id].entity == child.id
     ]
-    columns = list(dict.fromkeys([*to_parent, *grouped]))
     name = f"{measure_plan.cte_name}_child_values"
     values = SqlSelect(
-        select=[SqlField(_column_ref(child.table, column), column) for column in columns],
+        select=[
+            *(SqlField(_column_ref(child.table, column), column) for column in to_parent),
+            *grouped,
+        ],
         from_table=SqlTableRef(name=child.table),
         distinct=True,
     )
     return child.id, SqlCte(name=name, query=values)
 
 
+def _value_alias(dim_id: str) -> str:
+    return "__value_" + dim_id.removeprefix("dimension.").replace(".", "_")
+
+
 def child_value_dimension(dim_id: str, child: str, cte: str, config: PackageConfig) -> Any | None:
     """A grouped dimension of the child read from its distinct values (``cte``), or None for any
     other dimension."""
-    dim = _dimension_index(config)[dim_id]
-    if dim.entity != child:
+    if _dimension_index(config)[dim_id].entity != child:
         return None
-    return unknown_as_null(_column_ref(cte, dim.column), dim)
+    return _column_ref(cte, _value_alias(dim_id))
 
 
 def keep_rows(joins: list[SqlJoin], cte: str) -> list[SqlJoin]:

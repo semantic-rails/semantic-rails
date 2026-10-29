@@ -170,6 +170,16 @@ VARIANTS: dict[str, list[tuple[str, Callable[[dict[str, Any]], None]]]] = {
             _recorded("room", "address", [ROOM_BUILDING, "relationship.address_building"]),
         ),
     ],
+    # Every city an address holds is a declared unknown spelling (``test_child_values``).
+    "unknown_cities": [
+        ("package.yml", _two_way),
+        (
+            "models/addresses.yml",
+            lambda spec: spec["model"]["dimensions"]["city"].update(
+                unknown_values=["Springfield", "Shelbyville"]
+            ),
+        ),
+    ],
 }
 
 

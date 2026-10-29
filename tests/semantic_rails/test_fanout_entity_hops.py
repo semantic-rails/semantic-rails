@@ -1230,6 +1230,27 @@ def test_a_grouping_across_the_hop_counts_each_row_whole_in_every_group(
     assert _rows(package, query) == _reference(package, reference)
 
 
+def test_a_grouping_after_a_lookup_counts_each_order_in_every_channel(package: Path) -> None:
+    """Orders by the channels of their customer's sessions (a lookup, then one to many): each
+    order counts once, with its whole value, in every channel its customer has a session on,
+    and customer 12's orders, with no session, are the NULL channel."""
+    query = {"select": [_measure("order_count"), _measure("revenue")], "group_by": [CHANNEL]}
+    has = (
+        "EXISTS (SELECT 1 FROM customers k JOIN sessions s ON s.customer_id = k.customer_id "
+        "WHERE k.customer_id = o.customer_id{})"
+    )
+    reference = f"""
+      SELECT c.channel, COUNT(DISTINCT o.order_id), SUM(o.total) FROM orders o
+      JOIN (SELECT DISTINCT channel FROM sessions) c ON {has.format(" AND s.channel = c.channel")}
+      GROUP BY c.channel
+      UNION ALL
+      SELECT NULL, COUNT(DISTINCT o.order_id), SUM(o.total) FROM orders o
+      WHERE NOT {has.format("")}"""
+    rows = _rows(package, query)
+    assert rows == _reference(package, reference)
+    assert rows == [(None, 2, 230.0), ("app", 2, 30.0), ("web", 4, 60.0)]
+
+
 def test_the_groups_overlap_and_add_up_to_more_than_the_orders(package: Path) -> None:
     assert _rows(package, _ask(group_by=[TYPE])) == [("beverage", 70.0), ("jaffle", 50.0)]
     assert _rows(package, _ask(where=[_is(TYPE, ["beverage", "jaffle"], "is")])) == [(100.0,)]
@@ -1466,8 +1487,10 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         # On a boolean only "= true" reads one way.
         (_bound_filter(_is(HOT, True, "<")), NEGATED),
         (_bound_filter(_is(HOT, 0)), NEGATED),
-        # orders -> customer -> sessions: many-to-many through the customer.
-        (_ask("order_count", group_by=[CHANNEL]), "many-to-many"),
+        # orders -> customer -> sessions, many-to-many through the customer, over a time window
+        # (without one, each order counts in every channel of its customer's sessions:
+        # test_a_grouping_after_a_lookup_counts_each_order_in_every_channel).
+        (_ask("order_count", group_by=[CHANNEL], time=MONTHLY), "many-to-many"),
         # Grouping still requires the declared parent key, unlike filter-only EXISTS.
         (_ask("face_value", group_by=[TYPE]), "join off the declared key"),
         # A pre-aggregated value has no one row per key to count.

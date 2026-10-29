@@ -25,6 +25,7 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import leaf_paths
+from semantic_rails.compiler_parts.child_values import _lookups_then_one_to_many
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.query_call import read_call
@@ -217,6 +218,32 @@ def test_two_columns_of_the_child_are_the_values_one_address_holds(campus):
         ],
         key=repr,
     )
+
+
+def test_values_read_as_unknown_are_one_null_city(campus):
+    """With every city an unknown spelling, B-1's three addresses hold one value, unknown: each
+    of its rooms counts once in the NULL city, beside the rooms with no address, not once per
+    spelling."""
+    assert campus.answer(BY_CITY, "unknown_cities") == campus.sql(
+        "SELECT NULL, SUM(area), COUNT(*) FROM rooms"
+    )
+
+
+def test_the_one_to_many_hop_joins_its_one_side_on_its_key():
+    """A hop whose one side joins on a column that isn't its key (an address naming its
+    building's name) may reach another building's addresses: the call keeps its refusal."""
+    lookup = {"traversal": "forward", "directional_safety": "safe", "cardinality": "N:1"}
+    hop = {
+        "traversal": "reverse",
+        "directional_safety": "requires_rewrite",
+        "cardinality": "N:1",
+        "target_entity": "entity.campus_building",
+    }
+    keys = {"entity.campus_building": ["building_id"]}
+    on_key = {"relationships": [lookup, {**hop, "target_columns": ["building_id"]}]}
+    off_key = {"relationships": [lookup, {**hop, "target_columns": ["building_name"]}]}
+    assert _lookups_then_one_to_many(on_key, keys)
+    assert not _lookups_then_one_to_many(off_key, keys)
 
 
 def test_a_filter_on_the_rooms_reads_their_rows_only(campus):
