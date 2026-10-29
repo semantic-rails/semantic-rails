@@ -36,6 +36,8 @@ SWITCHED = {
     ("compiler_parts/parent_values.py", "parent_value_leaf_select"),
     ("compiler_parts/parent_values.py", "parent_value_route"),
     ("compiler_parts/paths.py", "_direct_dimension_source_expr"),
+    # A row-grain entity has no key to read from the model before it on a route.
+    ("compiler_parts/paths.py", "route_key_source_expr"),
     ("compiler_parts/paths.py", "display_key"),
     ("compiler_parts/paths.py", "keyed_entity"),
     ("compiler_parts/plan_checks.py", "_dedup_refusal"),
