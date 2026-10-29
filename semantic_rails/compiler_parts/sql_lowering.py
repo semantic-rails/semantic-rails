@@ -78,8 +78,8 @@ from .indexes import (
     _measure_index,
 )
 from .leaves import _distinct_value_select, _measure_group_leaf_select
-from .lowering_common import _apply_role_timezone as _apply_role_timezone
 from .lowering_common import (
+    WINDOW_TOTAL_BUCKET,
     _dataset_scope,
     _dialect,
     _emits_time_coverage,
@@ -97,12 +97,14 @@ from .lowering_common import (
     _retained_filtered_series,
     _time_alias_for_plan,
 )
+from .lowering_common import _apply_role_timezone as _apply_role_timezone
 from .lowering_common import _filtered_series_candidate as _filtered_series_candidate
 from .lowering_common import _snapshot_series_columns as _snapshot_series_columns
 from .lowering_common import _stock_clock_key_gap as _stock_clock_key_gap
 from .lowering_common import _stock_snapshot_refusal as _stock_snapshot_refusal
 from .lowering_common import _value_filter_condition as _value_filter_condition
 from .namespacing import _namespace_sql_select
+from .part_domain import DOMAIN, PRESENT, domain_ctes, part_domain
 from .paths import (
     _join_condition,
     _leaf_time_role,
@@ -508,6 +510,23 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         base_name = "series_base"
         base_table = SqlTableRef(name=base_name, alias="base")
 
+    # A joined call's part reads its groups beside every key of the call, so the guard below
+    # settles a key only another part has as one of this part's groups (``part_domain``).
+    domain = part_domain()
+    if domain is not None:
+        window_total = bool(plan.time.get("window_total"))
+        ctes.extend(
+            domain_ctes(
+                domain,
+                base_table.name,
+                group_aliases if window_total else key_aliases,
+                [field.alias for field in base_leaf_select.select],
+                window_bucket=(time_alias, WINDOW_TOTAL_BUCKET) if window_total else None,
+            )
+        )
+        base_table = SqlTableRef(name=DOMAIN, alias="base")
+        joined = True
+
     # What the answer states beside its rows, in hidden columns the runtime reads and removes:
     # each re-aggregated measure's row count, how many rows each share's total spans, and the
     # groups a measure's own rows never reached (below).
@@ -516,6 +535,8 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         for name in overrides.values()
         if name in rows.values()
     ]
+    if domain is not None:
+        hidden.append(SqlField(SqlIdentifier(parts=["base", PRESENT]), PRESENT))
     kept = [field.alias for field in hidden]  # the guard passes these source columns through
     # A summing window reads each sum's row count beside its value, period by period, so a
     # window whose rows all hold NULL amounts reads NULL; the guard passes the counts through.
