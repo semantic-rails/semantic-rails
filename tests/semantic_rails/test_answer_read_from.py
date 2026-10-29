@@ -1,8 +1,8 @@
 """An answer says which model each of its values comes from (``read_from``), before its rows.
 
 A call reads measures, metrics and dimensions that may sit on different models, joined through
-relationships the call never names. Two models can hold the same kind of value (a room number on
-a rooms table and on a space-detail table), so an answer read from the other one looks right.
+relationships the call never names. Two models can hold the same kind of value (an order total on
+an orders table and on an order-history table), so an answer read from the other one looks right.
 ``execute`` answers say, by id, which model each selected value and each group_by or where
 dimension was read from, and the relationships the SQL took to reach a model when nothing else
 in the response states that route. A model that ``routes`` already names is left out. The
