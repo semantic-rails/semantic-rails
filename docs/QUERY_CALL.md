@@ -1711,7 +1711,12 @@ column it sums holds a value yet: the metric reads `0` there and `NULL` with `NO
 after the edge. "Each week's refund rate", refunds over revenue, reads `0.0` in a loaded week of
 paid orders before the first refund; a refunded order whose amount is NULL leaves its week
 `NULL`. Under `observation_scope: "query"`, the call's
-`where` must still keep a row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+`where` must still keep a row. The edge is the measure's own table's, however far away the
+group's column is: "weekly revenue by customer region" (orders, then customers, then regions)
+reads `0` in a week the orders' load log covers with no order and `NULL` before the first order
+and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
+read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
+not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
