@@ -3158,6 +3158,9 @@ Up to the edge, the table is observed whether or not a metric's `filter` matches
 rows: a count filtered to enterprise accounts reads `0` in every loaded week before the first
 enterprise account signs up (data of nothing), and `NULL` with `NO_DATA_YET` after the edge, so
 no `COALESCE(..., 0)` is needed (it would also read the weeks after the edge as a silent `0`).
+The same holds before the summed column holds any value: refunds filtered to refunded orders,
+and a refund rate over revenue, read `0` in a loaded week of paid orders before the first
+refund, while a refunded order with no amount leaves its week `NULL`.
 A call's `where` counts as before: under `observation_scope: "query"` a week is observed only if
 the `where` keeps a row of the table. Balances, averages,
 distinct populations and `additive: false` measures never read `0` for an empty period, edge or

@@ -325,8 +325,8 @@ def guard_empty_groups(
     or that has no time bucket (``bucketed=False``: one total over its scope). Earlier
     settlement retains its value-based observation. Where a declared edge gates the output
     (the scope's ``edge``), its probes read the source rows without the measure's authored
-    filter conditions (``source_where``), bounded or not: the edge, not a matching row, says a
-    loaded period is observed.
+    filter conditions (``source_where``), bounded or not, whether or not they hold a value: the
+    edge, not a matching row, says a loaded period is observed.
     ``observed_buckets`` names leaves whose conditional operand retained the pre-filter
     source groups. Where the loaded-bucket check gates the output, their non-NULL count
     (including 0) proves that specific bucket was observed; the sum's matching-row count
@@ -494,8 +494,12 @@ def _seen_outside_window(
     scope: LeafScope, *, source_rows: bool = False, declared: bool = False
 ) -> SqlExists:
     """Whether the scope has a row that holds a value. ``declared`` (a declared edge gates the
-    output) reads the scope's rows without the measure's authored filter conditions."""
-    where = scope.source_where if declared and scope.source_where is not None else scope.where
+    output) reads the scope's rows without the measure's authored filter conditions, and then
+    any such row will do: the edge says its period is loaded, so a filter that matched no row
+    there reads 0 even while the column holds no value yet (refunds before the first one)."""
+    source_where = scope.source_where if declared else None
+    unfiltered = source_where is not None
+    where = scope.where if source_where is None else source_where
     if (
         not isinstance(scope.value, SqlCall)
         or scope.value.name not in {"SUM", "COUNT", "COUNT_IF", "COUNTIF"}
@@ -513,12 +517,17 @@ def _seen_outside_window(
             select=[SqlField(SqlLiteral(1), "seen")],
             from_table=replace(scope.from_table),
             joins=list(scope.joins),
-            # A top-level conditional additive operand can be measured as zero even
-            # when it never matched. Its row count still protects matching NULL sums.
-            # Keep every scope filter and leave unsupported/earlier settlement alone.
+            # A top-level conditional additive operand, or a filtered one under a declared
+            # edge, can be measured as zero even when it never matched. Its row count still
+            # protects matching NULL sums. Keep every scope filter and leave
+            # unsupported/earlier settlement alone.
             where=[
                 *where,
-                *([] if source_rows and is_conditional_case(operand) else [observed]),
+                *(
+                    []
+                    if unfiltered or (source_rows and is_conditional_case(operand))
+                    else [observed]
+                ),
             ],
             limit=1,
             observation_scan=True,
