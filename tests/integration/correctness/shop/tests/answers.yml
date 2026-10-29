@@ -6861,10 +6861,10 @@ tests:
         GROUP BY o.order_id, date_trunc('month', o.ordered_at), o.amount
       )
       SELECT b, percentile_cont(0.5) WITHIN GROUP (ORDER BY net) FROM per_order GROUP BY b
-  shop/median-net-order-value-of-one-store:
+  shop/median-net-order-value-of-web-customers:
     kind: query_matches_snapshot
     expect: answer
-    why: "Store b's own orders: only order 2 (November) has a refund. Under the dataset scope refunds are observed outside the where, so March, June and July's orders refunded nothing and read their amounts."
+    why: "Web customers (101, 103 and 106) have no goods refund: their one refund (order 4's, January) is shipping only, with no goods amount. Under the dataset scope goods refunds are observed outside the where, so their other orders refunded nothing and read their amounts; order 4's net value is unknown, so January reads NULL."
     cites: *net_order_cites
     tags: [null-vs-zero, time-window]
     variant: utc_authored
@@ -6874,18 +6874,21 @@ tests:
         as: median
       time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
       where:
-      - {field: dimension.shop_order_store_id, op: is, value: b}
+      - {field: dimension.shop_customer_channel, op: is, value: web}
     expected_rows:
-      - {period: '2023-11-01', median: -1}
-      - {period: '2024-03-01', median: 8}
+      - {period: '2023-11-01', median: 10}
+      - {period: '2023-12-01', median: 7}
+      - {period: '2024-01-01', median: null}
+      - {period: '2024-05-01', median: 6}
       - {period: '2024-06-01', median: 3}
       - {period: '2024-07-01', median: 9}
     reference_sql: |
       WITH per_order AS (
         SELECT date_trunc('month', o.ordered_at) AS b,
           o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
-        FROM orders AS o LEFT JOIN refunds AS r ON r.order_id = o.order_id
-        WHERE o.store_id = 'b'
+        FROM orders AS o JOIN signups AS s ON s.customer_id = o.customer_id
+        LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        WHERE s.channel = 'web'
         GROUP BY o.order_id, date_trunc('month', o.ordered_at), o.amount
       )
       SELECT b, percentile_cont(0.5) WITHIN GROUP (ORDER BY net) FROM per_order GROUP BY b
