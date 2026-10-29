@@ -6,6 +6,6 @@
   one of its child rows, a group whose rows name no parent reads NULL, and a total is the call
   without the grouping. `REWRITE_APPLIED` (`parent_value`) says the column doesn't add up across
   groups. A route recorded from the parent's side stands, and a median, a non-additive measure,
-  a ratio against the child's measure, and a call with `time`, `having` or no `group_by` keep
-  their refusal. See
+  a ratio against the child's measure, a call with `time`, `having` or no `group_by`, and any
+  such call on ClickHouse (which joins lookups inner) keep their refusal. See
   [A parent's value on its children's rows](docs/QUERY_CALL.md#a-parents-value-on-its-childrens-rows).

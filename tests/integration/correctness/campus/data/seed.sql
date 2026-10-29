@@ -1,8 +1,8 @@
 -- Portable seed: DuckDB and Postgres run this same script, and comments here hold no semicolons.
 -- A room names its building by its own key and its floor by another: R-202 names B-2 but sits
 -- on a floor of B-1, so the two routes from a room to its building read different buildings
--- for it. R-103 names no building and no floor. B-3 has no room. room_rows stores the rooms
--- again without a key, R-101 twice.
+-- for it. R-103 and R-105 name no building and no floor, so the offices mix rooms with and
+-- without a building. B-3 has no room. room_rows stores the rooms again without a key, R-101 twice.
 CREATE TABLE buildings (
   building_id INTEGER, building_name VARCHAR(8), campus VARCHAR(8), assignable_area INTEGER,
   occupants INTEGER
@@ -23,7 +23,8 @@ CREATE TABLE rooms (
 INSERT INTO rooms VALUES
   (1, 'R-101', 1, 11, 1, 'lab', 30), (2, 'R-102', 1, 12, 1, 'office', 20),
   (3, 'R-104', 1, 11, 1, 'lab', 15), (4, 'R-201', 2, 21, 2, 'office', 50),
-  (5, 'R-202', 2, 12, 2, 'seminar', 40), (6, 'R-103', NULL, NULL, 1, 'storage', 10);
+  (5, 'R-202', 2, 12, 2, 'seminar', 40), (6, 'R-103', NULL, NULL, 1, 'storage', 10),
+  (7, 'R-105', NULL, NULL, 2, 'office', 25);
 
 CREATE TABLE room_rows (
   room_code VARCHAR(8), building_id INTEGER, org_id INTEGER, room_use VARCHAR(8), area INTEGER
@@ -31,4 +32,4 @@ CREATE TABLE room_rows (
 INSERT INTO room_rows VALUES
   ('R-101', 1, 1, 'lab', 30), ('R-101', 1, 1, 'lab', 30), ('R-102', 1, 1, 'office', 20),
   ('R-104', 1, 1, 'lab', 15), ('R-201', 2, 2, 'office', 50), ('R-202', 2, 2, 'seminar', 40),
-  ('R-103', NULL, 1, 'storage', 10);
+  ('R-103', NULL, 1, 'storage', 10), ('R-105', NULL, 2, 'office', 25);

@@ -17,7 +17,9 @@ package's recorded one or the rows' own key, one row at every hop. Its leaf
 (``parent_value_leaf_select``) keeps one row per (M key, group) from the rows with every hop
 joined LEFT, then aggregates: each M row counts once, with its whole value, in every group it
 has a row in, and a group whose rows name no M row reads NULL. A total is the call without the
-grouping. Anything else keeps the call's own refusal, except a policy's (``POLICY_DENIED``).
+grouping. Anything else keeps the call's own refusal, except a policy's (``POLICY_DENIED``),
+as does every such call on a warehouse that joins lookups INNER (ClickHouse, whose outer join
+reads a type default for an unmatched row).
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ from ..sql_ast import (
     SqlExpr,
     SqlField,
     SqlIdentifier,
+    SqlIsNull,
     SqlLiteral,
     SqlSelect,
     SqlTableRef,
@@ -61,6 +64,7 @@ from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
     _joins_for_paths,
+    _outer_joins,
     _resolve_dimension_expr,
 )
 from .plan_checks import (
@@ -184,6 +188,9 @@ def parent_value_route(
     roots = _query_roots(query)
     if (
         parent is None
+        # A warehouse whose outer join reads a type default for an unmatched row (ClickHouse)
+        # joins a lookup INNER, so a row with no parent would drop out instead of reading NULL.
+        or not _outer_joins(config)
         or parent.id == rows
         or parent.is_row_grain
         or not parent.key_columns
@@ -329,12 +336,14 @@ def parent_value_leaf_select(
         for item in plain_filters(plan.query.get("where"))
     ]
     name = f"{measure_plan.cte_name}_parent_rows"
+    # The value is NULL where a row names no parent, before the measure's own expression: one
+    # that isn't NULL there (a sum of 1, a COALESCE) would count a parent that isn't there.
+    value_expr = SqlCase(
+        [SqlCaseWhen(SqlIsNull(keys[0].expression), SqlLiteral(None))],
+        else_expr=_config_expr_to_sql(measure.expr, measure, config),
+    )
     reached = SqlSelect(
-        select=[
-            *keys,
-            *groups,
-            SqlField(_config_expr_to_sql(measure.expr, measure, config), "__parent_value"),
-        ],
+        select=[*keys, *groups, SqlField(value_expr, "__parent_value")],
         from_table=SqlTableRef(name=entities[rows].table),
         joins=_joins_for_paths(rows, measure_plan.path_selections, config, measure_entity=None),
         where=where,

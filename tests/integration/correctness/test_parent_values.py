@@ -7,7 +7,8 @@ building's measure. From the building's side that is a one-to-many walk the pack
 (``PATH_NOT_FOUND``), or on a two-way package a question of which route reaches the rooms
 (``AMBIGUOUS_PATH``). Read from the rooms' side it is one lookup by the room's own building
 key: each building counts once, with its whole value, in every group that holds one of its
-rooms; a group whose rooms name no building (R-103) reads NULL; and a total is the call
+rooms; a group whose rooms name no building (R-103) reads NULL, and a room with no building
+(R-105, beside two offices with one) adds nothing to its group; and a total is the call
 without the grouping, B-3 with no room included. A route the package or the call records
 stands.
 
@@ -30,11 +31,14 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import binding
 from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.query_call import read_call
+from semantic_rails.registry import Registry
 from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, PackageConfig, SeedSpec, SemanticPolicyConfig
@@ -56,6 +60,7 @@ SEED = (CAMPUS / "data" / "seed.sql").read_text(encoding="utf-8")
 ROOM, BUILDING, FLOOR = "entity.campus_room", "entity.campus_building", "entity.campus_floor"
 AREA = "measure.campus.assignable_area"
 BUILDINGS = "measure.campus.building_count"
+BUILDING_ROWS, AREA_OR_ZERO = "measure.campus.building_rows", "measure.campus.area_or_zero"
 ROOM_AREA = "measure.campus.room_area"
 ROOM_CODE, ROOM_USE = "dimension.campus_room_room_code", "dimension.campus_room_room_use"
 ROW_CODE = "dimension.campus_room_rows_room_code"
@@ -97,6 +102,17 @@ REFERENCE = {
       FROM rooms r LEFT JOIN buildings b ON b.building_id = r.building_id""",
     "b1_rooms": """SELECT r.room_code, b.assignable_area FROM rooms r
       JOIN buildings b ON b.building_id = r.building_id WHERE b.building_name = 'B-1'""",
+    # A use's buildings are those one of its rooms names, each once.
+    "rows_by_use": """SELECT u.room_use,
+      (SELECT NULLIF(COUNT(*), 0) FROM buildings b WHERE EXISTS (SELECT 1 FROM rooms r
+        WHERE r.building_id = b.building_id AND r.room_use = u.room_use)),
+      (SELECT AVG(COALESCE(b.assignable_area, 0)) FROM buildings b WHERE EXISTS (SELECT 1
+        FROM rooms r WHERE r.building_id = b.building_id AND r.room_use = u.room_use))
+      FROM (SELECT DISTINCT room_use FROM rooms) u""",
+    # An organization's buildings are those one of its rooms names, each once.
+    "by_organization": """SELECT o.org_name, SUM(b.assignable_area) FROM organizations o
+      JOIN buildings b ON EXISTS (SELECT 1 FROM rooms r WHERE r.org_id = o.org_id
+        AND r.building_id = b.building_id) GROUP BY o.org_name""",
     "total": "SELECT SUM(assignable_area) FROM buildings",
     "office_total": """SELECT SUM(b.assignable_area) FROM buildings b WHERE EXISTS (
       SELECT 1 FROM rooms r WHERE r.building_id = b.building_id AND r.room_use = 'office')""",
@@ -190,6 +206,12 @@ class Campus:
 
 def _values(out: dict[str, Any]) -> list[tuple[Any, ...]]:
     return sorted((tuple(row.values()) for row in out["rows"]), key=repr)
+
+
+def _exact(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    """``rows`` with their last column, an average, read as an exact number: Postgres answers an
+    average's NUMERIC exactly, as a string."""
+    return [(*row[:-1], None if row[-1] is None else Decimal(str(row[-1]))) for row in rows]
 
 
 @pytest.fixture(scope="module", params=["duckdb", "postgres"])
@@ -311,15 +333,24 @@ def test_each_room_row_reads_its_own_buildings_value(campus, variant, verbosity)
 def test_a_group_counts_each_of_its_buildings_once(campus, variant):
     """Labs R-101 and R-104 are both in B-1: 1000, not 2000. Offices span B-1 and B-2: 1600.
     Storage's one room names no building: NULL area, count and average, never 0."""
-
-    def exact(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
-        # Postgres answers an average's NUMERIC exactly, as a string.
-        return [(*row[:3], None if row[3] is None else Decimal(str(row[3]))) for row in rows]
-
-    assert exact(campus.answer(BY_USE, variant)) == exact(campus.reference("by_use"))
-    rows = {row[0]: row[1:] for row in exact(campus.answer(BY_USE, variant))}
+    assert _exact(campus.answer(BY_USE, variant)) == _exact(campus.reference("by_use"))
+    rows = {row[0]: row[1:] for row in _exact(campus.answer(BY_USE, variant))}
     assert rows["lab"] == (1000, 1, 1000) and rows["office"] == (1600, 2, 800)
     assert rows["storage"] == (None, None, None)
+
+
+@pytest.mark.parametrize("variant", ["base", "two_way"])
+def test_a_room_with_no_building_adds_no_building(campus, variant):
+    """How many buildings have offices? R-102 and R-201 name B-1 and B-2, and R-105 names no
+    building: a count of 1 per building row reads 2, not 3, and the average of the area read as
+    0 where it's missing reads 800, not 533, whatever the measure's expression reads where no
+    building is there."""
+    average = {"kind": "measure", "measure": AREA_OR_ZERO, "aggregation": "avg"}
+    call = {"select": [BUILDING_ROWS, {"expression": average, "as": "avg"}], "group_by": [ROOM_USE]}
+    answer = _exact(campus.answer(call, variant))
+    assert answer == _exact(campus.reference("rows_by_use"))
+    rows = {row[0]: row[1:] for row in answer}
+    assert rows["office"] == (2, 800) and rows["storage"] == (None, None)
 
 
 def test_rows_without_a_key_count_each_building_once(campus):
@@ -463,8 +494,8 @@ def test_a_row_filter_on_buildings_reads_the_visible_rooms_only(campus, variant)
 
 @pytest.mark.parametrize("variant", ["base", "two_way"])
 def test_a_row_filter_on_rooms_reads_buildings_only_where_they_are_shared(campus, variant):
-    """An office caller sees R-102 and R-201. With every building shared, each office reads its
-    building's value; otherwise no filter reaches the buildings, so their measure is refused as
+    """An office caller sees R-102, R-201 and R-105. With every building shared, each office
+    reads its building's value (R-105, naming none, NULL); otherwise no filter reaches the buildings, so their measure is refused as
     it is asked alone."""
     shared = campus.runtime(with_policies(campus.config(variant), SHARED_USE_FILTER), variant)
     held = campus.runtime(with_policies(campus.config(variant), USE_FILTER), variant)
@@ -545,3 +576,53 @@ def test_any_other_call_keeps_its_own_refusal(campus, variant, name):
     with _without_parent_values():
         assert refused == _refusal(lambda: campus.query(REFUSED[name], variant))
     assert refused[0] in {"PATH_NOT_FOUND", "AMBIGUOUS_PATH", "INVALID_QUERY"}
+
+
+def test_buildings_by_organization_is_a_route_question(campus):
+    """Each organization's building area: which link ties a building to an organization is a
+    business route, so the rooms don't decide it. A two-way package asks, and each option's
+    call answers from the buildings' side: each building counts once, with its whole area, in
+    every organization with one of its rooms."""
+    code, _, details = _refusal(lambda: campus.query(REFUSED["by_organization"], "two_way"))
+    assert code == "AMBIGUOUS_PATH"
+    (rooms,) = [
+        option
+        for option in details["clarification"]["options"]
+        if option["relationship_path"] == [ROOM_BUILDING, "relationship.room_organization"]
+    ]
+    assert campus.answer(rooms["query"], "two_way") == campus.reference("by_organization")
+
+
+def _on_clickhouse(config: PackageConfig) -> PackageConfig:
+    connection = ConnectionSpec(
+        kind="clickhouse_native",
+        options={"host_env": "SR_CLICKHOUSE_HOST", "user_env": "SR_CLICKHOUSE_USER"},
+    )
+    return replace(
+        config,
+        package=replace(
+            config.package,
+            warehouse="clickhouse",
+            default_db="",
+            seed=SeedSpec(),
+            connection=connection,
+        ),
+    )
+
+
+@pytest.mark.parametrize("variant", ["base", "two_way"])
+@pytest.mark.parametrize("name", ["by_room", "by_use"])
+def test_clickhouse_keeps_the_refusal(packages, variant, name):
+    """ClickHouse joins lookups INNER (its outer join reads a type default for an unmatched
+    row), so a room with no building would drop out there instead of reading NULL: the call
+    keeps its own refusal."""
+    config = _on_clickhouse(load_package_config(str(packages[variant])))
+    registry = Registry(config)
+
+    def compiled() -> Any:
+        return compile_query(config, registry, read_call(CALLS[name], config=config)[0])
+
+    refused = _refusal(compiled)
+    with _without_parent_values():
+        assert refused == _refusal(compiled)
+    assert refused[0] == {"base": "PATH_NOT_FOUND", "two_way": "AMBIGUOUS_PATH"}[variant]
