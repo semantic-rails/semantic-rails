@@ -473,24 +473,37 @@ def call_measures(call: dict[str, Any]) -> list[str]:
 
 
 class _Grains:
-    """Each entity's declared key and the columns of its own times (those a temporal role reads)."""
+    """Each entity's declared key, the columns its dimensions read, and those of its own times
+    (the dimensions a temporal role reads)."""
 
     def __init__(self, config: PackageConfig) -> None:
         self.columns = _Columns(config)
         roles = {role.dimension for role in config.temporal_roles}
+        self.described: dict[str, set[str]] = {}
         self.times: dict[str, set[str]] = {}
         for dim in config.dimensions:
-            if dim.id in roles and dim.column:
+            if not _COLUMN.match(dim.column or ""):
+                continue
+            self.described.setdefault(dim.entity, set()).add(dim.column.casefold())
+            if dim.id in roles:
                 self.times.setdefault(dim.entity, set()).add(dim.column.casefold())
 
     def same_things(self, entity: str, other: str) -> bool:
-        """Whether two entities' rows are the same things: both keyed by the same key (a copy,
-        such as a staging or mirrored table), or one keyed by the other's key and time columns
-        of its own (a history or snapshot, one row per version of each). Every key column says
-        what it identifies. A relationship between two entities, or a table that holds another's
-        key (payments holding each invoice's), relates different things; and a table without a
-        declared key is the same as no other."""
+        """Whether two entities' rows are the same things.
+
+        - Keyed: both by the same key (a copy, such as a staging or mirrored table), or one by
+          the other's key and time columns of its own (a history or snapshot, one row per
+          version of each). Every key column says what it identifies.
+        - Keyless: neither declares a key, and one's dimensions read every column the other's
+          do (a copy, or one that adds columns such as a snapshot date or validity range).
+
+        A relationship, or a table that holds another's key (payments holding each invoice's),
+        relates different things, and so do two keyless tables that each read columns the
+        other doesn't."""
         near, far = self.columns.key_of(entity), self.columns.key_of(other)
+        if not near and not far:
+            mine, theirs = self.described.get(entity, set()), self.described.get(other, set())
+            return bool(mine and theirs) and (mine <= theirs or theirs <= mine)
         if not near or not far or not all(_specific(column) for column in near | far):
             return False
         return (

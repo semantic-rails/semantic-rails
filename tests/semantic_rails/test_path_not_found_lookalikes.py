@@ -80,6 +80,15 @@ CREATE TABLE invoices (invoice_id INTEGER, amount DOUBLE);
 INSERT INTO invoices VALUES (1, 100), (2, 50);
 CREATE TABLE payments (payment_id INTEGER, invoice_id INTEGER, method VARCHAR, amount DOUBLE);
 INSERT INTO payments VALUES (1, 1, 'card', 60), (2, 1, 'wire', 40);
+CREATE TABLE room_log (room_name VARCHAR, floor VARCHAR, area DOUBLE);
+INSERT INTO room_log VALUES ('Hall 1', 'ground', 30), ('Hall 2', 'first', 20);
+CREATE TABLE room_log_hist (room_name VARCHAR, floor VARCHAR, area DOUBLE, snapshot_date DATE);
+INSERT INTO room_log_hist VALUES ('Hall 1', 'ground', 25, '2026-01-01'),
+  ('Hall 1', 'ground', 30, '2026-06-01'), ('Hall 2', 'first', 20, '2026-06-01');
+CREATE TABLE cash_sales (register VARCHAR, amount DOUBLE);
+INSERT INTO cash_sales VALUES ('front', 12), ('back', 8);
+CREATE TABLE refunds (reason VARCHAR, amount DOUBLE);
+INSERT INTO refunds VALUES ('damaged', 5);
 """
 
 
@@ -263,6 +272,32 @@ def _files(v2: bool) -> dict[str, Any]:
                 "entities": {entity: {}},
                 "dimensions": dimension,
                 "measures": {f"{model_id}_amount": _measure("Amount", "amount", "currency")},
+            }
+        }
+    # Keyless tables (row grain): a room log and its history, which reads every column of the log
+    # and a snapshot date; and two unrelated tables that each sum an amount.
+    for model_id, dimensions, measure in (
+        ("room_log", ["room_name", "floor"], "area"),
+        ("room_log_hist", ["room_name", "floor"], "area"),
+        ("cash_sales", ["register"], "amount"),
+        ("refunds", ["reason"], "amount"),
+    ):
+        files[f"models/{model_id}.yml"] = {
+            "model": {
+                "id": model_id,
+                "relation": model_id,
+                "entities": {},
+                **(
+                    {"times": {"snapshot_date": {"column": "snapshot_date", "kind": "date"}}}
+                    if model_id == "room_log_hist"
+                    else {}
+                ),
+                "dimensions": {column: {"kind": "categorical"} for column in dimensions},
+                "measures": {
+                    f"{model_id}_{measure}": _measure(
+                        f"{measure.title()} ({model_id.upper()})", measure
+                    )
+                },
             }
         }
     if v2:
@@ -540,6 +575,44 @@ def test_a_history_keyed_by_the_rooms_key_and_its_own_time_is_a_lookalike(shop):
     # times, it holds rows of something else.
     for key in (["version_id"], ["room_id", "version_id"]):
         assert lookalike_swaps(hist_keyed(key), [ROOMS_AREA], room) == [], key
+
+
+def test_a_keyless_history_reading_every_column_of_its_table_is_a_lookalike(shop):
+    # Neither table declares a key; the history reads every column the log does, and a snapshot
+    # date: the same rooms, one row per snapshot.
+    runtime = shop()
+    config = runtime.package_config
+    log, hist = "entity.shop_room_log", "entity.shop_room_log_hist"
+    log_area, hist_area = "measure.shop.room_log_area", "measure.shop.room_log_hist_area"
+    assert lookalike_swaps(config, [log_area], log) == [(hist, {log_area: hist_area})]
+    assert lookalike_swaps(config, [hist_area], hist) == [(log, {hist_area: log_area})]
+    assert [row["measure"] for row in _card(runtime, log_area)["lookalike_measures"]] == [hist_area]
+    # A history that no longer reads the floor holds other rows.
+    narrowed = replace(
+        config,
+        dimensions=[
+            row for row in config.dimensions if not (row.entity == hist and row.column == "floor")
+        ],
+    )
+    assert lookalike_swaps(narrowed, [log_area], log) == []
+
+
+def test_unrelated_keyless_tables_sharing_only_an_amount_are_never_lookalikes(shop):
+    # Cash sales by register and refunds by reason: each reads a column the other doesn't.
+    runtime = shop()
+    sales, refunds = "measure.shop.cash_sales_amount", "measure.shop.refunds_amount"
+    assert lookalike_swaps(runtime.package_config, [sales], "entity.shop_cash_sales") == []
+    assert lookalike_swaps(runtime.package_config, [refunds], "entity.shop_refunds") == []
+    assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, sales))
+    # Refunds that read no column at all say nothing about which rows they hold.
+    bare = replace(
+        runtime.package_config,
+        dimensions=[
+            row for row in runtime.package_config.dimensions if row.entity != "entity.shop_refunds"
+        ],
+    )
+    assert lookalike_swaps(bare, [sales], "entity.shop_cash_sales") == []
+    assert lookalike_swaps(bare, [refunds], "entity.shop_refunds") == []
 
 
 def _copies(root: Path, count: int) -> None:
