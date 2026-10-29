@@ -481,10 +481,11 @@ def _edge_cap(
     """What a measure's declared edge (``zero_through``) lets the leaf that reads it on the
     clock ``role_id`` (an untimed read: the measure's default clock) read: the rows at or
     before the edge (``declared_cap``). None past it exist for anything the leaf feeds, nested
-    predicates and windows included. An untimed read on a clock of another model is capped
-    through the to-one route that dates each row (``clock_hops``): a row whose dating row is
-    missing or past the edge isn't read. A series or window on such a clock isn't capped, and
-    its edge isn't read there either (``_record_time_scope``)."""
+    predicates and windows included. An untimed read of the measure's own rows on a clock of
+    another model is capped through the to-one route that dates each row (``clock_hops``): a
+    row whose dating row is missing or past the edge isn't read. A series or window on such a
+    clock isn't capped, and its edge isn't read there either (``_record_time_scope``); nor is a
+    leaf that reads another entity's rows for the measure (``entity``) on such a clock."""
     untimed = not role_id
     role_id = role_id or measure.default_temporal_role
     if measure.zero_through is None or not role_id:
@@ -502,7 +503,7 @@ def _edge_cap(
     cap = declared_cap(measure.zero_through, raw, local, zone, dialect)
     if direct is not None or dim.entity == source:
         return cap
-    hops = clock_hops(source, dim.entity, config) if untimed else None
+    hops = clock_hops(source, dim.entity, config) if untimed and source == measure.entity else None
     if hops is None:
         return []
     route, ((on, table), *joins) = hops
