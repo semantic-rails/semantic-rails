@@ -557,7 +557,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # distribution's per-entity values need it only where an entity can lack an operand's
     # value: two or more leaves joined on its keys that read different rows, or an operand
     # beside another whose sum skips rows (a CASE with no ELSE: "revenue less store b
-    # revenue" reads 0 for store b at a customer with no store b order). Sums of the same rows
+    # sales" reads 0 for store b at a customer with no store b order). Sums of the same rows
     # that read every row (the declared average order value) need none, in one leaf or one per
     # measure under an entity filter: an amount all NULL reads NULL either way.
     measures = _measure_index(config)

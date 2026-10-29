@@ -6980,7 +6980,7 @@ tests:
   shop/median-revenue-excluding-store-b-of-repeat-customers:
     kind: query_matches_snapshot
     expect: answer
-    why: "Store b revenue has no ELSE, so a customer with no store b order read store b as NULL and dropped out. As grouped by customer, it reads 0 there: customers 101 (23 less 0), 102 (9 less 5) and 103 (23 less 3) read 23, 4 and 20, so 20."
+    why: "Store b sales has no ELSE, so a customer with no store b order read store b as NULL and dropped out. As grouped by customer, it reads 0 there: customers 101 (23 less 0), 102 (9 less 5) and 103 (23 less 3) read 23, 4 and 20, so 20."
     cites: &store_b_cites
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
       - tests/integration/correctness/shop/models/orders.yml#model.measures.store_b_sales

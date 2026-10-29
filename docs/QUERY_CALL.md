@@ -1604,7 +1604,7 @@ where one of the input's measures has rows for it there, after that measure's ow
 bounded window never adds an order to a month it has no rows in, as a call grouped by order
 fills it in. A sum whose CASE has no ELSE skips the rows its conditions fail, so beside another
 measure it settles too: "median revenue excluding store b" per customer, revenue less store b
-revenue, reads `0` for store b at a customer with no store b order, as grouped by customer.
+sales, reads `0` for store b at a customer with no store b order, as grouped by customer.
 Measures that read the same rows, each of them every row (the declared average order value:
 revenue over order count), need no settling. Under `dataset`, a `where` beside an entity filter
 refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GROUPS_UNSETTLED`,
