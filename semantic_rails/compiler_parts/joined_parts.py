@@ -37,7 +37,9 @@ from ..sql_ast import (
     SqlJoin,
     SqlLiteral,
     SqlOrder,
+    SqlOrderTerm,
     SqlSelect,
+    SqlSetQuery,
     SqlTableRef,
     SqlWindow,
 )
@@ -48,6 +50,7 @@ from .paths import display_key
 # The joined call's own CTEs and hidden columns.
 KEYS_CTE = "joined_keys"
 JOINED_CTE = "joined_rows"
+COUNTED_CTE = "joined_counted"
 KEPT_CTE = "joined_kept"
 # Whether a row is a part's own: true, false (a key only another part has), or NULL (another
 # part's NULL-key row, which this part has no row for).
@@ -56,6 +59,12 @@ ROWS = "joined_rows_{part}"
 NULL_KEYS = "joined_null_keys_{part}"
 UNMATCHED = "joined_unmatched_{part}_{other}"
 KEPT_ROWS = "joined_kept_rows"
+# Marks on the joined rows the counts read: a part's row once (a coarser part's row repeats on
+# each of the finer part's rows, an untimed part's on each period's), its NULL key, and whether
+# any row of it holds another part's row.
+FIRST = "joined_first_{part}"
+NULL_KEY = "joined_null_key_{part}"
+HAS = "joined_has_{part}_{other}"
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,25 @@ class JoinKey:
     columns: tuple[str, ...]
     dimensions: tuple[str, ...]
     chosen: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class JoinShape:
+    """The joined call's key columns and its finer part, if any: the one part grouped by more
+    than the join key (``extra``: its further key columns), on whose rows every other part's
+    values repeat. A part with no clock beside a timed call holds every key but ``period``
+    (its column for it is ``""``): its values repeat on each period's row."""
+
+    keys: list[JoinKey]
+    finer: int | None = None
+    extra: tuple[str, ...] = ()
+
+    def holds(self, part: int) -> list[JoinKey]:
+        """The keys ``part`` has a column for."""
+        return [key for key in self.keys if key.columns[part]]
+
+    def untimed(self, part: int) -> bool:
+        return any(not key.columns[part] for key in self.keys)
 
 
 @dataclass(frozen=True)
@@ -238,15 +266,18 @@ def join_keys(
     group_bys: Sequence[Sequence[str]],
     bound_keys: Sequence[Sequence[str]],
     time_key: str,
-) -> list[JoinKey]:
-    """The joined call's key columns, checked: ``on`` (one dimension of each part per tuple),
-    each part's own ``group_by`` and the keys its binding grouped by (its group_by with the
-    display keys it added, then ``time_key`` when the call has a grain).
+) -> JoinShape:
+    """The joined call's key columns and finer part, checked: ``on`` (one dimension of each
+    part per tuple), each part's own ``group_by`` and the keys its binding grouped by (its
+    group_by with the display keys it added, then ``time_key`` when the call has a grain and
+    the part has a clock).
 
     Every tuple names a column each part groups by, once, and passes ``join_allowed``. A key
     the binding added beside a name that every part's tuple names joins with that tuple, so
-    two same-named entities stay two rows. Every key of every part is a key of the join: a
-    part grouped by more (a finer part) is refused.
+    two same-named entities stay two rows. One part may be grouped by more than the join key
+    (the finer part: each list's owners beside its member count), and it holds every key of
+    the join, ``period`` included; two such parts would multiply each other's rows, so they
+    are refused, as is a finer part with no clock beside a timed call.
     """
     parts = len(group_bys)
     seen: list[dict[str, int]] = [{} for _ in range(parts)]
@@ -299,32 +330,56 @@ def join_keys(
             # The key the binding grouped by beside the name, in every part: one more column.
             keys[(added,) * parts] = JoinKey(added, (added,) * parts, (added,) * parts)
     if time_key:
-        keys[(time_key,) * parts] = JoinKey(time_key, (time_key,) * parts, ("",) * parts)
-    covered = [{key.columns[part] for key in keys.values()} for part in range(parts)]
-    for part, bound in enumerate(bound_keys):
-        extra = [column for column in bound if column not in covered[part]]
-        if extra:
-            joined = [key.dimensions[part] or key.name for key in keys.values()]
+        # A part with no clock holds no period: it is matched on the other keys.
+        held = tuple(time_key if time_key in bound else "" for bound in bound_keys)
+        keys[(time_key,) * parts] = JoinKey(time_key, held, ("",) * parts)
+    covered = [{key.columns[part] for key in keys.values()} - {""} for part in range(parts)]
+    extras = {
+        part: [column for column in bound if column not in covered[part]]
+        for part, bound in enumerate(bound_keys)
+    }
+    finer = [part for part, extra in extras.items() if extra]
+    joined = ", ".join(key.dimensions[0] or key.name for key in keys.values())
+    if len(finer) > 1:
+        one, other = finer[:2]
+        raise refusal(
+            _part(other),
+            f"{_part(one)} groups by {', '.join(extras[one])} and {_part(other)} by "
+            f"{', '.join(extras[other])} beyond the join key ({joined}): joined, each row of one "
+            "would repeat for every row of the other",
+            fix=f"Group {_part(one)} or {_part(other)} by the join key only, or add the extra "
+            "column to join.on with a column of every other part.",
+            reason="parts_grain_mismatch",
+            part=other,
+            extra=extras[other],
+            finer=finer,
+        )
+    shape = JoinShape(list(keys.values()))
+    if finer:
+        (part,) = finer
+        shape = JoinShape(shape.keys, part, tuple(extras[part]))
+        if shape.untimed(part):
             raise refusal(
                 _part(part),
-                f"groups by {', '.join(extra)} beyond the join key ({', '.join(joined)}): "
-                "joined, each of its rows would repeat beside the other parts' rows. Every part "
-                "is grouped by the join key only",
-                fix=f"Add {extra[0]} to join.on with a column of every other part, or group "
-                f"{_part(part)} by the join key only.",
+                f"groups by {', '.join(extras[part])} beyond the join key ({joined}) but has no "
+                "period: joined, its rows would repeat on each period's row and each period's "
+                "rows on its rows",
+                fix=f"Group {_part(part)} by the join key only.",
                 reason="parts_grain_mismatch",
                 part=part,
-                extra=extra,
+                extra=extras[part],
             )
     # The order of the first part's own keys (a display key just before its name).
     order = {column: position for position, column in enumerate(bound_keys[0])}
-    return sorted(keys.values(), key=lambda key: order.get(key.columns[0], len(order)))
+    ordered = sorted(shape.keys, key=lambda key: order.get(key.columns[0], len(order)))
+    return replace(shape, keys=ordered)
 
 
-def refuse_shared_outputs(keys: Sequence[JoinKey], outputs: Sequence[Sequence[str]]) -> None:
-    """Every column of the joined answer is named once: a key or a select alias of one part
-    that another part's select alias repeats is refused."""
-    taken = {key.name: "the join key" for key in keys}
+def refuse_shared_outputs(shape: JoinShape, outputs: Sequence[Sequence[str]]) -> None:
+    """Every column of the joined answer is named once: a key, the finer part's further key
+    or a select alias of one part that another part's select alias repeats is refused."""
+    taken = {key.name: "the join key" for key in shape.keys}
+    taken.update({column: f"{_part(shape.finer)}'s group_by" for column in shape.extra})
     for part, names in enumerate(outputs):
         for name in names:
             if name in taken:
@@ -345,17 +400,26 @@ def _keys_cte(name: str) -> str:
 
 def joined_statement(
     parts: Sequence[PartStatement],
-    keys: Sequence[JoinKey],
+    shape: JoinShape,
     *,
     keep: Sequence[int] | None,
     order_by: Sequence[Mapping[str, Any]],
     limit: int | None,
 ) -> SqlSelect:
     """The one statement of a joined call (see the module docstring); ``keep`` None keeps
-    every key of every part."""
+    every key of every part.
+
+    A part that holds every key reads every key of the call, as its own groups or settled by
+    its guard. The keys of the call are those parts' own keys, the finer part's included, so
+    a key only the finer part has is settled in the others. An untimed part reads every key of
+    the call without its period, and its own keys besides: a key no timed part has is its own
+    row, with no period. The finer part reads its own keys only: on a key it lacks, its
+    columns are NULL, one row for the key."""
+    keys = shape.keys
     ctes_before: list[SqlCte] = []
     ctes_after: list[SqlCte] = []
-    sources: list[SqlCte] = []
+    sources: list[str] = []
+    every_own: list[SqlCte] = []
     roots: list[SqlCte] = []
     for index, part in enumerate(parts):
         prefix = f"joined_part_{index}"
@@ -372,64 +436,166 @@ def joined_statement(
             )
         own = flat.ctes[at]
         assert isinstance(own.query, SqlSelect)
-        # The part's own keys (no NULL), under the joined call's key names.
+        held = shape.holds(index)
+        # The part's own keys with no NULL join key, under the joined call's key names.
         named = dict(zip(part.keys, own.query.select, strict=True))
-        sources.append(
-            SqlCte(
-                name=f"{prefix}__own_keys",
-                query=replace(
-                    own.query,
+        own_keys = SqlCte(
+            name=f"{prefix}__own_keys",
+            query=replace(
+                own.query,
+                select=[SqlField(named[key.columns[index]].expression, key.name) for key in held],
+                where=[
+                    SqlBinary(named[key.columns[index]].expression, "IS NOT", SqlLiteral(None))
+                    for key in held
+                ],
+                distinct=True,
+            ),
+        )
+        if index == shape.finer:
+            # The finer part reads its own keys only.
+            replaced = own
+            sources.append(own_keys.name)
+        else:
+            source = KEYS_CTE
+            if shape.untimed(index):
+                source = f"{prefix}__every_keys"
+                every_own.append(_every_and_own(source, own_keys.name, [key.name for key in held]))
+            else:
+                sources.append(own_keys.name)
+            replaced = SqlCte(
+                name=own.name,
+                query=SqlSelect(
                     select=[
-                        SqlField(named[key.columns[index]].expression, key.name) for key in keys
+                        SqlField(
+                            SqlIdentifier(parts=["every", key.name]),
+                            named[key.columns[index]].alias,
+                        )
+                        for key in held
                     ],
+                    from_table=SqlTableRef(name=source, alias="every"),
                 ),
             )
-        )
-        # Inside the joined call, the part reads every key of every part.
-        every = SqlSelect(
-            select=[
-                SqlField(SqlIdentifier(parts=["every", key.name]), named[key.columns[index]].alias)
-                for key in keys
-            ],
-            from_table=SqlTableRef(name=KEYS_CTE, alias="every"),
-        )
-        ctes_before.extend(flat.ctes[:at])
-        ctes_after.extend([SqlCte(name=own.name, query=every), *flat.ctes[at + 1 :]])
+        ctes_before.extend([*flat.ctes[:at], own_keys])
+        ctes_after.extend([replaced, *flat.ctes[at + 1 :]])
         roots.append(SqlCte(name=prefix, query=replace(flat, ctes=[])))
-    every_key = _union_of_keys([cte.name for cte in sources], [key.name for key in keys])
-    joined = _joined_rows(parts, keys)
+    # Every part with a clock holds every key: some part does, whenever the call is timed.
+    assert sources, "a joined call has a part holding every key"
+    every_key = _union_of_keys(sources, [key.name for key in keys])
+    joined = _joined_rows(parts, shape)
+    marks = {field.alias for field in joined.select if field.alias.startswith(_MARKS)}
+    carried = [field.alias for field in joined.select if field.alias not in marks]
+    counted = SqlSelect(
+        select=[
+            *(SqlField(SqlIdentifier(parts=["joined", name]), name) for name in carried),
+            *_counts(len(parts)),
+        ],
+        from_table=SqlTableRef(name=JOINED_CTE, alias="joined"),
+    )
     kept = SqlSelect(
         select=[
-            SqlField(SqlIdentifier(parts=["joined", field.alias]), field.alias)
-            for field in joined.select
+            SqlField(SqlIdentifier(parts=["counted", field.alias]), field.alias)
+            for field in counted.select
         ]
         + [SqlField(SqlWindow(function=SqlCall("COUNT", [SqlLiteral(1)])), KEPT_ROWS)],
-        from_table=SqlTableRef(name=JOINED_CTE, alias="joined"),
+        from_table=SqlTableRef(name=COUNTED_CTE, alias="counted"),
         where=[
-            SqlBinary(SqlIdentifier(parts=["joined", IN.format(part=part)]), "=", SqlLiteral(True))
+            SqlBinary(SqlIdentifier(parts=["counted", IN.format(part=part)]), "=", SqlLiteral(True))
             for part in (keep or ())
         ],
     )
-    outputs = [*(key.name for key in keys), *(name for part in parts for name in part.outputs)]
+    outputs = [
+        *(key.name for key in keys),
+        *shape.extra,
+        *(name for part in parts for name in part.outputs),
+    ]
     hidden = [field.alias for field in kept.select if field.alias not in outputs]
     final = SqlSelect(
         ctes=[
             *ctes_before,
-            *sources,
             *every_key,
+            *every_own,
             *ctes_after,
             *roots,
             SqlCte(name=JOINED_CTE, query=joined),
+            SqlCte(name=COUNTED_CTE, query=counted),
             SqlCte(name=KEPT_CTE, query=kept),
         ],
         select=[
             SqlField(SqlIdentifier(parts=["kept", name]), name) for name in [*outputs, *hidden]
         ],
         from_table=SqlTableRef(name=KEPT_CTE, alias="kept"),
-        order_by=_order(order_by, keys),
+        order_by=_order(order_by, shape),
         limit=limit,
     )
     return final
+
+
+_MARKS = ("joined_first_", "joined_null_key_", "joined_has_")
+
+
+def _every_and_own(name: str, own_keys: str, columns: Sequence[str]) -> SqlCte:
+    """An untimed part's keys: every key of the call without its period, and the part's own."""
+    return SqlCte(
+        name=name,
+        query=SqlSetQuery(
+            "UNION",
+            [
+                SqlSelect(
+                    select=[
+                        SqlField(SqlIdentifier(parts=["every", column]), column)
+                        for column in columns
+                    ],
+                    from_table=SqlTableRef(name=KEYS_CTE, alias="every"),
+                ),
+                SqlSelect(
+                    select=[
+                        SqlField(SqlIdentifier(parts=["own_keys", column]), column)
+                        for column in columns
+                    ],
+                    from_table=SqlTableRef(name=own_keys, alias="own_keys"),
+                ),
+            ],
+        ),
+    )
+
+
+def _counts(count: int) -> list[SqlField]:
+    """The whole result's counts per part, over the marked joined rows: its rows (each once),
+    its NULL-key rows, and its rows with a non-NULL key no row of another part holds."""
+
+    def mark(name: str) -> Any:
+        return SqlIdentifier(parts=["joined", name])
+
+    def summed(condition: Any) -> SqlWindow:
+        return SqlWindow(
+            function=SqlCall(
+                "SUM", [SqlCase([SqlCaseWhen(condition, SqlLiteral(1))], else_expr=SqlLiteral(0))]
+            )
+        )
+
+    def is_one(name: str) -> Any:
+        return SqlBinary(mark(name), "=", SqlLiteral(1))
+
+    out: list[SqlField] = []
+    for part in range(count):
+        first = is_one(FIRST.format(part=part))
+        null = is_one(NULL_KEY.format(part=part))
+        out.append(SqlField(summed(first), ROWS.format(part=part)))
+        out.append(SqlField(summed(SqlBinary(first, "AND", null)), NULL_KEYS.format(part=part)))
+        for other in range(count):
+            if other == part:
+                continue
+            unmatched = SqlBinary(
+                SqlBinary(
+                    first,
+                    "AND",
+                    SqlBinary(mark(NULL_KEY.format(part=part)), "=", SqlLiteral(0)),
+                ),
+                "AND",
+                SqlBinary(mark(HAS.format(part=part, other=other)), "=", SqlLiteral(0)),
+            )
+            out.append(SqlField(summed(unmatched), UNMATCHED.format(part=part, other=other)))
+    return out
 
 
 def _union_of_keys(sources: Sequence[str], names: Sequence[str]) -> list[SqlCte]:
@@ -488,18 +654,35 @@ def _union_of_keys(sources: Sequence[str], names: Sequence[str]) -> list[SqlCte]
     return out
 
 
-def _joined_rows(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> SqlSelect:
+def _joined_rows(parts: Sequence[PartStatement], shape: JoinShape) -> SqlSelect:
     """The parts' rows joined on the keys by plain equality, each part's presence beside them
-    and the whole result's counts."""
+    and the marks the counts read.
+
+    The parts that hold every key join first, then the untimed parts (on every key but the
+    period), then the finer part, each on the keys it holds, compared with the value the parts
+    before it have there; a key's column is the first value any part has."""
+    keys = shape.keys
     aliases = [f"part_{index}" for index in range(len(parts))]
-    fields: list[SqlField] = []
-    for key in keys:
-        values: list[Any] = [
-            SqlIdentifier(parts=[alias, key.columns[index]]) for index, alias in enumerate(aliases)
-        ]
-        fields.append(
-            SqlField(values[0] if len(values) == 1 else SqlCall("COALESCE", values), key.name)
-        )
+    finer = [] if shape.finer is None else [shape.finer]
+    order = [
+        *(i for i in range(len(parts)) if i not in finer and not shape.untimed(i)),
+        *(i for i in range(len(parts)) if i not in finer and shape.untimed(i)),
+        *finer,
+    ]
+
+    def column(index: int, key: JoinKey) -> Any:
+        return SqlIdentifier(parts=[aliases[index], key.columns[index]])
+
+    def first_of(indexes: Sequence[int], key: JoinKey) -> Any:
+        values = [column(index, key) for index in indexes if key.columns[index]]
+        return values[0] if len(values) == 1 else SqlCall("COALESCE", values)
+
+    fields: list[SqlField] = [SqlField(first_of(order, key), key.name) for key in keys]
+    fields.extend(
+        SqlField(SqlIdentifier(parts=[aliases[shape.finer], name]), name)
+        for name in shape.extra
+        if shape.finer is not None
+    )
     for index, (alias, part) in enumerate(zip(aliases, parts, strict=True)):
         fields.extend(SqlField(SqlIdentifier(parts=[alias, name]), name) for name in part.outputs)
         fields.extend(
@@ -510,63 +693,67 @@ def _joined_rows(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> Sql
     fields.extend(
         SqlField(present, IN.format(part=index)) for index, present in enumerate(presence)
     )
-    key_values = {field.alias: field.expression for field in fields[: len(keys)]}
-
-    def any_null() -> Any:
-        out: Any = None
-        for key in keys:
-            test = SqlIsNull(key_values[key.name])
-            out = test if out is None else SqlBinary(out, "OR", test)
-        return out
-
-    def no_null() -> Any:
-        out: Any = None
-        for key in keys:
-            test = SqlBinary(key_values[key.name], "IS NOT", SqlLiteral(None))
-            out = test if out is None else SqlBinary(out, "AND", test)
-        return out
-
-    def count(condition: Any) -> SqlWindow:
-        return SqlWindow(
-            function=SqlCall(
-                "SUM", [SqlCase([SqlCaseWhen(condition, SqlLiteral(1))], else_expr=SqlLiteral(0))]
-            )
-        )
 
     def own(index: int) -> Any:
         return SqlBinary(presence[index], "=", SqlLiteral(True))
 
-    for index in range(len(parts)):
-        fields.append(SqlField(count(own(index)), ROWS.format(part=index)))
+    def flag(condition: Any) -> SqlCase:
+        return SqlCase([SqlCaseWhen(condition, SqlLiteral(1))], else_expr=SqlLiteral(0))
+
+    for index, alias in enumerate(aliases):
+        held = [column(index, key) for key in shape.holds(index)]
+        extra = (
+            [SqlIdentifier(parts=[alias, name]) for name in shape.extra] if index in finer else []
+        )
+        # A part's row is told apart by its presence and its own keys: it repeats, whole, on
+        # each joined row it is matched to.
+        row = [presence[index], *held, *extra]
+        number = SqlWindow(
+            function=SqlCall("ROW_NUMBER", []),
+            partition_by=row,
+            order_by=[SqlOrderTerm(presence[index])],
+        )
         fields.append(
-            SqlField(count(SqlBinary(own(index), "AND", any_null())), NULL_KEYS.format(part=index))
+            SqlField(
+                flag(SqlBinary(own(index), "AND", SqlBinary(number, "=", SqlLiteral(1)))),
+                FIRST.format(part=index),
+            )
+        )
+        any_null: Any = None
+        for value in held:
+            test = SqlIsNull(value)
+            any_null = test if any_null is None else SqlBinary(any_null, "OR", test)
+        fields.append(
+            SqlField(flag(SqlBinary(own(index), "AND", any_null)), NULL_KEY.format(part=index))
         )
         for other in range(len(parts)):
-            if other == index:
-                continue
-            # A key of this part's own rows no row of the other part has (NULL keys apart).
-            missing = SqlBinary(
-                SqlCall("COALESCE", [presence[other], SqlLiteral(False)]), "=", SqlLiteral(False)
-            )
-            unmatched = SqlBinary(SqlBinary(own(index), "AND", missing), "AND", no_null())
-            fields.append(SqlField(count(unmatched), UNMATCHED.format(part=index, other=other)))
+            if other != index:
+                fields.append(
+                    SqlField(
+                        SqlWindow(function=SqlCall("MAX", [flag(own(other))]), partition_by=row),
+                        HAS.format(part=index, other=other),
+                    )
+                )
     joins = []
-    for index, alias in enumerate(aliases[1:], start=1):
+    for position, index in enumerate(order[1:], start=1):
+        before = order[:position]
         on: Any = None
-        for key in keys:
+        for key in shape.holds(index):
+            if not any(key.columns[prior] for prior in before):
+                continue  # no part before it holds this key (a period beside untimed parts)
             # Plain equality: a NULL key matches nothing, so it stays its part's own row.
-            equal = SqlBinary(
-                SqlIdentifier(parts=[aliases[0], key.columns[0]]),
-                "=",
-                SqlIdentifier(parts=[alias, key.columns[index]]),
-            )
+            equal = SqlBinary(first_of(before, key), "=", column(index, key))
             on = equal if on is None else SqlBinary(on, "AND", equal)
         joins.append(
-            SqlJoin("FULL OUTER", SqlTableRef(name=f"joined_part_{index}", alias=alias), on=on)
+            SqlJoin(
+                "FULL OUTER",
+                SqlTableRef(name=f"joined_part_{index}", alias=aliases[index]),
+                on=on,
+            )
         )
     return SqlSelect(
         select=fields,
-        from_table=SqlTableRef(name="joined_part_0", alias=aliases[0]),
+        from_table=SqlTableRef(name=f"joined_part_{order[0]}", alias=aliases[order[0]]),
         joins=joins,
     )
 
@@ -580,8 +767,10 @@ def presence_order(count: int) -> list[SqlOrder]:
     ]
 
 
-def _order(order_by: Sequence[Mapping[str, Any]], keys: Sequence[JoinKey]) -> list[SqlOrder]:
-    """The call's order, else its time axis and then its keys, ascending; NULLs last."""
+def _order(order_by: Sequence[Mapping[str, Any]], shape: JoinShape) -> list[SqlOrder]:
+    """The call's order, else its time axis, its keys and the finer part's further keys,
+    ascending; NULLs last."""
+    keys = shape.keys
     if order_by:
         return [
             SqlOrder(
@@ -591,7 +780,9 @@ def _order(order_by: Sequence[Mapping[str, Any]], keys: Sequence[JoinKey]) -> li
             )
             for item in order_by
         ]
-    names = [key.name for key in keys if not key.dimensions[0]] + [
-        key.name for key in keys if key.dimensions[0]
+    names = [
+        *(key.name for key in keys if not key.dimensions[0]),
+        *(key.name for key in keys if key.dimensions[0]),
+        *shape.extra,
     ]
     return [SqlOrder(SqlIdentifier(parts=[name]), "ASC", nulls_last=True) for name in names]

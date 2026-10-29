@@ -34,6 +34,7 @@ from ..compiler_parts.joined_parts import (
     ROWS,
     UNMATCHED,
     JoinKey,
+    JoinShape,
     PartStatement,
     hidden_name,
     join_keys,
@@ -104,10 +105,14 @@ class _Part:
 @dataclass(frozen=True)
 class _Joined:
     parts: list[_Part]
-    keys: list[JoinKey]
+    shape: JoinShape
     keep: list[int] | None
     compiled: dict[str, Any]
     zone: str
+
+    @property
+    def keys(self) -> list[JoinKey]:
+        return self.shape.keys
 
 
 def joined_check(
@@ -187,13 +192,20 @@ def joined_query(runtime: Any, payload: dict[str, Any]) -> dict[str, Any]:
     for part in joined.parts:
         own: list[dict[str, Any]] = []
         at: list[int] = []
+        seen: dict[tuple[Any, ...], int] = {}
         present = column(IN.format(part=part.index))
         for row in rows:
             if row.get(present) is None:
-                at.append(-1)  # another part's NULL-key row: this part has no row here
+                at.append(-1)  # a row this part has none of (a key it lacks, a NULL-key row)
                 continue
-            at.append(len(own))
-            own.append(_part_row(row, part, joined.keys, column))
+            part_row = _part_row(row, part, joined.keys, column)
+            # A coarser part's row repeats on each finer row of its key, an untimed part's on
+            # each period's: the part answers from each of its rows once.
+            identity = tuple(part_row.get(name) for name in part.statement.keys)
+            if identity not in seen:
+                seen[identity] = len(own)
+                own.append(part_row)
+            at.append(seen[identity])
         part_rows, hidden = split_hidden(QueryRows(own, truncated=truncated), part.compiled)
         answers.append(
             runtime._answer(
@@ -300,28 +312,29 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
             reason="parts_time_zones_differ",
         )
     time_key = TIME_AXIS if payload.get("timed") else ""
-    keys = join_keys(
+    shape = join_keys(
         config,
         payload["join"]["on"],
         [list(part.payload.get("group_by") or []) for part in parts],
         [list(part.statement.keys) for part in parts],
         time_key,
     )
-    refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
-    _check_order(payload.get("order_by") or [], keys, parts)
+    refuse_shared_outputs(shape, [part.statement.outputs for part in parts])
+    _check_order(payload.get("order_by") or [], shape, parts)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
     statement = joined_statement(
         [part.statement for part in parts],
-        keys,
+        shape,
         keep=keep,
         order_by=payload.get("order_by") or [],
         limit=payload.get("limit"),
     )
-    # A requested order under a limit is broken by the keys, and a tie at the limit is stated,
-    # as a call's is; the parts' order breaks what is left.
+    # A requested order under a limit is broken by the keys (the finer part's further keys
+    # too), and a tie at the limit is stated, as a call's is; the parts' order breaks what is
+    # left.
     own, order_keys = (
-        limit_order(statement, [key.name for key in keys])
+        limit_order(statement, [*(key.name for key in shape.keys), *shape.extra])
         if payload.get("order_by")
         else (statement, ())
     )
@@ -340,7 +353,7 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         "limit_order_keys": order_keys,
     }
     zone = next(iter(zones), "") or _time_zone(config, parts[0].compiled)
-    return _Joined(parts=parts, keys=keys, keep=keep, compiled=compiled, zone=zone)
+    return _Joined(parts=parts, shape=shape, keep=keep, compiled=compiled, zone=zone)
 
 
 def _compile_part(
@@ -411,8 +424,12 @@ def _visibility(parts: list[_Part]) -> Any:
     )
 
 
-def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: list[_Part]) -> None:
-    names = [key.name for key in keys] + [name for part in parts for name in part.statement.outputs]
+def _check_order(order_by: list[dict[str, Any]], shape: JoinShape, parts: list[_Part]) -> None:
+    names = [
+        *(key.name for key in shape.keys),
+        *shape.extra,
+        *(name for part in parts for name in part.statement.outputs),
+    ]
     for index, item in enumerate(order_by):
         if item["field"] not in names:
             raise refusal(
@@ -425,7 +442,7 @@ def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: lis
 
 def _part_row(row: dict[str, Any], part: _Part, keys: list[JoinKey], column: Any) -> dict[str, Any]:
     """A part's row of a joined row, under the part's own column names, in its own order."""
-    by_column = {key.columns[part.index]: key.name for key in keys}
+    by_column = {key.columns[part.index]: key.name for key in keys if key.columns[part.index]}
     out: dict[str, Any] = {}
     for field in part.statement.sql_ast.select:
         name = field.alias
@@ -443,17 +460,30 @@ def _part_row(row: dict[str, Any], part: _Part, keys: list[JoinKey], column: Any
 def _joined_rows(
     joined: _Joined, answers: list[dict[str, Any]], where: list[list[int]], count: int
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """The answer's rows, rebuilt from each part's answered rows: the key columns (from the
-    first part with a row there), then each part's outputs (NULL where it has none)."""
+    """The answer's rows, rebuilt from each part's answered rows: each key column (from the
+    first part with a row there that holds it), the finer part's further keys, then each
+    part's outputs (NULL where it has none)."""
     rows: list[dict[str, Any]] = []
+    finer = joined.shape.finer
+    # Whether the period comes with its partial flag: then a row no timed part has (an untimed
+    # part's key no timed part has) reads it NULL beside its NULL period.
+    partial = any(PERIOD_PARTIAL in (answer.get("column_types") or {}) for answer in answers)
     for position in range(count):
-        first = next(index for index in range(len(joined.parts)) if where[index][position] >= 0)
-        source = answers[first]["rows"][where[first][position]]
         out: dict[str, Any] = {}
         for key in joined.keys:
-            out[key.name] = source.get(key.columns[first])
-            if key.name == TIME_AXIS and PERIOD_PARTIAL in source:
-                out[PERIOD_PARTIAL] = source[PERIOD_PARTIAL]
+            holding = [
+                index
+                for index in range(len(joined.parts))
+                if key.columns[index] and where[index][position] >= 0
+            ]
+            source = answers[holding[0]]["rows"][where[holding[0]][position]] if holding else {}
+            out[key.name] = source.get(key.columns[holding[0]]) if holding else None
+            if key.name == TIME_AXIS and (PERIOD_PARTIAL in source or partial):
+                out[PERIOD_PARTIAL] = source.get(PERIOD_PARTIAL)
+        if finer is not None:
+            at = where[finer][position]
+            source = answers[finer]["rows"][at] if at >= 0 else {}
+            out.update({name: source.get(name) for name in joined.shape.extra})
         for part, answer, at in zip(joined.parts, answers, where, strict=True):
             row = answer["rows"][at[position]] if at[position] >= 0 else {}
             for name in _visible_outputs(part):
@@ -462,6 +492,8 @@ def _joined_rows(
     types: dict[str, Any] = {}
     for key in joined.keys:
         for part, answer in zip(joined.parts, answers, strict=True):
+            if not key.columns[part.index]:
+                continue
             kind = (answer.get("column_types") or {}).get(key.columns[part.index])
             if kind is not None:
                 types[key.name] = kind
@@ -477,6 +509,11 @@ def _joined_rows(
             )
             if kind is not None:
                 types[PERIOD_PARTIAL] = kind
+    if finer is not None:
+        for name in joined.shape.extra:
+            kind = (answers[finer].get("column_types") or {}).get(name)
+            if kind is not None:
+                types[name] = kind
     for part, answer in zip(joined.parts, answers, strict=True):
         for name in _visible_outputs(part):
             kind = (answer.get("column_types") or {}).get(name)
@@ -726,7 +763,7 @@ def _output_columns(joined: _Joined, answers: list[dict[str, Any]]) -> list[dict
     for key in joined.keys:
         for part in joined.parts:
             row = by_field[part.index].get(key.columns[part.index])
-            if row is not None:
+            if key.columns[part.index] and row is not None:
                 columns.append({**row, "field": key.name, "sql_alias": key.name})
                 break
         if key.name == TIME_AXIS:
@@ -735,6 +772,11 @@ def _output_columns(joined: _Joined, answers: list[dict[str, Any]]) -> list[dict
             )
             if row is not None:
                 columns.append(row)
+    if joined.shape.finer is not None:
+        for name in joined.shape.extra:
+            row = by_field[joined.shape.finer].get(name)
+            if row is not None:
+                columns.append({**row, "part": joined.shape.finer})
     for part in joined.parts:
         for name in _visible_outputs(part):
             row = by_field[part.index].get(name)
