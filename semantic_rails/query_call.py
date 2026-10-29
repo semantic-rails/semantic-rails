@@ -62,6 +62,12 @@ FIELDS: tuple[str, ...] = (
     "observation_scope",
     "totals",
 )
+# A joined call: two or more parts, each a call of its own, joined on shared key columns
+# (``read_joined_call``). A part has the keys a call has except those that act on the joined
+# rows; one time block, order and limit belong to the whole call.
+JOINED_FIELDS: tuple[str, ...] = ("parts", "join", "time", "order_by", "limit")
+PART_FIELDS: tuple[str, ...] = ("select", "group_by", "where", "routes", "observation_scope")
+JOIN_KEYS: tuple[str, ...] = ("on", "keep")
 # The column a call with ``totals`` adds: the group_by ids a total row adds up (null on a row
 # of the call's own grain).
 TOTAL_OVER = "total_over"
@@ -468,6 +474,272 @@ def read_call(
             "select", "a call needs select, group_by or time", fix="Name a measure or metric."
         )
     return internal, context.notes
+
+
+def read_joined_call(
+    payload: Mapping[str, Any],
+    *,
+    config: PackageConfig | None = None,
+    now: Any = None,
+    default_clock: Callable[[str], str] | None = None,
+    text_dimension: Callable[[str, str, str, PackageConfig, str], Any] | None = None,
+    column_dimensions: Callable[[str, str, PackageConfig], list[Any]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """``(engine query, notes)`` for a joined call: ``parts`` (each read as a call, with the
+    joined call's ``time``), ``join`` (``on``: one dimension of every part per key column;
+    ``keep``: ``"all"`` or the indexes of the parts whose keys the answer keeps), ``order_by``
+    and ``limit``. Each part's notes carry its index (``part``)."""
+    _check_joined_top_level(payload)
+    raw_parts = payload.get("parts")
+    if not isinstance(raw_parts, list) or not raw_parts:
+        raise refusal(
+            "parts",
+            "is a list of one or more calls",
+            fix='Write "parts": [{"select": [...], "group_by": [...]}, ...].',
+        )
+    time = payload.get("time")
+    parts: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_parts):
+        path = f"parts[{index}]"
+        if not isinstance(raw, Mapping):
+            raise refusal(path, "is a call: an object", fix='Write {"select": [...], ...}.')
+        _check_part_keys(raw, path)
+        if time is not None:
+            _refuse_untimed_part(raw, path, default_clock)
+        call = {**raw, **({"time": time} if time is not None else {})}
+        try:
+            internal, part_notes = read_call(
+                call,
+                config=config,
+                now=now,
+                default_clock=default_clock,
+                text_dimension=text_dimension,
+                column_dimensions=column_dimensions,
+            )
+        except SemanticLayerError as exc:
+            raise in_part(exc, index) from None
+        parts.append(internal)
+        notes.extend({**note, "part": index} for note in part_notes)
+    _refuse_shared_aliases(parts)
+    join = _join(payload.get("join"), parts)
+    if len(raw_parts) > 1:
+        _refuse_unkept_entity_filters(raw_parts, join["keep"])
+    out: dict[str, Any] = {
+        "parts": parts,
+        "join": join,
+        "timed": bool(isinstance(time, Mapping) and time.get("grain")),
+    }
+    if "order_by" in payload:
+        # A measure id names the one column of any part that reads it as itself.
+        out["order_by"] = _order_by(
+            payload.get("order_by"),
+            [row for part in parts for row in part.get("select") or []],
+            config.measures if config is not None else [],
+        )
+    if "limit" in payload:
+        out["limit"] = _limit(payload.get("limit"))
+    return out, notes
+
+
+def in_part(exc: SemanticLayerError, index: int) -> SemanticLayerError:
+    """A part's refusal as the part alone gives it, said of that part: its message prefixed
+    ``parts[i]: ``, its details unchanged but for ``part`` (and ``path``, under the part)."""
+    details = dict(exc.details or {})
+    if isinstance(details.get("path"), str) and not str(details["path"]).startswith("time"):
+        details["path"] = f"parts[{index}].{details['path']}"
+    details["part"] = index
+    return SemanticLayerError(exc.code, f"parts[{index}]: {exc}", details=details)
+
+
+def _check_joined_top_level(payload: Mapping[str, Any]) -> None:
+    for key in payload:
+        if key in IGNORED or str(key).startswith("_"):
+            claim = identity_claim_path(payload[key], str(key))
+            if claim is not None:
+                raise refusal(claim, "is not part of a query call", fix=RETIRED["policy_context"])
+            continue
+        if key in JOINED_FIELDS:
+            continue
+        if key in FIELDS:
+            raise refusal(
+                key,
+                f"a joined call has {list(JOINED_FIELDS)}; {key} belongs to a part",
+                fix=f"Move '{key}' into the part it is for."
+                if key in PART_FIELDS
+                else f"Remove '{key}': a joined call has no {key}.",
+                supported_keys=list(JOINED_FIELDS),
+            )
+        if key in RETIRED:
+            raise refusal(
+                key, "is not part of a query call", fix=f"{_retired_fix(key, payload)} {V2_POINTER}"
+            )
+        if key in TOOL_ARGUMENTS:
+            raise refusal(
+                key,
+                "is an argument of the tool, not a key of the query",
+                fix=f"Pass `{key}` beside `query`.",
+            )
+        matches = _closest(key, JOINED_FIELDS)
+        raise refusal(
+            key,
+            f"unknown key; a joined call has {list(JOINED_FIELDS)}",
+            fix=f"Use '{matches[0]}'." if matches else f"Remove '{key}'.",
+            supported_keys=list(JOINED_FIELDS),
+        )
+
+
+def _check_part_keys(raw: Mapping[str, Any], path: str) -> None:
+    """A part is a call without the keys that act on the joined rows."""
+    if "having" in raw:
+        raise refusal(
+            f"{path}.having",
+            "a part has no having: a group it removed would read as 0 beside the other parts",
+            fix="Filter the returned rows, or keep only the keys of a filtered part with "
+            "join.keep.",
+        )
+    if "time" in raw:
+        raise refusal(
+            f"{path}.time",
+            "a joined call has one time block, on the call, read by every part whose "
+            "measures have a time role",
+            fix="Move it to the joined call's time.",
+        )
+    for key in ("order_by", "limit", "totals"):
+        if key in raw:
+            raise refusal(
+                f"{path}.{key}",
+                "a part has no order_by, limit or totals; they belong to the joined call",
+                fix="Move order_by and limit to the joined call."
+                if key != "totals"
+                else "Remove totals: a joined call has no totals.",
+            )
+    if "parts" in raw or "join" in raw:
+        raise refusal(
+            path, "a part is a call of its own, not a joined call", fix="Name its parts here."
+        )
+    for key in raw:
+        if key in IGNORED or str(key).startswith("_") or key in PART_FIELDS:
+            continue
+        matches = _closest(key, PART_FIELDS)
+        raise refusal(
+            f"{path}.{key}",
+            f"unknown key; a part has {list(PART_FIELDS)}",
+            fix=f"Use '{matches[0]}'." if matches else f"Remove '{key}'.",
+            supported_keys=list(PART_FIELDS),
+        )
+
+
+def _refuse_untimed_part(
+    raw: Mapping[str, Any], path: str, default_clock: Callable[[str], str] | None
+) -> None:
+    """A part none of whose selected ids reads a clock can't take the call's time block: such
+    a part is refused beside a timed call, never answered untimed."""
+    if default_clock is None:
+        return
+    measured = _named_ids(raw.get("select") or [])
+    if measured and any(default_clock(ref) for ref in measured):
+        return
+    raise refusal(
+        path,
+        "selects nothing with a clock, so the joined call's time can't apply to it: a part "
+        "with no time role beside a timed joined call isn't answered yet",
+        fix="Ask for it in a call of its own.",
+        reason="part_untimed",
+    )
+
+
+def _named_ids(value: Any) -> list[str]:
+    """Every measure and metric id a part's raw ``select`` names, at any depth of an item
+    (an id, an ``expression`` and the kinds nested in it); an alias (``as``) names none."""
+    if isinstance(value, str):
+        return [value] if value.startswith(REFERENCE_PREFIXES) else []
+    if isinstance(value, Mapping):
+        return [ref for key, item in value.items() if key != "as" for ref in _named_ids(item)]
+    if isinstance(value, list):
+        return [ref for item in value for ref in _named_ids(item)]
+    return []
+
+
+def _refuse_shared_aliases(parts: list[dict[str, Any]]) -> None:
+    taken: dict[str, int] = {}
+    for index, part in enumerate(parts):
+        for position, row in enumerate(part.get("select") or []):
+            alias = str(row.get("as") or "")
+            if alias in taken:
+                raise refusal(
+                    f"parts[{index}].select[{position}]",
+                    f"parts[{index}] selects '{alias}' and so does parts[{taken[alias]}]",
+                    fix='Name one of them with "as".',
+                    code="DUPLICATE_OUTPUT_ALIAS",
+                    alias=alias,
+                    part=index,
+                )
+            taken[alias] = index
+
+
+def _refuse_unkept_entity_filters(raw_parts: list[Any], keep: Any) -> None:
+    """An entity filter removes whole keys of its part by their own rows (departments with
+    more than 2 people), a having by another name: beside the other parts, a key it removed
+    would read as 0. Such a part is answered only when ``join.keep`` names it, so the answer
+    keeps only the keys the filter kept."""
+    kept = [] if keep == "all" else list(keep)
+    for index, raw in enumerate(raw_parts):
+        if index in kept:
+            continue
+        for position, item in enumerate(raw.get("where") or []):
+            if isinstance(item, Mapping) and "entity" in item:
+                raise refusal(
+                    f"parts[{index}].where[{position}]",
+                    "an entity filter in a part that join.keep doesn't name: a key it removes "
+                    f"would read as 0 beside the other parts; add {index} to join.keep",
+                    fix=f'Write "keep": {json.dumps(sorted({*kept, index}))} in join, so the '
+                    "answer keeps only the keys the filter keeps.",
+                    reason="part_filter_not_kept",
+                    part=index,
+                )
+
+
+def _join(raw: Any, parts: list[dict[str, Any]]) -> dict[str, Any]:
+    count = len(parts)
+    if not isinstance(raw, Mapping):
+        raise refusal(
+            "join",
+            "a joined call names join.on: one dimension of every part per key column",
+            fix='Write "join": {"on": [["dimension.<id>", "dimension.<id>"]]}.',
+        )
+    _check_keys(raw, JOIN_KEYS, "join")
+    on = raw.get("on")
+    shape = "join.on names at least one tuple, one dimension of every part"
+    if not isinstance(on, list) or not on:
+        raise refusal("join.on", shape, fix='Write [["dimension.<id>", "dimension.<id>"]].')
+    tuples: list[list[str]] = []
+    for index, row in enumerate(on):
+        if (
+            not isinstance(row, list)
+            or len(row) != count
+            or not all(isinstance(item, str) and item.strip() for item in row)
+        ):
+            raise refusal(
+                f"join.on[{index}]",
+                f"{shape}: {count} dimension ids, in the order of parts",
+                fix=f"Write {json.dumps(['dimension.<id>'] * count)}.",
+            )
+        tuples.append([item.strip() for item in row])
+    keep = raw.get("keep", "all")
+    if keep != "all" and (
+        not isinstance(keep, list)
+        or not keep
+        or not all(isinstance(item, int) and not isinstance(item, bool) for item in keep)
+        or not all(0 <= item < count for item in keep)
+        or len(set(keep)) != len(keep)
+    ):
+        raise refusal(
+            "join.keep",
+            f"join.keep names part indexes 0..{count - 1}, or 'all'",
+            fix='Write "all", or the indexes of the parts whose keys the answer keeps, e.g. [1].',
+        )
+    return {"on": tuples, "keep": keep if keep == "all" else sorted(keep)}
 
 
 def engine_where(
@@ -1877,6 +2149,35 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
         call["observation_scope"] = query["observation_scope"]
     if query.get("totals") is not None:
         call["totals"] = list(query["totals"])
+    return call
+
+
+def joined_call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
+    """The joined call that states an engine query of ``read_joined_call``: each part as its
+    call (``call_from_query``), the one time block on the call."""
+    parts = [call_from_query(part) for part in query.get("parts") or []]
+    times = [part.pop("time") for part in parts if "time" in part]
+    join = dict(query.get("join") or {})
+    call: dict[str, Any] = {
+        "parts": parts,
+        "join": {
+            "on": [list(row) for row in join.get("on") or []],
+            **({"keep": list(join["keep"])} if join.get("keep", "all") != "all" else {}),
+        },
+    }
+    if times:
+        call["time"] = times[0]
+    order = [
+        {
+            "field": str(item.get("field") or ""),
+            "direction": str(item.get("direction", "asc")).lower(),
+        }
+        for item in list(query.get("order_by") or [])
+    ]
+    if order:
+        call["order_by"] = order
+    if query.get("limit") is not None:
+        call["limit"] = query["limit"]
     return call
 
 

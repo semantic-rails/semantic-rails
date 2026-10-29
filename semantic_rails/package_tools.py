@@ -43,6 +43,7 @@ from .renderer import _quote_ident
 from .result_values import result_rows
 from .route_census import route_change_lines, route_changes
 from .runtime import Runtime, _time_zone
+from .runtime_parts.joined_call import joined_output_columns
 from .runtime_parts.responses import output_columns
 from .yaml_loader import load_named_entries
 
@@ -1138,11 +1139,14 @@ def _run_test(
     if kind == "query_matches_snapshot":
         result = runtime.query(query, **call)
         expected_rows = list(spec.get("expected_rows", []) or [])
-        compiled = runtime._compile(runtime.engine_payload(query, **call), policy_context={})
-        columns = output_columns(runtime._config, compiled)
-        encoded_expected = result_rows(
-            expected_rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
-        )
+        payload = runtime.engine_payload(query, **call)
+        if "parts" in payload:
+            columns, zone = joined_output_columns(runtime, payload)
+        else:
+            compiled = runtime._compile(payload, policy_context={})
+            columns = output_columns(runtime._config, compiled)
+            zone = _time_zone(runtime._config, compiled)
+        encoded_expected = result_rows(expected_rows, output_columns=columns, zone=zone)
         # A snapshot that leaves out a series' period_partial flag is compared without it.
         if not any(PERIOD_PARTIAL in row for row in expected_rows):
             shown = [
