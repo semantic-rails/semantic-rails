@@ -5,8 +5,7 @@ SQL runs.
 Fixture ``vendors/``: 236 shipments, each owned by one of three owners by a UUID in the
 warehouse's own UUID type (owners 1 and 2 hold 79, owner 0 holds 78). The package's policy
 filters shipments by the caller's trusted ``owner_id`` (``type: uuid``) for the ``owner`` role.
-Every answer is a count, checked against the rows read back in Python, so no UUID column is
-read back on either warehouse.
+Every answer is checked against the rows read back in Python.
 """
 
 from __future__ import annotations
@@ -56,6 +55,10 @@ def test_each_owner_counts_only_their_own_shipments_in_any_form_of_their_id(vend
     for owner, ids in owned.items():
         for form in _forms(owner):
             assert _count(vendors, _owner(form)) == len(ids), form
+        listed = vendors.runtime.query(
+            {"select": [SHIPMENTS], "group_by": [SHIPMENT]}, context=_owner(owner.upper())
+        )["rows"]
+        assert sorted(row[SHIPMENT] for row in listed) == sorted(ids)
     # A caller without the role reads every shipment.
     assert _count(vendors, RequestContext()) == 236
 
@@ -75,8 +78,15 @@ def test_another_owners_shipment_reads_as_one_that_does_not_exist(vendors):
         where = [{"field": SHIPMENT, "op": "is", "value": shipment}]
         return _count(vendors, _owner(mine), {**COUNT, "where": where})
 
+    def searched(text: str) -> tuple[list[str], int | None]:
+        context = {"policy_context": _owner(mine).to_policy_context()}
+        out = vendors.page(SHIPMENT, search=text, query=context)
+        return [row["value"] for row in out["values"]], out["total_count"]
+
     assert counted(own[0]) == 1
     assert counted(theirs[0]) == counted(nobody) == 0
+    assert searched(own[0][:13].upper()) == ([own[0]], 1)
+    assert searched(theirs[0][:13].upper()) == searched(nobody[:13]) == ([], 0)
     unfiltered = vendors.runtime.query(
         {**COUNT, "where": [{"field": SHIPMENT, "op": "is", "value": theirs[0]}]}
     )
