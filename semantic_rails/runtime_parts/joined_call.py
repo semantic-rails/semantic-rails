@@ -76,10 +76,19 @@ _PART_FIELDS = (
     "methodology_hints",
     "data_diagnostics",
 )
-PARTS_JOINED_CAVEAT = (
+_AGGREGATED = (
     "Each part was aggregated to its own groups before the join, so no row counts twice within "
-    "a part. It does not check that the joined columns mean the same thing in both models; the "
-    "join is the caller's."
+    "a part."
+)
+# Said instead when a part's groups overlap, naming those parts.
+_AGGREGATED_OVERLAPPING = (
+    "Each part was aggregated to its own groups before the join, so no row counts twice within "
+    "a group of a part; a row of {parts} counts in every group it has a row in, as its "
+    "REWRITE_APPLIED note says, so those groups overlap."
+)
+_THE_CALLERS = (
+    "It does not check that the joined columns mean the same thing in both models; the join is "
+    "the caller's."
 )
 
 
@@ -508,11 +517,22 @@ def _counts(joined: _Joined, rows: list[dict[str, Any]]) -> dict[str, Any] | Non
     return {"parts": parts, "kept": read(KEPT_ROWS)}
 
 
+def _overlapping(part: _Part) -> set[str]:
+    """The measures whose groups overlap in ``part``: a row counts, whole, in every group it
+    has a row in (``overlapping_groups``, the fact the part's own REWRITE_APPLIED states)."""
+    return {
+        str(step.measure_id)
+        for step in part.compiled["logical_plan"].rewrite_steps
+        if (getattr(step, "details", None) or {}).get("overlapping_groups")
+    }
+
+
 def _adds_up(config: Any, part: _Part) -> dict[str, bool]:
     """Per output of a part (at the join key), whether it adds up down the table: a count, or a
-    sum of an additive measure, read as itself. A distinct count, an average, a ratio or a
-    metric never does."""
+    sum of an additive measure, read as itself, in groups that don't overlap. A distinct count,
+    an average, a ratio, a metric or a measure whose groups overlap never does."""
     measures = {row.id: row for row in config.measures}
+    overlapping = _overlapping(part)
     out: dict[str, bool] = {}
     for item in part.compiled["logical_plan"].query.get("select") or []:
         alias = str(item.get("as") or "")
@@ -527,6 +547,7 @@ def _adds_up(config: Any, part: _Part) -> dict[str, bool]:
             and getattr(measure, "additive", False)
             and getattr(measure, "measure_class", "") == "additive"
             and aggregation in {"count", "sum"}
+            and measure.id not in overlapping
         )
     return out
 
@@ -599,13 +620,22 @@ def _parts_joined(
         sentences.append(
             f"Summed down the rows, {_listed(summed)} add{'s' if len(summed) == 1 else ''} up."
         )
+    overlap = [f"parts[{part.index}]" for part in joined.parts if _overlapping(part)]
     if others:
         sentences.append(
             f"{_listed(others)} {'is' if len(others) == 1 else 'are'} not stated to add up: a "
-            "distinct count, an average or a ratio can count a member of two rows twice."
+            + (
+                "distinct count, an average, a ratio or a part's overlapping groups"
+                if overlap
+                else "distinct count, an average or a ratio"
+            )
+            + " can count a member of two rows twice."
         )
     if len(joined.parts) > 1:
-        sentences.append(PARTS_JOINED_CAVEAT)
+        sentences.append(
+            _AGGREGATED_OVERLAPPING.format(parts=_listed(overlap)) if overlap else _AGGREGATED
+        )
+        sentences.append(_THE_CALLERS)
     return semantic_issue(
         code="PARTS_JOINED",
         message=" ".join(sentences),

@@ -64,6 +64,13 @@ IN_BUILDING_32 = {
 WORK_ORDERS = {"select": ["measure.depts.work_orders"], "group_by": [ROOM]}
 RESERVATIONS = {"select": ["measure.depts.reservations"], "group_by": [ROOM]}
 MONTHS = {"grain": "month", "start": "2024-01-01", "end": "2024-04-01"}
+SITE = "dimension.depts_employee_site"
+# Departments with more than 2 people: an entity filter, which removes whole keys of its part.
+BIG_DEPARTMENTS = {
+    "entity": "entity.depts_department",
+    "over": "all_time",
+    "having": [{"field": "measure.depts.headcount", "op": "gt", "value": 2}],
+}
 
 CAVEAT = (
     "Each part was aggregated to its own groups before the join, so no row counts twice within "
@@ -157,6 +164,27 @@ SELECT r.room_key, m.period,
 FROM rooms_seen AS r CROSS JOIN months AS m
 LEFT JOIN wo ON wo.room_key = r.room_key AND wo.period = m.period
 LEFT JOIN rv ON rv.room_key = r.room_key AND rv.period = m.period"""
+
+
+# Headcount and office area by site, by hand: site is on employees, and a space row counts once,
+# whole, in every site its department's people work at (so the area groups overlap); a space
+# row whose department has nobody, or that names none, is the NULL site.
+BY_SITE = """
+WITH hr AS (SELECT site, COUNT(*) AS headcount FROM employees GROUP BY site),
+fac AS (
+  SELECT site, SUM(area_sqft) AS area
+  FROM (SELECT DISTINCT s.space_id, s.area_sqft, e.site
+        FROM space AS s LEFT JOIN employees AS e ON e.dept_code = s.dept_code) AS seen
+  GROUP BY site)
+SELECT COALESCE(hr.site, fac.site), hr.headcount, fac.area
+FROM hr FULL OUTER JOIN fac ON hr.site = fac.site"""
+
+# The departments with more than 2 people, each with its people and its area, by hand.
+BIG_BY_DEPARTMENT = """
+SELECT e.dept_code, COUNT(*),
+  (SELECT SUM(area_sqft) FROM space AS s WHERE s.dept_code = e.dept_code)
+FROM employees AS e JOIN departments AS d ON d.dept_code = e.dept_code
+GROUP BY e.dept_code HAVING COUNT(*) > 2"""
 
 
 class Depts:
@@ -434,6 +462,62 @@ def test_a_timed_call_joins_each_period_and_settles_each_part_by_its_own_load(de
     assert [row["opened"] for row in renamed["rows"]] == [row["work_orders"] for row in out["rows"]]
 
 
+def test_a_part_whose_groups_overlap_is_not_stated_to_add_up(depts):
+    """Headcount and office area by site: a department's space counts in every site its people
+    work at, so the area rows sum to more than the space there is, and the note says area
+    doesn't add up, as the part's own overlap notice does."""
+    out = depts.query(
+        {
+            "parts": [
+                {**HEADCOUNT, "group_by": [SITE]},
+                {**SPACE, "select": ["measure.depts.area"], "group_by": [SITE]},
+            ],
+            "join": {"on": [[SITE, SITE]]},
+        }
+    )
+
+    assert _values(out) == depts.sql(BY_SITE)
+    assert sum(row["area"] for row in out["rows"]) == 3500
+    assert depts.sql("SELECT SUM(area_sqft) FROM space") == [(2400,)]
+    note = _joined(out)
+    assert {row["column"]: row["adds_up"] for row in note["details"]["columns"]} == {
+        "headcount": False,
+        "area": False,
+    }
+    assert "Summed down the rows" not in note["message"]
+    assert note["message"].endswith(
+        "headcount and area are not stated to add up: a distinct count, an average, a ratio or "
+        "a part's overlapping groups can count a member of two rows twice. Each part was "
+        "aggregated to its own groups before the join, so no row counts twice within a group of "
+        "a part; a row of parts[1] counts in every group it has a row in, as its REWRITE_APPLIED "
+        "note says, so those groups overlap. It does not check that the joined columns mean the "
+        "same thing in both models; the join is the caller's."
+    )
+    (overlap,) = [
+        row for row in _note(out, "REWRITE_APPLIED") if row["details"].get("overlapping_groups")
+    ]
+    assert overlap["details"]["part"] == 1
+    assert overlap["message"].startswith("parts[1]: ")
+    assert "so the groups overlap and don't add up to the total" in overlap["message"]
+
+
+def test_an_entity_filter_in_a_kept_part_answers_its_keys_only(depts):
+    """Departments with more than 2 people, beside their area: with the filtered part named in
+    keep, the answer is those departments, each with its real headcount and area."""
+    out = depts.query(
+        {
+            **BY_DEPARTMENT,
+            "parts": [
+                {**HEADCOUNT, "where": [BIG_DEPARTMENTS]},
+                {**SPACE, "select": ["measure.depts.area"]},
+            ],
+            "join": {"on": [[DEPT, SPACE_DEPT]], "keep": [0]},
+        }
+    )
+
+    assert _values(out) == depts.sql(BIG_BY_DEPARTMENT) == [("OPS", 3, 400)]
+
+
 def test_a_row_filter_reads_each_parts_visible_rows_and_counts_no_hidden_row(depts):
     """A south site lead sees the south employees only; facilities space is listed as shared.
     Marketing's one person works north: hidden, it is neither a row nor an unmatched key."""
@@ -696,6 +780,36 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         "INVALID_QUERY",
         f"join.on[1]: names {DEPT} of parts[0] again (join.on[0])",
         {"path": "join.on[1]", "reason": "join_key_repeated", "part": 0},
+    ),
+    (
+        "an entity filter in a part keep doesn't name",
+        {**BY_DEPARTMENT, "parts": [{**HEADCOUNT, "where": [BIG_DEPARTMENTS]}, SPACE]},
+        "INVALID_QUERY",
+        "parts[0].where[0]: an entity filter in a part that join.keep doesn't name: a key it "
+        "removes would read as 0 beside the other parts; add 0 to join.keep",
+        {"path": "parts[0].where[0]", "reason": "part_filter_not_kept", "part": 0},
+    ),
+    (
+        "an entity filter in the part keep leaves out",
+        {
+            "parts": [
+                HEADCOUNT,
+                {
+                    **SPACE,
+                    "where": [
+                        {
+                            **BIG_DEPARTMENTS,
+                            "having": [{"field": "measure.depts.area", "op": "gt", "value": 450}],
+                        }
+                    ],
+                },
+            ],
+            "join": {"on": [[DEPT, SPACE_DEPT]], "keep": [0]},
+        },
+        "INVALID_QUERY",
+        "parts[1].where[0]: an entity filter in a part that join.keep doesn't name: a key it "
+        "removes would read as 0 beside the other parts; add 1 to join.keep",
+        {"path": "parts[1].where[0]", "reason": "part_filter_not_kept", "part": 1},
     ),
     (
         "no join",

@@ -1152,7 +1152,10 @@ their rows in one statement:
   `routes`, the key a display name groups by (two people named Alex are two rows). A part's
   refusal is the one it gives alone, its message prefixed `parts[i]: ` and its `details.part`
   set. A part has no `having`, `time`, `order_by`, `limit` or `totals`, and two parts never
-  select the same output name (`DUPLICATE_OUTPUT_ALIAS`: name one with `as`).
+  select the same output name (`DUPLICATE_OUTPUT_ALIAS`: name one with `as`). An entity filter
+  in a part (departments with more than 2 people) removes whole keys, a `having` by another
+  name, so a key it removed would read 0 beside the other parts: a part holding one is answered
+  only when `join.keep` names it (`part_filter_not_kept`).
 - **Which columns join.** A tuple names the same dimension in every part, or two columns the
   package says hold the same values: a declared relationship's own two columns, each an
   identifier (a code, key or id, named for what it identifies) of one type. Two models that
@@ -1183,8 +1186,9 @@ their rows in one statement:
   rows, its NULL-key rows and its keys each other part lacks (`details.parts[].unmatched`),
   counted over the whole joined result before `order_by` and `limit` and never counting a row
   the caller can't see; `kept_rows`; and per column whether it adds up down the rows (a count
-  or sum of an additive measure does; a distinct count, an average or a ratio is not stated
-  to). `validate` and `sql` state the join without counts. The warehouse runs once.
+  or sum of an additive measure does; a distinct count, an average, a ratio, or a column whose
+  part's groups overlap, as that part's own `REWRITE_APPLIED` says, is not stated to).
+  `validate` and `sql` state the join without counts. The warehouse runs once.
 
 ## Inline expression kinds
 

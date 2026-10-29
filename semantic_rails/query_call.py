@@ -522,9 +522,12 @@ def read_joined_call(
         parts.append(internal)
         notes.extend({**note, "part": index} for note in part_notes)
     _refuse_shared_aliases(parts)
+    join = _join(payload.get("join"), parts)
+    if len(raw_parts) > 1:
+        _refuse_unkept_entity_filters(raw_parts, join["keep"])
     out: dict[str, Any] = {
         "parts": parts,
-        "join": _join(payload.get("join"), parts),
+        "join": join,
         "timed": bool(isinstance(time, Mapping) and time.get("grain")),
     }
     if "order_by" in payload:
@@ -673,6 +676,28 @@ def _refuse_shared_aliases(parts: list[dict[str, Any]]) -> None:
                     part=index,
                 )
             taken[alias] = index
+
+
+def _refuse_unkept_entity_filters(raw_parts: list[Any], keep: Any) -> None:
+    """An entity filter removes whole keys of its part by their own rows (departments with
+    more than 2 people), a having by another name: beside the other parts, a key it removed
+    would read as 0. Such a part is answered only when ``join.keep`` names it, so the answer
+    keeps only the keys the filter kept."""
+    kept = [] if keep == "all" else list(keep)
+    for index, raw in enumerate(raw_parts):
+        if index in kept:
+            continue
+        for position, item in enumerate(raw.get("where") or []):
+            if isinstance(item, Mapping) and "entity" in item:
+                raise refusal(
+                    f"parts[{index}].where[{position}]",
+                    "an entity filter in a part that join.keep doesn't name: a key it removes "
+                    f"would read as 0 beside the other parts; add {index} to join.keep",
+                    fix=f'Write "keep": {json.dumps(sorted({*kept, index}))} in join, so the '
+                    "answer keeps only the keys the filter keeps.",
+                    reason="part_filter_not_kept",
+                    part=index,
+                )
 
 
 def _join(raw: Any, parts: list[dict[str, Any]]) -> dict[str, Any]:
