@@ -1,0 +1,7 @@
+model:
+  id: organizations
+  label: Organizations
+  relation: organizations
+  entities: {organization: {}}
+  dimensions:
+    org_name: {label: Organization name, kind: categorical}

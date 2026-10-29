@@ -1,0 +1,9 @@
+model:
+  id: floors
+  label: Floors
+  relation: floors
+  entities: {floor: {}}
+  dimensions:
+    floor_name: {label: Floor name, kind: categorical}
+  measures:
+    floor_count: {label: Floors, kind: entity_count, entity_key: floor_id}

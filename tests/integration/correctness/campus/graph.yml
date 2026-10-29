@@ -1,0 +1,30 @@
+# Every relationship is declared child to parent. A room names its building by its own key
+# and its floor by another, and a floor names its building: two routes from a room to a
+# building. room_rows (a model no entity names) stores the rooms again, without a key.
+graph:
+  entities:
+    building: {label: Building, key: [building_id], model: buildings}
+    floor: {label: Floor, key: [floor_id], model: floors}
+    organization: {label: Organization, key: [org_id], model: organizations}
+    room: {label: Room, key: [room_id], model: rooms}
+  relationships:
+    room_building:
+      entities: [room, building]
+      cardinality: many_to_one
+      via: [building_id]
+      target: [building_id]
+    room_floor:
+      entities: [room, floor]
+      cardinality: many_to_one
+      via: [floor_id]
+      target: [floor_id]
+    floor_building:
+      entities: [floor, building]
+      cardinality: many_to_one
+      via: [building_id]
+      target: [building_id]
+    room_organization:
+      entities: [room, organization]
+      cardinality: many_to_one
+      via: [org_id]
+      target: [org_id]

@@ -1,0 +1,24 @@
+model:
+  id: buildings
+  label: Buildings
+  relation: buildings
+  entities: {building: {}}
+  dimensions:
+    building_name: {label: Building name, kind: categorical}
+    campus: {label: Campus, kind: categorical}
+  measures:
+    assignable_area: {label: Assignable area, kind: aggregate, expr: assignable_area}
+    building_count: {label: Buildings, kind: entity_count, entity_key: building_id}
+    # Expressions that aren't NULL where a room names no building: a row count, and an area
+    # read as 0 where it's missing.
+    building_rows: {label: Building rows, kind: aggregate, expr: {kind: literal, value: 1},
+      default_agg: sum, value_type: count}
+    area_or_zero:
+      label: Area or zero
+      kind: aggregate
+      expr:
+        kind: call
+        name: COALESCE
+        args: [{kind: column, column: assignable_area}, {kind: literal, value: 0}]
+    peak_occupancy: {label: Peak occupancy, kind: aggregate, expr: occupants, default_agg: max,
+      additive: false}

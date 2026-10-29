@@ -27,6 +27,10 @@ SWITCHED = {
     # A listing's start row is told apart by its key; a row-grain start by its own columns.
     ("compiler_parts/listings.py", "listing_rows"),
     ("compiler_parts/lowering_common.py", "_entity_in_terms_of_anchor_plan"),
+    # A parent with no key has no value to read on its children's rows; the leaf reads the
+    # key of a parent that has one.
+    ("compiler_parts/parent_values.py", "parent_value_leaf_select"),
+    ("compiler_parts/parent_values.py", "parent_value_route"),
     ("compiler_parts/paths.py", "_direct_dimension_source_expr"),
     ("compiler_parts/paths.py", "display_key"),
     ("compiler_parts/paths.py", "keyed_entity"),

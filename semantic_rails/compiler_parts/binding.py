@@ -89,6 +89,7 @@ from .indexes import (
 )
 from .listings import bind_listing
 from .lowering_common import recording_stock_key_gaps
+from .parent_values import bind_parent_values
 from .paths import (
     _leaf_time_role,
     display_key,
@@ -316,10 +317,15 @@ def bind_query(
         return bind(payload)
     except SemanticLayerError as exc:
         if exc.code != "AMBIGUOUS_CHILD_SCOPE":
-            listed = bind_listing(config, payload, exc, lambda listing: bind(payload, listing))
-            if listed is None:
+            # A call of dimensions alone lists through one-to-many routes (``listings``); one
+            # that selects a parent's measure reads it on the rows it groups by
+            # (``parent_values``).
+            answered = bind_listing(config, payload, exc, lambda listing: bind(payload, listing))
+            if answered is None:
+                answered = bind_parent_values(payload, exc, lambda: bind(payload))
+            if answered is None:
                 raise
-            return listed
+            return answered
         ambiguity = exc
     for option in ambiguity.details["clarification"]["options"]:
         # An option is the call's where; entity filters re-enter as the engine's predicates.
