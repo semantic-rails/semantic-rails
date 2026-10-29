@@ -97,6 +97,38 @@ def canonical_of(entities: Sequence[str], prefer: dict[str, list[str]]) -> str:
     return ""
 
 
+def preferred_marks(config: PackageConfig) -> dict[str, tuple[str, int, str]]:
+    """Each entity a model's ``prefer_over`` reaches, directly or through another model's list:
+    the canonical entity reaching it (one no list reaches; the first by id when two do), its
+    distance from it, and its mark in ``discover``. The mark reads ``history copy of
+    <canonical>`` when its key is the canonical one's plus time columns of its own (one row per
+    version, ``_Grains.same_things``), else ``prefer <canonical>``. ``config`` is the caller's
+    view, whose lists name no hidden model, so no mark names one."""
+    prefer = {row.id: list(row.prefer_over) for row in config.entities if row.prefer_over}
+    if not prefer:
+        return {}
+    listed = {target for targets in prefer.values() for target in targets}
+    grains = _Grains(config)
+    marks: dict[str, tuple[str, int, str]] = {}
+    for head in sorted(set(prefer) - listed):
+        depth = {head: 0}
+        queue = [head]
+        for node in queue:
+            for target in prefer.get(node, []):
+                if target not in depth:
+                    depth[target] = depth[node] + 1
+                    queue.append(target)
+        near = grains.columns.key_of(head)
+        for entity, distance in depth.items():
+            if entity == head or entity in marks:
+                continue
+            history = bool(near) and near < grains.columns.key_of(entity)
+            history = history and grains.same_things(head, entity)
+            mark = f"history copy of {head}" if history else f"prefer {head}"
+            marks[entity] = (head, distance, mark)
+    return marks
+
+
 def _unit(measure: Any) -> str:
     """A count's unit without its own model: ``distinct term_code``, ``rows``."""
     unit = str(_count_unit(measure).get("count_unit", ""))

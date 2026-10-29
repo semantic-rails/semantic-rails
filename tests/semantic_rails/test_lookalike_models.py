@@ -27,8 +27,12 @@ from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.lookalike_models import _same_rows_pairs, lookalike_groups
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.path_gap import _Grains
+from semantic_rails.request_context import context_from_policy_context
+from semantic_rails.runtime import Runtime
 from semantic_rails.visible_view import build_view
+from tests.semantic_rails.hidden_absent import visibility_policy, with_policies
 
 ROOT = Path(__file__).resolve().parents[2]
 ROOM = "entity.campus_room"
@@ -566,3 +570,153 @@ def test_upsert_model_writes_keeps_and_removes_prefer_over(campus, tmp_path):
     assert declared() == ["rooms_hist"]
     write(revision, "remove", prefer_over=[])
     assert declared() is None
+
+
+ROOM_AUDIT = "entity.campus_room_audit"
+HISTORY_OF_ROOM = f"history copy of {ROOM}"
+
+
+def _discover(
+    root: Path, terms: str, *, config: Any = None, caller: Any = None, **more: Any
+) -> Any:
+    """The MCP discover response's buckets, without the per-call fields."""
+    runtime = (
+        Runtime.from_config(config, source_path=str(root))
+        if config is not None
+        else Runtime.from_path(str(root))
+    )
+    try:
+        response = SemanticLayerMCPAdapter(runtime).call_tool(
+            "discover",
+            {"terms": terms, **more},
+            request_context=context_from_policy_context(caller) if caller else None,
+        )
+    finally:
+        runtime.close()
+    body = dict(response.get("structuredContent", response))
+    for key in ("request_id", "timing_ms"):
+        body.pop(key, None)
+    return body
+
+
+def _ids(body: Any, bucket: str) -> list[str]:
+    return [row["id"] for row in body.get(bucket, [])]
+
+
+def _marks(body: Any) -> dict[str, str]:
+    return {
+        row["id"]: row["look_alike"]
+        for rows in body.values()
+        if isinstance(rows, list)
+        for row in rows
+        if isinstance(row, dict) and "look_alike" in row
+    }
+
+
+def test_discover_lists_the_canonical_models_rows_first_and_marks_its_history(tmp_path):
+    plain = _discover(_write(tmp_path / "plain", _files()), "rooms")
+    root = _write(tmp_path / "declared", _with_prefer(_files(), rooms=["rooms_hist"]))
+    body = _discover(root, "rooms")
+    # The same rows in every bucket; the room's dimensions now come before its history's, in
+    # the places those rows held, and the survey's keep theirs.
+    assert {
+        bucket: sorted(_ids(body, bucket)) for bucket in body if isinstance(body[bucket], list)
+    } == {
+        bucket: sorted(_ids(plain, bucket)) for bucket in plain if isinstance(plain[bucket], list)
+    }
+    dimensions = _ids(body, "dimensions")
+    assert _ids(plain, "dimensions") != dimensions
+    room = [
+        index for index, row in enumerate(dimensions) if row.startswith("dimension.campus_room_")
+    ]
+    hist = [index for index, row in enumerate(dimensions) if "campus_room_hist_" in row]
+    room = [index for index in room if index not in hist]
+    assert max(room) < min(hist)
+    assert [row for row in dimensions if "space_detail" in row] == [
+        row for row in _ids(plain, "dimensions") if "space_detail" in row
+    ]
+    assert [dimensions.index(row) for row in dimensions if "space_detail" in row] == [
+        _ids(plain, "dimensions").index(row) for row in dimensions if "space_detail" in row
+    ]
+    assert _ids(body, "entities") == [ROOM, ROOM_HIST]
+    # Each of the history's rows says whose history it is; the room's rows carry nothing.
+    marks = _marks(body)
+    assert marks == {
+        row: HISTORY_OF_ROOM
+        for bucket in ("measures", "dimensions", "entities")
+        for row in _ids(body, bucket)
+        if "room_hist" in row or "rooms_hist" in row
+    }
+    assert "measure.campus.rooms_hist_count" in marks
+    assert not _marks(plain)
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_every_verbosity_carries_the_mark(tmp_path, verbosity):
+    root = _write(tmp_path, _with_prefer(_files(), rooms=["rooms_hist"]))
+    body = _discover(root, "rooms", verbosity=verbosity)
+    assert _marks(body)[ROOM_HIST] == HISTORY_OF_ROOM
+    assert _marks(body)["measure.campus.rooms_hist_count"] == HISTORY_OF_ROOM
+
+
+def test_a_look_alike_that_is_no_history_reads_prefer(tmp_path):
+    """The survey isn't keyed by the room's key, so it's marked only as the one to read less;
+    a chain of lists reaches the audit table through the history, after both."""
+    files = _with_prefer(
+        _rooms_audit(_files()), rooms=["rooms_hist", "space_detail"], rooms_hist=["rooms_audit"]
+    )
+    body = _discover(_write(tmp_path, files), "rooms")
+    assert _ids(body, "entities")[:3] == [ROOM, ROOM_HIST, ROOM_AUDIT]
+    marks = _marks(body)
+    assert marks[ROOM_HIST] == marks[ROOM_AUDIT] == HISTORY_OF_ROOM
+    assert {mark for row, mark in marks.items() if "space_detail" in row and "hist" not in row} == {
+        f"prefer {ROOM}"
+    }
+
+
+@pytest.mark.parametrize("hidden", [ROOM, ROOM_HIST])
+def test_a_caller_who_cant_see_a_model_gets_discover_as_if_nothing_were_declared(tmp_path, hidden):
+    """Hiding the canonical model drops it from the history's list in the caller's view, so
+    nothing is marked or moved; hiding the history leaves the room nothing to stand before."""
+    caller = {"roles": ["support"]}
+    bodies = []
+    for name, prefer in (("plain", {}), ("declared", {"rooms": ["rooms_hist"]})):
+        root = _write(tmp_path / name, _with_prefer(_files(), **prefer))
+        config = with_policies(load_package_config(str(root)), visibility_policy("hidden", hidden))
+        bodies.append(_discover(root, "rooms", config=config, caller=caller))
+    plain, declared = bodies
+    assert declared == plain
+    assert not _marks(declared)
+    assert f'"{hidden}"' not in json.dumps(declared)
+
+
+def test_plan_and_execute_read_the_declared_package_as_before(tmp_path):
+    calls = (
+        ("plan", {"intent": "how many rooms by building"}),
+        (
+            "execute",
+            {
+                "query": {
+                    "select": ["measure.campus.rooms_hist_count"],
+                    "group_by": ["dimension.campus_room_hist_building_id"],
+                },
+                "mode": "sql",
+            },
+        ),
+    )
+    answers = []
+    for name, prefer in (("plain", {}), ("declared", {"rooms": ["rooms_hist"]})):
+        runtime = Runtime.from_path(str(_write(tmp_path / name, _with_prefer(_files(), **prefer))))
+        try:
+            adapter = SemanticLayerMCPAdapter(runtime)
+            rows = []
+            for tool, arguments in calls:
+                body = dict(adapter.call_tool(tool, arguments, request_context=None))
+                body = dict(body.get("structuredContent", body))
+                for key in ("request_id", "timing_ms"):
+                    body.pop(key, None)
+                rows.append(json.dumps(body, sort_keys=True, default=str).replace(name, "<pkg>"))
+            answers.append(rows)
+        finally:
+            runtime.close()
+    assert answers[0] == answers[1]

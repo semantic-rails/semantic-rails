@@ -64,6 +64,7 @@ from .expressions import (
     parse_semantic_expression,
 )
 from .fanout import eligible_path_targets, entity_label, query_route_decisions
+from .lookalike_models import preferred_marks
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
@@ -2402,6 +2403,9 @@ def discover_payload(
     # the caller's view, so an object hidden from them is never counted.
     has_more = {bucket: len(rows) - limit for bucket, rows in ranked.items() if len(rows) > limit}
     buckets = {bucket: rows[:limit] for bucket, rows in ranked.items()}
+    if marks := preferred_marks(config):
+        for bucket in _MARKED_BUCKETS:
+            buckets[bucket] = _canonical_first(buckets[bucket], marks)
 
     # Ship a single ready-to-run starter_query_patch on each selectable
     # candidate so blind agents can copy a runnable IR seed directly from
@@ -2480,6 +2484,34 @@ def discover_payload(
         for row in payload["measures"]:
             row["allowed_aggregations"] = list(measure_index[row["id"]].allowed_aggregations)
     return _slim_discover_minimal(payload) if verbosity == "minimal" else payload
+
+
+# The buckets whose rows are read from one model each (``root_entity``): among the rows a bucket
+# shows, a canonical model's come before those of the look-alikes its ``prefer_over`` lists.
+_MARKED_BUCKETS = ("measures", "metrics", "segments", "dimensions", "dimension_values", "entities")
+
+
+def _canonical_first(
+    rows: list[dict[str, Any]], marks: Mapping[str, tuple[str, int, str]]
+) -> list[dict[str, Any]]:
+    """``rows`` with each canonical model's rows first among its look-alikes' (``marks``, from
+    ``preferred_marks``), in the places those rows held, and each look-alike's row marked
+    (``look_alike``). Other rows keep their places, and rows of one model keep their order."""
+    places: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        entity = str(row.get("root_entity") or "")
+        head = marks[entity][0] if entity in marks else entity
+        places.setdefault(head, []).append(index)
+    ordered = list(rows)
+    for indexes in places.values():
+        family = [rows[index] for index in indexes]
+        family.sort(key=lambda row: marks.get(str(row.get("root_entity") or ""), ("", 0, ""))[1])
+        for index, row in zip(indexes, family, strict=True):
+            ordered[index] = row
+    for row in ordered:
+        if (entity := str(row.get("root_entity") or "")) in marks:
+            row["look_alike"] = marks[entity][2]
+    return ordered
 
 
 # What a call's own arguments decide, not its terms: said once beside ``by_term`` when every
@@ -2632,6 +2664,8 @@ def _slim_discover_minimal(
                 slim["score"] = round(slim["score"], 1)
             if row.get("measure"):
                 slim["measure"] = row["measure"]
+            if row.get("look_alike"):
+                slim["look_alike"] = row["look_alike"]
             description = " ".join(str(row.get("description") or "").split())
             if description and description != str(row.get("label") or ""):
                 if config is None:
