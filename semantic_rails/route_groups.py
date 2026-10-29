@@ -185,10 +185,11 @@ REST_IN_ARCHITECT = (
 )
 
 
-def _asks(value: Any) -> Iterator[tuple[dict[str, Any], str]]:
-    """Each route question in ``value`` (an answer): an ``AMBIGUOUS_PATH`` issue's grouped
-    clarification, whose options carry ``query``, or plan's route ``why`` details, whose options
-    carry ``call``; with that key."""
+def _asks(value: Any) -> Iterator[tuple[dict[str, Any], dict[str, Any], str]]:
+    """Each route question in ``value`` (an answer): the issue (or plan's ``why``) holding its
+    message, the dict holding its options and groups, and the key of each option's call. An
+    ``AMBIGUOUS_PATH`` issue's grouped clarification has ``query`` calls, plan's route ``why``
+    details ``call``."""
     if isinstance(value, list):
         for item in value:
             yield from _asks(item)
@@ -199,10 +200,10 @@ def _asks(value: Any) -> Iterator[tuple[dict[str, Any], str]]:
     if value.get("code") == "AMBIGUOUS_PATH" and isinstance(details, dict):
         clarification = details.get("clarification")
         if isinstance(clarification, dict) and "groups" in clarification:
-            yield clarification, "query"
+            yield value, clarification, "query"
             return
         if "groups" in details:
-            yield details, "call"
+            yield value, details, "call"
             return
     for item in value.values():
         yield from _asks(item)
@@ -220,50 +221,82 @@ def _as_template(ask: dict[str, Any], key: str) -> bool:
     calls = [option.get(key) for option in options]
     if not calls or not all(isinstance(call, dict) and call.get("routes") for call in calls):
         return False
-    template = {k: v for k, v in calls[0].items() if k != "routes"}
-    if calls[0]["routes"][:-1]:
-        template["routes"] = calls[0]["routes"][:-1]
-    for call in calls:
-        rest = {k: v for k, v in call.items() if k != "routes"}
-        if rest != {k: v for k, v in template.items() if k != "routes"} or call["routes"][
-            :-1
-        ] != list(template.get("routes") or []):
-            return False
-    ask["call"] = template
+
+    def rest(call: dict[str, Any]) -> dict[str, Any]:
+        return {**call, "routes": call["routes"][:-1]}
+
+    if any(rest(call) != rest(calls[0]) for call in calls):
+        return False
+    ask["call"] = {k: v for k, v in rest(calls[0]).items() if k != "routes" or v}
     for option, call in zip(options, calls, strict=True):
         option.pop(key)
         option["route"] = call["routes"][-1]
     return True
 
 
+def _retext(value: Any, texts: Mapping[str, str]) -> None:
+    """Each ``message`` or ``why_invalid`` in ``value`` that is a key of ``texts``, replaced by
+    its value: an answer repeats an issue's message (``why_invalid``, the envelope's
+    ``error``)."""
+    if isinstance(value, list):
+        for item in value:
+            _retext(item, texts)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("message", "why_invalid") and isinstance(item, str) and item in texts:
+                value[key] = texts[item]
+            else:
+                _retext(item, texts)
+
+
+def _short_message(holder: dict[str, Any], ask: dict[str, Any], shown: int) -> str:
+    """The question alone, and how many of its groups are listed (``shown``, when any)."""
+    details = holder.get("details") or {}
+    lead = (
+        f"Ambiguous path from '{details['start']}' to '{details['target']}'. "
+        if "start" in details and "target" in details
+        else ""
+    )
+    question = ask.get("question") or (ask.get("clarification") or {}).get("question") or ""
+    listed = f" {shown} of its {ask.get('groups_total')} groups are listed." if shown else ""
+    return f"{lead}{question}{listed}"
+
+
 def shorter_route_asks(payload: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
     """``payload`` with its route questions shorter, step by step, for an answer over its
     budget: only the options the groups list; then one ``call`` and a ``route`` per option to
-    append to its ``routes``; then the first groups, fewest last; then the question and its
-    counts alone. Each step says what it left out. Nothing is yielded when ``payload`` has no
-    grouped route question."""
+    append to its ``routes``; then the first groups, fewest last, under a message that only
+    asks the question; then the question and its counts alone. Each step's ``note`` says what
+    it left out. Nothing is yielded when ``payload`` has no grouped route question."""
     if not any(True for _ in _asks(payload)):
         return
     note = "Only the options the groups list are shown. " + REST_IN_ARCHITECT
     step = deepcopy(dict(payload))
-    for ask, _key in _asks(step):
+    for _holder, ask, _key in _asks(step):
         ask["options"], ask["note"] = _listed(ask, ask["groups"]), note
     yield deepcopy(step)
-    for ask, key in _asks(step):
+    for _holder, ask, key in _asks(step):
         if _as_template(ask, key):
             ask["note"] = f"{note} Send call with the option's route appended to call.routes."
     yield deepcopy(step)
-    widest = max(len(ask["groups"]) for ask, _key in _asks(step))
-    for count in range(widest - 1, 0, -1):
-        cut = deepcopy(step)
-        for ask, _key in _asks(cut):
-            if len(ask["groups"]) > count:
-                ask["groups"] = ask["groups"][:count]
-                ask["options"] = _listed(ask, ask["groups"])
-                ask["note"] = f"The first {count} groups are shown. {REST_IN_ARCHITECT}"
+    widest = max(len(ask["groups"]) for _holder, ask, _key in _asks(step))
+    for count in range(widest, 0, -1):
+        cut, texts = deepcopy(step), {}
+        for holder, ask, _key in _asks(cut):
+            shown = min(count, len(ask["groups"]))
+            ask["groups"] = ask["groups"][:shown]
+            ask["options"] = _listed(ask, ask["groups"])
+            texts[str(holder.get("message"))] = _short_message(holder, ask, shown)
+            if shown < int(ask.get("groups_total") or 0):
+                ask["note"] = f"The first {shown} groups are shown. {REST_IN_ARCHITECT}"
+        _retext(cut, texts)
         yield cut
-    for ask, _key in _asks(step):
+    texts = {}
+    for holder, ask, _key in _asks(step):
         for field in ("groups", "options", "call"):
             ask.pop(field, None)
+        texts[str(holder.get("message"))] = _short_message(holder, ask, 0)
+        holder["details"].pop("hint", None)
         ask["note"] = f"No group fits the answer. {REST_IN_ARCHITECT}"
+    _retext(step, texts)
     yield step

@@ -16,6 +16,7 @@ from typing import Any
 from ..compiler_parts.indexes import get_package_analysis
 from ..errors import SemanticLayerError
 from ..fanout import package_hop_limit, package_route, route_note
+from ..route_groups import route_groups
 from ..schema import PackageConfig, RelationshipConfig
 
 # A minimal card keeps this many entries of each list and counts the rest.
@@ -64,8 +65,9 @@ def reachable_entities(config: PackageConfig, entity_id: str) -> list[dict[str, 
     """Every entity a route from ``entity_id`` reaches within the hop ceiling, nearest first:
     ``via`` the package's route, ``recorded`` when recorded route rows chose it among the
     caller's routes (an answer's ``basis: recorded``, by the same ``route_note``), or
-    ``route_decision_required`` when the question has to choose (``routes``). A pair the
-    package refuses otherwise is left out."""
+    ``route_decision_required`` when the question has to choose, with how many ``routes`` it
+    chooses among and how many ``groups`` of distinct meanings the refusal shows them in
+    (``route_groups``). A pair the package refuses otherwise is left out."""
     graph = get_package_analysis(config).graph
     ceiling = package_hop_limit(config)
     hops = {entity_id: 0}
@@ -85,7 +87,16 @@ def reachable_entities(config: PackageConfig, entity_id: str) -> list[dict[str, 
             resolution = package_route(config, start=entity_id, target=target)
         except SemanticLayerError as exc:
             if exc.code == "AMBIGUOUS_PATH":
-                rows.append({"id": target, "route_decision_required": True})
+                options = exc.details["clarification"]["options"]
+                grouped = route_groups(config, entity_id, target, options)
+                rows.append(
+                    {
+                        "id": target,
+                        "route_decision_required": True,
+                        "routes": grouped["options_total"],
+                        "groups": grouped["groups_total"],
+                    }
+                )
             continue
         route = resolution.routes[0]
         row: dict[str, Any] = {"id": target, "via": list(route)}
