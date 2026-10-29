@@ -165,6 +165,128 @@ def test_enterprise_accounts_ever_in_a_region_follow_the_observation_scope(
     assert result["rows"] == [{"enterprise_accounts": reference}]
 
 
+# Sales over all time: sale 4 (East, 999) lands on 2024-10-01, after the load log's Sunday
+# 2024-09-29.
+SALES = [(1, "2024-09-03 10:00:00", "East", 100), (2, "2024-09-05 12:00:00", "West", 60)]
+SALES += [(3, "2024-09-17 09:00:00", "East", 80), (4, "2024-10-01 08:00:00", "East", 999)]
+AMOUNT = {"kind": "column", "column": "amount", "entity": "entity.ever_sale"}
+OVER_50 = {
+    "kind": "comparison",
+    "op": ">",
+    "left": AMOUNT,
+    "right": {"kind": "literal", "value": 50},
+}
+
+
+def _sales(request, backend_name, tmp_path, edge):
+    """Sales read under ``edge``, with "sales over 50" declared (``large_sales``, a CASE with no
+    ELSE) beside revenue."""
+    zero_through = {"loaded": {"loaded": "loads.through_day"}, "empty_log": {"loaded": "loads.through_day"}, "now": "now"}  # fmt: skip
+    over_50 = {"kind": "comparison", "op": ">", "left": {"kind": "column", "column": "amount"}}
+    over_50["right"] = {"kind": "literal", "value": 50}
+    models = {
+        "sales": {
+            "id": "sales",
+            "relation": "events",
+            "entities": {"sale": {}},
+            **({"zero_through": zero_through[edge]} if edge in zero_through else {}),
+            "times": {"event_at": EVENT_TIME},
+            "dimensions": {"region": {"kind": "categorical"}},
+            "measures": {
+                "revenue": {"kind": "aggregate", "expr": "amount"},
+                "large_sales": {
+                    "kind": "aggregate",
+                    "expr": {
+                        "kind": "case",
+                        "whens": [
+                            {"when": over_50, "then": {"kind": "column", "column": "amount"}}
+                        ],
+                    },
+                },
+            },
+        },
+        "loads": {
+            "id": "loads",
+            "relation": "loads",
+            "entities": {"load": {}},
+            "times": {"through_day": {"column": "through_day", "kind": "date"}},
+        },
+    }
+    entities = {
+        "sale": {"key": ["event_id"], "model": "sales"},
+        "load": {"key": ["run_id"], "model": "loads"},
+    }
+    values = ", ".join(f"({n}, TIMESTAMP '{at}', '{region}', {a})" for n, at, region, a in SALES)
+    seed = (
+        "CREATE TABLE {events} (event_id INTEGER, event_at TIMESTAMP, region VARCHAR(20), "
+        f"amount INTEGER); INSERT INTO {{events}} VALUES {values};"
+        "CREATE TABLE {loads} (run_id INTEGER, through_day DATE);"
+        + ("" if edge == "empty_log" else "INSERT INTO {loads} VALUES (1, DATE '2024-09-29');")
+    )
+    return _package(request, backend_name, tmp_path, "ever", models, entities, seed)
+
+
+def _number(value):
+    return None if value is None else float(value)
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(
+    "edge,east,total",
+    [
+        # Sale 4, after the load log, is not read, as revenue beside it doesn't read it.
+        ("loaded", (180.0, 2.0, 180.0), 240.0),
+        ("now", (1179.0, 3.0, 1179.0), 1239.0),
+        ("data", (1179.0, 3.0, 1179.0), 1239.0),
+        # An empty load log certifies nothing: no row is read.
+        ("empty_log", None, None),
+    ],
+)
+def test_sales_over_50_ever_written_inline_stop_at_the_load_log_as_revenue_does(
+    request, backend_name, tmp_path, edge, east, total
+):
+    """ "The value and number of sales over 50 we have ever had, by region", written inline
+    (``aggregate_if``) with no time window: they read the rows the table's edge lets through,
+    as revenue and the same sum declared do."""
+    runtime, tables = _sales(request, backend_name, tmp_path, edge)
+    value = {"kind": "aggregate_if", "aggregation": "sum", "value": AMOUNT, "condition": OVER_50}
+    count = {"kind": "aggregate_if", "aggregation": "count", "condition": OVER_50}
+    select = [
+        {"expression": value, "as": "large_value"},
+        {"expression": count, "as": "large_count"},
+        "measure.ever.revenue",
+        "measure.ever.large_sales",
+    ]
+    region = "dimension.ever_sale_region"
+    call = {"select": select, "group_by": [region], "order_by": [{"field": region}]}
+    cap = CAPS[edge].format(**tables)
+    try:
+        by_region = runtime.query(call, now=NOW)
+        ungrouped = runtime.query({"select": select[:1]}, now=NOW)
+        reference = _rows(
+            runtime,
+            "SELECT region, SUM(CASE WHEN amount > 50 THEN amount END), "
+            "COUNT(CASE WHEN amount > 50 THEN 1 END), SUM(amount) "
+            f"FROM {tables['events']} WHERE {cap} GROUP BY region ORDER BY region",
+        )
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {events}; DROP TABLE {loads}".format(**tables))
+        runtime.close()
+    rows = [
+        (
+            row[region],
+            *(_number(row[key]) for key in ("large_value", "large_count", "revenue")),
+            _number(row["large_sales"]),
+        )
+        for row in by_region["rows"]
+    ]
+    assert rows == [(name, *map(_number, cells), _number(cells[0])) for name, *cells in reference]
+    expected = [] if east is None else [("East", *east, east[0]), ("West", 60.0, 1.0, 60.0, 60.0)]
+    assert rows == expected
+    assert [_number(row["large_value"]) for row in ungrouped["rows"]] == [total]
+
+
 # Refunds dated by their order's clock (another model's), over all time. Orders 1 and 2 are
 # before the load log's Sunday 2024-09-29; order 3 lands on 2024-10-01, after it. No refund is
 # a goods refund unless ``stray`` adds one on order 3.

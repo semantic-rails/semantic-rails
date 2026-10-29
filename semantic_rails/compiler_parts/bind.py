@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -1402,6 +1403,14 @@ def _synthetic_conditional_measure(
     row_grain = next(
         (grain for grain in grains if sorted(grain) != key), grains[0] if grains else []
     )
+    # It reads its table's rows as that table's measures do: with no time window, on their
+    # clock and only through their declared edge (``zero_through``), so "orders over 50 ever"
+    # never counts an order past the load log that revenue beside it leaves out. With no such
+    # measure it has neither, and reads every row.
+    own = [row for row in config.measures if row.entity == entity_id]
+    clocks = Counter(row.default_temporal_role for row in own if row.default_temporal_role)
+    clock = clocks.most_common(1)[0][0] if clocks else ""
+    edge = next((row.zero_through for row in own if row.zero_through is not None), None)
 
     # Build the column-level expression: CASE WHEN cond THEN value END.
     # For COUNT_IF (value omitted) the body is literal 1 so COUNT()
@@ -1440,6 +1449,8 @@ def _synthetic_conditional_measure(
         label=f"aggregate_if({aggregation}, …)",
         description=("Synthetic measure produced by the aggregate_if binding-time rewrite."),
         meta={"synthetic": True, "source": "aggregate_if"},
+        default_temporal_role=clock,
+        zero_through=edge,
     )
     return measure_id, measure
 
