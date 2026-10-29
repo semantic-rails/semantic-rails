@@ -49,7 +49,6 @@ from .bind import (
 )
 from .dependencies import (
     binding_cut,
-    lowering_entity_values,
     owning,
     project_is_cut,
     recipe_objects,
@@ -188,18 +187,19 @@ def _distribution_select(
     )
     # Like a metric predicate's set, the per-entity values join their lookups INNER: a row whose
     # lookup of the entity finds no match is no entity, never one NULL entity of its own. Over
-    # several measures, each entity's value settles as the call grouped by that entity reads it:
-    # an operand with no rows for an entity the others have reads 0 where its measure has data
-    # in scope (an order with no refund row refunded nothing), NULL where it has none. The
-    # settled values are internal: no NO_DATA_IN_SCOPE output of their own.
+    # several measures, each operand settles as a sum grouped by the entity does: one with no
+    # rows for an entity the others have reads 0 where its measure has data in scope (an order
+    # with no refund row refunded nothing), NULL where it has none. The entities stay those with
+    # rows of the input's measures in the period. The settled values are internal: no
+    # NO_DATA_IN_SCOPE output of their own.
     several = _reads_several_measures(expr.over.input, config, normalize_query(plan.query))
-    with inner_lookups(), lowering_entity_values(), recording_zero_outputs():
+    with inner_lookups(), recording_zero_outputs():
         sql_ast = nested.query_sql(
             config,
             entity_value_query,
             project_cut=project_is_cut() or bool(expr.over.where),
             guard_empty=several,
-            standalone=several,
+            entity_values=several,
         )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
