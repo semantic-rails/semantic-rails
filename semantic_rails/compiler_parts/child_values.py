@@ -36,6 +36,7 @@ from .plan_checks import (
     _WHOLE_GROUPED_AGGREGATIONS,
     _is_count,
     _measures_inside,
+    _measures_under_summing_wrappers,
     _overlapping_share,
     _query_roots,
 )
@@ -76,8 +77,9 @@ def child_values_route(
     doesn't. Only the call's ``group_by`` crosses that hop: a filter there (its own path
     across the hop), a time window, a result filter or an entity filter keeps the leaf's
     refusal, as does a measure that isn't a sum, count, average or distinct count of an
-    additive, non-stock value with no window and no share over the grouping, and a call that
-    reads another entity's measure beside it (see ``_another_entity_in_the_call``)."""
+    additive, non-stock value with no window, no per-entity rollup and no share over the
+    grouping, and a call that reads another entity's measure beside it (see
+    ``_another_entity_in_the_call``)."""
     crossing = [row for row in selections if row.analysis.get("status") != "ok"]
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if (
@@ -97,6 +99,13 @@ def child_values_route(
         or _edge_cap(measure, "", config)
         or _another_entity_in_the_call(measure, config, query)
         or _overlapping_share(measure, bound, selections, config, query)
+        # A per-entity rollup (a distribution over entity values) joins its lookups INNER, so a
+        # row that names no parent would drop out of the NULL group.
+        or any(
+            measure_id == bound.measure_id
+            for root in _query_roots(query)
+            for measure_id, _ in _measures_under_summing_wrappers(root, config)
+        )
     ):
         return None
     keys = {entity.id: list(entity.key_columns) for entity in config.entities}

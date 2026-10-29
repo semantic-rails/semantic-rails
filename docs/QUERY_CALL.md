@@ -353,9 +353,10 @@ up to more than the total.
 - It reads a sum, count, average or distinct count of an additive measure. Everything else keeps
   the refusal the call had (`MIXED_GRAIN_INVALID`, or `PATH_NOT_FOUND` where the package walks
   the hop from its many side only): a median, minimum, maximum or other statistic; a non-additive
-  measure or a stock; a conditional aggregate or a measure with its own filter or window; a share
-  over the grouping; another entity's measure anywhere in the call (room area beside building
-  area, whose leaf reads the cities by its own route, where a building with no address is in no
+  measure or a stock; a conditional aggregate or a measure with its own filter or window; a
+  distribution over entity values (average room area per organization); a share over the
+  grouping; another entity's measure anywhere in the call (room area beside building area,
+  whose leaf reads the cities by its own route, where a building with no address is in no
   city); a filter on the child, or a second grouping across a one-to-many hop; a `time` window,
   `having` or an entity filter; and any such call on ClickHouse, which joins lookups inner, so a
   row with no parent or no child row would drop out there instead of being the NULL group.

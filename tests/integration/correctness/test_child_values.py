@@ -289,6 +289,18 @@ MEDIAN = {"kind": "measure", "measure": ROOM_AREA, "aggregation": "median"}
 SHARE = {"kind": "share", "input": ROOM_AREA, "over": [CITY]}
 RATIO = {"kind": "ratio", "numerator": ROOM_AREA, "denominator": AREA}
 ROUTED = {"group_by": [CITY], "routes": BY_BUILDING}
+ORGANIZATION = "entity.campus_organization"
+
+
+def _per_organization(function: str) -> dict[str, Any]:
+    """A distribution of room area per organization: its per-organization rollup joins a
+    room's building INNER, so R-103 and R-105, which name no building, would drop out of the
+    NULL city (average 90 there, where it is 62.5)."""
+    over = {"kind": "entity_value", "entity": ORGANIZATION, "input": ROOM_AREA}
+    item = {"kind": "distribution", "function": function, "over": over}
+    return {"select": [{"expression": item, "as": "d"}], "group_by": [CITY]}
+
+
 REFUSED = {
     # The package walks an address's building only from the address: no city for a room.
     "forward_only": ("base", {"select": [ROOM_AREA], "group_by": [CITY]}),
@@ -308,6 +320,14 @@ REFUSED = {
     # Beside a building's measure, which reads the cities by its own route: a building with no
     # address is in no city there.
     "beside_building_area": ("two_way", {"select": [ROOM_AREA, AREA], **ROUTED}),
+    # A distribution over entity values, by the package's recorded route and the call's own.
+    "avg_per_organization": ("address_route", _per_organization("avg")),
+    "median_per_organization": ("address_route", _per_organization("median")),
+    "sum_per_organization": ("address_route", _per_organization("sum")),
+    "avg_per_organization_routed": (
+        "two_way",
+        {**_per_organization("avg"), "routes": BY_BUILDING},
+    ),
 }
 CODES = {"forward_only": "PATH_NOT_FOUND", "undecided": "AMBIGUOUS_PATH"}
 
