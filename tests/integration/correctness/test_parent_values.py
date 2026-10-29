@@ -400,6 +400,30 @@ def test_a_recorded_route_from_the_buildings_stands(campus):
         assert refused == _refusal(lambda: campus.query(by_organization, "rooms_route"))
 
 
+def test_the_value_reads_as_fresh_as_the_buildings_model(campus):
+    """The leaf reads the rooms' rows and the buildings' values: each model's freshness is
+    stated."""
+    config = campus.config()
+    stamps = {ROOM: "2026-10-02T00:00:00Z", BUILDING: "2026-10-01T00:00:00Z"}
+    config = replace(
+        config,
+        entities=[
+            replace(row, freshness_as_of=stamps[row.id]) if row.id in stamps else row
+            for row in config.entities
+        ],
+    )
+    runtime = campus.runtime(config)
+    try:
+        out = runtime.query(BY_ROOM)
+    finally:
+        runtime.close()
+    assert sorted((row["source_entity"], row["as_of"]) for row in out["freshness_by_leaf"]) == [
+        (BUILDING, stamps[BUILDING]),
+        (ROOM, stamps[ROOM]),
+    ]
+    assert out["freshness_as_of"] == stamps[BUILDING]
+
+
 def _row_filter(name: str, dimension: str, attribute: str, **config: Any) -> SemanticPolicyConfig:
     return SemanticPolicyConfig(
         id=f"policy.campus.{name}",
