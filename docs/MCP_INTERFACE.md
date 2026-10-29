@@ -247,6 +247,18 @@ the label, generic `recommended_next_actions`, empty structural fields, and ever
 and query literals remain exact, including blank and null values. `"compact"` or `"full"` return
 the whole card, which is also the HTTP default.
 
+A count measure's card, at every verbosity, says what it counts in `count_unit`, read from the
+measure's definition alone: `"rows of <entity>"` for a sum of `1`, or `"distinct <column> across
+rows of <entity>"` for a distinct count (an `entity_count`), with `" where its condition holds"`
+when the counted value is a CASE that gives that one value on the rows its conditions keep and
+NULL on the rest (or `0`, for a sum of `1`). A
+count of keys and a count of rows differ wherever a key repeats: `measure.jaffle.order_count`
+is `"distinct order_id across rows of entity.jaffle_order"`, and
+`measure.jaffle.ordering_customer_count` `"distinct customer_id across rows of
+entity.jaffle_order"`, each customer once however many orders they placed. A measure that adds
+up, averages or carries a value, or counts an expression that names no single column, has no
+`count_unit`.
+
 A measure's card, at every verbosity, names its look-alikes on other models when it has any:
 published measures with the same key or label once each model's table name is taken off, over
 the same column expression, that total the same way (the rule of the `PATH_NOT_FOUND` row below).
