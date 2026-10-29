@@ -43,8 +43,7 @@ SWITCHED = {
     ("config_parts/one_per_key.py", "one_per_key_relation"),
     ("config_parts/one_per_key.py", "with_one_per_key.link"),
     ("contracts/producer.py", "_resources_from_normalized"),
-    # Refusal context only: a row-grain target is named, and has no shared key columns.
-    ("diagnostics.py", "_isolated_start"),
+    # Refusal context only: a row-grain target is named.
     ("diagnostics.py", "enrich_path_not_found"),
     ("fanout.py", "pass_through_disclosure"),
     # Refusal context only: a row-grain target gets no missing link, and holds no key to match.

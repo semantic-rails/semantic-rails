@@ -338,6 +338,96 @@ def missing_link_fix(link: dict[str, Any]) -> str:
     return ""
 
 
+# --- The key columns the pair shares ------------------------------------------------------------
+
+
+def shared_key(config: PackageConfig, start: str, target: str) -> dict[str, Any]:
+    """The columns of either entity's declared key that both ``start`` and ``target`` hold, each
+    saying what it identifies (``shared_key_columns``, empty when they share none) and, when
+    there are any, whether they hold ``target``'s whole key (``shared_key_unique_on_target``):
+    only then does each ``start`` row match at most one ``target`` row on them."""
+    columns = _Columns(config)
+    keys = columns.key_of(start) | columns.key_of(target)
+    shared = sorted(
+        column
+        for column in columns.held.get(start, set()) & columns.held.get(target, set())
+        if column in keys and _specific(column)
+    )
+    if not shared:
+        return {"shared_key_columns": []}
+    key = columns.key_of(target)
+    return {
+        "shared_key_columns": shared,
+        "shared_key_unique_on_target": bool(key) and key <= set(shared),
+    }
+
+
+def _shared(details: dict[str, Any]) -> tuple[str, str, list[str], str]:
+    shared = list(details.get("shared_key_columns") or [])
+    return str(details.get("start")), str(details.get("target")), shared, ", ".join(shared)
+
+
+def _them(shared: Sequence[str]) -> str:
+    return "it" if len(shared) == 1 else "them"
+
+
+def shared_key_fact(details: dict[str, Any]) -> str:
+    """What the pair shares, in one clause (for the refusal's message): no key column, the
+    target's whole key, or key columns on which one start row can match many target rows."""
+    if "shared_key_columns" not in details:
+        return ""
+    start, target, shared, columns = _shared(details)
+    if not shared:
+        return f"'{start}' and '{target}' share no key column"
+    if details.get("shared_key_unique_on_target"):
+        return f"'{start}' holds the key of '{target}' ({columns})"
+    short = (
+        f"'{target}' has no key"
+        if details.get("target_row_grain")
+        else f"not the whole key of '{target}'"
+    )
+    return (
+        f"'{start}' and '{target}' share {columns}, but {short}, so one '{start}' row can match "
+        f"many '{target}' rows on {_them(shared)}"
+    )
+
+
+def shared_key_split(details: dict[str, Any]) -> str:
+    """What separate calls for each side can be matched on (for the caller's split hint)."""
+    if "shared_key_columns" not in details:
+        return ""
+    start, target, shared, columns = _shared(details)
+    if not shared:
+        return (
+            f" '{start}' and '{target}' share no key column, so their separate results have no "
+            "key to be matched on."
+        )
+    if details.get("shared_key_unique_on_target"):
+        return (
+            f" Key columns they share: {columns}; each '{start}' row matches at most one "
+            f"'{target}' row on {_them(shared)}."
+        )
+    return (
+        f" Key columns they share: {columns}, not the whole key of '{target}', so one "
+        f"'{start}' row can match many '{target}' rows on {_them(shared)}: a total across the "
+        f"matched rows counts a '{start}' row once per '{target}' row it matches."
+    )
+
+
+def shared_key_fix(details: dict[str, Any]) -> str:
+    """The package author's change when the pair shares key columns that aren't all of the
+    target's key: no many-to-one relationship can join them on those."""
+    start, target, shared, columns = _shared(details)
+    if not shared or details.get("shared_key_unique_on_target"):
+        return ""
+    return (
+        f"'{start}' and '{target}' share {columns}, not the whole key of '{target}', so no "
+        f"many-to-one relationship joins them on {_them(shared)}: that needs '{start}' to hold "
+        f"every column of '{target}''s key. A graph.relationships row in graph.yml on "
+        f"{columns} alone declares `cardinality: many_to_many`." + _repeats(start, target)
+    )
+
+
 def _ranked(
     rows: Iterable[tuple[str, set[str], tuple[Any, ...]]],
     wanted: set[str],
