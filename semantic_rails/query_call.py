@@ -635,8 +635,7 @@ def _refuse_untimed_part(
     this version such a part is refused beside a timed call, never answered untimed."""
     if default_clock is None:
         return
-    ids = [ref for item in raw.get("select") or [] for ref in _references(_item_expression(item))]
-    measured = [ref for ref in ids if ref.startswith(REFERENCE_PREFIXES)]
+    measured = _named_ids(raw.get("select") or [])
     if measured and any(default_clock(ref) for ref in measured):
         return
     raise refusal(
@@ -648,12 +647,16 @@ def _refuse_untimed_part(
     )
 
 
-def _item_expression(item: Any) -> Any:
-    if isinstance(item, Mapping) and "expression" in item:
-        return item["expression"]
-    if isinstance(item, str):
-        return {"kind": "measure", "measure": item} if item.startswith("measure.") else item
-    return item
+def _named_ids(value: Any) -> list[str]:
+    """Every measure and metric id a part's raw ``select`` names, at any depth of an item
+    (an id, an ``expression`` and the kinds nested in it); an alias (``as``) names none."""
+    if isinstance(value, str):
+        return [value] if value.startswith(REFERENCE_PREFIXES) else []
+    if isinstance(value, Mapping):
+        return [ref for key, item in value.items() if key != "as" for ref in _named_ids(item)]
+    if isinstance(value, list):
+        return [ref for item in value for ref in _named_ids(item)]
+    return []
 
 
 def _refuse_shared_aliases(parts: list[dict[str, Any]]) -> None:

@@ -420,6 +420,16 @@ def test_a_timed_call_joins_each_period_and_settles_each_part_by_its_own_load(de
     windows = [part["window"] for part in note["details"]["parts"]]
     assert all(window["start"] == "2024-01-01" for window in windows)
     assert {row["details"]["part"] for row in _note(out, "NO_DATA_YET")} == {0}
+    # A measure named inside an expression reads its clock as the bare id does.
+    opened = {"select": [{"expression": "measure.depts.work_orders", "as": "opened"}]}
+    renamed = depts.query(
+        {
+            "parts": [{**WORK_ORDERS, **opened}, RESERVATIONS],
+            "join": {"on": [[ROOM, ROOM]]},
+            "time": MONTHS,
+        }
+    )
+    assert [row["opened"] for row in renamed["rows"]] == [row["work_orders"] for row in out["rows"]]
 
 
 def test_a_row_filter_reads_each_parts_visible_rows_and_counts_no_hidden_row(depts):
