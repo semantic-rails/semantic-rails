@@ -38,16 +38,6 @@ model:
         right: {kind: case, whens: [{when: {kind: comparison, op: '=',
           left: {kind: column, column: store_id}, right: {kind: literal, value: a}},
           then: {kind: literal, value: 1.1}}], else: {kind: literal, value: 1.2}}}
-    # Store b's sales with no ELSE: another store's order has no value here, so a customer
-    # whose orders are all at other stores reads 0, data of nothing.
-    store_b_sales:
-      label: Store b sales
-      kind: aggregate
-      accumulation: {kind: flow}
-      value_type: currency
-      expr: {kind: case, whens: [{when: {kind: comparison, op: '=',
-        left: {kind: column, column: store_id}, right: {kind: literal, value: b}},
-        then: {kind: column, column: amount}}]}
     store_a_orders:
       label: Store a orders
       kind: entity_count

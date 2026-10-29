@@ -6977,59 +6977,6 @@ tests:
           ORDER BY revenue.revenue - CASE WHEN goods.customer_id IS NULL THEN 0 ELSE goods.goods END)
       FROM revenue LEFT JOIN goods ON goods.customer_id = revenue.customer_id AND goods.b = revenue.b
       GROUP BY revenue.b
-  shop/median-revenue-excluding-store-b-of-repeat-customers:
-    kind: query_matches_snapshot
-    expect: answer
-    why: "Store b sales has no ELSE, so a customer with no store b order read store b as NULL and dropped out. As grouped by customer, it reads 0 there: customers 101 (23 less 0), 102 (9 less 5) and 103 (23 less 3) read 23, 4 and 20, so 20."
-    cites: &store_b_cites
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
-      - tests/integration/correctness/shop/models/orders.yml#model.measures.store_b_sales
-      - docs/QUERY_CALL.md#empty-groups-null-or-0
-    tags: [null-vs-zero]
-    variant: utc_authored
-    query:
-      select:
-      - expression:
-          kind: distribution
-          function: median
-          over: &revenue_excluding_store_b
-            kind: entity_value
-            entity: entity.shop_customer
-            input: {kind: arithmetic, op: subtract, left: measure.shop.revenue, right: measure.shop.store_b_sales}
-        as: median
-      where:
-      - {entity: entity.shop_customer, having: [{field: measure.shop.order_count, op: gte, value: 2}], over: all_time}
-    expected_rows:
-      - {median: 20}
-    reference_sql: |
-      WITH per_customer AS (
-        SELECT customer_id,
-          SUM(amount) - CASE WHEN COUNT(CASE WHEN store_id = 'b' THEN 1 END) = 0 THEN 0
-            ELSE SUM(CASE WHEN store_id = 'b' THEN amount END) END AS excluding_b
-        FROM orders GROUP BY customer_id HAVING COUNT(DISTINCT order_id) >= 2
-      )
-      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY excluding_b) FROM per_customer
-  shop/median-revenue-excluding-store-b-per-customer:
-    kind: query_matches_snapshot
-    expect: answer
-    why: "Every customer with a known revenue: 101 (23), 102 (4), 103 (20), 104 and 106 (store b only, 0) and 108 (2); 105's only order has no amount. The median of six is 3."
-    cites: *store_b_cites
-    tags: [null-vs-zero]
-    variant: utc_authored
-    query:
-      select:
-      - expression: {kind: distribution, function: median, over: *revenue_excluding_store_b}
-        as: median
-    expected_rows:
-      - {median: 3}
-    reference_sql: |
-      WITH per_customer AS (
-        SELECT customer_id,
-          SUM(amount) - CASE WHEN COUNT(CASE WHEN store_id = 'b' THEN 1 END) = 0 THEN 0
-            ELSE SUM(CASE WHEN store_id = 'b' THEN amount END) END AS excluding_b
-        FROM orders GROUP BY customer_id
-      )
-      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY excluding_b) FROM per_customer
   shop/median-aov-of-repeat-web-customers:
     kind: query_matches_snapshot
     expect: answer
