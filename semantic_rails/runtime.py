@@ -142,6 +142,7 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .result_values import result_rows
+from .route_groups import grouped_refusal
 from .runtime_parts.answer_warnings import (
     _covered_through,
     _guard_probe_names,
@@ -261,7 +262,8 @@ def _enrich_runtime_error(
         scope["roles"] = caller.get("roles", ())
     exc = enrich_column_expression(exc, config, lambda: kept_column_names(config, scope))
     exc = enrich_path_not_found(exc, config)
-    return exc
+    # A route refusal leaves the engine here: its options grouped as the answer shows them.
+    return grouped_refusal(exc, config)
 
 
 def runtime_request_scope(operation: Callable[..., Any]) -> Callable[..., Any]:

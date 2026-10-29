@@ -1808,7 +1808,10 @@ def route_entry(row: Mapping[str, Any]) -> dict[str, Any]:
 def route_options(call: Any, details: dict[str, Any]) -> None:
     """Make each option of an ``AMBIGUOUS_PATH`` refusal a complete call: ``call`` with the
     option's route added to ``routes``, ready to send."""
-    options = (details.get("clarification") or {}).get("options") or []
+    from .route_groups import GROUPS_HINT
+
+    clarification = details.get("clarification") or {}
+    options = clarification.get("options") or []
     if not isinstance(call, Mapping) or not options:
         return
     for option in options:
@@ -1818,6 +1821,7 @@ def route_options(call: Any, details: dict[str, Any]) -> None:
         "Which route is meant is a business definition. Ask which option the question means, "
         "then send that option's query (this query only), or record the option's decision as "
         "the package default with record_route_decision (a graph.path_preferences row)."
+        + (f" {GROUPS_HINT}" if "groups" in clarification else "")
     )
 
 
