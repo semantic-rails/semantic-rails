@@ -528,8 +528,9 @@ LOOK_ALIKE = "measure.jaffle.membership_revenue_usd"
 
 
 def test_no_refusal_offers_a_stand_in_measure(jaffle_snapshot, monkeypatch):
-    # A measure on the target that shares the asked measure's words is still never offered: a
-    # different measure needs the caller's own policies checked first, which this refusal can't do.
+    # A measure on the target that only shares the asked measure's words is never offered: a
+    # refusal names only the same measure on another model, once the call compiles with it in the
+    # caller's own request scope (test_path_not_found_lookalikes.py).
     runtime = opened(Runtime.from_snapshot(jaffle_snapshot, package_id="jaffle_shop"))
     config = runtime.package_config
     revenue = next(m for m in config.measures if m.id == "measure.jaffle.revenue_usd")

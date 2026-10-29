@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from ..errors import SemanticLayerError
+from ..path_gap import without_lookalikes
 from .call import Call, Order, QueryBuilder, Select, Time
 from .time_reference import time_policy_context
 
@@ -136,7 +137,9 @@ def _validate_query(runtime: Any, query: Call, partial_query: Call | None = None
     context = dict(time_policy_context() or {})
     now = context.pop("now", None)
     try:
-        report = runtime.validate(query.to_call(), now=now, context=context or None)
+        # Plan's own drafts: their refusals offer no look-alike measures (plan stays as it is).
+        with without_lookalikes():
+            report = runtime.validate(query.to_call(), now=now, context=context or None)
     except SemanticLayerError as exc:
         return {
             "ok": False,

@@ -53,7 +53,9 @@ _CARDINALITY = {
     "M:N": "many_to_many",
 }
 _ROLLUPS = {"rollup_safe_aggregations_reverse": "reverse"}
+# Entity fields its model states; ``model_description`` is written as the model's description.
 _MODEL_FIELDS = {
+    "model_description",
     "calendar_id",
     "freshness_source",
     "freshness_sla_seconds",
@@ -114,7 +116,13 @@ class _Writer:
         for entity in self.config.entities:
             key, alias = self.keys[entity.id]
             model = self.model(entity.id)[1]
-            model.update(_authored(entity, skip={f.name for f in fields(entity)} - _MODEL_FIELDS))
+            model.update(
+                _authored(
+                    entity,
+                    skip={f.name for f in fields(entity)} - _MODEL_FIELDS,
+                    renames={**_RENAMES, "model_description": "description"},
+                )
+            )
             if entity.foreign_keys:  # graph.relationships states every join, which replaces
                 model["entities"].update({n: {"expr": c} for n, c in entity.foreign_keys.items()})
                 model["entities"]["bridge"] = entity.bridge  # each one a link table infers

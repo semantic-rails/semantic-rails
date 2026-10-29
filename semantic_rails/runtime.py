@@ -115,6 +115,13 @@ from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
+from .path_gap import (
+    call_measures,
+    lookalike_swaps,
+    lookalikes_off,
+    renamed_columns,
+    swapped_call,
+)
 from .policies import (
     enforce_query_policies,
     row_filters_for_context,
@@ -1871,6 +1878,7 @@ class Runtime:
                 kind="validate",
             )
         except SemanticLayerError as exc:
+            exc = self._with_lookalike_measures(exc, payload, policy_context)
             exc = _enrich_runtime_error(exc, self._config, payload.get("_call_notes"))
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
@@ -1916,7 +1924,8 @@ class Runtime:
         try:
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
+            enriched = self._with_lookalike_measures(exc, payload, policy_context)
+            raise _enrich_runtime_error(enriched, self._config, payload.get("_call_notes")) from exc
         out = {
             "ok": True,
             "status": "ok",
@@ -1968,7 +1977,8 @@ class Runtime:
             if value_page is not None:
                 compiled = page_values(compiled, self._config, **value_page)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config, payload.get("_call_notes")) from exc
+            enriched = self._with_lookalike_measures(exc, payload, policy_context)
+            raise _enrich_runtime_error(enriched, self._config, payload.get("_call_notes")) from exc
         zone = _time_zone(self._config, compiled)
         now = _answer_now(payload)
         withheld = _withheld_columns(policy_effects)
@@ -2330,6 +2340,60 @@ class Runtime:
         )
         return policy_effects, self._compile(
             payload, policy_context=policy_context, binding=binding
+        )
+
+    def _with_lookalike_measures(
+        self, exc: SemanticLayerError, payload: dict[str, Any], policy_context: dict[str, Any]
+    ) -> SemanticLayerError:
+        """A ``PATH_NOT_FOUND`` for measures on its start, with the same-named measures of other
+        models that answer the call as it stands (``details.lookalike_measures``).
+
+        Each candidate (``path_gap.lookalike_swaps``) is the call with the look-alikes in place
+        of its measures, the same group_by, where and time, on the look-alike's own clock when
+        the call's clock isn't one of its own. It is kept only when it compiles here: in this
+        request's scope, on the caller's view, under the caller's identity and policies, as the
+        call itself did. Nothing is offered when no check can run that way: a resource grant
+        (whose refusals name nothing), or ``plan`` validating its own drafts. The warehouse is
+        never read; a candidate's compile is the call's own work for another measure.
+        """
+        details = dict(exc.details or {})
+        if (
+            exc.code != "PATH_NOT_FOUND"
+            or lookalikes_off()
+            or policy_context.get("metric_allowlist") is not None
+            or details.get("reason") == "excluded_by_decision"
+        ):
+            return exc
+        config = self._config
+        swaps = lookalike_swaps(config, call_measures(payload), str(details.get("start") or ""))
+        measures = {row.id: row for row in config.measures}
+        clock = str(dict(payload.get("time") or {}).get("temporal_role") or "")
+        rows: list[dict[str, Any]] = []
+        for entity, pairs in swaps:
+            own = {self._default_clock(new) for new in pairs.values()}
+            keep = not clock or all(
+                clock in measures[new].compatible_temporal_roles for new in pairs.values()
+            )
+            if not keep and (len(own) != 1 or not next(iter(own))):
+                continue  # Its measures have no one clock of their own to read the window by.
+            role = "" if keep else next(iter(own))
+            try:
+                self._enforced_compile(swapped_call(payload, pairs, role), policy_context)
+            except Exception:  # noqa: BLE001 — a look-alike the call can't compile answers nothing
+                continue
+            columns = renamed_columns(payload, pairs)
+            rows.append(
+                {
+                    "entity": entity,
+                    "measures": pairs,
+                    **({"columns": columns} if columns else {}),
+                    **({"temporal_role": role} if role else {}),
+                }
+            )
+        if not rows:
+            return exc
+        return SemanticLayerError(
+            exc.code, str(exc), details={**details, "lookalike_measures": rows}
         )
 
     def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
