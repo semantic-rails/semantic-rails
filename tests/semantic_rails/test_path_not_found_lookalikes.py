@@ -488,6 +488,28 @@ def test_sums_of_one_column_on_unlinked_tables_are_never_lookalikes(shop):
         ],
     )
     assert lookalike_swaps(keyless, [charges], "entity.shop_charge") == []
+    # A declared relationship says one table holds the other's key, under any column name: the
+    # pair is then named, with the caveat that each model holds its own rows.
+    (link,) = (row for row in config.relationships if row.id == "relationship.order_customer")
+    linked = replace(
+        config,
+        relationships=[
+            *config.relationships,
+            replace(
+                link,
+                id="relationship.payment_charge",
+                source_entity="entity.shop_payment",
+                target_entity="entity.shop_charge",
+                source_column="billed_charge",
+                target_column="charge_id",
+                source_columns=["billed_charge"],
+                target_columns=["charge_id"],
+            ),
+        ],
+    )
+    assert lookalike_swaps(linked, [charges], "entity.shop_charge") == [
+        ("entity.shop_payment", {charges: payments})
+    ]
 
 
 def _copies(root: Path, count: int) -> None:
