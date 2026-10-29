@@ -287,7 +287,9 @@ order that isn't large 58,458, of 59,652 in all: a customer with both kinds coun
   rows: two rooms of one building each show its whole area, and a group of rooms in two
   buildings adds each building once. The column repeats per parent and doesn't add up across
   groups. Child rows stored twice, or with no key, count their parent once.
-- A group whose rows name no parent reads NULL, a count too: no data, not zero.
+- A group whose rows name no parent reads NULL, a count too: no data, not zero. A row that
+  names no parent adds nothing to its group, whatever the measure's expression: a count of 1
+  per parent row, or a `COALESCE` of the parent's column, counts the parents that are there.
 - A [total](#coarser-totals) or [`totals`](#totals) row is the call without the grouping: every
   parent once, including those with no child rows (the customers who never ordered); with a
   condition on the children, the parents with such a child.
@@ -298,10 +300,13 @@ order that isn't large 58,458, of 59,652 in all: a customer with both kinds coun
   statistic; a non-additive measure or a stock; a measure with its own filter or window, or
   inside a share; an item that sets it against a measure of another entity (room area per
   building area); a grouping the rows reach only one to many (buildings' area by organization
-  alone); rows that are a [link](#groups-across-a-link) of the parent; and a call with no
-  `group_by`, a `time` window, `having` or an entity filter. A call the parent's side reads by
-  one route ([groups across a one-to-many hop](#groups-across-a-one-to-many-hop)) keeps that
-  reading and its refusals.
+  alone, where which link ties a building to an organization is a route question: each
+  option's call answers it from the buildings' side); rows that are a
+  [link](#groups-across-a-link) of the parent; a call with no `group_by`, a `time` window,
+  `having` or an entity filter; and any such call on ClickHouse, which joins lookups inner, so
+  a child row with no parent would drop out there instead of reading NULL. A call the parent's
+  side reads by one route ([groups across a one-to-many hop](#groups-across-a-one-to-many-hop))
+  keeps that reading and its refusals.
 - The caller's view and the package's policies hold as for any call. A row filter on the
   parents keeps the rows that name a visible parent; one on the children reaches no parent, so
   the parent's measure is refused (`POLICY_DENIED`, `row_filter_uncovered_root`), as it is
@@ -1400,8 +1405,7 @@ The engine trusts the data as it is stored in three cases:
 - A grouping beside a filter on the same child is read on the children's rows where the parent
   can't reach them, and refused (`MIXED_GRAIN_INVALID`) where it reaches them by one route,
   since from the parent's side it can mean two things.
-- ClickHouse joins lookups inner, so there a child row with no parent is left out instead of
-  reading NULL.
+- On ClickHouse, which joins lookups inner, such a call keeps its refusal.
 - A route recorded through an object hidden from the caller leaves that caller no route, as it
   does for any lookup, while a package without that object reads the rows' own key.
 
