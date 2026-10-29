@@ -19,7 +19,13 @@ def _kind_property(kind: str, key: str) -> dict[str, Any]:
         if key == "input":
             return {"$ref": "#/$defs/Ref"}
         if key == "over":
-            return {"type": "array", "items": {"type": "string"}, "minItems": 1}
+            over: dict[str, Any] = {"type": "array", "items": {"type": "string"}, "minItems": 1}
+            if kind == "total":
+                over["description"] = (
+                    "The group_by ids (or period) the total rolls up, not the grain it keeps: "
+                    "one value per combination of the call's other columns, on each row."
+                )
+            return over
     if key in EXPRESSION_KEYS or key == "else" or (key == "over" and kind == "distribution"):
         return expression
     if key == "value" and kind in {"aggregate_if", "nullif", "date_add"}:

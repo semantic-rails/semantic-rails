@@ -101,8 +101,8 @@ def test_a_total_states_what_it_reads_in_the_inputs_unit(duckdb_backend):
             "column": "total",
             "input": REVENUE,
             "over": [STORE],
-            "message": f"total is {REVENUE} across {STORE} in the rows the call keeps, computed "
-            "at that grain, not added up from the rows.",
+            "message": f"total is {REVENUE} with {STORE} rolled up: one grand total, repeated "
+            "on every row, computed from the rows the call keeps, not added up from the rows.",
         }
     ]
     [column] = [row for row in result["output_columns"] if row["field"] == "total"]

@@ -944,9 +944,16 @@ def _object_card(
                 for row in config.relationships
                 if row.source_entity == entity.id
             }
+            parents = ", ".join(sorted(looks_up))
+            # No key means no join *into* one of its rows; never that its answers can't combine.
             base["key_note"] = (
-                "No key: every stored row counts. It looks up "
-                f"{', '.join(sorted(looks_up)) or 'nothing'}; nothing can look up one of its rows."
+                f"No key: every stored row counts. It looks up {parents or 'nothing'}. No model "
+                "can join to one of its rows by key, but its measures still group and filter by "
+                + (
+                    f"its own columns and through {parents}, beside other models' measures."
+                    if parents
+                    else "its own columns."
+                )
             )
             linked = sorted(
                 entity_label(config, row.target_entity)

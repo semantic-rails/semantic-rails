@@ -224,10 +224,17 @@ def share_of_total(
 
 
 def total_over(compiled: dict[str, Any]) -> list[dict[str, Any]]:
-    """``TOTAL_OVER`` for every selected total: its input across the ``over`` columns in the
-    rows the call keeps, computed at that grain (a distinct count counts distinct values)."""
+    """``TOTAL_OVER`` for every selected total: its input with the ``over`` columns rolled up,
+    one value per combination of the columns the call keeps, computed from the rows the call
+    keeps (a distinct count counts distinct values). ``over`` names what is rolled up, never
+    the grain kept, so the message names both."""
+    query = compiled["logical_plan"].query
+    columns = [
+        *(query.get("group_by") or []),
+        *(["period"] if (query.get("time") or {}).get("grain") else []),
+    ]
     out: list[dict[str, Any]] = []
-    for row in compiled["logical_plan"].query.get("select") or []:
+    for row in query.get("select") or []:
         expression = row.get("expression") or {}
         if expression.get("kind") != "total":
             continue
@@ -238,9 +245,15 @@ def total_over(compiled: dict[str, Any]) -> list[dict[str, Any]]:
             "input": source.get("measure") or source.get("metric"),
             "over": list(expression.get("over") or []),
         }
+        kept = [column for column in columns if column not in entry["over"]]
+        per = (
+            f"one value per {' and '.join(kept)}, repeated on each of its rows"
+            if kept
+            else "one grand total, repeated on every row"
+        )
         entry["message"] = (
-            f"{entry['column']} is {entry['input']} across {' and '.join(entry['over'])} in the "
-            "rows the call keeps, computed at that grain, not added up from the rows."
+            f"{entry['column']} is {entry['input']} with {' and '.join(entry['over'])} rolled "
+            f"up: {per}, computed from the rows the call keeps, not added up from the rows."
         )
         out.append(entry)
     return out

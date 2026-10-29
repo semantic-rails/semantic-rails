@@ -179,21 +179,21 @@ VERBOSITY_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["minimal", "compact", "full"],
     "default": "minimal",
-    "description": "'compact' adds metadata; 'full' adds plans too.",
+    "description": "'compact' adds metadata, 'full' plans too.",
 }
 
 SQL_PROFILE_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["audit", "compact", "debug", "off"],
     "default": "audit",
-    "description": "'off' omits rendered_sql and sql_plan.",
+    "description": "'off' omits rendered_sql, sql_plan.",
 }
 
 ROW_FORMAT_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["records", "columns"],
     "default": "records",
-    "description": "'columns': column names once, rows as arrays.",
+    "description": "'columns': names once, rows as arrays.",
 }
 
 MCP_RESULT_SCHEMA: dict[str, Any] = {
@@ -525,12 +525,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Answer a call; call plan first to draft it. mode 'run' returns rows, 'validate' "
-            "only checks (skip it: run a call directly), 'sql' adds rendered_sql; only 'run' "
-            "reads the warehouse. Call: select ids or {expression, as}, group_by dimension ids "
-            "(alone, it lists rows), where/having [{field, op, value}] and entity filters, time "
-            "(time.end is exclusive), order_by (period: the time column), limit inside it; "
-            "max_rows and row_format go beside query."
+            "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only "
+            "checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and "
+            "ran, not that it answers the question. Call: select ids or {expression, as}, "
+            "group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] "
+            "and entity filters, time (time.end is exclusive), order_by (period: time column), "
+            "limit inside it; max_rows and row_format go beside query."
         ),
         input_schema={
             **_schema(

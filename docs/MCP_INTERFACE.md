@@ -136,7 +136,8 @@ tool/schema drift cannot be merged silently.
   other draft until each period it returns has ended.
   Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run a query call. `mode="validate"` or
-  `mode="sql"` stops before running it.
+  `mode="sql"` stops before running it. `ok` means the call is valid and ran (in `validate`,
+  that it is valid), not that it answers the question.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
   Listed only when the current package defines segments; its instruction and workflow prompt
   are omitted otherwise. Tool availability follows `Runtime.reload()` on the same adapter.

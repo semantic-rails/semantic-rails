@@ -362,6 +362,30 @@ def test_every_assumption_an_answer_states_says_it_in_words(
     assert all(isinstance(row["message"], str) and row["message"].strip() for row in stated)
 
 
+@pytest.mark.parametrize(
+    ("over", "grain", "per"),
+    [
+        (["period"], "month", f"one value per {STORE}, repeated on each of its rows"),
+        ([STORE], "month", "one value per period, repeated on each of its rows"),
+        ([STORE], None, "one grand total, repeated on every row"),
+        ([STORE, "period"], "month", "one grand total, repeated on every row"),
+    ],
+)
+def test_a_total_says_what_it_rolls_up_and_the_grain_it_keeps(
+    runtime: Runtime, over: list[str], grain: str | None, per: str
+) -> None:
+    # over names the columns rolled up, never the grain kept: the message names both.
+    total = {"expression": {"kind": "total", "input": REVENUE, "over": over}, "as": "total"}
+    call: dict[str, Any] = {"select": [REVENUE, total], "group_by": [STORE]}
+    if grain:
+        call["time"] = {"grain": grain, "start": "2017-01-01", "end": "2017-03-01"}
+    [stated] = [row for row in runtime.validate(call)["assumptions"] if row["code"] == "TOTAL_OVER"]
+    assert stated["message"] == (
+        f"total is {REVENUE} with {' and '.join(over)} rolled up: {per}, computed from the rows "
+        "the call keeps, not added up from the rows."
+    )
+
+
 def test_a_key_beside_another_of_its_entity_s_dimensions_is_not_shown_by_key(
     runtime: Runtime,
 ) -> None:

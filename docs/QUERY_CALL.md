@@ -1009,7 +1009,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `cumulative` | `{kind: cumulative, input, partition_by?, window_scope?}` |
 | `ratio` | `{kind: ratio, numerator, denominator}` |
 | `share` | `{kind: share, input: <id>, over: [<group_by id> \| "period"]}` |
-| `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own |
+| `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own; `over` names the columns rolled up, not the grain kept |
 | `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition, value?}` |
@@ -1134,10 +1134,13 @@ multiplying by 100 returns a percentage). Nested shares omit the optional row co
 `{"kind": "total", "input": <id>, "over": [<group_by id> | "period"]}` is its input at a
 coarser grain beside each row: the call itself without the `over` columns, joined back on the
 columns that remain (within each combination of the other `group_by` columns, and `period`
-unless `over` names it; a NULL group meets its own total). The coarser call keeps the call's
-`where`, `time` window, entity filters, routes, row filters and policies, so the total reads
-the rows the call keeps; `having`, `order_by` and `limit` act on the call's rows after it, as
-for a share. A `having` may filter on a total's column.
+unless `over` names it; a NULL group meets its own total). `over` names the columns the total
+rolls up, never the grain it keeps: grouped by store and month, `over: ["period"]` is one value
+per store on each of its months, and `over: [<store id>]` one value per month across the
+stores. The coarser call keeps the call's `where`, `time` window, entity filters, routes, row
+filters and policies, so the total reads the rows the call keeps; `having`, `order_by` and
+`limit` act on the call's rows after it, as for a share. A `having` may filter on a total's
+column.
 
 Every measure kind is computed at that grain from its own rows, never added up from the rows:
 a distinct count counts distinct values, an average averages every row, a ratio divides the
@@ -1171,7 +1174,7 @@ month. The answer states each total in `assumptions`:
           {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-02-01", "period_partial": false, "ordering_customer_count": 337, "store_customers": 366},
           {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-03-01", "period_partial": false, "ordering_customer_count": 363, "store_customers": 366}],
  "assumptions": [{"code": "TOTAL_OVER", "column": "store_customers", "input": "measure.jaffle.ordering_customer_count", "over": ["period"],
-                  "message": "store_customers is measure.jaffle.ordering_customer_count across period in the rows the call keeps, computed at that grain, not added up from the rows."}]}
+                  "message": "store_customers is measure.jaffle.ordering_customer_count with period rolled up: one value per dimension.jaffle_store_name, repeated on each of its rows, computed from the rows the call keeps, not added up from the rows."}]}
 ```
 
 The input is one measure or metric id, and each `over` item a `group_by` id of the call, or

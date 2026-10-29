@@ -190,6 +190,9 @@ def test_a_row_grain_target_never_gets_a_relationship_into_it(package_config_fac
     assert all(hint["kind"] != "author_relationship" for hint in issue["recovery_hints"])
     assert "author a relationship" not in _hints(issue).lower()
     assert "row-grain" in _hints(issue)
+    # It names the join it rules out, not "nothing can look up": the answers still combine.
+    assert "no model can join to one of its rows by key" in _hints(issue)
+    assert "nothing can look up" not in _hints(issue)
 
 
 # --- RESULT_TOO_LARGE --------------------------------------------------------------------------
@@ -451,10 +454,10 @@ def test_an_unresolved_current_without_a_state_offers_no_state_hint(package_conf
     assert all(hint["kind"] != "use_current_state" for hint in why["recovery_hints"])
 
 
-# --- A safe rewrite is a note ------------------------------------------------------------------
+# --- A cross-fact rewrite is a note -------------------------------------------------------------
 
 
-def test_a_safe_cross_fact_rewrite_is_an_info_note(runtime):
+def test_a_cross_fact_rewrite_is_a_note_that_says_only_what_it_checked(runtime):
     result = runtime.query(
         {
             "select": ["measure.jaffle.revenue_usd", "measure.jaffle.session_starts"],
@@ -464,4 +467,11 @@ def test_a_safe_cross_fact_rewrite_is_an_info_note(runtime):
     assert result["ok"]
     (rewrite,) = [w for w in result["warnings"] if w["code"] == "REWRITE_APPLIED"]
     assert rewrite["severity"] == "info"
-    assert rewrite["message"].startswith("Safe cross-fact alignment")
+    # How the rows combine, and nothing that reads as "the answer is right".
+    assert rewrite["message"] == (
+        "Each model's measures were aggregated from its own rows to the call's groups before "
+        "the join, so no row is counted twice. It does not check that these models answer the "
+        "question."
+    )
+    assert rewrite["details"]["rewrite_classification"] == "independent_leaf_alignment"
+    assert "safe" not in json.dumps(rewrite).lower()
