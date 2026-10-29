@@ -146,6 +146,14 @@ VARIANTS: dict[str, list[tuple[str, Callable[[dict[str, Any]], None]]]] = {
             ),
         ),
     ],
+    # A room's addresses are its own building's (``test_child_values``).
+    "address_route": [
+        ("package.yml", _two_way),
+        (
+            "graph.yml",
+            _recorded("room", "address", [ROOM_BUILDING, "relationship.address_building"]),
+        ),
+    ],
 }
 
 
@@ -170,7 +178,11 @@ class Campus:
         self.on = on  # the package overrides that put a config on this backend
 
     def reference(self, name: str) -> list[tuple[Any, ...]]:
-        return sorted(_rows(self.runtimes["base"], REFERENCE[name]), key=repr)
+        return self.sql(REFERENCE[name])
+
+    def sql(self, sql: str) -> list[tuple[Any, ...]]:
+        """Reference SQL's rows on this backend's data, sorted."""
+        return sorted(_rows(self.runtimes["base"], sql), key=repr)
 
     def query(self, call: dict[str, Any], variant: str = "base", **kwargs: Any) -> dict[str, Any]:
         return self.runtimes[variant].query(call, **kwargs)

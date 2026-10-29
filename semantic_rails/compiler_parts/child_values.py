@@ -3,9 +3,8 @@ the measure's own rows.
 
 "Room area by the city of each room's building": a room looks up its building, and a building
 has several addresses, in one city or more. From the rooms that is a lookup before a
-one-to-many hop, so no one set of addresses belongs to each room row, and the de-duplicated
-leaf, which keeps one row per room key, refuses it (``_dedup_refusal``; a keyless model has no
-key to keep). Where that route is decided (the call's own, the package's recorded one, or the
+one-to-many hop, which the de-duplicated leaf refuses (``_dedup_refusal``: it keeps one row per
+room key, and a keyless model has none). Where that route is decided (the call's own, the package's recorded one, or the
 only one) and walkable from its one side, the leaf reads the measure's rows as they are
 stored, each hop joined LEFT, against the child's distinct values per parent
 (``child_values_cte``: ``SELECT DISTINCT <the child's columns to the parent>, <its grouped
@@ -21,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..ast import NormalizedQuery, child_groups, plain_filters
+from ..ast import NormalizedQuery, child_groups
 from ..fanout import entity_label, route_reading
 from ..ir import BoundMeasure, MeasurePlan, PathSelection, RewriteStep
 from ..schema import MeasureConfig, PackageConfig
@@ -70,10 +69,11 @@ def child_values_route(
 ) -> PathSelection | None:
     """The leaf's one grouped route that ends in a one-to-many hop after its lookups, when the
     leaf reads it through the child's distinct values (see the module docstring); None when it
-    doesn't. Only the call's ``group_by`` crosses that hop: a filter there, a time window, a
-    result filter or an entity filter keeps the leaf's refusal, as does a measure that isn't a
-    sum, count, average or distinct count of an additive, non-stock value with no window, no
-    share over the grouping and no other entity's measure in its item."""
+    doesn't. Only the call's ``group_by`` crosses that hop: a filter there (its own path
+    across the hop), a time window, a result filter or an entity filter keeps the leaf's
+    refusal, as does a measure that isn't a sum, count, average or distinct count of an
+    additive, non-stock value with no window, no share over the grouping and no other
+    entity's measure in its item."""
     crossing = [row for row in selections if row.analysis.get("status") != "ok"]
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if (
@@ -94,13 +94,8 @@ def child_values_route(
         or _overlapping_share(measure, bound, selections, config, query)
     ):
         return None
-    route = crossing[0]
     keys = {entity.id: list(entity.key_columns) for entity in config.entities}
-    dimensions = _dimension_index(config)
-    filtered = {dimensions[item.field].entity for item in plain_filters(query.where)}
-    if route.target_entity in filtered or not _lookups_then_one_to_many(route.analysis, keys):
-        return None
-    return route
+    return crossing[0] if _lookups_then_one_to_many(crossing[0].analysis, keys) else None
 
 
 def _child_route(measure_plan: MeasurePlan) -> PathSelection:
