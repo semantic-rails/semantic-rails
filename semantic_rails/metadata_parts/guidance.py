@@ -28,10 +28,12 @@ from ..expressions import (
     BooleanExpr,
     CallExpr,
     CaseExpr,
+    ColumnRefExpr,
     ComparisonExpr,
     ConversionExpr,
     DistributionExpr,
     EntityValueExpr,
+    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
@@ -55,6 +57,43 @@ def _aggregation_guidance(measure: Any) -> dict[str, Any]:
         ),
         "discouraged_aggregations": discouraged,
     }
+
+
+def _count_unit(measure: Any) -> dict[str, Any]:
+    """What a count measure counts, read from its definition alone: rows of its model, or
+    distinct values of a column across them. ``{}`` for a measure that adds up, averages or
+    carries a value (a lookup), a stock, or one whose counted expression names no single column.
+
+    A count of distinct keys and a count of rows differ wherever a key repeats (customers who
+    ordered vs their orders), so the card names which one the measure is."""
+    # A stock reads one snapshot per series, whatever its aggregation: never every row it holds.
+    if measure.lookup_from or measure.measure_class == "semi_additive":
+        return {}
+    aggregation = str(measure.default_aggregation or "").lower()
+    expr, conditional = measure.expr, False
+    if isinstance(expr, CaseExpr) and expr.whens:
+        first = expr.whens[0].then
+        other = expr.else_expr
+        # Rows where its condition holds: every branch yields one value and the rest read NULL
+        # (or, for a sum of 1, 0); any other CASE counts no single thing.
+        empty = other is None or (isinstance(other, LiteralExpr) and other.value is None)
+        zero = isinstance(other, LiteralExpr) and other.value == 0
+        same = all(item.then == first for item in expr.whens)
+        if same and (empty or (zero and aggregation == "sum")):
+            expr, conditional = first, True
+    rows = f"rows of {measure.entity}" + (" where its condition holds" if conditional else "")
+    if aggregation == "sum" and isinstance(expr, LiteralExpr) and expr.value == 1:
+        return {"count_unit": rows}
+    if aggregation not in {"count", "count_distinct"}:
+        return {}
+    if isinstance(expr, LiteralExpr) and expr.value is not None and aggregation == "count":
+        return {"count_unit": rows}
+    if not isinstance(expr, ColumnRefExpr):
+        return {}
+    column = ".".join(part for part in (expr.entity or expr.table, expr.column) if part)
+    if aggregation == "count":
+        return {"count_unit": f"{rows} with a non-NULL {column}"}
+    return {"count_unit": f"distinct {column} across {rows}"}
 
 
 def _metric_measure_ids(

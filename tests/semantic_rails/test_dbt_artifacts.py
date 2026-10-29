@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from semantic_rails import architect_mcp
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.dbt_artifacts import (
     dbt_import_models,
@@ -605,24 +604,22 @@ def _call(server: Any, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(run())
 
 
-def test_mcp_session_suggests_models_from_the_dbt_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_mcp_session_suggests_models_from_the_dbt_target(tmp_path: Path) -> None:
     db_path = build_dbt_warehouse(tmp_path / "dbt" / "warehouse.duckdb")
     write_dbt_artifacts(db_path, tmp_path / "dbt" / "target")
     server = create_architect_mcp_server(workspace_root=tmp_path)
-    monkeypatch.setattr(architect_mcp, "MAX_UNSELECTED_DBT_SUGGESTIONS", 2)
 
     result = _call(
         server,
         "suggest_models_from_dbt",
         {"target_dir": "dbt/target", "select": ["fct_orders", "fct_order_lines", "dim_stores"]},
     )
-    unselected = _call(server, "suggest_models_from_dbt", {"target_dir": "dbt/target"})
+    unselected = _call(server, "suggest_models_from_dbt", {"target_dir": "dbt/target", "limit": 2})
 
-    assert len(unselected["models"]) == 2 and unselected["truncated"] is True
-    assert unselected["hint"] == "narrow with select"
-    assert result["ok"] is True and result["truncated"] is False, result
+    assert len(unselected["models"]) == 2 and unselected["has_more"] is True
+    assert unselected["next_offset"] == 2 and unselected["total_count"] > 3
+    assert result["ok"] is True and result["has_more"] is False, result
+    assert result["total_count"] == 3
     assert result["dbt_project"] == "shop_dbt"
     models = _by(result["models"], "relation")
     assert models["main_marts.fct_order_lines"]["primary_key"]["columns"] == [

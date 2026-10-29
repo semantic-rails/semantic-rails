@@ -1561,17 +1561,19 @@ model:                         # models/readings.yml: nothing in graph.entities 
   an aggregate of its rows (an entity filter on the parent, or a child group); its rows can be
   filtered by a parent's other children; and it can be a link table (`bridge: true`), whose
   duplicate rows count twice for its own measures and once for a parent's distinct count.
-- Nothing can look up one of its rows. A relationship into it (another model's `entities:`
-  entry or a `graph.relationships` row) is `INVALID_CONFIG`, and the message shows the row to
-  write from its side instead.
+- No model can join to one of its rows by key. A relationship into it (another model's
+  `entities:` entry or a `graph.relationships` row) is `INVALID_CONFIG`, and the message shows
+  the row to write from its side instead. Its measures still group, filter and sit beside other
+  facts as above.
 - What has to tell its rows apart refuses with `ROW_GRAIN_UNSUPPORTED`, naming the model and the
   fix: segments, entity filters, per-entity values and distributions, conversions and anchored
   sets on it, lookups `via` it, and a sum, first or last of an `additive: false` measure on it.
   An `entity_count` without `entity_key` and a stock (`accumulation: stock`, whose series is the
   key minus the clock) are `INVALID_CONFIG`.
-- `inspect` shows `"key": []` and its `key_note`, what it looks up; `discover` doesn't offer it
-  as a grouping entity, and `semantic-rails project validate` lists it under "Row grain (no
-  key)". Answers carry nothing new.
+- `inspect` shows `"key": []` and its `key_note`: what it looks up, that no model can join to
+  one of its rows by key, and what its measures still group and filter by. `discover` doesn't
+  offer it as a grouping entity, and `semantic-rails project validate` lists it under "Row grain
+  (no key)". Answers carry nothing new.
 
 Declare a key, a graph entity homed on the model, when its rows have one. `kind: fact` is gone:
 give such a model an entity keyed by its time column (a daily series keyed by `[date_day]`), or
@@ -3151,8 +3153,16 @@ its period reads `NULL` like any other period the load hasn't reached. Such a me
 base table, never a rollup, whose buckets can't stop at an instant. A clock on another model
 than the measure's own is not capped.
 
-The edge is only the upper bound: a period before the table's first row still reads `NULL`,
-and `observation_scope` decides what counts as observed, as before. Balances, averages,
+The edge is only the upper bound: a period before the table's first row still reads `NULL`.
+Up to the edge, the table is observed whether or not a metric's `filter` matches any of its
+rows: a count filtered to enterprise accounts reads `0` in every loaded week before the first
+enterprise account signs up (data of nothing), and `NULL` with `NO_DATA_YET` after the edge, so
+no `COALESCE(..., 0)` is needed (it would also read the weeks after the edge as a silent `0`).
+The same holds before the summed column holds any value: refunds filtered to refunded orders,
+and a refund rate over revenue, read `0` in a loaded week of paid orders before the first
+refund, while a refunded order with no amount leaves its week `NULL`.
+A call's `where` counts as before: under `observation_scope: "query"` a week is observed only if
+the `where` keeps a row of the table. Balances, averages,
 distinct populations and `additive: false` measures never read `0` for an empty period, edge or
 not. A caller row filter never
 filters the load log (it records how far the whole load ran); a `row_filter` policy on the

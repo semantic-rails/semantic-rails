@@ -540,7 +540,7 @@ def test_relationships_are_ranked_only_when_kinds_names_them(
     found = discover_payload(runtime, terms="store", kinds=["relationship"])
     assert "relationship.orders_store" in {row["id"] for row in found["relationships"]}
     miss = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["relationship"]})
-    assert miss["ok"] is True and not miss["relationships"]
+    assert miss["ok"] is True and "relationships" not in miss
     assert "No semantic objects of kind ['relationship'] matched" in _hints_text(miss)
 
 
@@ -585,7 +585,8 @@ def test_advertised_discover_schema_accepts_supported_kinds(
     if not terms:
         assert response["catalog"][f"{kind}_ids"], kind
     else:
-        assert isinstance(response[plural], list), kind
+        # The search ran over the kind: its bucket, or no match of it.
+        assert isinstance(response.get(plural), list) or "no_matches" in response, kind
 
 
 def test_the_schema_offers_exactly_the_kinds_discover_takes() -> None:
@@ -620,7 +621,7 @@ def test_a_time_role_search_ranks_the_roles_beside_the_dimensions(
         "supported_grains": ["day", "week", "month", "quarter", "year"],
     }
     assert out["dimensions"][0]["id"] == "dimension.jaffle_order_ordered_at"
-    assert not out["measures"] and not out["metrics"]
+    assert "measures" not in out and "metrics" not in out
     assert NO_MATCH not in _hints_text(out)
 
 
@@ -634,7 +635,7 @@ def test_a_value_domain_search_ranks_the_domain_by_its_values(
         "dimension.jaffle_item_product_type"
     ]
     miss = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["temporal_role"]})
-    assert miss["ok"] is True and not miss["temporal_roles"]
+    assert miss["ok"] is True and "temporal_roles" not in miss
     assert "No semantic objects of kind ['temporal_role'] matched" in _hints_text(miss)
 
 

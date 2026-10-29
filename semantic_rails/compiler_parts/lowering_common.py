@@ -6,7 +6,7 @@ an entity expressed through its parent.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
@@ -504,7 +504,10 @@ def _record_time_scope(
     raw_time: Any,
     bucket: Any,
     local: bool,
+    authored: Sequence[Any] = (),
 ) -> None:
+    """Record each row's scope; ``authored`` names the conditions of ``untimed`` that are its
+    measures' authored filter, which a declared edge's probe leaves out."""
     if not plan.time or not _needs_time_scope(plan, config):
         return
     # A leaf with CTEs of its own (an entity filter's population) keeps its joins and
@@ -546,6 +549,13 @@ def _record_time_scope(
                 storage_zone=role.column_timezone or role.timezone or "UTC",
                 bounded=bool(plan.time.get("start") or plan.time.get("end")),
                 edge=edge,
+                source_where=tuple(
+                    condition
+                    for condition in untimed
+                    if not any(condition is filtered for filtered in authored)
+                )
+                if edge is not None and authored
+                else None,
             ),
         )
 
@@ -602,11 +612,12 @@ def _dataset_scope(
 ) -> LeafScope | None:
     """A sum or count's own rows under its authored conditions (its filter, its CASE, the joins
     they need), without the query's filters or window: what ``dataset`` observation probes,
-    whichever leaf answers. Its own metric predicates (a scoped aggregate's, over all time, a
-    window or each period) are read through the leaf's joins to their sets (``owned``, renamed
-    as the leaf's CTE names them). None for a predicate it can't read that way, a fan-out or a
-    hop valid over time, and for a nested CASE, whose settlement can't tell unknown amounts
-    from no rows: the guard then refuses."""
+    whichever leaf answers; under a declared edge, ``source_where`` leaves its filter out. Its
+    own metric predicates (a scoped aggregate's, over all time, a window or each period) are
+    read through the leaf's joins to their sets (``owned``, renamed as the leaf's CTE names
+    them). None for a predicate it can't read that way, a fan-out or a hop valid over time,
+    and for a nested CASE, whose settlement can't tell unknown amounts from no rows: the guard
+    then refuses."""
     bound = row.bound_measure
     measure = _measure_index(config)[bound.measure_id]
     paths = [s for s in row.path_selections if s.purpose in _AUTHORED_PURPOSES]
@@ -624,6 +635,7 @@ def _dataset_scope(
     where = []
     for item in _bound_filter_clauses(bound, config):
         where.append(_filter_condition_for_item(measure.entity, item, config))
+    authored = len(where)
     # Rows past a declared edge are never read, so they observe nothing either.
     where.extend(_edge_cap(measure, role_id, config))
     relation = _entity_index(config)[measure.entity].table
@@ -650,6 +662,10 @@ def _dataset_scope(
         joins=tuple(joins),
         where=tuple(where),
         value=SqlCall("COUNT", [_config_expr_to_sql(measure.expr, measure, config)]),
+        # The same rows without its authored filter, which a declared edge's probe reads.
+        source_where=tuple(where[authored:])
+        if authored and measure.zero_through is not None
+        else None,
     )
 
 

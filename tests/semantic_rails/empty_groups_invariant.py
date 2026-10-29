@@ -24,6 +24,7 @@ from semantic_rails.compiler_parts.empty_groups import (
     zero_aliases,
     zero_outputs,
 )
+from semantic_rails.compiler_parts.row_counts import _names_in_use, _row_count_names
 from semantic_rails.compiler_parts.sql_lowering import (
     _anchored_entity_set_select,
     _plan_requires_agent_dag_lowering,
@@ -74,21 +75,25 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
     )
     if expected:
         guard = next(node for node in guards if node.name == GUARDED_BASE)
+        # The marks of the groups a measure's own rows never reached settle nothing.
+        marks = {name for names in (compiled.get("absent_rows") or {}).values() for name in names}
         settled = [
             field
             for field in guard.query.select
-            if isinstance(field.expression, SqlCase) or _is_zero_fill(field.expression)
+            if field.alias not in marks
+            and (isinstance(field.expression, SqlCase) or _is_zero_fill(field.expression))
         ]
         assert len(settled) == len(expected), (
             f"{GUARDED_BASE} settles {len(settled)} measures, expected {sorted(expected)}"
         )
         # Besides its own value (and the keys, for coverage), a sum reads exactly one column:
         # its row count. A count reads none, nor does anything beside a distribution, which
-        # keeps the earlier settlement.
+        # keeps the earlier settlement. A row count the guard passes through is no key.
+        row_counts = set(_row_count_names(plan, _names_in_use(plan, config)).values())
         keys = {
             field.alias
             for field in guard.query.select
-            if isinstance(field.expression, SqlIdentifier)
+            if isinstance(field.expression, SqlIdentifier) and field.alias not in row_counts
         }
         counted = [
             field

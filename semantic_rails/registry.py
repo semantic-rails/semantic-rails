@@ -56,6 +56,8 @@ class Registry:
     def _build(self) -> None:
         for entity in self.config.entities:
             payload = asdict(entity)
+            # Read only by the look-alike notices, which state it where it decides a reading.
+            payload.pop("model_description", None)
             self._add(
                 SemanticObject(
                     entity.id,

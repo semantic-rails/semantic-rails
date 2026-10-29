@@ -158,6 +158,24 @@ def share_group_counts(plan: LogicalPlan, config: PackageConfig) -> dict[str, st
     return names
 
 
+def absent_row_names(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
+    """The column marking the groups each measure's own rows never reached, by leaf alias:
+    ``m<i>_absent`` beside the measure's ``m<i>``, renamed until it takes no name in use, no
+    row count's and no share's."""
+    taken = _names_in_use(plan, config)
+    taken |= {name.casefold() for name in _row_count_names(plan, taken).values()}
+    taken |= {name.casefold() for name in share_group_counts(plan, config).values()}
+    names: dict[str, str] = {}
+    aliases = dict.fromkeys(row.bound_measure.alias for row in plan.measure_plans)
+    for index, alias in enumerate(aliases, start=1):
+        name, suffix = f"m{index}_absent", 2
+        while name.casefold() in taken:
+            name, suffix = f"m{index}_absent_{suffix}", suffix + 1
+        taken.add(name.casefold())
+        names[alias] = name
+    return names
+
+
 def _rows_fields(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[SqlField]:
     """Beside a sum's value: how many of the group's rows it read."""
     return [

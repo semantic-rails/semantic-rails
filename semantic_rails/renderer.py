@@ -527,8 +527,14 @@ def _select_clauses(query: SqlSelect, bound: list[frozenset[str]]) -> list[str]:
                 for order in query.order_by
             )
         )
+    offset = [f"OFFSET {int(query.offset)}"] if query.offset else []
+    dialect = _ACTIVE_DIALECT.get()
+    if dialect is not None and dialect.offset_before_limit:
+        chunks.extend(offset)
+        offset = []
     if query.limit is not None:
         chunks.append(f"LIMIT {query.limit}")
+    chunks.extend(offset)
     return chunks
 
 

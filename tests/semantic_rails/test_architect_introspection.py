@@ -10,7 +10,6 @@ import duckdb
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from semantic_rails import architect_mcp
 from semantic_rails.architect_introspection import (
     MAX_PROFILE_ROWS,
     MAX_SAMPLE_CHARS,
@@ -780,28 +779,26 @@ def _session(server: Any, calls: list[tuple[str, dict[str, Any]]]) -> list[dict[
     return asyncio.run(run())
 
 
-def test_mcp_session_explores_a_dbt_warehouse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_mcp_session_explores_a_dbt_warehouse(tmp_path: Path) -> None:
     build_dbt_warehouse(tmp_path / "dbt" / "warehouse.duckdb")
     server = create_architect_mcp_server(workspace_root=tmp_path)
     path = {"duckdb_path": "dbt/warehouse.duckdb"}
-    monkeypatch.setattr(architect_mcp, "MAX_LISTED_TABLES", 5)
 
     everything, tables, described, profiled, suggested = _session(
         server,
         [
-            ("list_tables", path),
-            ("list_tables", {**path, "schema": "main_marts"}),
+            ("list_tables", {**path, "limit": 5}),
+            ("list_tables", {**path, "schema": "main_marts", "limit": 5}),
             ("describe_table", {**path, "relation": "main_marts.dim_customers"}),
             ("profile_columns", {**path, "relation": "main_marts.fct_orders", "sample_limit": 2}),
             ("suggest_model", {**path, "relation": "main_marts.fct_orders"}),
         ],
     )
 
-    assert len(everything["tables"]) == 5 and everything["truncated"] is True
-    assert everything["hint"] == "narrow with schema"
-    assert len(tables["tables"]) == 5 and tables["truncated"] is False and "hint" not in tables
+    assert len(everything["tables"]) == 5 and everything["has_more"] is True
+    assert everything["next_offset"] == 5 and everything["total_count"] == 15
+    assert len(tables["tables"]) == 5 and tables["has_more"] is False
+    assert tables["next_offset"] is None and tables["total_count"] == 5
     assert described["primary_key"] == ["customer_id"]
     assert profiled["row_count"] == 8
     assert suggested["upsert_model"]["primary_key"] == ["order_id"]

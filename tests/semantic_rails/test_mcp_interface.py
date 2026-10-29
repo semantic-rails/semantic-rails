@@ -242,7 +242,7 @@ def test_mcp_adapter_metadata_tools_match_public_v1_payloads(runtime_factory):
         assert catalog["package_id"] == "jaffle_shop"
         assert "dimension.jaffle_store_name" in catalog["catalog"]["dimension_ids"]
         assert discovered["ok"] is True
-        assert discovered["stage"] == "initial"
+        assert "stage" not in discovered  # an echo of the call
         assert discovered["measures"]
         assert inspected["card"]["id"] == "measure.jaffle.order_count"
         assert inspected["card"]["default_aggregation"] == "count_distinct"

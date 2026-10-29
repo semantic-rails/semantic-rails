@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import asdict
 from functools import lru_cache
 from typing import Any
@@ -63,13 +63,14 @@ from .expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
-from .fanout import entity_label, query_route_decisions
+from .fanout import eligible_path_targets, entity_label, query_route_decisions
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
 from .metadata_parts.entity_graph import entity_graph, entity_relationships
 from .metadata_parts.guidance import (
     _aggregation_guidance,
+    _count_unit,
     _metric_guidance,
     _metric_preferences,
 )
@@ -101,6 +102,7 @@ from .metadata_parts.relevance import (
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
 from .naming import governed_names, unclaimed_name
+from .path_gap import first_sentence, measure_lookalikes, model_population
 from .policies import policy_effects_for_object, row_filters_for_context
 from .query_call import call_from_query
 from .request_context import policy_identity
@@ -849,6 +851,7 @@ def _object_card(
                     "snapshot": measure.accumulation.snapshot,
                 },
                 "value_type": measure.value_type,
+                **_count_unit(measure),
                 "usage_summary": _aggregation_guidance(measure),
                 **_aggregation_guidance(measure),
                 "default_temporal_role": payload.get("default_temporal_role", ""),
@@ -943,9 +946,16 @@ def _object_card(
                 for row in config.relationships
                 if row.source_entity == entity.id
             }
+            parents = ", ".join(sorted(looks_up))
+            # No key means no join *into* one of its rows; never that its answers can't combine.
             base["key_note"] = (
-                "No key: every stored row counts. It looks up "
-                f"{', '.join(sorted(looks_up)) or 'nothing'}; nothing can look up one of its rows."
+                f"No key: every stored row counts. It looks up {parents or 'nothing'}. No model "
+                "can join to one of its rows by key, but its measures still group and filter by "
+                + (
+                    f"its own columns and through {parents}, beside other models' measures."
+                    if parents
+                    else "its own columns."
+                )
             )
             linked = sorted(
                 entity_label(config, row.target_entity)
@@ -2217,7 +2227,26 @@ def discover_payload(
                 row["label"],
                 row["id"],
             ),
-        )[:limit]
+        )
+
+    def _ranked(
+        rows: list[dict[str, Any]], value_rows: list[dict[str, Any]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Every bucket's whole ranking; the response cuts each at ``limit``."""
+
+        def of_kind(kind: str) -> list[dict[str, Any]]:
+            return _sort([row for row in rows if row["kind"] == kind])
+
+        return {
+            "measures": of_kind("measure"),
+            "metrics": of_kind("metric"),
+            "segments": of_kind("segment"),
+            "dimensions": of_kind("dimension"),
+            "dimension_values": _sort(value_rows),
+            "entities": of_kind("entity"),
+            **{bucket: of_kind(kind) for kind, bucket in asked.items()},
+            "blocked": _sort([row for row in [*rows, *value_rows] if row["blocked_reason"]]),
+        }
 
     # When the user provided a non-trivial search term but no candidate
     # actually matched it (the "asdjkfhqwiuer" case), drop the floor of
@@ -2247,19 +2276,10 @@ def discover_payload(
         records = [row for row in records if _is_real_match(row)]
         dimension_values = [row for row in dimension_values if _is_real_match(row)]
 
-    measures = _sort([row for row in records if row["kind"] == "measure"])
-    metrics = _sort([row for row in records if row["kind"] == "metric"])
-    segments = _sort([row for row in records if row["kind"] == "segment"])
-    dimensions = _sort([row for row in records if row["kind"] == "dimension"])
-    entities = _sort([row for row in records if row["kind"] == "entity"])
-    extra = {
-        bucket: _sort([row for row in records if row["kind"] == kind])
-        for kind, bucket in asked.items()
-    }
-    values = _sort(dimension_values)
-    blocked = _sort([row for row in [*records, *dimension_values] if row["blocked_reason"]])
-    no_matches = has_real_term and not (
-        measures or metrics or segments or dimensions or values or entities or any(extra.values())
+    ranked = _ranked(records, dimension_values)
+    # A blocked card is also in its kind's bucket.
+    no_matches = has_real_term and not any(
+        ranked[bucket] for bucket in ranked if bucket != "blocked"
     )
 
     # Token-AND fallback: when the holistic single-string match returns
@@ -2372,28 +2392,14 @@ def discover_payload(
                     kind_set = set(kinds)
                     fallback_records = [r for r in fallback_records if r["kind"] in kind_set]
                     fallback_dimvals = [r for r in fallback_dimvals if r["kind"] in kind_set]
-                measures = _sort([row for row in fallback_records if row["kind"] == "measure"])
-                metrics = _sort([row for row in fallback_records if row["kind"] == "metric"])
-                segments = _sort([row for row in fallback_records if row["kind"] == "segment"])
-                dimensions = _sort([row for row in fallback_records if row["kind"] == "dimension"])
-                entities = _sort([row for row in fallback_records if row["kind"] == "entity"])
-                extra = {
-                    bucket: _sort([row for row in fallback_records if row["kind"] == kind])
-                    for kind, bucket in asked.items()
-                }
-                values = _sort(fallback_dimvals)
-                blocked = _sort(
-                    [row for row in [*fallback_records, *fallback_dimvals] if row["blocked_reason"]]
-                )
-                no_matches = not (
-                    measures
-                    or metrics
-                    or segments
-                    or dimensions
-                    or values
-                    or entities
-                    or any(extra.values())
-                )
+                ranked = _ranked(fallback_records, fallback_dimvals)
+                no_matches = not any(ranked[bucket] for bucket in ranked if bucket != "blocked")
+
+    # Each bucket shows its first ``limit`` matches. ``has_more`` names every bucket cut there with
+    # how many more matches it has, so a cut list never reads as the whole catalog. The rows are
+    # the caller's view, so an object hidden from them is never counted.
+    has_more = {bucket: len(rows) - limit for bucket, rows in ranked.items() if len(rows) > limit}
+    buckets = {bucket: rows[:limit] for bucket, rows in ranked.items()}
 
     # Ship a single ready-to-run starter_query_patch on each selectable
     # candidate so blind agents can copy a runnable IR seed directly from
@@ -2402,15 +2408,15 @@ def discover_payload(
     # entities, dimension_values, blocked) intentionally skip — they
     # don't map to a single canonical clause.
     seed = _call_of(partial_query)
-    for row in [*measures, *metrics]:
+    for row in [*buckets["measures"], *buckets["metrics"]]:
         row["starter_query_patch"] = _query_patch_with_selection(
             runtime, seed, {"id": row["id"], "kind": row["kind"], "label": row["label"]}
         )
-    for row in dimensions:
+    for row in buckets["dimensions"]:
         row["starter_query_patch"] = _query_patch_with_group_by(seed, row["id"])
     if verbosity == "full":
         # Reachability stays on the inspect card: it follows the package's routes.
-        for row in entities:
+        for row in buckets["entities"]:
             row["relationships"] = entity_relationships(config, row["id"])
 
     payload = {
@@ -2423,15 +2429,10 @@ def discover_payload(
             "selected_measure_ids": selection["selected_measure_ids"],
             "selected_metric_recipe_ids": selection["selected_metric_recipe_ids"],
         },
-        "measures": measures,
-        "metrics": metrics,
-        "segments": segments,
-        "dimensions": dimensions,
-        "dimension_values": values,
-        "entities": entities,
-        **extra,
-        "blocked": blocked,
+        **buckets,
     }
+    if has_more:
+        payload["has_more"] = has_more
     if fallback_token_match_reason is not None and not no_matches:
         payload["match_strategy"] = {
             "kind": "multi_token_fallback",
@@ -2667,11 +2668,86 @@ def inspect_payload(
         payload["card"].update(
             entity_graph(runtime._config, object_id, minimal=verbosity == "minimal")
         )
+    if payload["card"]["kind"] == "measure":
+        payload["card"].update(_lookalike_notice(runtime._config, payload["card"], partial_query))
     if verbosity == "minimal":
         payload["card"] = _slim_inspect_card(payload["card"])
         if not payload["query_state"]:
             payload.pop("query_state")
     return payload
+
+
+LOOKALIKE_NOTICE = (
+    "Other models define a measure named like this one (lookalike_measures; inspect one for its "
+    "model's full description and reach). Each model holds its own rows and a call reads only "
+    "its own measure's model: read the one whose rows the user asks about, and tell the user "
+    "which model the answer reads."
+)
+
+
+def _grouping_entities(config: PackageConfig, entity: str) -> list[str]:
+    """The entities a call reading ``entity``'s measures can group by, besides ``entity``: each
+    one a declared route reaches one row per measure row, as the caller sees them."""
+    return [
+        target
+        for target in eligible_path_targets(config, start=entity)
+        if _path_reach(config, entity, target).available
+    ]
+
+
+def _lookalike_notice(
+    config: PackageConfig, card: dict[str, Any], partial_query: dict[str, Any]
+) -> dict[str, Any]:
+    """A measure card's notice of its look-alikes on other models (``measure_lookalikes``) that
+    the caller sees and may read: each one by id with the first sentence of its model's
+    description (its own card has the rest and where it reaches) and, when the call names
+    dimensions, which of them it reaches. Read from the package and the caller's view only
+    (never from a question); empty when the measure has none."""
+    scope = policy_identity(_policy_context(partial_query))
+
+    def readable(*object_ids: str) -> bool:
+        return not any(
+            effect["action"] in {"deny", "hidden"}
+            for object_id in object_ids
+            for effect in policy_effects_for_object(config, object_id, **scope)
+        )
+
+    others = [row for row in measure_lookalikes(config, card["id"]) if readable(row.id, row.entity)]
+    if not others:
+        return {}
+    entities = {row.id: row for row in config.entities}
+    dimension_entity = {row.id: row.entity for row in config.dimensions}
+
+    def named(value: Any) -> Iterator[str]:
+        if isinstance(value, str) and value in dimension_entity:
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from named(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from named(item)
+
+    dimensions = list(
+        dict.fromkeys(named([partial_query.get("group_by"), partial_query.get("where")]))
+    )
+    rows = []
+    for other in others:
+        row: dict[str, Any] = {"measure": other.id, "entity": other.entity}
+        if population := first_sentence(model_population(entities[other.entity])):
+            row["description"] = population
+        if dimensions:
+            held = {other.entity, *_grouping_entities(config, other.entity)}
+            row["reaches"] = [item for item in dimensions if dimension_entity[item] in held]
+        rows.append(row)
+    root = card["root_entity"]
+    own = model_population(entities[root]) if root in entities else ""
+    return {
+        **({"model_description": own} if own else {}),
+        "grouping_entities": _grouping_entities(config, root),
+        "lookalike_measures": rows,
+        "lookalike_notice": LOOKALIKE_NOTICE,
+    }
 
 
 # Card fields that repeat another field: object_type repeats kind,

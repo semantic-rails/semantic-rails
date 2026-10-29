@@ -116,7 +116,10 @@ tool/schema drift cannot be merged silently.
 
 - `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
 - `inspect`: one object's card.
-- `valid-values`: a dimension's governed values.
+- `valid-values`: a dimension's governed values. `search` keeps the values containing its
+  text, ignoring case, and `limit`/`offset` page them in the warehouse; `has_more` says
+  whether another page follows, and `total_count` is exact once a page holds the last match
+  (`null` before). See [valid-values](QUERY_API.md#post-apiv1valid-values).
 - `plan`: draft a query call from a natural-language question. A fully matched
   package example uses its validated authored query (`best.pattern:
   package_example`), including its groupings, filters and limit. An example
@@ -133,7 +136,8 @@ tool/schema drift cannot be merged silently.
   other draft until each period it returns has ended.
   Runtimes without a source path have no package examples.
 - `execute` (`/api/v1/query`): validate, compile and run a query call. `mode="validate"` or
-  `mode="sql"` stops before running it.
+  `mode="sql"` stops before running it. `ok` means the call is valid and ran (in `validate`,
+  that it is valid), not that it answers the question.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
   Listed only when the current package defines segments; its instruction and workflow prompt
   are omitted otherwise. Tool availability follows `Runtime.reload()` on the same adapter.
@@ -210,8 +214,8 @@ past the cap; descriptions repeating the label are omitted) and `default_tempora
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
 bucket leaves out its `kind`, and its `label` when every word of the label is already in the id
 past its kind ("Store name" on `dimension.store_name`; "Orders" on `measure.order_count` stays);
-blocked and dimension-value cards keep theirs. The response leaves out the `terms` and
-`verbosity` it was called with. `verbosity="compact"` keeps the same slim cards and descriptions but omits unavailable
+blocked and dimension-value cards keep theirs. The response leaves out the `terms` and `verbosity`
+it was called with, the ranking `stage`, and every empty bucket. `verbosity="compact"` keeps the same slim cards and descriptions but omits unavailable
 candidates and the blocked bucket. Match reasons, starter patches, companions, recommended actions
 and blocked metadata are retained with `verbosity="full"`, subject to the response budget. When the
 question uses an object's whole name ("revenue by store"), that object ranks
@@ -238,11 +242,52 @@ metric replaces each measure; additional equivalent metrics keep their own cards
 and measure-only requests retain separate cards. Grant-scoped discovery retains its card fields,
 including `starter_query_patch`, at every verbosity.
 
+Each bucket lists at most `limit` matches (default 10). When a bucket had more, `has_more` names it
+with how many more matches it has, at every verbosity: `"has_more": {"dimensions": 5}` means five
+more dimensions match beyond the ten listed, so the list is not the whole catalog; raise `limit` or
+narrow `terms` to see them. A bucket that ends at or before `limit` has no entry, and `has_more` is
+left out when no bucket was cut. It counts every match the caller may see, available or not
+(compact names no cut `blocked` bucket, which it leaves out); an object hidden from them, or
+outside their grant, never counts.
+
 `inspect` (default `verbosity="minimal"`) states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
 the label, generic `recommended_next_actions`, empty structural fields, and every starter patch after the first. Declared sample values
 and query literals remain exact, including blank and null values. `"compact"` or `"full"` return
 the whole card, which is also the HTTP default.
+
+A count measure's card, at every verbosity, says what it counts in `count_unit`, read from the
+measure's definition alone: `"rows of <entity>"` for a sum of `1`, or `"distinct <column> across
+rows of <entity>"` for a distinct count (an `entity_count`), with `" where its condition holds"`
+when the counted value is a CASE that gives that one value on the rows its conditions keep and
+NULL on the rest (or `0`, for a sum of `1`). A
+count of keys and a count of rows differ wherever a key repeats: `measure.jaffle.order_count`
+is `"distinct order_id across rows of entity.jaffle_order"`, and
+`measure.jaffle.ordering_customer_count` `"distinct customer_id across rows of
+entity.jaffle_order"`, each customer once however many orders they placed. A measure that adds
+up, averages or carries a value, a stock (which reads one snapshot per series, even a sum of
+`1`), or one that counts an expression naming no single column, has no `count_unit`.
+
+A measure's card, at every verbosity, names its look-alikes on other models when it has any:
+published measures with the same key or label once each model's table name is taken off, over
+the same column expression, that total the same way (the rule of the `PATH_NOT_FOUND` row below).
+Cards without one are unchanged.
+Read from the package and the caller's view only, never from a question, the card then adds:
+
+- `lookalike_measures`: each look-alike the caller sees and may read, by `measure` id, with its
+  `entity`, `description` (the first sentence of its model's `description`, which states its
+  rows, else of the entity's own) and, when the `query` seed names dimensions in `group_by` or
+  `where`, `reaches`: those of them a call reading it can group or filter by. The look-alike's
+  own card has its full description and its `grouping_entities`;
+- `grouping_entities`: each entity, besides its own `root_entity`, whose dimensions a call
+  reading this measure can group by, because a declared route reaches one of its rows per measure
+  row (an entity reached only by a route that would repeat its rows is not listed);
+- `model_description`: what this measure's own model says its rows are, when it says;
+- `lookalike_notice`: a fixed sentence saying each model holds its own rows, so the answer should
+  read the one whose rows the user asks about and say which model it read, and that a
+  look-alike's card has its full description and reach.
+
+None is chosen, and no call changes: a call reads only the measure it names.
 
 An entity's card shows its place in the join graph, read from the caller's visible view:
 
@@ -753,9 +798,13 @@ is one to fix:
   aggregation words ("count", "total", "average"), units of time and numbers; a measure is
   named when one of them is a word of its label, id or synonyms, never its description. Only
   the catch-all drafts are read this way, and never when the caller's `query` selects. The why
-  names the words that name nothing in the catalog (`details.terms`) and the measures and
-  metrics whose names or descriptions mention them (`details.candidates`); with none, the
-  status is `unrealizable`, else `low_confidence`. A measure sharing any word the question asks
+  names the words that name nothing in the catalog (`details.terms`), the measures and
+  metrics whose names or descriptions mention them (`details.candidates`), and the dimensions,
+  time roles, segments and entities that do (`details.other_matches`, each with its `kind`,
+  `id` and `label`: they can group or filter, but none is a measure). Every kind the caller can
+  see is checked, and an object hidden from the caller is never matched. When nothing of any
+  kind mentions them, the message says so and the status is `unrealizable`; otherwise it is
+  `low_confidence`. A measure sharing any word the question asks
   about counts as named, even an entity's name ("customer satisfaction score" names Customer
   count): that draft stays held, with the words it misses.
 A plan that is `ok` never changes this way. A fallback draft that `detail="full"` still shows on
@@ -1086,6 +1135,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `BALANCE_SERIES_MISSING_ON_CLOSING_DAY` | `execute` | A balance on an `as_of_time` clock is read on each period's closing day, and series seen earlier in a period had no snapshot that day, so they are not counted. `details` `{measure, outputs, nested, closing_day, periods, checked, series, series_missing, periods_missing}` (`closing_day` is the latest such day; `outputs` empty for the whole answer, `null` when the engine can't tell, and then dropped beside a withheld column; `nested` for a read inside an entity filter, predicate or branch). A series that stopped is right to leave out; one that takes its snapshots on other days, or a table that records only changes, is undercounted. Granted when the measure or a granted output reading it is; a measure not granted is named by those outputs, never by a column that doesn't read it. See [Balances](QUERY_CALL.md#balances) |
 | `PARTIAL_DATA` | `execute` | A window total, or a row of a day-or-coarser series, spans a whole day after `window.data_through` and before `now`'s day, so its number covers only the loaded days. `details` `{through, days_covered, days, period}` (`period` only for a series row). Silent for a nightly load whose only gap is today. See [Partial periods](QUERY_CALL.md#partial-periods) |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a window, a `having` nor an entity filter on aggregates explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. Under `observation_scope: "dataset"` an empty answer to a filtered query never gets it. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
+| `ZERO_FILLED_GROUPS` | `execute` | A note: a count or sum read `0` in groups its own rows never reach, which another selected measure's rows hold (signups and orders by customer: a customer who never ordered reads 0 orders). `details.outputs` lists `{output, zero_filled, entities, having}`: how many returned groups, the entity with no rows there, and the `having` condition that leaves out exactly those groups, when one does. `details.groups` is the rows counted, and `details.truncated` makes the count a lower bound. Never for a group that reads `NULL`, nor for a series' periods; the answer's own statement marks the groups, so no other query runs. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
 | `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `is` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. Aggregate-filter literals of a retained additive series are checked in both observation scopes. One warning; `details.filters` lists each `dimension`, `value` and likely `suggestion` (none for an id dimension, a value with a digit or a weak match), the first 10 of `details.missing_count`. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0) |
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. With a `time` block and no `temporal_role`, the call is refused with this code instead: each of `details.options` names one clock and the selections it reads. See [The clock](QUERY_CALL.md#the-clock) |
 | `FILTERED_SERIES_BUCKETS_DROPPED` | `execute` | An unsupported filtered additive series omitted observed buckets. `details.dropped_buckets` lists their time and grouping keys from a separately authorized source query; an average over returned rows omits them |
@@ -1399,7 +1449,7 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
-| `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. With `details.reason: no_relationship_chain` and no walk to the target at any length, `details.missing_link` names the one change that would connect the pair, and the message says it: `direction` (a relationship joins the start's side to the target's but allows no walk from it), `lookup` (one side holds the other's key, `columns`; `walk: reverse` when a call would walk the new relationship from its target, one row to many), `bridge` (`via` holds both sides' keys; `via_keyed_by_near` when it is keyed by the start side's own key, so one bridge row meets each start-side row) or `many_to_many` (both hold an identifier that is a key of neither; `keyed_by` names an entity that identifier keys, and `keyed_by_columns` that entity's own key). `direction` carries `fans_out`, read from the relationship's declared cardinality for the walk a call would take (null when it says neither). `details.nearest_entity` is the start-side entity of that link. A key is matched only when every column of the entity's declared key says what it identifies, so a bare `id` is never read as another entity's key. The author hint says what each change does to the rows: one row each, so nothing repeats, or many, so a measure read through the start's side repeats across them. `details.closest_dimensions` ranks reachable dimensions sharing rare words with what the call asked for on the target: each is a different dimension, so the hint says to ask the user before grouping by one. No refusal suggests a different measure. Each hint carries `audience`: `caller` for what the asker can change, `author` for the package change (`author_relationship`, and `declare_key` for a row-grain target). A target that isn't an entity (a typo, or one hidden from the caller) gets `details.unknown_entity` (echoed at most 120 characters), `closest_matches` (entity ids only) and one `fix_entity_id` hint instead. Enriching a refusal again rebuilds all of it for the view at hand. All of it is read from the caller's view, so a hidden object is never named, and none of it changes a route or an answer. |
+| `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. With `details.reason: no_relationship_chain` and no walk to the target at any length, `details.missing_link` names the one change that would connect the pair, and the message says it: `direction` (a relationship joins the start's side to the target's but allows no walk from it), `lookup` (one side holds the other's key, `columns`; `walk: reverse` when a call would walk the new relationship from its target, one row to many), `bridge` (`via` holds both sides' keys; `via_keyed_by_near` when it is keyed by the start side's own key, so one bridge row meets each start-side row) or `many_to_many` (both hold an identifier that is a key of neither; `keyed_by` names an entity that identifier keys, and `keyed_by_columns` that entity's own key). `direction` carries `fans_out`, read from the relationship's declared cardinality for the walk a call would take (null when it says neither). `details.nearest_entity` is the start-side entity of that link. A key is matched only when every column of the entity's declared key says what it identifies, so a bare `id` is never read as another entity's key. The author hint says what each change does to the rows: one row each, so nothing repeats, or many, so a measure read through the start's side repeats across them. `details.closest_dimensions` ranks reachable dimensions sharing rare words with what the call asked for on the target: each is a different dimension, so the hint says to ask the user before grouping by one. When the call's measures sit on the start, `details.lookalike_measures` lists each other model that holds the same measure and answers the call as it stands, once each: `entity`, `measures` (each of the call's measures to its look-alike there), `description` (the first sentence of the model's `description`, which states its rows, else of the entity's own; the measure's card has the rest), `columns` (each result column the call names after a measure, to the look-alike's name, for an `order_by` or `having` that names it) and `temporal_role` when the call's window is read by the look-alike's own clock. The message says how many there are, and a first `use_lookalike_measure` hint names each by id and says that a look-alike's rows may be fewer, more or other rows (such as every version of each row) than the user asked about. A look-alike is a published measure with the same key or label once its model's table name is taken off (a `rooms_hist_` key prefix or a `(ROOMS_HIST)` label suffix on the `rooms_hist` table), over the same expression of its own table's columns, that totals the same way: the same default aggregation, measure class, additivity, value type and currency. A measure that reads no column (a row count's literal `1`), or a column whose name doesn't say what it identifies (a plain `id`, `key` or `code`, as connector schemas key every table), counts its own model's rows and has no look-alike, and two counts of different keys (rooms and room versions) are not alike. Each is listed only when the call compiles with it in place, in the caller's own request: the same view, identity, policies and route rules as the call, without reading the warehouse. Two that answer are both listed, in entity order; none is chosen. `plan` validating its own drafts lists none, and neither does a resource grant's refusal, which names nothing. No other measure is suggested. Each hint carries `audience`: `caller` for what the asker can change, `author` for the package change (`author_relationship`, and `declare_key` for a row-grain target). A target that isn't an entity (a typo, or one hidden from the caller) gets `details.unknown_entity` (echoed at most 120 characters), `closest_matches` (entity ids only) and one `fix_entity_id` hint instead. Enriching a refusal again rebuilds all of it for the view at hand. All of it is read from the caller's view, so a hidden object is never named, and none of it changes a route or an answer. |
 | `POLICY_DENIED` | Policy context blocks a referenced object or query cut. The message names the blocked object and the cuts a metric constraint allows; the one hint carries the call fragment that meets it in `patch.merge`. A cut whose words name anything hidden from the caller (an id or label, alone or inside a value) is left out of `policy_violations` and stated only as "can't be read this way under policy". `policy_effects` state each policy as the caller may see it: one that lists a hidden object, or whose text names one, appears without `policy_id` and with its action's fixed text. While anything is hidden from the caller, a raw-column aggregate is refused with empty `blocked_objects`, `policy_effects` and `policy_violations`. When what the caller may see can't be resolved, every tool refuses before binding or the warehouse with `details: {"reason": "visibility_unresolved"}`, naming nothing. |
 | `INVALID_METRIC_PREDICATE` | A `metric_predicate` expression, or an entity filter's `having`, is malformed or asks what this shape can't answer; the message says which. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |
@@ -1502,8 +1552,10 @@ mistakes fail with a specific error code; the fourth,
 a misspelled `discover` argument, succeeds with a warning. A scripted call that fails when it should
 succeed (or the reverse), or that reports a different code, stops the measurement rather than
 counting as a smaller response. A scripted session's queries may only use ids that an earlier call
-in the same session returned, so its size measures a path an agent could follow. Architect MCP
-tool-list sizes are recorded under `tracked` and are not gated.
+in the same session returned, so its size measures a path an agent could follow. The Architect
+MCP's tool list and instructions are gated too (`architect.tools_list.*`,
+`architect.instructions_tokens`), and so is the first page of each tool that pages, on the
+100-relation warehouse `scripts/large_warehouse.py` builds (`architect.page.*`).
 
 A draft is correct when it matches the gold query, or a listed alternative, in every slot that can
 change its rows: measures and metrics, grouping, time role, grain, window, `fill`, observation

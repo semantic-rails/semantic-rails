@@ -176,9 +176,11 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
 
 Dimension ids. Each becomes a column named by its full id, so a reader keys on it without
 guessing. Time is never a `group_by` item: ask for `time.grain` and the answer has a `period`
-column. Groups with no rows stay absent: the engine never cross-joins dimension values. A
-policy's `required_group_by` on the clock's own date dimension is met by any `time.grain` at or
-below that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
+column. Groups with no rows stay absent: the engine never cross-joins dimension values.
+Beside another measure whose rows hold a group, a count or sum with no rows there reads `0`,
+and the answer says so ([Zero-filled groups](#empty-groups-null-or-0)). A policy's
+`required_group_by` on the clock's own date dimension is met by any `time.grain` at or below
+that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
 naming it ("measure.x can only be read by day: group by dimension.d, or set time.grain to
 day."), and the one hint's `patch.merge` is the call fragment that meets it
 (`{"time": {"grain": "day"}}`), built from the policy's own cuts.
@@ -1110,7 +1112,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `cumulative` | `{kind: cumulative, input, partition_by?, window_scope?}` |
 | `ratio` | `{kind: ratio, numerator, denominator}` |
 | `share` | `{kind: share, input: <id>, over: [<group_by id> \| "period"]}` |
-| `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own |
+| `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own; `over` names the columns rolled up, not the grain kept |
 | `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition, value?}` |
@@ -1156,6 +1158,15 @@ ones they return, so a window that cuts their lookback is refused
 ([details](#windows-that-read-earlier-periods)); beside a named window a comparison is refused
 with `WINDOWED_TIME_FILTER_UNSUPPORTED` ("ask for a series with a grain and read the periods
 you need from it").
+
+A `prior_period` or `rolling` window counts periods on the calendar, never rows: wherever it sits
+(alone, in an `arithmetic`, a `ratio`, a `case` or a metric), the answer runs over every period
+from the first to the last and returns the empty ones too. The prior of the month after a month
+with no rows is that month, which reads by the [empty-group rule](#empty-groups-null-or-0) (`0`
+inside the data), so "revenue over the previous month" reads `NULL` there (÷0), never revenue
+over the last month that had any. Such an item is refused on ClickHouse, which has no day
+spine, and as a distribution's input, which would then count entities in periods where they
+have no rows (`REWRITE_NOT_SUPPORTED`).
 
 ### The `aggregation` override
 
@@ -1226,10 +1237,13 @@ multiplying by 100 returns a percentage). Nested shares omit the optional row co
 `{"kind": "total", "input": <id>, "over": [<group_by id> | "period"]}` is its input at a
 coarser grain beside each row: the call itself without the `over` columns, joined back on the
 columns that remain (within each combination of the other `group_by` columns, and `period`
-unless `over` names it; a NULL group meets its own total). The coarser call keeps the call's
-`where`, `time` window, entity filters, routes, row filters and policies, so the total reads
-the rows the call keeps; `having`, `order_by` and `limit` act on the call's rows after it, as
-for a share. A `having` may filter on a total's column.
+unless `over` names it; a NULL group meets its own total). `over` names the columns the total
+rolls up, never the grain it keeps: grouped by store and month, `over: ["period"]` is one value
+per store on each of its months, and `over: [<store id>]` one value per month across the
+stores. The coarser call keeps the call's `where`, `time` window, entity filters, routes, row
+filters and policies, so the total reads the rows the call keeps; `having`, `order_by` and
+`limit` act on the call's rows after it, as for a share. A `having` may filter on a total's
+column.
 
 Every measure kind is computed at that grain from its own rows, never added up from the rows:
 a distinct count counts distinct values, an average averages every row, a ratio divides the
@@ -1263,7 +1277,7 @@ month. The answer states each total in `assumptions`:
           {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-02-01", "period_partial": false, "ordering_customer_count": 337, "store_customers": 366},
           {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-03-01", "period_partial": false, "ordering_customer_count": 363, "store_customers": 366}],
  "assumptions": [{"code": "TOTAL_OVER", "column": "store_customers", "input": "measure.jaffle.ordering_customer_count", "over": ["period"],
-                  "message": "store_customers is measure.jaffle.ordering_customer_count across period in the rows the call keeps, computed at that grain, not added up from the rows."}]}
+                  "message": "store_customers is measure.jaffle.ordering_customer_count with period rolled up: one value per dimension.jaffle_store_name, repeated on each of its rows, computed from the rows the call keeps, not added up from the rows."}]}
 ```
 
 The input is one measure or metric id, and each `over` item a `group_by` id of the call, or
@@ -1572,7 +1586,8 @@ period with no rows reads one or the other, by one rule, in every call:
 A measure has data in scope when at least one of its rows in scope holds a value: a sum with a
 non-NULL amount, or a count above zero. The scope is the measure's own authored conditions (its
 `filter`, an `aggregate_if` condition or a `CASE`) and policy row filters, before the
-`group_by`; [`observation_scope`](#observation_scope) says whether the call's `where` counts:
+`group_by`, except that a declared edge observes its table's loaded periods whatever a `filter`
+matches, and then whatever the filtered column holds (see "The data's edge" below); [`observation_scope`](#observation_scope) says whether the call's `where` counts:
 
 - **`dataset`**: it doesn't. "Apples at store 5" reads `0` when store 5 sold no apples, as store
   5 does in a by-store answer. An entity filter is part of the `where`: a period in which it
@@ -1622,7 +1637,13 @@ the period ends by that edge (or, after a load that reached the start of today, 
 it): a load log's loaded-through date (`edge_source` `loaded`; `edge`
 is null and the message says "loaded-through date unavailable" when the log holds none) or
 `now` (`edge_source` `now`, with the note `ZERO_AFTER_LAST_ROW` when the answer reaches past the
-last row). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+last row). Such a table is observed in each of those periods from its first row on, whether or
+not a filtered metric's `filter` has ever matched one of its rows, and whether or not the
+column it sums holds a value yet: the metric reads `0` there and `NULL` with `NO_DATA_YET`
+after the edge. "Each week's refund rate", refunds over revenue, reads `0.0` in a loaded week of
+paid orders before the first refund; a refunded order whose amount is NULL leaves its week
+`NULL`. Under `observation_scope: "query"`, the call's
+`where` must still keep a row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
@@ -1633,6 +1654,35 @@ reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those
 has data, and neither does a truncated answer. An ungrouped distinct-population count over
 nothing reads `0` with no warning, a known limitation
 ([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+
+**Zero-filled groups.** Two selected measures that the `group_by` joins answer a row for every
+group either one's rows hold, so a group can hold rows of one and none of the other. "Signups
+and orders by customer" has a row for a customer who signed up and never ordered, whose order
+count is `0`: data of nothing. The note `ZERO_FILLED_GROUPS` says so, read from the answer's own
+statement, which marks those groups (no other query runs):
+
+```jsonc
+{"code": "ZERO_FILLED_GROUPS", "severity": "info",
+ "message": "1 of 8 groups has no rows of entity.shop_order in this call, so its order_count is 0 (to leave it out, add {\"field\": \"order_count\", \"op\": \"not\", \"value\": 0} to having). A 0 there is data of nothing, not missing data.",
+ "details": {"outputs": [{"output": "order_count", "zero_filled": 1, "entities": ["entity.shop_order"],
+                          "having": {"field": "order_count", "op": "not", "value": 0}}],
+             "groups": 8, "truncated": false, "agent_action": "mention_when_interpreting_results"}}
+```
+
+`zero_filled` counts the returned groups (total rows aside) where the output reads `0` and no
+row of its measure reaches the group; outputs zero in the same groups share one sentence.
+`entities` names the entity with no rows there. `having` is a condition that leaves out exactly
+those groups. It names an output that counts its own entity's key, which reads `0` only where
+its rows never reached the group; a sum or a conditional count can read a real `0` as well. With
+no such output among them, or when another returned row reads the same `0`, the note gives none
+(signups and large orders by customer: a customer whose orders are all small reads a real 0
+large orders). A truncated answer counts the rows shown, as a lower bound
+("at least 1 group (1 of the 3 rows shown)"). A group that reads `NULL` (no data in scope) or
+whose rows sum to `0` is never counted. The note comes under either `observation_scope`; under
+`query`, a measure with no value inside the call's filters reads `NULL` in every group instead,
+with `NO_DATA_IN_SCOPE`, and nothing is noted. A call with one measure, or several read from
+the same rows, holds no such group, since groups with no rows stay absent, and a series' empty
+periods are periods, not groups: neither carries the note.
 
 ClickHouse fills an unmatched outer-join field with a type default unless the join yields
 NULLs, so every ClickHouse statement ends with `SETTINGS join_use_nulls = 1`.
@@ -1696,7 +1746,10 @@ so a month so far never reads as a change from the whole previous month.
 Summing windows (`rolling`, `cumulative`, `period_to_date`) need values that add up across
 periods: additive flows (`sum`, `count`), event counts (`count_distinct` of a complete row key),
 and sums, differences and literal multiples of them. A ratio windows its parts:
-`SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Inputs using `avg`, `min`,
+`SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. A window sums the rows of its
+periods as one group, so [All NULL reads NULL](#empty-groups-null-or-0) holds for it too: a
+window whose rows all have a NULL amount reads `NULL`, never the `0` its empty periods add up
+to, while a window with no rows adds up its periods by the empty-group rule. Inputs using `avg`, `min`,
 `max`, `median` or `percentile`, balances, distinct populations, distributions, products of
 measures, nested windows and ratios inside other arithmetic are refused with `ROLLUP_UNSAFE`
 before SQL runs, through derived metrics too.

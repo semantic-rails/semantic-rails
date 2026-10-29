@@ -1109,6 +1109,9 @@ def _measure_leaf_select(
         target.append(condition := _filter_condition_for_item(measure.entity, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
+    # The authored filter's conditions, wherever they apply: a declared edge's probe leaves
+    # them out (_record_time_scope).
+    filter_conditions: list[Any] = []
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         target = (
             child_where
@@ -1118,6 +1121,7 @@ def _measure_leaf_select(
             else where_clauses
         )
         target.append(condition := _filter_condition_for_item(measure.entity, item, config))
+        filter_conditions.append(condition)
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     where_clauses.extend(_edge_cap(measure, leaf_time_role, config))
@@ -1325,6 +1329,7 @@ def _measure_leaf_select(
             raw_time=coverage_time,
             bucket=time_expr,
             local=time_source_local,
+            authored=filter_conditions,
         )
     return leaf
 
@@ -1540,10 +1545,11 @@ def _measure_group_leaf_select(
     preserve_buckets = all(_preserves_filtered_series(plan, row, config) for row in measure_plans)
     for item in refuse_child_groups(query.get("where"), "in a folded leaf"):
         where_clauses.append(_filter_condition_for_item(first_measure.entity, item, config))
+    filter_conditions: list[Any] = []
     for item in _bound_filter_clauses(first_plan.bound_measure, config):
-        (authored_conditions if preserve_buckets else where_clauses).append(
-            _filter_condition_for_item(first_measure.entity, item, config)
-        )
+        condition = _filter_condition_for_item(first_measure.entity, item, config)
+        (authored_conditions if preserve_buckets else where_clauses).append(condition)
+        filter_conditions.append(condition)
     where_clauses.extend(_edge_cap(first_measure, leaf_time_role, config))
     untimed = [*where_clauses, *authored_conditions]
     if plan.time:
@@ -1600,5 +1606,6 @@ def _measure_group_leaf_select(
             raw_time=coverage_time,
             bucket=time_expr,
             local=time_source_local,
+            authored=filter_conditions,
         )
     return leaf

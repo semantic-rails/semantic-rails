@@ -171,6 +171,7 @@ def alias_select(
             for item in select.order_by
         ],
         limit=select.limit,
+        offset=select.offset,
         distinct=getattr(select, "distinct", False),
         observation_scan=select.observation_scan,
     )

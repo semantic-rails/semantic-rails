@@ -179,21 +179,21 @@ VERBOSITY_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["minimal", "compact", "full"],
     "default": "minimal",
-    "description": "'compact' adds metadata; 'full' adds plans too.",
+    "description": "'compact' adds metadata, 'full' plans too.",
 }
 
 SQL_PROFILE_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["audit", "compact", "debug", "off"],
     "default": "audit",
-    "description": "'off' omits rendered_sql and sql_plan.",
+    "description": "'off' omits rendered_sql, sql_plan.",
 }
 
 ROW_FORMAT_SCHEMA: dict[str, Any] = {
     "type": "string",
     "enum": ["records", "columns"],
     "default": "records",
-    "description": "'columns': column names once, rows as arrays.",
+    "description": "'columns': names once, rows as arrays.",
 }
 
 MCP_RESULT_SCHEMA: dict[str, Any] = {
@@ -402,7 +402,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         description=(
             f"Rank objects by business terms; empty terms list ids ({_DISCOVER_ID_PAGE} per kind; limit, offset). "
             "Default: id, label, description; compact omits blocked cards. "
-            "Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; "
+            "Gotcha: 'out_of_scope' or 'low_relevance' with no candidates; "
             "branch before using a candidate."
         ),
         input_schema=_schema(
@@ -525,12 +525,12 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Answer a call; call plan first to draft it. mode 'run' returns rows, 'validate' "
-            "only checks (skip it: run a call directly), 'sql' adds rendered_sql; only 'run' "
-            "reads the warehouse. Call: select ids or {expression, as}, group_by dimension ids "
-            "(alone, it lists rows), where/having [{field, op, value}] and entity filters, time "
-            "(time.end is exclusive), order_by (period: the time column), limit inside it; "
-            "max_rows and row_format go beside query."
+            "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only "
+            "checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and "
+            "ran, not that it answers the question. Call: select ids or {expression, as}, "
+            "group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] "
+            "and entity filters, time (time.end is exclusive), order_by (period: time column), "
+            "limit inside it; max_rows and row_format go beside query."
         ),
         input_schema={
             **_schema(
@@ -1426,13 +1426,15 @@ def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
             and not (key == "label" and _label_restates_id(value, row.get("id")))
         }
 
-    for key in ("terms", "verbosity"):
+    for key in ("terms", "verbosity", "stage"):
         payload.pop(key, None)
     for key in ("query_state", "selection_context"):
         if isinstance(payload.get(key), dict) and not any(payload[key].values()):
             payload.pop(key)
     for key in _DISCOVER_BUCKETS:
-        if isinstance(payload.get(key), list):
+        if payload.get(key) == []:
+            payload.pop(key)
+        elif isinstance(payload.get(key), list):
             payload[key] = [lean(row, key) for row in payload[key]]
     return payload
 
@@ -2184,6 +2186,10 @@ class SemanticLayerMCPAdapter:
                 payload = _slim_discover_minimal(payload, view)
                 if verbosity == "compact":
                     payload.pop("blocked", None)
+                    more = payload.pop("has_more", {})
+                    more.pop("blocked", None)
+                    if more:
+                        payload["has_more"] = more
                     for bucket in _DISCOVER_BUCKETS:
                         if bucket in payload:
                             payload[bucket] = [

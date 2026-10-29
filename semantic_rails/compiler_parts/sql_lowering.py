@@ -7,6 +7,7 @@ from it. A nested compile goes through :mod:`.nested`.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any, cast
@@ -57,8 +58,10 @@ from .distribution import _lower_agent_dag_to_sql
 from .empty_groups import (
     GUARDED_BASE,
     LeafScope,
+    absent_marker,
     base_reads,
     carried_zero_lookups,
+    counts_its_own_key,
     expr_resolves_to_zero,
     guard_empty_groups,
     has_nested_case,
@@ -109,12 +112,15 @@ from .paths import _joins_for_paths as _joins_for_paths
 from .paths import _resolve_dimension_expr as _resolve_dimension_expr
 from .post_aggregation import (
     _compile_post_expr,
+    holds_summing_window,
+    reading_window_rows,
     share_partition,
 )
 from .predicate_sets import _anchored_entity_set_select, _requested_order
 from .row_counts import (
     _names_in_use,
     _row_count_names,
+    absent_row_names,
     naming_row_counts,
     override_row_counts,
     share_group_counts,
@@ -136,17 +142,22 @@ from .totals import selected_totals, total_sources
 
 def _namespaced_scope(scope: LeafScope, leaf: SqlSelect, prefix: str) -> LeafScope:
     """A nested leaf's scope reading its CTEs by the names they take inside the leaf's CTE."""
-    named = _namespace_sql_select(
-        SqlSelect(
-            select=[],
-            from_table=scope.from_table,
-            joins=list(scope.joins),
-            where=list(scope.where),
-            ctes=list(leaf.ctes),
-        ),
-        prefix,
-    )
-    return replace(scope, joins=tuple(named.joins), where=tuple(named.where))
+
+    def named(where: Iterable[Any]) -> SqlSelect:
+        return _namespace_sql_select(
+            SqlSelect(
+                select=[],
+                from_table=scope.from_table,
+                joins=list(scope.joins),
+                where=list(where),
+                ctes=list(leaf.ctes),
+            ),
+            prefix,
+        )
+
+    full = named(scope.where)
+    source = None if scope.source_where is None else tuple(named(scope.source_where).where)
+    return replace(scope, joins=tuple(full.joins), where=tuple(full.where), source_where=source)
 
 
 def lower_to_sql(
@@ -309,6 +320,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         and not (_query_metric_predicates(plan) and plan.query.get("where"))
     )
     retained = _retained_filtered_series(plan, config)
+    # Whether the call's rows join two or more leaves on its keys, so a group can come from
+    # another leaf's rows than a measure's own.
+    joined = False
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -398,6 +412,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             for group in measure_groups
         ] + [[alias] for alias in conversion_aliases]
         combined_name = combine_sources[0]
+        joined = len(combine_sources) > 1
         available_aliases = list(source_alias_groups[0])
         for source_index, source_name in enumerate(combine_sources[1:], start=1):
             left_alias = "left_side"
@@ -499,13 +514,27 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         base_table = SqlTableRef(name=base_name, alias="base")
 
     # What the answer states beside its rows, in hidden columns the runtime reads and removes:
-    # each re-aggregated measure's row count, and how many rows each share's total spans.
+    # each re-aggregated measure's row count, how many rows each share's total spans, and the
+    # groups a measure's own rows never reached (below).
     hidden = [
         SqlField(SqlIdentifier(parts=["base", name]), name)
         for name in overrides.values()
         if name in rows.values()
     ]
     kept = [field.alias for field in hidden]  # the guard passes these source columns through
+    # A summing window reads each sum's row count beside its value, period by period, so a
+    # window whose rows all hold NULL amounts reads NULL; the guard passes the counts through.
+    window_rows = (
+        rows
+        if any(
+            holds_summing_window(payload, config)
+            for payload in [
+                *plan.post_aggregation_exprs.values(),
+                *(item["expression"] for item in plan.query.get("metric_filters", []) or []),
+            ]
+        )
+        else {}
+    )
     shares = share_group_counts(plan, config) if plan_is_root() else {}
     # The one place an empty group reads 0 instead of NULL: the projection reads every such
     # measure through the guard below, so nothing after it can change what it sees.
@@ -520,6 +549,26 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             ),
             _dialect(config),
         )
+    # Where a group can come from another leaf's rows (two or more joined on the call's keys,
+    # with no series), each count or sum an output reads marks the groups its own rows never
+    # reached, in a hidden column: what the answer's ZERO_FILLED_GROUPS counts.
+    absent = (
+        {
+            alias: name
+            for alias, name in absent_row_names(plan, config).items()
+            if alias in zero and absent_marker(alias, zero[alias], rows) is not None
+        }
+        if zero
+        and joined
+        and group_aliases
+        and plan_is_root()
+        and not plan.time.get("grain")
+        and fill_binding is None
+        and not total_spine
+        else {}
+    )
+    marked: dict[str, str] = {}
+    leaves = {row.bound_measure.alias: row for row in plan.measure_plans}
     projected_fields: list[SqlField] = [
         SqlField(SqlIdentifier(parts=["base", alias]), alias) for alias in key_aliases
     ]
@@ -536,7 +585,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             projected_fields.append(SqlField(totaled[alias], alias))
             record_output_reads(alias, set())  # its coarser call's reads answer for it
             continue
-        with binding_cut() if project_is_cut() else nullcontext():
+        with binding_cut() if project_is_cut() else nullcontext(), reading_window_rows(window_rows):
             compiled_output = _compile_post_expr(
                 _parse_public_expr(post_expr),
                 config,
@@ -558,12 +607,32 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         # prior-period, ratio or window output is NULL for reasons other than no data.
         if zero and expr_resolves_to_zero(_parse_public_expr(post_expr), config):
             reads = base_reads(compiled_output) & zero.keys()
+            unreached = sorted(reads) if reads and reads <= absent.keys() else []
+            for read in unreached:
+                if read not in marked:
+                    marked[read] = absent[read]
+                    hidden.append(
+                        SqlField(SqlIdentifier(parts=["base", absent[read]]), absent[read])
+                    )
+            # A bare count of its own entity's key read from its rows reads 0 only where they
+            # never reached the group: ``<output> not 0`` then leaves out exactly those groups.
+            only = leaves[unreached[0]] if len(unreached) == 1 else None
             record_zero_output(
                 alias,
                 (
                     row.bound_measure.measure_id
                     for row in plan.measure_plans
                     if row.bound_measure.alias in reads
+                ),
+                [absent[read] for read in unreached],
+                zero_means_absent=only is not None
+                and isinstance(post_expr, dict)
+                and post_expr.get("kind") == "measure"
+                and not only.aggregate_relation_id
+                and counts_its_own_key(
+                    zero[unreached[0]],
+                    _measure_index(config).get(only.bound_measure.measure_id),
+                    config,
                 ),
             )
         elif guard_empty and (
@@ -601,13 +670,14 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 observed=observed,
                 observed_buckets=retained,
                 bucketed=bool(plan.time),
-                keep=kept,
+                keep=[*kept, *(name for name in window_rows.values() if name not in kept)],
                 names={
                     measure: [
                         f.alias for f in projected_fields if measure in base_reads(f.expression)
                     ]
                     for measure in measure_aliases
                 },
+                absent=marked,
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
@@ -625,7 +695,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         if selected_total is not None:
             projected_fields.append(SqlField(selected_total, alias))
             continue
-        with binding_cut():
+        with binding_cut(), reading_window_rows(window_rows):
             compiled_expr = _compile_post_expr(
                 filter_expr,
                 config,

@@ -1135,10 +1135,13 @@ def _no_draft_payload(
 ) -> dict[str, Any]:
     """A held plan that offers no draft (``no_draft``): ``unrealizable`` when the package can't
     answer as asked (pieces that don't connect, or nothing in the catalog matches what the
-    question asks about), else ``low_confidence`` (catalog objects mention its words)."""
+    question asks about), else ``low_confidence`` (catalog objects of any kind mention its
+    words)."""
 
     terms = list(why["details"].get("terms") or [])
-    candidates = why["code"] == "PLAN_SUBJECT_UNMATCHED" and why["details"]["candidates"]
+    candidates = why["code"] == "PLAN_SUBJECT_UNMATCHED" and bool(
+        why["details"]["candidates"] or why["details"]["other_matches"]
+    )
     return {
         "plan_version": _VERSION,
         "intent": intent,

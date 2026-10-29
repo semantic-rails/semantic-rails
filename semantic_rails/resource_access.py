@@ -335,15 +335,20 @@ def _discover(access: ResourceAccess, kwargs: dict[str, Any]) -> dict[str, Any]:
         )
     rows.sort(key=lambda row: (-row["score"], row["id"]))
     limit = max(1, int(kwargs.get("limit", 10)))
+    ranked = {
+        bucket: [row for row in rows if row["kind"] == kind] for kind, bucket in _BUCKETS.items()
+    }
+    # The rows are the granted ones, so an object outside the grant never counts.
+    has_more = {
+        bucket: len(found) - limit for bucket, found in ranked.items() if len(found) > limit
+    }
     return {
-        **{
-            bucket: [row for row in rows if row["kind"] == kind][:limit]
-            for kind, bucket in _BUCKETS.items()
-        },
+        **{bucket: found[:limit] for bucket, found in ranked.items()},
         "blocked": [],
         "dimension_values": [],
         "selection_context": {},
         "query_state": {},
+        **({"has_more": has_more} if has_more else {}),
     }
 
 

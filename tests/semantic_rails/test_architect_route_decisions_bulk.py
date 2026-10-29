@@ -121,6 +121,8 @@ def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_p
         keep_existing_routes=True,
         expected_revision=revision,
         idempotency_key="relate-and-keep",
+        # Every kept row: a summary shows the first of a long list.
+        full_report=True,
     )
     assert committed["ok"] and committed["status"] == "upserted", committed
     assert committed["kept_route_decisions"] == preview["kept_route_decisions"]

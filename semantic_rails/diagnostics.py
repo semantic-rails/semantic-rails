@@ -372,6 +372,11 @@ def recovery_hints_for_error(
         items = list(details.get("unreachable_items", []) or [])
         row_grain = bool(details.get("target_row_grain"))
         hints = []
+        lookalikes = list(details.get("lookalike_measures", []) or [])
+        if lookalikes:
+            from .path_gap import lookalike_advice
+
+            hints.append({"kind": "use_lookalike_measure", "message": lookalike_advice(lookalikes)})
         if not reachable:
             blocked = {
                 "direction": f"by direction, each relationship of '{start}' leads only to it",
@@ -460,9 +465,9 @@ def recovery_hints_for_error(
                 {
                     "kind": "row_grain_target",
                     "message": (
-                        f"'{target}' is a row-grain model (no key): nothing can look up one of "
-                        "its rows, so no relationship leads into it. Group its own measures by "
-                        "its columns."
+                        f"'{target}' is a row-grain model (no key): no model can join to one of "
+                        "its rows by key, so no relationship leads into it. Group its own "
+                        "measures by its columns."
                     ),
                     "unreachable_target": target,
                 }
@@ -1474,9 +1479,15 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
         return exc
     details = dict(exc.details or {})
     message = str(exc)
+    from .path_gap import lookalike_fact, lookalike_rows_in_view, missing_link_fact
+
+    # The look-alikes were checked in the request's scope; a view shows those it can see.
+    lookalikes = list(details.pop("lookalike_measures", None) or [])
+    if lookalikes:
+        message = message.replace(f" {lookalike_fact(lookalikes)}", "")
+        lookalikes = lookalike_rows_in_view(config, lookalikes)
     # Undo an earlier enrichment: its facts were appended to the message, after the base text.
     prior = {key: details.pop(key, None) for key in _GAP_KEYS}
-    from .path_gap import missing_link_fact
 
     for fact in (
         missing_link_fact(prior["missing_link"] or {}),
@@ -1558,6 +1569,9 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
     fact = missing_link_fact(details.get("missing_link") or {})
     if fact:
         message = f"{message}: {fact}."
+    if lookalikes:
+        details["lookalike_measures"] = lookalikes
+        message = f"{message} {lookalike_fact(lookalikes)}"
     items = list(details.get("unreachable_items") or [])
     closest = closest_dimensions(config, start, reachable_sorted, target, items)
     if closest:
@@ -1710,12 +1724,15 @@ def rewrite_warning_payload(step: Any) -> dict[str, Any]:
         details.setdefault("rewrite_kind", rewrite_kind)
     message = str(getattr(step, "reason", "") or "rewrite applied")
     if rewrite_kind == "leaf_preaggregate_join":
-        details.setdefault("rewrite_classification", "safe_independent_leaf_alignment")
+        # What the fan-out check proved, and no more: how the rows combine, never that the
+        # call reads the right measures or tables.
+        details.setdefault("rewrite_classification", "independent_leaf_alignment")
         message = (
-            "Safe cross-fact alignment: independent leaf aggregates were joined on final "
-            "grain keys."
+            "Each model's measures were aggregated to the call's groups before the join, so "
+            "the join counts no row twice. It does not check that these models answer the "
+            "question."
         )
-    # A disclosure of how a correct answer was computed: a note, not a warning to act on.
+    # A disclosure of how the rows were computed: a note, not a warning to act on.
     return semantic_issue(
         code="REWRITE_APPLIED",
         message=message,

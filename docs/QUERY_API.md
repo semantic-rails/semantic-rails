@@ -89,6 +89,9 @@ All JSON HTTP responses include the operation payload plus additive contract fie
 - `warnings`, `errors` and `recovery_hints`, each only when it has entries
 - `timing_ms`
 
+On `/validate`, `/compile` and `/query`, `ok: true` means the call is valid and, on `/query`,
+ran: never that it answers the question it was written for.
+
 Clients may send `X-Request-ID`, `X-Correlation-ID`, a `request_id` query parameter, or a
 top-level JSON `request_id`. The server echoes the selected value in the response body and
 the `X-Request-ID` response header. If none is provided, the server generates one.
@@ -640,6 +643,9 @@ Response groups:
 - `dimension_values`
 - `entities`
 - `blocked`
+- `has_more` — present when a group was cut at `limit`: each cut group with how many more
+  matches it has (`{"measures": 8}`: eight more beyond the `limit` listed). It counts only
+  objects the caller may see, never a hidden or ungranted one.
 
 Each result includes:
 
@@ -849,8 +855,8 @@ Response keys:
 
 `source` is typically `value_domain` or `duckdb`. Without a declared domain and
 with `allow_live_query=false` (the default), HTTP 200 returns `ok: false`,
-`status: "needs_live_query"`, `source: "none"`, empty `values`, and a
-`VALID_VALUES_NO_DOMAIN` warning. Its message and recovery hint name the dimension, say no
+`status: "needs_live_query"`, `source: "none"`, empty `values`, `total_count: null` (no value
+was read), and a `VALID_VALUES_NO_DOMAIN` warning. Its message and recovery hint name the dimension, say no
 values were read, and give the argument that returns them: the same call with
 `allow_live_query: true` (the hint's `patch`), which a first call may pass too. A declared empty
 domain remains a successful empty result. This
@@ -865,6 +871,21 @@ source diagnostics. If all available candidates are denied, it keeps the
 `POLICY_DENIED` refusal without naming them; otherwise a lookup with no source
 refuses with `NO_VALID_VALUES_SOURCE`. Row filters still constrain the returned
 values and counts.
+
+`search` keeps the values that contain its text, literally and ignoring case: the `contains`
+filter word's match, so `_` and `%` are text, not wildcards. A declared domain also matches a
+value's label and aliases. A live lookup searches, skips `offset` values and stops after `limit`
+in the warehouse, in ascending order, over the known values the caller's row filters leave, so
+a value is found wherever it sorts and a hidden one never matches or counts. Paging:
+
+- `has_more` is `true` exactly when another value follows the page.
+- `total_count` is the number of matching values once a page holds the last of them
+  (`has_more: false`). Before that, and on a page past the last value, a live lookup returns
+  `null`: page on with `offset` or narrow `search`. A declared domain's count is always exact.
+
+A live `search` on a dimension that isn't text (a number, date or id) is refused with
+`INVALID_QUERY` at path `search` before any read, as is search text no warehouse lowercases
+alike (such as `ß`); list the values without `search` instead.
 
 ### `POST /api/v1/plan`
 
@@ -917,8 +938,9 @@ answer. Two holds offer no draft (`best: null`): `PLAN_UNCONNECTED` (`unrealizab
 draft's measure can't reach a dimension it groups or filters by (`why.details` names the
 `subjects`, the `dimensions` and the engine's `error`), and `PLAN_SUBJECT_UNMATCHED` when no
 word the question asks about names the measure or metric the draft would read
-(`why.details.terms`, with the `candidates` whose names or descriptions mention them;
-`unrealizable` when there are none).
+(`why.details.terms`, with the measure and metric `candidates` whose names or descriptions
+mention them and the dimensions, time roles, segments and entities that do, in
+`other_matches` with their `kind`; `unrealizable` when no object of any kind mentions them).
 Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort
 and time scope can be proven. Grouping by entity keys or selecting a key count alone does not
 prove that the qualification was applied. Store grouping terms use the same
@@ -1207,6 +1229,12 @@ The response `warnings` array can carry these non-error signals:
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result, nor, under `observation_scope: "dataset"`, on an empty answer to a filtered query.
   See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
+- `ZERO_FILLED_GROUPS` (a note) — fires on `execute` when a count or sum reads `0` in groups
+  its own rows never reach while another selected measure's rows hold them (signups and orders
+  by customer: a customer who never ordered). `details.outputs` lists `{output, zero_filled,
+  entities, having}` (`having` only when that condition leaves out exactly those groups),
+  `details.groups` the returned rows counted and `details.truncated` whether the count is a
+  lower bound. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
 - `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
   default) when a string `is` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.

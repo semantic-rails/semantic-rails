@@ -338,6 +338,73 @@ def test_a_generic_id_key_pairs_only_with_a_column_named_for_its_table(tmp_path)
     }
 
 
+def test_pages_hold_proposals_then_the_rest_and_count_each_on_every_page(tmp_path):
+    arguments = {
+        "duckdb_path": str(_warehouse(tmp_path)),
+        "relation": "details",
+        "columns": ["subject_id", "fee"],
+    }
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    first, second, whole = _session(
+        server,
+        [
+            ("suggest_links", {**arguments, "limit": 1}),
+            ("suggest_links", {**arguments, "limit": 1, "offset": 1}),
+            ("suggest_links", {**arguments, "full_report": True}),
+        ],
+    )
+
+    counts = {"proposals": 1, "below_threshold": 1, "not_proposed": 0}
+    assert [page["counts"] for page in (first, second, whole)] == [counts] * 3
+    assert (first["proposals"], first["below_threshold"]) == (whole["proposals"], [])
+    assert (second["proposals"], second["below_threshold"]) == ([], whole["below_threshold"])
+    assert [(page["has_more"], page["next_offset"]) for page in (first, second)] == [
+        (True, 1),
+        (False, None),
+    ]
+    assert first["total_count"] == second["total_count"] == whole["total_count"] == 2
+
+
+def test_a_model_over_a_missing_table_is_named_with_the_fix(tmp_path):
+    """A package model over a table the warehouse lacks (a starter scaffold's raw_events over
+    external data, say) stops suggest_links with the entity, the relation and the warehouse it
+    read, and the calls that fix it."""
+    pkg = _package(tmp_path)
+    _write(
+        pkg / "models" / "raw_events.yml",
+        {"model": {"id": "raw_events", "relation": "raw_events", "entities": {"event": {}}}},
+    )
+    graph = yaml.safe_load((pkg / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["entities"]["event"] = {"key": ["event_id"], "model": "raw_events"}
+    _write(pkg / "graph.yml", graph)
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    linked, described = _session(
+        server,
+        [
+            ("suggest_links", {"project_path": str(pkg), "relation": "rooms"}),
+            ("describe_table", {"project_path": str(pkg), "relation": "raw_events"}),
+        ],
+    )
+
+    warehouse = pkg / "data" / "warehouse.duckdb"
+    assert linked["ok"] is False
+    assert linked["error"]["code"] == "OBJECT_NOT_FOUND"
+    assert linked["error"]["message"] == (
+        "entity 'event' reads relation 'raw_events', which does not exist in the warehouse: "
+        "point its model at a relation list_tables shows (upsert_model), or remove it "
+        "(remove_object)"
+    )
+    details = linked["error"]["details"]
+    assert (details["entity"], details["relation"]) == ("event", "raw_events")
+    assert Path(details["duckdb_path"]).resolve() == warehouse.resolve()
+    for refused in (linked, described):
+        assert refused["error"]["code"] == "OBJECT_NOT_FOUND"
+        assert "list_tables" in refused["recovery_hints"][0]["message"]
+    assert described["error"]["message"] == "relation 'raw_events' does not exist in the warehouse"
+
+
 @pytest.mark.parametrize("min_coverage", [0, -0.5, 1.5])
 def test_a_coverage_threshold_is_a_share(tmp_path, min_coverage):
     with pytest.raises(SemanticLayerError) as refused:

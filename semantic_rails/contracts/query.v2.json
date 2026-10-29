@@ -1141,6 +1141,7 @@
           "const": "total"
         },
         "over": {
+          "description": "The group_by ids (or period) the total rolls up, not the grain it keeps: one value per combination of the call's other columns, on each row.",
           "items": {
             "type": "string"
           },

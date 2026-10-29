@@ -4967,7 +4967,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5054,7 +5054,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5141,7 +5141,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 22}
       - {period: '2023-12-01', trailing: 22}
@@ -5226,7 +5226,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 22}
       - {period: '2023-12-01', trailing: 22}
@@ -5311,7 +5311,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5398,7 +5398,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5979,7 +5979,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 day') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '7 day') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '7 day') FROM s
     expected_rows:
       - {period: '2023-11-03', trailing: 10}
       - {period: '2023-11-04', trailing: 10}
@@ -6166,13 +6166,13 @@ tests:
       - {period: '2024-05-03', trailing: 0}
       - {period: '2024-05-04', trailing: 0}
       - {period: '2024-05-05', trailing: 0}
-      - {period: '2024-05-06', trailing: 0}
-      - {period: '2024-05-07', trailing: 0}
-      - {period: '2024-05-08', trailing: 0}
-      - {period: '2024-05-09', trailing: 0}
-      - {period: '2024-05-10', trailing: 0}
-      - {period: '2024-05-11', trailing: 0}
-      - {period: '2024-05-12', trailing: 0}
+      - {period: '2024-05-06', trailing: null}
+      - {period: '2024-05-07', trailing: null}
+      - {period: '2024-05-08', trailing: null}
+      - {period: '2024-05-09', trailing: null}
+      - {period: '2024-05-10', trailing: null}
+      - {period: '2024-05-11', trailing: null}
+      - {period: '2024-05-12', trailing: null}
       - {period: '2024-05-13', trailing: 0}
       - {period: '2024-05-14', trailing: 0}
       - {period: '2024-05-15', trailing: 0}
@@ -6292,7 +6292,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '3 month') AS g(b))
-              SELECT s.b, CASE WHEN s.b - INTERVAL '6 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '6 month') END, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '6 month') FROM s
+              SELECT s.b, CASE WHEN s.b - INTERVAL '6 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '6 month') END, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '6 month') FROM s
     expected_rows:
       - {period: '2023-10-01', prior: null, trailing: 22}
       - {period: '2024-01-01', prior: null, trailing: 54}
@@ -6406,7 +6406,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT SUM(m.v) FROM m WHERE m.b <= s.b), (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND date_trunc('quarter', m.b) = date_trunc('quarter', s.b)) FROM s
+              SELECT s.b, (SELECT SUM(m.v) FROM m WHERE m.b <= s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND date_trunc('quarter', m.b) = date_trunc('quarter', s.b)) FROM s
     expected_rows:
       - {period: '2023-11-01', cumulative: 15, qtd: 15}
       - {period: '2023-12-01', cumulative: 22, qtd: 22}
@@ -6853,7 +6853,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b), (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', p80: 9, trailing: 15}
       - {period: '2023-12-01', p80: 7, trailing: 22}
@@ -6956,7 +6956,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b) FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b) FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15, p80: 9}
       - {period: '2023-12-01', trailing: 22, p80: 7}
@@ -7256,7 +7256,7 @@ tests:
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b)),
               k AS (SELECT DISTINCT m.k FROM m)
-              SELECT k.k, s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM k CROSS JOIN s
+              SELECT k.k, s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM k CROSS JOIN s
     expected_rows:
       - {dimension.shop_order_store_id: a, period: '2023-11-01', trailing: 10}
       - {dimension.shop_order_store_id: a, period: '2023-12-01', trailing: 17}
@@ -7265,8 +7265,8 @@ tests:
       - {dimension.shop_order_store_id: a, period: '2024-03-01', trailing: 24}
       - {dimension.shop_order_store_id: a, period: '2024-04-01', trailing: 4}
       - {dimension.shop_order_store_id: a, period: '2024-05-01', trailing: 4}
-      - {dimension.shop_order_store_id: a, period: '2024-06-01', trailing: 0}
-      - {dimension.shop_order_store_id: a, period: '2024-07-01', trailing: 0}
+      - {dimension.shop_order_store_id: a, period: '2024-06-01', trailing: null}
+      - {dimension.shop_order_store_id: a, period: '2024-07-01', trailing: null}
       - {dimension.shop_order_store_id: a, period: '2024-08-01', trailing: 2}
       - {dimension.shop_order_store_id: b, period: '2023-11-01', trailing: 5}
       - {dimension.shop_order_store_id: b, period: '2023-12-01', trailing: 5}
@@ -7348,6 +7348,342 @@ tests:
       - {dimension.shop_order_store_id: null, period: '2024-05-01', revenue: 6}
       - {dimension.shop_order_store_id: null, period: '2024-06-01', revenue: 0}
       - {dimension.shop_order_store_id: null, period: '2024-07-01', revenue: 0}
+  shop/ratio_over_prior_month:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A ratio over the prior month reads every month, as arithmetic does. February 2024 has no orders, so March divides by February's 0 and reads NULL, never by January (the 0.6 a series of only the months with orders gave).
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - tests/integration/correctness/conftest.py#CLOCKS
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+    tags: [time-window, null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - measure.shop.revenue
+      - expression:
+          kind: ratio
+          numerator: measure.shop.revenue
+          denominator:
+            kind: prior_period
+            input: measure.shop.revenue
+            offset:
+              unit: month
+              value: 1
+        as: vs_prior
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: month
+    reference_sql: |-
+      WITH m AS (
+                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
+                FROM orders AS o GROUP BY 1
+              ),
+              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b) / CAST(NULLIF(CASE WHEN s.b - INTERVAL '1 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '1 month') END, 0) AS DOUBLE PRECISION) FROM s
+    expected_rows:
+      - {period: '2023-11-01', revenue: 15, vs_prior: null}
+      - {period: '2023-12-01', revenue: 7, vs_prior: 0.4666666666666667}
+      - {period: '2024-01-01', revenue: 20, vs_prior: 2.857142857142857}
+      - {period: '2024-02-01', revenue: 0, vs_prior: 0}
+      - {period: '2024-03-01', revenue: 12, vs_prior: null}
+      - {period: '2024-04-01', revenue: 0, vs_prior: 0}
+      - {period: '2024-05-01', revenue: 6, vs_prior: null}
+      - {period: '2024-06-01', revenue: 3, vs_prior: 0.5}
+      - {period: '2024-07-01', revenue: 9, vs_prior: 3}
+      - {period: '2024-08-01', revenue: 2, vs_prior: 0.2222222222222222}
+  shop/divide_by_prior_month:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Arithmetic division by the prior month returns the same rows as shop/ratio_over_prior_month, its ratio form.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - tests/integration/correctness/conftest.py#CLOCKS
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+    tags: [time-window, null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - measure.shop.revenue
+      - expression:
+          kind: arithmetic
+          op: divide
+          left: measure.shop.revenue
+          right:
+            kind: prior_period
+            input: measure.shop.revenue
+            offset:
+              unit: month
+              value: 1
+        as: vs_prior
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: month
+    reference_sql: |-
+      WITH m AS (
+                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
+                FROM orders AS o GROUP BY 1
+              ),
+              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b) / CAST(NULLIF(CASE WHEN s.b - INTERVAL '1 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '1 month') END, 0) AS DOUBLE PRECISION) FROM s
+    expected_rows:
+      - {period: '2023-11-01', revenue: 15, vs_prior: null}
+      - {period: '2023-12-01', revenue: 7, vs_prior: 0.4666666666666667}
+      - {period: '2024-01-01', revenue: 20, vs_prior: 2.857142857142857}
+      - {period: '2024-02-01', revenue: 0, vs_prior: 0}
+      - {period: '2024-03-01', revenue: 12, vs_prior: null}
+      - {period: '2024-04-01', revenue: 0, vs_prior: 0}
+      - {period: '2024-05-01', revenue: 6, vs_prior: null}
+      - {period: '2024-06-01', revenue: 3, vs_prior: 0.5}
+      - {period: '2024-07-01', revenue: 9, vs_prior: 3}
+      - {period: '2024-08-01', revenue: 2, vs_prior: 0.2222222222222222}
+  shop/growth_over_prior_month:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Month-over-month growth written as a ratio, (revenue - prior) / prior, reads every month. March follows February's 0 and reads NULL, never the -0.4 of March against January.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - tests/integration/correctness/conftest.py#CLOCKS
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+    tags: [time-window, null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: ratio
+          numerator:
+            kind: arithmetic
+            op: subtract
+            left: measure.shop.revenue
+            right: &id001
+              kind: prior_period
+              input: measure.shop.revenue
+              offset:
+                unit: month
+                value: 1
+          denominator: *id001
+        as: growth
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: month
+    reference_sql: |-
+      WITH m AS (
+                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
+                FROM orders AS o GROUP BY 1
+              ),
+              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
+              SELECT s.b, ((SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b) - CASE WHEN s.b - INTERVAL '1 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '1 month') END) / CAST(NULLIF(CASE WHEN s.b - INTERVAL '1 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '1 month') END, 0) AS DOUBLE PRECISION) FROM s
+    expected_rows:
+      - {period: '2023-11-01', growth: null}
+      - {period: '2023-12-01', growth: -0.5333333333333333}
+      - {period: '2024-01-01', growth: 1.8571428571428572}
+      - {period: '2024-02-01', growth: -1}
+      - {period: '2024-03-01', growth: null}
+      - {period: '2024-04-01', growth: -1}
+      - {period: '2024-05-01', growth: null}
+      - {period: '2024-06-01', growth: -0.5}
+      - {period: '2024-07-01', growth: 2}
+      - {period: '2024-08-01', growth: -0.7777777777777778}
+  shop/ratio_over_trailing_3_months:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue over its trailing three months reads every month. March's trailing three months are January, February's 0 and March (32), so it reads 0.375, never 12 over December, January and March (39).
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - tests/integration/correctness/conftest.py#CLOCKS
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+    tags: [time-window, null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: ratio
+          numerator: measure.shop.revenue
+          denominator:
+            kind: rolling
+            input: measure.shop.revenue
+            window:
+              unit: month
+              value: 3
+        as: of_trailing
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: month
+    reference_sql: |-
+      WITH m AS (
+                SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
+                FROM orders AS o GROUP BY 1
+              ),
+              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b) / CAST(NULLIF((SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), 0) AS DOUBLE PRECISION) FROM s
+    expected_rows:
+      - {period: '2023-11-01', of_trailing: 1}
+      - {period: '2023-12-01', of_trailing: 0.3181818181818182}
+      - {period: '2024-01-01', of_trailing: 0.47619047619047616}
+      - {period: '2024-02-01', of_trailing: 0}
+      - {period: '2024-03-01', of_trailing: 0.375}
+      - {period: '2024-04-01', of_trailing: 0}
+      - {period: '2024-05-01', of_trailing: 0.3333333333333333}
+      - {period: '2024-06-01', of_trailing: 0.3333333333333333}
+      - {period: '2024-07-01', of_trailing: 0.5}
+      - {period: '2024-08-01', of_trailing: 0.14285714285714285}
+  shop/ratio_over_prior_month_by_store:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A ratio over the prior month by store reads every month of every store. Store b (Oak) has no orders from December 2023 to February 2024, so its March reads NULL, never 8 over November's 5.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - tests/integration/correctness/conftest.py#CLOCKS
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+    tags: [time-window, null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - measure.shop.revenue
+      - expression:
+          kind: ratio
+          numerator: measure.shop.revenue
+          denominator:
+            kind: prior_period
+            input: measure.shop.revenue
+            offset:
+              unit: month
+              value: 1
+        as: vs_prior
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: month
+      group_by:
+      - dimension.shop_order_store_id
+    reference_sql: |-
+      WITH m AS (
+                SELECT o.store_id AS k, date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
+                FROM orders AS o GROUP BY 1, 2
+              ),
+              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b)),
+              k AS (SELECT DISTINCT m.k FROM m)
+              SELECT k.k, s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b) / CAST(NULLIF(CASE WHEN s.b = (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b - INTERVAL '1 month') END, 0) AS DOUBLE PRECISION) FROM k CROSS JOIN s
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2023-11-01', revenue: 10, vs_prior: null}
+      - {dimension.shop_order_store_id: a, period: '2023-12-01', revenue: 7, vs_prior: 0.7}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 20, vs_prior: 2.857142857142857}
+      - {dimension.shop_order_store_id: a, period: '2024-02-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_order_store_id: a, period: '2024-03-01', revenue: 4, vs_prior: null}
+      - {dimension.shop_order_store_id: a, period: '2024-04-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_order_store_id: a, period: '2024-05-01', revenue: null, vs_prior: null}
+      - {dimension.shop_order_store_id: a, period: '2024-06-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: a, period: '2024-07-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: a, period: '2024-08-01', revenue: 2, vs_prior: null}
+      - {dimension.shop_order_store_id: b, period: '2023-11-01', revenue: 5, vs_prior: null}
+      - {dimension.shop_order_store_id: b, period: '2023-12-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: b, period: '2024-02-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: b, period: '2024-03-01', revenue: 8, vs_prior: null}
+      - {dimension.shop_order_store_id: b, period: '2024-04-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_order_store_id: b, period: '2024-05-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: b, period: '2024-06-01', revenue: 3, vs_prior: null}
+      - {dimension.shop_order_store_id: b, period: '2024-07-01', revenue: 9, vs_prior: 3}
+      - {dimension.shop_order_store_id: b, period: '2024-08-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_order_store_id: null, period: '2023-11-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2023-12-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2024-01-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2024-02-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2024-03-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2024-04-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2024-05-01', revenue: 6, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2024-06-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_order_store_id: null, period: '2024-07-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_order_store_id: null, period: '2024-08-01', revenue: 0, vs_prior: null}
+  shop/ratio_over_prior_quarter_by_customer:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A ratio over the prior quarter by customer reads every quarter of every customer. Customer 101 has no orders in the first quarter of 2024, so its second quarter reads NULL, never 6 over the 17 of the last quarter of 2023.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - tests/integration/correctness/conftest.py#CLOCKS
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+      - docs/QUERY_CALL.md#inline-expression-kinds
+      - docs/QUERY_CALL.md#select
+      - docs/QUERY_CALL.md#time
+    tags: [time-window, null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - measure.shop.revenue
+      - expression:
+          kind: ratio
+          numerator: measure.shop.revenue
+          denominator:
+            kind: prior_period
+            input: measure.shop.revenue
+            offset:
+              unit: quarter
+              value: 1
+        as: vs_prior
+      time:
+        temporal_role: temporal_role.shop_order_ordered_at
+        grain: quarter
+      group_by:
+      - dimension.shop_customer_id
+    reference_sql: |-
+      WITH m AS (
+                SELECT o.customer_id AS k, date_trunc('quarter', o.ordered_at) AS b, SUM(o.amount) AS v
+                FROM orders AS o GROUP BY 1, 2
+              ),
+              s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '3 month') AS g(b)),
+              k AS (SELECT DISTINCT m.k FROM m)
+              SELECT k.k, s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b) / CAST(NULLIF(CASE WHEN s.b = (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b - INTERVAL '3 month') END, 0) AS DOUBLE PRECISION) FROM k CROSS JOIN s
+    expected_rows:
+      - {dimension.shop_customer_id: 101, period: '2023-10-01', revenue: 17, vs_prior: null}
+      - {dimension.shop_customer_id: 101, period: '2024-01-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_customer_id: 101, period: '2024-04-01', revenue: 6, vs_prior: null}
+      - {dimension.shop_customer_id: 101, period: '2024-07-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_customer_id: 102, period: '2023-10-01', revenue: 5, vs_prior: null}
+      - {dimension.shop_customer_id: 102, period: '2024-01-01', revenue: 4, vs_prior: 0.8}
+      - {dimension.shop_customer_id: 102, period: '2024-04-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_customer_id: 102, period: '2024-07-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 103, period: '2023-10-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 103, period: '2024-01-01', revenue: 20, vs_prior: null}
+      - {dimension.shop_customer_id: 103, period: '2024-04-01', revenue: 3, vs_prior: 0.15}
+      - {dimension.shop_customer_id: 103, period: '2024-07-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_customer_id: 104, period: '2023-10-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 104, period: '2024-01-01', revenue: 8, vs_prior: null}
+      - {dimension.shop_customer_id: 104, period: '2024-04-01', revenue: 0, vs_prior: 0}
+      - {dimension.shop_customer_id: 104, period: '2024-07-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 105, period: '2023-10-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 105, period: '2024-01-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 105, period: '2024-04-01', revenue: null, vs_prior: null}
+      - {dimension.shop_customer_id: 105, period: '2024-07-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 106, period: '2023-10-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 106, period: '2024-01-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 106, period: '2024-04-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 106, period: '2024-07-01', revenue: 9, vs_prior: null}
+      - {dimension.shop_customer_id: 108, period: '2023-10-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 108, period: '2024-01-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 108, period: '2024-04-01', revenue: 0, vs_prior: null}
+      - {dimension.shop_customer_id: 108, period: '2024-07-01', revenue: 2, vs_prior: null}
   shop/conversion_by_month:
     kind: query_matches_snapshot
     expect: answer
@@ -7948,6 +8284,75 @@ tests:
       FROM generate_series(TIMESTAMP '2024-09-23', TIMESTAMP '2024-10-14', INTERVAL '7 days') AS g(b)
       LEFT JOIN loaded AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
       GROUP BY g.b
+  shop/weeks-a-filter-never-matched-read-zero-through-the-load-log-then-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Four weeks to October 7, 2024 of long tickets (over 480 minutes): no ticket has ever run that long, but the load log says the load ran through Sunday September 29, so the weeks of September 9, 16 and 23 are loaded and read 0 (data of nothing), as the unfiltered count does there; the week of September 30 is after it, so it reads NULL (no data yet), never 0.'
+    cites: &long_cites [tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_tickets, tests/integration/correctness/shop/models/tickets.yml#model.dimensions.minutes, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [metric.shop.long_tickets]
+      time: {last: {unit: week, value: 4}, grain: week}
+    now: '2024-10-07T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-09', long_tickets: 0}
+      - {period: '2024-09-16', long_tickets: 0}
+      - {period: '2024-09-23', long_tickets: 0}
+      - {period: '2024-09-30', long_tickets: null}
+    reference_sql: |
+      SELECT g.b,
+        CASE WHEN COUNT(CASE WHEN t.minutes > 480 THEN 1 END) > 0
+            OR (g.b >= (SELECT date_trunc('week', MIN(opened_at)) FROM tickets)
+              AND g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads))
+          THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END
+      FROM generate_series(TIMESTAMP '2024-09-09', TIMESTAMP '2024-09-30', INTERVAL '7 days') AS g(b)
+      LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+      GROUP BY g.b
+  shop/a-loaded-week-a-filter-never-matched-reads-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The week of September 23 to 29, 2024, which the load log covers: no long ticket (over 480 minutes) has ever been opened, that week or any other, so the loaded week reads 0, not NULL with NO_DATA_IN_SCOPE.'
+    cites: *long_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [metric.shop.long_tickets]
+      time: {last: {unit: week, value: 1}}
+    now: '2024-09-30T06:00:00Z'
+    expected_rows: [{long_tickets: 0}]
+    reference_sql: |
+      SELECT CASE WHEN COUNT(CASE WHEN t.minutes > 480 THEN 1 END) > 0
+          OR ((SELECT MAX(through_day) FROM ticket_loads) >= DATE '2024-09-29'
+            AND EXISTS (SELECT 1 FROM tickets WHERE opened_at < TIMESTAMP '2024-09-30'))
+        THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END
+      FROM tickets AS t
+      WHERE t.opened_at >= TIMESTAMP '2024-09-23' AND t.opened_at < TIMESTAMP '2024-09-30'
+  shop/the-share-of-long-tickets-reads-zero-where-tickets-opened-and-null-where-none-did:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'Four weeks to October 7, 2024 of the share of tickets that ran long: each operand settles first, then the ratio. Long tickets read 0 in the three loaded weeks; the week of September 9 opened ticket 3, so its share is 0 / 1 = 0; the weeks of September 16 and 23 opened none, so 0 / 0 is NULL (no tickets, never 0.0); the week of September 30 is after the load log, so both operands are NULL and so is the share.'
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_ticket_share, tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_tickets, tests/integration/correctness/shop/models/tickets.yml#model.measures.tickets_opened, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [metric.shop.long_ticket_share]
+      time: {last: {unit: week, value: 4}, grain: week}
+    now: '2024-10-07T06:00:00Z'
+    expected_rows:
+      - {period: '2024-09-09', long_ticket_share: 0.0}
+      - {period: '2024-09-16', long_ticket_share: null}
+      - {period: '2024-09-23', long_ticket_share: null}
+      - {period: '2024-09-30', long_ticket_share: null}
+    reference_sql: |
+      WITH weeks AS (
+        SELECT g.b,
+          CASE WHEN g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+            THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END AS long_tickets,
+          CASE WHEN g.b + INTERVAL '7' DAY <= (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+            THEN COUNT(DISTINCT t.ticket_id) END AS opened
+        FROM generate_series(TIMESTAMP '2024-09-09', TIMESTAMP '2024-09-30', INTERVAL '7 days') AS g(b)
+        LEFT JOIN tickets AS t ON t.opened_at >= g.b AND t.opened_at < g.b + INTERVAL '7' DAY
+        GROUP BY g.b
+      )
+      SELECT b, CAST(long_tickets AS DOUBLE PRECISION) / NULLIF(opened, 0) FROM weeks
   shop/a-quiet-week-under-an-empty-load-log-reads-null:
     kind: query_matches_snapshot
     expect: answer

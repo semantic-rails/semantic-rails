@@ -572,7 +572,7 @@ def test_valid_values_defaults_to_declared_domains_without_live_query(runtime):
     assert empty["status"] == "needs_live_query"
     assert "next_call" not in empty
     assert empty["values"] == []
-    assert empty["total_count"] == 0
+    assert empty["total_count"] is None  # no value was read, so no count is known
     assert empty["source"] == "none"
     assert empty["value_source_type"] == "none"
     assert empty["estimated_cost"] == "none"

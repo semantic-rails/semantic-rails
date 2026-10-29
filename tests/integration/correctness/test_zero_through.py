@@ -9,6 +9,7 @@ read in New York across the end of daylight saving time.
 
 import json
 from dataclasses import replace
+from datetime import date, timedelta
 from uuid import uuid4
 
 import duckdb
@@ -154,6 +155,50 @@ def test_last_nights_load_covers_the_month_so_far_but_not_today(request, backend
         {"id": "measure.shop.exported_tickets", "edge": "2024-11-14", "edge_source": "loaded"}
     ]
     assert not _warnings(week, "PARTIAL_DATA")
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_filter_no_row_has_matched_reads_zero_in_loaded_weeks_and_no_data_yet_after(
+    request, backend_name
+):
+    """No ticket has run over 480 minutes yet: the load log, not a matching row, says which
+    weeks are observed, so its weeks read 0 with no NO_DATA_IN_SCOPE, and the week after it
+    reads NULL, named as no data yet."""
+    case_id = "weeks-a-filter-never-matched-read-zero-through-the-load-log-then-null"
+    result = _answer(request, backend_name, case_id)
+    assert [row["long_tickets"] for row in result["rows"]] == [0, 0, 0, None]
+    assert result["window"]["data_through"] == "2024-09-29"
+    assert result["window"]["data_through_source"] == "ticket_loads.through_day"
+    assert not _warnings(result, "NO_DATA_IN_SCOPE")
+    [warning] = _warnings(result, "NO_DATA_YET")
+    assert warning["details"]["measures"] == [
+        {"id": "measure.shop.tickets_opened", "edge": "2024-09-29", "edge_source": "loaded"}
+    ]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_single_loaded_week_a_filter_never_matched_reads_zero(request, backend_name):
+    """One loaded week, as a window total and as a one-period series: 0, with no warning."""
+    total = _answer(request, backend_name, "a-loaded-week-a-filter-never-matched-reads-zero")
+    assert total["rows"] == [{"long_tickets": 0}]
+    assert not total.get("warnings")
+    runtime = _backend(request, backend_name).runtimes["utc_authored"]
+    week = {"start": "2024-09-23", "end": "2024-09-30", "grain": "week"}
+    series = runtime.query(
+        {"select": ["metric.shop.long_tickets"], "time": week}, now="2024-09-30T06:00:00Z"
+    )
+    assert [row["long_tickets"] for row in series["rows"]] == [0]
+    assert not series.get("warnings")
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_share_of_a_filter_never_matched_divides_its_settled_operands(request, backend_name):
+    """0 / 1 is 0 where a ticket opened, 0 / 0 is NULL where none did, and past the load log
+    both operands are NULL."""
+    case_id = "the-share-of-long-tickets-reads-zero-where-tickets-opened-and-null-where-none-did"
+    result = _answer(request, backend_name, case_id)
+    assert [row["long_ticket_share"] for row in result["rows"]] == [0, None, None, None]
+    assert not _warnings(result, "NO_DATA_IN_SCOPE")
 
 
 def test_a_caller_who_cant_see_the_load_log_reads_loaded(packages):
@@ -450,9 +495,10 @@ def test_no_row_past_the_load_log_is_read_by_anything(logged, backend_name, expr
     assert total["rows"] == [{"event_count": 2}]
 
 
-def _package(request, backend_name, tmp_path, name, models, entities, seed):
+def _package(request, backend_name, tmp_path, name, models, entities, seed, metrics=None):
     """A package of its own on ``backend_name``: ``models`` and graph ``entities`` by key,
-    tables named in ``seed`` as ``{table}`` (made unique per run), seeded by ``seed``."""
+    tables named in ``seed`` as ``{table}`` (made unique per run), seeded by ``seed``, and
+    ``metrics`` by name."""
     backend = _backend(request, backend_name)
     tables = {table: f"{table}_{uuid4().hex}" for table in ("events", "purchases", "loads")}
     documents = {
@@ -468,6 +514,8 @@ def _package(request, backend_name, tmp_path, name, models, entities, seed):
         },
         "graph.yml": {"graph": {"entities": entities}},
     }
+    if metrics:
+        documents["metrics/metrics.yml"] = {"metrics": metrics}
     for key, model in models.items():
         documents[f"models/{key}.yml"] = {"model": {**model, "relation": tables[model["relation"]]}}
     for path_name, document in documents.items():
@@ -646,3 +694,193 @@ def test_a_conversion_reads_each_operand_through_its_own_edge(request, backend_n
         "2024-11-01": 1.0,
         "2024-11-04": 0.0,
     }
+
+
+# Purchases whose refund_amount is filled only on refunded ones, under a load log through
+# Sunday 2024-09-29, and a refund rate authored as refunds over revenue.
+REFUNDED = {"field": "dimension.refunds_purchase_status", "op": "is", "value": "refunded"}
+REFUND_METRICS = {
+    "refunds": {
+        "as": "metric.refunds.refunds",
+        "label": "Refunds",
+        "kind": "derived",
+        "value_type": "currency",
+        "temporal_role": "temporal_role.refunds_purchase_purchased_at",
+        "expression": {
+            "kind": "aggregate",
+            "measure": "measure.refunds.refunded",
+            "aggregation": "sum",
+            "filter": {"all": [REFUNDED]},
+        },
+    },
+    "refund_rate": {
+        "as": "metric.refunds.refund_rate",
+        "label": "Refund rate",
+        "kind": "ratio",
+        "value_type": "number",
+        "numerator": "refunds",
+        "denominator": "revenue",
+        "temporal_role": "temporal_role.refunds_purchase_purchased_at",
+    },
+}
+REFUND_MODELS = {
+    "purchases": {
+        "id": "purchases",
+        "relation": "purchases",
+        "entities": {"purchase": {}},
+        "zero_through": {"loaded": "loads.through_day"},
+        "times": {"purchased_at": {**EVENT_TIME, "column": "purchased_at"}},
+        "dimensions": {"status": {"kind": "categorical"}, "store": {"kind": "categorical"}},
+        "measures": {
+            "revenue": {"kind": "aggregate", "expr": "amount"},
+            "refunded": {"kind": "aggregate", "expr": "refund_amount"},
+        },
+    },
+    "loads": {
+        "id": "loads",
+        "relation": "loads",
+        "entities": {"load": {}},
+        "times": {"through_day": {"column": "through_day", "kind": "date"}},
+    },
+}
+REFUND_WEEKS = ["2024-09-02", "2024-09-09", "2024-09-16", "2024-09-23", "2024-09-30"]
+# The week of 09-16 has no purchase; 10-01 is after the load log.
+PURCHASES = [
+    (1, "2024-09-03 10:00:00", "a", 100),
+    (2, "2024-09-05 12:00:00", "b", 50),
+    (3, "2024-09-12 09:00:00", "a", 80),
+    (4, "2024-09-24 15:00:00", "b", 40),
+    (5, "2024-10-01 08:00:00", "a", 999),
+]
+
+
+def _refunds(request, backend_name, tmp_path, refunded=()):
+    """The refunds package; ``refunded`` names the purchases refunded, none with an amount."""
+    rows = ", ".join(
+        f"({n}, TIMESTAMP '{at}', '{'refunded' if n in refunded else 'paid'}', '{store}', "
+        f"{amount}, NULL)"
+        for n, at, store, amount in PURCHASES
+    )
+    seed = (
+        "CREATE TABLE {purchases} (purchase_id INTEGER, purchased_at TIMESTAMP, "
+        "status VARCHAR(20), store VARCHAR(20), amount INTEGER, refund_amount INTEGER);"
+        f"INSERT INTO {{purchases}} VALUES {rows};"
+        "CREATE TABLE {loads} (run_id INTEGER, through_day DATE);"
+        "INSERT INTO {loads} VALUES (1, DATE '2024-09-15'), (2, DATE '2024-09-29');"
+    )
+    entities = {
+        "purchase": {"key": ["purchase_id"], "model": "purchases"},
+        "load": {"key": ["run_id"], "model": "loads"},
+    }
+    return _package(
+        request, backend_name, tmp_path, "refunds", REFUND_MODELS, entities, seed, REFUND_METRICS
+    )
+
+
+def _refund_rate_reference(runtime, tables, starts, where="TRUE"):
+    """Plain SQL of the rule, for each [start, end) of ``starts``: a period's refunds sum its
+    refunded purchases' amounts (NULL when each one is NULL), and read 0 in a loaded period
+    with none, NULL past the load log (which ends with its last through_day); revenue the
+    same over every purchase; the rate divides them, NULL over no revenue. ``where`` keeps the
+    purchases a call's where keeps."""
+    weeks = " UNION ALL ".join(
+        f"SELECT TIMESTAMP '{s}' AS s, TIMESTAMP '{e}' AS e" for s, e in starts
+    )
+    loaded = (
+        "(g.e <= (SELECT edge FROM edge) AND g.e > (SELECT MIN(purchased_at) FROM {purchases}))"
+    )
+    sql = f"""
+WITH edge AS (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY AS edge
+              FROM {{loads}}),
+w AS ({weeks}),
+p AS (SELECT * FROM {{purchases}} WHERE purchased_at < (SELECT edge FROM edge) AND {where}),
+g AS (
+  SELECT w.s, w.e, COUNT(p.purchase_id) AS n, SUM(p.amount) AS revenue,
+    COUNT(CASE WHEN p.status = 'refunded' THEN 1 END) AS refunded_n,
+    SUM(CASE WHEN p.status = 'refunded' THEN p.refund_amount END) AS refunds
+  FROM w LEFT JOIN p ON p.purchased_at >= w.s AND p.purchased_at < w.e
+  GROUP BY w.s, w.e
+)
+SELECT CAST(g.s AS DATE),
+  CASE WHEN g.refunded_n > 0 THEN g.refunds WHEN {loaded} THEN 0 END * 1.0
+  / NULLIF(CASE WHEN g.n > 0 THEN g.revenue WHEN {loaded} THEN 0 END, 0)
+FROM g ORDER BY g.s"""
+    return [
+        (str(day), None if rate is None else float(rate))
+        for day, rate in _rows(runtime, sql.format(**tables))
+    ]
+
+
+def _weekly(starts):
+    """Each week starting on one of ``starts``, as [start, end)."""
+    return [(s, str(date.fromisoformat(s) + timedelta(days=7))) for s in starts]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(
+    "refunded,rates,overall",
+    [
+        ((), [0.0, 0.0, None, 0.0, None], 0.0),
+        # A refund recorded without its amount is unknown, not 0, in its week and in total.
+        ((3,), [0.0, None, None, 0.0, None], None),
+    ],
+    ids=["no-refund-yet", "a-refund-without-its-amount"],
+)
+def test_a_refund_rate_before_the_first_refund_amount_reads_zero_in_loaded_weeks(
+    request, backend_name, tmp_path, refunded, rates, overall
+):
+    """Each week's refund rate before any refund has an amount: the refund column is NULL
+    on every row, but the load log says each week is loaded, so a week whose purchases were
+    all paid reads 0 of its revenue (0.0), a quiet week 0 / 0 (NULL), and the week after the
+    load log NULL; the rate over the whole window reads 0.0. A refunded purchase whose amount
+    is NULL still leaves its week, and the window, NULL."""
+    runtime, tables = _refunds(request, backend_name, tmp_path, refunded)
+    weeks = {"start": "2024-09-02", "end": "2024-10-07", "grain": "week"}
+    try:
+        series = runtime.query({"select": ["metric.refunds.refund_rate"], "time": weeks}, now=NOW)
+        total = runtime.query(
+            {
+                "select": ["metric.refunds.refund_rate"],
+                "time": {"start": "2024-09-02", "end": "2024-09-30"},
+            },
+            now=NOW,
+        )
+        reference = _refund_rate_reference(runtime, tables, _weekly(REFUND_WEEKS))
+        [(_, whole)] = _refund_rate_reference(runtime, tables, [("2024-09-02", "2024-09-30")])
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {purchases}; DROP TABLE {loads}".format(**tables))
+        runtime.close()
+    assert reference == list(zip(REFUND_WEEKS, rates, strict=True))
+    assert [(row["period"], row["refund_rate"]) for row in series["rows"]] == reference
+    assert whole == overall
+    assert total["rows"] == [{"refund_rate": whole}]
+    for answer in (series, total):
+        assert not _warnings(answer, "NO_DATA_IN_SCOPE")
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_a_stores_refund_rate_before_the_first_refund_reads_zero_in_its_loaded_weeks(
+    request, backend_name, tmp_path, scope
+):
+    """Store b's weekly refund rate before any refund: 0.0 in its weeks with purchases,
+    0 / 0 (NULL) in the loaded weeks it has none, in either observation scope."""
+    runtime, tables = _refunds(request, backend_name, tmp_path)
+    call = {
+        "select": ["metric.refunds.refund_rate"],
+        "where": [{"field": "dimension.refunds_purchase_store", "op": "is", "value": "b"}],
+        "time": {"start": "2024-09-02", "end": "2024-10-07", "grain": "week"},
+        "observation_scope": scope,
+    }
+    try:
+        result = runtime.query(call, now=NOW)
+        reference = _refund_rate_reference(
+            runtime, tables, _weekly(REFUND_WEEKS), where="store = 'b'"
+        )
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {purchases}; DROP TABLE {loads}".format(**tables))
+        runtime.close()
+    assert reference == list(zip(REFUND_WEEKS, [0.0, None, None, 0.0, None], strict=True))
+    assert [(row["period"], row["refund_rate"]) for row in result["rows"]] == reference
