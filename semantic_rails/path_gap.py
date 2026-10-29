@@ -472,21 +472,41 @@ def call_measures(call: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(ref for key in _VALUE_KEYS for ref in walk(call.get(key))))
 
 
+def _same_things(config: PackageConfig, entity: str, other: str, columns: _Columns) -> bool:
+    """Whether two entities' rows are about the same things: a declared relationship joins them,
+    or one's table holds the other's key (``_Columns.holds_key_of``: every column of it, each
+    one saying what it identifies). Two tables that only share a column name, such as
+    ``amount``, hold different things; a model without a declared key pairs only with one whose
+    key it holds."""
+    if any(
+        {rel.source_entity, rel.target_entity} == {entity, other} for rel in config.relationships
+    ):
+        return True
+    return columns.holds_key_of(other, entity) or columns.holds_key_of(entity, other)
+
+
 def lookalike_swaps(
     config: PackageConfig, measure_ids: Sequence[str], start: str
 ) -> list[tuple[str, dict[str, str]]]:
     """Each other entity that holds a look-alike of every one of ``measure_ids`` (the call's
     measures on ``start``), with each measure's look-alike there. A look-alike is a published
     measure on another entity with the same key or label, each without its model's table name,
-    that totals the same way (``_alike``). An entity with two look-alikes of one measure has no
-    one look-alike, so it is left out."""
+    that totals the same way (``_alike``), on an entity whose rows are about the same things
+    (``_same_things``). An entity with two look-alikes of one measure has no one look-alike, so
+    it is left out."""
     entities = {row.id: row for row in config.entities}
     asked = [row for row in config.measures if row.id in set(measure_ids) and row.entity == start]
     if not asked:
         return []
     found: dict[str, dict[str, list[str]]] = {}
+    columns = _Columns(config)
+    same: dict[str, bool] = {}
     for other in config.measures:
         if other.entity == start or not other.publish:
+            continue
+        if other.entity not in same:
+            same[other.entity] = _same_things(config, start, other.entity, columns)
+        if not same[other.entity]:
             continue
         for measure in asked:
             if _alike(measure, other, entities):
@@ -500,16 +520,21 @@ def lookalike_swaps(
 
 
 def measure_lookalikes(config: PackageConfig, measure_id: str) -> list[Any]:
-    """The published look-alikes (``_alike``) of one measure on other entities, by id."""
+    """The published look-alikes (``_alike``) of one measure on other entities whose rows are
+    about the same things (``_same_things``), by id."""
     entities = {row.id: row for row in config.entities}
     asked = next((row for row in config.measures if row.id == measure_id), None)
     if asked is None:
         return []
+    columns = _Columns(config)
     return sorted(
         (
             other
             for other in config.measures
-            if other.entity != asked.entity and other.publish and _alike(asked, other, entities)
+            if other.entity != asked.entity
+            and other.publish
+            and _alike(asked, other, entities)
+            and _same_things(config, asked.entity, other.entity, columns)
         ),
         key=lambda row: row.id,
     )
@@ -628,7 +653,8 @@ def lookalike_advice(rows: Sequence[dict[str, Any]]) -> str:
     """The caller hint: each look-alike by id, how to read it, and the caveat. What each one's
     model holds is in ``details.lookalike_measures`` and, in full, on the measure's card."""
     renames = (
-        " Where the call names a result column (order_by, having), use the row's `columns`."
+        " Where the call names a result column (select `as`, order_by, having), use the row's "
+        "`columns`."
         if any(row.get("columns") for row in rows)
         else ""
     )

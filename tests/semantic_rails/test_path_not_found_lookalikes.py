@@ -75,6 +75,10 @@ CREATE TABLE invoices (id INTEGER, amount DOUBLE);
 INSERT INTO invoices VALUES (1, 10), (2, 20);
 CREATE TABLE subscriptions (id INTEGER, plan VARCHAR);
 INSERT INTO subscriptions VALUES (1, 'pro');
+CREATE TABLE charges (charge_id INTEGER, amount DOUBLE);
+INSERT INTO charges VALUES (1, 100), (2, 50);
+CREATE TABLE payments (payment_id INTEGER, method VARCHAR, amount DOUBLE);
+INSERT INTO payments VALUES (1, 'card', 60), (2, 'wire', 40);
 """
 
 
@@ -123,7 +127,12 @@ def _rooms(model_id: str, entity: str, description: str, *, building: bool, meas
             "relation": model_id,
             "description": description,
             "entities": {entity: {}, **({"building": {}} if building else {})},
-            "dimensions": {"area": {"kind": "categorical"}} if not measure else {},
+            "dimensions": {"area": {"kind": "categorical"}}
+            if not measure
+            # The history copy holds the room each version is of.
+            else {"room_id": {"kind": "categorical"}}
+            if model_id == "rooms_hist"
+            else {},
             "measures": {
                 f"{model_id}_area": _measure(f"Area ({model_id.upper()})", "area"),
                 # A count of the model's own key: rooms here, room versions on the history copy.
@@ -150,6 +159,9 @@ def _files(v2: bool) -> dict[str, Any]:
         "room_hist": {"key": ["version_id"], "model": "rooms_hist"},
         "room_legacy": {"key": ["room_id"], "model": "rooms_legacy"},
         "building": {"key": ["building_id"], "model": "buildings"},
+        # Amounts billed and amounts paid: two tables nothing in the package links.
+        "charge": {"key": ["charge_id"], "model": "charges"},
+        "payment": {"key": ["payment_id"], "model": "payments"},
         # A connector schema's tables, each keyed by a plain `id`.
         "invoice": {"key": ["id"], "model": "invoices"},
         "subscription": {"key": ["id"], "model": "subscriptions"},
@@ -236,6 +248,19 @@ def _files(v2: bool) -> dict[str, Any]:
                         "value_type": "count",
                     }
                 },
+            }
+        }
+    for model_id, entity, dimension in (
+        ("charges", "charge", {}),
+        ("payments", "payment", {"method": {"kind": "categorical"}}),
+    ):
+        files[f"models/{model_id}.yml"] = {
+            "model": {
+                "id": model_id,
+                "relation": model_id,
+                "entities": {entity: {}},
+                "dimensions": dimension,
+                "measures": {f"{model_id}_amount": _measure("Amount", "amount", "currency")},
             }
         }
     if v2:
@@ -353,8 +378,8 @@ def test_the_one_model_holding_the_campaign_answers_and_says_its_rows(shop):
     assert hint["message"] == (
         "Read the same measure from another model in details.lookalike_measures, keeping this "
         f"call's group_by, where and time: '{ATTRIBUTED_REVENUE}' in place of '{REVENUE}' (on "
-        "'entity.shop_attributed_order'). Where the call names a result column (order_by, "
-        "having), use the row's `columns`. Each model holds its own rows, which may be fewer, "
+        "'entity.shop_attributed_order'). Where the call names a result column (select `as`, "
+        "order_by, having), use the row's `columns`. Each model holds its own rows, which may be fewer, "
         "more or other rows (such as every version of each row) than the user asked about: "
         "inspect the measure for its model's description, and tell the user which model the "
         "answer reads."
@@ -438,6 +463,31 @@ def test_counts_of_tables_keyed_by_a_plain_id_are_never_lookalikes(shop):
     assert subscriptions not in json.dumps(error)
     assert lookalike_swaps(runtime.package_config, [invoices], "entity.shop_invoice") == []
     assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, invoices))
+
+
+def test_sums_of_one_column_on_unlinked_tables_are_never_lookalikes(shop):
+    # "Amount billed by payment method": the payments table's amount is cash collected, and no
+    # relationship or held key says a charge and a payment are the same thing.
+    runtime = shop()
+    charges, payments = "measure.shop.charges_amount", "measure.shop.payments_amount"
+    call = {"select": [charges], "group_by": ["dimension.shop_payment_method"]}
+    error = _refusal(_validate(runtime, call))
+    assert "lookalike_measures" not in error["details"]
+    assert payments not in json.dumps(error)
+    assert lookalike_swaps(runtime.package_config, [charges], "entity.shop_charge") == []
+    assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, charges))
+    # Nor when neither table declares a key, so that no key says what either one's rows are.
+    config = runtime.package_config
+    keyless = replace(
+        config,
+        entities=[
+            replace(row, key_columns=[])
+            if row.id in ("entity.shop_charge", "entity.shop_payment")
+            else row
+            for row in config.entities
+        ],
+    )
+    assert lookalike_swaps(keyless, [charges], "entity.shop_charge") == []
 
 
 def _copies(root: Path, count: int) -> None:
