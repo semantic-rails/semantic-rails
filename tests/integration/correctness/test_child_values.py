@@ -305,6 +305,9 @@ REFUSED = {
     "share": ("two_way", {"select": [{"expression": SHARE, "as": "s"}], **ROUTED}),
     # A room's measure against its building's.
     "ratio": ("two_way", {"select": [{"expression": RATIO, "as": "r"}], **ROUTED}),
+    # Beside a building's measure, which reads the cities by its own route: a building with no
+    # address is in no city there.
+    "beside_building_area": ("two_way", {"select": [ROOM_AREA, AREA], **ROUTED}),
 }
 CODES = {"forward_only": "PATH_NOT_FOUND", "undecided": "AMBIGUOUS_PATH"}
 

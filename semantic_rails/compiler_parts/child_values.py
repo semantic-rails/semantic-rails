@@ -33,9 +33,10 @@ from .lowering_common import _edge_cap
 from .paths import _column_ref, _outer_joins, unknown_as_null
 from .plan_checks import (
     _WHOLE_GROUPED_AGGREGATIONS,
-    _beside_another_entity,
     _is_count,
+    _measures_inside,
     _overlapping_share,
+    _query_roots,
 )
 
 CHILD_VALUES = "child_values"
@@ -74,8 +75,8 @@ def child_values_route(
     doesn't. Only the call's ``group_by`` crosses that hop: a filter there (its own path
     across the hop), a time window, a result filter or an entity filter keeps the leaf's
     refusal, as does a measure that isn't a sum, count, average or distinct count of an
-    additive, non-stock value with no window, no share over the grouping and no other
-    entity's measure in its item."""
+    additive, non-stock value with no window and no share over the grouping, and a call that
+    reads another entity's measure beside it (see ``_another_entity_in_the_call``)."""
     crossing = [row for row in selections if row.analysis.get("status") != "ok"]
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if (
@@ -93,12 +94,27 @@ def child_values_route(
         or bound.window_spec
         or _bound_metric_predicates(bound)
         or _edge_cap(measure, "", config)
-        or _beside_another_entity(measure, config, query)
+        or _another_entity_in_the_call(measure, config, query)
         or _overlapping_share(measure, bound, selections, config, query)
     ):
         return None
     keys = {entity.id: list(entity.key_columns) for entity in config.entities}
     return crossing[0] if _lookups_then_one_to_many(crossing[0].analysis, keys) else None
+
+
+def _another_entity_in_the_call(
+    measure: MeasureConfig, config: PackageConfig, query: NormalizedQuery
+) -> bool:
+    """Whether the call reads a measure of another entity than ``measure``'s, in any item: that
+    measure's leaf reads the grouping by its own route (room area beside building area by city:
+    a building with no address is in no city), so its groups wouldn't be this leaf's, whose rows
+    with no child row are the NULL group."""
+    measures = _measure_index(config)
+    return any(
+        other in measures and measures[other].entity != measure.entity
+        for root in _query_roots(query)
+        for other in _measures_inside(root, (), config, inside=True)
+    )
 
 
 def _child_route(measure_plan: MeasurePlan) -> PathSelection:
