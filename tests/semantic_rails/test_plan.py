@@ -360,10 +360,11 @@ def test_plan_uses_planner_owned_catalog_fallback(runtime, monkeypatch) -> None:
 
 
 def test_plan_best_detail_rejects_grouping_drift_fallback(runtime) -> None:
-    # Two routes reach an item from a session: the draft fails, and the fallback drops the
-    # grouping. (A measure that can't reach its grouping at all gets no draft:
-    # test_plan_no_draft.py.)
-    question = "session starts by product type"
+    # Two routes reach an item from a session, and over a time window neither runs (without
+    # one, the route through the session's order groups by its items' values): the draft
+    # fails, and the fallback drops the grouping. (A measure that can't reach its grouping at
+    # all gets no draft: test_plan_no_draft.py.)
+    question = "session starts by product type last month"
     best = plan_payload(runtime, intent=question, detail="best")
     query = plan_payload(runtime, intent=question, detail="query")
     full = plan_payload(runtime, intent=question, detail="full", limit=3)
