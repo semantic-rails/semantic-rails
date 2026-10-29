@@ -277,14 +277,16 @@ def test_a_pair_with_more_options_than_a_page_continues_them_on_marked_pages(
     census = full["route_census"]
     pair = census["undecided"][0]
     clarification = pair["details"]["clarification"]
-    # 212 routes between one pair, as a package of 85 marts has: each its own option.
+    # 212 routes between one pair, as a package of 85 marts has: each its own option, and no
+    # groups (a pair none of whose groups fits shows its options so too).
     many = [
         {**clarification["options"][n % len(clarification["options"])], "id": f"route_{n}"}
         for n in range(212)
     ]
+    ungrouped = {key: value for key, value in clarification.items() if key != "groups"}
     big = {
         **pair,
-        "details": {**pair["details"], "clarification": {**clarification, "options": many}},
+        "details": {**pair["details"], "clarification": {**ungrouped, "options": many}},
     }
     report = {**full, "route_census": {**census, "undecided": [big, *census["undecided"][1:]]}}
     path = "route_census.undecided.0.details.clarification.options"

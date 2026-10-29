@@ -350,6 +350,10 @@ PACKAGE_ID = "large"
 PACKAGE_MARTS = [dimension_table(name) for name in DIMENSIONS[:10]] + [
     table for _, table, _ in fact_tables()[:24]
 ]
+# Every mart as one package: 85 entities, and a pair of them with 212 routes.
+ALL_MARTS = [dimension_table(name) for name in DIMENSIONS] + [
+    table for _, table, _ in fact_tables()
+]
 FACT = f"{MARTS_SCHEMA}.fct_sales_orders"
 WIDE_FACT = f"{MARTS_SCHEMA}.fct_sales_refunds"
 
@@ -373,9 +377,10 @@ def call_tool(server: Any, name: str, arguments: dict[str, Any]) -> dict[str, An
     return dict(structured)
 
 
-def build_large_workspace(root: Path) -> LargeWorkspace:
-    """The warehouse in the package's ``data/``, the dbt target, and the package: created and
-    then imported from dbt through the Architect MCP."""
+def build_large_workspace(root: Path, marts: list[str] | None = None) -> LargeWorkspace:
+    """The warehouse in the package's ``data/``, the dbt target, and the package over ``marts``
+    (``PACKAGE_MARTS`` by default): created and then imported from dbt through the Architect
+    MCP."""
     from semantic_rails.architect_mcp import create_architect_mcp_server
 
     package = root / PACKAGE_ID
@@ -411,7 +416,7 @@ def build_large_workspace(root: Path) -> LargeWorkspace:
         {
             "project_path": PACKAGE_ID,
             "target_dir": "dbt/target",
-            "select": PACKAGE_MARTS,
+            "select": PACKAGE_MARTS if marts is None else marts,
             "expected_revision": created["revision"],
             "idempotency_key": "import",
         },

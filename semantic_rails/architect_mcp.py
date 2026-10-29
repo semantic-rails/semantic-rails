@@ -63,6 +63,7 @@ from .package_tools import (
     run_examples_report,
     run_package_tests_report,
 )
+from .route_groups import route_groups
 from .upgrade.service import legacy_form_hint
 from .upgrade.service import upgrade_project as upgrade_project_service
 
@@ -473,16 +474,58 @@ def _options_note(pair: dict[str, Any], start: int, shown: int, total: int, path
     return f"{where}: the last of them"
 
 
+def _grouped_pair(pair: Any, room: int, where: str, pages: dict[str, Any]) -> Any:
+    """``pair`` with the options its first groups list, as many groups as fit in ``room``
+    (at least one), an ``options_note`` saying so, and ``pages`` naming its options (every one
+    of them pages from the first it leaves out) and its groups, when it leaves one out; None
+    when even one group doesn't fit, or the pair has no groups."""
+    details = pair["details"]
+    clarification = details["clarification"]
+    options, groups = clarification["options"], clarification.get("groups")
+    if not isinstance(groups, list) or not groups:
+        return None
+    path = f"{where}details.clarification"
+    names = f"{pair.get('source_entity')} to {pair.get('target_entity')}"
+    for count in range(len(groups), 0, -1):
+        wanted = {option for group in groups[:count] for option in group.get("options") or ()}
+        listed = [option for option in options if option.get("id") in wanted]
+        part = f"the first {count} of its {len(groups)} groups" if count < len(groups) else ""
+        note = (
+            f"the {len(listed)} options {part or 'its groups'} list, of {len(options)} for "
+            f"{names}: every option is on the pages of {path}.options"
+            + (f", and every group on the pages of {path}.groups" if part else "")
+        )
+        shown = {**clarification, "groups": groups[:count], "options": listed}
+        row = {**pair, "details": {**details, "clarification": {**shown, "options_note": note}}}
+        if _json_size(row) <= room:
+            left_out = (n for n, option in enumerate(options) if option.get("id") not in wanted)
+            pages[f"{path}.options"] = {
+                "total_count": len(options),
+                "next_offset": next(left_out, len(options)),
+            }
+            if part:
+                pages[f"{path}.groups"] = {"total_count": len(groups), "next_offset": count}
+            return row
+    return None
+
+
 def _fit_pair(pair: Any, room: int, where: str, pages: dict[str, Any]) -> Any:
-    """``pair`` whole when it fits in ``room`` characters; else with the first of its options
-    that fit (at least one), ``options_total`` and an ``options_note`` saying which they are,
-    and ``pages`` naming the options list, which pages from where this one stops."""
+    """``pair`` whole when it fits in ``room`` characters; else grouped (``_grouped_pair``); else
+    with the first of its options that fit (at least one), ``options_total`` and an
+    ``options_note`` saying which they are, and ``pages`` naming the options list, which pages
+    from where this one stops, and its groups, left out."""
     options = _pair_options(pair)
     if _json_size(pair) <= room or not options:
         return pair
+    grouped = _grouped_pair(pair, room, where, pages)
+    if grouped is not None:
+        return grouped
     path = f"{where}details.clarification.options"
     details = pair["details"]
-    clarification = details["clarification"]
+    clarification = {key: v for key, v in details["clarification"].items() if key != "groups"}
+    if details["clarification"].get("groups"):
+        groups = len(details["clarification"]["groups"])
+        pages[f"{where}details.clarification.groups"] = {"total_count": groups, "next_offset": 0}
 
     def shown(count: int) -> dict[str, Any]:
         marked = {
@@ -925,8 +968,23 @@ def _package_ref(project: Path) -> PackageReference:
 
 
 def _parse_report(project: Path) -> dict[str, Any]:
-    report, _ = parse_config_report(_package_ref(project))
+    """The package's parse report, its route census's undecided pairs grouped as a refusal
+    shows them (``route_groups``)."""
+    report, snapshot = parse_config_report(_package_ref(project))
+    census = report.get("route_census")
+    if isinstance(census, dict) and snapshot is not None:
+        census["undecided"] = [
+            _with_groups(snapshot, pair) for pair in census.get("undecided") or []
+        ]
     return report
+
+
+def _with_groups(config: Any, pair: dict[str, Any]) -> dict[str, Any]:
+    clarification = pair["details"]["clarification"]
+    groups = route_groups(
+        config, pair["source_entity"], pair["target_entity"], clarification["options"]
+    )
+    return {**pair, "details": {**pair["details"], "clarification": {**clarification, **groups}}}
 
 
 def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:

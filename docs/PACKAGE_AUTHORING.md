@@ -2686,6 +2686,44 @@ words built only from package labels:
 - `query` is the refused call with the option's route added to
   [`routes`](QUERY_CALL.md#routes) (`{from, to, via}`), ready to send.
 
+An answer (and Architect's route census) adds `groups` beside the options, so a pair with
+many routes asks among a few meanings. The hops every route shares are set aside, and the
+routes that take the same next hop form a group, named by the entity it reaches (`via`). In
+a group, routes rank by their one-to-many hops, then hops, then id; the group then lists:
+
+- one route: its option;
+- two or more lookups from `via` to the target (a work order's billing building and its
+  serviced room's building): each as an option, never one as the group's meaning;
+- else one route ranked first: its option, the others counted in `more_routes`;
+- else up to three routes: each as an option;
+- else no option: `decide_first` names the entity its routes pass through (`via`) and the
+  target. A package author decides which of the group's routes the asked pair means.
+
+```json
+{"options_total": 41, "groups_total": 3, "listed": 3,
+ "ordered": "by one-to-many hops, then hops, then id; not a preference",
+ "groups": [
+   {"id": "staff_building", "via": "entity.staff", "routes": 1, "more_routes": 0,
+    "options": ["staff_building"]},
+   {"id": "via_work_order", "via": "entity.work_order", "routes": 2, "more_routes": 0,
+    "options": ["work_order_building", "work_order_room_building"]},
+   {"id": "via_project", "via": "entity.project", "routes": 38,
+    "decide_first": {"source_entity": "entity.project", "target_entity": "entity.building"}}]}
+```
+
+Grouping chooses nothing and changes no answer: `options` keeps every route, which route a
+query takes and every policy result read the routes as before, and a group's option is a
+whole route with its own `decision` row.
+
+To decide a `decide_first` group, record **the asked pair's own route**: the `decision` of
+the option for the chosen route (the route census row lists every option). Don't record a row
+for the `decide_first` pair (`via` to the target) on its own: a route for that pair can
+pass back through the asked pair's start, and the asked pair is then answered by another
+group's route, which nobody chose. To record that pair too, send its row and the asked pair's
+row together in one `record_route_decision` `decisions` batch, previewed with `dry_run`: the
+batch is refused unless the changed package resolves each row's pair, the asked pair
+included, to that row's route.
+
 Every option can be applied two ways. For the person who asked, the agent
 sends the option's `query`: that call only, not a
 default. For everyone, a maintainer records the option's `decision` in the package (Architect

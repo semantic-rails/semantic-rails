@@ -885,13 +885,16 @@ def _route_ask(runtime: Any, validation: dict[str, Any]) -> dict[str, Any] | Non
     that refuses the draft and some reading runs: which route the question means, in business
     words, each option the draft with that route in its ``routes`` (this question only) and the
     ``graph.path_preferences`` row that makes it the package default (``decision``). Only the
-    readings the engine answers are offered."""
+    readings the engine answers are offered, and of a grouped question only those its groups
+    list (``route_groups``): the groups and their counts come along."""
 
     errors = validation.get("errors") or []
     if validation.get("ok") or len(errors) != 1 or errors[0].get("code") != "AMBIGUOUS_PATH":
         return None
     clarification = (errors[0].get("details") or {}).get("clarification") or {}
     question = str(clarification.get("question") or "")
+    groups = clarification.get("groups")
+    listed = {option for group in groups or () for option in group.get("options") or ()}
     why: dict[str, Any] = {
         "code": "AMBIGUOUS_PATH",
         "details": {
@@ -905,7 +908,9 @@ def _route_ask(runtime: Any, validation: dict[str, Any]) -> dict[str, Any] | Non
                 }
                 for row in clarification.get("options") or []
                 if isinstance(row, dict) and "query" in row
+                if groups is None or row["id"] in listed
             ],
+            **{key: clarification[key] for key in _ROUTE_GROUP_KEYS if key in clarification},
         },
         "recovery_hints": [
             {
@@ -934,7 +939,26 @@ def _route_ask(runtime: Any, validation: dict[str, Any]) -> dict[str, Any] | Non
     if unrunnable := [reads for reads in offered if reads not in readings]:
         message += f" This question can't be answered as {', or as '.join(unrunnable)}."
         why["details"]["unrunnable"] = unrunnable
+    if groups is not None:
+        ready = {option["id"] for option in why["details"]["options"]}
+        why["details"]["groups"] = [
+            {**group, "options": [o for o in group["options"] if o in ready]}
+            if "options" in group
+            else group
+            for group in groups
+        ]
+        why["details"]["listed"] = len(ready)
+        unlisted = int(clarification.get("options_total") or 0) - len(listed)
+        if unlisted:
+            message += (
+                f" {unlisted} other route{'s' if unlisted > 1 else ''} between them "
+                f"{'are' if unlisted > 1 else 'is'} counted in groups, not offered."
+            )
     return {"code": why.pop("code"), "message": message, **why}
+
+
+# A grouped route question's counts and groups, as plan's why carries them.
+_ROUTE_GROUP_KEYS = ("options_total", "groups_total", "listed", "ordered", "groups")
 
 
 def _with_ready_options(

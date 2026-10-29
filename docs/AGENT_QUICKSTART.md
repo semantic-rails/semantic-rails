@@ -396,6 +396,11 @@ The agent never picks one; it asks:
 
 1. Refusal: `details.clarification.question` ("Which District does the question mean for an
    Account?") and one option per route, each with a `meaning` in business words.
+   `details.clarification.groups` lists the distinct meanings, by the entity each group's
+   routes reach first: ask among the options the groups list. A group with `decide_first`
+   has no option to send: a package author decides its routes. A question that names a
+   group's entity sends that group's option without asking only when the group has one route
+   (`more_routes` 0).
 2. Ask the person, reading each option's `meaning`.
 3. Send the chosen option's `query`: the same call with that route in
    [`routes`](QUERY_CALL.md#routes). The answer is for this person and this call only, and

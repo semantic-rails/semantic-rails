@@ -58,6 +58,7 @@ from .request_payload import (
     coerce_bool as _coerce_bool,
 )
 from .resource_access import GRANT_DISCOVER_KINDS
+from .route_groups import shorter_route_asks
 from .runtime import Runtime
 from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
 from .runtime_parts.responses import resolve_verbosity
@@ -1265,8 +1266,9 @@ def _bound_response(
     Both MCP representations serialize this same payload. Compiler detail and
     echoes are optional; rows, SQL-mode text, query drafts and diagnostics are not.
     With ``columns_fallback``, record rows that can't fit are returned as columns when
-    those fit, from the rows already fetched. If the required fields still cannot fit,
-    return a bounded, explicit refusal.
+    those fit, from the rows already fetched. A route question (``AMBIGUOUS_PATH``) is
+    shortened until it fits (``route_groups.shorter_route_asks``), so it always asks. If the
+    required fields still cannot fit, return a bounded, explicit refusal.
     """
     limit = _max_result_chars()
 
@@ -1278,6 +1280,9 @@ def _bound_response(
     result = trimmed(payload)
     if len(json_text(result)) <= limit:
         return result
+    for shorter in shorter_route_asks(result):
+        if len(json_text(shorter)) <= limit:
+            return shorter
     if columns_fallback and _record_rows(result):
         columns = trimmed(_as_columns(payload, limit=limit, records_chars=len(json_text(result))))
         if len(json_text(columns)) <= limit:
