@@ -211,16 +211,18 @@ alias index (see [Resources And Prompts](#resources-and-prompts)).
 `terms` may also be a list, for a question the agent has split into its parts:
 `{"terms": ["revenue", "region"]}` ranks each term on its own, exactly as a call with that term
 alone would (same ranking, `kinds`, `query`, `limit` and verbosity), and returns the results
-keyed by term under `by_term`, in the order sent:
+keyed by term under `by_term`:
 `{"by_term": {"revenue": {"measures": [...], ...}, "region": {"dimensions": [...], ...}}}`. Each
 entry is that term's response without the call's own fields: `query_state`, `selection_context`,
 `verbosity` and a warning about the call itself (a misspelled argument) appear once, beside
 `by_term`. An entry carries its own `no_matches`, `low_relevance` or `out_of_scope` and
 `recovery_hints`. A repeated term is ranked once; an empty list is empty `terms`. An item that is
 not a non-blank string is refused with `INVALID_MCP_ARGUMENTS`. A string is still one search
-(`"revenue by region"` is not read as a list), and a list's terms are never ranked together. The terms share
-the response budget, so a list whose results do not fit is refused with `RESULT_TOO_LARGE`
-naming `by_term`; send fewer terms or a lower `limit` or verbosity.
+(`"revenue by region"` is not read as a list), and a list's terms are never ranked together. The
+terms share the response budget: when their results don't fit, the response keeps the leading
+terms that do, in the order sent, and a `DISCOVER_TERMS_TRUNCATED` warning names the rest in
+`details.remaining_terms`; send those in another call. Only a first term whose results don't fit
+on their own is refused (`RESULT_TOO_LARGE`), as a call with that term alone would be.
 
 `discover` returns slim cards by default: `id`, `label`, a `description` retaining whole sentences
 up to 120 characters (sentences naming package dimensions, entities, measures or metrics survive
@@ -1116,6 +1118,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | Code | Tool(s) | Meaning |
 |---|---|---|
 | `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
+| `DISCOVER_TERMS_TRUNCATED` | `discover` | A list of `terms` didn't fit the response budget; the leading terms that fit are listed and `details.remaining_terms` names the rest to send in another call |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, the message names the dimension and says no values were read, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query: true`, which a first call may pass too. No warehouse lookup runs without that argument; a declared empty domain remains a successful empty result |

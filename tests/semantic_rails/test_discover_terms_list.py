@@ -1,5 +1,5 @@
 """``discover`` takes ``terms`` as a list: each term ranks on its own, exactly as a call with
-that term alone, and the results are keyed by term. The engine never splits or joins terms."""
+that term alone, and the results are keyed by term. A list's terms are never ranked together."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import HTTPInputError, SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter, json_text, list_tool_definitions
 from semantic_rails.request_context import RequestContext
+from semantic_rails.request_payload import MAX_RESULT_CHARS_ENV
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PackageConfig
 from tests.semantic_rails.conftest import copy_package_config
@@ -143,18 +144,49 @@ def test_the_schema_offers_a_list_of_terms() -> None:
     assert "each term of a list alone (by_term)" in tool["description"]
 
 
-def test_terms_that_do_not_fit_the_budget_are_refused_whole(runtime: Runtime) -> None:
-    terms = ["revenue", "store", "customer", "order"]
-    full = SemanticLayerMCPAdapter(runtime).call_tool(
-        "discover", {"terms": terms, "verbosity": "full"}
-    )
-    assert not full["ok"]
-    [error] = full["errors"]
-    assert error["code"] == "RESULT_TOO_LARGE"
-    assert error["details"]["largest_field"] == "by_term"
-    default = SemanticLayerMCPAdapter(runtime).call_tool("discover", {"terms": terms})
-    assert default["ok"] and list(default["by_term"]) == terms
-    assert len(json_text(default)) <= error["details"]["max_result_chars"]
+# A question split into five parts, asked beside the revenue the agent already chose.
+QUESTION = ["new customers", "customer", "first order date", "average order value", "supply cost"]
+
+
+def test_a_list_past_the_budget_keeps_the_leading_terms_that_fit(runtime: Runtime) -> None:
+    adapter = SemanticLayerMCPAdapter(runtime)
+    arguments = {"terms": QUESTION, "query": SEED}
+    response = adapter.call_tool("discover", arguments)
+    assert response["ok"], response
+    kept = list(response["by_term"])
+    assert 0 < len(kept) < len(QUESTION) and kept == QUESTION[: len(kept)]
+    [warning] = response["warnings"]
+    left_out = QUESTION[len(kept) :]
+    assert warning == {
+        "code": "DISCOVER_TERMS_TRUNCATED",
+        "severity": "warning",
+        "message": (
+            f"Results for the first {len(kept)} of {len(QUESTION)} terms fit the 32,000-character "
+            f"response budget; {left_out} were left out. Send them in another discover call."
+        ),
+        "details": {"remaining_terms": left_out, "max_result_chars": 32_000},
+    }
+    assert len(json_text(response)) <= 32_000
+    for term in kept:
+        alone = adapter.call_tool("discover", {"terms": term, "query": SEED})
+        assert response["by_term"][term] == _alone(alone)
+    # The next term would not have fitted: asked with it, the same terms come back.
+    one_more = adapter.call_tool("discover", {**arguments, "terms": QUESTION[: len(kept) + 1]})
+    assert list(one_more["by_term"]) == kept
+    assert one_more["warnings"][0]["details"]["remaining_terms"] == [QUESTION[len(kept)]]
+
+
+def test_a_first_term_that_cannot_fit_alone_is_refused(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(MAX_RESULT_CHARS_ENV, "2000")
+    adapter = SemanticLayerMCPAdapter(runtime)
+    listed = adapter.call_tool("discover", {"terms": ["revenue by store", "store"]})
+    alone = adapter.call_tool("discover", {"terms": "revenue by store"})
+    for response in (listed, alone):
+        assert not response["ok"]
+        assert [error["code"] for error in response["errors"]] == ["RESULT_TOO_LARGE"]
+    assert listed["errors"][0]["details"]["largest_field"] == "by_term"
 
 
 @pytest.fixture(scope="module")
