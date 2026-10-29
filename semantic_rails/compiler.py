@@ -88,14 +88,13 @@ def _compile_query_sql_ast(
     payload: dict[str, Any],
     *,
     project_cut: bool = False,
-    guard_empty: bool = True,
     standalone: bool = False,
     entity_values: bool = False,
 ) -> SqlSelect:
-    """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values
-    over one measure, ``standalone`` for a call of its own (a total's coarser call), planned and
-    settled as the request would be. ``entity_values`` settles a distribution's per-entity
-    values as the request would, over the entities with rows only."""
+    """Compile a nested query; ``standalone`` for a call of its own (a total's coarser call),
+    planned and settled as the request would be. ``entity_values`` for a distribution's
+    per-entity values, settled as the request would be where its leaves join, over the entities
+    with rows only."""
     validate_temporal_support(config, payload)
     with candidate_planning():
         plan = _plan_query(
@@ -106,9 +105,7 @@ def _compile_query_sql_ast(
         plan, project_cut=project_cut, standalone=standalone, entity_values=entity_values
     ) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
-        select = attach_relation_ctes(
-            config, lower_to_sql(plan, config, guard_empty=guard_empty, default_order=False)
-        )
+        select = attach_relation_ctes(config, lower_to_sql(plan, config, default_order=False))
         return limit_order(select, _query_key_aliases(plan))[0]
 
 
@@ -134,7 +131,6 @@ class _NestedCompiles:
         payload: dict[str, Any],
         *,
         project_cut: bool = False,
-        guard_empty: bool = True,
         standalone: bool = False,
         entity_values: bool = False,
     ) -> SqlSelect:
@@ -142,7 +138,6 @@ class _NestedCompiles:
             config,
             payload,
             project_cut=project_cut,
-            guard_empty=guard_empty,
             standalone=standalone,
             entity_values=entity_values,
         )

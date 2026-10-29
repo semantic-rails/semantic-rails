@@ -68,6 +68,18 @@ def test_a_where_beside_an_entity_filter_refuses_naming_the_distribution(request
     answer = runtime.query({**call, "observation_scope": "query"}, now=NOW)
     assert [row["median_net"] for row in answer["rows"]] == [None] * 5
 
+    # One measure's leaf holds every value its entities have: nothing to settle, so the median
+    # order under the same filters answers (orders 1, 3, 4, 8 and 9).
+    median_order = {
+        "expression": {
+            **NET_MEDIAN["expression"],
+            "over": {**NET_MEDIAN["expression"]["over"], "input": "measure.shop.revenue"},
+        },
+        "as": "median_order",
+    }
+    answer = runtime.query({**call, "select": [median_order]}, now=NOW)
+    assert [float(row["median_order"]) for row in answer["rows"]] == [10.0, 7.0, 20.0, 6.0, 3.0]
+
 
 @pytest.mark.parametrize("backend", ["duckdb", "postgres"])
 def test_an_entity_filter_alone_settles_each_order(request, backend):

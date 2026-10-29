@@ -634,9 +634,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     config,
                 ),
             )
-        elif settled and (
-            lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)
-        ):
+        elif settled and (lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)):
             record_zero_output(alias, lookups)
         reads = base_reads(compiled_output)
         record_output_reads(alias, reads)
