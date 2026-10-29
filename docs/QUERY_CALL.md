@@ -483,6 +483,10 @@ cast and its reported value identifies one date filter, the redacted
   reads as its digits (`ends_with` `"03"` matches 103 and 203, never 3), and a UUID in lower
   case with hyphens (case is ignored, so `E2C0` matches). `is` and `not` still compare the id
   as it is stored, and `valid-values` `search` reads an id the same way.
+- An id stored as a float reads as the warehouse's float text: DuckDB (and so MotherDuck and
+  DuckLake), Databricks and Athena write `203.0`, while Postgres, Snowflake, BigQuery and
+  ClickHouse write `203`. So on DuckDB `ends_with` `"03"` finds nothing and `contains` `"0"`
+  matches every id. Store ids as integers or text.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
 ### Unknown values
@@ -1647,7 +1651,11 @@ condition: a group whose rows all fail it reads `0`, one whose matching rows all
 amount reads `NULL`. A sum of a `CASE` with no `ELSE` follows that rule; an explicit non-NULL
 `ELSE` (including `ELSE 0`) contributes on every row. So does a `CASE` with an `ELSE` below a
 formula's root (`amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2 END`). Every output beside
-a `distribution` settles as it does without it. One shape can't tell the two apart: a `CASE`
+a `distribution` settles as it does without it, except in three shapes that read `NULL` beside it
+where they read `0` alone: a sum of two columns of one table (goods plus shipping refunds) under
+`observation_scope: "query"` when no group in the answer has both known; a `COALESCE` of a
+filtered sum over a bounded window, in its empty periods; and a filtered sum or count under a
+declared edge (`zero_through`), in its loaded periods. One shape can't tell the two apart: a `CASE`
 with no `ELSE` below the root (`1.1 * CASE WHEN store_id = 'a' THEN amount END`) reads `0` in a
 group whose matching amounts are all NULL, where the measure has a value in scope. Write the
 condition at the root instead (`CASE WHEN store_id = 'a' THEN amount * 1.1 END`).
@@ -1665,6 +1673,23 @@ filter's scope, and `NULL` where it has none. So `large_order_count is 0` ("cust
 large orders") keeps every customer without one when some order in scope is large, and keeps
 nobody when none is. `NULL` fails every threshold, `is 0`, `lt 1` and `not 0` included. Only a count or
 sum threshold that 0 passes reaches an entity with no rows at all.
+
+**Distributions.** A `distribution` settles each entity's value before it aggregates. An input
+over several measures reads each one as a sum grouped by the entity does: `0` for an entity with
+no rows of it where its measure has data in scope (outside a bounded window too, and under
+`dataset` outside the call's `where`), `NULL` where it has none. "Median net order value", revenue less goods refunds
+per order, counts an order with no refund row at its amount, in a month with no refund at all
+too. An order whose amount is unknown, or whose only refund has no goods amount, reads `NULL`
+and is left out. A percentile, `min` and `max` read the same values. An entity enters a period
+where one of the input's measures has rows for it there, after that measure's own `filter`: a
+bounded window never adds an order to a month it has no rows in, as a call grouped by order
+fills it in. A sum whose CASE has no ELSE skips the rows its conditions fail, so beside another
+measure it settles too: "median revenue excluding store b" per customer, revenue less store b
+sales, reads `0` for store b at a customer with no store b order, as grouped by customer.
+Measures that read the same rows, each of them every row (the declared average order value:
+revenue over order count), need no settling. Under `dataset`, a `where` beside an entity filter
+refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GROUPS_UNSETTLED`,
+naming it, as it refuses the call grouped by order.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an
@@ -1686,7 +1711,12 @@ column it sums holds a value yet: the metric reads `0` there and `NULL` with `NO
 after the edge. "Each week's refund rate", refunds over revenue, reads `0.0` in a loaded week of
 paid orders before the first refund; a refunded order whose amount is NULL leaves its week
 `NULL`. Under `observation_scope: "query"`, the call's
-`where` must still keep a row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+`where` must still keep a row. The edge is the measure's own table's, however far away the
+group's column is: "weekly revenue by customer region" (orders, then customers, then regions)
+reads `0` in a week the orders' load log covers with no order and `NULL` before the first order
+and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
+read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
+not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
@@ -1696,7 +1726,10 @@ declared edge lets through. Such a table is observed there whether or not a filt
 `filter` has matched one of them, so "how many enterprise accounts have we ever had?" reads `0`
 before the first one, with no `NO_DATA_IN_SCOPE`. It needs a row the edge lets through (under
 `observation_scope: "query"`, one the call's `where` keeps): an empty load log lets none through,
-so it reads `NULL`. Without a declared edge, the filter must match a row, as above.
+so it reads `NULL`. Without a declared edge, the filter must match a row, as above. A measure
+dated by another model's clock (a refund by its order's time) is let through by that clock, so a
+refund whose order is after the edge isn't read
+([Empty periods](PACKAGE_AUTHORING.md#empty-periods)).
 
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
@@ -1918,7 +1951,8 @@ warehouse (`AVG` is DOUBLE on DuckDB and NUMERIC on Postgres); `column_types` re
 driver returned. An all-null column has type `null`; an empty result has `column_types: {}`.
 
 The Postgres adapter accepts only Arrow scalar types with exact mappings (integers, decimals,
-floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, NULL); other
-types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
+floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, UUIDs, NULL),
+so a uuid column groups, lists and is searched as its lower-case hyphenated text, as on DuckDB;
+other types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
 without exposing values. Unsupported values, non-finite numbers and conflicting non-null column
 types refuse with `RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error.

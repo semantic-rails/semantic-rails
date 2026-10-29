@@ -54,6 +54,9 @@ class PlanBindings:
     # Settles its empty groups as a call of its own (the request's, or a total's coarser call):
     # loaded coverage, observation and time scopes, whatever it answers for.
     settles: bool = False
+    # A distribution's per-entity values: its entities are those with rows of the input's
+    # measures, so no filtered leaf keeps the source groups its own filter removed.
+    entity_values: bool = False
 
 
 _plan: ContextVar[PlanBindings | None] = ContextVar("plan_bindings", default=None)
@@ -152,13 +155,22 @@ def measure_cut_owners(measure_id: str) -> AbstractContextManager[None]:
 
 @contextmanager
 def plan_bindings(
-    plan: LogicalPlan, *, project_cut: bool = False, standalone: bool = False
+    plan: LogicalPlan,
+    *,
+    project_cut: bool = False,
+    standalone: bool = False,
+    entity_values: bool = False,
 ) -> Iterator[PlanBindings]:
     """The bindings of a plan being lowered: the request's own (``root``), or nested in it. A
-    ``standalone`` nested plan settles its empty groups as a call of its own would, while its
-    reads still answer for the request's outputs."""
+    ``standalone`` nested plan, or a distribution's ``entity_values``, settles its empty groups
+    as a call of its own would, while its reads still answer for the request's outputs."""
     root = _plan.get() is None
-    bindings = PlanBindings(project_cut=project_cut, root=root, settles=root or standalone)
+    bindings = PlanBindings(
+        project_cut=project_cut,
+        root=root,
+        settles=root or standalone or entity_values,
+        entity_values=entity_values,
+    )
     for bound in plan.bound_measures:
         target = bindings.leaves.setdefault(bound.alias, set())
         bindings.measures.setdefault(bound.measure_id, []).append(target)
@@ -178,6 +190,18 @@ def settles_as_a_call() -> bool:
     request's, or a standalone nested call: ``plan_bindings``)."""
     plan = _plan.get()
     return plan is not None and plan.settles
+
+
+def lowers_entity_values() -> bool:
+    """Whether the plan being lowered is a distribution's per-entity values (``plan_bindings``)."""
+    plan = _plan.get()
+    return plan is not None and plan.entity_values
+
+
+def retains_filtered_groups() -> bool:
+    """Whether a filtered leaf may keep its source groups (``_preserves_filtered_series``): in a
+    call that settles its empty groups, but not in a distribution's per-entity values."""
+    return settles_as_a_call() and not lowers_entity_values()
 
 
 def record_retained_filtered_series(alias: str) -> None:

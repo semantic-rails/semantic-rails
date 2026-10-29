@@ -6756,6 +6756,269 @@ tests:
       LEFT JOIN orders AS o ON o.store_id IS NOT DISTINCT FROM k.k
         AND o.ordered_at >= s.b - INTERVAL '2 month' AND o.ordered_at < s.b + INTERVAL '1 month'
       GROUP BY k.k, s.b
+  shop/median-net-order-value-reads-an-order-without-a-refund-as-refunding-nothing:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Each order's net value is its amount less its goods refunds. An order with no refund row refunded nothing (0), so November's orders 1 (10) and 2 (5 - 6 = -1) read 4.5 and March's orders 5 (8) and 6 (0) read 4. Order 4 (January) has only a shipping refund, whose goods amount is unknown, so its net value is unknown and January reads NULL; order 7's amount is unknown, so May reads order 8 alone."
+    cites: &net_order_cites
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/refunds.yml#model.measures.goods_refunded
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero, time-window]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over: &net_per_order
+            kind: entity_value
+            entity: entity.shop_order
+            input: {kind: arithmetic, op: subtract, left: measure.shop.revenue, right: measure.shop.goods_refunded}
+        as: median
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+    expected_rows:
+      - {period: '2023-11-01', median: 4.5}
+      - {period: '2023-12-01', median: 7}
+      - {period: '2024-01-01', median: null}
+      - {period: '2024-03-01', median: 4}
+      - {period: '2024-05-01', median: 6}
+      - {period: '2024-06-01', median: 3}
+      - {period: '2024-07-01', median: 9}
+      - {period: '2024-08-01', median: 2}
+    reference_sql: |
+      WITH per_order AS (
+        SELECT date_trunc('month', o.ordered_at) AS b,
+          o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
+        FROM orders AS o LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        GROUP BY o.order_id, date_trunc('month', o.ordered_at), o.amount
+      )
+      SELECT b, percentile_cont(0.5) WITHIN GROUP (ORDER BY net) FROM per_order GROUP BY b
+  shop/median-net-order-value-over-all-time:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "The median of the nine orders whose net value is known (-1, 0, 2, 3, 6, 7, 8, 9, 10), counting the orders with no refund at their amount."
+    cites: *net_order_cites
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression: {kind: distribution, function: median, over: *net_per_order}
+        as: median
+    expected_rows:
+      - {median: 6}
+    reference_sql: |
+      WITH per_order AS (
+        SELECT o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
+        FROM orders AS o LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        GROUP BY o.order_id, o.amount
+      )
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY net) FROM per_order
+  shop/percentile-and-lowest-net-order-value-by-month:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "A percentile and a minimum read the same per-order values as the median: November's 75th percentile is 7.25 (between -1 and 10) and its lowest is order 2's -1; March's are 6 and order 6's 0."
+    cites: *net_order_cites
+    tags: [null-vs-zero, time-window]
+    variant: utc_authored
+    query:
+      select:
+      - expression: {kind: distribution, function: percentile, p: 0.75, over: *net_per_order}
+        as: p75
+      - expression: {kind: distribution, function: min, over: *net_per_order}
+        as: lowest
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+    expected_rows:
+      - {period: '2023-11-01', p75: 7.25, lowest: -1}
+      - {period: '2023-12-01', p75: 7, lowest: 7}
+      - {period: '2024-01-01', p75: null, lowest: null}
+      - {period: '2024-03-01', p75: 6, lowest: 0}
+      - {period: '2024-05-01', p75: 6, lowest: 6}
+      - {period: '2024-06-01', p75: 3, lowest: 3}
+      - {period: '2024-07-01', p75: 9, lowest: 9}
+      - {period: '2024-08-01', p75: 2, lowest: 2}
+    reference_sql: |
+      WITH per_order AS (
+        SELECT date_trunc('month', o.ordered_at) AS b,
+          o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
+        FROM orders AS o LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        GROUP BY o.order_id, date_trunc('month', o.ordered_at), o.amount
+      )
+      SELECT b, percentile_cont(0.75) WITHIN GROUP (ORDER BY net), MIN(net) FROM per_order GROUP BY b
+  shop/median-net-order-value-in-months-with-no-refund:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "June to August hold no refund at all, but refunds have data outside the window, so each order there refunded nothing and the median reads its amount. Only the orders with rows in a month enter it: order 9 is not a 0 in July."
+    cites: *net_order_cites
+    tags: [null-vs-zero, time-window]
+    variant: utc_authored
+    query:
+      select:
+      - expression: {kind: distribution, function: median, over: *net_per_order}
+        as: median
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month, start: '2024-06-01', end: '2024-09-01'}
+    expected_rows:
+      - {period: '2024-06-01', median: 3}
+      - {period: '2024-07-01', median: 9}
+      - {period: '2024-08-01', median: 2}
+    reference_sql: |
+      WITH per_order AS (
+        SELECT date_trunc('month', o.ordered_at) AS b,
+          o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
+        FROM orders AS o LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        WHERE o.ordered_at >= TIMESTAMP '2024-06-01' AND o.ordered_at < TIMESTAMP '2024-09-01'
+        GROUP BY o.order_id, date_trunc('month', o.ordered_at), o.amount
+      )
+      SELECT b, percentile_cont(0.5) WITHIN GROUP (ORDER BY net) FROM per_order GROUP BY b
+  shop/median-net-order-value-of-web-customers:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Web customers (101, 103 and 106) have no goods refund: their one refund (order 4's, January) is shipping only, with no goods amount. Under the dataset scope goods refunds are observed outside the where, so their other orders refunded nothing and read their amounts; order 4's net value is unknown, so January reads NULL."
+    cites: *net_order_cites
+    tags: [null-vs-zero, time-window]
+    variant: utc_authored
+    query:
+      select:
+      - expression: {kind: distribution, function: median, over: *net_per_order}
+        as: median
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+      where:
+      - {field: dimension.shop_customer_channel, op: is, value: web}
+    expected_rows:
+      - {period: '2023-11-01', median: 10}
+      - {period: '2023-12-01', median: 7}
+      - {period: '2024-01-01', median: null}
+      - {period: '2024-05-01', median: 6}
+      - {period: '2024-06-01', median: 3}
+      - {period: '2024-07-01', median: 9}
+    reference_sql: |
+      WITH per_order AS (
+        SELECT date_trunc('month', o.ordered_at) AS b,
+          o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
+        FROM orders AS o JOIN signups AS s ON s.customer_id = o.customer_id
+        LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        WHERE s.channel = 'web'
+        GROUP BY o.order_id, date_trunc('month', o.ordered_at), o.amount
+      )
+      SELECT b, percentile_cont(0.5) WITHIN GROUP (ORDER BY net) FROM per_order GROUP BY b
+  shop/median-store-a-net-order-value-reads-only-orders-with-rows:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Store a revenue less goods refunds per order. An order enters a month where one of the two has rows for it there: order 2 (store b, refunded 6) reads 0 - 6, beside order 1's 10, so November reads 2. Store b's orders with no refund (5, 9 and 10) and order 8 (no store) have no rows of either and stay out, so March reads order 6 alone (0) and June and July have no row. Order 7's amount is unknown, so May reads NULL."
+    cites: *net_order_cites
+    tags: [null-vs-zero, time-window]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over:
+            kind: entity_value
+            entity: entity.shop_order
+            input:
+              kind: arithmetic
+              op: subtract
+              left:
+                kind: aggregate
+                measure: measure.shop.revenue
+                filter:
+                  all: [{field: dimension.shop_order_store_id, op: is, value: a}]
+              right: measure.shop.goods_refunded
+        as: median
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+    expected_rows:
+      - {period: '2023-11-01', median: 2}
+      - {period: '2023-12-01', median: 7}
+      - {period: '2024-01-01', median: null}
+      - {period: '2024-03-01', median: 0}
+      - {period: '2024-05-01', median: null}
+      - {period: '2024-08-01', median: 2}
+    reference_sql: |
+      WITH store_a AS (
+        SELECT order_id, date_trunc('month', ordered_at) AS b, SUM(amount) AS v
+        FROM orders WHERE store_id = 'a' GROUP BY 1, 2
+      ),
+      goods AS (
+        SELECT o.order_id, date_trunc('month', o.ordered_at) AS b, SUM(r.goods_amount) AS v
+        FROM refunds AS r JOIN orders AS o ON o.order_id = r.order_id GROUP BY 1, 2
+      ),
+      per_order AS (
+        SELECT COALESCE(store_a.b, goods.b) AS b,
+          CASE WHEN store_a.order_id IS NULL THEN 0 ELSE store_a.v END
+            - CASE WHEN goods.order_id IS NULL THEN 0 ELSE goods.v END AS v
+        FROM store_a FULL JOIN goods ON goods.order_id = store_a.order_id AND goods.b = store_a.b
+      )
+      SELECT b, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM per_order GROUP BY b
+  shop/median-net-customer-value-by-quarter:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Per customer per quarter: revenue less goods refunds, 0 refunds for a customer with no refund row. The fourth quarter of 2023 reads customers 101 (17) and 102 (-1), so 8; customer 103's first quarter (order 4, only a shipping refund) is unknown and left out."
+    cites: *net_order_cites
+    tags: [null-vs-zero, time-window]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over:
+            kind: entity_value
+            entity: entity.shop_customer
+            input: {kind: arithmetic, op: subtract, left: measure.shop.revenue, right: measure.shop.goods_refunded}
+        as: median
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: quarter}
+    expected_rows:
+      - {period: '2023-10-01', median: 8}
+      - {period: '2024-01-01', median: 4}
+      - {period: '2024-04-01', median: 4.5}
+      - {period: '2024-07-01', median: 5.5}
+    reference_sql: |
+      WITH revenue AS (
+        SELECT customer_id, date_trunc('quarter', ordered_at) AS b, SUM(amount) AS revenue
+        FROM orders GROUP BY 1, 2
+      ),
+      goods AS (
+        SELECT o.customer_id, date_trunc('quarter', o.ordered_at) AS b, SUM(r.goods_amount) AS goods
+        FROM refunds AS r JOIN orders AS o ON o.order_id = r.order_id GROUP BY 1, 2
+      )
+      SELECT revenue.b, percentile_cont(0.5) WITHIN GROUP (
+          ORDER BY revenue.revenue - CASE WHEN goods.customer_id IS NULL THEN 0 ELSE goods.goods END)
+      FROM revenue LEFT JOIN goods ON goods.customer_id = revenue.customer_id AND goods.b = revenue.b
+      GROUP BY revenue.b
+  shop/median-aov-of-repeat-web-customers:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Revenue and order count read the same order rows, every one of them, so each customer holds both and nothing needs settling: the default scope answers. Customers 101 (23 over 3) and 103 (23 over 2), so 9.583."
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
+      - tests/integration/correctness/shop/metrics/metrics.yml#metrics
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over: {kind: entity_value, entity: entity.shop_customer, input: metric.shop.average_order_value}
+        as: median
+      where:
+      - {entity: entity.shop_customer, having: [{field: measure.shop.order_count, op: gte, value: 2}], over: all_time}
+      - {field: dimension.shop_customer_channel, op: is, value: web}
+    expected_rows:
+      - {median: 9.583333333333334}
+    reference_sql: |
+      WITH per_customer AS (
+        SELECT o.customer_id, CAST(SUM(o.amount) AS DOUBLE PRECISION) / COUNT(DISTINCT o.order_id) AS aov
+        FROM orders AS o JOIN signups AS s ON s.customer_id = o.customer_id
+        WHERE s.channel = 'web'
+          AND o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(DISTINCT order_id) >= 2)
+        GROUP BY o.customer_id
+      )
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY aov) FROM per_customer
   shop/distribution_median:
     kind: query_matches_snapshot
     expect: answer
@@ -8555,6 +8818,38 @@ tests:
       FROM tickets AS t
       WHERE t.opened_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
         AND t.opened_at <= TIMESTAMP '2024-10-07 06:00:00'
+  shop/refunds-ever-are-capped-on-their-orders-clock-by-the-load-log:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'How many refunds have we ever issued, with no time window, when a refund is dated by its order and the load log says refunds are loaded through Sunday March 31, 2024: refunds 1 to 4 (orders 2, 4 and 6) are read, and order 7''s two refunds (ordered May 6) are not loaded yet, so the answer is 4, not 6.'
+    cites: [tests/integration/correctness/shop/models/refunds_loaded.yml#model.measures.loaded_refunds, tests/integration/correctness/shop/models/refunds_loaded.yml#model.zero_through, docs/PACKAGE_AUTHORING.md#empty-periods]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.loaded_refunds]
+    now: '2024-06-01T00:00:00Z'
+    expected_rows: [{loaded_refunds: 4}]
+    reference_sql: |
+      SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(DISTINCT r.refund_id) END
+      FROM refunds AS r
+      JOIN orders AS o ON o.order_id = r.order_id
+      WHERE o.ordered_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM refund_loads)
+        AND o.ordered_at <= TIMESTAMP '2024-06-01 00:00:00'
+  shop/refunds-ever-under-an-empty-load-log-read-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'How many refunds have we ever issued, with no time window, when a refund is dated by its order and its load log (ticket_audits) has no run yet: the log certifies none of their orders, so no refund is read and the answer is NULL, not 6.'
+    cites: [tests/integration/correctness/shop/models/refunds_audited.yml#model.measures.audited_refunds, tests/integration/correctness/shop/models/refunds_audited.yml#model.zero_through, docs/PACKAGE_AUTHORING.md#empty-periods]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.audited_refunds]
+    now: '2024-06-01T00:00:00Z'
+    expected_rows: [{audited_refunds: null}]
+    reference_sql: |
+      SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(DISTINCT r.refund_id) END
+      FROM refunds AS r
+      JOIN orders AS o ON o.order_id = r.order_id
+      WHERE o.ordered_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_audits)
+        AND o.ordered_at <= TIMESTAMP '2024-06-01 00:00:00'
   shop/a-quiet-week-under-an-empty-load-log-reads-null:
     kind: query_matches_snapshot
     expect: answer

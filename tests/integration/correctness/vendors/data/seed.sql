@@ -10,7 +10,10 @@ CREATE TABLE products AS
 SELECT CASE WHEN g.i % 2 = 0 THEN 'JAF-' ELSE 'SES-' END || LPAD(CAST(g.i AS VARCHAR), 3, '0')
   AS sku
 FROM generate_series(1, 236) AS g(i);
--- 236 shipments, each by a UUID (the md5 of its number) in the warehouse's own UUID type.
+-- 236 shipments, each by a UUID (the md5 of its number) in the warehouse's own UUID type, and
+-- each owned by one of three owners, also by a UUID (the md5 of owner 0, 1 or 2: its number
+-- modulo 3), so owners 1 and 2 hold 79 shipments and owner 0 holds 78.
 CREATE TABLE shipments AS
-SELECT CAST(md5(CAST(g.i AS VARCHAR)) AS UUID) AS shipment_id
+SELECT CAST(md5(CAST(g.i AS VARCHAR)) AS UUID) AS shipment_id,
+  CAST(md5('owner ' || CAST(g.i % 3 AS VARCHAR)) AS UUID) AS owner_id
 FROM generate_series(1, 236) AS g(i);

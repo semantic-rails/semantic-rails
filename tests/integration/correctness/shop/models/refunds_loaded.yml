@@ -1,0 +1,10 @@
+# The refunds, dated by their order, loaded by a nightly that records each run in refund_loads:
+# the load log caps them on their order's clock.
+model:
+  id: refunds_loaded
+  relation: refunds
+  entities: {refund_loaded: {}, order: {}}
+  zero_through: {loaded: refund_loads.through_day}
+  measures:
+    loaded_refunds: {kind: entity_count, entity_key: refund_id, accumulation: {kind: flow},
+      times: [temporal_role.shop_order_ordered_at]}

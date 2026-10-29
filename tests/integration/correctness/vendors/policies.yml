@@ -1,0 +1,10 @@
+# An owner sees only their own shipments, by the UUID the host verified for them. Every other
+# caller is unfiltered.
+semantic_policies:
+  - id: policy.vendors.own_shipments
+    kind: row_filter
+    dimension: dimension.vendors_shipment_owner
+    attribute: owner_id
+    type: uuid
+    roles: [owner]
+    rationale: An owner sees only the shipments they own.

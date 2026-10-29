@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
@@ -80,7 +81,6 @@ def _arrow_rows(batch, positional):
         ("uuid_extension", "null", True),
         ("fixed_binary_17", "empty", False),
         ("opaque_uuid", "value", True),
-        ("opaque_uuid_binary", "null", False),
         ("time32", "empty", True),
         ("time_ns", "value", False),
         ("duration", "null", True),
@@ -108,7 +108,6 @@ def test_unsupported_postgres_result_types_refuse_before_reading_values(kind, co
         "uuid_extension": (pa.uuid(), b"x" * 16),
         "fixed_binary_17": (pa.binary(17), b"x" * 17),
         "opaque_uuid": (pa.opaque(pa.binary(16), "uuid", "PostgreSQL"), b"x" * 16),
-        "opaque_uuid_binary": (pa.opaque(pa.binary(), "uuid", "PostgreSQL"), b"x" * 16),
         "time32": (pa.time32("s"), 1),
         "time_ns": (pa.time64("ns"), 1),
         "duration": (pa.duration("us"), 1),
@@ -162,6 +161,12 @@ SUPPORTED_SCALARS = [
         "12345678-1234-5678-9abc-def012345678",
         "'12345678-1234-5678-9abc-def012345678'::VARCHAR",
     ),
+    # A uuid comes over as its 16 bytes and reads back as DuckDB's UUID does.
+    (
+        "uuid",
+        bytes.fromhex("e2c0ab1200004000800000000000000a"),
+        "'E2C0AB12-0000-4000-8000-00000000000A'::UUID",
+    ),
     ("timestamp", "2026-09-30T12:34:56.123456", "TIMESTAMP '2026-09-30 12:34:56.123456'"),
     (
         "timestamptz",
@@ -200,6 +205,8 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
         value = datetime.fromisoformat(value)
     elif type_name == "interval":
         data_type = pa.month_day_nano_interval()
+    elif type_name == "uuid":
+        data_type = pa.opaque(pa.binary(), "uuid", "PostgreSQL")
     else:
         data_type = getattr(pa, type_name)()
     batch = pa.record_batch([pa.array([value, None], type=data_type)], names=["payload"])
@@ -212,6 +219,7 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
         "time": time,
         "binary": bytes,
         "interval": timedelta,
+        "uuid": UUID,
     }.get(type_name)
     if python_type:
         assert type(rows[0]["payload"]) is python_type
@@ -280,6 +288,17 @@ def test_unrepresentable_postgres_values_refuse_without_values(value, positional
         _arrow_rows(pa.record_batch([column], names=["payload"]), positional)
     assert (caught.value.code, caught.value.details) == (code, details)
     assert str(value) not in str(caught.value)
+
+
+def test_a_postgres_uuid_that_is_not_16_bytes_refuses_without_its_value():
+    pa = pytest.importorskip("pyarrow")
+    data_type = pa.opaque(pa.binary(), "uuid", "PostgreSQL")
+    batch = pa.record_batch([pa.array([b"row-canary"], type=data_type)], names=["payload"])
+    with pytest.raises(SemanticLayerError) as caught:
+        _arrow_rows(batch, False)
+    assert caught.value.code == "RESULT_VALUE_UNSUPPORTED"
+    assert str(caught.value) == "A Postgres result uuid is not the 16 bytes of a UUID."
+    assert "row-canary" not in str(caught.value)
 
 
 def test_postgres_dispatch_uses_the_qualified_profile():

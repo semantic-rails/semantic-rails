@@ -847,6 +847,18 @@ kind names must match exactly.
   (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
   of nothing).
 
+  A UUID column (an account or owner key) takes `type: uuid` on its id or categorical
+  dimension. The attribute is a string holding a UUID: 32 hex digits in any case, hyphenated
+  `8-4-4-4-12` or not, in braces or not. It binds as its lower-case hyphenated text, so
+  `3F2504E0-4F89-11D3-9A0C-0305E82C3301` and `{3f2504e0-4f89-11d3-9a0c-0305e82c3301}` read
+  the same rows. Any other value, another string included, is of another type: the request
+  is denied (`POLICY_DENIED`, `attribute_type_mismatch`, naming the attribute, never its
+  value) by `validate` and every other surface, before any SQL runs. Postgres compares
+  `<column> = CAST(? AS UUID)`, so the column must be `uuid` there (a UUID kept as text takes
+  `type: string`) and its index still serves the filter; DuckDB reads the value in the
+  column's own type; on Snowflake, which has no UUID type, the column holds the lower-case
+  hyphenated text.
+
   **What a filtered caller sees.** Each caller reads a *visible database*: the package's
   data with every row they can't see removed, and every answer (totals, groups, shares,
   distinct counts, `EXISTS` filters, windows, prior periods, coverage dates and
@@ -3209,8 +3221,13 @@ midnight after its date, or at or before its timestamp; for `now`, rows at or be
 request's `now`): series, totals, an answer without a window, running totals, shares, prior
 periods, entity filters and each operand of a conversion all see the same rows. A stray row after the edge is not read, so
 its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
-base table, never a rollup, whose buckets can't stop at an instant. A clock on another model
-than the measure's own is not capped.
+base table, never a rollup, whose buckets can't stop at an instant. A measure dated by another
+model's clock (refunds dated by their order's `ordered_at`, through `times:`) is capped on that
+clock with no time window: a refund is read when its order is at or before the edge, so a refund
+on an order after the load log, or whose order is missing, isn't read. That needs one route of
+to-one relationships to the clock's model, the route a series on that clock joins; a model the
+measure reaches by two routes the package hasn't decided between isn't capped, and its answers
+with no window read as under `data`. A series or window on another model's clock is not capped.
 
 The edge is only the upper bound: a period before the table's first row still reads `NULL`.
 Up to the edge, the table is observed whether or not a metric's `filter` matches any of its
@@ -3230,9 +3247,21 @@ load log's own model refuses the query for the callers it applies to (`POLICY_DE
 coverage, so a ClickHouse package refuses any value but `data` (`INVALID_CONFIG`). Name one
 load log per load job; a model that another job loads declares its own.
 
+**Whose edge.** A measure's periods are covered by its own table's edge, however far away the
+column it is grouped by lives. Weekly revenue by customer region (orders, then customers, then
+regions) reads `0` in a week the orders' load log covers with no order, and `NULL` before the
+first order and past the log, as revenue by customer tier does. A load log declared only on
+the customers model says how far signups are loaded, not orders: the orders read with edge
+`data` (`0` through their last row, `PARTIAL_DATA` where a week runs past it). An order whose
+customer the customers table doesn't hold yet reads under no region (a `NULL` group); a
+customers table that lags never drops it, and never changes which weeks read `0`.
+
 The same holds with no time window: "how many enterprise accounts have we ever had?" reads `0`
 before the first one signs up, once the table holds a row the edge lets through, and `NULL`
-with `NO_DATA_IN_SCOPE` on a model whose edge is `data`.
+with `NO_DATA_IN_SCOPE` on a model whose edge is `data`. On another model's clock the edge
+lets a row through by that clock: "how many goods refunds have we ever issued?" reads `0` before
+the first goods refund once a refund's order is loaded, and `NULL` under an empty load log, as
+every refund count does there.
 
 Known limits:
 

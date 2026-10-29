@@ -630,6 +630,36 @@ def _reaches_at_most_one(rel: RelationshipConfig, current_entity: str) -> bool:
     return far == "1" and near in ("1", "N")
 
 
+def clock_hops(
+    source_entity: str, clock_entity: str, config: PackageConfig
+) -> list[SqlJoin] | None:
+    """The joins from each ``source_entity`` row to the one ``clock_entity`` row that dates it,
+    on ``resolve_path``'s route (the one a series on that clock joins), as a time role joins it
+    (``_joins_for_paths``, which notes the route). None when the pair has no route, or a hop can
+    reach more than one row, is valid over time or reads a table twice: then no single row
+    dates a source row."""
+    try:
+        route, _ = resolve_path(config, start=source_entity, target=clock_entity)
+    except SemanticLayerError:
+        return None
+    relationships = _relationship_index(config)
+    entities = _entity_index(config)
+    tables = {entities[source_entity].table}
+    current = source_entity
+    for rel_id in route:
+        rel = relationships[rel_id]
+        if rel.temporal_validity or not _reaches_at_most_one(rel, current):
+            return None
+        current = rel.target_entity if current == rel.source_entity else rel.source_entity
+        if entities[current].table in tables:
+            return None
+        tables.add(entities[current].table)
+    if not route:
+        return None
+    selection = PathSelection(clock_entity, "time", list(route), [list(route)])
+    return _joins_for_paths(source_entity, [selection], config, measure_entity=None)
+
+
 def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
     """True when the hop reaches at most one row for each current row (N:1, 1:1) and the
     warehouse's outer join reads NULL, not a type default, for an unmatched row (not ClickHouse).

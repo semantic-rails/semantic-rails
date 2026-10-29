@@ -57,6 +57,8 @@ from semantic_rails.sql_ast import (
 from semantic_rails.sql_preparation import ParameterSlot
 
 A, B = "cust-a-canary-4417", "cust-b-canary-9023"
+# Two customers by UUID, for a filter of type uuid.
+UA, UB = "6f1c0b9e-3a52-4c1d-9e7a-2b8d4f0a1c35", "0d9e8f7a-6b5c-4d3e-8f2a-1b0c9d8e7f6a"
 SEED = f"""
 CREATE TABLE order_fact AS SELECT * FROM (VALUES
  (1, '{A}', 's1', TIMESTAMP '2026-01-10', 10), (2, '{A}', 's2', TIMESTAMP '2026-02-10', 20),
@@ -413,6 +415,12 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
         ({"object_ids": []}, "unknown key 'object_ids'"),
         ({"action": ""}, "unknown key 'action'"),
         ({"type": "integer"}, "has type 'string'"),
+        (
+            {"dimension": "dimension.rf_order_ordered_at", "type": "uuid"},
+            "has type 'timestamp'; a row filter compares a string, integer or boolean column, "
+            "or a UUID column as type 'uuid'",
+        ),
+        ({"type": "UUID"}, "has type 'string'"),
         ({"kind": "row_filters"}, "looks like a row filter"),
         ({"kind": "Row-Filter"}, "looks like a row filter"),
         (
@@ -436,10 +444,19 @@ def test_the_package_rejects_a_row_filter_it_cannot_enforce(tmp_path, change, pr
         load_package_config(str(_package(tmp_path / "rf", [policy])))
 
 
-def test_an_id_dimension_takes_an_explicit_type(tmp_path):
-    policy = {**OWN_ORDERS, "dimension": "dimension.rf_order_store_id", "type": "string",
+@pytest.mark.parametrize(
+    ("dimension", "slot_type"),
+    [
+        ("dimension.rf_order_store_id", "string"),
+        ("dimension.rf_order_store_id", "uuid"),  # a key held as a UUID
+    ],
+)
+def test_an_id_dimension_takes_an_explicit_type(tmp_path, dimension, slot_type):
+    policy = {**OWN_ORDERS, "dimension": dimension, "type": slot_type,
               "rationale": "An id dimension needs an explicit type."}  # fmt: skip
-    load_package_config(str(_package(tmp_path / "rf", [policy])))
+    config = load_package_config(str(_package(tmp_path / "rf", [policy])))
+    [row] = row_filters_for_context(config, _ctx(customer_id=UA).to_policy_context())
+    assert row.slot == ParameterSlot("customer_id", slot_type)
 
 
 def test_nested_row_filter_stays_refused_at_load(tmp_path):
@@ -608,6 +625,93 @@ def test_a_scalar_slot_never_binds_a_list():
     filtered, slots = _apply(_scan(SqlTableRef("t")), listed)
     assert slots == listed.slots
     assert render_select(filtered).endswith("WHERE\n  (t.c IN (?, ?))")
+
+
+def test_a_uuid_filter_reads_any_form_of_the_id_as_its_lower_case_text(tmp_path, monkeypatch):
+    # The customer ids are UUID text in a VARCHAR column, which DuckDB compares as text: only
+    # the lower-case hyphenated form a host's value binds as finds them.
+    root = _package(tmp_path / "rf", [{**OWN_ORDERS, "type": "uuid"}])
+    with duckdb.connect(str(root / "rf.duckdb")) as connection:
+        connection.execute(SEED.replace(A, UA).replace(B, UB))
+    runtime = Runtime.from_path(str(root))
+    adapter, bound = runtime._get_adapter(), []
+    real = adapter.query_prepared
+
+    def record(prepared, **kwargs):
+        bound.append(tuple(kwargs.get("parameters", ())))
+        return real(prepared, **kwargs)
+
+    monkeypatch.setattr(adapter, "query_prepared", record)
+    forms = [UA, UA.upper(), "{" + UA + "}", UA.replace("-", "").upper()]
+    for form in forms:
+        result = _as(runtime.query, customer_id=form)
+        assert _revenue(result) == [("s1", 10), ("s2", 20)], form
+        assert "order_fact.customer_id = ?" in result["rendered_sql"]  # no cast on DuckDB
+    assert bound == [(UA,)] * len(forms)
+    both = _as(runtime.query, customer_id=[UB.upper(), UA])
+    assert _revenue(both) == [("s1", 410), ("s2", 20), ("s3", 300)]
+    assert bound[-1] == (UB, UA)
+    runtime.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "cust-a",
+        UA[:-1],  # one digit short
+        UA + "0",
+        "{" + UA,  # an unclosed brace
+        UA + "}",
+        " " + UA,
+        UA + "\n",
+        UA.replace("-", "_"),
+        UA.replace("-", "", 1),  # hyphens in some places only
+        "g" + UA[1:],  # not a hex digit
+        7,
+        True,
+    ],
+)
+def test_a_uuid_filter_denies_a_value_that_is_not_a_uuid(value):
+    row = RowFilter("p", "t", "c", ParameterSlot("customer_id", "uuid"))
+    assert _denied(lambda: row.for_value(value)) == "attribute_type_mismatch"
+    assert _denied(lambda: row.for_value((UA, value))) == "attribute_type_mismatch"
+    prepared = sql_preparation.PreparedQuery("SELECT 1 WHERE c = ?", parameters=(row.slot,))
+    with pytest.raises(SemanticLayerError) as caught:
+        sql_preparation.checked_parameter_values(prepared, [value])
+    assert caught.value.code == "POLICY_DENIED"
+    assert str(caught.value) == "Query parameters could not be bound safely for this request."
+    assert caught.value.details == {"reason": "attribute_type_mismatch", "attribute": "customer_id"}
+
+
+def test_a_uuid_parameter_is_cast_only_where_text_never_compares_with_a_uuid_column():
+    row = RowFilter("p", "t", "c", ParameterSlot("customer_id", "uuid"))
+    text = RowFilter("p", "t", "s", ParameterSlot("store_id", "string"))
+    listed = row.for_value((UA, UB))
+    statement = _scan(SqlTableRef("t"))
+    rendered = {}
+    for warehouse in ("postgres", "duckdb", "snowflake"):
+        dialect = dialect_for_warehouse(warehouse)
+        sql, slots = render_with_slots(
+            apply_row_filters(statement, Visibility((row, text), modeled=frozenset({"t"}))),
+            dialect=dialect,
+        )
+        connection = {"postgres": "postgres_native", "snowflake": "snowflake_adbc"}
+        prepared = sql_preparation.finalize_parameters(
+            sql_preparation.PreparedQuery(sql, parameters=slots), connection.get(warehouse, "")
+        )
+        listed_sql, _ = render_with_slots(
+            apply_row_filters(statement, Visibility((listed,), modeled=frozenset({"t"}))),
+            dialect=dialect,
+        )
+        rendered[warehouse] = tuple(
+            " ".join(each.split("WHERE")[1].split()) for each in (prepared.sql, listed_sql)
+        )
+    # Only the trusted value is cast, never the column, and a string slot never is.
+    assert rendered["postgres"] == (
+        "t.c = CAST($1 AS UUID) AND t.s = $2",
+        "(t.c IN (CAST(? AS UUID), CAST(? AS UUID)))",
+    )
+    assert rendered["duckdb"] == rendered["snowflake"] == ("t.c = ? AND t.s = ?", "(t.c IN (?, ?))")
 
 
 def test_unless_roles_exempts_only_the_named_roles(tmp_path):
