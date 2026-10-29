@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -872,9 +873,7 @@ def test_an_exact_rollup_of_an_else_zero_sum_matches_the_base(
                 "SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) AS amount FROM orders GROUP BY 1, 2",
             )
             # Beside a distribution too, a group whose only amount is unknown reads NULL.
-            assert results[-1] == {
-                (row["s"], str(row["month"])[:7]): row["amount"] for row in gold
-            }
+            assert results[-1] == {(row["s"], str(row["month"])[:7]): row["amount"] for row in gold}
         finally:
             rt.close()
     assert results[0] == results[1]
@@ -1166,6 +1165,80 @@ def test_a_case_under_arithmetic_keeps_the_base_settlement(shop_package: Path) -
             # The nested CASE fallback must not turn an ordinary sum's unknown amount into zero.
             assert rows[("a", "2024-05")]["raw"] is None
             assert_settled_in_one_place(compile_query(config, Registry(config), query), config)
+    finally:
+        rt.close()
+
+
+# A tax multiplier: a CASE below the root that gives every row a value.
+CASE_WITH_AN_ELSE_UNDER_ARITHMETIC = {
+    "kind": "arithmetic",
+    "op": "multiply",
+    "left": AMOUNT,
+    "right": {
+        "kind": "case",
+        "whens": [{"when": IN_STORE_A, "then": {"kind": "literal", "value": 1.1}}],
+        "else": {"kind": "literal", "value": 1.2},
+    },
+}
+GROSS = "amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2 END"
+
+
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_a_case_with_an_else_under_arithmetic_reads_unknown_amounts_as_null(
+    shop_package: Path, scope: str
+) -> None:
+    """A CASE below the root that gives every row a value reads every row, as other arithmetic
+    does: store a's May, whose only order has no amount, reads NULL, never 0, alone and in the
+    trailing windows that hold only that order, and a window with no orders reads 0. Judged
+    across the dataset, a filtered call has a probe of the measure's own rows, so it answers.
+    It still never reads a rollup."""
+    config = _with_measure(
+        load_package_config(str(shop_package)), CASE_WITH_AN_ELSE_UNDER_ARITHMETIC
+    )
+    rt = Runtime.from_config(config, source_path=str(shop_package))
+    monthly = {
+        "select": _select(gross=SHOP_REVENUE),
+        "group_by": [SHOP_STORE],
+        "time": SHOP_MONTH,
+        "observation_scope": scope,
+    }
+    trailing = {
+        **monthly,
+        "select": _select(
+            gross={
+                "kind": "rolling",
+                "input": SHOP_REVENUE,
+                "window": {"unit": "month", "value": 3},
+            }
+        ),
+    }
+    try:
+        for query, where in [(monthly, ""), (monthly, "a"), (trailing, ""), (trailing, "a")]:
+            if where:
+                query = {**query, "where": [{"field": SHOP_STORE, "op": "is", "value": where}]}
+            response = rt.query(query)
+            assert "orders_monthly" not in response["rendered_sql"]
+            got = {
+                (row[SHOP_STORE], str(row["period"])[:7]): row["gross"]
+                for row in typed_rows(response)
+            }
+            assert_settled_in_one_place(compile_query(config, Registry(config), query), config)
+            if query["select"] == trailing["select"]:
+                assert got[("a", "2024-05")] == Decimal("4.4")
+                assert got[("a", "2024-06")] is None
+                assert got[("a", "2024-07")] is None
+                if not where:
+                    assert got[("b", "2024-02")] == 0
+                continue
+            gold = _gold(
+                rt,
+                "SELECT store_id AS s, date_trunc('month', ordered_at) AS month, "
+                f"SUM({GROSS}) AS gross FROM orders "
+                + (f"WHERE store_id = '{where}' " if where else "")
+                + "GROUP BY 1, 2",
+            )
+            assert got == {(row["s"], str(row["month"])[:7]): row["gross"] for row in gold}
+            assert got[("a", "2024-05")] is None
     finally:
         rt.close()
 
