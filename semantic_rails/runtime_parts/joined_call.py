@@ -51,6 +51,7 @@ from .assumptions import hidden_columns, refuse_hidden_governors, split_hidden
 from .responses import (
     _ANSWER_KEYS,
     apply_response_verbosity,
+    output_columns,
     resolve_sql_profile,
     resolve_verbosity,
 )
@@ -142,6 +143,19 @@ def joined_check(
         sql_profile=resolve_sql_profile(payload),
         kind=kind,
     )
+
+
+def joined_output_columns(
+    runtime: Any, payload: dict[str, Any]
+) -> tuple[list[dict[str, Any]], str]:
+    """A joined call's output columns as ``output_columns`` states a call's (each part's, once
+    per field) and its clock's zone: what a package snapshot test encodes its rows by."""
+    joined = _compile(runtime, payload)
+    columns: dict[str, dict[str, Any]] = {}
+    for part in joined.parts:
+        for column in output_columns(runtime._config, part.compiled):
+            columns.setdefault(column["field"], column)
+    return list(columns.values()), joined.zone
 
 
 def joined_query(runtime: Any, payload: dict[str, Any]) -> dict[str, Any]:

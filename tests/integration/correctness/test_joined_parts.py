@@ -30,6 +30,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.package_tools import _run_test
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, PackageConfig, SeedSpec, SemanticPolicyConfig
 from tests.semantic_rails.hidden_absent import visibility_policy
@@ -527,6 +528,18 @@ def test_the_execute_tool_runs_a_joined_call(depts):
     )
 
     assert _values(out) == depts.sql(_by_department())
+
+
+def test_a_package_snapshot_test_reads_a_joined_call(depts):
+    """A package's own snapshot test of a joined call compares its rows (a timed one by its
+    periods) as a call's."""
+    timed = {"parts": [WORK_ORDERS, RESERVATIONS], "join": {"on": [[ROOM, ROOM]]}, "time": MONTHS}
+    expected = [dict(row) for row in depts.query(timed)["rows"]]
+    spec = {"kind": "query_matches_snapshot", "query": timed, "expected_rows": expected}
+    assert _run_test(depts.base, "joined", spec, NOW) == {"id": "joined", "ok": True}
+    wrong = [{**expected[0], "reservations": 99}, *expected[1:]]
+    failed = _run_test(depts.base, "joined", {**spec, "expected_rows": wrong}, NOW)
+    assert failed["error"]["code"] == "SNAPSHOT_MISMATCH"
 
 
 REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
