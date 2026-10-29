@@ -898,7 +898,6 @@ def test_the_hint_spells_each_side_as_its_own_key_says(tmp_path, start_key, targ
     runtime.close()
     assert error["code"] == "PATH_NOT_FOUND"
     assert error["details"]["shared_key_columns"] == [target_key]
-    assert error["details"]["shared_key_columns_on_start"] == [start_key]
     snippets = re.findall(r"`((?:via|target): \[[^\]]*\]|cardinality: [a-z_]+)`", _author(error))
     assert snippets == [
         f"via: [{start_key}]",
@@ -912,10 +911,11 @@ def test_the_hint_spells_each_side_as_its_own_key_says(tmp_path, start_key, targ
         row = {"entities": ["reserve", "instructor"], **via, **target, **cardinality}
         runtime = _library(tmp_path / cardinality["cardinality"], start_key, row, target_key)
         answers[cardinality["cardinality"]] = [
-            error["code"] for error in runtime.validate(by_course).get("errors") or []
+            issue["code"] for issue in runtime.validate(by_course).get("errors") or []
         ]
         runtime.close()
     assert answers == {"many_to_one": [], "many_to_many": ["MIXED_GRAIN_INVALID"]}
+    assert error["details"]["shared_key_columns_on_start"] == [start_key]
 
 
 def test_a_shared_key_spelled_alike_on_both_sides_names_one_spelling(tmp_path):
