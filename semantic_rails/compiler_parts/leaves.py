@@ -101,6 +101,7 @@ from .lowering_common import (
     _preserves_filtered_series,
     _query_metric_predicates,
     _record_balance_edge,
+    _record_all_time_scope,
     _record_time_scope,
     _selected_aggregate_relation,
     _snapshot_series_columns,
@@ -1305,6 +1306,8 @@ def _measure_leaf_select(
             local=time_source_local,
             authored=filter_conditions,
         )
+    else:
+        _record_all_time_scope(config, leaf, [measure_plan], untimed, authored=filter_conditions)
     return leaf
 
 
@@ -1582,4 +1585,6 @@ def _measure_group_leaf_select(
             local=time_source_local,
             authored=filter_conditions,
         )
+    else:
+        _record_all_time_scope(config, leaf, measure_plans, untimed, authored=filter_conditions)
     return leaf
