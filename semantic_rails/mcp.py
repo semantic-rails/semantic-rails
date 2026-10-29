@@ -33,7 +33,7 @@ from .diagnostics import (
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
 from .mcp_query import coerce_arguments
 from .mcp_session import MCPQuerySession
-from .metadata import _slim_discover_minimal
+from .metadata import _slim_discover_minimal, discover_by_term
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -46,6 +46,7 @@ from .request_payload import (
     MAX_RESULT_CHARS_ENV,
     MIN_RESULT_CHARS,
     checked_discover_kinds,
+    discover_term_list,
     max_result_chars,
     parse_string_list,
     singular_kinds,
@@ -400,14 +401,14 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="discover",
         description=(
-            f"Rank objects by business terms; empty terms list ids ({_DISCOVER_ID_PAGE} per kind; limit, offset). "
-            "Default: id, label, description; compact omits blocked cards. "
+            "Rank objects by business terms, or each term of a list alone (by_term); "
+            "empty terms list ids. Compact omits blocked cards. "
             "Gotcha: 'out_of_scope' or 'low_relevance' with no candidates; "
             "branch before using a candidate."
         ),
         input_schema=_schema(
             {
-                "terms": {"type": "string"},
+                "terms": {"type": ["string", "array"], "items": {"type": "string"}},
                 "kinds": {
                     "type": ["string", "array"],
                     "items": {"type": "string", "enum": sorted(DISCOVER_KIND_NAMES)},
@@ -417,8 +418,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "stage": {
                     "type": "string",
                     "description": (
-                        "Ranking stage: initial, post_measure, post_dimension or "
-                        "comparison; inferred if omitted."
+                        "initial, post_measure, post_dimension or comparison; inferred if omitted."
                     ),
                 },
                 "verbosity": _VERBOSITY_MINIMAL,
@@ -1332,6 +1332,43 @@ def _bound_response(
     return refusal
 
 
+def _bound_by_term(
+    payload: dict[str, Any], bound: Callable[[dict[str, Any]], dict[str, Any]]
+) -> dict[str, Any]:
+    """``payload`` bounded. A list of terms whose results don't fit keeps the leading terms
+    that do, in the order sent, and a ``DISCOVER_TERMS_TRUNCATED`` warning names the rest; only
+    a first term that can't fit alone is refused, as its own call would be."""
+
+    result = bound(payload)
+    by_term = payload.get("by_term")
+    refused = [issue.get("code") for issue in result.get("errors") or []]
+    if refused != ["RESULT_TOO_LARGE"] or not isinstance(by_term, dict) or len(by_term) < 2:
+        return result
+    terms = list(by_term)
+    for kept in range(len(terms) - 1, 0, -1):
+        left_out = terms[kept:]
+        warning = {
+            "code": "DISCOVER_TERMS_TRUNCATED",
+            "severity": "warning",
+            "message": (
+                f"Results for the first {kept} of {len(terms)} terms fit the "
+                f"{_max_result_chars():,}-character response budget; {left_out} were left out. "
+                "Send them in another discover call."
+            ),
+            "details": {"remaining_terms": left_out, "max_result_chars": _max_result_chars()},
+        }
+        fitted = bound(
+            {
+                **payload,
+                "by_term": {term: by_term[term] for term in terms[:kept]},
+                "warnings": [*list(payload.get("warnings") or []), warning],
+            }
+        )
+        if fitted.get("ok") is not False:
+            return fitted
+    return result
+
+
 _DISCOVER_SCREENED_KEYS = ("low_relevance", "out_of_scope")
 
 
@@ -1642,7 +1679,7 @@ class SemanticLayerMCPAdapter:
                     columns_fallback=columns_fallback,
                 )
 
-            response = bound(response)
+            response = _bound_by_term(response, bound) if name == "discover" else bound(response)
             if session is not None and response.get("ok") is True:
                 key = _call_key(args_dict) if name == "execute" else None
                 session.annotate(self, name, args_dict, response, query=key)
@@ -2041,9 +2078,20 @@ class SemanticLayerMCPAdapter:
                         ),
                     }
                 )
+            elif isinstance(raw_terms, (list, tuple)):
+                try:
+                    listed = discover_term_list(raw_terms)
+                except ValueError as exc:
+                    raise _argument_error(
+                        f"MCP argument 'terms' {exc}.", field="terms", value=raw_terms
+                    ) from exc
+                if listed:
+                    # Each term ranks on its own, exactly as a call with that term alone.
+                    return discover_by_term(lambda term: _build({**args, "terms": term}), listed)
+                terms_str = ""
             else:
                 raise _argument_error(
-                    "MCP argument 'terms' must be a string.",
+                    "MCP argument 'terms' must be a string or a list of non-blank strings.",
                     field="terms",
                     value=raw_terms,
                 )

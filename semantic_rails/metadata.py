@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict
 from functools import lru_cache
 from typing import Any
@@ -2478,6 +2478,29 @@ def discover_payload(
         for row in payload["measures"]:
             row["allowed_aggregations"] = list(measure_index[row["id"]].allowed_aggregations)
     return _slim_discover_minimal(payload) if verbosity == "minimal" else payload
+
+
+# What a call's own arguments decide, not its terms: said once beside ``by_term`` when every
+# term's result has the same.
+_CALL_FIELDS = ("verbosity", "query_state", "selection_context", "warnings")
+
+
+def discover_by_term(rank: Callable[[str], dict[str, Any]], terms: Sequence[str]) -> dict[str, Any]:
+    """Each term ranked on its own by ``rank`` (one discover call), keyed by term.
+
+    The agent splits its question into terms; the engine reads none of them together."""
+
+    by_term = {term: dict(rank(term)) for term in terms}
+    results = list(by_term.values())
+    shared: dict[str, Any] = {}
+    for key in _CALL_FIELDS:
+        if all(key in result and result[key] == results[0][key] for result in results):
+            shared[key] = results[0][key]
+            for result in results:
+                del result[key]
+    for result in results:
+        result.pop("terms", None)
+    return {**shared, "by_term": by_term}
 
 
 _MINIMAL_DISCOVER_RECORD_KEYS = (

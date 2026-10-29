@@ -41,6 +41,7 @@ from .http_request import (
     coerce_bool,
     coerce_int,
     coerce_string_list,
+    coerce_term_list,
     header_value,
     issue,
     normalize_route,
@@ -48,6 +49,7 @@ from .http_request import (
     request_id_from_parts,
     status_label,
 )
+from .metadata import discover_by_term
 from .metadata_parts.capabilities import capabilities_payload
 from .policies import kept_column_names
 from .query_call import EXPRESSION_SHAPES
@@ -668,20 +670,27 @@ class SemanticHTTPService:
                 ),
             }, 200
         if route == "/discover":
-            return {
-                "ok": True,
-                **operations.run(
+
+            def discover(terms: str) -> dict[str, Any]:
+                return operations.run(
                     "discover",
                     self.runtime,
-                    terms=str(payload.get("terms", "")),
+                    terms=terms,
                     kinds=coerce_string_list(payload.get("kinds"), field="kinds"),
                     partial_query=self._seed(payload, policy_context),
                     stage=str(payload.get("stage", "")),
                     verbosity=str(payload.get("verbosity", "compact")),
                     limit=coerce_int(payload.get("limit"), 10, field="limit", minimum=1),
                     enforce_scope=True,
-                ),
-            }, 200
+                )
+
+            terms = payload.get("terms", "")
+            if isinstance(terms, list):
+                listed = coerce_term_list(terms)
+                if listed:
+                    return {"ok": True, **discover_by_term(discover, listed)}, 200
+                terms = ""
+            return {"ok": True, **discover(str(terms))}, 200
         if route == "/inspect":
             return {
                 "ok": True,
