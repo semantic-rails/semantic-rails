@@ -1703,7 +1703,9 @@ before the first one, with no `NO_DATA_IN_SCOPE`. It needs a row the edge lets t
 so it reads `NULL`. Without a declared edge, the filter must match a row, as above. A measure
 dated by another model's clock (a refund by its order's time) is let through by that clock, so a
 refund whose order is after the edge isn't read
-([Empty periods](PACKAGE_AUTHORING.md#empty-periods)).
+([Empty periods](PACKAGE_AUTHORING.md#empty-periods)). An `aggregate_if` reads its table's rows
+as the table's measures do: "the value of orders over 50 we have ever had" leaves out an order
+after the load log, as revenue beside it does.
 
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
