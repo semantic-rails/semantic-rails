@@ -62,7 +62,12 @@ from ..sql_ast import (
     SqlWindow,
     sql_nodes,
 )
-from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
+from .bind import (
+    _measure_count_distinct_key_columns,
+    _parse_public_expr,
+    earlier_settlement_applies,
+    is_conditional_case,
+)
 from .dependencies import holding, plan_is_root, settles_as_a_call
 from .indexes import _measure_index, _recipe_index
 from .temporal import _source_filter_refusals
@@ -123,6 +128,32 @@ def reads_every_row(measure: MeasureConfig) -> bool:
     marker (``_row_marker``) applies the same test. A nested CASE cannot prove this either
     and keeps base settlement instead of deriving a marker."""
     return not (has_nested_case(measure) or is_conditional_case(measure.expr))
+
+
+def counts_its_own_key(
+    aggregation: str, measure: MeasureConfig | None, config: PackageConfig
+) -> bool:
+    """Whether a count of the measure is at least 1 in every group its rows reach: it counts its
+    own entity's key, which every row holds (``_measure_count_distinct_key_columns``). Only then
+    is a 0 a group its rows never reached; a conditional count, a count of another column and a
+    sum read a real 0 as well."""
+    return (
+        measure is not None
+        and aggregation in _COUNTING
+        and bool(_measure_count_distinct_key_columns(measure, config))
+    )
+
+
+def absent_marker(alias: str, aggregation: str, rows: Mapping[str, str]) -> SqlIdentifier | None:
+    """The guard's source column that is NULL exactly where the measure's own rows never
+    reached the group (another measure's rows hold it): a count's value, which is never NULL
+    where it read a row, or a sum's row count. None for a sum that counts no rows (the earlier
+    settlement, or a nested CASE), which can't tell."""
+    if aggregation in _COUNTING:
+        return SqlIdentifier(parts=["base", alias])
+    if alias in rows and not earlier_settlement_applies():
+        return SqlIdentifier(parts=["base", rows[alias]])
+    return None
 
 
 def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str, str]:
@@ -272,6 +303,7 @@ def guard_empty_groups(
     bucketed: bool = True,
     keep: Iterable[str] = (),
     names: Mapping[str, Sequence[str]] | None = None,
+    absent: Mapping[str, str] | None = None,
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -299,12 +331,16 @@ def guard_empty_groups(
     still prevents filling unknown amounts. Ungated, a retained leaf gets no such proof.
     ``keep`` names source columns passed through unchanged.
     ``names`` gives each measure alias's output names, which a refusal states.
+    ``absent`` names, for a measure alias, a column reading 1 in each group its own rows never
+    reached (``absent_marker``) and 0 elsewhere: what the answer's ``ZERO_FILLED_GROUPS``
+    counts. It changes no value.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.reads_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     rows = rows or {}
     measures = list(measures)
     observed = observed or {}
+    absent = absent or {}
     dataset = observes_dataset()
     if dataset and (unobserved := [a for a in measures if a in zero and a not in observed]):
         named = (names or {}).get
@@ -331,9 +367,14 @@ def guard_empty_groups(
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
 
+    markers: list[SqlField] = []
     for alias in measures:
         value: Any = SqlIdentifier(parts=["base", alias])
         aggregation = zero.get(alias)
+        marker = absent_marker(alias, aggregation, rows) if aggregation is not None else None
+        if marker is not None and alias in absent:
+            unreached = SqlCaseWhen(SqlIsNull(marker), SqlLiteral(1))
+            markers.append(SqlField(SqlCase([unreached], else_expr=SqlLiteral(0)), absent[alias]))
         if aggregation is not None:
             seen: Any = SqlBinary(
                 SqlWindow(
@@ -439,6 +480,7 @@ def guard_empty_groups(
                     whens=[SqlCaseWhen(seen, SqlCall("COALESCE", [value, SqlLiteral(0)]))],
                 )
         fields_.append(SqlField(value, alias))
+    fields_.extend(markers)
     fields_.extend(SqlField(SqlIdentifier(parts=["base", name]), name) for name in keep)
     guard = SqlSelect(
         select=fields_, from_table=SqlTableRef(name=source, alias="base"), joins=joins
@@ -844,7 +886,21 @@ def recording_outputs_as(names: Mapping[str, str]) -> Iterator[None]:
             ]
 
 
-def record_zero_output(output: str, measure_ids: Iterable[str]) -> None:
+def record_zero_output(
+    output: str,
+    measure_ids: Iterable[str],
+    absent: Sequence[str] = (),
+    *,
+    zero_means_absent: bool = False,
+) -> None:
+    """``absent`` names the guard's columns marking the groups each measure the output reads
+    never reached (``guard_empty_groups``); a group all of them mark, read as 0, is zero-filled.
+    ``zero_means_absent``: the output reads 0 in no other group (``counts_its_own_key``)."""
     outputs = _zero_outputs.get()
     if outputs is not None:
-        outputs.append({"output": output, "measures": sorted(set(measure_ids))})
+        item: dict[str, Any] = {"output": output, "measures": sorted(set(measure_ids))}
+        if absent:
+            item["absent"] = list(absent)
+        if zero_means_absent:
+            item["zero_means_absent"] = True
+        outputs.append(item)

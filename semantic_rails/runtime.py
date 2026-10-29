@@ -1949,6 +1949,7 @@ class Runtime:
             _zero_after_last_row_notes,
             closing_day_disclosures,
         )
+        from .runtime_parts.zero_filled import zero_filled_groups_notes
 
         refusal = _scope_refusal(payload)
         if refusal is not None:
@@ -2113,6 +2114,9 @@ class Runtime:
                     dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
                     runtime=self,
                     payload=payload,
+                ),
+                *zero_filled_groups_notes(
+                    self._config, compiled, rows, hidden, excluded_outputs=withheld
                 ),
                 *closing_warnings,
                 *_filter_value_warnings(self, compiled, payload),
@@ -2531,7 +2535,8 @@ class Runtime:
                     seed_warnings=self._seed_warnings,
                 )
             ) from exc
-        visible_rows = strip_segment_preview_metric(list(rows))
+        # The preview's rows, without the columns its SQL carries for the engine alone.
+        visible_rows = strip_segment_preview_metric(list(split_hidden(rows, preview_compiled)[0]))
         member_count = int(count_rows[0].get("member_count", 0)) if count_rows else 0
         return {
             "segment": {

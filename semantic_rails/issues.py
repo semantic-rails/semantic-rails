@@ -124,6 +124,8 @@ CODES: dict[str, str] = {
         WAREHOUSE_COLUMN_NOT_FOUND WAREHOUSE_TABLE_NOT_FOUND
         """,
     ),
+    # A note an answer reads from marks its own statement carries (``runtime_parts.zero_filled``).
+    **_codes(NOTE, "ZERO_FILLED_GROUPS"),
 }
 ERROR_CODES = frozenset(code for code, kind in CODES.items() if kind == REFUSAL)
 WARNING_CODES = frozenset(code for code, kind in CODES.items() if kind in {WARNING, NOTE})

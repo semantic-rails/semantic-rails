@@ -1207,6 +1207,12 @@ The response `warnings` array can carry these non-error signals:
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result, nor, under `observation_scope: "dataset"`, on an empty answer to a filtered query.
   See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
+- `ZERO_FILLED_GROUPS` (a note) — fires on `execute` when a count or sum reads `0` in groups
+  its own rows never reach while another selected measure's rows hold them (signups and orders
+  by customer: a customer who never ordered). `details.outputs` lists `{output, zero_filled,
+  entities, having}` (`having` only when that condition leaves out exactly those groups),
+  `details.groups` the returned rows counted and `details.truncated` whether the count is a
+  lower bound. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
 - `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
   default) when a string `is` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
