@@ -84,6 +84,7 @@
   "tests/semantic_rails/test_dialect_postgres.py": 0.536,
   "tests/semantic_rails/test_diff_detects_expr_and_relation_changes.py": 1.212,
   "tests/semantic_rails/test_discover.py": 0.732,
+  "tests/semantic_rails/test_discover_has_more.py": 1.6,
   "tests/semantic_rails/test_discover_kinds_argument.py": 9.661,
   "tests/semantic_rails/test_discover_ranking.py": 0.593,
   "tests/semantic_rails/test_duckdb_builtin_resolution.py": 10.591,

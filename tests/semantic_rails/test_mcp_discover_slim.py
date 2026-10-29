@@ -51,9 +51,9 @@ def test_explicit_minimal_discover_returns_five_slim_cards_per_kind(
         for row in rows:
             assert set(row) <= SLIM_KEYS - {"kind", "available"}, (bucket, sorted(set(row)))
             assert "id" in row, (bucket, row)
-    assert "terms" not in response and "verbosity" not in response
-    for row in response["dimension_values"]:
-        assert set(row) <= VALUE_KEYS | {"blocked_reason"}
+    assert "terms" not in response and "verbosity" not in response and "stage" not in response
+    # An empty bucket is left out.
+    assert not {"segments", "dimension_values", "blocked"} & response.keys()
 
 
 @pytest.mark.parametrize(
@@ -210,10 +210,10 @@ def test_compact_discover_keeps_slim_descriptions_without_blocked_metadata(
     assert compact["ok"]
     assert "blocked" not in compact
     for bucket in ("measures", "metrics", "dimensions", "entities", "dimension_values"):
-        assert compact[bucket] == [
-            row for row in minimal[bucket] if row.get("available") is not False
+        assert compact.get(bucket, []) == [
+            row for row in minimal.get(bucket, []) if row.get("available") is not False
         ]
-        for card in compact[bucket]:
+        for card in compact.get(bucket, []):
             assert (
                 not {
                     "match_reasons",
@@ -231,10 +231,10 @@ def test_nonsense_terms_return_a_relevance_block_with_empty_buckets(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     discover = next(tool for tool in list_tool_definitions() if tool["name"] == "discover")
-    assert "'out_of_scope' or 'low_relevance' with empty buckets" in discover["description"]
+    assert "'out_of_scope' or 'low_relevance' with no candidates" in discover["description"]
     response = adapter.call_tool("discover", {"terms": "unladen swallow airspeed"})
     assert response.get("out_of_scope") or response.get("low_relevance")
-    assert not response["measures"] and not response["metrics"]
+    assert not {"measures", "metrics", "dimensions"} & response.keys()
 
 
 @pytest.mark.parametrize(
@@ -274,7 +274,7 @@ def test_kinds_filter_accepts_a_list_in_any_encoding(
     response = adapter.call_tool("discover", {"terms": "revenue by store", "kinds": kinds})
     assert not [w for w in response.get("warnings", []) if w["code"] == "DISCOVER_UNKNOWN_KIND"]
     assert response["measures"] and response["metrics"]
-    assert not response["dimensions"] and not response["entities"]
+    assert "dimensions" not in response and "entities" not in response
 
 
 @pytest.mark.parametrize(
@@ -304,8 +304,10 @@ def test_only_unpinned_default_aggregates_merge(
     minimal = adapter.call_tool("discover", args)
     assert any(m["id"] == measure_id for m in full["measures"])
     assert any(m["id"] == metric_id for m in [*full["metrics"], *full["blocked"]])
-    assert any(m["id"] == measure_id for m in minimal["measures"]) == bool(pin)
-    card = next(m for m in [*minimal["metrics"], *minimal["blocked"]] if m["id"] == metric_id)
+    assert any(m["id"] == measure_id for m in minimal.get("measures", [])) == bool(pin)
+    card = next(
+        m for m in [*minimal["metrics"], *minimal.get("blocked", [])] if m["id"] == metric_id
+    )
     assert card.get("measure") == (None if pin else measure_id)
     if pin is None:
         assert sum(m.get("measure") == measure_id for m in minimal["metrics"]) == 1
