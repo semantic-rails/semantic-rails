@@ -195,9 +195,9 @@ def _files() -> dict[str, Any]:
     }
 
 
-def _write(parent: Path, files: dict[str, Any]) -> Path:
-    """The package under ``parent/campus``: its directory is named for its id."""
-    root = parent / "campus"
+def _write(parent: Path, files: dict[str, Any], package: str = "campus") -> Path:
+    """The package under ``parent/<package>``: its directory is named for its id."""
+    root = parent / package
     for name, body in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -622,27 +622,15 @@ def test_discover_lists_the_canonical_models_rows_first_and_marks_its_history(tm
     plain = _discover(_write(tmp_path / "plain", _files()), "rooms")
     root = _write(tmp_path / "declared", _with_prefer(_files(), rooms=["rooms_hist"]))
     body = _discover(root, "rooms")
-    # The same rows in every bucket; the room's dimensions now come before its history's, in
-    # the places those rows held, and the survey's keep theirs.
-    assert {
-        bucket: sorted(_ids(body, bucket)) for bucket in body if isinstance(body[bucket], list)
-    } == {
-        bucket: sorted(_ids(plain, bucket)) for bucket in plain if isinstance(plain[bucket], list)
+    # The same rows in every bucket, in their match order: the room's first row already leads its
+    # history's in each.
+    assert {bucket: _ids(body, bucket) for bucket in body if isinstance(body[bucket], list)} == {
+        bucket: _ids(plain, bucket) for bucket in plain if isinstance(plain[bucket], list)
     }
     dimensions = _ids(body, "dimensions")
-    assert _ids(plain, "dimensions") != dimensions
-    room = [
-        index for index, row in enumerate(dimensions) if row.startswith("dimension.campus_room_")
-    ]
-    hist = [index for index, row in enumerate(dimensions) if "campus_room_hist_" in row]
-    room = [index for index in room if index not in hist]
-    assert max(room) < min(hist)
-    assert [row for row in dimensions if "space_detail" in row] == [
-        row for row in _ids(plain, "dimensions") if "space_detail" in row
-    ]
-    assert [dimensions.index(row) for row in dimensions if "space_detail" in row] == [
-        _ids(plain, "dimensions").index(row) for row in dimensions if "space_detail" in row
-    ]
+    assert dimensions.index("dimension.campus_room_id") < min(
+        dimensions.index(row) for row in dimensions if "campus_room_hist_" in row
+    )
     assert _ids(body, "entities") == [ROOM, ROOM_HIST]
 
     # The history's measure and entity cards say whose history it is, and in full cards its
@@ -662,6 +650,108 @@ def test_discover_lists_the_canonical_models_rows_first_and_marks_its_history(tm
     assert _marks(full) == history_rows(full, ("measures", "dimensions", "entities"))
     assert "dimension.campus_room_hist_valid_from" in _marks(full)
     assert not _marks(plain)
+
+
+def _revenue(label: str, description: str, column: str = "amount") -> dict[str, Any]:
+    return {
+        "label": label,
+        "description": description,
+        "kind": "aggregate",
+        "expr": column,
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+        "value_type": "currency",
+    }
+
+
+def _shop(**prefer: list[str]) -> dict[str, Any]:
+    """Orders, their history, and signups, each with its own revenue."""
+    package = _files()["package.yml"]
+    package["package"].update(id="shop", namespace="shop", name="Shop", default_db="shop.duckdb")
+    entities = {
+        "order": {"key": ["order_id"], "model": "orders"},
+        "order_hist": {"key": ["order_id", "valid_from"], "model": "orders_hist"},
+        "signup": {"key": ["signup_id"], "model": "signups"},
+    }
+    files = {
+        "package.yml": package,
+        "graph.yml": {"graph": {"entities": entities, "relationships": {}}},
+        "models/orders.yml": _model(
+            "orders",
+            {"order": {}},
+            description="One row per order.",
+            dimensions=_categorical("status"),
+            measures={
+                "revenue": _revenue("Revenue", "Order revenue, net of refunds."),
+                "refunds": _revenue("Refunds", "Refunded order revenue.", "refunded"),
+            },
+        ),
+        "models/orders_hist.yml": _model(
+            "orders_hist",
+            {"order_hist": {}},
+            description="One row per version of an order.",
+            times={"valid_from": {"column": "valid_from", "kind": "date"}},
+            dimensions=_categorical("status", "signup_channel"),
+            measures={
+                "hist_revenue": _revenue(
+                    "Revenue", "Order revenue by signup channel, for each version of an order."
+                )
+            },
+        ),
+        "models/signups.yml": _model(
+            "signups",
+            {"signup": {}},
+            description="One row per signup.",
+            dimensions=_categorical("signup_channel"),
+            measures={
+                "first_order_revenue": _revenue(
+                    "First order revenue", "Revenue by signup channel: each signup's first order."
+                )
+            },
+        ),
+    }
+    return _with_prefer(files, **prefer)
+
+
+REVENUE, REFUNDS = "measure.shop.revenue", "measure.shop.refunds"
+HIST_REVENUE, FIRST_ORDER_REVENUE = "measure.shop.hist_revenue", "measure.shop.first_order_revenue"
+
+
+@pytest.mark.parametrize(
+    ("terms", "matched", "listed"),
+    [
+        # The orders' revenue matches only "revenue"; the signups' first-order revenue matches the
+        # whole question, and the history's revenue more of it again. The weak canonical row stays
+        # below the signups' and leads its history's.
+        (
+            "revenue by signup channel",
+            [HIST_REVENUE, FIRST_ORDER_REVENUE, REVENUE, REFUNDS],
+            [FIRST_ORDER_REVENUE, REVENUE, HIST_REVENUE, REFUNDS],
+        ),
+        # The canonical model matches best: the match order stands, the history's revenue still
+        # ahead of the refunds it out-matched.
+        (
+            "net revenue",
+            [REVENUE, HIST_REVENUE, FIRST_ORDER_REVENUE, REFUNDS],
+            [REVENUE, HIST_REVENUE, FIRST_ORDER_REVENUE, REFUNDS],
+        ),
+        # The history matches best: it follows the orders' revenue, still ahead of every row it
+        # out-matched.
+        (
+            "revenue by version",
+            [HIST_REVENUE, REVENUE, FIRST_ORDER_REVENUE, REFUNDS],
+            [REVENUE, HIST_REVENUE, FIRST_ORDER_REVENUE, REFUNDS],
+        ),
+    ],
+)
+def test_discover_ranks_by_match_and_the_canonical_row_leads_its_look_alikes(
+    tmp_path, terms, matched, listed
+):
+    plain = _discover(_write(tmp_path / "plain", _shop(), "shop"), terms)
+    assert _ids(plain, "measures") == matched
+    body = _discover(_write(tmp_path / "declared", _shop(orders=["orders_hist"]), "shop"), terms)
+    assert _ids(body, "measures") == listed
+    assert _marks(body) == {HIST_REVENUE: "history copy of entity.shop_order"}
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
