@@ -533,8 +533,13 @@ class ProjectTransaction:
         if not expected:
             raise SemanticLayerError(
                 "INVALID_MCP_ARGUMENTS",
-                "expected_revision is required for every Architect mutation",
-                details={"argument": "expected_revision"},
+                "expected_revision is required for every Architect mutation: pass the revision "
+                "project_status or the last write returned, or "
+                f"{ABSENT_PROJECT_REVISION!r} for a package that doesn't exist yet",
+                details={
+                    "argument": "expected_revision",
+                    "accepted": ["sha256:... (the package's revision)", ABSENT_PROJECT_REVISION],
+                },
             )
         if not key:
             raise SemanticLayerError(

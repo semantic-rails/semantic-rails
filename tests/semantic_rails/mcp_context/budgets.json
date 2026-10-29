@@ -1,7 +1,25 @@
 {
- "description": "Ceilings for scripts/mcp_context.py's query MCP (interface v2): its surface, defaults, sessions, resources, errors and hosted probes (compact cards, which carry query patches; query.v2.default covers default discover), in tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, budget * tolerance), counts above budget; tracked ones are reported only. Regenerate with --write-baseline and review the diff.",
+ "description": "Ceilings for scripts/mcp_context.py's query MCP (interface v2): its surface, defaults, sessions, resources, errors and hosted probes (compact cards, which carry query patches; query.v2.default covers default discover), and the Architect MCP's tool list, instructions and first pages on a 100-relation warehouse (architect.page), in tokens = round(chars / 4). Gated token metrics fail CI above budget + max(8, budget * tolerance), counts above budget; tracked ones are reported only. Regenerate with --write-baseline and review the diff.",
  "tolerance": 0.02,
  "gated": {
+  "architect.instructions_tokens": 374,
+  "architect.page.describe_table_wide_tokens": 2204,
+  "architect.page.diff_project_tokens": 730,
+  "architect.page.impact_project_tokens": 1973,
+  "architect.page.import_dbt_project_preview_tokens": 2743,
+  "architect.page.list_project_files_tokens": 554,
+  "architect.page.list_tables_tokens": 3882,
+  "architect.page.profile_columns_wide_tokens": 2038,
+  "architect.page.project_status_tokens": 3006,
+  "architect.page.suggest_links_columns_tokens": 3940,
+  "architect.page.suggest_model_wide_tokens": 3553,
+  "architect.page.suggest_models_from_dbt_tokens": 4308,
+  "architect.page.validate_project_parse_tokens": 2440,
+  "architect.page.validate_project_runtime_tokens": 3018,
+  "architect.tools_list.largest_tool_tokens": 685,
+  "architect.tools_list.model_visible_tokens": 6477,
+  "architect.tools_list.tools": 30,
+  "architect.tools_list.wire_tokens": 14657,
   "query.error.discover_unknown_argument_tokens": 2397,
   "query.error.inspect_label_not_id_tokens": 211,
   "query.error.validate_fanout_tokens": 812,
@@ -40,12 +58,5 @@
   "query.v2.tools_list.model_visible_tokens": 2871,
   "query.v2.tools_list.tools": 6,
   "query.v2.tools_list.wire_tokens": 3706
- },
- "tracked": {
-  "architect.instructions_tokens": 274,
-  "architect.tools_list.largest_tool_tokens": 512,
-  "architect.tools_list.model_visible_tokens": 4684,
-  "architect.tools_list.tools": 28,
-  "architect.tools_list.wire_tokens": 12382
  }
 }

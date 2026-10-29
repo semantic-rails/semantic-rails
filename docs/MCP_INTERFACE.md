@@ -1531,8 +1531,10 @@ mistakes fail with a specific error code; the fourth,
 a misspelled `discover` argument, succeeds with a warning. A scripted call that fails when it should
 succeed (or the reverse), or that reports a different code, stops the measurement rather than
 counting as a smaller response. A scripted session's queries may only use ids that an earlier call
-in the same session returned, so its size measures a path an agent could follow. Architect MCP
-tool-list sizes are recorded under `tracked` and are not gated.
+in the same session returned, so its size measures a path an agent could follow. The Architect
+MCP's tool list and instructions are gated too (`architect.tools_list.*`,
+`architect.instructions_tokens`), and so is the first page of each tool that pages, on the
+100-relation warehouse `scripts/large_warehouse.py` builds (`architect.page.*`).
 
 A draft is correct when it matches the gold query, or a listed alternative, in every slot that can
 change its rows: measures and metrics, grouping, time role, grain, window, `fill`, observation
