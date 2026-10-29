@@ -551,8 +551,8 @@ def kept_column_names(config: PackageConfig, scope: Mapping[str, Any] | None) ->
     ``withhold_values`` policy keeps it from the caller in ``scope`` (its ``environment``,
     ``audience`` and ``roles``), directly or as a kept metric's input; with no caller known,
     from anyone. Such a policy covers the measure, not its columns, so a hint offers no
-    aggregate over them. ``config`` is the caller's view: a measure hidden from the caller is
-    one the package doesn't have, so its columns are never kept."""
+    aggregate over them. ``config`` is the caller's view: a measure or metric hidden from the
+    caller is one the package doesn't have, so it never keeps a column."""
 
     def keeps(policy: SemanticPolicyConfig, object_id: str) -> bool:
         if _policy_action(policy) not in {"deny", WITHHOLD}:
@@ -565,7 +565,7 @@ def kept_column_names(config: PackageConfig, scope: Mapping[str, Any] | None) ->
     measures = {row.id for row in base.measures}
     kept = {
         object_id
-        for object_id in [*measures, *(row.id for row in base.metric_recipes)]
+        for object_id in [*measures, *(row.id for row in config.metric_recipes)]
         if any(keeps(policy, object_id) for policy in base.semantic_policies)
     }
     recipes = kept - measures
