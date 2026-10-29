@@ -1,0 +1,6 @@
+model:
+  id: refund_loads
+  relation: refund_loads
+  entities: {refund_load: {}}
+  times:
+    through_day: {column: through_day, kind: date, class: event_time}

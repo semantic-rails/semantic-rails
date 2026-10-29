@@ -8555,6 +8555,38 @@ tests:
       FROM tickets AS t
       WHERE t.opened_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
         AND t.opened_at <= TIMESTAMP '2024-10-07 06:00:00'
+  shop/refunds-ever-are-capped-on-their-orders-clock-by-the-load-log:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'How many refunds have we ever issued, with no time window, when a refund is dated by its order and the load log says refunds are loaded through Sunday March 31, 2024: refunds 1 to 4 (orders 2, 4 and 6) are read, and order 7''s two refunds (ordered May 6) are not loaded yet, so the answer is 4, not 6.'
+    cites: [tests/integration/correctness/shop/models/refunds_loaded.yml#model.measures.loaded_refunds, tests/integration/correctness/shop/models/refunds_loaded.yml#model.zero_through, docs/PACKAGE_AUTHORING.md#empty-periods]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.loaded_refunds]
+    now: '2024-06-01T00:00:00Z'
+    expected_rows: [{loaded_refunds: 4}]
+    reference_sql: |
+      SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(DISTINCT r.refund_id) END
+      FROM refunds AS r
+      JOIN orders AS o ON o.order_id = r.order_id
+      WHERE o.ordered_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM refund_loads)
+        AND o.ordered_at <= TIMESTAMP '2024-06-01 00:00:00'
+  shop/refunds-ever-under-an-empty-load-log-read-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'How many refunds have we ever issued, with no time window, when a refund is dated by its order and its load log (ticket_audits) has no run yet: the log certifies none of their orders, so no refund is read and the answer is NULL, not 6.'
+    cites: [tests/integration/correctness/shop/models/refunds_audited.yml#model.measures.audited_refunds, tests/integration/correctness/shop/models/refunds_audited.yml#model.zero_through, docs/PACKAGE_AUTHORING.md#empty-periods]
+    tags: [null-vs-zero]
+    query:
+      select: [measure.shop.audited_refunds]
+    now: '2024-06-01T00:00:00Z'
+    expected_rows: [{audited_refunds: null}]
+    reference_sql: |
+      SELECT CASE WHEN COUNT(*) > 0 THEN COUNT(DISTINCT r.refund_id) END
+      FROM refunds AS r
+      JOIN orders AS o ON o.order_id = r.order_id
+      WHERE o.ordered_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_audits)
+        AND o.ordered_at <= TIMESTAMP '2024-06-01 00:00:00'
   shop/a-quiet-week-under-an-empty-load-log-reads-null:
     kind: query_matches_snapshot
     expect: answer

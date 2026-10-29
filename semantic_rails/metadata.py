@@ -71,6 +71,7 @@ from .metadata_parts.entity_graph import entity_graph, entity_relationships
 from .metadata_parts.guidance import (
     _aggregation_guidance,
     _count_unit,
+    _metric_count_units,
     _metric_guidance,
     _metric_preferences,
 )
@@ -880,6 +881,7 @@ def _object_card(
                 "default_temporal_role": payload.get("default_temporal_role", ""),
                 "compatible_temporal_roles": payload.get("compatible_temporal_roles", []),
                 "expression_summary": payload.get("expression_summary", ""),
+                **_metric_count_units(config, recipe),
                 "usage_summary": usage_summary,
                 **usage_summary,
                 "related_measures": preference_meta["related_measures"]

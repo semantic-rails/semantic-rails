@@ -779,9 +779,13 @@ def test_a_date_beside_an_identifier_or_as_a_calendars_key_is_shared(package_con
         assert details["shared_key_unique_on_target"] is True, target
 
 
-def _library(root: Path, key: str, relationship: dict[str, Any] | None) -> Runtime:
+def _library(
+    root: Path, key: str, relationship: dict[str, Any] | None, target_key: str = ""
+) -> Runtime:
     """Reserves keyed by a catalog item and an instructor key, and instructors keyed by that
-    key and the instructor's name, related by ``relationship`` when given."""
+    key (spelled ``target_key`` when given) and the instructor's name, related by
+    ``relationship`` when given."""
+    target_key = target_key or key
     count = {"kind": "entity_count", "accumulation": {"kind": "population"}, "value_type": "count"}
     files: dict[str, Any] = {
         "package.yml": {
@@ -816,7 +820,7 @@ def _library(root: Path, key: str, relationship: dict[str, Any] | None) -> Runti
             "graph": {
                 "entities": {
                     "reserve": {"key": ["catalog_key", key], "model": "reserves"},
-                    "instructor": {"key": [key, "instructor_name"], "model": "instructors"},
+                    "instructor": {"key": [target_key, "instructor_name"], "model": "instructors"},
                 },
                 "relationships": {"reserve_instructor": relationship} if relationship else {},
             }
@@ -829,7 +833,7 @@ def _library(root: Path, key: str, relationship: dict[str, Any] | None) -> Runti
     with duckdb.connect(str(root / "library.duckdb")) as connection:
         connection.execute(
             f"CREATE TABLE reserves (catalog_key VARCHAR, {key} VARCHAR);"
-            f"CREATE TABLE instructors ({key} VARCHAR, instructor_name VARCHAR, "
+            f"CREATE TABLE instructors ({target_key} VARCHAR, instructor_name VARCHAR, "
             "course_name VARCHAR);"
         )
     load_package_config(str(root))
@@ -876,3 +880,52 @@ def test_both_relationships_the_author_hint_offers_load_as_written(tmp_path, key
         "many_to_one": [[], []],
         "many_to_many": [["MIXED_GRAIN_INVALID"], ["MIXED_GRAIN_INVALID"]],
     }
+
+
+@pytest.mark.parametrize(
+    ("start_key", "target_key"),
+    [("instructor_key", "INSTRUCTOR_KEY"), ("INSTRUCTOR_KEY", "instructor_key")],
+)
+def test_the_hint_spells_each_side_as_its_own_key_says(tmp_path, start_key, target_key):
+    # The two keys spell the shared column with different capitals: the hint's `via:` follows
+    # the reserves' key and `target:` the instructors', so both rows it offers load.
+    by_course = {
+        "select": ["measure.library.reserves"],
+        "group_by": ["dimension.library_instructor_course_name"],
+    }
+    runtime = _library(tmp_path / "refused", start_key, None, target_key)
+    (error,) = runtime.validate(by_course)["errors"]
+    runtime.close()
+    assert error["code"] == "PATH_NOT_FOUND"
+    assert error["details"]["shared_key_columns"] == [target_key]
+    snippets = re.findall(r"`((?:via|target): \[[^\]]*\]|cardinality: [a-z_]+)`", _author(error))
+    assert snippets == [
+        f"via: [{start_key}]",
+        f"target: [{target_key}]",
+        "cardinality: many_to_one",
+        "cardinality: many_to_many",
+    ]
+    via, target, *cardinalities = (yaml.safe_load(snippet) for snippet in snippets)
+    answers = {}
+    for cardinality in cardinalities:
+        row = {"entities": ["reserve", "instructor"], **via, **target, **cardinality}
+        runtime = _library(tmp_path / cardinality["cardinality"], start_key, row, target_key)
+        answers[cardinality["cardinality"]] = [
+            issue["code"] for issue in runtime.validate(by_course).get("errors") or []
+        ]
+        runtime.close()
+    assert answers == {"many_to_one": [], "many_to_many": ["MIXED_GRAIN_INVALID"]}
+    assert error["details"]["shared_key_columns_on_start"] == [start_key]
+
+
+def test_a_shared_key_spelled_alike_on_both_sides_names_one_spelling(tmp_path):
+    runtime = _library(tmp_path / "refused", "instructor_key", None)
+    (error,) = runtime.validate(
+        {
+            "select": ["measure.library.reserves"],
+            "group_by": ["dimension.library_instructor_course_name"],
+        }
+    )["errors"]
+    runtime.close()
+    assert error["details"]["shared_key_columns"] == ["instructor_key"]
+    assert "shared_key_columns_on_start" not in error["details"]
