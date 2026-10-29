@@ -69,7 +69,15 @@ from .relation_pipelines import attach_relation_ctes
 from .renderer import collecting_slots, render_select_for_profile
 from .row_filters import RowFilter, verify_row_filters
 from .schema import PackageConfig
-from .sql_ast import SqlSelect
+from .sql_ast import (
+    SqlCte,
+    SqlField,
+    SqlIdentifier,
+    SqlOrder,
+    SqlSelect,
+    SqlTableRef,
+    build_filter_condition,
+)
 from .sql_preparation import PreparedQuery, finalize_parameters
 from .temporal_support import validate_temporal_support
 from .top_n import limit_order
@@ -140,6 +148,70 @@ class _NestedCompiles:
 nested.register(_NestedCompiles())
 
 
+def _prepare(
+    select: SqlSelect, config: PackageConfig, sql_profile: str, visibility: Any
+) -> PreparedQuery:
+    """``select`` as the warehouse runs it, held to the call's row filters first."""
+    if visibility is not None:
+        verify_row_filters(select, visibility)
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    # The slots of the very render that is executed, in the order its text holds them.
+    with collecting_slots() as slots:
+        rendered = render_select_for_profile(select, sql_profile, dialect=dialect)
+    rendered, parameters = slots.read(rendered)
+    prepared = replace(dialect.prepare_query(rendered), parameters=parameters)
+    return finalize_parameters(prepared, config.package.connection.kind)
+
+
+def value_page(
+    compiled: dict[str, Any], config: PackageConfig, *, column: str, search: str, offset: int
+) -> dict[str, Any]:
+    """``compiled``, a call listing ``column``'s values under a limit, as one page of them: the
+    known values that contain ``search`` (the ``contains`` word: literal, ignoring case), in
+    ascending order, from ``offset`` on. The page filters the listed rows, after grouping, so a
+    value matches by itself on every route (a call's ``where`` filters the rows a value comes
+    from: across a to-many hop it is refused or keeps every value of a matching row), and the
+    warehouse skips and limits matching values only.
+    """
+    statement = compiled["sql_ast"]
+    own = call_rows(statement)
+    name = "value_rows"
+    while name in {cte.name for cte in own.ctes}:
+        name = f"{name}_"
+    key = SqlIdentifier(parts=[name, column])
+    where = [build_filter_condition(key, "missing", False)]
+    if search:
+        where.append(build_filter_condition(key, "contains", search, path="search"))
+    paged = SqlSelect(
+        ctes=[*own.ctes, SqlCte(name, replace(own, ctes=[], order_by=[], limit=None))],
+        select=[SqlField(SqlIdentifier(parts=[name, row.alias]), row.alias) for row in own.select],
+        from_table=SqlTableRef(name),
+        where=where,
+        order_by=[SqlOrder(key, "ASC", nulls_last=True)],
+        limit=own.limit,
+        offset=offset or None,
+    )
+    sql_ast = with_call_rows(statement, paged)
+
+    def prepare(select: SqlSelect) -> PreparedQuery:
+        return _prepare(select, config, compiled["sql_profile"], compiled["row_filter_visibility"])
+
+    prepared = prepare(sql_ast)
+    probe = compiled["limit_probe"]
+    if probe is not None and paged.limit is not None:
+        probe = prepare(with_call_rows(statement, replace(paged, limit=paged.limit + 1)))
+    return {
+        **compiled,
+        "sql_ast": sql_ast,
+        "sql": prepared.sql,
+        "prepared_query": prepared,
+        "limit_probe": probe,
+        "explain": replace(
+            compiled["explain"], rendered_sql=prepared.sql, sql_plan=asdict(sql_ast)
+        ),
+    }
+
+
 def compile_query(
     config: PackageConfig,
     registry: Registry | None,
@@ -178,14 +250,7 @@ def compile_query(
     sql_profile = str(payload.get("sql_profile", "audit") or "audit")
 
     def prepare(select: SqlSelect) -> PreparedQuery:
-        if bound.visibility is not None:
-            verify_row_filters(select, bound.visibility)
-        # The slots of the very render that is executed, in the order its text holds them.
-        with collecting_slots() as slots:
-            rendered = render_select_for_profile(select, sql_profile, dialect=dialect)
-        rendered, parameters = slots.read(rendered)
-        prepared = replace(dialect.prepare_query(rendered), parameters=parameters)
-        return finalize_parameters(prepared, config.package.connection.kind)
+        return _prepare(select, config, sql_profile, bound.visibility)
 
     prepared = prepare(sql_ast)
     limit_probe = None
@@ -239,6 +304,7 @@ def compile_query(
         "prepared_query": prepared,
         "limit_probe": limit_probe,
         "limit_order_keys": limit_order_keys,
+        "sql_profile": sql_profile,
         "override_rows": override_rows,
         "share_groups": share_groups,
         "absent_rows": absent_rows,

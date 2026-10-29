@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from .. import operators
 from ..ast import normalize_query
 from ..compiler import (
     _extend_config_with_synthetic_measures,
@@ -24,11 +25,10 @@ from ..policies import (
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
 from ..runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
-from ..schema import MeasureConfig, PackageConfig
+from ..schema import DimensionConfig, MeasureConfig, PackageConfig
 from ..temporal_support import validate_temporal_support
 from .path_coverage import (
     _declared_value_rows,
-    _filter_value_rows,
     _valid_values_lookup_hint,
     _value_domain_for_dimension,
 )
@@ -189,6 +189,24 @@ def _anchor_measure_id(
     )
 
 
+_UNSEARCHABLE_HINT = "Send the call without search; offset pages through every value."
+
+
+def _check_search(dim: DimensionConfig, search: str) -> None:
+    """Refuse, before any read, a search the warehouse can't run as the ``contains`` word."""
+    operators.check_value("contains", search, path="search")
+    if not operators.reads_text(dim.data_type):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"search: matches text, and '{dim.id}' is {dim.data_type}",
+            details={
+                "path": "search",
+                "data_type": dim.data_type,
+                "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": _UNSEARCHABLE_HINT}],
+            },
+        )
+
+
 @runtime_request_scope
 def valid_values_payload(
     runtime: Runtime,
@@ -243,7 +261,7 @@ def valid_values_payload(
             "status": "needs_live_query",
             "dimension": dimension_id,
             "values": [],
-            "total_count": 0,
+            "total_count": None,  # no value was read
             "has_more": False,
             "source": "none",
             "query_state": None,
@@ -272,29 +290,33 @@ def valid_values_payload(
             ],
         }
 
+    if search:
+        _check_search(dim, search)
     anchor_measure_id, decisions = _anchor_measure_id(runtime, dimension_id, query)
     anchor_measure = next(measure for measure in config.measures if measure.id == anchor_measure_id)
     query_payload = _live_values_query(anchor_measure, dimension_id, query)
     if decisions:
         query_payload["route_decisions"] = decisions
     query_payload["order_by"] = [{"field": dimension_id, "direction": "ASC"}]
-    query_payload["limit"] = max(limit + offset, 100)
-    result = runtime.query_internal(query_payload)
+    # The warehouse searches, skips and limits every known value; the row past the page says
+    # whether another follows.
+    query_payload["limit"] = limit + 1
+    result = runtime.query_internal(
+        query_payload, value_page={"column": dimension_id, "search": search, "offset": offset}
+    )
     values = []
-    for row in result["rows"]:
-        if row.get(dimension_id) is None:
-            continue
+    for row in result["rows"][:limit]:
         value_row = {"value": row.get(dimension_id), "label": str(row.get(dimension_id))}
         if include_counts:
             value_row["count"] = row.get("anchor")
         values.append(value_row)
-    values, total_count, has_more = _filter_value_rows(
-        values, search=search, offset=offset, limit=limit
-    )
+    has_more = len(result["rows"]) > limit
+    # Exact once the page holds the last value; before that (or past the end) it is unknown.
+    reached_end = not has_more and (bool(values) or offset == 0)
     return {
         "dimension": dimension_id,
         "values": values,
-        "total_count": total_count,
+        "total_count": offset + len(values) if reached_end else None,
         "has_more": has_more,
         "source": runtime.warehouse_engine,
         "query_state": _query_state(query_payload, runtime._config),

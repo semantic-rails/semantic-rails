@@ -1,0 +1,9 @@
+model:
+  id: vendors
+  label: Vendors
+  relation: vendors
+  entities: {vendor: {}}
+  dimensions:
+    name: {label: Vendor name, column: vendor_name, kind: categorical}
+  measures:
+    vendor_count: {label: Vendors, kind: entity_count, entity_key: vendor_id}

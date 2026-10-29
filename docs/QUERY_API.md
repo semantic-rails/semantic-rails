@@ -849,8 +849,8 @@ Response keys:
 
 `source` is typically `value_domain` or `duckdb`. Without a declared domain and
 with `allow_live_query=false` (the default), HTTP 200 returns `ok: false`,
-`status: "needs_live_query"`, `source: "none"`, empty `values`, and a
-`VALID_VALUES_NO_DOMAIN` warning. Its message and recovery hint name the dimension, say no
+`status: "needs_live_query"`, `source: "none"`, empty `values`, `total_count: null` (no value
+was read), and a `VALID_VALUES_NO_DOMAIN` warning. Its message and recovery hint name the dimension, say no
 values were read, and give the argument that returns them: the same call with
 `allow_live_query: true` (the hint's `patch`), which a first call may pass too. A declared empty
 domain remains a successful empty result. This
@@ -865,6 +865,21 @@ source diagnostics. If all available candidates are denied, it keeps the
 `POLICY_DENIED` refusal without naming them; otherwise a lookup with no source
 refuses with `NO_VALID_VALUES_SOURCE`. Row filters still constrain the returned
 values and counts.
+
+`search` keeps the values that contain its text, literally and ignoring case: the `contains`
+filter word's match, so `_` and `%` are text, not wildcards. A declared domain also matches a
+value's label and aliases. A live lookup searches, skips `offset` values and stops after `limit`
+in the warehouse, in ascending order, over the known values the caller's row filters leave, so
+a value is found wherever it sorts and a hidden one never matches or counts. Paging:
+
+- `has_more` is `true` exactly when another value follows the page.
+- `total_count` is the number of matching values once a page holds the last of them
+  (`has_more: false`). Before that, and on a page past the last value, a live lookup returns
+  `null`: page on with `offset` or narrow `search`. A declared domain's count is always exact.
+
+A live `search` on a dimension that isn't text (a number, date or id) is refused with
+`INVALID_QUERY` at path `search` before any read, as is search text no warehouse lowercases
+alike (such as `ß`); list the values without `search` instead.
 
 ### `POST /api/v1/plan`
 

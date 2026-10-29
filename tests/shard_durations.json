@@ -323,6 +323,7 @@
   "tests/semantic_rails/test_upgrade_rules_time.py": 3.003,
   "tests/semantic_rails/test_upgrade_v1_to_v2.py": 0.754,
   "tests/semantic_rails/test_v1_authoring.py": 3.418,
+  "tests/semantic_rails/test_valid_values_paging.py": 6.0,
   "tests/semantic_rails/test_valid_values_policies.py": 9.386,
   "tests/semantic_rails/test_verify_readme_quickstart.py": 2.287,
   "tests/semantic_rails/test_visible_only_policies.py": 22.938,

@@ -18,8 +18,8 @@ answered about a given object:
   ``_valid_values_lookup_hint``.
 
 ``_filter_value_rows`` lives here because the value-row pagination it
-provides is only used inside this domain (declared value rows during
-catalog inspect, and the same shape during a valid-values lookup).
+provides is only used inside this domain (declared value rows, for
+catalog inspect and valid-values).
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any, NamedTuple
 
-from ..catalog_search import normalize_search_value
 from ..compiler_parts.indexes import get_package_analysis
 from ..errors import SemanticLayerError
 from ..fanout import analyze_fanout, query_routes_active, resolve_path, route_label
@@ -171,19 +170,18 @@ def _valid_values_lookup_hint(has_declared_domain: bool) -> str:
 def _filter_value_rows(
     values: list[dict[str, Any]], *, search: str, offset: int, limit: int
 ) -> tuple[list[dict[str, Any]], int, bool]:
-    filtered = list(values)
-    if search:
-        search_norm = normalize_search_value(search)
-        filtered = [
-            row
-            for row in filtered
-            if search_norm in normalize_search_value(str(row.get("label", "")))
-            or search_norm in normalize_search_value(str(row.get("value", "")))
-            or any(
-                search_norm in normalize_search_value(alias)
-                for alias in row.get("aliases", []) or []
-            )
-        ]
+    """A page of declared values: those whose value, label or an alias contains ``search``,
+    literally and ignoring case (as the ``contains`` word and a live lookup match), and the
+    exact count of every match."""
+    needle = search.lower()
+    filtered = [
+        row
+        for row in values
+        if any(
+            needle in str(text).lower()
+            for text in (row.get("value", ""), row.get("label", ""), *(row.get("aliases") or []))
+        )
+    ]
     total = len(filtered)
     sliced = filtered[offset : offset + limit]
     has_more = offset + limit < total
