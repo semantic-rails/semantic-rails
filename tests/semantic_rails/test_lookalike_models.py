@@ -28,7 +28,8 @@ from semantic_rails.config_validation import PackageReference, parse_config_repo
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.lookalike_models import _same_rows_pairs, lookalike_groups
 from semantic_rails.path_gap import _Grains
-from semantic_rails.visible_view import build_view
+from semantic_rails.visible_view import build_view, hidden_object_ids
+from tests.semantic_rails.hidden_absent import visibility_policy, with_policies
 
 ROOT = Path(__file__).resolve().parents[2]
 ROOM = "entity.campus_room"
@@ -493,11 +494,16 @@ def test_a_written_package_keeps_prefer_over(tmp_path):
 
 
 def test_a_caller_never_sees_a_hidden_model_in_prefer_over(tmp_path):
+    """Hiding a listed look-alike drops it from the list, never the model that lists it."""
     root = _write(tmp_path, _with_prefer(_files(), rooms=["rooms_hist", "space_detail"]))
     config = load_package_config(str(root))
-    view = build_view(config, frozenset({ROOM_HIST}))
+    policy = with_policies(config, visibility_policy("hidden", ROOM_HIST))
+    hidden = hidden_object_ids(policy, roles=["support"])
+    assert ROOM_HIST in hidden
+    assert ROOM not in hidden
+    view = build_view(config, hidden)
     assert {row.id: row.prefer_over for row in view.entities}[ROOM] == [SPACE_DETAIL]
-    assert ROOM_HIST not in json.dumps([asdict(row) for row in view.entities])
+    assert f'"{ROOM_HIST}"' not in json.dumps([asdict(row) for row in view.entities])
 
 
 @pytest.mark.parametrize(
