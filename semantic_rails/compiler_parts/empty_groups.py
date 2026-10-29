@@ -492,8 +492,11 @@ def _seen_outside_window(
     scope: LeafScope, *, source_rows: bool = False, declared: bool = False
 ) -> SqlExists:
     """Whether the scope has a row that holds a value. ``declared`` (a declared edge gates the
-    output) reads the scope's rows without the measure's authored filter conditions."""
-    where = scope.source_where if declared and scope.source_where is not None else scope.where
+    output) reads the scope's rows without the measure's authored filter conditions, and then
+    any such row will do: the edge says its period is loaded, so a filter that matched no row
+    there reads 0 even while the column holds no value yet (refunds before the first one)."""
+    unfiltered = declared and scope.source_where is not None
+    where = scope.source_where if unfiltered else scope.where
     if (
         not isinstance(scope.value, SqlCall)
         or scope.value.name not in {"SUM", "COUNT", "COUNT_IF", "COUNTIF"}
@@ -511,12 +514,17 @@ def _seen_outside_window(
             select=[SqlField(SqlLiteral(1), "seen")],
             from_table=replace(scope.from_table),
             joins=list(scope.joins),
-            # A top-level conditional additive operand can be measured as zero even
-            # when it never matched. Its row count still protects matching NULL sums.
-            # Keep every scope filter and leave unsupported/earlier settlement alone.
+            # A top-level conditional additive operand, or a filtered one under a declared
+            # edge, can be measured as zero even when it never matched. Its row count still
+            # protects matching NULL sums. Keep every scope filter and leave
+            # unsupported/earlier settlement alone.
             where=[
                 *where,
-                *([] if source_rows and is_conditional_case(operand) else [observed]),
+                *(
+                    []
+                    if unfiltered or (source_rows and is_conditional_case(operand))
+                    else [observed]
+                ),
             ],
             limit=1,
             observation_scan=True,
