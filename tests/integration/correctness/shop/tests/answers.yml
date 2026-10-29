@@ -8353,6 +8353,38 @@ tests:
         GROUP BY g.b
       )
       SELECT b, CAST(long_tickets AS DOUBLE PRECISION) / NULLIF(opened, 0) FROM weeks
+  shop/long-tickets-ever-read-zero-under-the-load-log:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'How many long tickets (over 480 minutes) have we ever had, with no time window: none has run that long, and the load log says the tickets are loaded through Sunday September 29, so the answer is 0 (data of nothing), not NULL with NO_DATA_IN_SCOPE. The stray ticket 4 after the load log is not read.'
+    cites: *long_cites
+    tags: [null-vs-zero]
+    query:
+      select: [metric.shop.long_tickets]
+    now: '2024-10-07T06:00:00Z'
+    expected_rows: [{long_tickets: 0}]
+    reference_sql: |
+      SELECT CASE WHEN COUNT(CASE WHEN t.minutes > 480 THEN 1 END) > 0 OR COUNT(*) > 0
+        THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END
+      FROM tickets AS t
+      WHERE t.opened_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+        AND t.opened_at <= TIMESTAMP '2024-10-07 06:00:00'
+  shop/the-share-of-long-tickets-ever-reads-zero-under-the-load-log:
+    kind: query_matches_snapshot
+    expect: answer
+    why: 'The share of tickets that ever ran long, with no time window: no ticket has, and the load log covers tickets 1 to 3, so the share is 0 / 3 = 0.0, not NULL.'
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_ticket_share, tests/integration/correctness/shop/metrics/metrics.yml#metrics.long_tickets, tests/integration/correctness/shop/models/tickets.yml#model.zero_through, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    tags: [null-vs-zero]
+    query:
+      select: [metric.shop.long_ticket_share]
+    now: '2024-10-07T06:00:00Z'
+    expected_rows: [{long_ticket_share: 0.0}]
+    reference_sql: |
+      SELECT CAST(CASE WHEN COUNT(*) > 0 THEN COUNT(DISTINCT CASE WHEN t.minutes > 480 THEN t.ticket_id END) END
+          AS DOUBLE PRECISION) / NULLIF(COUNT(DISTINCT t.ticket_id), 0)
+      FROM tickets AS t
+      WHERE t.opened_at < (SELECT CAST(MAX(through_day) AS TIMESTAMP) + INTERVAL '1' DAY FROM ticket_loads)
+        AND t.opened_at <= TIMESTAMP '2024-10-07 06:00:00'
   shop/a-quiet-week-under-an-empty-load-log-reads-null:
     kind: query_matches_snapshot
     expect: answer

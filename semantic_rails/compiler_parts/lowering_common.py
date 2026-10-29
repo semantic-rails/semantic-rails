@@ -560,6 +560,44 @@ def _record_time_scope(
         )
 
 
+def _record_all_time_scope(
+    config: PackageConfig,
+    leaf: SqlSelect,
+    rows: list[MeasurePlan],
+    untimed: list[Any],
+    *,
+    authored: Sequence[Any] = (),
+) -> None:
+    """Record the scope of a call with no time window, for each filtered sum or count whose
+    table declares its edge: the edge caps every row it reads (``_edge_cap``), so the table is
+    loaded through the whole answer, and its rows without the authored filter
+    (``source_where``), not a matching row, say it is observed (``guard_empty_groups``).
+    A leaf with CTEs of its own (an entity filter's population) records nothing."""
+    if not authored or leaf.ctes or not isinstance(leaf.from_table, SqlTableRef):
+        return
+    for row in rows:
+        measure = _measure_index(config)[row.bound_measure.measure_id]
+        if measure.zero_through is None or not resolves_to_zero(
+            row.bound_measure.aggregation, measure
+        ):
+            continue
+        alias = row.bound_measure.alias
+        record_leaf_scope(
+            alias,
+            LeafScope(
+                from_table=leaf.from_table,
+                joins=tuple(leaf.joins),
+                where=tuple(untimed),
+                value=next(field.expression for field in leaf.select if field.alias == alias),
+                source_where=tuple(
+                    condition
+                    for condition in untimed
+                    if not any(condition is filtered for filtered in authored)
+                ),
+            ),
+        )
+
+
 def _coverage_bucket(
     plan: LogicalPlan, config: PackageConfig, raw_time: Any, bucket: Any, role: Any
 ) -> Any:

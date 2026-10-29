@@ -338,6 +338,122 @@ def missing_link_fix(link: dict[str, Any]) -> str:
     return ""
 
 
+# --- The key columns the pair shares ------------------------------------------------------------
+
+
+_DATED = frozenset({"date", "timestamp", "datetime", "time"})
+
+
+def shared_key(config: PackageConfig, start: str, target: str) -> dict[str, Any]:
+    """The columns of either entity's declared key that both ``start`` and ``target`` hold, each
+    saying what it identifies (``shared_key_columns``, empty when they share none, spelled as
+    the key declares them) and, when there are any, whether they hold ``target``'s whole key
+    (``shared_key_unique_on_target``): only then does each ``start`` row match at most one
+    ``target`` row on them.
+
+    Columns that only date the rows (a load, snapshot or validity date: a dimension of either
+    side typed as a date or time) identify nothing the two share, unless they are one side's
+    whole key, as a calendar's date is."""
+    columns = _Columns(config)
+    keys = columns.key_of(start) | columns.key_of(target)
+    shared = {
+        column
+        for column in columns.held.get(start, set()) & columns.held.get(target, set())
+        if column in keys and _specific(column)
+    }
+    dated = {
+        dim.column.casefold()
+        for dim in config.dimensions
+        if dim.entity in (start, target) and dim.column and dim.data_type.casefold() in _DATED
+    }
+    if shared <= dated and shared not in (columns.key_of(start), columns.key_of(target)):
+        shared = set()
+    if not shared:
+        return {"shared_key_columns": []}
+    # A relationship's columns compare as written, so name them as the keys do.
+    spelled = {
+        column.casefold(): column
+        for entity in (start, target)
+        for column in columns.keys.get(entity, [])
+    }
+    key = columns.key_of(target)
+    return {
+        "shared_key_columns": sorted(spelled.get(column, column) for column in shared),
+        "shared_key_unique_on_target": bool(key) and key <= shared,
+    }
+
+
+def _shared(details: dict[str, Any]) -> tuple[str, str, list[str], str]:
+    shared = list(details.get("shared_key_columns") or [])
+    return str(details.get("start")), str(details.get("target")), shared, ", ".join(shared)
+
+
+def _them(shared: Sequence[str]) -> str:
+    return "it" if len(shared) == 1 else "them"
+
+
+def shared_key_fact(details: dict[str, Any]) -> str:
+    """What the pair shares, in one clause (for the refusal's message): no key column, the
+    target's whole key, or key columns on which one start row can match many target rows."""
+    if "shared_key_columns" not in details:
+        return ""
+    start, target, shared, columns = _shared(details)
+    if not shared:
+        return f"'{start}' and '{target}' share no key column"
+    if details.get("shared_key_unique_on_target"):
+        return f"'{start}' holds the key of '{target}' ({columns})"
+    short = (
+        f"'{target}' has no key"
+        if details.get("target_row_grain")
+        else f"not the whole key of '{target}'"
+    )
+    return (
+        f"'{start}' and '{target}' share {columns}, but {short}, so one '{start}' row can match "
+        f"many '{target}' rows on {_them(shared)}"
+    )
+
+
+def shared_key_split(details: dict[str, Any]) -> str:
+    """What separate calls for each side can be matched on (for the caller's split hint)."""
+    if "shared_key_columns" not in details:
+        return ""
+    start, target, shared, columns = _shared(details)
+    if not shared:
+        return (
+            f" '{start}' and '{target}' share no key column, so their separate results have no "
+            "key to be matched on."
+        )
+    if details.get("shared_key_unique_on_target"):
+        return (
+            f" Key columns they share: {columns}; each '{start}' row matches at most one "
+            f"'{target}' row on {_them(shared)}."
+        )
+    return (
+        f" Key columns they share: {columns}, not the whole key of '{target}', so one "
+        f"'{start}' row can match many '{target}' rows on {_them(shared)}: a total across the "
+        f"matched rows counts a '{start}' row once per '{target}' row it matches."
+    )
+
+
+def shared_key_fix(details: dict[str, Any]) -> str:
+    """The package author's change when the pair shares key columns that aren't all of the
+    target's key. Which relationship joins them on those depends on rows the engine doesn't
+    read: many-to-one when no two target rows hold the same values, else many-to-many, which a
+    call can't group or filter through."""
+    start, target, shared, columns = _shared(details)
+    if not shared or details.get("shared_key_unique_on_target"):
+        return ""
+    return (
+        f"'{start}' and '{target}' share {columns}, not the whole key of '{target}'. A "
+        f"graph.relationships row from '{start}' to '{target}' with `via: [{columns}]` and "
+        f"`target: [{columns}]` is `cardinality: many_to_one` when no two '{target}' rows hold "
+        f"the same {columns} (or, for versions, none valid at the same time, with their window "
+        f"in `temporal_validity:`): each '{start}' row then meets one '{target}' row. Otherwise "
+        f"it is `cardinality: many_to_many`, and a call can't group or filter a measure of "
+        f"either by the other's dimensions through it: it is refused with MIXED_GRAIN_INVALID."
+    )
+
+
 def _ranked(
     rows: Iterable[tuple[str, set[str], tuple[Any, ...]]],
     wanted: set[str],
@@ -472,21 +588,69 @@ def call_measures(call: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(ref for key in _VALUE_KEYS for ref in walk(call.get(key))))
 
 
+class _Grains:
+    """Each entity's declared key, the columns its dimensions read, and those of its own times
+    (the dimensions a temporal role reads)."""
+
+    def __init__(self, config: PackageConfig) -> None:
+        self.columns = _Columns(config)
+        roles = {role.dimension for role in config.temporal_roles}
+        self.described: dict[str, set[str]] = {}
+        self.times: dict[str, set[str]] = {}
+        for dim in config.dimensions:
+            if not _COLUMN.match(dim.column or ""):
+                continue
+            self.described.setdefault(dim.entity, set()).add(dim.column.casefold())
+            if dim.id in roles:
+                self.times.setdefault(dim.entity, set()).add(dim.column.casefold())
+
+    def same_things(self, entity: str, other: str) -> bool:
+        """Whether two entities' rows are the same things.
+
+        - Keyed: both by the same key (a copy, such as a staging or mirrored table), or one by
+          the other's key and time columns of its own (a history or snapshot, one row per
+          version of each). Every key column says what it identifies.
+        - Keyless: neither declares a key, and one's dimensions read every column the other's
+          do (a copy, or one that adds columns such as a snapshot date or validity range).
+
+        A relationship, or a table that holds another's key (payments holding each invoice's),
+        relates different things, and so do two keyless tables that each read columns the
+        other doesn't."""
+        near, far = self.columns.key_of(entity), self.columns.key_of(other)
+        if not near and not far:
+            mine, theirs = self.described.get(entity, set()), self.described.get(other, set())
+            return bool(mine and theirs) and (mine <= theirs or theirs <= mine)
+        if not near or not far or not all(_specific(column) for column in near | far):
+            return False
+        return (
+            near == far
+            or (near < far and far - near <= self.times.get(other, set()))
+            or (far < near and near - far <= self.times.get(entity, set()))
+        )
+
+
 def lookalike_swaps(
     config: PackageConfig, measure_ids: Sequence[str], start: str
 ) -> list[tuple[str, dict[str, str]]]:
     """Each other entity that holds a look-alike of every one of ``measure_ids`` (the call's
     measures on ``start``), with each measure's look-alike there. A look-alike is a published
     measure on another entity with the same key or label, each without its model's table name,
-    that totals the same way (``_alike``). An entity with two look-alikes of one measure has no
-    one look-alike, so it is left out."""
+    that totals the same way (``_alike``), on an entity whose rows are the same things
+    (``_Grains.same_things``). An entity with two look-alikes of one measure has no one look-alike, so
+    it is left out."""
     entities = {row.id: row for row in config.entities}
     asked = [row for row in config.measures if row.id in set(measure_ids) and row.entity == start]
     if not asked:
         return []
     found: dict[str, dict[str, list[str]]] = {}
+    grains = _Grains(config)
+    same: dict[str, bool] = {}
     for other in config.measures:
         if other.entity == start or not other.publish:
+            continue
+        if other.entity not in same:
+            same[other.entity] = grains.same_things(start, other.entity)
+        if not same[other.entity]:
             continue
         for measure in asked:
             if _alike(measure, other, entities):
@@ -500,16 +664,21 @@ def lookalike_swaps(
 
 
 def measure_lookalikes(config: PackageConfig, measure_id: str) -> list[Any]:
-    """The published look-alikes (``_alike``) of one measure on other entities, by id."""
+    """The published look-alikes (``_alike``) of one measure on other entities whose rows
+    are the same things (``_Grains.same_things``), by id."""
     entities = {row.id: row for row in config.entities}
     asked = next((row for row in config.measures if row.id == measure_id), None)
     if asked is None:
         return []
+    grains = _Grains(config)
     return sorted(
         (
             other
             for other in config.measures
-            if other.entity != asked.entity and other.publish and _alike(asked, other, entities)
+            if other.entity != asked.entity
+            and other.publish
+            and _alike(asked, other, entities)
+            and grains.same_things(asked.entity, other.entity)
         ),
         key=lambda row: row.id,
     )
@@ -628,7 +797,8 @@ def lookalike_advice(rows: Sequence[dict[str, Any]]) -> str:
     """The caller hint: each look-alike by id, how to read it, and the caveat. What each one's
     model holds is in ``details.lookalike_measures`` and, in full, on the measure's card."""
     renames = (
-        " Where the call names a result column (order_by, having), use the row's `columns`."
+        " Where the call names a result column (select `as`, order_by, having), use the row's "
+        "`columns`."
         if any(row.get("columns") for row in rows)
         else ""
     )

@@ -391,11 +391,14 @@ def guard_empty_groups(
             # below gates the output's bucket, or where the output has no time bucket.
             source_rows = gated or not bucketed
             # Under a declared edge, the edge says which gated periods are observed: its probes
-            # read the source rows whether or not the authored filter ever matched one.
+            # read the source rows whether or not the authored filter ever matched one. So it
+            # does for one total over all time (no window): the edge caps every row it reads.
             declared = (
                 scope is not None
-                and gated
-                and scope.edge is not None
+                and (
+                    (gated and scope.edge is not None)
+                    or (not bucketed and scope.source_where is not None)
+                )
                 and alias not in earlier
                 and not earlier_settlement_applies()
             )
