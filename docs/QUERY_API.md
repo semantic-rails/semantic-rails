@@ -632,6 +632,12 @@ Request:
 }
 ```
 
+`terms` may be a list (`["revenue", "region"]`): each term is ranked on its own, as a request
+with that term alone would be, and the response is `by_term`, each term's response groups keyed
+by the term, with `query_state` and `selection_context` once beside it. A repeated term is ranked
+once, and an empty list is empty `terms`. An item that is not a non-blank string is refused with
+`400` (`INVALID_REQUEST`). A string is one search, as before.
+
 Response groups:
 
 - `measures`

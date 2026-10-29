@@ -86,6 +86,7 @@
   "tests/semantic_rails/test_discover.py": 0.732,
   "tests/semantic_rails/test_discover_kinds_argument.py": 9.661,
   "tests/semantic_rails/test_discover_ranking.py": 0.593,
+  "tests/semantic_rails/test_discover_terms_list.py": 1.7,
   "tests/semantic_rails/test_duckdb_builtin_resolution.py": 10.591,
   "tests/semantic_rails/test_duckdb_confinement.py": 28.362,
   "tests/semantic_rails/test_duckdb_materialized_fetch.py": 3.027,

@@ -33,7 +33,7 @@ from .diagnostics import (
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
 from .mcp_query import coerce_arguments
 from .mcp_session import MCPQuerySession
-from .metadata import _slim_discover_minimal
+from .metadata import _slim_discover_minimal, discover_by_term
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -46,6 +46,7 @@ from .request_payload import (
     MAX_RESULT_CHARS_ENV,
     MIN_RESULT_CHARS,
     checked_discover_kinds,
+    discover_term_list,
     max_result_chars,
     parse_string_list,
     singular_kinds,
@@ -400,14 +401,14 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="discover",
         description=(
-            f"Rank objects by business terms; empty terms list ids ({_DISCOVER_ID_PAGE} per kind; limit, offset). "
-            "Default: id, label, description; compact omits blocked cards. "
+            "Rank objects by business terms, or each term of a list alone (by_term); "
+            "empty terms list ids. Compact omits blocked cards. "
             "Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; "
             "branch before using a candidate."
         ),
         input_schema=_schema(
             {
-                "terms": {"type": "string"},
+                "terms": {"type": ["string", "array"], "items": {"type": "string"}},
                 "kinds": {
                     "type": ["string", "array"],
                     "items": {"type": "string", "enum": sorted(DISCOVER_KIND_NAMES)},
@@ -417,8 +418,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "stage": {
                     "type": "string",
                     "description": (
-                        "Ranking stage: initial, post_measure, post_dimension or "
-                        "comparison; inferred if omitted."
+                        "initial, post_measure, post_dimension or comparison; inferred if omitted."
                     ),
                 },
                 "verbosity": _VERBOSITY_MINIMAL,
@@ -2039,9 +2039,20 @@ class SemanticLayerMCPAdapter:
                         ),
                     }
                 )
+            elif isinstance(raw_terms, (list, tuple)):
+                try:
+                    listed = discover_term_list(raw_terms)
+                except ValueError as exc:
+                    raise _argument_error(
+                        f"MCP argument 'terms' {exc}.", field="terms", value=raw_terms
+                    ) from exc
+                if listed:
+                    # Each term ranks on its own, exactly as a call with that term alone.
+                    return discover_by_term(lambda term: _build({**args, "terms": term}), listed)
+                terms_str = ""
             else:
                 raise _argument_error(
-                    "MCP argument 'terms' must be a string.",
+                    "MCP argument 'terms' must be a string or a list of non-blank strings.",
                     field="terms",
                     value=raw_terms,
                 )

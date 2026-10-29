@@ -64,6 +64,15 @@ def parse_string_list(value: Any) -> list[str]:
     raise ValueError("must be a string or array of strings")
 
 
+def discover_term_list(value: list[Any] | tuple[Any, ...]) -> list[str]:
+    """``discover``'s ``terms`` sent as a list: each item a term ranked on its own, in order,
+    each once. Raises ``ValueError`` for an item that is not a non-blank string."""
+
+    if not all(isinstance(term, str) and term.strip() for term in value):
+        raise ValueError("must be a string or a list of non-blank strings")
+    return list(dict.fromkeys(value))
+
+
 def checked_string_list(value: Any, *, field: str) -> list[str]:
     """:func:`parse_string_list` for callers outside HTTP and MCP (the CLI).
 

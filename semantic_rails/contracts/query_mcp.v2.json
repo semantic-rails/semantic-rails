@@ -219,7 +219,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank objects by business terms; empty terms list ids (100 per kind; limit, offset). Default: id, label, description; compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank objects by business terms, or each term of a list alone (by_term); empty terms list ids. Compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -269,11 +269,17 @@
             "type": "object"
           },
           "stage": {
-            "description": "Ranking stage: initial, post_measure, post_dimension or comparison; inferred if omitted.",
+            "description": "initial, post_measure, post_dimension or comparison; inferred if omitted.",
             "type": "string"
           },
           "terms": {
-            "type": "string"
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "string",
+              "array"
+            ]
           },
           "verbosity": {
             "default": "minimal",

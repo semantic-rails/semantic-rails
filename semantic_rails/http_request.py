@@ -34,7 +34,7 @@ from .request_payload import (
 from .request_payload import (
     coerce_bool as coerce_bool,
 )
-from .request_payload import parse_string_list
+from .request_payload import discover_term_list, parse_string_list
 
 
 class HTTPInputError(ValueError):
@@ -54,6 +54,13 @@ def coerce_int(value: Any, default: int, *, field: str, minimum: int | None = No
     if minimum is not None and parsed < minimum:
         raise HTTPInputError(f"Field '{field}' must be greater than or equal to {minimum}.")
     return parsed
+
+
+def coerce_term_list(value: list[Any]) -> list[str]:
+    try:
+        return discover_term_list(value)
+    except ValueError as exc:
+        raise HTTPInputError(f"Field 'terms' {exc}.") from exc
 
 
 def coerce_string_list(value: Any, *, field: str) -> list[str]:

@@ -114,7 +114,8 @@ tool/schema drift cannot be merged silently.
 
 ## Tools
 
-- `discover`: rank objects against business terms; empty `terms` list the catalog's ids.
+- `discover`: rank objects against business terms, or each term of a list on its own; empty
+  `terms` list the catalog's ids.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values. `search` keeps the values containing its
   text, ignoring case, and `limit`/`offset` page them in the warehouse; `has_more` says
@@ -206,6 +207,20 @@ ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning giv
 `details.next_offset` while more remain. The `semantic-rails://catalog/index`, `catalog/summary`
 and `catalog/full` resources return the whole index, descriptive rows, or every card with the
 alias index (see [Resources And Prompts](#resources-and-prompts)).
+
+`terms` may also be a list, for a question the agent has split into its parts:
+`{"terms": ["revenue", "region"]}` ranks each term on its own, exactly as a call with that term
+alone would (same ranking, `kinds`, `query`, `limit` and verbosity), and returns the results
+keyed by term under `by_term`, in the order sent:
+`{"by_term": {"revenue": {"measures": [...], ...}, "region": {"dimensions": [...], ...}}}`. Each
+entry is that term's response without the call's own fields: `query_state`, `selection_context`,
+`verbosity` and a warning about the call itself (a misspelled argument) appear once, beside
+`by_term`. An entry carries its own `no_matches`, `low_relevance` or `out_of_scope` and
+`recovery_hints`. A repeated term is ranked once; an empty list is empty `terms`. An item that is
+not a non-blank string is refused with `INVALID_MCP_ARGUMENTS`. A string is still one search
+(`"revenue by region"` is not read as a list), and a list's terms are never ranked together. The terms share
+the response budget, so a list whose results do not fit is refused with `RESULT_TOO_LARGE`
+naming `by_term`; send fewer terms or a lower `limit` or verbosity.
 
 `discover` returns slim cards by default: `id`, `label`, a `description` retaining whole sentences
 up to 120 characters (sentences naming package dimensions, entities, measures or metrics survive
