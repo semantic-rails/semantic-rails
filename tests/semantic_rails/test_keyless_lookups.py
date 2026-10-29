@@ -683,9 +683,10 @@ def test_the_cards_say_one_row_per_key_and_name_the_link(shop):
     )
     rows = inspect_payload(shop, object_id=ROOM_ROWS)["card"]
     assert rows["key_note"] == (
-        "No key: every stored row counts. It looks up Room; nothing can look up one of its "
-        "rows. Its columns are reached from Room one to many: each counts once in every group "
-        "it has a row in."
+        "No key: every stored row counts. It looks up Room. No model can join to one of its "
+        "rows by key, but its measures still group and filter by its own columns and through "
+        "Room, beside other models' measures. Its columns are reached from Room one to many: "
+        "each counts once in every group it has a row in."
     )
 
 

@@ -465,9 +465,9 @@ def recovery_hints_for_error(
                 {
                     "kind": "row_grain_target",
                     "message": (
-                        f"'{target}' is a row-grain model (no key): nothing can look up one of "
-                        "its rows, so no relationship leads into it. Group its own measures by "
-                        "its columns."
+                        f"'{target}' is a row-grain model (no key): no model can join to one of "
+                        "its rows by key, so no relationship leads into it. Group its own "
+                        "measures by its columns."
                     ),
                     "unreachable_target": target,
                 }
@@ -1724,12 +1724,15 @@ def rewrite_warning_payload(step: Any) -> dict[str, Any]:
         details.setdefault("rewrite_kind", rewrite_kind)
     message = str(getattr(step, "reason", "") or "rewrite applied")
     if rewrite_kind == "leaf_preaggregate_join":
-        details.setdefault("rewrite_classification", "safe_independent_leaf_alignment")
+        # What the fan-out check proved, and no more: how the rows combine, never that the
+        # call reads the right measures or tables.
+        details.setdefault("rewrite_classification", "independent_leaf_alignment")
         message = (
-            "Safe cross-fact alignment: independent leaf aggregates were joined on final "
-            "grain keys."
+            "Each model's measures were aggregated to the call's groups before the join, so "
+            "the join counts no row twice. It does not check that these models answer the "
+            "question."
         )
-    # A disclosure of how a correct answer was computed: a note, not a warning to act on.
+    # A disclosure of how the rows were computed: a note, not a warning to act on.
     return semantic_issue(
         code="REWRITE_APPLIED",
         message=message,

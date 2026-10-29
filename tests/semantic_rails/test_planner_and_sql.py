@@ -555,7 +555,7 @@ def test_mixed_grain_measures_are_rewritten_into_classified_leaf_aggregates(conf
     warnings = runtime.validate(query).get("warnings") or []
     rewrite = next(warning for warning in warnings if warning["code"] == "REWRITE_APPLIED")
     assert rewrite["details"]["rewrite_kind"] == "leaf_preaggregate_join"
-    assert rewrite["details"]["rewrite_classification"] == "safe_independent_leaf_alignment"
+    assert rewrite["details"]["rewrite_classification"] == "independent_leaf_alignment"
 
 
 TWO_FROM_ORDERS = {
