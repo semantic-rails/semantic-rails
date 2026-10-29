@@ -19,6 +19,9 @@ graph:
     ticket_audited: {label: Audited ticket, key: [ticket_id], model: ticket_audited}
     ticket_export: {label: Ticket export, key: [run_id], model: ticket_exports}
     ticket_exported: {label: Exported ticket, key: [ticket_id], model: ticket_exported}
+    refund_load: {label: Refund load, key: [run_id], model: refund_loads}
+    refund_loaded: {label: Loaded refund, key: [refund_id], model: refunds_loaded}
+    refund_audited: {label: Audited refund, key: [refund_id], model: refunds_audited}
     default_calendar: {label: Calendar, kind: time, key: [date_day], model: default_calendar,
       allowed_as_root: false}
     fiscal_calendar: {label: Fiscal calendar, kind: time, key: [date_day],

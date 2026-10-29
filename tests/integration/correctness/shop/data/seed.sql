@@ -186,6 +186,10 @@ CREATE TABLE ticket_audits (run_id INTEGER, through_day DATE);
 -- ticket_exports, a nightly that ran through Thursday 2024-11-14: November has no ticket.
 CREATE TABLE ticket_exports (run_id INTEGER, through_day DATE);
 INSERT INTO ticket_exports VALUES (1, DATE '2024-11-13'), (2, DATE '2024-11-14');
+-- refund_loads, a nightly load log for refunds, which are dated by their order: its last run
+-- loaded through Sunday 2024-03-31, so order 7's two refunds (ordered 2024-05-06) aren't loaded.
+CREATE TABLE refund_loads (run_id INTEGER, through_day DATE);
+INSERT INTO refund_loads VALUES (1, DATE '2024-03-31');
 
 -- A monthly rollup of orders by store, keyed by a DATE (the base table's key is a TIMESTAMP).
 CREATE TABLE orders_monthly AS

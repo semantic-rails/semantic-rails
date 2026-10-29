@@ -1696,7 +1696,10 @@ declared edge lets through. Such a table is observed there whether or not a filt
 `filter` has matched one of them, so "how many enterprise accounts have we ever had?" reads `0`
 before the first one, with no `NO_DATA_IN_SCOPE`. It needs a row the edge lets through (under
 `observation_scope: "query"`, one the call's `where` keeps): an empty load log lets none through,
-so it reads `NULL`. Without a declared edge, the filter must match a row, as above.
+so it reads `NULL`. Without a declared edge, the filter must match a row, as above. A measure
+dated by another model's clock (a refund by its order's time) is let through by that clock, so a
+refund whose order is after the edge isn't read
+([Empty periods](PACKAGE_AUTHORING.md#empty-periods)).
 
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
