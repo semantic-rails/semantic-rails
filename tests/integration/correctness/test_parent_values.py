@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -310,10 +311,15 @@ def test_each_room_row_reads_its_own_buildings_value(campus, variant, verbosity)
 def test_a_group_counts_each_of_its_buildings_once(campus, variant):
     """Labs R-101 and R-104 are both in B-1: 1000, not 2000. Offices span B-1 and B-2: 1600.
     Storage's one room names no building: NULL area, count and average, never 0."""
-    assert campus.answer(BY_USE, variant) == campus.reference("by_use")
-    rows = {row[0]: row[1:3] for row in campus.answer(BY_USE, variant)}
-    assert rows["lab"] == (1000, 1) and rows["office"] == (1600, 2)
-    assert rows["storage"] == (None, None)
+
+    def exact(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+        # Postgres answers an average's NUMERIC exactly, as a string.
+        return [(*row[:3], None if row[3] is None else Decimal(str(row[3]))) for row in rows]
+
+    assert exact(campus.answer(BY_USE, variant)) == exact(campus.reference("by_use"))
+    rows = {row[0]: row[1:] for row in exact(campus.answer(BY_USE, variant))}
+    assert rows["lab"] == (1000, 1, 1000) and rows["office"] == (1600, 2, 800)
+    assert rows["storage"] == (None, None, None)
 
 
 def test_rows_without_a_key_count_each_building_once(campus):
