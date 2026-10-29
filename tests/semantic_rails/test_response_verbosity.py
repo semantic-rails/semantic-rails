@@ -52,8 +52,9 @@ _TIME_MEANING_KEYS = frozenset(
 )
 _MINIMAL_NONEXECUTE_KEYS = frozenset({"ok", "errors", "warnings", *_TIME_MEANING_KEYS})
 _MINIMAL_COMPILE_KEYS = frozenset({"ok", "errors", "warnings", "rendered_sql", *_TIME_MEANING_KEYS})
+# A run also says which model each value comes from (read_from).
 _MINIMAL_EXECUTE_KEYS = frozenset(
-    {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+    {"ok", "read_from", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
     | _TIME_MEANING_KEYS
 )
 

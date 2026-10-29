@@ -314,10 +314,10 @@ def read_from(
     Each measure or metric the call selects is listed under its model's entity (under each, when
     a metric reads several), and each group_by and where dimension under its own. When the SQL
     reached a dimension's entity through relationships whose route the response doesn't state,
-    those relationship ids follow its values, in route order. A route is stated by ``routes``
-    (chosen among several), a ``ROUTE_PASS_THROUGH`` or ``LISTED_THROUGH`` note, or a fan-out
-    note's ``paths``. An entity ``routes`` names, with no unstated route into it, is left out:
-    the response already says the call reads it. ``config`` is the caller's view, which the call
+    those relationship ids follow its values, each once, in the order the SQL read them. A route
+    is stated by ``routes`` (chosen among several), a ``ROUTE_PASS_THROUGH`` or ``LISTED_THROUGH``
+    note, or a fan-out note's ``paths``. An entity ``routes`` names, with no unstated route into
+    it, is left out: the response already says the call reads it. ``config`` is the caller's view, which the call
     compiled on, so nothing here names an object the caller can't see."""
     query = dict(compiled["explain"].normalized_query or {})
     measures = {row.id: row.entity for row in config.measures}
@@ -343,15 +343,16 @@ def read_from(
                 values.setdefault(entity, {})[ref] = None
     stated = _stated_routes(config, out)
     reads = read_routes(compiled["logical_plan"], compiled.get("route_choices") or [])
+    where = [row for row in every_filter(query.get("where")) if isinstance(row, Mapping)]
     fields = [
-        *(ref for ref in query.get("group_by") or [] if isinstance(ref, str)),
-        *(row.get("field") for row in every_filter(query.get("where")) if isinstance(row, Mapping)),
+        *(field for field in query.get("group_by") or [] if isinstance(field, str)),
+        *(str(row.get("field") or "") for row in where),
     ]
-    for ref in dict.fromkeys(fields):
-        target = dimensions.get(ref)
-        if target not in entities:
+    for field in dict.fromkeys(fields):
+        target = dimensions.get(field)
+        if target is None or target not in entities:
             continue
-        values.setdefault(target, {})[ref] = None
+        values.setdefault(target, {})[field] = None
         for start, end, path in reads:
             if end == target and path and (start, end) not in stated and set(path) <= relationships:
                 hops.setdefault(target, {}).update(dict.fromkeys(path))
