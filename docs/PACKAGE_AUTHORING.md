@@ -847,7 +847,7 @@ kind names must match exactly.
   (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
   of nothing).
 
-  A UUID column (a tenant or owner key) takes `type: uuid` on its id or categorical
+  A UUID column (an account or owner key) takes `type: uuid` on its id or categorical
   dimension. The attribute is a string holding a UUID: 32 hex digits in any case, hyphenated
   `8-4-4-4-12` or not, in braces or not. It binds as its lower-case hyphenated text, so
   `3F2504E0-4F89-11D3-9A0C-0305E82C3301` and `{3f2504e0-4f89-11d3-9a0c-0305e82c3301}` read
