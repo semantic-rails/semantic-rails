@@ -69,6 +69,7 @@
   "tests/semantic_rails/test_conversion_operand_filters.py": 4.345,
   "tests/semantic_rails/test_conversion_recovery.py": 2.739,
   "tests/semantic_rails/test_conversion_window_bounds.py": 0.907,
+  "tests/semantic_rails/test_count_unit_cards.py": 0.93,
   "tests/semantic_rails/test_coverage_probe_identifiers.py": 0.005,
   "tests/semantic_rails/test_db_parts_common.py": 2.107,
   "tests/semantic_rails/test_dbt_artifacts.py": 11.49,

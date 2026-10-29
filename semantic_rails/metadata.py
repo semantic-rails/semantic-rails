@@ -70,6 +70,7 @@ from .metadata_parts.capabilities import (
 from .metadata_parts.entity_graph import entity_graph, entity_relationships
 from .metadata_parts.guidance import (
     _aggregation_guidance,
+    _count_unit,
     _metric_guidance,
     _metric_preferences,
 )
@@ -850,6 +851,7 @@ def _object_card(
                     "snapshot": measure.accumulation.snapshot,
                 },
                 "value_type": measure.value_type,
+                **_count_unit(measure),
                 "usage_summary": _aggregation_guidance(measure),
                 **_aggregation_guidance(measure),
                 "default_temporal_role": payload.get("default_temporal_role", ""),
