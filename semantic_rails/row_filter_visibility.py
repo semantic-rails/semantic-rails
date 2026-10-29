@@ -213,7 +213,7 @@ def visibility_for(config: PackageConfig, filters: Sequence[RowFilter]) -> Visib
         modeled=frozenset(relation_key(row.table) for row in base.entities if row.table),
         load_logs=frozenset(
             relation_key(row.zero_through.relation)
-            for row in base.measures
+            for row in base.entities
             if row.zero_through is not None and row.zero_through.kind == "loaded"
         ),
         pipelines=frozenset(relation_key(name) for name in pipeline_cte_names(base)),

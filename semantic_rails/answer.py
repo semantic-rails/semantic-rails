@@ -201,7 +201,7 @@ def load_log_name(config: Any, rows: Any) -> str:
     shown = any(row.entity in owners and row.column == column for row in config.dimensions)
     names = {
         row.zero_through.name
-        for row in config.measures
+        for row in config.entities
         if row.zero_through is not None
         and (row.zero_through.relation, row.zero_through.column) == (relation, column)
     }

@@ -111,6 +111,10 @@ class EntityConfig:
     # The entities of the models the model lists in `prefer_over:`: look-alikes whose questions
     # this one answers instead (lookalike_models).
     prefer_over: list[str] = field(default_factory=list)
+    # The model's declared loaded edge (its own ``zero_through``, else the project's); None is
+    # the last row (``data``). Every measure of the model carries it, and so does an inline
+    # aggregate over the model's rows when the model has no measure.
+    zero_through: ZeroThrough | None = None
 
     @property
     def is_row_grain(self) -> bool:

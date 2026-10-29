@@ -7,8 +7,10 @@ A model's ``zero_through``, else the project's ``defaults.zero_through``, is one
 - ``{loaded: <model>.<field>}``: ``MAX`` of a date or timestamp field of a model (usually a
   load log, never the facts themselves) that records how far the load has completed.
 
-Every measure of the model carries the resolved edge (``MeasureConfig.zero_through``); only
-an additive sum or count reads it (``compiler_parts.empty_groups``).
+The model's entity and every measure of the model carry the resolved edge
+(``EntityConfig.zero_through``, ``MeasureConfig.zero_through``); only an additive sum or count
+reads it (``compiler_parts.empty_groups``), and an inline aggregate over the model's rows takes
+the entity's (``compiler_parts.bind``).
 """
 
 from __future__ import annotations

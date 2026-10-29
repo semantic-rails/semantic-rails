@@ -691,7 +691,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         path=path,
     )
     measure_model = {measure_id: model for (model, _key), measure_id in measure_lookup.items()}
-    measures = _with_zero_through(
+    entities, measures = _with_zero_through(
+        entities,
         measures,
         model_rows,
         defaults,
@@ -1399,6 +1400,7 @@ def _load_fields(
 
 
 def _with_zero_through(
+    entities: list[EntityConfig],
     measures: list[MeasureConfig],
     model_rows: dict[str, dict[str, Any]],
     defaults: dict[str, Any],
@@ -1407,8 +1409,9 @@ def _with_zero_through(
     field_of: FieldOf,
     model_of: dict[str, str],
     path: str,
-) -> list[MeasureConfig]:
-    """Each measure with its model's ``zero_through``, else the project's default."""
+) -> tuple[list[EntityConfig], list[MeasureConfig]]:
+    """Each entity and measure with its model's ``zero_through``, else the project's default:
+    the entity keeps it for a model with no measure."""
 
     def edge(value: Any, where: str) -> ZeroThrough | None:
         return zero_through(value, where=where, path=path, warehouse=warehouse, field_of=field_of)
@@ -1420,4 +1423,7 @@ def _with_zero_through(
         else default
         for model_id, model in model_rows.items()
     }
-    return [replace(row, zero_through=edges.get(model_of.get(row.id, ""))) for row in measures]
+    return (
+        [replace(row, zero_through=edges.get(row.model_id)) for row in entities],
+        [replace(row, zero_through=edges.get(model_of.get(row.id, ""))) for row in measures],
+    )

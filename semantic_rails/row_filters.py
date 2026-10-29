@@ -125,7 +125,7 @@ class Visibility:
     refused: Mapping[str, str] = field(default_factory=dict)
     # Relations a model reads (unrestricted ones may be read as they are).
     modeled: frozenset[str] = frozenset()
-    # Load logs whose mark (zero_through) a measure reads.
+    # Load logs whose mark (zero_through) a model's rows are read through.
     load_logs: frozenset[str] = frozenset()
     # Relation-pipeline CTE names: their bodies may not read a restricted relation.
     pipelines: frozenset[str] = frozenset()

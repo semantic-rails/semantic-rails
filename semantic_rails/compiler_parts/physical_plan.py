@@ -828,7 +828,7 @@ def build_performance_plan(
     # A load log (zero_through) whose model the caller's view hides is not described.
     hidden_logs = {
         row.zero_through.relation
-        for row in config.measures
+        for row in config.entities
         if row.zero_through is not None and row.zero_through.kind == "loaded"
     } - {row.table for row in config.entities}
     for read in sql_nodes(sql_ast):

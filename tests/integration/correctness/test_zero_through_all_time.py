@@ -4,6 +4,7 @@ period does; without a declared edge it reads NULL, as before."""
 
 import pytest
 
+from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 
 from .conftest import _rows
@@ -771,3 +772,128 @@ def test_the_fulfilment_rate_and_the_unfulfilled_amount_read_each_side_on_its_cl
     [row] = result["rows"]
     assert float(row["fulfilment_rate"]) == pytest.approx(rate)
     assert int(row["unfulfilled"]) == unfulfilled
+
+
+# Customers, a model with no measure, dated by when they joined; their load log ends on Sunday
+# 2024-09-29, so customer 3 (VIP, Oct 1) and customer 4 (Oct 2) are past it.
+JOINED = [(1, "2024-09-03 10:00:00", "vip"), (2, "2024-09-05 12:00:00", "regular")]
+JOINED += [(3, "2024-10-01 08:00:00", "vip"), (4, "2024-10-02 09:00:00", "regular")]
+VIP = {"kind": "comparison", "op": "=", "right": {"kind": "literal", "value": "vip"}}
+VIP["left"] = {"kind": "column", "column": "tier", "entity": "entity.joined_customer"}
+VIP_CUSTOMERS = {"expression": {"kind": "aggregate_if", "aggregation": "count", "condition": VIP}}
+TIER = "dimension.joined_customer_tier"
+CUSTOMER_CAPS = {**CAPS, "default_loaded": CAPS["loaded"], "default_now": CAPS["now"]}
+
+
+def _customers(request, backend_name, tmp_path, edge, policies=None):
+    """Customers with no measure, read under ``edge``: their model's own, or (``default_*``)
+    the project's ``defaults.zero_through``."""
+    loaded = {"loaded": "loads.through_day"}
+    zero_through = {"loaded": loaded, "empty_log": loaded, "now": "now"}
+    defaults = {"default_loaded": loaded, "default_now": "now"}
+    models = {
+        "customers": {
+            "id": "customers",
+            "relation": "events",
+            "entities": {"customer": {}},
+            **({"zero_through": zero_through[edge]} if edge in zero_through else {}),
+            "times": {"event_at": EVENT_TIME},
+            "dimensions": {"tier": {"kind": "categorical"}},
+        },
+        "loads": {
+            "id": "loads",
+            "relation": "loads",
+            "entities": {"load": {}},
+            "times": {"through_day": {"column": "through_day", "kind": "date"}},
+            "dimensions": {"team": {"kind": "categorical"}},
+        },
+    }
+    entities = {
+        "customer": {"key": ["event_id"], "model": "customers"},
+        "load": {"key": ["run_id"], "model": "loads"},
+    }
+    values = ", ".join(f"({n}, TIMESTAMP '{at}', '{tier}')" for n, at, tier in JOINED)
+    seed = (
+        "CREATE TABLE {events} (event_id INTEGER, event_at TIMESTAMP, tier VARCHAR(20)); "
+        f"INSERT INTO {{events}} VALUES {values};"
+        "CREATE TABLE {loads} (run_id INTEGER, through_day DATE, team VARCHAR(20));"
+        + ("" if edge == "empty_log" else "INSERT INTO {loads} VALUES (1, DATE '2024-09-29', 'a');")
+    )
+    defaults = {"zero_through": defaults[edge]} if edge in defaults else None
+    return _package(
+        request,
+        backend_name,
+        tmp_path,
+        "joined",
+        models,
+        entities,
+        seed,
+        defaults=defaults,
+        policies=policies,
+    )
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(
+    "edge,total,by_tier",
+    [
+        # Customer 3, after the load log, is not read.
+        ("loaded", 1, [("regular", 0), ("vip", 1)]),
+        # The project's default edge covers a model that declares none.
+        ("default_loaded", 1, [("regular", 0), ("vip", 1)]),
+        ("now", 2, [("regular", 0), ("vip", 2)]),
+        ("default_now", 2, [("regular", 0), ("vip", 2)]),
+        ("data", 2, [("regular", 0), ("vip", 2)]),
+        # An empty load log certifies nothing: no row is read.
+        ("empty_log", None, []),
+    ],
+)
+def test_vip_customers_ever_written_inline_stop_at_a_model_with_no_measure_s_load_log(
+    request, backend_name, tmp_path, edge, total, by_tier
+):
+    """ "How many VIP customers have we ever had", written inline (``aggregate_if``) over a
+    customers model with no measure: it reads the rows the model's declared edge lets through,
+    its own or the project's, as it does on a model with measures."""
+    runtime, tables = _customers(request, backend_name, tmp_path, edge)
+    grouped = {"select": [{**VIP_CUSTOMERS, "as": "vip"}], "group_by": [TIER], "order_by": [{"field": TIER}]}  # fmt: skip
+    try:
+        ungrouped = runtime.query({"select": [{**VIP_CUSTOMERS, "as": "vip"}]}, now=NOW)
+        by_tier_result = runtime.query(grouped, now=NOW)
+        reference = _rows(
+            runtime,
+            "SELECT tier, COUNT(CASE WHEN tier = 'vip' THEN 1 END) FROM {events} "
+            "WHERE {cap} GROUP BY tier ORDER BY tier".format(
+                cap=CUSTOMER_CAPS[edge].format(**tables), **tables
+            ),
+        )
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {events}; DROP TABLE {loads}".format(**tables))
+        runtime.close()
+    rows = [(row[TIER], row["vip"]) for row in by_tier_result["rows"]]
+    assert rows == [(tier, count) for tier, count in reference] == by_tier
+    assert ungrouped["rows"] == [{"vip": total}]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_vip_customers_ever_under_a_row_filter_on_the_load_log_are_refused(
+    request, backend_name, tmp_path
+):
+    """The load log says how far the whole load ran: a caller whose row filter covers it is
+    refused, never shown a date the filter has cut, as for a model with measures."""
+    team = {"id": "policy.joined.team", "kind": "row_filter", "audiences": ["auditor"]}
+    team.update(dimension="dimension.joined_load_team", attribute="team")
+    runtime, tables = _customers(request, backend_name, tmp_path, "loaded", policies=[team])
+    auditor = RequestContext(audience="auditor", attributes={"team": "a"})
+    try:
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.query({"select": [{**VIP_CUSTOMERS, "as": "vip"}]}, now=NOW, context=auditor)
+        unfiltered = runtime.query({"select": [{**VIP_CUSTOMERS, "as": "vip"}]}, now=NOW)
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {events}; DROP TABLE {loads}".format(**tables))
+        runtime.close()
+    assert raised.value.code == "POLICY_DENIED"
+    assert raised.value.details == {"reason": "row_filter_on_load_log"}
+    assert "zero_through" in str(raised.value)
+    assert unfiltered["rows"] == [{"vip": 1}]

@@ -188,7 +188,7 @@ def check_one_per_key_names(config: PackageConfig) -> None:
         authored += [row.id, row.output_name]
         authored += [name for step in row.steps for name in _strings(step.config)]
     authored += [row.relation for row in config.aggregate_relations]
-    authored += [row.zero_through.relation for row in config.measures if row.zero_through]
+    authored += [row.zero_through.relation for row in config.entities if row.zero_through]
     for name in authored:
         if _STEM in _normalized(name):
             raise SemanticLayerError(

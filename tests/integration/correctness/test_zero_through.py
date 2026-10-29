@@ -545,10 +545,13 @@ def _package(
     metrics=None,
     relationships=None,
     names=("events", "purchases", "loads"),
+    defaults=None,
+    policies=None,
 ):
     """A package of its own on ``backend_name``: ``models`` and graph ``entities`` (and
     ``relationships``) by key, tables ``names`` named in ``seed`` as ``{table}`` (made unique
-    per run), seeded by ``seed``, and ``metrics`` by name."""
+    per run), seeded by ``seed``, ``metrics`` by name, and the project's ``defaults`` and
+    ``policies``."""
     backend = _backend(request, backend_name)
     tables = {table: f"{table}_{uuid4().hex}" for table in names}
     documents = {
@@ -571,6 +574,10 @@ def _package(
     }
     if metrics:
         documents["metrics/metrics.yml"] = {"metrics": metrics}
+    if defaults:
+        documents["defaults.yml"] = {"defaults": defaults}
+    if policies:
+        documents["policies.yml"] = {"semantic_policies": policies}
     for key, model in models.items():
         documents[f"models/{key}.yml"] = {"model": {**model, "relation": tables[model["relation"]]}}
     for path_name, document in documents.items():

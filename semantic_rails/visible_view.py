@@ -119,6 +119,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         text="label description model_description freshness_source freshness_as_of display",
         texts="key_roles foreign_key_roles topics disallowed_names prefer_over",
         identity="name aliases",
+        rows="zero_through",
     ),
     DimensionConfig: _classes(
         "id entity column data_type filterable groupable value_domain unknown_values",
