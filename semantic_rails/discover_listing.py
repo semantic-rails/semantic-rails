@@ -80,8 +80,9 @@ def _first_measure(
 def _owners(config: PackageConfig) -> dict[str, str]:
     """Each measure, metric, segment and dimension id, with its model's entity id.
 
-    A metric's model is its discover card's ``root_entity``, else the model of the first measure
-    it reads.
+    A metric's model is the one whose rows it counts: its discover card's ``root_entity`` (a
+    predicate or conversion metric's entity, else its first measure's model), else, for a metric
+    whose card names none (a windowed one), the model of the first measure it reads.
     """
     measures = {row.id: row.entity for row in config.measures}
     owner = {**measures, **{row.id: row.entity for row in config.segments}}

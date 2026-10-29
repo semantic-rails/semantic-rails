@@ -42,7 +42,9 @@ from semantic_rails.embedding import SemanticLayerMCPAdapter
 adapter = SemanticLayerMCPAdapter.from_package("jaffle_shop")
 try:
     tools = adapter.list_tools()  # Paid once at connect time.
-    found = adapter.call_tool("discover", {"terms": "orders by store name"})  # "" lists every id.
+    found = adapter.call_tool(
+        "discover", {"terms": "orders by store name"}
+    )  # "" lists ids by model.
     draft = adapter.call_tool("plan", {"intent": "orders by store name"})
     if draft["status"] == "ok" and not draft.get("warnings"):
         result = adapter.call_tool(
@@ -115,7 +117,7 @@ tool/schema drift cannot be merged silently.
 ## Tools
 
 - `discover`: rank objects against business terms, or each term of a list on its own; empty
-  `terms` list the catalog's ids.
+  `terms` list the catalog's ids by model.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values. `search` keeps the values containing its
   text, ignoring case, and `limit`/`offset` page them in the warehouse; `has_more` says
@@ -202,12 +204,37 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
 
 ### Catalog And Metadata
 
-`discover` with empty `terms` lists the catalog instead of ranking: counts, the package's
-capability flags, and ids per object kind, 100 per kind at a time. `limit` and `offset` page the
-ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning gives
-`details.next_offset` while more remain. The `semantic-rails://catalog/index`, `catalog/summary`
-and `catalog/full` resources return the whole index, descriptive rows, or every card with the
-alias index (see [Resources And Prompts](#resources-and-prompts)).
+`discover` with empty `terms` lists the catalog instead of ranking. With no `kinds`, it lists
+the ids an agent picks a starting point from, by model: `counts` per kind, the package's
+`description`, and `models`, each model the caller sees keyed by its entity id with its
+`measures`, `metrics`, `segments` and `dimensions` ids (and its `label` when the label says more
+than the id):
+
+```json
+{"catalog": {"counts": {"entities": 15, "measures": 41, "...": 0}, "description": "...",
+  "models": {"entity.jaffle_customer": {"measures": ["measure.jaffle.customer_count", "..."],
+    "metrics": ["metric.sales.customer_count", "..."],
+    "segments": ["segment.jaffle.high_value_customers"],
+    "dimensions": ["dimension.jaffle_customer_id", "..."]}, "...": {}}}}
+```
+
+A metric is listed under the model whose rows it counts: a predicate or conversion metric's
+entity, else the model of the first measure it reads. When the caller sees more dimensions than one page holds (100), each model
+gives its `dimension_count` instead, and the note `DISCOVER_DIMENSIONS_COUNTED` says to pass
+`kinds: ["dimension"]` to page their ids or `terms` to rank them. `limit` (default 100) and
+`offset` page the models, and a page also ends before the first model that would take the
+response past its character budget. A `DISCOVER_IDS_TRUNCATED` warning gives `details.next_offset`
+and `details.remaining.models` while models remain. The detail of an id (aggregations, values,
+time roles) is on its `inspect` card.
+
+With `kinds`, it lists each named kind's ids instead (`measure_ids`, `dimension_ids`, ...), with
+`counts`, 100 per kind at a time: `limit` and `offset` page each kind's ids, and
+`DISCOVER_IDS_TRUNCATED` gives `details.next_offset` and the ids left per kind while more remain.
+A resource grant names no model, so its listing is by kind too. Every id and count is the
+caller's: an object hidden from them, or outside their grant, lists as if it were absent. The
+listing leaves out the package's capability flags: the `semantic-rails://catalog/index` resource
+returns the whole index with them, and `catalog/summary` and `catalog/full` return descriptive
+rows, or every card with the alias index (see [Resources And Prompts](#resources-and-prompts)).
 
 `terms` may also be a list, for a question the agent has split into its parts:
 `{"terms": ["revenue", "region"]}` ranks each term on its own, exactly as a call with that term
@@ -1174,7 +1201,8 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 
 | Code | Tool(s) | Meaning |
 |---|---|---|
-| `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
+| `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of models, or of ids per kind, and more remain; `details.next_offset` is the next page and `details.remaining` counts what is left (`models`, or per kind) |
+| `DISCOVER_DIMENSIONS_COUNTED` | `discover` | A note: the empty-terms listing by model gives each model's `dimension_count`, since the caller sees more dimensions than one page (100); `kinds: ["dimension"]` pages their ids. `details` `{dimensions}` |
 | `DISCOVER_TERMS_TRUNCATED` | `discover` | A list of `terms` didn't fit the response budget; the leading terms that fit are listed and `details.remaining_terms` names the rest to send in another call |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
@@ -1201,7 +1229,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
 
-`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). Every kind the tool schema lists is accepted: `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value`, `relationship`, `temporal_role` and `value_domain`, and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. With `terms`, `relationship`, `temporal_role` and `value_domain` are ranked only when named, each in its own bucket (`relationships`, `temporal_roles`, `value_domains`) whose cards keep what the object joins, times (`dimension`, `supported_grains`) or holds (`dimensions`) at every verbosity. The id listing (empty `terms`) exists on MCP only and lists each requested kind's ids, `dimension_value_ids` included; over HTTP, empty `terms` run the ranked search. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
+`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). Every kind the tool schema lists is accepted: `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value`, `relationship`, `temporal_role` and `value_domain`, and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. With `terms`, `relationship`, `temporal_role` and `value_domain` are ranked only when named, each in its own bucket (`relationships`, `temporal_roles`, `value_domains`) whose cards keep what the object joins, times (`dimension`, `supported_grains`) or holds (`dimensions`) at every verbosity. The id listing (empty `terms`) exists on MCP only and lists ids by model, or each requested kind's ids, `dimension_value_ids` included; over HTTP, empty `terms` run the ranked search. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
 
 Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) when the boundary contract is violated outright — e.g. wrong arg name, wrong type, value outside a declared enum. The full envelope shape is identical across all six tools.
 
@@ -1224,8 +1252,9 @@ Declarative resources:
   resources and prompts.
 - `semantic-rails://catalog/summary`: descriptive rows (up to 200 per kind) and `counts_total`.
   Existing consumers can read fields such as `catalog.measures[].id`. This is a large resource.
-- `semantic-rails://catalog/index`: a small opt-in index of counts and ids per object kind,
-  the same as `discover` with empty `terms`, unpaged.
+- `semantic-rails://catalog/index`: a small opt-in index of counts and ids per object kind, with
+  the package's capability flags: the ids `discover` with empty `terms` and every `kinds` lists,
+  unpaged.
 - `semantic-rails://catalog/full`: every object's full card and the alias index. It grows with the
   package (about 200K tokens for `jaffle_shop`), so read the index first. `resources/read` has
   no paging arguments; paging this resource needs resource templates, planned with the
