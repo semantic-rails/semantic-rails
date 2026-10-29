@@ -1659,6 +1659,31 @@ model:
   instead of reading NULL. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
   under "One row per key".
 
+### `prefer_over:` — the canonical model of look-alikes
+
+When validation names a group of [look-alike models](#look-alike-models), such as a table and its
+history, list the others in the canonical model's `prefer_over:`, by model id. It says that
+model answers their questions instead, so validation stops asking about the group:
+
+```yaml
+# models/rooms.yml: one row per room in use; rooms_hist holds one row per version
+model:
+  id: rooms
+  relation: rooms
+  entities: {room: {}}
+  prefer_over: [rooms_hist]
+```
+
+- A group is decided when one model lists every other, directly or through another model's list
+  (`rooms` lists `rooms_hist`, and `rooms_hist` lists `rooms_audit`). Until then the group's
+  `LOOKALIKE_MODELS` warning stays.
+- A model may list one no rule groups with it, when the author knows they hold the same things.
+- Each id must be another model of the package, and the lists never run in a circle: one model of
+  a group is the canonical one. Either mistake is `INVALID_CONFIG`, naming the unknown id with the
+  closest model ids, or the circle (`rooms -> rooms_hist -> rooms`).
+- A caller who can't see a listed model reads the list without it.
+- Queries read the models as before: `prefer_over:` changes no answer.
+
 ### `bridge:` — link tables and junction tables
 
 `bridge: true` on the entities block declares the model a link table: a route
@@ -3604,7 +3629,7 @@ canonical. The groups come from the YAML alone, never from descriptions:
 | `same_count` | Rows that aren't the same things, each with a published count of the same label (without a `(<table>)` suffix) over the same column, counted the same way (its card's `count_unit`, without the model). | `floors` and `space_detail`, each counting distinct `building_id` as "Distinct buildings" |
 
 A group links its models pair by pair, so a table, its history and a staging copy make one
-group. The message names up to five models (`details.entities` has them all). A `same_rows`
+group. The message names up to five models (`details.models` has them all). A `same_rows`
 group has each model's key in `details.keys`; a `same_count` group has its counts by model in
 `details.measures`, with their `unit` and `name`. These are never a group:
 
@@ -3615,11 +3640,15 @@ group has each model's key in `details.keys`; a `same_count` group has its count
 - two tables whose only shared count is a row count, such as a `sum` of `1`: each counts its own
   rows.
 
-For a `same_rows` group, say what each model's rows are in its `description` (a refusal's
-look-alike rows and a measure's card show its first sentence), and remove a copy no question
-needs. For a `same_count` group, label each count for the rows it counts ("Buildings with a
-floor"), which takes it out of the group, or set `publish: false` on those no question needs.
-`project_status` adds a next action that counts the groups.
+A warning names the models by model id (`details.models`), and their entities in
+`details.entities`. For either kind, list the others in the canonical model's
+[`prefer_over:`](#prefer_over--the-canonical-model-of-look-alikes), which clears the group's
+warning. For a `same_rows` group, also say what each model's rows are in its `description` (a
+refusal's look-alike rows and a measure's card show its first sentence). For a `same_count`
+group where no model answers every question the others do, label each count for the rows it
+counts instead ("Buildings with a floor"), which takes it out of the group, or set
+`publish: false` on those no question needs. `project_status` adds a next action that counts the
+groups no model is declared canonical of.
 
 ## Upgrading a package
 

@@ -166,6 +166,9 @@ def semantic_payload(config: PackageConfig) -> dict[str, Any]:
     semantic = canonicalize_semantics(config)
     for name in ("connection", "default_db", "seed"):
         semantic["package"].pop(name, None)
+    # A model's id names its file, as its author does: renaming one changes no object or answer.
+    for entity in semantic["entities"]:
+        entity.pop("model_id", None)
     return semantic
 
 

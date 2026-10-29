@@ -115,9 +115,9 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     ),
     EntityConfig: _classes(
         "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
-        "allowed_as_root freshness_sla_seconds bridge model one_per_key",
+        "allowed_as_root freshness_sla_seconds bridge model one_per_key model_id",
         text="label description model_description freshness_source freshness_as_of display",
-        texts="key_roles foreign_key_roles topics disallowed_names",
+        texts="key_roles foreign_key_roles topics disallowed_names prefer_over",
         identity="name aliases",
     ),
     DimensionConfig: _classes(
@@ -305,10 +305,16 @@ def _declared_references(config: PackageConfig) -> dict[str, frozenset[str]]:
     if analysis.declared_references is None:
         ids = {row.id for row in _rows(config)}
         # An entity's display only names a dimension shown beside its key: hiding that
-        # dimension blanks the display (a text field), never the entity.
+        # dimension blanks the display (a text field), never the entity. Its prefer_over only
+        # names the look-alikes it answers for: hiding one drops it from the list, never the
+        # entity.
         analysis.declared_references = {
             row.id: frozenset(
-                _strings(replace(row, display="") if isinstance(row, EntityConfig) else row)
+                _strings(
+                    replace(row, display="", prefer_over=[])
+                    if isinstance(row, EntityConfig)
+                    else row
+                )
             )
             & ids - {row.id}
             for row in _rows(config)

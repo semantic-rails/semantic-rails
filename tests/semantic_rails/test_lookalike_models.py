@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +25,11 @@ import yaml
 from semantic_rails.architect_mcp import _guidance_payload, create_architect_mcp_server
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, parse_config_report
+from semantic_rails.interop.package_writer import write_package
 from semantic_rails.lookalike_models import _same_rows_pairs, lookalike_groups
 from semantic_rails.path_gap import _Grains
+from semantic_rails.visible_view import build_view, hidden_object_ids
+from tests.semantic_rails.hidden_absent import visibility_policy, with_policies
 
 ROOT = Path(__file__).resolve().parents[2]
 ROOM = "entity.campus_room"
@@ -222,24 +227,27 @@ def test_each_group_of_lookalike_models_is_named_once_with_the_question(campus):
     rooms, survey, buildings = warnings
     assert rooms["severity"] == "warning"
     assert rooms["message"] == (
-        f"{campus}: {ROOM} and {ROOM_HIST} hold the same rows (keyed by room_id; {ROOM_HIST} "
+        f"{campus}: models rooms and rooms_hist hold the same rows (keyed by room_id; rooms_hist "
         "adds valid_from: one row per version), so an agent can answer one question from any "
-        "of them. Which is canonical? Say what each one's rows are in its model's description, "
-        "and remove a copy no question needs."
+        "of them. Which is canonical? List the others in its model's prefer_over, and say in "
+        "each model's description what its rows are."
     )
+    assert rooms["details"]["models"] == ["rooms", "rooms_hist"]
     assert rooms["details"]["keys"] == {ROOM: ["room_id"], ROOM_HIST: ["room_id", "valid_from"]}
     assert survey["message"].startswith(
-        f"{campus}: {SPACE_DETAIL} and {SPACE_DETAIL_HIST} hold the same rows (neither has a "
-        f"key, and {SPACE_DETAIL_HIST} reads every column {SPACE_DETAIL} does), so"
+        f"{campus}: models space_detail and space_detail_hist hold the same rows (neither has a "
+        "key, and space_detail_hist reads every column space_detail does), so"
     )
     assert buildings["message"] == (
-        f"{campus}: {FLOOR} and {SPACE_DETAIL} each count distinct building_id under one label "
-        "(Distinct buildings) over rows that aren't the same things, so an agent can answer "
-        "one question from any of them. Which is canonical? Label each count for the rows it "
-        "counts, or set publish: false on those no question needs."
+        f"{campus}: models floors and space_detail each count distinct building_id under one "
+        "label (Distinct buildings) over rows that aren't the same things, so an agent can "
+        "answer one question from any of them. Which is canonical? When one model answers "
+        "every question the others do, list them in its prefer_over; else label each count for "
+        "the rows it counts, or set publish: false on those no question needs."
     )
     assert buildings["details"] == {
         "kind": "same_count",
+        "models": ["floors", "space_detail"],
         "entities": [FLOOR, SPACE_DETAIL],
         "measures": {FLOOR: [FLOOR_BUILDINGS], SPACE_DETAIL: [SPACE_BUILDINGS]},
         "unit": "distinct building_id",
@@ -316,8 +324,8 @@ def test_a_group_of_three_names_what_each_adds_and_counts_the_rest(tmp_path):
     audit = "entity.campus_room_audit"
     assert rooms["details"]["entities"] == [ROOM, audit, ROOM_HIST]
     assert (
-        f"{ROOM}, {audit} and {ROOM_HIST} hold the same rows (keyed by room_id; {audit} adds "
-        f"audited_at; {ROOM_HIST} adds valid_from: one row per version)"
+        "models rooms, rooms_audit and rooms_hist hold the same rows (keyed by room_id; "
+        "rooms_audit adds audited_at; rooms_hist adds valid_from: one row per version)"
     ) in rooms["message"]
 
 
@@ -365,13 +373,14 @@ def test_project_status_asks_for_the_canonical_models_and_the_summary_shows_one(
     status = _mcp(server, "project_status", {"project_path": str(campus)})
     assert status["next_actions"][0] == (
         "Name the canonical model of each of the 3 groups of look-alike models in parse.warnings "
-        "(code LOOKALIKE_MODELS; page: parse.warnings lists them all): an agent can answer one "
-        "question from any model of a group."
+        "(code LOOKALIKE_MODELS; page: parse.warnings lists them all), and list the others in "
+        "its prefer_over (upsert_model): an agent can answer one question from any model of a "
+        "group."
     )
     assert status["parse"]["warning_counts"]["LOOKALIKE_MODELS"] == 3
     summary = _mcp(server, "validate_project", {"project_path": str(campus)})
     (shown,) = [row for row in summary["warnings"] if row["code"] == "LOOKALIKE_MODELS"]
-    assert shown["message"].startswith(f"{campus}: {ROOM} and {ROOM_HIST} hold the same rows")
+    assert shown["message"].startswith(f"{campus}: models rooms and rooms_hist hold the same rows")
     whole = _mcp(server, "validate_project", {"project_path": str(campus), "full_report": True})
     assert _lookalikes(whole) == _lookalikes(parse_config_report(PackageReference(str(campus)))[0])
     # A package without look-alikes gets no such action.
@@ -398,3 +407,168 @@ def test_the_architect_guidance_says_who_decides():
     ]
     assert "decide which is canonical" in principle
     assert "never from the names alone" in principle
+    assert "prefer_over" in principle
+
+
+def _with_prefer(files: dict[str, Any], **prefer: list[str]) -> dict[str, Any]:
+    """``files`` with each named model's ``prefer_over``."""
+    for name, body in files.items():
+        model = body.get("model") if name.startswith("models/") else None
+        if model and model["id"] in prefer:
+            model["prefer_over"] = prefer[model["id"]]
+    return files
+
+
+def _rooms_audit(files: dict[str, Any]) -> dict[str, Any]:
+    files["graph.yml"]["graph"]["entities"]["room_audit"] = {
+        "key": ["room_id", "audited_at"],
+        "model": "rooms_audit",
+    }
+    files["models/rooms_audit.yml"] = _model(
+        "rooms_audit",
+        {"room_audit": {}},
+        times={"audited_at": {"column": "audited_at", "kind": "date"}},
+        dimensions=_categorical("room_name"),
+    )
+    return files
+
+
+def test_a_declared_canonical_model_clears_its_group_and_only_its_group(tmp_path):
+    files = _with_prefer(_files(), rooms=["rooms_hist"], floors=["space_detail"])
+    root = _write(tmp_path, files)
+    report, _ = parse_config_report(PackageReference(source_path=str(root)))
+    assert report["ok"]
+    assert [row["details"]["models"] for row in _lookalikes(report)] == [
+        ["space_detail", "space_detail_hist"]
+    ]
+    config = load_package_config(str(root))
+    rows = {row.id: row for row in config.entities}
+    assert rows[ROOM].prefer_over == [ROOM_HIST]
+    assert rows[FLOOR].prefer_over == [SPACE_DETAIL]
+    assert (rows[ROOM].model_id, rows[SPACE_DETAIL].model_id) == ("rooms", "space_detail")
+    assert [group.canonical for group in lookalike_groups(config)] == [ROOM, "", FLOOR]
+    status = _mcp(
+        create_architect_mcp_server(workspace_root=root),
+        "project_status",
+        {"project_path": str(root)},
+    )
+    assert status["next_actions"][0].startswith(
+        "Name the canonical model of each of the 1 group of look-alike models"
+    )
+
+
+def test_a_group_is_decided_only_when_one_model_reaches_every_other(tmp_path):
+    """rooms over rooms_hist leaves rooms_audit undecided; rooms_hist over rooms_audit then
+    decides the group through rooms_hist, and so does rooms listing both."""
+    for prefer, warned in (
+        ({"rooms": ["rooms_hist"]}, True),
+        ({"rooms": ["rooms_hist"], "rooms_hist": ["rooms_audit"]}, False),
+        ({"rooms": ["rooms_hist", "rooms_audit"]}, False),
+        ({"rooms_hist": ["rooms_audit"], "rooms_audit": ["rooms"]}, False),
+        ({"rooms": ["rooms_hist"], "rooms_audit": ["rooms_hist"]}, True),
+    ):
+        root = _write(tmp_path / "_".join(prefer), _with_prefer(_rooms_audit(_files()), **prefer))
+        report, _ = parse_config_report(PackageReference(source_path=str(root)))
+        models = [row["details"]["models"] for row in _lookalikes(report)]
+        assert (["rooms", "rooms_audit", "rooms_hist"] in models) is warned, prefer
+
+
+def test_an_author_may_declare_models_no_rule_groups(tmp_path):
+    """Rooms and the keyless space survey read different columns: no rule groups them, but the
+    author knows the survey's rows are rooms too."""
+    root = _write(tmp_path, _with_prefer(_files(), rooms=["space_detail"]))
+    config = load_package_config(str(root))
+    assert {row.id: row.prefer_over for row in config.entities}[ROOM] == [SPACE_DETAIL]
+
+
+def test_a_written_package_keeps_prefer_over(tmp_path):
+    """The package writer names models by their entity keys: the list follows them."""
+    root = _write(tmp_path, _with_prefer(_files(), rooms=["rooms_hist", "space_detail"]))
+    out = write_package(load_package_config(str(root)), tmp_path / "out/campus", namespace="campus")
+    rows = {row.id: row.prefer_over for row in load_package_config(str(out)).entities}
+    assert rows[ROOM] == [ROOM_HIST, SPACE_DETAIL]
+    assert yaml.safe_load((out / "models/room.yml").read_text())["model"]["prefer_over"] == [
+        "room_hist",
+        "space_detail",
+    ]
+
+
+def test_a_caller_never_sees_a_hidden_model_in_prefer_over(tmp_path):
+    """Hiding a listed look-alike drops it from the list, never the model that lists it."""
+    root = _write(tmp_path, _with_prefer(_files(), rooms=["rooms_hist", "space_detail"]))
+    config = load_package_config(str(root))
+    policy = with_policies(config, visibility_policy("hidden", ROOM_HIST))
+    hidden = hidden_object_ids(policy, roles=["support"])
+    assert ROOM_HIST in hidden
+    assert ROOM not in hidden
+    view = build_view(config, hidden)
+    assert {row.id: row.prefer_over for row in view.entities}[ROOM] == [SPACE_DETAIL]
+    assert f'"{ROOM_HIST}"' not in json.dumps([asdict(row) for row in view.entities])
+
+
+@pytest.mark.parametrize(
+    ("prefer", "message"),
+    [
+        (
+            {"rooms": ["rooms_hst"]},
+            "model 'rooms' prefer_over names 'rooms_hst', which is no model of the package "
+            "(did you mean 'rooms_hist'?)",
+        ),
+        (
+            {"rooms": ["rooms"]},
+            "model 'rooms' prefer_over names the model itself: list the other models whose "
+            "questions it answers instead",
+        ),
+        (
+            {"rooms": ["rooms_hist"], "rooms_hist": ["floors"], "floors": ["rooms"]},
+            "prefer_over runs in a circle (floors -> rooms -> rooms_hist -> floors): one model of "
+            "a group is the canonical one, so drop one of these from the other's prefer_over",
+        ),
+        ({"rooms": "rooms_hist"}, "model 'rooms' prefer_over must be a list of model ids"),
+        ({"rooms": ["rooms_hist", ""]}, "model 'rooms' prefer_over must be a list of model ids"),
+    ],
+)
+def test_a_prefer_over_the_package_cannot_follow_is_refused(tmp_path, prefer, message):
+    root = _write(tmp_path, _with_prefer(_files(), **prefer))
+    report, _ = parse_config_report(PackageReference(source_path=str(root)))
+    assert not report["ok"]
+    assert [row["code"] for row in report["errors"]] == ["INVALID_CONFIG"]
+    assert report["errors"][0]["message"].endswith(
+        f"failed to load package config: {root}: {message}"
+    )
+
+
+def test_upsert_model_writes_keeps_and_removes_prefer_over(campus, tmp_path):
+    root = _write(tmp_path, _files())
+    server = create_architect_mcp_server(workspace_root=root)
+    arguments = {
+        "project_path": str(root),
+        "model_id": "rooms",
+        "entity_key": "room",
+        "relation": "rooms",
+        "primary_key": ["room_id"],
+    }
+
+    def write(revision: str, key: str, **changes: Any) -> dict[str, Any]:
+        result = _mcp(
+            server,
+            "upsert_model",
+            {**arguments, "expected_revision": revision, "idempotency_key": key, **changes},
+        )
+        assert result["status"] == "upserted", result
+        return result
+
+    def declared() -> Any:
+        return yaml.safe_load((root / "models/rooms.yml").read_text())["model"].get("prefer_over")
+
+    revision = _mcp(server, "project_status", {"project_path": str(root)})["revision"]
+    revision = write(revision, "prefer", prefer_over=["rooms_hist"])["revision"]
+    assert declared() == ["rooms_hist"]
+    report, _ = parse_config_report(PackageReference(source_path=str(root)))
+    assert ["rooms", "rooms_hist"] not in [row["details"]["models"] for row in _lookalikes(report)]
+    # A replace keeps it; [] removes it.
+    measure = _files()["models/rooms.yml"]["model"]["measures"]
+    revision = write(revision, "replace", replace=True, measures=measure)["revision"]
+    assert declared() == ["rooms_hist"]
+    write(revision, "remove", prefer_over=[])
+    assert declared() is None

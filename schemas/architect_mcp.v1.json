@@ -876,7 +876,7 @@
         "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
-      "description": "Upsert a model and its graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs): its columns are ordinary dimensions; time.fill and every time bucket use the implicit Gregorian calendar. calendar: false reverts that. On a regular model, calendar_id binds its times to a calendar; a non-default calendar is refused in this release. Fields merge into an existing model. An existing dimension, time or measure given only label, description, synonyms or meta keeps its other fields; given anything else it is rewritten, and dropped_fields lists what that drops. replace: true rewrites the model from the arguments, keeping only its id, entities, calendar_id, zero_through (how far its tables are loaded) and one_per_key, and lists what it drops in dropped_fields. one_per_key: true reads a relation whose rows repeat the key as one row per primary_key, each column the key's one value (NULL where its rows disagree); keep the columns that vary on a row-grain model of the same relation. primary_key [] makes a row-grain model (no key); entities ({parent: {} or {expr: column}}) merges the model's parent entities. Relationships also go through upsert_relationship.",
+      "description": "Upsert a model and its graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs), its columns ordinary dimensions; time.fill and time buckets stay Gregorian. false reverts it. calendar_id on a regular model binds its times to a calendar (only the default in this release). Fields merge into an existing model: a dimension, time or measure given only label, description, synonyms or meta keeps its other fields; given more, it is rewritten. replace: true rewrites the model from the arguments, keeping its id, entities, calendar_id, zero_through (how far its tables are loaded), one_per_key and prefer_over. dropped_fields lists what a rewrite drops. one_per_key: true reads a relation whose rows repeat the key as one row per primary_key, each column the key's one value (NULL where its rows disagree); put columns that vary on a row-grain model of the same relation. prefer_over: look-alike model ids it answers for; [] removes. primary_key [] makes a row-grain model (no key); entities ({parent: {} or {expr: column}}) merges parent entities. Relate models with upsert_relationship.",
       "inputSchema": {
         "properties": {
           "calendar": {
@@ -967,6 +967,20 @@
             "anyOf": [
               {
                 "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "prefer_over": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"

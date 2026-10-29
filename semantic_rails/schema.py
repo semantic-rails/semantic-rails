@@ -106,6 +106,11 @@ class EntityConfig:
     # The model authors `one_per_key: true`: its relation is read as one row per key, each
     # column the key's one value (NULL where its rows disagree). ``table`` is that reading.
     one_per_key: bool = False
+    # The id of the model the entity is homed on (``model.id``), as its author names it.
+    model_id: str = ""
+    # The entities of the models the model lists in `prefer_over:`: look-alikes whose questions
+    # this one answers instead (lookalike_models).
+    prefer_over: list[str] = field(default_factory=list)
 
     @property
     def is_row_grain(self) -> bool:
