@@ -515,6 +515,13 @@ def _edge_cap(
     return [SqlExists(dated)]
 
 
+def _caps_untimed_reads(measure: MeasureConfig, config: PackageConfig) -> bool:
+    """Whether the measure's declared edge caps a read of it with no time window (``_edge_cap``).
+    Only a check, so it notes no route: the leaf that reads the cap notes its own."""
+    with recording_route_choices():
+        return bool(_edge_cap(measure, "", config))
+
+
 def _record_time_scope(
     plan: LogicalPlan,
     config: PackageConfig,
@@ -603,10 +610,8 @@ def _record_all_time_scope(
             row.bound_measure.aggregation, measure
         ):
             continue
-        # Only a check: the leaf already noted the route its cap reads.
-        with recording_route_choices():
-            if measure.default_temporal_role and not _edge_cap(measure, "", config):
-                continue
+        if measure.default_temporal_role and not _caps_untimed_reads(measure, config):
+            continue
         alias = row.bound_measure.alias
         record_leaf_scope(
             alias,
