@@ -34,6 +34,7 @@ from .bind import (
     _bound_filter_clauses,
     _expression_alias,
 )
+from .child_values import CHILD_VALUES
 from .empty_groups import (
     sql_nodes,
 )
@@ -412,9 +413,10 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
         first_plan = group[0]
         measure = measures[first_plan.bound_measure.measure_id]
         selected_aggregate = _selected_aggregate_relation(first_plan, config)
-        fanout_dedup = first_plan.rewrite_strategy == "fanout_dedup"
+        # A leaf across a one-to-many hop reads the measure's own rows: no anchor stands in.
+        crossing = first_plan.rewrite_strategy in {"fanout_dedup", CHILD_VALUES}
         entity_terms_anchor = (
-            None if fanout_dedup else _entity_in_terms_of_anchor_plan(plan, first_plan, config)
+            None if crossing else _entity_in_terms_of_anchor_plan(plan, first_plan, config)
         )
         scan_entity = (
             str(entity_terms_anchor["anchor_entity"])
@@ -529,7 +531,7 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
                         "contracts": contract_payloads,
                         "rewrite_reason": "entity_in_terms_of"
                         if entity_terms_anchor is not None
-                        else ("fanout_dedup" if fanout_dedup else ""),
+                        else (first_plan.rewrite_strategy if crossing else ""),
                         "physical_anchor_entity": scan_entity
                         if entity_terms_anchor is not None
                         else "",

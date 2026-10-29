@@ -163,6 +163,9 @@ def test_a_room_counts_once_in_every_city_its_building_has_an_address_in(campus,
     }
     # A count is no amount to split over the addresses.
     assert "whole_amounts" not in notes[1]["details"]["overlapping_groups"]
+    plan = campus.runtimes[variant].compile(call, verbosity="full")["physical_plan"]
+    joins = [node["details"] for node in plan["nodes"] if node["kind"] == "Join"]
+    assert joins and {join["rewrite_reason"] for join in joins} == {"child_values"}
 
 
 def test_the_cities_dont_add_up_to_the_total(campus):
