@@ -1311,8 +1311,9 @@ apply before the per-entity aggregation.
 - Each assumption is `{code, message, ...}`; any code the engine registers as an assumption
   is stated here, never among the warnings.
 - Verbosity trims only after the answer is built: `read_from`, `window`, `clock`,
-  `observation_scope`, `routes` (each `{from, to, via}`, with a call's `other_routes`), every assumption and every
-  warning survive every verbosity, because they change what the numbers mean.
+  `observation_scope`, `routes` (each `{from, to, via}`, with a call's `other_routes`), every
+  assumption and every warning survive every verbosity, because they change what the numbers
+  mean.
 - Each warning and each error has a stable `code` and a `message`, and like the answer leaves
   out its empty fields (an empty `path`, no `details`, no hints), on every transport. Codes,
   `status` and `routes` are server-authored, so a host can record them per call without the
