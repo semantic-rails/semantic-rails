@@ -7019,6 +7019,122 @@ tests:
         GROUP BY o.customer_id
       )
       SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY aov) FROM per_customer
+  shop/median-net-order-value-and-orders-by-store-name:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Order 8 has no store, so grouped by the store's name it reads in the NULL group: its net value 6 beside its count of 1, as grouped by the store's id. Elm's known net values are 10, 7, 0 and 2 (orders 4 and 7 are unknown), so 4.5; Oak's are -1, 8, 3 and 9, so 5.5."
+    cites: &net_by_store_cites
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/refunds.yml#model.measures.goods_refunded
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
+      - tests/integration/correctness/shop/models/stores.yml#model.dimensions.name
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression: {kind: distribution, function: median, over: *net_per_order}
+        as: median
+      - measure.shop.order_count
+      group_by: [dimension.shop_store_name]
+    expected_rows:
+      - {dimension.shop_store_id: a, dimension.shop_store_name: Elm, median: 4.5, order_count: 6}
+      - {dimension.shop_store_id: b, dimension.shop_store_name: Oak, median: 5.5, order_count: 4}
+      - {dimension.shop_store_id: null, dimension.shop_store_name: null, median: 6, order_count: 1}
+    reference_sql: |
+      WITH per_order AS (
+        SELECT o.order_id, s.store_id, s.name,
+          o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
+        FROM orders AS o
+        LEFT JOIN stores AS s ON s.store_id = o.store_id
+        LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        GROUP BY o.order_id, s.store_id, s.name, o.amount
+      )
+      SELECT store_id, name, percentile_cont(0.5) WITHIN GROUP (ORDER BY net), COUNT(order_id)
+      FROM per_order GROUP BY store_id, name
+  shop/median-net-order-value-by-store-name:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Alone, the median reads the same three groups: order 8, which has no store, is the NULL group's 6, not left out of the answer."
+    cites: *net_by_store_cites
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression: {kind: distribution, function: median, over: *net_per_order}
+        as: median
+      group_by: [dimension.shop_store_name]
+    expected_rows:
+      - {dimension.shop_store_id: a, dimension.shop_store_name: Elm, median: 4.5}
+      - {dimension.shop_store_id: b, dimension.shop_store_name: Oak, median: 5.5}
+      - {dimension.shop_store_id: null, dimension.shop_store_name: null, median: 6}
+    reference_sql: |
+      WITH per_order AS (
+        SELECT o.order_id, s.store_id, s.name,
+          o.amount - CASE WHEN COUNT(r.refund_id) = 0 THEN 0 ELSE SUM(r.goods_amount) END AS net
+        FROM orders AS o
+        LEFT JOIN stores AS s ON s.store_id = o.store_id
+        LEFT JOIN refunds AS r ON r.order_id = o.order_id
+        GROUP BY o.order_id, s.store_id, s.name, o.amount
+      )
+      SELECT store_id, name, percentile_cont(0.5) WITHIN GROUP (ORDER BY net)
+      FROM per_order GROUP BY store_id, name
+  shop/median-revenue-per-store-reads-only-the-stores:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Elm's revenue is 43 and Oak's 25, so 34. Order 8 has no store: it is no store of its own, so its 6 is not a third store's revenue. Fir has no orders, so no revenue to read."
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/graph.yml#graph.entities.store
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over: {kind: entity_value, entity: entity.shop_store, input: measure.shop.revenue}
+        as: median
+    expected_rows:
+      - {median: 34}
+    reference_sql: |
+      WITH per_store AS (
+        SELECT store_id, SUM(amount) AS revenue FROM orders WHERE store_id IS NOT NULL GROUP BY store_id
+      )
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY revenue) FROM per_store
+  shop/median-customer-revenue-and-orders-by-channel:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Web customers 101 (23), 103 (23) and 106 (9) read 23 over 6 orders; store customers 102 (9) and 104 (8) read 8.5 over 3. Customer 105's channel is unknown and customer 108 has no signup, so both are in the NULL group, as in the order count beside it: 105's revenue is unknown (order 7), so the group reads 108's 2."
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
+      - tests/integration/correctness/shop/models/signups.yml#model.dimensions.channel
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over: {kind: entity_value, entity: entity.shop_customer, input: measure.shop.revenue}
+        as: median
+      - measure.shop.order_count
+      group_by: [dimension.shop_customer_channel]
+    expected_rows:
+      - {dimension.shop_customer_channel: web, median: 23, order_count: 6}
+      - {dimension.shop_customer_channel: store, median: 8.5, order_count: 3}
+      - {dimension.shop_customer_channel: null, median: 2, order_count: 2}
+    reference_sql: |
+      WITH per_customer AS (
+        SELECT o.customer_id, s.channel, SUM(o.amount) AS revenue, COUNT(o.order_id) AS orders
+        FROM orders AS o LEFT JOIN signups AS s ON s.customer_id = o.customer_id
+        GROUP BY o.customer_id, s.channel
+      )
+      SELECT channel, percentile_cont(0.5) WITHIN GROUP (ORDER BY revenue), SUM(orders)
+      FROM per_customer GROUP BY channel
   shop/distribution_median:
     kind: query_matches_snapshot
     expect: answer

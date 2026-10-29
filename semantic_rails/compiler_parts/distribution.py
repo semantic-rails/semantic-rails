@@ -174,14 +174,14 @@ def _distribution_select(
         value_alias,
         extra_group_by=entity_key_dims,
     )
-    # The per-entity values read their lookups as the call grouped by the entity does: a row a
-    # group's lookup finds no match for (an order whose store the stores table doesn't hold)
-    # reads in the NULL group, "no store", never in no group. Where the input's measures read separate leaves, each operand settles as a sum grouped by the
-    # entity does: one with no rows for an entity the others have reads 0 where its measure has
-    # data in scope (an order with no refund row refunded nothing), NULL where it has none. The
-    # entities stay those with rows of the input's measures in the period. The settled values are
-    # internal: no NO_DATA_IN_SCOPE output of their own, and a refusal to settle them names this
-    # output.
+    # The per-entity values read their lookups as the call grouped by the entity does: a row
+    # whose lookup for a group finds no match (an order with no store, read by store name) reads
+    # in the NULL group, never in no group. Where the input's measures read separate leaves, each
+    # operand settles as a sum grouped by the entity does: one with no rows for an entity the
+    # others have reads 0 where its measure has data in scope (an order with no refund row
+    # refunded nothing), NULL where it has none. The entities stay those with rows of the input's
+    # measures in the period. The settled values are internal: no NO_DATA_IN_SCOPE output of their
+    # own, and a refusal to settle them names this output.
     with recording_zero_outputs(), unobserved_as(value_alias, alias):
         sql_ast = nested.query_sql(
             config,
@@ -227,9 +227,8 @@ def _distribution_select(
         ],
         from_table=SqlTableRef(name=source_name),
         where=[
-            # A row with no key of the entity (an order with no store, read per store, or whose
-            # customer's lookup finds no region, read per region) is no entity, never one NULL
-            # entity of its own.
+            # A row with no key of the entity (an order with no store, read per store) is no
+            # entity, never one NULL entity of its own.
             *(
                 SqlBinary(SqlIdentifier(parts=[source_name, key]), "IS NOT", SqlLiteral(None))
                 for key in entity_key_dims
