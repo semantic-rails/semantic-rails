@@ -433,6 +433,10 @@
       "description": "Return the package's revision (pass it as expected_revision), files and parse report. Use first, and again when the package may have changed. Gotcha: include_runtime_checks also runs runtime validation, examples and tests, which query the warehouse.",
       "inputSchema": {
         "properties": {
+          "expected_revision": {
+            "default": "",
+            "type": "string"
+          },
           "full_report": {
             "default": false,
             "description": "true: the whole report, not a summary",
@@ -483,6 +487,10 @@
       "description": "List files inside a Semantic Rails project directory.",
       "inputSchema": {
         "properties": {
+          "expected_revision": {
+            "default": "",
+            "type": "string"
+          },
           "full_report": {
             "default": false,
             "description": "true: every item, unpaged",
@@ -3472,6 +3480,10 @@
             "default": "",
             "type": "string"
           },
+          "expected_revision": {
+            "default": "",
+            "type": "string"
+          },
           "full_report": {
             "default": false,
             "description": "true: every item, unpaged",
@@ -3870,6 +3882,10 @@
             "default": "",
             "type": "string"
           },
+          "expected_revision": {
+            "default": "",
+            "type": "string"
+          },
           "full_report": {
             "default": false,
             "description": "true: the whole report, not a summary",
@@ -3928,6 +3944,10 @@
             "default": "",
             "type": "string"
           },
+          "expected_revision": {
+            "default": "",
+            "type": "string"
+          },
           "full_report": {
             "default": false,
             "description": "true: the whole report, not a summary",
@@ -3979,6 +3999,10 @@
             "type": "string"
           },
           "compare_path": {
+            "default": "",
+            "type": "string"
+          },
+          "expected_revision": {
             "default": "",
             "type": "string"
           },
@@ -4037,6 +4061,10 @@
             "type": "string"
           },
           "environment": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "default": "",
             "type": "string"
           },
           "full_report": {

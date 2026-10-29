@@ -112,7 +112,8 @@ def test_status_and_validate_summarize_the_census_warnings_and_passing_checks(
     }
     # The first pairs come whole, with the clarification options whose decisions record them.
     assert census["undecided"] == undecided[:FIRST_UNDECIDED]
-    assert set(census) == {"counts", "undecided"}
+    assert set(census) == {"counts", "undecided", "undecided_omitted"}
+    assert census["undecided_omitted"] == len(undecided) - FIRST_UNDECIDED
     assert compact["revision"] == full["revision"]
     assert "ROUTES_UNDECIDED" not in compact["parse"]["warning_counts"]
     assert len(compact["parse"]["warnings"]) <= FIRST_WARNINGS

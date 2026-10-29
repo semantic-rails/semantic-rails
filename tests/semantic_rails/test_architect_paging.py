@@ -12,7 +12,9 @@ call, and ``full_report: true`` still returns all of it in one answer.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,9 +32,11 @@ from semantic_rails import architect_introspection as introspection
 from semantic_rails.architect_mcp import (
     PAGE_CHARS,
     PAGE_ITEMS,
+    _full_or_summary,
     _report_page,
     create_architect_mcp_server,
 )
+from semantic_rails.architect_service import DECIDE_ROUTES_ACTION
 from semantic_rails.architect_transactions import project_revision
 
 PAGING = ("offset", "total_count", "has_more", "next_offset")
@@ -238,20 +242,145 @@ def test_report_pages_come_from_the_tool_the_same_on_every_call(
 ) -> None:
     package = {"project_path": workspace.package}
     full = call_tool(server, "project_status", {**package, "full_report": True})
+    summary = call_tool(server, "project_status", package)
 
     def fetch(page: str, offset: int) -> dict[str, Any]:
-        answer = call_tool(server, "project_status", {**package, "page": page, "offset": offset})
+        answer = call_tool(
+            server,
+            "project_status",
+            {**package, "page": page, "offset": offset, "expected_revision": summary["revision"]},
+        )
         assert (answer["ok"], answer["project_path"]) == (full["ok"], full["project_path"])
-        assert answer["revision"] == full["revision"]
+        assert answer["revision"] == full["revision"] == summary["revision"]
         return answer
 
     first = fetch("route_census.undecided", 0)
     second = fetch("route_census.undecided", first["next_offset"])
     assert fetch("route_census.undecided", first["next_offset"]) == second
-    options = "route_census.undecided.0.details.clarification.options"
-    assert options in first["pages"]
-    assert _walk_report(fetch, options) == _at(full, options)
+    # A route is chosen from all of a pair's options: the summary and its pages show whole pairs.
+    undecided = full["route_census"]["undecided"]
+    shown = summary["route_census"]["undecided"]
+    assert shown and shown == undecided[: len(shown)]
+    assert summary["route_census"]["undecided_omitted"] == len(undecided) - len(shown)
+    walked = first["items"] + second["items"]
+    assert walked == undecided[: len(walked)]
+    assert not [path for path in summary["pages"] if ".undecided." in path]
     assert _walk_report(fetch, "route_census.assumed") == full["route_census"]["assumed"]
+
+
+def test_a_release_summary_keeps_every_blocker_and_next_action_whole(
+    server: Any, workspace: LargeWorkspace
+) -> None:
+    package = {"project_path": workspace.package}
+    status = call_tool(server, "project_status", {**package, "full_report": True})
+    gate = call_tool(
+        server,
+        "promotion_check",
+        {
+            **package,
+            "environment": "production",
+            "compare_path": workspace.scaffold,
+            "full_report": True,
+        },
+    )
+    # Eight examples fail after a change (more than any summary list keeps), and the actions
+    # an agent follows next, the long one first, as project_status puts it when the package's
+    # own metrics need undecided routes.
+    actions = [
+        "Decide the 2 join routes the package's own metrics, examples or tests need: the first "
+        f"pairs in route_census.undecided, each naming them in needed_by. {DECIDE_ROUTES_ACTION}",
+        *status["next_actions"],
+    ]
+    blockers = [
+        {
+            "check": "examples",
+            "code": "EXAMPLE_FAILED",
+            "message": f"example orders_by_region_{n} returned other rows than it expects",
+            "details": {
+                "example": f"example.large.orders_by_region_{n}",
+                "query": {
+                    "select": ["measure.large.sales_order_count"],
+                    "group_by": ["dimension.large_region_attribute_001"],
+                },
+            },
+        }
+        for n in range(8)
+    ]
+    failing = {
+        **gate,
+        "ok": False,
+        "promotion_checks": {**gate["promotion_checks"], "examples": False},
+        "blockers": blockers,
+        "next_actions": actions,
+    }
+
+    summary = _full_or_summary(failing, False)
+
+    assert "artifacts.parse.warnings" in summary["pages"]
+    assert summary["blockers"] == blockers
+    assert summary["next_actions"] == actions
+    assert call_tool(server, "project_status", package)["next_actions"] == status["next_actions"]
+
+
+def test_a_page_after_a_write_refuses_with_the_revision_it_read(
+    workspace: LargeWorkspace, tmp_path: Path
+) -> None:
+    """Deciding a route removes pairs from the undecided list, so an offset read before the
+    write counts another list: the next page refuses instead of skipping pairs."""
+    shutil.copytree(
+        workspace.root / workspace.package,
+        tmp_path / "large",
+        ignore=shutil.ignore_patterns("*.duckdb*", ".*"),
+    )
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    package = {"project_path": "large"}
+    summary = call_tool(server, "project_status", package)
+    first = call_tool(
+        server,
+        "project_status",
+        {**package, "page": "route_census.undecided", "expected_revision": summary["revision"]},
+    )
+    [decision] = [
+        option["decision"]
+        for option in first["items"][0]["details"]["clarification"]["options"][:1]
+    ]
+    decided = call_tool(
+        server,
+        "record_route_decision",
+        {
+            **package,
+            "expected_revision": first["revision"],
+            "idempotency_key": "decide-the-first-pair",
+            **decision,
+        },
+    )
+    assert decided["ok"] is True, decided
+
+    stale = {"expected_revision": first["revision"], "offset": first["next_offset"]}
+    for tool, arguments in (
+        ("project_status", {**package, "page": "route_census.undecided", **stale}),
+        ("validate_project", {**package, "page": "route_census.undecided", **stale}),
+        ("list_project_files", {**package, "expected_revision": first["revision"]}),
+    ):
+        assert _refusal(call_tool(server, tool, arguments)) == (
+            "CONFIG_CONFLICT",
+            "the package changed after the answer that gave expected_revision, so its offsets "
+            "count another list: read the summary again, or page from offset 0 with the current "
+            "revision",
+            {
+                "conflict_kind": "stale_revision",
+                "expected_revision": first["revision"],
+                "current_revision": decided["revision"],
+            },
+        ), tool
+    # The current revision pages on, and every summary names the revision it read.
+    again = call_tool(
+        server,
+        "project_status",
+        {**package, "page": "route_census.undecided", "expected_revision": decided["revision"]},
+    )
+    assert again["ok"] is True and again["total_count"] < first["total_count"]
+    assert call_tool(server, "validate_project", package)["revision"] == decided["revision"]
 
 
 @pytest.mark.parametrize("tool", ["diff_project", "impact_project"])
@@ -346,6 +475,18 @@ def test_paging_misuse_names_the_fix(server: Any, workspace: LargeWorkspace) -> 
             f"page {page!r} names no list in this report: pass a path from the summary's pages",
             {"page": page, "pages": sorted(summary["pages"])},
         )
+    assert _refusal(
+        call_tool(
+            server,
+            "suggest_links",
+            {**warehouse, "relation": WIDE_FACT, "expected_revision": summary["revision"]},
+        )
+    ) == (
+        "INVALID_MCP_ARGUMENTS",
+        "expected_revision checks the package project_path names: pass project_path, or drop "
+        "expected_revision",
+        {"expected_revision": summary["revision"]},
+    )
     # The schema refuses a negative offset and an empty page before the tool runs.
     for wrong in ({"offset": -1}, {"limit": 0}):
         with pytest.raises(ToolError, match="greater than or equal to"):

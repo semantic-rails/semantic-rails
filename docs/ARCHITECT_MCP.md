@@ -150,22 +150,23 @@ Writes, `validate_project`, `project_status`, `promotion_check`, `diff_project` 
 `impact_project` answer with a summary that fits one page (16,000 characters of compact JSON),
 whatever the package's size: each `warnings` list as `warning_counts` by code and 10 of its
 warnings without their `details`, the first of each code before any repeat, in report order
-(`warnings_omitted` counts the rest), the route census as its `counts` and its first 3
-`undecided` pairs (each with the first of its long lists, such as its options), `project_status`
+(`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
+pairs, up to 3, that fit whole in 8,000 characters (a route is chosen from all of a pair's
+options, so a pair is never cut; `undecided_omitted` counts the rest), `project_status`
 `files` without those under dot-directories (transaction receipts), only the failing `probes`,
 `examples` and `tests`, every other list as its first rows within 2,000 characters, and file
 `changes` with their `diff` but no `proposed_content` (diffs share a 12,000-character budget; a
 cut one says `diff_truncated`). A summary that still doesn't fit halves those budgets, up to
-three times. Errors, revisions, `changed_files`, and refusals' `details` (such as
-`CONFIG_CONFLICT`'s `retry`) are never cut. `pages` names each list the summary leaves rows out
-of by its path (`parse.warnings`, `route_census.undecided`,
-`route_census.undecided.0.details.clarification.options`), with its `total_count` and the
-`next_offset` of the first row it leaves out. The `report` field says so. `full_report: true`
-returns the whole report.
+three times. Errors, a release's `blockers`, `next_actions`, revisions, `changed_files`, and
+refusals' `details` (such as `CONFIG_CONFLICT`'s `retry`) are never cut. `pages` names each list
+the summary leaves rows out of by its path (`parse.warnings`, `route_census.undecided`), with its
+`total_count` and the `next_offset` of the first row it leaves out. The `report` field says so.
+`full_report: true` returns the whole report.
 
 On the read-only report tools, `page` (a path from `pages`) answers with that list instead:
-`items` from `offset`, each shown as the summary shows rows, with the [paging](#paging) fields
-and `pages` for the lists its items cut short in turn. A write's summary counts what it leaves out
+`items` from `offset`, each shown as the summary shows rows (route census pairs whole), with the
+[paging](#paging) fields and `pages` for the lists its items cut short in turn. Every summary and
+page names the `revision` it read. A write's summary counts what it leaves out
 in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
 the same `idempotency_key` replays the write).
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
@@ -188,6 +189,13 @@ the items from `offset`, in a stable order, as many as fit in 16,000 characters 
 `next_offset` as `offset` for the next page. Paging is not a limit: every item is on exactly one
 page, and `full_report: true` returns them all in one answer.
 
+A write between pages can move a list's items: deciding one route can settle several undecided
+pairs. So the calls that page what a package holds (the report tools, `list_project_files`, and
+`suggest_links` with `project_path`) take an optional `expected_revision`: pass the `revision` of
+the answer whose `next_offset` you pass, and a package that has changed since refuses with
+`CONFIG_CONFLICT` (`conflict_kind: stale_revision`) instead of skipping items. Read the summary
+again, or page from offset 0 with the current revision.
+
 - `describe_table` pages its columns; its keys are on every page.
 - `profile_columns` profiles only the page's columns, at most 50 at a time.
 - `suggest_model` pages its times, then dimensions, then measures, and each page's
@@ -196,8 +204,9 @@ page, and `full_report: true` returns them all in one answer.
   `counts` totals each on every page.
 
 An `offset` past the last item, an `offset` with `full_report`, an `offset` without `page` on a
-report tool, `page` with `full_report`, and a `page` that names no list are
-`INVALID_MCP_ARGUMENTS` errors whose message names the fix; an unknown `page` lists the paths
+report tool, `page` with `full_report`, a `page` that names no list, and `expected_revision` on
+`suggest_links` without `project_path` are `INVALID_MCP_ARGUMENTS` errors whose message names the
+fix; an unknown `page` lists the paths
 there are in `details.pages`. A negative `offset` or a `limit` under 1 fails the tool's schema.
 `scripts/mcp_context.py` gates the first page of each paged tool, and each summary, on a
 100-relation warehouse (`scripts/large_warehouse.py`).
