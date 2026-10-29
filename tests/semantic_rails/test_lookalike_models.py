@@ -848,3 +848,29 @@ def test_discover_marks_no_model_its_canonical_one_is_set_apart_from(tmp_path):
     assert marks[ROOM_HIST] == HISTORY_OF_ROOM
     assert ROOM_AUDIT in _ids(body, "entities")
     assert not [row for row in marks if "audit" in row]
+
+
+def test_an_architect_replace_keeps_distinct_from(tmp_path):
+    root = _write(tmp_path, _with_distinct(_files(), rooms=["rooms_hist"]))
+    server = create_architect_mcp_server(workspace_root=root)
+    result = _mcp(
+        server,
+        "upsert_model",
+        {
+            "project_path": str(root),
+            "model_id": "rooms",
+            "entity_key": "room",
+            "relation": "rooms",
+            "primary_key": ["room_id"],
+            "replace": True,
+            "measures": _files()["models/rooms.yml"]["model"]["measures"],
+            "expected_revision": _mcp(server, "project_status", {"project_path": str(root)})[
+                "revision"
+            ],
+            "idempotency_key": "replace",
+        },
+    )
+    assert result["status"] == "upserted", result
+    assert "distinct_from" not in json.dumps(result.get("dropped_fields"))
+    model = yaml.safe_load((root / "models/rooms.yml").read_text())["model"]
+    assert model["distinct_from"] == ["rooms_hist"]
