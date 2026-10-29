@@ -219,7 +219,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank objects by business terms, or each term of a list alone (by_term); empty terms list ids. Compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with no candidates; branch before using a candidate.",
+      "description": "Rank objects by terms, or each term of a list alone (by_term); empty terms list ids by model. Compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with no candidates; branch before using one.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -254,13 +254,13 @@
             ]
           },
           "limit": {
-            "description": "Per kind: default 10, or 100 ids with empty terms.",
+            "description": "Per list: 10, or 100 with empty terms; has_more counts the rest.",
             "minimum": 1,
             "type": "integer"
           },
           "offset": {
             "default": 0,
-            "description": "With empty terms, ids to skip per kind.",
+            "description": "Empty terms: models/ids to skip.",
             "minimum": 0,
             "type": "integer"
           },

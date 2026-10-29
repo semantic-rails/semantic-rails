@@ -30,6 +30,7 @@ from .diagnostics import (
     enrich_object_not_found,
     exception_issue,
 )
+from .discover_listing import ID_PAGE, id_listing, label_restates_id
 from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
 from .mcp_query import coerce_arguments
 from .mcp_session import MCPQuerySession
@@ -135,7 +136,7 @@ MCP_SERVER_INSTRUCTIONS = (
     "\n"
     "To answer a question:\n"
     "1. discover(terms) ranks measures, metrics and dimensions for it; empty terms list "
-    "every id. inspect(object_id) shows one object's card when you need its aggregations, "
+    "ids by model. inspect(object_id) shows one object's card when you need its aggregations, "
     "values or time roles. valid-values(dimension_id) lists a dimension's values.\n"
     "2. plan(intent) drafts the query call; draft with plan rather than writing one from "
     'scratch. Run best.query only when status is "ok" and there are no warnings; '
@@ -389,8 +390,8 @@ SEGMENT_VERBOSITY_SCHEMA: dict[str, Any] = {
 
 _EXECUTE_MODES = ("run", "validate", "sql")
 _SEGMENT_ACTIONS = ("validate", "explain", "preview")
-# Empty-terms discover lists this many ids per kind at a time: under 10K tokens for all kinds.
-_DISCOVER_ID_PAGE = 100
+# Room an empty-terms listing leaves in the response budget for the envelope and its warnings.
+_LISTING_RESERVE_CHARS = 2_000
 _VERBOSITY_MINIMAL: dict[str, Any] = {
     "type": "string",
     "enum": ["minimal", "compact", "full"],
@@ -402,10 +403,10 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="discover",
         description=(
-            "Rank objects by business terms, or each term of a list alone (by_term); "
-            "empty terms list ids. Compact omits blocked cards. "
+            "Rank objects by terms, or each term of a list alone (by_term); "
+            "empty terms list ids by model. Compact omits blocked cards. "
             "Gotcha: 'out_of_scope' or 'low_relevance' with no candidates; "
-            "branch before using a candidate."
+            "branch before using one."
         ),
         input_schema=_schema(
             {
@@ -424,19 +425,19 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 },
                 "verbosity": _VERBOSITY_MINIMAL,
                 # No schema default: clients that fill defaults in would cap
-                # an empty-terms page at 10 ids.
+                # an empty-terms page at 10 models or ids.
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
                     "description": (
-                        f"Per kind: default 10, or {_DISCOVER_ID_PAGE} ids with empty terms."
+                        f"Per list: 10, or {ID_PAGE} with empty terms; has_more counts the rest."
                     ),
                 },
                 "offset": {
                     "type": "integer",
                     "default": 0,
                     "minimum": 0,
-                    "description": "With empty terms, ids to skip per kind.",
+                    "description": "Empty terms: models/ids to skip.",
                 },
             },
             additional_properties=True,
@@ -1429,22 +1430,6 @@ _DISCOVER_BUCKETS = (
 )
 
 
-_WORDS = re.compile(r"[^\W_]+")
-
-
-def _label_restates_id(label: Any, object_id: Any) -> bool:
-    """Whether every word of ``label`` is already a word of ``object_id`` past its kind.
-
-    "Store name" restates ``dimension.store_name``; "Orders" doesn't restate
-    ``measure.order_count``, and "Food" doesn't restate ``dimension.product_type``.
-    """
-
-    if not isinstance(label, str) or not isinstance(object_id, str):
-        return False
-    words = set(_WORDS.findall(label.casefold()))
-    return bool(words) and words <= set(_WORDS.findall(object_id.partition(".")[2].casefold()))
-
-
 def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
     """State each fact of a minimal discover response once.
 
@@ -1466,7 +1451,7 @@ def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
             for key, value in row.items()
             if value not in _EMPTY
             and not (key in repeats and value == repeats[key])
-            and not (key == "label" and _label_restates_id(value, row.get("id")))
+            and not (key == "label" and label_restates_id(value, row.get("id")))
         }
 
     for key in ("terms", "verbosity", "stage"):
@@ -2108,7 +2093,7 @@ class SemanticLayerMCPAdapter:
             # know which kinds this call can produce.
             requested_kinds = _coerce_kinds(args.get("kinds", []))
             if not terms_str.strip():
-                # Empty terms list the ids instead of ranking, a page per kind.
+                # Empty terms list ids instead of ranking: by model, or a page per kind.
                 policy_context = _policy_context_payload()
                 # A grant lists only the kinds it can produce, so a filter for
                 # any other kind is refused, never answered with an empty list.
@@ -2138,33 +2123,15 @@ class SemanticLayerMCPAdapter:
                     catalog["dimension_value_ids"] = sorted(
                         str(row["id"]) for row in values.get("dimension_values") or []
                     )
-                kinds = set(requested_kinds)
-                size = _coerce_int(args.get("limit"), _DISCOVER_ID_PAGE, field="limit", minimum=1)
-                start = _coerce_int(args.get("offset"), 0, field="offset", minimum=0)
-                page: dict[str, Any] = {}
-                more: dict[str, int] = {}
-                for key, value in catalog.items():
-                    kind = key.removesuffix("_ids")
-                    if key == kind:
-                        page[key] = value
-                    elif not kinds or kind in kinds:
-                        page[key] = list(value)[start : start + size]
-                        if len(value) > start + size:
-                            more[kind] = len(value) - start - size
-                if more:
-                    terms_warnings.append(
-                        {
-                            "code": "DISCOVER_IDS_TRUNCATED",
-                            "severity": "warning",
-                            "message": (
-                                f"Listed {size} ids per kind from offset {start}; more remain "
-                                f"for {sorted(more)}. Pass offset={start + size} for the next "
-                                "page, kinds to list fewer kinds, or terms to rank candidates."
-                            ),
-                            "details": {"remaining": more, "next_offset": start + size},
-                        }
-                    )
-                return {"catalog": page, "warnings": terms_warnings}
+                page, notes = id_listing(
+                    catalog,
+                    self.runtime.view_for(_caller()),
+                    kinds=requested_kinds,
+                    offset=_coerce_int(args.get("offset"), 0, field="offset", minimum=0),
+                    limit=_coerce_int(args.get("limit"), ID_PAGE, field="limit", minimum=1),
+                    max_chars=_max_result_chars() - _LISTING_RESERVE_CHARS,
+                )
+                return {"catalog": page, "warnings": [*terms_warnings, *notes]}
             verbosity = str(args.get("verbosity") or "minimal")
             payload = operations.run(
                 "discover",
@@ -2208,7 +2175,7 @@ class SemanticLayerMCPAdapter:
                 if screened:
                     browse_message = (
                         f"'{terms_str}' was not searched as a catalog query (see the hint "
-                        "above). Call discover with empty terms to list every id."
+                        "above). Call discover with empty terms to list ids by model."
                     )
                     if filter_dropped:
                         browse_message += (
@@ -2219,13 +2186,13 @@ class SemanticLayerMCPAdapter:
                         f"Nothing ranked for '{terms_str}', and the 'kind' argument was "
                         "ignored (the argument is 'kinds'), so the requested kind filter "
                         "was not applied. Retry with 'kinds', or call discover with empty "
-                        "terms to list every id."
+                        "terms to list ids by model."
                     )
                 else:
                     of_kinds = f" of kind {sorted(set(requested_kinds))}" if requested_kinds else ""
                     browse_message = (
                         f"No semantic objects{of_kinds} matched '{terms_str}'. "
-                        "Call discover with empty terms to list every id."
+                        "Call discover with empty terms to list ids by model."
                     )
                 existing_hints.append(
                     {"kind": "browse_catalog_or_capabilities", "message": browse_message}
