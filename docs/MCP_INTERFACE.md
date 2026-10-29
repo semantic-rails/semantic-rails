@@ -1494,6 +1494,28 @@ expression kind names the received kind and its request path (for example,
 | `EMPTY_GROUPS_UNSETTLED` | Under `observation_scope: "dataset"`, a `where` beside an entity filter on aggregates can't tell no data from data of nothing: resend with `observation_scope: "query"` ([Empty groups](QUERY_CALL.md#empty-groups-null-or-0)); `details.outputs` names the call's outputs it can't settle. Otherwise the compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`, or a sum missing a required row count, so a group whose amounts are all unknown could read `0`. A measure containing a nested CASE forced onto a rollup is also refused (`details.aggregate_relation`). An engine defect, not a query error; nothing is returned. `details.measures` names them, or `details.row_counts_named_like` a row count named like another column. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 
+A `PATH_NOT_FOUND` with no relationship chain between its start and target, or whose start
+reaches no entity, also carries `details.shared_key_columns`: the columns of either side's
+declared key that both hold, each saying what it identifies, spelled as the key declares them
+(empty when they share none), and, with any, `shared_key_unique_on_target`: whether they hold
+the target's whole key, so that each start row matches at most one target row on them. Columns
+that only date the rows (a load, snapshot or validity date, typed as a date or time on either
+side) are shared only when they are one side's whole key, as a calendar's date is. When no
+missing link is named, the message says which: they share no key column, or they share columns
+on which one start row can match many target rows (part of the target's key, or a target with no
+key). The caller's split hint (`drop_or_split`, `isolated_source_entity`) names the shared
+columns and, when they aren't the target's whole key, says that a total across rows matched on
+them counts a start row once per target row. The author hint then gives the
+`graph.relationships` row on those columns (`via:` and `target:`) and both cardinalities it can
+declare, since which one holds depends on rows the engine doesn't read: `many_to_one` when no
+two target rows hold the same values (or, for versions, none valid at the same time, with their
+window in `temporal_validity:`), so each start row meets one target row; otherwise
+`many_to_many`, which a call can't group or filter a measure of either side through
+(`MIXED_GRAIN_INVALID`). With no link and no shared key, it says an entity the start reaches
+must hold the target's key, related by a foreign key in that model's `entities:` block or a
+`graph.relationships` row in `graph.yml`. A refusal naming a relationship that already joins the
+pair carries none of this.
+
 ### Worked Example Envelopes
 
 `OBJECT_NOT_FOUND` on `inspect` with a typo:

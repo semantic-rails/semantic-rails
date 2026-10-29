@@ -12,12 +12,17 @@ code and every route stay what they were.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
+import yaml
 
 from semantic_rails.compiler_parts.indexes import get_package_analysis
+from semantic_rails.config import load_package_config
 from semantic_rails.diagnostics import enrich_path_not_found, exception_issue
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
@@ -584,3 +589,290 @@ def test_a_link_entity_fix_names_no_quoted_pronoun(package_config_factory):
     author = _author(_issue(config, "entity.order", "entity.rep"))
     assert "'it'" not in author
     assert "meets many 'entity.rep' rows through it" in author
+
+
+# --- The key columns the pair shares ------------------------------------------------------------
+
+# A reading list's reserves: each row names a catalog item and an instructor key, while an
+# instructor row is keyed by that key and the instructor's name together.
+RESERVES = {
+    "reserve": ["catalog_key", "instructor_key"],
+    "instructor": ["instructor_key", "instructor_name"],
+    "term": ["term_code"],
+}
+RESERVE_COLUMNS = {
+    "reserve": ["catalog_key", "instructor_key", "term_code"],
+    "instructor": ["instructor_key", "instructor_name", "course_name"],
+    "term": ["term_code", "academic_year"],
+}
+RESERVE_TERM = _rel("reserve_term", "entity.reserve", "entity.term", "term_code")
+
+
+def _hint(issue: dict[str, Any], kind: str) -> str:
+    return next(hint["message"] for hint in issue["recovery_hints"] if hint["kind"] == kind)
+
+
+def test_a_shared_key_that_isnt_unique_on_the_far_side_says_so(package_config_factory):
+    # "Reserves by instructor name": the key the two share is part of the instructor's key, so
+    # one reserve row can match every instructor row with that key.
+    config, _ = _package(package_config_factory, RESERVES, RESERVE_COLUMNS, [RESERVE_TERM])
+    asked = ["dimension.instructor_instructor_name"]
+    issue = _issue(config, "entity.reserve", "entity.instructor", unreachable_items=asked)
+    details = issue["details"]
+    assert "missing_link" not in details
+    assert details["shared_key_columns"] == ["instructor_key"]
+    assert details["shared_key_unique_on_target"] is False
+    assert issue["message"].endswith(
+        ": 'entity.reserve' and 'entity.instructor' share instructor_key, but not the whole key "
+        "of 'entity.instructor', so one 'entity.reserve' row can match many 'entity.instructor' "
+        "rows on it."
+    )
+    split = _hint(issue, "drop_or_split")
+    assert "Key columns they share: instructor_key, not the whole key of 'entity.instructor'" in (
+        split
+    )
+    assert "counts a 'entity.reserve' row once per 'entity.instructor' row it matches" in split
+    author = _author(issue)
+    # Which relationship joins them depends on rows the engine doesn't read: the hint says both.
+    assert (
+        "is `cardinality: many_to_one` when no two 'entity.instructor' rows hold the same "
+        "instructor_key" in author
+    )
+    assert "Otherwise it is `cardinality: many_to_many`" in author
+    assert "refused with MIXED_GRAIN_INVALID" in author
+    assert "should be reachable" not in author
+    assert _audiences(issue)["drop_or_split"] == "caller"
+
+
+def test_a_pair_sharing_no_key_says_so_and_where_a_relationship_goes(package_config_factory):
+    # "Terms by instructor name": neither holds a column of the other's key.
+    config, _ = _package(package_config_factory, RESERVES, RESERVE_COLUMNS, [RESERVE_TERM])
+    asked = ["dimension.instructor_instructor_name"]
+    issue = _issue(config, "entity.term", "entity.instructor", unreachable_items=asked)
+    assert issue["details"]["shared_key_columns"] == []
+    assert "shared_key_unique_on_target" not in issue["details"]
+    assert issue["message"].endswith(": 'entity.term' and 'entity.instructor' share no key column.")
+    assert "share no key column, so their separate results have no key to be matched on" in (
+        _hint(issue, "drop_or_split")
+    )
+    author = _author(issue)
+    assert "an entity 'entity.term' reaches must hold its key" in author
+    assert "`entities:` block" in author and "graph.relationships row in graph.yml" in author
+
+
+def test_a_shared_whole_key_matches_one_row_each(package_config_factory):
+    # Orders hold the store's whole key: the split's results match one store row per order.
+    entities = {"order": ["order_id"], "store": ["store_id"]}
+    columns = {"order": ["order_id", "store_id"], "store": ["store_id", "store_name"]}
+    config, _ = _package(package_config_factory, entities, columns)
+    issue = _issue(config, "entity.order", "entity.store")
+    assert issue["details"]["shared_key_columns"] == ["store_id"]
+    assert issue["details"]["shared_key_unique_on_target"] is True
+    # The missing link says it once; the shared key adds nothing to the message.
+    assert issue["message"].count("store_id") == 1
+    assert issue["details"]["missing_link"]["kind"] == "lookup"
+    assert (
+        "Key columns they share: store_id; each 'entity.order' row matches at most one "
+        "'entity.store' row on it." in _hint(issue, "isolated_source_entity")
+    )
+
+
+def test_a_row_grain_target_sharing_a_key_column_says_it_has_no_key(package_config_factory):
+    entities = {"room": ["room_id"], "room_rows": []}
+    columns = {"room": ["room_id"], "room_rows": ["room_id", "department"]}
+    config, _ = _package(package_config_factory, entities, columns)
+    issue = _issue(config, "entity.room", "entity.room_rows")
+    assert issue["details"]["shared_key_columns"] == ["room_id"]
+    assert issue["details"]["shared_key_unique_on_target"] is False
+    assert (
+        "but 'entity.room_rows' has no key, so one 'entity.room' row can match many"
+        in (issue["message"])
+    )
+    assert all(hint["kind"] != "author_relationship" for hint in issue["recovery_hints"])
+
+
+def test_a_bare_id_on_both_sides_is_no_shared_key(package_config_factory):
+    entities = {"a": ["id"], "b": ["id"]}
+    config, _ = _package(package_config_factory, entities, {"a": ["id"], "b": ["id"]})
+    issue = _issue(config, "entity.a", "entity.b")
+    assert issue["details"]["shared_key_columns"] == []
+    assert "share no key column" in issue["message"]
+
+
+def test_enriching_again_states_the_shared_key_once(package_config_factory):
+    config, _ = _package(package_config_factory, RESERVES, RESERVE_COLUMNS, [RESERVE_TERM])
+    with pytest.raises(SemanticLayerError) as raised:
+        resolve_path(config, start="entity.reserve", target="entity.instructor")
+    once = enrich_path_not_found(raised.value, config)
+    twice = enrich_path_not_found(once, config)
+    assert str(twice) == str(once)
+    assert str(once).count("share instructor_key") == 1
+    assert twice.details == once.details
+
+
+def _dated(config: Any, *columns: str, on: str = "") -> Any:
+    """``config`` with every dimension reading one of ``columns`` typed as a date (on the
+    entity ``on`` only, when given)."""
+    return replace(
+        config,
+        dimensions=[
+            replace(row, data_type="date")
+            if row.column in columns and row.entity == (on or row.entity)
+            else row
+            for row in config.dimensions
+        ],
+    )
+
+
+def test_a_load_date_on_every_table_is_no_shared_key(package_config_factory):
+    # Two histories keyed by their own key and the date the warehouse loaded each row, and a
+    # rooms table that reads the same load date. The date dates the rows and identifies nothing
+    # the tables share, so a separate result of each has no key to be matched on.
+    entities = {
+        "building_hist": ["building_key", "load_date"],
+        "floor_hist": ["floor_key", "load_date"],
+        "room": ["room_id"],
+    }
+    columns = {
+        "building_hist": ["building_key", "load_date", "building_name"],
+        "floor_hist": ["floor_key", "load_date", "floor_name"],
+        "room": ["room_id", "load_date"],
+    }
+    config, _ = _package(package_config_factory, entities, columns)
+    for start, target in (
+        ("building_hist", "floor_hist"),
+        ("floor_hist", "room"),
+        ("room", "building_hist"),
+    ):
+        issue = _issue(_dated(config, "load_date"), f"entity.{start}", f"entity.{target}")
+        assert issue["details"]["shared_key_columns"] == [], (start, target)
+        assert issue["message"].endswith("share no key column."), (start, target)
+        assert "many_to_many" not in _author(issue)
+    # Either side's date type says so, whichever end the call starts from.
+    one_side = _dated(config, "load_date", on="entity.building_hist")
+    for start, target in (("room", "building_hist"), ("building_hist", "room")):
+        issue = _issue(one_side, f"entity.{start}", f"entity.{target}")
+        assert issue["details"]["shared_key_columns"] == [], (start, target)
+    # The same column read as text would be stated as a key they share.
+    issue = _issue(config, "entity.building_hist", "entity.floor_hist")
+    assert issue["details"]["shared_key_columns"] == ["load_date"]
+
+
+def test_a_date_beside_an_identifier_or_as_a_calendars_key_is_shared(package_config_factory):
+    # Daily store totals keyed by store and day: an order holds both, so it matches one row. A
+    # calendar keyed by its date: an order's day matches one calendar row.
+    entities = {
+        "order": ["order_id"],
+        "store_day": ["store_id", "date_day"],
+        "calendar": ["date_day"],
+    }
+    columns = {
+        "order": ["order_id", "store_id", "date_day"],
+        "store_day": ["store_id", "date_day", "visits"],
+        "calendar": ["date_day", "fiscal_week"],
+    }
+    config, _ = _package(package_config_factory, entities, columns)
+    config = _dated(config, "date_day")
+    for target, shared in (("store_day", ["date_day", "store_id"]), ("calendar", ["date_day"])):
+        details = _issue(config, "entity.order", f"entity.{target}")["details"]
+        assert details["shared_key_columns"] == shared, target
+        assert details["shared_key_unique_on_target"] is True, target
+
+
+def _library(root: Path, key: str, relationship: dict[str, Any] | None) -> Runtime:
+    """Reserves keyed by a catalog item and an instructor key, and instructors keyed by that
+    key and the instructor's name, related by ``relationship`` when given."""
+    count = {"kind": "entity_count", "accumulation": {"kind": "population"}, "value_type": "count"}
+    files: dict[str, Any] = {
+        "package.yml": {
+            "schema_version": 1,
+            "package": {
+                "id": "library",
+                "namespace": "library",
+                "name": "Library",
+                "description": "Course reserves",
+                "warehouse": "duckdb",
+                "default_db": "library.duckdb",
+                "seed": {"kind": "external"},
+            },
+        },
+        "models/reserves.yml": {
+            "model": {
+                "id": "reserves",
+                "relation": "reserves",
+                "entities": {"reserve": {}},
+                "measures": {"reserves": {**count, "label": "Reserves", "entity_key": key}},
+            }
+        },
+        "models/instructors.yml": {
+            "model": {
+                "id": "instructors",
+                "relation": "instructors",
+                "entities": {"instructor": {}},
+                "dimensions": {"course_name": {"kind": "categorical"}},
+            }
+        },
+        "graph.yml": {
+            "graph": {
+                "entities": {
+                    "reserve": {"key": ["catalog_key", key], "model": "reserves"},
+                    "instructor": {"key": [key, "instructor_name"], "model": "instructors"},
+                },
+                "relationships": {"reserve_instructor": relationship} if relationship else {},
+            }
+        },
+    }
+    for name, body in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(body), encoding="utf-8")
+    with duckdb.connect(str(root / "library.duckdb")) as connection:
+        connection.execute(
+            f"CREATE TABLE reserves (catalog_key VARCHAR, {key} VARCHAR);"
+            f"CREATE TABLE instructors ({key} VARCHAR, instructor_name VARCHAR, "
+            "course_name VARCHAR);"
+        )
+    load_package_config(str(root))
+    return Runtime.from_path(str(root))
+
+
+@pytest.mark.parametrize("key", ["instructor_key", "INSTRUCTOR_KEY"])
+def test_both_relationships_the_author_hint_offers_load_as_written(tmp_path, key):
+    # "Reserves by course": the hint's two rows, written as it spells them, both load. The
+    # many-to-one row answers the call; the many-to-many one is refused, as the hint says.
+    by_course = {
+        "select": ["measure.library.reserves"],
+        "group_by": ["dimension.library_instructor_course_name"],
+    }
+    for_math = {
+        "select": ["measure.library.reserves"],
+        "where": [
+            {"field": "dimension.library_instructor_course_name", "op": "is", "value": "Math"}
+        ],
+    }
+    runtime = _library(tmp_path / "refused", key, None)
+    (error,) = runtime.validate(by_course)["errors"]
+    runtime.close()
+    assert error["code"] == "PATH_NOT_FOUND"
+    assert error["details"]["shared_key_columns"] == [key]
+    snippets = re.findall(r"`((?:via|target): \[[^\]]*\]|cardinality: [a-z_]+)`", _author(error))
+    assert snippets == [
+        f"via: [{key}]",
+        f"target: [{key}]",
+        "cardinality: many_to_one",
+        "cardinality: many_to_many",
+    ]
+    via, target, *cardinalities = (yaml.safe_load(snippet) for snippet in snippets)
+    answers = {}
+    for cardinality in cardinalities:
+        row = {"entities": ["reserve", "instructor"], **via, **target, **cardinality}
+        runtime = _library(tmp_path / cardinality["cardinality"], key, row)
+        answers[cardinality["cardinality"]] = [
+            [error["code"] for error in runtime.validate(call).get("errors") or []]
+            for call in (by_course, for_math)
+        ]
+        runtime.close()
+    assert answers == {
+        "many_to_one": [[], []],
+        "many_to_many": [["MIXED_GRAIN_INVALID"], ["MIXED_GRAIN_INVALID"]],
+    }

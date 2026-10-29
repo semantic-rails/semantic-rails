@@ -366,6 +366,8 @@ def recovery_hints_for_error(
             }
         ]
     if code == "PATH_NOT_FOUND":
+        from .path_gap import missing_link_fix, shared_key_fix, shared_key_split
+
         start = str(details.get("start", "") or "")
         target = str(details.get("target", "") or "")
         reachable = list(details.get("reachable_targets", []) or [])
@@ -392,12 +394,10 @@ def recovery_hints_for_error(
                     f" Entities related to both '{start}' and '{target}': "
                     f"{', '.join(repr(entity) for entity in details['bridge_entities'])}."
                 )
-            if details.get("shared_key_columns"):
-                message += f" Key columns they share: {', '.join(details['shared_key_columns'])}."
             dropped = f" ({', '.join(items)})" if items else ""
             message += (
                 f" Split the query, or drop what needs '{target}'{dropped}; or group by a "
-                f"dimension on '{start}' itself."
+                f"dimension on '{start}' itself." + shared_key_split(details)
             )
             hints.append(
                 {
@@ -455,7 +455,7 @@ def recovery_hints_for_error(
                     "kind": "drop_or_split",
                     "message": (
                         f"{details.get('anchor') or ''} Drop {', '.join(items)}, or split the "
-                        f"query: ask for {', '.join(items)} separately."
+                        f"query: ask for {', '.join(items)} separately." + shared_key_split(details)
                     ).strip(),
                     "unreachable_items": items,
                 }
@@ -483,9 +483,9 @@ def recovery_hints_for_error(
                 }
             )
         else:
-            from .path_gap import missing_link_fix
-
-            fix = missing_link_fix(dict(details.get("missing_link") or {}))
+            fix = missing_link_fix(dict(details.get("missing_link") or {})) or shared_key_fix(
+                details
+            )
             hints.append(
                 {
                     "kind": "author_relationship",
@@ -493,8 +493,9 @@ def recovery_hints_for_error(
                     + (
                         fix[:1].lower() + fix[1:]
                         or (
-                            f"if '{target}' should be reachable, add a graph.relationships row "
-                            f"connecting it to an entity '{start}' reaches."
+                            f"if '{target}' should be reachable, an entity '{start}' reaches "
+                            "must hold its key: relate the two with a foreign key in that "
+                            "model's `entities:` block, or a graph.relationships row in graph.yml."
                         )
                     ),
                     "start": start,
@@ -1474,6 +1475,8 @@ _GAP_KEYS = (
     "nearest_entity",
     "closest_dimensions",
     "unknown_entity",
+    "shared_key_columns",
+    "shared_key_unique_on_target",
 )
 # A caller's own id is echoed at most this long (a refusal's own message names it whole).
 _ECHO_CHARS = 120
@@ -1508,7 +1511,13 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
         return exc
     details = dict(exc.details or {})
     message = str(exc)
-    from .path_gap import lookalike_fact, lookalike_rows_in_view, missing_link_fact
+    from .path_gap import (
+        lookalike_fact,
+        lookalike_rows_in_view,
+        missing_link_fact,
+        shared_key,
+        shared_key_fact,
+    )
 
     # The look-alikes were checked in the request's scope; a view shows those it can see.
     lookalikes = list(details.pop("lookalike_measures", None) or [])
@@ -1521,6 +1530,9 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
     for fact in (
         missing_link_fact(prior["missing_link"] or {}),
         _unknown_entity_fact(str(prior["unknown_entity"])) if prior["unknown_entity"] else "",
+        shared_key_fact(
+            {**details, **{key: value for key, value in prior.items() if value is not None}}
+        ),
     ):
         if fact:
             message = message.replace(f": {fact}.", "")
@@ -1595,7 +1607,14 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
     # view; none of it changes a route or an answer.
     if reason == "no_relationship_chain" and "relationship" not in details:
         details.update(path_gap(config, start, target, reachable_sorted))
-    fact = missing_link_fact(details.get("missing_link") or {})
+    if "relationship" not in details and (
+        not reachable_sorted or reason == "no_relationship_chain"
+    ):
+        # The key columns the pair shares, and whether one start row can match many target
+        # rows on them: what separate calls could be matched on, and what a relationship needs.
+        # A refusal naming a relationship that already joins them has its own fact.
+        details.update(shared_key(config, start, target))
+    fact = missing_link_fact(details.get("missing_link") or {}) or shared_key_fact(details)
     if fact:
         message = f"{message}: {fact}."
     if lookalikes:
@@ -1609,9 +1628,8 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
 
 
 def _isolated_start(config: PackageConfig, start: str, target: str, reason: str) -> dict[str, Any]:
-    """What keeps ``start`` from every entity: the constraint (``blocked_by``), the entities
-    related to both ends (``bridge_entities``), and the key columns of one end that the other
-    end's dimensions read (``shared_key_columns``)."""
+    """What keeps ``start`` from every entity: the constraint (``blocked_by``) and the entities
+    related to both ends (``bridge_entities``)."""
 
     def related(entity: str) -> set[str]:
         return {
@@ -1632,21 +1650,9 @@ def _isolated_start(config: PackageConfig, start: str, target: str, reason: str)
     blocked = {"hop_limit_exceeded": "hop_limit", "excluded_by_decision": "route_choice"}.get(
         reason
     ) or ("route_choice" if walkable else "direction" if related(start) else "no_relationship")
-    keys = {row.id: list(row.key_columns) for row in config.entities}
-
-    def columns(entity: str) -> set[str]:
-        return {dim.column.lower() for dim in config.dimensions if dim.entity == entity}
-
-    shared = {
-        column
-        for one, other in ((start, target), (target, start))
-        for column in keys.get(other, [])
-        if column.lower() in columns(one)
-    }
     return {
         "blocked_by": blocked,
         "bridge_entities": sorted((related(start) & related(target)) - {start, target}),
-        "shared_key_columns": sorted(shared),
     }
 
 

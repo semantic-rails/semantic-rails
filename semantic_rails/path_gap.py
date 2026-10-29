@@ -338,6 +338,122 @@ def missing_link_fix(link: dict[str, Any]) -> str:
     return ""
 
 
+# --- The key columns the pair shares ------------------------------------------------------------
+
+
+_DATED = frozenset({"date", "timestamp", "datetime", "time"})
+
+
+def shared_key(config: PackageConfig, start: str, target: str) -> dict[str, Any]:
+    """The columns of either entity's declared key that both ``start`` and ``target`` hold, each
+    saying what it identifies (``shared_key_columns``, empty when they share none, spelled as
+    the key declares them) and, when there are any, whether they hold ``target``'s whole key
+    (``shared_key_unique_on_target``): only then does each ``start`` row match at most one
+    ``target`` row on them.
+
+    Columns that only date the rows (a load, snapshot or validity date: a dimension of either
+    side typed as a date or time) identify nothing the two share, unless they are one side's
+    whole key, as a calendar's date is."""
+    columns = _Columns(config)
+    keys = columns.key_of(start) | columns.key_of(target)
+    shared = {
+        column
+        for column in columns.held.get(start, set()) & columns.held.get(target, set())
+        if column in keys and _specific(column)
+    }
+    dated = {
+        dim.column.casefold()
+        for dim in config.dimensions
+        if dim.entity in (start, target) and dim.column and dim.data_type.casefold() in _DATED
+    }
+    if shared <= dated and shared not in (columns.key_of(start), columns.key_of(target)):
+        shared = set()
+    if not shared:
+        return {"shared_key_columns": []}
+    # A relationship's columns compare as written, so name them as the keys do.
+    spelled = {
+        column.casefold(): column
+        for entity in (start, target)
+        for column in columns.keys.get(entity, [])
+    }
+    key = columns.key_of(target)
+    return {
+        "shared_key_columns": sorted(spelled.get(column, column) for column in shared),
+        "shared_key_unique_on_target": bool(key) and key <= shared,
+    }
+
+
+def _shared(details: dict[str, Any]) -> tuple[str, str, list[str], str]:
+    shared = list(details.get("shared_key_columns") or [])
+    return str(details.get("start")), str(details.get("target")), shared, ", ".join(shared)
+
+
+def _them(shared: Sequence[str]) -> str:
+    return "it" if len(shared) == 1 else "them"
+
+
+def shared_key_fact(details: dict[str, Any]) -> str:
+    """What the pair shares, in one clause (for the refusal's message): no key column, the
+    target's whole key, or key columns on which one start row can match many target rows."""
+    if "shared_key_columns" not in details:
+        return ""
+    start, target, shared, columns = _shared(details)
+    if not shared:
+        return f"'{start}' and '{target}' share no key column"
+    if details.get("shared_key_unique_on_target"):
+        return f"'{start}' holds the key of '{target}' ({columns})"
+    short = (
+        f"'{target}' has no key"
+        if details.get("target_row_grain")
+        else f"not the whole key of '{target}'"
+    )
+    return (
+        f"'{start}' and '{target}' share {columns}, but {short}, so one '{start}' row can match "
+        f"many '{target}' rows on {_them(shared)}"
+    )
+
+
+def shared_key_split(details: dict[str, Any]) -> str:
+    """What separate calls for each side can be matched on (for the caller's split hint)."""
+    if "shared_key_columns" not in details:
+        return ""
+    start, target, shared, columns = _shared(details)
+    if not shared:
+        return (
+            f" '{start}' and '{target}' share no key column, so their separate results have no "
+            "key to be matched on."
+        )
+    if details.get("shared_key_unique_on_target"):
+        return (
+            f" Key columns they share: {columns}; each '{start}' row matches at most one "
+            f"'{target}' row on {_them(shared)}."
+        )
+    return (
+        f" Key columns they share: {columns}, not the whole key of '{target}', so one "
+        f"'{start}' row can match many '{target}' rows on {_them(shared)}: a total across the "
+        f"matched rows counts a '{start}' row once per '{target}' row it matches."
+    )
+
+
+def shared_key_fix(details: dict[str, Any]) -> str:
+    """The package author's change when the pair shares key columns that aren't all of the
+    target's key. Which relationship joins them on those depends on rows the engine doesn't
+    read: many-to-one when no two target rows hold the same values, else many-to-many, which a
+    call can't group or filter through."""
+    start, target, shared, columns = _shared(details)
+    if not shared or details.get("shared_key_unique_on_target"):
+        return ""
+    return (
+        f"'{start}' and '{target}' share {columns}, not the whole key of '{target}'. A "
+        f"graph.relationships row from '{start}' to '{target}' with `via: [{columns}]` and "
+        f"`target: [{columns}]` is `cardinality: many_to_one` when no two '{target}' rows hold "
+        f"the same {columns} (or, for versions, none valid at the same time, with their window "
+        f"in `temporal_validity:`): each '{start}' row then meets one '{target}' row. Otherwise "
+        f"it is `cardinality: many_to_many`, and a call can't group or filter a measure of "
+        f"either by the other's dimensions through it: it is refused with MIXED_GRAIN_INVALID."
+    )
+
+
 def _ranked(
     rows: Iterable[tuple[str, set[str], tuple[Any, ...]]],
     wanted: set[str],
