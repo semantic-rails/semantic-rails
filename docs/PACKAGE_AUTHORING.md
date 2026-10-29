@@ -2686,8 +2686,8 @@ a group, routes rank by their one-to-many hops, then hops, then id; the group th
   serviced room's building): each as an option, never one as the group's meaning;
 - else one route ranked first: its option, the others counted in `more_routes`;
 - else up to three routes: each as an option;
-- else no option, and `decide_first` names the pair (`via` to the target) to record a route
-  for.
+- else no option: `decide_first` names the entity its routes pass through (`via`) and the
+  target. A package author decides which of the group's routes the asked pair means.
 
 ```json
 {"options_total": 41, "groups_total": 3, "listed": 3,
@@ -2704,6 +2704,15 @@ a group, routes rank by their one-to-many hops, then hops, then id; the group th
 Grouping chooses nothing and changes no answer: `options` keeps every route, which route a
 query takes and every policy result read the routes as before, and a group's option is a
 whole route with its own `decision` row.
+
+To decide a `decide_first` group, record **the asked pair's own route**: the `decision` of
+the option for the chosen route (the route census row lists every option). Don't record a row
+for the `decide_first` pair (`via` to the target) on its own: a route for that pair can
+pass back through the asked pair's start, and the asked pair is then answered by another
+group's route, which nobody chose. To record that pair too, send its row and the asked pair's
+row together in one `record_route_decision` `decisions` batch, previewed with `dry_run`: the
+batch is refused unless the changed package resolves each row's pair, the asked pair
+included, to that row's route.
 
 Every option can be applied two ways. For the person who asked, the agent
 sends the option's `query`: that call only, not a
