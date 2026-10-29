@@ -74,3 +74,28 @@ def test_ends_with_reads_a_numeric_id_as_its_digits(vendors):
     assert sorted(row[VENDOR] for row in rows) == expected
     out = vendors.page(VENDOR, search="03")
     assert (_values(out), out["total_count"], out["has_more"]) == (expected, 2, False)
+
+
+def test_shipments_group_by_their_uuid_as_its_lower_case_text(vendors):
+    # "Shipments whose id starts with E2, by id": each uuid reads back as its lower-case
+    # hyphenated text, on Postgres as on DuckDB.
+    shipments = _ids(vendors, "SELECT CAST(shipment_id AS VARCHAR) FROM shipments")
+    expected = [text for text in shipments if text.startswith("e2")]
+    assert len(expected) == 3
+    call = {**_where(SHIPMENT, "starts_with", "E2", select=SHIPMENTS), "group_by": [SHIPMENT]}
+    out = vendors.runtime.query(call)
+    assert sorted((row[SHIPMENT], row["n"]) for row in out["rows"]) == [(t, 1) for t in expected]
+    assert out["column_types"][SHIPMENT] == {"type": "uuid"}
+
+
+def test_a_uuid_lists_and_is_searched_as_its_lower_case_text(vendors):
+    # The ids to pick from, page by page, and the one whose id starts with the characters a
+    # user pasted, in either case.
+    shipments = _ids(vendors, "SELECT CAST(shipment_id AS VARCHAR) FROM shipments")
+    assert len(shipments) == 236
+    pages = [vendors.page(SHIPMENT, limit=100, offset=offset) for offset in (0, 100, 200)]
+    assert [text for page in pages for text in _values(page)] == shipments
+    assert [page["has_more"] for page in pages] == [True, True, False]
+    expected = [text for text in shipments if text.startswith("e2c0")]
+    out = vendors.page(SHIPMENT, search="E2C0")
+    assert (_values(out), out["total_count"], out["has_more"]) == (expected, 1, False)
