@@ -167,8 +167,11 @@ def semantic_payload(config: PackageConfig) -> dict[str, Any]:
     for name in ("connection", "default_db", "seed"):
         semantic["package"].pop(name, None)
     # A model's id names its file, as its author does: renaming one changes no object or answer.
+    # An empty distinct_from is left out, so a package that declares none keeps its fingerprint.
     for entity in semantic["entities"]:
         entity.pop("model_id", None)
+        if not entity.get("distinct_from"):
+            entity.pop("distinct_from", None)
     return semantic
 
 

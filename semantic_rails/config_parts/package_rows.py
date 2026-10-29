@@ -66,7 +66,7 @@ from .policy_rows import (
     _validate_caveat_refs,
     _validate_policy_scopes,
 )
-from .prefer_over import with_prefer_over
+from .prefer_over import with_lookalike_lists
 from .row_values import (
     _ensure_dict_list,
     _ensure_list,
@@ -223,7 +223,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model_to_entity[model_id] = entity_id
         if model.get("one_per_key") is True:
             one_per_key[entity_id] = relation_table
-    entities = with_prefer_over(entities, model_rows, model_to_entity, path=path)
+    entities = with_lookalike_lists(entities, model_rows, model_to_entity, path=path)
 
     dimensions: list[DimensionConfig] = []
     temporal_roles: list[TemporalRoleConfig] = []

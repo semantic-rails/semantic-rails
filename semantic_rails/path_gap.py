@@ -613,11 +613,15 @@ def call_measures(call: dict[str, Any]) -> list[str]:
 
 
 class _Grains:
-    """Each entity's declared key, the columns its dimensions read, and those of its own times
-    (the dimensions a temporal role reads)."""
+    """Each entity's declared key, the columns its dimensions read, those of its own times (the
+    dimensions a temporal role reads), and the pairs its author declares different things."""
 
     def __init__(self, config: PackageConfig) -> None:
         self.columns = _Columns(config)
+        # Each pair a model's `distinct_from:` names, whichever of the two lists the other.
+        self.distinct = {
+            frozenset((row.id, other)) for row in config.entities for other in row.distinct_from
+        }
         roles = {role.dimension for role in config.temporal_roles}
         self.described: dict[str, set[str]] = {}
         self.times: dict[str, set[str]] = {}
@@ -639,7 +643,9 @@ class _Grains:
 
         A relationship, or a table that holds another's key (payments holding each invoice's),
         relates different things, and so do two keyless tables that each read columns the
-        other doesn't."""
+        other doesn't, and two whose author says so (``distinct_from``)."""
+        if frozenset((entity, other)) in self.distinct:
+            return False
         near, far = self.columns.key_of(entity), self.columns.key_of(other)
         if not near and not far:
             mine, theirs = self.described.get(entity, set()), self.described.get(other, set())

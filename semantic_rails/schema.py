@@ -111,6 +111,9 @@ class EntityConfig:
     # The entities of the models the model lists in `prefer_over:`: look-alikes whose questions
     # this one answers instead (lookalike_models).
     prefer_over: list[str] = field(default_factory=list)
+    # The entities of the models the model lists in `distinct_from:`: models whose rows are
+    # different things, so neither is a look-alike of the other, whichever lists it.
+    distinct_from: list[str] = field(default_factory=list)
 
     @property
     def is_row_grain(self) -> bool:

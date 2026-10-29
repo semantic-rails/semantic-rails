@@ -62,6 +62,7 @@ class Registry:
             # and say which one an author declared canonical.
             payload.pop("model_id", None)
             payload.pop("prefer_over", None)
+            payload.pop("distinct_from", None)
             self._add(
                 SemanticObject(
                     entity.id,

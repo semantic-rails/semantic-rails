@@ -107,7 +107,8 @@ package with one model, its count and amount metrics, an example, a package test
    (refused with `primary_key: []`); `false` removes it, and `replace` keeps it.
    `prefer_over` (model ids) writes the model's
    [`prefer_over:`](PACKAGE_AUTHORING.md#prefer_over--the-canonical-model-of-look-alikes) list;
-   `[]` removes it, and `replace` keeps it.
+   `[]` removes it, and `replace` keeps it. `replace` also keeps a model's
+   [`distinct_from:`](PACKAGE_AUTHORING.md#distinct_from--models-that-only-look-alike) list.
    `upsert_relationship` relates `from_entity` to `to_entity`: `columns` on `from_entity`'s
    model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
    `expr` when named differently). Name either entity by its key (`order`) or its id
