@@ -85,6 +85,7 @@ def _hops(request, backend_name, tmp_path, edge, orders=ORDERS):
         "load": {"key": ["run_id"], "model": "loads"},
     }
     role = "temporal_role.hops_order_ordered_at"
+    refunded = {"field": "dimension.hops_order_status", "op": "is", "value": "refunded"}
     metrics = {
         "refunds": {
             "as": REFUNDS,
@@ -96,9 +97,7 @@ def _hops(request, backend_name, tmp_path, edge, orders=ORDERS):
                 "kind": "aggregate",
                 "measure": "measure.hops.refunded",
                 "aggregation": "sum",
-                "filter": {
-                    "all": [{"field": "dimension.hops_order_status", "op": "is", "value": "refunded"}]
-                },
+                "filter": {"all": [refunded]},
             },
         },
         "refund_rate": {
