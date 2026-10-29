@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..dialects import (
@@ -83,8 +84,16 @@ def _check_postgres_result_types(schema: Any) -> None:
             and data_type.vendor_name == "PostgreSQL"
             and data_type.storage_type == pa.string()
         )
+        # The driver hands a uuid over as its 16 bytes (``_postgres_value`` reads them back).
+        uuid = (
+            isinstance(data_type, pa.OpaqueType)
+            and data_type.type_name == "uuid"
+            and data_type.vendor_name == "PostgreSQL"
+            and data_type.storage_type == pa.binary()
+        )
         if (
             numeric
+            or uuid
             or pa.types.is_integer(data_type)
             or pa.types.is_decimal(data_type)
             or pa.types.is_float32(data_type)
@@ -127,12 +136,22 @@ def _check_postgres_result_values(batch: Any, schema: Any) -> None:
 
 def _postgres_value(value: Any, data_type: Any, result_zone: tzinfo) -> Any:
     """Convert a driver value by its Arrow type, never by the text's appearance."""
-    if (
-        value is not None
-        and getattr(data_type, "type_name", "") == "numeric"
-        and getattr(data_type, "vendor_name", "") == "PostgreSQL"
-    ):
+    vendor_type = (
+        getattr(data_type, "type_name", "")
+        if getattr(data_type, "vendor_name", "") == "PostgreSQL"
+        else ""
+    )
+    if value is not None and vendor_type == "numeric":
         return Decimal(value)
+    if value is not None and vendor_type == "uuid":
+        # A uuid's 16 bytes, read as the UUID DuckDB's driver returns: its text is the
+        # lower-case hyphenated form, as a group, a listed value or a search match.
+        if len(value) != 16:
+            raise SemanticLayerError(
+                "RESULT_VALUE_UNSUPPORTED",
+                "A Postgres result uuid is not the 16 bytes of a UUID.",
+            )
+        return UUID(bytes=bytes(value))
     if value is not None and str(data_type) == "month_day_nano_interval":
         if value.nanoseconds % 1000 == 0:
             try:
