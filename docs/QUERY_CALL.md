@@ -355,8 +355,8 @@ up to more than the total.
   over the grouping; another entity's measure anywhere in the call (room area beside building
   area, whose leaf reads the cities by its own route, where a building with no address is in no
   city); a filter on the child, or a second grouping across a one-to-many hop; a `time` window,
-  `having` or an entity filter; and any such call on ClickHouse, which joins lookups inner, so a row with no parent or
-  no child row would drop out there instead of being the NULL group.
+  `having` or an entity filter; and any such call on ClickHouse, which joins lookups inner, so a
+  row with no parent or no child row would drop out there instead of being the NULL group.
 - The caller's view and the package's policies hold as for any call: under a row filter the
   package's recorded route reads, and a call can't give its own.
 

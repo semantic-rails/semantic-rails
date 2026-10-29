@@ -4,9 +4,10 @@ the measure's own rows.
 "Room area by the city of each room's building": a room looks up its building, and a building
 has several addresses, in one city or more. From the rooms that is a lookup before a
 one-to-many hop, which the de-duplicated leaf refuses (``_dedup_refusal``: it keeps one row per
-room key, and a keyless model has none). Where that route is decided (the call's own, the package's recorded one, or the
-only one) and walkable from its one side, the leaf reads the measure's rows as they are
-stored, each hop joined LEFT, against the child's distinct values per parent
+room key, and a keyless model has none). Where that route is decided (the call's own, the
+package's recorded one, or the only one) and walkable from its one side, the leaf reads the
+measure's rows as they are stored, each hop joined LEFT, against the child's distinct values
+per parent
 (``child_values_cte``: ``SELECT DISTINCT <the child's columns to the parent>, <its grouped
 columns> FROM <child>``). Each stored row counts once, with its whole value, in every group of
 values its parent holds: two child rows with the same values count once, and a row whose
