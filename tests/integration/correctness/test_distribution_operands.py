@@ -82,6 +82,31 @@ def test_a_where_beside_an_entity_filter_refuses_naming_the_distribution(request
 
 
 @pytest.mark.parametrize("backend", ["duckdb", "postgres"])
+def test_median_aov_of_repeat_web_customers_answers_under_the_dataset_scope(request, backend):
+    """The declared AOV reads revenue and order count from the same order rows: under an entity
+    filter each gets its own leaf, but both hold the same customers, so nothing needs settling
+    and the default scope answers. Customers 101 (23 / 3) and 103 (23 / 2)."""
+    runtime = _runtime(request, backend)
+    median_aov = {
+        "expression": {
+            "kind": "distribution",
+            "function": "median",
+            "over": {
+                "kind": "entity_value",
+                "entity": "entity.shop_customer",
+                "input": "metric.shop.average_order_value",
+            },
+        },
+        "as": "median_aov",
+    }
+    call = {"select": [median_aov], "where": [REPEAT, WEB]}
+    (row,) = runtime.query(call, now=NOW)["rows"]
+    assert float(row["median_aov"]) == pytest.approx(23 / 3 / 2 + 23 / 2 / 2)
+    quarters = runtime.query({**call, "time": {"temporal_role": ROLE, "grain": "quarter"}}, now=NOW)
+    assert [float(row["median_aov"]) for row in quarters["rows"]] == [8.5, 20.0, 4.5]
+
+
+@pytest.mark.parametrize("backend", ["duckdb", "postgres"])
 def test_an_entity_filter_alone_settles_each_order(request, backend):
     """Repeat customers' orders (1, 2, 3, 4, 6, 8, 9): orders with no refund read their amount."""
     runtime = _runtime(request, backend)

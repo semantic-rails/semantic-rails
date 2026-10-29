@@ -1602,8 +1602,10 @@ too. An order whose amount is unknown, or whose only refund has no goods amount,
 and is left out. A percentile, `min` and `max` read the same values. An entity enters a period
 where one of the input's measures has rows for it there, after that measure's own `filter`: a
 bounded window never adds an order to a month it has no rows in, as a call grouped by order
-fills it in. Under `dataset`, a `where` beside an entity filter refuses such a distribution with
-`EMPTY_GROUPS_UNSETTLED`, naming it, as it refuses the call grouped by order.
+fills it in. Measures read from the same rows (the declared average order value: revenue over
+order count) hold the same entities, so they need no settling. Under `dataset`, a `where`
+beside an entity filter refuses a distribution over measures of different rows (revenue less
+refunds) with `EMPTY_GROUPS_UNSETTLED`, naming it, as it refuses the call grouped by order.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an

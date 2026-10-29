@@ -276,6 +276,20 @@ def _cte_names(ctes: list[SqlCte]) -> set[str]:
     return names | {GUARDED_BASE, "projected"}
 
 
+def _rows_read(leaf: SqlSelect) -> tuple[Any, ...]:
+    """The rows ``leaf`` reads, and how it groups them: everything but what it computes."""
+    return (
+        leaf.from_table,
+        leaf.joins,
+        leaf.where,
+        leaf.group_by,
+        leaf.having,
+        leaf.qualify,
+        leaf.ctes,
+        leaf.distinct,
+    )
+
+
 def _refuse_total_beside(what: str) -> SemanticLayerError:
     return SemanticLayerError(
         "REWRITE_NOT_SUPPORTED",
@@ -319,6 +333,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # Whether the call's rows join two or more leaves on its keys, so a group can come from
     # another leaf's rows than a measure's own.
     joined = False
+    # What rows each leaf reads (its table, joins, conditions and grouping): two leaves that
+    # read the same rows hold the same groups.
+    leaf_rows: list[tuple[Any, ...]] = []
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -364,6 +381,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 ):
                     require_time_scopes((row.bound_measure.alias for row in measure_group), scopes)
                 _refuse_varying_time_key(plan, leaf_select)
+                leaf_rows.append(_rows_read(leaf_select))
                 for row in measure_group if leaf_select.ctes else ():
                     if (scope := scopes.get(row.bound_measure.alias)) is not None:
                         scopes[row.bound_measure.alias] = _namespaced_scope(
@@ -378,6 +396,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             with cut_owners(_expression_alias(expr, config)):
                 conversion_cte = _conversion_leaf_cte(expr, index=index, plan=plan, config=config)
             _refuse_varying_time_key(plan, conversion_cte.query)
+            leaf_rows.append((conversion_cte.name,))
             leaf_ctes.append(
                 SqlCte(
                     name=conversion_cte.name,
@@ -535,8 +554,12 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # The one place an empty group reads 0 instead of NULL: the projection reads every such
     # measure through the guard below, so nothing after it can change what it sees. A
     # distribution's per-entity values need it only where an entity can lack an operand: two
-    # or more leaves joined on its keys. One leaf holds each entity's rows of every measure.
-    settled = guard_empty and (joined or not lowers_entity_values())
+    # or more leaves joined on its keys that read different rows. Leaves that read the same
+    # rows (one leaf, or one per measure under an entity filter) hold the same entities.
+    settled = guard_empty and (
+        not lowers_entity_values()
+        or (joined and any(read != leaf_rows[0] for read in leaf_rows[1:]))
+    )
     zero = zero_aliases(plan.measure_plans, config) if settled else {}
     if zero and plan.time:
         measures = _measure_index(config)
