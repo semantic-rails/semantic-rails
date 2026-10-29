@@ -1688,6 +1688,39 @@ model:
   model that lists it.
 - `plan` and `execute` read the models as before: `prefer_over:` changes no answer.
 
+### `distinct_from:` — models that only look alike
+
+When validation groups models whose rows are different things, such as stores and the daily
+inventory snapshots of each store, list one in the other's `distinct_from:`, by model id. It says
+the two are no look-alikes, so validation stops asking about the pair:
+
+```yaml
+# models/stores.yml: one row per store; store_inventory_snapshots holds one row per store a day
+model:
+  id: stores
+  relation: stores
+  entities: {store: {}}
+  distinct_from: [store_inventory_snapshots]
+```
+
+- Either model may list the other: one list sets the pair apart.
+- The pair leaves its `same_rows` `LOOKALIKE_MODELS` group. A larger group keeps its other links:
+  setting `rooms_hist` apart from `rooms` leaves `rooms` grouped with `rooms_audit`.
+- A `same_count` group is separate. Two models that each publish a count under one label stay in
+  one, set apart or not: an agent asked "how many rooms" still sees two "Rooms" counts over
+  different rows, so label each count for the rows it counts, as the warning asks.
+- `discover` marks neither as the other's look-alike, and a `PATH_NOT_FOUND` refusal or a
+  measure's card never names a measure of one as the other's look-alike (see
+  [MCP_INTERFACE.md](MCP_INTERFACE.md)).
+- Each id must be another model of the package. A pair is never in both a `prefer_over:` and a
+  `distinct_from:`, whichever model lists it in each, since a model answers only for its
+  look-alikes. Either mistake is `INVALID_CONFIG`, naming the unknown id with the closest model
+  ids, or both lists.
+- A caller who can't see a listed model reads the list without it, and hiding it never hides the
+  model that lists it.
+- `plan` and `execute` read the models as before. The semantic fingerprint records the list; a
+  package that declares none keeps its fingerprint.
+
 ### `bridge:` — link tables and junction tables
 
 `bridge: true` on the entities block declares the model a link table: a route
@@ -3659,7 +3692,10 @@ group has each model's key in `details.keys`; a `same_count` group has its count
 A warning names the models by model id (`details.models`), and their entities in
 `details.entities`. For either kind, list the others in the canonical model's
 [`prefer_over:`](#prefer_over--the-canonical-model-of-look-alikes), which clears the group's
-warning. For a `same_rows` group, also say what each model's rows are in its `description` (a
+warning. When two models of a `same_rows` group are different things, list one in the other's
+[`distinct_from:`](#distinct_from--models-that-only-look-alike) instead, which takes the pair out
+of the group; it never settles a `same_count` group, which the counts' labels settle. For a
+`same_rows` group, also say what each model's rows are in its `description` (a
 refusal's look-alike rows and a measure's card show its first sentence). For a `same_count`
 group where no model answers every question the others do, label each count for the rows it
 counts instead ("Buildings with a floor"), which takes it out of the group, or set

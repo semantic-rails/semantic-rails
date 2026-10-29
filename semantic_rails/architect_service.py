@@ -75,7 +75,15 @@ _ROLE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 # What upsert_model(replace=True) keeps from the model it rewrites: its identity and how
 # its tables are bound (a calendar, and how far they are loaded).
-_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through", "one_per_key", "prefer_over")
+_KEPT_ON_REPLACE = (
+    "id",
+    "entities",
+    "calendar_id",
+    "zero_through",
+    "one_per_key",
+    "prefer_over",
+    "distinct_from",
+)
 # Model blocks of named objects: dropped_fields names each object a replace drops.
 _MODEL_BLOCKS = ("dimensions", "times", "measures")
 
@@ -788,8 +796,8 @@ class ArchitectProject:
 
         Fields merge into an existing model; ``replace=True`` rewrites it from
         the arguments, keeping only its ``id``, ``entities`` block, ``calendar_id``,
-        ``zero_through``, ``one_per_key`` and ``prefer_over``, and reports what it dropped as
-        ``dropped_fields``.
+        ``zero_through``, ``one_per_key``, ``prefer_over`` and ``distinct_from``, and reports what
+        it dropped as ``dropped_fields``.
         ``entities`` merges parent entities into the model's ``entities`` block, each
         ``{}`` or ``{expr: column}`` (a column or a list of columns also reads as ``expr``).
 

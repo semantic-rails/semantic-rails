@@ -28,6 +28,7 @@ from semantic_rails.config_validation import PackageReference, parse_config_repo
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.lookalike_models import _same_rows_pairs, lookalike_groups
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.path_gap import _Grains
 from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
@@ -233,7 +234,8 @@ def test_each_group_of_lookalike_models_is_named_once_with_the_question(campus):
         f"{campus}: models rooms and rooms_hist hold the same rows (keyed by room_id; rooms_hist "
         "adds valid_from: one row per version), so an agent can answer one question from any "
         "of them. Which is canonical? List the others in its model's prefer_over, and say in "
-        "each model's description what its rows are."
+        "each model's description what its rows are. When two of them are different things, "
+        "list one in the other's distinct_from."
     )
     assert rooms["details"]["models"] == ["rooms", "rooms_hist"]
     assert rooms["details"]["keys"] == {ROOM: ["room_id"], ROOM_HIST: ["room_id", "valid_from"]}
@@ -823,3 +825,159 @@ def test_plan_and_execute_read_the_declared_package_as_before(tmp_path):
         finally:
             runtime.close()
     assert answers[0] == answers[1]
+
+
+# --- distinct_from: models that only look alike ---------------------------------------------
+
+
+def _with_distinct(files: dict[str, Any], **distinct: list[str]) -> dict[str, Any]:
+    """``files`` with each named model's ``distinct_from``."""
+    for name, body in files.items():
+        model = body.get("model") if name.startswith("models/") else None
+        if model and model["id"] in distinct:
+            model["distinct_from"] = distinct[model["id"]]
+    return files
+
+
+@pytest.mark.parametrize(
+    ("declared", "loaded"),
+    [
+        ({"rooms": ["rooms_hist"]}, {ROOM: [ROOM_HIST]}),
+        ({"rooms_hist": ["rooms"]}, {ROOM_HIST: [ROOM]}),
+    ],
+)
+def test_models_set_apart_leave_their_same_rows_group_and_keep_a_count_group(
+    tmp_path, declared, loaded
+):
+    """The author has looked: rooms_hist holds room inspections, not versions of rooms. Whichever
+    of the two lists the other, they leave their same-rows group. Each still counts distinct
+    room_id under the label "Rooms", so they form a count group, which asks for a label of each
+    count's rows; the audit table stays grouped with the rooms."""
+
+    def warned(root: Path) -> list[dict[str, Any]]:
+        report, _ = parse_config_report(PackageReference(source_path=str(root)))
+        assert report["ok"]
+        return _lookalikes(report)
+
+    def groups(warnings: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
+        return [(row["details"]["kind"], row["details"]["models"]) for row in warnings]
+
+    survey_and_floors = [
+        ("same_rows", ["space_detail", "space_detail_hist"]),
+        ("same_count", ["floors", "space_detail"]),
+    ]
+    assert groups(warned(_write(tmp_path / "plain", _files()))) == [
+        ("same_rows", ["rooms", "rooms_hist"]),
+        *survey_and_floors,
+    ]
+    warnings = warned(_write(tmp_path / "pair", _with_distinct(_files(), **declared)))
+    assert groups(warnings) == [*survey_and_floors, ("same_count", ["rooms", "rooms_hist"])]
+    assert (
+        "under one label (Rooms) over rows that aren't the same things" in (warnings[-1]["message"])
+    )
+    root = _write(tmp_path / "three", _with_distinct(_rooms_audit(_files()), **declared))
+    assert groups(warned(root))[0] == ("same_rows", ["rooms", "rooms_audit"])
+    rows = load_package_config(str(root)).entities
+    assert {row.id: row.distinct_from for row in rows if row.distinct_from} == loaded
+
+
+@pytest.mark.parametrize(
+    ("lists", "message"),
+    [
+        (
+            {"distinct_from": {"rooms": ["rooms_hst"]}},
+            "model 'rooms' distinct_from names 'rooms_hst', which is no model of the package "
+            "(did you mean 'rooms_hist'?)",
+        ),
+        (
+            {"distinct_from": {"rooms": ["rooms"]}},
+            "model 'rooms' distinct_from names the model itself: list the other models whose "
+            "rows are different things",
+        ),
+        (
+            {"distinct_from": {"rooms": "rooms_hist"}},
+            "model 'rooms' distinct_from must be a list of model ids",
+        ),
+        (
+            {"prefer_over": {"rooms": ["rooms_hist"]}, "distinct_from": {"rooms": ["rooms_hist"]}},
+            "model 'rooms' names 'rooms_hist' in both prefer_over and distinct_from: a model "
+            "answers only for its look-alikes, so drop one of them",
+        ),
+        (
+            {"prefer_over": {"rooms": ["rooms_hist"]}, "distinct_from": {"rooms_hist": ["rooms"]}},
+            "model 'rooms' prefer_over names 'rooms_hist', and model 'rooms_hist' distinct_from "
+            "names 'rooms': a model answers only for its look-alikes, so drop one of them",
+        ),
+    ],
+)
+def test_a_distinct_from_the_package_cannot_follow_is_refused(tmp_path, lists, message):
+    files = _with_prefer(_files(), **lists.get("prefer_over", {}))
+    root = _write(tmp_path, _with_distinct(files, **lists["distinct_from"]))
+    report, _ = parse_config_report(PackageReference(source_path=str(root)))
+    assert not report["ok"]
+    assert [row["code"] for row in report["errors"]] == ["INVALID_CONFIG"]
+    assert report["errors"][0]["message"].endswith(
+        f"failed to load package config: {root}: {message}"
+    )
+
+
+def test_a_written_package_keeps_distinct_from_and_its_fingerprint_records_it(tmp_path):
+    plain = load_package_snapshot(str(_write(tmp_path / "plain", _files())))
+    root = _write(tmp_path / "declared", _with_distinct(_files(), rooms=["rooms_hist"]))
+    assert load_package_snapshot(str(root)).semantic_fingerprint != plain.semantic_fingerprint
+    out = write_package(load_package_config(str(root)), tmp_path / "out/campus", namespace="campus")
+    rows = {row.id: row.distinct_from for row in load_package_config(str(out)).entities}
+    assert rows[ROOM] == [ROOM_HIST]
+    assert yaml.safe_load((out / "models/room.yml").read_text())["model"]["distinct_from"] == [
+        "room_hist"
+    ]
+
+
+def test_a_caller_never_sees_a_hidden_model_in_distinct_from(tmp_path):
+    """Hiding a model drops it from the list, never the model that lists it."""
+    root = _write(tmp_path, _with_distinct(_files(), rooms=["rooms_hist", "space_detail"]))
+    config = load_package_config(str(root))
+    hidden = hidden_object_ids(
+        with_policies(config, visibility_policy("hidden", ROOM_HIST)), roles=["support"]
+    )
+    assert ROOM not in hidden
+    view = build_view(config, hidden)
+    assert {row.id: row.distinct_from for row in view.entities}[ROOM] == [SPACE_DETAIL]
+    assert f'"{ROOM_HIST}"' not in json.dumps([asdict(row) for row in view.entities])
+
+
+def test_discover_marks_no_model_its_canonical_one_is_set_apart_from(tmp_path):
+    """rooms answers for its history, and the history for the audit table; but rooms says the
+    audit table holds different things, so the audit table carries no mark naming rooms."""
+    files = _with_prefer(_rooms_audit(_files()), rooms=["rooms_hist"], rooms_hist=["rooms_audit"])
+    body = _discover(_write(tmp_path, _with_distinct(files, rooms=["rooms_audit"])), "rooms")
+    marks = _marks(body)
+    assert marks[ROOM_HIST] == HISTORY_OF_ROOM
+    assert ROOM_AUDIT in _ids(body, "entities")
+    assert not [row for row in marks if "audit" in row]
+
+
+def test_an_architect_replace_keeps_distinct_from(tmp_path):
+    root = _write(tmp_path, _with_distinct(_files(), rooms=["rooms_hist"]))
+    server = create_architect_mcp_server(workspace_root=root)
+    result = _mcp(
+        server,
+        "upsert_model",
+        {
+            "project_path": str(root),
+            "model_id": "rooms",
+            "entity_key": "room",
+            "relation": "rooms",
+            "primary_key": ["room_id"],
+            "replace": True,
+            "measures": _files()["models/rooms.yml"]["model"]["measures"],
+            "expected_revision": _mcp(server, "project_status", {"project_path": str(root)})[
+                "revision"
+            ],
+            "idempotency_key": "replace",
+        },
+    )
+    assert result["status"] == "upserted", result
+    assert "distinct_from" not in json.dumps(result.get("dropped_fields"))
+    model = yaml.safe_load((root / "models/rooms.yml").read_text())["model"]
+    assert model["distinct_from"] == ["rooms_hist"]

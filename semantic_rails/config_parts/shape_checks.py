@@ -317,6 +317,7 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "zero_through",
         "one_per_key",
         "prefer_over",
+        "distinct_from",
     }
 )
 _MODEL_VARIANT_KEYS: frozenset[str] = frozenset(

@@ -5,7 +5,9 @@ count the same thing under one label, answers its question as asked, with anothe
 Only the author knows which one a question means, so validation names each group of
 look-alike models once (``LOOKALIKE_MODELS``) and asks which one is canonical, until one
 model's ``prefer_over:`` lists every other model of the group, directly or through another
-(``canonical_of``; ``config_parts.prefer_over`` loads it).
+(``canonical_of``; ``config_parts.prefer_over`` loads it). Two models one of which lists the
+other in ``distinct_from:`` hold different things, so they are in no same-rows group; two counts
+of theirs under one label still form a count group, which their labels settle.
 
 Two kinds of group, read from the YAML alone, never from descriptions:
 
@@ -102,8 +104,9 @@ def preferred_marks(config: PackageConfig) -> dict[str, tuple[str, int, str]]:
     the canonical entity reaching it (one no list reaches; the first by id when two do), its
     distance from it, and its mark in ``discover``. The mark reads ``history copy of
     <canonical>`` when its key is the canonical one's plus time columns of its own (one row per
-    version, ``_Grains.same_things``), else ``prefer <canonical>``. ``config`` is the caller's
-    view, whose lists name no hidden model, so no mark names one."""
+    version, ``_Grains.same_things``), else ``prefer <canonical>``. An entity the canonical one
+    is declared distinct from (``distinct_from``) has no mark. ``config`` is the caller's view,
+    whose lists name no hidden model, so no mark names one."""
     prefer = {row.id: list(row.prefer_over) for row in config.entities if row.prefer_over}
     if not prefer:
         return {}
@@ -120,7 +123,7 @@ def preferred_marks(config: PackageConfig) -> dict[str, tuple[str, int, str]]:
                     queue.append(target)
         near = grains.columns.key_of(head)
         for entity, distance in depth.items():
-            if entity == head or entity in marks:
+            if entity == head or entity in marks or frozenset((head, entity)) in grains.distinct:
                 continue
             history = bool(near) and near < grains.columns.key_of(entity)
             history = history and grains.same_things(head, entity)
@@ -293,7 +296,8 @@ def lookalike_warning(group: LookalikeGroup, source_path: Path | str) -> dict[st
         alike = f"hold the same rows ({_same_rows_basis(group)})"
         fix = (
             "List the others in its model's prefer_over, and say in each model's description "
-            "what its rows are."
+            "what its rows are. When two of them are different things, list one in the other's "
+            "distinct_from."
         )
         details: dict[str, Any] = {**named, "keys": group.keys}
     else:
