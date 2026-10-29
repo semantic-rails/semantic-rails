@@ -391,6 +391,13 @@ def test_a_recorded_route_from_the_buildings_stands(campus):
     assert not _parent_values(out)
     with _without_parent_values():
         assert campus.answer(BY_ROOM, "rooms_route") == _values(out)
+    # A call the package's route doesn't answer keeps its own refusal: read by each room's own
+    # key, R-202 would show B-2's 600 where the recorded route reads B-1's 1000.
+    by_organization = {**BY_ROOM, "group_by": [ROOM_CODE, ORG_NAME]}
+    refused = _refusal(lambda: campus.query(by_organization, "rooms_route"))
+    assert refused[0] == "AMBIGUOUS_PATH"
+    with _without_parent_values():
+        assert refused == _refusal(lambda: campus.query(by_organization, "rooms_route"))
 
 
 def _row_filter(name: str, dimension: str, attribute: str, **config: Any) -> SemanticPolicyConfig:
