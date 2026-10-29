@@ -1669,8 +1669,12 @@ model:
 - Each id must be another model of the package, and the lists never run in a circle: one model of
   a group is the canonical one. Either mistake is `INVALID_CONFIG`, naming the unknown id with the
   closest model ids, or the circle (`rooms -> rooms_hist -> rooms`).
-- A caller who can't see a listed model reads the list without it.
-- Queries read the models as before: `prefer_over:` changes no answer.
+- `discover` lists the canonical model's rows first among its look-alikes' and marks each
+  look-alike's card with `look_alike` (`history copy of <entity>` or `prefer <entity>`; see
+  [MCP_INTERFACE.md](MCP_INTERFACE.md)).
+- A caller who can't see a listed model reads the list without it, and hiding it never hides the
+  model that lists it.
+- `plan` and `execute` read the models as before: `prefer_over:` changes no answer.
 
 ### `bridge:` — link tables and junction tables
 

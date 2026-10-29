@@ -644,15 +644,23 @@ def test_discover_lists_the_canonical_models_rows_first_and_marks_its_history(tm
         _ids(plain, "dimensions").index(row) for row in dimensions if "space_detail" in row
     ]
     assert _ids(body, "entities") == [ROOM, ROOM_HIST]
-    # Each of the history's rows says whose history it is; the room's rows carry nothing.
+
+    # The history's measure and entity cards say whose history it is, and in full cards its
+    # dimensions too; the room's cards carry nothing.
+    def history_rows(body: Any, buckets: tuple[str, ...]) -> dict[str, str]:
+        return {
+            row: HISTORY_OF_ROOM
+            for bucket in buckets
+            for row in _ids(body, bucket)
+            if "room_hist" in row or "rooms_hist" in row
+        }
+
     marks = _marks(body)
-    assert marks == {
-        row: HISTORY_OF_ROOM
-        for bucket in ("measures", "dimensions", "entities")
-        for row in _ids(body, bucket)
-        if "room_hist" in row or "rooms_hist" in row
-    }
+    assert marks == history_rows(body, ("measures", "entities"))
     assert "measure.campus.rooms_hist_count" in marks
+    full = _discover(root, "rooms", verbosity="full")
+    assert _marks(full) == history_rows(full, ("measures", "dimensions", "entities"))
+    assert "dimension.campus_room_hist_valid_from" in _marks(full)
     assert not _marks(plain)
 
 
@@ -670,7 +678,7 @@ def test_a_look_alike_that_is_no_history_reads_prefer(tmp_path):
     files = _with_prefer(
         _rooms_audit(_files()), rooms=["rooms_hist", "space_detail"], rooms_hist=["rooms_audit"]
     )
-    body = _discover(_write(tmp_path, files), "rooms")
+    body = _discover(_write(tmp_path, files), "rooms", verbosity="full")
     assert _ids(body, "entities")[:3] == [ROOM, ROOM_HIST, ROOM_AUDIT]
     marks = _marks(body)
     assert marks[ROOM_HIST] == marks[ROOM_AUDIT] == HISTORY_OF_ROOM

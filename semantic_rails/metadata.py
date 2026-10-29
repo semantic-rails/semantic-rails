@@ -2560,6 +2560,8 @@ _ASKED_ROW_KEYS = {
     "temporal_roles": ("dimension", "supported_grains"),
     "value_domains": ("dimensions",),
 }
+# The cards a slim discover response marks as a look-alike's (``_canonical_first``).
+_SLIM_MARKED_KINDS = frozenset({"measure", "metric", "segment", "entity"})
 # Enough of a description to tell near-duplicates apart ("Revenue" vs
 # "Delivered revenue"), without shipping the whole card.
 _MINIMAL_DESCRIPTION_CHARS = 120
@@ -2664,7 +2666,9 @@ def _slim_discover_minimal(
                 slim["score"] = round(slim["score"], 1)
             if row.get("measure"):
                 slim["measure"] = row["measure"]
-            if row.get("look_alike"):
+            # A slim card marks a look-alike's sources of numbers and its entity; its dimensions
+            # follow the canonical model's, and only full cards repeat the mark on each.
+            if row.get("look_alike") and row.get("kind") in _SLIM_MARKED_KINDS:
                 slim["look_alike"] = row["look_alike"]
             description = " ".join(str(row.get("description") or "").split())
             if description and description != str(row.get("label") or ""):
