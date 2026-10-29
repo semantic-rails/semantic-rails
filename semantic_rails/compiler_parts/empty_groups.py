@@ -323,8 +323,8 @@ def guard_empty_groups(
     or that has no time bucket (``bucketed=False``: one total over its scope). Earlier
     settlement retains its value-based observation. Where a declared edge gates the output
     (the scope's ``edge``), its probes read the source rows without the measure's authored
-    filter conditions (``source_where``), bounded or not: the edge, not a matching row, says a
-    loaded period is observed.
+    filter conditions (``source_where``), bounded or not, whether or not they hold a value: the
+    edge, not a matching row, says a loaded period is observed.
     ``observed_buckets`` names leaves whose conditional operand retained the pre-filter
     source groups. Where the loaded-bucket check gates the output, their non-NULL count
     (including 0) proves that specific bucket was observed; the sum's matching-row count
@@ -495,8 +495,9 @@ def _seen_outside_window(
     output) reads the scope's rows without the measure's authored filter conditions, and then
     any such row will do: the edge says its period is loaded, so a filter that matched no row
     there reads 0 even while the column holds no value yet (refunds before the first one)."""
-    unfiltered = declared and scope.source_where is not None
-    where = scope.source_where if unfiltered else scope.where
+    source_where = scope.source_where if declared else None
+    unfiltered = source_where is not None
+    where = scope.where if source_where is None else source_where
     if (
         not isinstance(scope.value, SqlCall)
         or scope.value.name not in {"SUM", "COUNT", "COUNT_IF", "COUNTIF"}
