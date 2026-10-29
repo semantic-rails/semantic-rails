@@ -112,6 +112,8 @@ from .paths import _joins_for_paths as _joins_for_paths
 from .paths import _resolve_dimension_expr as _resolve_dimension_expr
 from .post_aggregation import (
     _compile_post_expr,
+    holds_summing_window,
+    reading_window_rows,
     share_partition,
 )
 from .predicate_sets import _anchored_entity_set_select, _requested_order
@@ -520,6 +522,19 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         if name in rows.values()
     ]
     kept = [field.alias for field in hidden]  # the guard passes these source columns through
+    # A summing window reads each sum's row count beside its value, period by period, so a
+    # window whose rows all hold NULL amounts reads NULL; the guard passes the counts through.
+    window_rows = (
+        rows
+        if any(
+            holds_summing_window(payload, config)
+            for payload in [
+                *plan.post_aggregation_exprs.values(),
+                *(item["expression"] for item in plan.query.get("metric_filters", []) or []),
+            ]
+        )
+        else {}
+    )
     shares = share_group_counts(plan, config) if plan_is_root() else {}
     # The one place an empty group reads 0 instead of NULL: the projection reads every such
     # measure through the guard below, so nothing after it can change what it sees.
@@ -570,7 +585,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             projected_fields.append(SqlField(totaled[alias], alias))
             record_output_reads(alias, set())  # its coarser call's reads answer for it
             continue
-        with binding_cut() if project_is_cut() else nullcontext():
+        with binding_cut() if project_is_cut() else nullcontext(), reading_window_rows(window_rows):
             compiled_output = _compile_post_expr(
                 _parse_public_expr(post_expr),
                 config,
@@ -655,7 +670,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 observed=observed,
                 observed_buckets=retained,
                 bucketed=bool(plan.time),
-                keep=kept,
+                keep=[*kept, *(name for name in window_rows.values() if name not in kept)],
                 names={
                     measure: [
                         f.alias for f in projected_fields if measure in base_reads(f.expression)
@@ -680,7 +695,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         if selected_total is not None:
             projected_fields.append(SqlField(selected_total, alias))
             continue
-        with binding_cut():
+        with binding_cut(), reading_window_rows(window_rows):
             compiled_expr = _compile_post_expr(
                 filter_expr,
                 config,

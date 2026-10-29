@@ -1269,20 +1269,27 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(
                 "2023-11": (21, 9),
                 "2023-12": (28, 16),
                 "2024-01": (48, 36),
-                "2024-02": (27, 27),
+                "2024-02": (None, None),
                 "2024-03": (36, 28),
             },
         ),
         ("rolling", 1, {"2024-01": (None, None), "2024-02": (0, 0)}),
         ("cumulative", 0, {"2024-01": (48, 36)}),
-        ("period_to_date", 0, {"2024-01": (None, None), "2024-03": (36, 28)}),
+        (
+            "period_to_date",
+            0,
+            {"2024-01": (None, None), "2024-02": (None, None), "2024-03": (36, 28)},
+        ),
     ],
     ids=["trailing_three", "trailing_one", "cumulative", "year_to_date"],
 )
 def test_a_summing_window_combines_each_operands_window(
     shop: Runtime, kind: str, width: int, expected: dict[str, tuple[int | None, int | None]]
 ) -> None:
-    """Revenue plus, and minus, goods refunds: each operand is windowed on its own."""
+    """Revenue plus, and minus, goods refunds: each operand is windowed on its own. January
+    2024's only refund is a shipping refund with no goods amount, and February has none, so
+    goods refunded over a window holding only January's refund is unknown (NULL), as in
+    January alone."""
     expressions = {
         op: {
             "kind": kind,

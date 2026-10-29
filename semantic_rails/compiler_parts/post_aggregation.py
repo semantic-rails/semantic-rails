@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any
 
@@ -48,7 +50,7 @@ from ..sql_ast import (
     build_negation,
 )
 from .bind import _expression_alias
-from .dependencies import _recipes, recipe_objects, record_leaf_reference
+from .dependencies import _recipes, holding, recipe_objects, record_leaf_reference
 from .indexes import (
     _entity_index,
     _measure_has_source_row_key,
@@ -66,9 +68,48 @@ __all__ = [
     "_compile_post_expr",
     "_expr_requires_dense_series",
     "_summing_window_parts",
+    "holds_summing_window",
+    "reading_window_rows",
     "share_partition",
     "_window_partition_exprs",
 ]
+
+SUMMING_WINDOWS = frozenset({"rolling", "cumulative", "period_to_date"})
+
+# Each sum's row count on the base the call's outputs read, by the sum's alias.
+_window_rows: ContextVar[Mapping[str, str] | None] = ContextVar("window_rows", default=None)
+
+
+@contextmanager
+def reading_window_rows(rows: Mapping[str, str]) -> Iterator[None]:
+    """Name, for the summing windows compiled in the block, the column counting each sum's
+    rows in a period of the base they read (``_compile_offset_window_expr``). A sum without
+    one sums its periods as they are."""
+    with holding(_window_rows, rows):
+        yield
+
+
+def holds_summing_window(payload: Any, config: PackageConfig) -> bool:
+    """Whether a call's expression holds a summing window anywhere, through its metrics."""
+    seen: set[str] = set()
+
+    def walk(node: Any) -> bool:
+        if isinstance(node, Mapping):
+            kind = node.get("kind")
+            if kind in SUMMING_WINDOWS:
+                return True
+            if kind == "metric":
+                recipe = _recipe_index(config).get(str(node.get("metric")))
+                if recipe is None or recipe.id in seen:
+                    return False
+                seen.add(recipe.id)
+                return walk(expr_to_dict(recipe.expression))
+            return any(walk(value) for value in node.values())
+        if isinstance(node, list | tuple):
+            return any(walk(value) for value in node)
+        return False
+
+    return walk(payload)
 
 
 def _base_alias_ref(alias: str, table_alias: str = "base") -> SqlIdentifier:
@@ -297,12 +338,32 @@ def _compile_offset_window_expr(
                 return SqlBinary(sum_part(part.left), "*" if part.op == "multiply" else "/", factor)
             if part.op == "multiply" and isinstance(part.left, LiteralExpr):
                 return SqlBinary(compile_input(part.left), "*", sum_part(part.right))
-        return SqlWindow(
-            function=SqlCall("SUM", [compile_input(part)]),
-            partition_by=partition_by,
-            order_by=order_by,
-            frame=frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        value = compile_input(part)
+
+        def over(function: str, operand: SqlExpr) -> SqlWindow:
+            return SqlWindow(
+                function=SqlCall(function, [operand]),
+                partition_by=partition_by,
+                order_by=order_by,
+                frame=frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+            )
+
+        total = over("SUM", value)
+        counted = None
+        if isinstance(value, SqlIdentifier) and value.parts[:-1] == [table_alias]:
+            counted = (_window_rows.get() or {}).get(value.parts[-1])
+        if counted is None:
+            return total
+        # One sum over the window's rows: All NULL reads NULL. A window whose periods hold
+        # rows, none of them with an amount, reads NULL, not the 0 its empty periods add.
+        rows = SqlIdentifier(parts=[table_alias, counted])
+        held = SqlCase([SqlCaseWhen(SqlBinary(rows, ">", SqlLiteral(0)), value)])
+        unknown = SqlBinary(
+            SqlBinary(over("SUM", rows), ">", SqlLiteral(0)),
+            "AND",
+            SqlBinary(over("COUNT", held), "=", SqlLiteral(0)),
         )
+        return SqlCase([SqlCaseWhen(unknown, SqlLiteral(None))], else_expr=total)
 
     sums = [sum_part(part) for part in parts]
     if len(sums) == 2:
