@@ -560,11 +560,16 @@ def _parts_joined(
     counts: dict[str, Any] | None,
     ran: bool = False,
 ) -> dict[str, Any]:
-    """``PARTS_JOINED``: the key columns and what each is in each part, ``keep``, each part's
-    window, the whole result's counts (once it ran) and which columns add up."""
+    """``PARTS_JOINED``: the key columns, what each is in each part and whether the package
+    says they hold the same values (``declared``; else the join is the caller's choice),
+    ``keep``, each part's window, the whole result's counts (once it ran) and which columns
+    add up."""
     from ..diagnostics import semantic_issue
 
-    keys = [{"column": key.name, "parts": list(key.columns)} for key in joined.keys]
+    keys = [
+        {"column": key.name, "parts": list(key.columns), "declared": not key.chosen}
+        for key in joined.keys
+    ]
     parts = [
         {"part": part.index, **({"window": block["window"]} if block.get("window") else {})}
         for part, block in zip(joined.parts, blocks, strict=True)
@@ -591,6 +596,12 @@ def _parts_joined(
             + (" has" if len(joined.keep) == 1 else " all have")
         )
         sentences = [f"The answer joins {len(joined.parts)} parts on {on}, {kept}."]
+        sentences.extend(
+            f"No relationship in the package pairs {key.dimensions[0]} with "
+            f"{_listed(list(key.chosen))}: joining on them is the caller's choice."
+            for key in joined.keys
+            if key.chosen
+        )
     if counts is not None:
         details["kept_rows"] = counts["kept"]
         for row, stated in zip(counts["parts"], parts, strict=True):

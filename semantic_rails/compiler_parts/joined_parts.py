@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ..errors import SemanticLayerError
-from ..path_gap import _IDENTIFIER_WORDS, _identifier, _words
+from ..path_gap import _DATED, _IDENTIFIER_WORDS, _identifier, _words
 from ..query_call import refusal
 from ..renderer import _flatten_ctes
 from ..schema import DimensionConfig, PackageConfig
@@ -61,11 +61,14 @@ KEPT_ROWS = "joined_kept_rows"
 @dataclass(frozen=True)
 class JoinKey:
     """One key column of the joined call: its name, and the column and dimension it is in each
-    part (``period`` and ``""`` for the time axis)."""
+    part (``period`` and ``""`` for the time axis). ``chosen`` names the dimensions the package
+    doesn't say hold the first part's values (``undeclared``): the caller joined key columns of
+    one name, and the answer says that join is the caller's choice."""
 
     name: str
     columns: tuple[str, ...]
     dimensions: tuple[str, ...]
+    chosen: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -92,19 +95,21 @@ def join_allowed(config: PackageConfig, dimension_ids: Sequence[str]) -> str:
     """The gate on one ``join.on`` tuple (a dimension of each part): ``""`` when the parts may
     be joined on it, else why not.
 
-    The gate joins only on what the package itself says names the same thing: the same
-    dimension in every part, or columns a declared relationship pairs (its own key columns,
-    one each), each an identifier column (``path_gap._identifier``: a word that says it
-    identifies and one saying what) of one data type. Two models holding a column of the same
-    name are not enough: nothing in the package says the two name the same things.
+    Every column is an identifier column (``path_gap._identifier``: a word that says it
+    identifies and one saying what) that doesn't only date the rows, all of one data type; and
+    the columns are the same dimension in every part, columns the package pairs (one column of
+    one relation, or the two columns a declared single-column relationship joins), or columns
+    of one name that one of their models declares in its key (``_shared_key``: the caller's
+    choice, which ``undeclared`` names). Two models holding a column of one name that
+    neither keys are not enough.
     """
     distinct = list(dict.fromkeys(dimension_ids))
     if len(distinct) == 1:
         return ""
-    dimensions = {row.id: row for row in config.dimensions}
-    rows = [dimensions[dimension_id] for dimension_id in distinct if dimension_id in dimensions]
-    if len(rows) != len(distinct):
+    rows = _rows(config, distinct)
+    if rows is None:
         return "a dimension it names is not one the parts can read"
+    keys = _keys(config)
     for row in rows:
         if not _identifier(row.column):
             if _words(row.column) <= _IDENTIFIER_WORDS:
@@ -117,20 +122,88 @@ def join_allowed(config: PackageConfig, dimension_ids: Sequence[str]) -> str:
     types = list(dict.fromkeys(row.data_type for row in rows if row.data_type != "id"))
     if len(types) > 1:
         return f"the columns' types differ ({', '.join(types)})"
+    linked = _linked(
+        rows, lambda one, other: _paired(config, one, other) or _shared_key(keys, one, other)
+    )
+    if len(linked) == len(rows):
+        return ""
+    apart = next(row for row in rows if row.id not in linked)
+    same = any(row.column.casefold() == apart.column.casefold() for row in rows if row is not apart)
+    if not same:
+        why = ", and their names differ"
+    elif _dated(keys, rows, apart):
+        why = f", and '{apart.column}' only dates the rows"
+    else:
+        model = "neither model" if len(rows) == 2 else "no model of the tuple"
+        why = f", and {model} declares '{apart.column}' in its key"
+    return (
+        f"no declared relationship pairs '{rows[0].column}' of '{rows[0].entity}' with "
+        f"'{apart.column}' of '{apart.entity}'{why}"
+    )
+
+
+def undeclared(config: PackageConfig, dimension_ids: Sequence[str]) -> list[str]:
+    """The dimensions of an allowed tuple the package itself doesn't say hold the first one's
+    values (the same dimension, or columns ``_paired`` links, directly or through another of
+    the tuple): those a caller joined on key columns of one name, by their own choice."""
+    distinct = list(dict.fromkeys(dimension_ids))
+    rows = _rows(config, distinct)
+    if len(distinct) == 1 or rows is None:
+        return []
+    linked = _linked(rows, lambda one, other: _paired(config, one, other))
+    return [row.id for row in rows if row.id not in linked]
+
+
+def _rows(config: PackageConfig, dimension_ids: Sequence[str]) -> list[DimensionConfig] | None:
+    dimensions = {row.id: row for row in config.dimensions}
+    rows = [
+        dimensions[dimension_id] for dimension_id in dimension_ids if dimension_id in dimensions
+    ]
+    return rows if len(rows) == len(dimension_ids) else None
+
+
+def _keys(config: PackageConfig) -> dict[str, set[str]]:
+    """Each entity's declared key columns, casefolded."""
+    return {row.id: {column.casefold() for column in row.key_columns} for row in config.entities}
+
+
+def _linked(rows: Sequence[DimensionConfig], paired: Any) -> set[str]:
+    """The dimensions ``paired`` links to the first, directly or through another of ``rows``."""
     linked = {rows[0].id}
     pending = [rows[0]]
     while pending:
         current = pending.pop()
         for row in rows:
-            if row.id not in linked and _paired(config, current, row):
+            if row.id not in linked and paired(current, row):
                 linked.add(row.id)
                 pending.append(row)
-    if len(linked) == len(rows):
-        return ""
-    apart = next(row for row in rows if row.id not in linked)
-    return (
-        f"no declared relationship pairs '{rows[0].column}' of '{rows[0].entity}' with "
-        f"'{apart.column}' of '{apart.entity}'"
+    return linked
+
+
+def _shared_key(
+    keys: Mapping[str, set[str]], left: DimensionConfig, right: DimensionConfig
+) -> bool:
+    """Whether two models hold a column of one name that at least one of them declares in its
+    key: the key column ``PATH_NOT_FOUND`` says two models share (``path_gap.shared_key``).
+    A column that only dates the rows (a load, snapshot or validity date) identifies nothing
+    they share, unless it is one side's whole key, as a calendar's date is."""
+    column = left.column.casefold()
+    if column != right.column.casefold():
+        return False
+    if _dated(keys, [left, right], left):
+        return False
+    return column in keys.get(left.entity, set()) or column in keys.get(right.entity, set())
+
+
+def _dated(
+    keys: Mapping[str, set[str]], rows: Sequence[DimensionConfig], row: DimensionConfig
+) -> bool:
+    """Whether ``row``'s column, among ``rows`` of its name, only dates the rows: typed as a
+    date or time on one of them, and the whole key of none."""
+    column = row.column.casefold()
+    named = [one for one in rows if one.column.casefold() == column]
+    return any(one.data_type.casefold() in _DATED for one in named) and not any(
+        keys.get(one.entity) == {column} for one in named
     )
 
 
@@ -204,9 +277,10 @@ def join_keys(
         if reason:
             raise refusal(
                 path,
-                f"pairs {' with '.join(dict.fromkeys(row))}: {reason}. Parts join only on the "
-                "same dimension in every part, or on the two columns a declared relationship "
-                "joins",
+                f"pairs {' with '.join(dict.fromkeys(row))}: {reason}. Parts join on the same "
+                "dimension in every part, on the two columns a declared relationship joins, or "
+                "on identifier columns of one name and type that one of the models declares in "
+                "its key",
                 fix="Group every part by the same dimension, or ask the package author to "
                 "declare the relationship between these models.",
                 reason="join_key_not_shared",
@@ -215,7 +289,7 @@ def join_keys(
         tuples.append(tuple(row))
     keys: dict[tuple[str, ...], JoinKey] = {}
     for row in tuples:
-        keys[row] = JoinKey(row[0], row, row)
+        keys[row] = JoinKey(row[0], row, row, chosen=tuple(undeclared(config, row)))
         shared = row[0] if len(set(row)) == 1 else ""
         added = display_key(config, shared) if shared else ""
         if added and all(

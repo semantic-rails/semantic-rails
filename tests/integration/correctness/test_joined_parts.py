@@ -2,7 +2,9 @@
 one statement, checked against SQL written by hand from the tables.
 
 The ``depts`` package holds HR and facilities rows that both carry a department code, joined by
-declared relationships to the departments model. Engineering is two people, both named Alex;
+declared relationships to the departments model; facilities' own assignments, keyed by building
+and department code, are related to nothing (LAB is a code HR doesn't have, and Finance and
+Marketing have no assignment). Engineering is two people, both named Alex;
 two people have no department and one is filed under UNASSIGNED, a code read as unknown;
 Marketing has people and no space, Legal space and no people, and 900 sq ft is assigned to no
 department. Work orders are loaded through 25 February and reservations through 15 March; room
@@ -56,6 +58,17 @@ SPACE = {
     "group_by": [SPACE_DEPT],
 }
 BY_DEPARTMENT = {"parts": [HEADCOUNT, SPACE], "join": {"on": [[DEPT, SPACE_DEPT]]}}
+ASSIGNMENT_DEPT = "dimension.depts_assignment_dept_code"
+ASSIGNED = {
+    "select": [
+        "measure.depts.assigned_area",
+        "measure.depts.assigned_buildings",
+        "measure.depts.average_assigned_area",
+    ],
+    "group_by": [ASSIGNMENT_DEPT],
+}
+# No relationship joins the assignments to HR: both key a dept_code, so the caller may join them.
+BY_ASSIGNMENT = {"parts": [HEADCOUNT, ASSIGNED], "join": {"on": [[DEPT, ASSIGNMENT_DEPT]]}}
 IN_BUILDING_32 = {
     "select": ["measure.depts.area"],
     "group_by": [SPACE_DEPT],
@@ -89,20 +102,32 @@ def _site_filter(**config: Any) -> SemanticPolicyConfig:
     )
 
 
-def _by_department(employees: str = "TRUE", space: str = "TRUE", keep: str = "") -> str:
+# The department code HR's headcount is grouped by: the departments model's, which reads
+# UNASSIGNED as unknown; the employees' own column reads it as written.
+UNKNOWN_AS_NULL = "CASE WHEN dept_code = 'UNASSIGNED' THEN NULL ELSE dept_code END"
+
+
+def _by_department(
+    employees: str = "TRUE",
+    space: str = "TRUE",
+    keep: str = "",
+    *,
+    table: str = "space",
+    code: str = UNKNOWN_AS_NULL,
+) -> str:
     """Headcount beside area by department code, by hand: each side grouped by its own code
     (UNASSIGNED read as unknown), FULL OUTER JOINed on plain equality, a count or sum 0 on a
-    code only the other side has, NULL on the other side's NULL-code row."""
+    code only the other side has, NULL on the other side's NULL-code row. ``table`` is the
+    facilities side: the space rows or the assignments."""
     return f"""
 WITH hr AS (
-  SELECT CASE WHEN dept_code = 'UNASSIGNED' THEN NULL ELSE dept_code END AS code,
-         COUNT(*) AS headcount, 1 AS present
+  SELECT {code} AS code, COUNT(*) AS headcount, 1 AS present
   FROM employees WHERE {employees}
-  GROUP BY CASE WHEN dept_code = 'UNASSIGNED' THEN NULL ELSE dept_code END),
+  GROUP BY {code}),
 fac AS (
   SELECT dept_code AS code, SUM(area_sqft) AS area, COUNT(DISTINCT building_key) AS buildings,
          AVG(area_sqft) AS average_area, 1 AS present
-  FROM space WHERE {space} GROUP BY dept_code)
+  FROM {table} WHERE {space} GROUP BY dept_code)
 SELECT COALESCE(hr.code, fac.code),
   CASE WHEN hr.present = 1 THEN hr.headcount WHEN fac.code IS NOT NULL THEN 0 END,
   CASE WHEN fac.present = 1 THEN fac.area WHEN hr.code IS NOT NULL THEN 0 END,
@@ -112,13 +137,13 @@ FROM hr FULL OUTER JOIN fac ON hr.code = fac.code
 {f"WHERE {keep}" if keep else ""}"""
 
 
-def _department_counts(employees: str = "TRUE", space: str = "TRUE") -> str:
+def _department_counts(
+    employees: str = "TRUE", space: str = "TRUE", *, table: str = "space"
+) -> str:
     """Per side: its rows, its NULL-code rows, and its codes the other side lacks."""
     return f"""
-WITH hr AS (
-  SELECT DISTINCT CASE WHEN dept_code = 'UNASSIGNED' THEN NULL ELSE dept_code END AS code
-  FROM employees WHERE {employees}),
-fac AS (SELECT DISTINCT dept_code AS code FROM space WHERE {space})
+WITH hr AS (SELECT DISTINCT {UNKNOWN_AS_NULL} AS code FROM employees WHERE {employees}),
+fac AS (SELECT DISTINCT dept_code AS code FROM {table} WHERE {space})
 SELECT
   (SELECT COUNT(*) FROM hr), (SELECT COUNT(*) FROM hr WHERE code IS NULL),
   (SELECT COUNT(*) FROM hr WHERE code IS NOT NULL
@@ -225,6 +250,9 @@ def _plain(row: tuple[Any, ...]) -> tuple[Any, ...]:
     return tuple(out)
 
 
+AVERAGES = ("average_area", "average_assigned_area")
+
+
 def _values(out: dict[str, Any]) -> list[tuple[Any, ...]]:
     """The answer's rows, sorted; an average read as an exact number (Postgres answers an
     average's NUMERIC exactly, as a string)."""
@@ -232,7 +260,7 @@ def _values(out: dict[str, Any]) -> list[tuple[Any, ...]]:
         (
             _plain(
                 tuple(
-                    Decimal(value) if name == "average_area" and isinstance(value, str) else value
+                    Decimal(value) if name in AVERAGES and isinstance(value, str) else value
                     for name, value in row.items()
                 )
             )
@@ -353,7 +381,9 @@ def test_both_parts_at_the_key_read_a_full_join_of_their_groups(depts):
         "up: a distinct count, an average or a ratio can count a member of two rows twice. "
         f"{CAVEAT}"
     )
-    assert note["details"]["keys"] == [{"column": DEPT, "parts": [DEPT, SPACE_DEPT]}]
+    assert note["details"]["keys"] == [
+        {"column": DEPT, "parts": [DEPT, SPACE_DEPT], "declared": True}
+    ]
     assert note["details"]["keep"] == "all"
     assert note["details"]["kept_rows"] == len(rows)
     # Each part's zero-filled groups, said of its part, with no having (a part has none).
@@ -407,6 +437,177 @@ def test_keeping_both_parts_drops_each_null_key_row(depts):
     assert _joined(out)["details"]["kept_rows"] == 3
 
 
+def test_two_models_join_on_a_key_column_of_one_name_as_the_callers_choice(depts):
+    """Headcount beside facilities' own assignments per department code: no relationship joins
+    them, but both models key a dept_code, so the caller may join them. The engine can't check
+    that both codes name the same departments, so the answer says the join is the caller's
+    and counts each side's codes that found no match: Finance and Marketing have people and no
+    assignment (area 0, average NULL), LAB and Legal assignments and no people (headcount 0)."""
+    out = depts.query(BY_ASSIGNMENT)
+
+    rows = depts.sql(_by_department(table="assignments"))
+    assert _values(out) == rows
+    by_code = {row[0]: row for row in rows if row[0] is not None}
+    assert by_code["MKT"][2:] == by_code["FIN"][2:] == (0, 0, None)
+    assert by_code["LAB"][1] == by_code["LAW"][1] == 0
+    assert [row[1:] for row in rows if row[0] is None] == [(3, None, None, None)]
+    note = _joined(out)
+    counts = depts.sql(_department_counts(table="assignments"))[0]
+    assert _counts(note) == counts == (5, 1, 2, 4, 0, 2)
+    assert note["details"]["keys"] == [
+        {"column": DEPT, "parts": [DEPT, ASSIGNMENT_DEPT], "declared": False}
+    ]
+    assert note["message"] == (
+        f"The answer joins 2 parts on {DEPT} (parts[0]: {DEPT}, parts[1]: {ASSIGNMENT_DEPT}), "
+        f"keeping every key of every part. No relationship in the package pairs {DEPT} with "
+        f"{ASSIGNMENT_DEPT}: joining on them is the caller's choice. parts[0] has 5 rows: 2 with "
+        "no row in parts[1] and 1 with a NULL key (its own row, NULL in every other part). "
+        "parts[1] has 4 rows: 2 with no row in parts[0] and 0 with a NULL key (its own row, NULL "
+        "in every other part). Summed down the rows, assigned_area adds up. headcount, "
+        "assigned_buildings and average_assigned_area are not stated to add up: a distinct "
+        f"count, an average or a ratio can count a member of two rows twice. {CAVEAT}"
+    )
+    # A declared join says nothing of a choice.
+    assert "caller's choice" not in _joined(depts.query(BY_DEPARTMENT))["message"]
+
+
+# Headcount, space and assignments per department code, by hand: every code any side has, each
+# side's count or sum 0 where it has no row, and each side's NULL-code row its own row.
+THREE_BY_DEPARTMENT = f"""
+WITH hr AS (SELECT {UNKNOWN_AS_NULL} AS code, COUNT(*) AS n FROM employees
+            GROUP BY {UNKNOWN_AS_NULL}),
+sp AS (SELECT dept_code AS code, SUM(area_sqft) AS n FROM space GROUP BY dept_code),
+asg AS (SELECT dept_code AS code, SUM(area_sqft) AS n FROM assignments GROUP BY dept_code),
+codes AS (SELECT code FROM hr WHERE code IS NOT NULL UNION SELECT code FROM sp
+          WHERE code IS NOT NULL UNION SELECT code FROM asg WHERE code IS NOT NULL)
+SELECT codes.code, COALESCE(hr.n, 0), COALESCE(sp.n, 0), COALESCE(asg.n, 0)
+FROM codes LEFT JOIN hr ON hr.code = codes.code LEFT JOIN sp ON sp.code = codes.code
+  LEFT JOIN asg ON asg.code = codes.code
+UNION ALL SELECT NULL, n, NULL, NULL FROM hr WHERE code IS NULL
+UNION ALL SELECT NULL, NULL, n, NULL FROM sp WHERE code IS NULL
+UNION ALL SELECT NULL, NULL, NULL, n FROM asg WHERE code IS NULL"""
+
+
+def test_three_parts_join_through_a_relationship_and_a_key_column_of_one_name(depts):
+    """Headcount, space and assignments per department: space through its declared
+    relationship, the assignments by the caller's choice, which the note names alone."""
+    out = depts.query(
+        {
+            "parts": [
+                HEADCOUNT,
+                {"select": ["measure.depts.area"], "group_by": [SPACE_DEPT]},
+                {"select": ["measure.depts.assigned_area"], "group_by": [ASSIGNMENT_DEPT]},
+            ],
+            "join": {"on": [[DEPT, SPACE_DEPT, ASSIGNMENT_DEPT]]},
+        }
+    )
+
+    assert _values(out) == depts.sql(THREE_BY_DEPARTMENT)
+    assert _joined(out)["details"]["keys"][0]["declared"] is False
+    assert (
+        f"No relationship in the package pairs {DEPT} with {ASSIGNMENT_DEPT}: joining on them is "
+        "the caller's choice."
+    ) in _joined(out)["message"]
+
+
+def test_a_foreign_key_joins_a_key_column_of_one_name(depts):
+    """The employees' own dept_code (a foreign key, UNASSIGNED read as written) beside the
+    assignments' key column: one of the two models keys it, so the caller may join them."""
+    employees = {"select": ["measure.depts.headcount"], "group_by": [EMPLOYEE_DEPT]}
+    out = depts.query(
+        {"parts": [employees, ASSIGNED], "join": {"on": [[EMPLOYEE_DEPT, ASSIGNMENT_DEPT]]}}
+    )
+
+    rows = depts.sql(_by_department(table="assignments", code="dept_code"))
+    assert _values(out) == rows
+    assert {row[0]: row[1:3] for row in rows if row[0] is not None}["UNASSIGNED"] == (1, 0)
+    assert _joined(out)["details"]["keys"][0]["declared"] is False
+
+
+def test_keep_answers_for_the_assigned_departments_only(depts):
+    """Headcount of the departments with an assignment in building 32: Engineering's 2."""
+    in_32 = {
+        **ASSIGNED,
+        "where": [{"field": "dimension.depts_assignment_building_key", "op": "is", "value": 32}],
+    }
+    out = depts.query(
+        {"parts": [HEADCOUNT, in_32], "join": {"on": [[DEPT, ASSIGNMENT_DEPT]], "keep": [1]}}
+    )
+
+    reference = depts.sql(
+        _by_department(space="building_key = 32", keep="fac.present = 1", table="assignments")
+    )
+    assert _values(out) == reference
+    assert [row[:3] for row in reference] == [("ENG", 2, 500)]
+
+
+def test_a_row_filter_reads_the_visible_rows_of_a_join_by_the_callers_choice(depts):
+    """A south site lead, the assignments listed as shared: rows and counts are the hand join
+    of the visible rows only. Unshared, the assignments part is refused as it is alone."""
+    shared = depts.runtime(_site_filter(shared=["entity.depts_assignment"]))
+    held = depts.runtime(_site_filter())
+    try:
+        out = shared.query(BY_ASSIGNMENT, now=NOW, context=SITE_LEAD)
+        south = "site = 'south'"
+        assert _values(out) == depts.sql(_by_department(employees=south, table="assignments"))
+        assert (
+            _counts(_joined(out))
+            == depts.sql(_department_counts(employees=south, table="assignments"))[0]
+            == (3, 1, 0, 4, 0, 2)
+        )
+        refused = _refusal(lambda: held.query(BY_ASSIGNMENT, now=NOW, context=SITE_LEAD))
+        code, message, details = _refusal(lambda: held.query(ASSIGNED, now=NOW, context=SITE_LEAD))
+        assert refused == (code, f"parts[1]: {message}", {**details, "part": 1})
+        assert code == "POLICY_DENIED" and details["reason"] == "row_filter_uncovered_root"
+    finally:
+        shared.close()
+        held.close()
+
+
+def test_a_hidden_model_is_refused_as_a_model_that_isnt_there(package, tmp_path):
+    """A caller who can't see the assignments is refused the join exactly as a package with no
+    assignments refuses it: the gate never says what a hidden model holds or keys."""
+    without = tmp_path / "depts"
+    shutil.copytree(package, without)
+    (without / "models" / "assignments.yml").unlink()
+    graph = without / "graph.yml"
+    graph.write_text(
+        "".join(
+            line
+            for line in graph.read_text(encoding="utf-8").splitlines(keepends=True)
+            if "assignment:" not in line
+        ),
+        encoding="utf-8",
+    )
+    config = load_package_config(str(package))
+    policy = visibility_policy("hidden", "entity.depts_assignment")
+    hidden = Runtime.from_config(
+        replace(config, semantic_policies=[*config.semantic_policies, policy]),
+        source_path=str(package),
+    )
+    absent = _runtime(without)
+    support = RequestContext(roles=("support",))
+    try:
+        refused = _refusal(lambda: hidden.query(BY_ASSIGNMENT, now=NOW, context=support))
+        assert refused == _refusal(lambda: absent.query(BY_ASSIGNMENT, now=NOW))
+        assert refused[0] == "OBJECT_NOT_FOUND" and refused[2]["part"] == 1
+        # Beside a part the caller sees, the join they can make answers as it does without it.
+        alexes = {
+            "parts": [
+                {"select": ["measure.depts.salary"], "group_by": [NAME]},
+                {"select": ["measure.depts.trainings"], "group_by": [NAME]},
+            ],
+            "join": {"on": [[NAME, NAME]]},
+        }
+        seen = hidden.query(alexes, now=NOW, context=support)
+        plain = absent.query(alexes, now=NOW)
+        for key in ("rows", "warnings", "assumptions", "parts"):
+            assert seen[key] == plain[key]
+    finally:
+        hidden.close()
+        absent.close()
+
+
 def test_two_people_named_alex_stay_two_rows(depts):
     """Both parts grouped by a display name group by the employee key beside it, and the key
     joins with the name: two Alexes are two rows, never one or four."""
@@ -426,8 +627,8 @@ def test_two_people_named_alex_stay_two_rows(depts):
         ("Alex", 120, 0),
     ]
     assert _joined(out)["details"]["keys"] == [
-        {"column": EMPLOYEE, "parts": [EMPLOYEE, EMPLOYEE]},
-        {"column": NAME, "parts": [NAME, NAME]},
+        {"column": EMPLOYEE, "parts": [EMPLOYEE, EMPLOYEE], "declared": True},
+        {"column": NAME, "parts": [NAME, NAME], "declared": True},
     ]
     assert [row["code"] for row in out["assumptions"]].count("GROUPED_BY_KEY") == 2
 
@@ -637,7 +838,9 @@ def test_validate_and_sql_state_the_join_without_running_it(depts):
     for out in (checked, compiled):
         note = _joined(out)
         assert "kept_rows" not in note["details"]
-        assert note["details"]["keys"] == [{"column": DEPT, "parts": [DEPT, SPACE_DEPT]}]
+        assert note["details"]["keys"] == [
+            {"column": DEPT, "parts": [DEPT, SPACE_DEPT], "declared": True}
+        ]
         assert [block["part"] for block in out["parts"]] == [0, 1]
     assert compiled["rendered_sql"].count("FULL OUTER JOIN joined_part_1 AS part_1") == 1
 
@@ -884,9 +1087,10 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         },
         "INVALID_QUERY",
         f"join.on[0]: pairs {EMPLOYEE_DEPT} with {SPACE_DEPT}: no declared relationship pairs "
-        "'dept_code' of 'entity.depts_employee' with 'dept_code' of 'entity.depts_space'. Parts "
-        "join only on the same dimension in every part, or on the two columns a declared "
-        "relationship joins",
+        "'dept_code' of 'entity.depts_employee' with 'dept_code' of 'entity.depts_space', and "
+        "neither model declares 'dept_code' in its key. Parts join on the same dimension in "
+        "every part, on the two columns a declared relationship joins, or on identifier columns "
+        "of one name and type that one of the models declares in its key",
         {"path": "join.on[0]", "reason": "join_key_not_shared"},
     ),
     (
@@ -901,8 +1105,9 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         "INVALID_QUERY",
         f"join.on[0]: pairs {DEPT_NAME} with {BUILDING}: 'dept_name' doesn't say it identifies "
         "anything: a join column names an identifier (a code, key or id) and what it identifies. "
-        "Parts join only on the same dimension in every part, or on the two columns a declared "
-        "relationship joins",
+        "Parts join on the same dimension in every part, on the two columns a declared "
+        "relationship joins, or on identifier columns of one name and type that one of the "
+        "models declares in its key",
         {"path": "join.on[0]", "reason": "join_key_not_shared"},
     ),
     (

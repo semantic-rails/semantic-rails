@@ -1156,12 +1156,19 @@ their rows in one statement:
   in a part (departments with more than 2 people) removes whole keys, a `having` by another
   name, so a key it removed would read 0 beside the other parts: a part holding one is answered
   only when `join.keep` names it (`part_filter_not_kept`).
-- **Which columns join.** A tuple names the same dimension in every part, or two columns the
-  package says hold the same values: a declared relationship's own two columns, each an
-  identifier (a code, key or id, named for what it identifies) of one type. Two models that
-  both hold a `dept_code` are not enough: declare the relationship between them, or join on a
-  dimension both parts reach. Refused with `INVALID_QUERY` (`details.reason`:
-  `join_key_not_shared`), the message naming the pair and why.
+- **Which columns join.** A tuple names the same dimension in every part, two columns the
+  package says hold the same values (a declared relationship's own two columns), or columns of
+  one name that one of their models declares in its key: headcount by the departments'
+  `dept_code` beside area by facilities' own assignments, keyed by building and `dept_code`
+  and related to nothing. Each column is an identifier (a code, key or id, named for what it
+  identifies) of one type, never a date that only dates the rows (a load or snapshot date).
+  Two models that both hold a `dept_code` neither of them keys are not enough: declare the
+  relationship, or join on a dimension both parts reach. Refused with `INVALID_QUERY`
+  (`details.reason`: `join_key_not_shared`), the message naming the pair and why.
+- **A join of one name is the caller's choice.** The engine can't check that two models' codes
+  of one name name the same things (one model's `ENG` may be the other's `ENGR`). Such a key is
+  `declared: false` in `PARTS_JOINED`, whose message says the join is the caller's choice; its
+  counts of each part's keys with no row in the other part are where a mismatch shows.
 - **Every part is grouped by its join keys only.** A part grouped by a further column would
   repeat each of its rows beside the other parts' rows, so it is refused (`parts_grain_mismatch`);
   so is a join column the part doesn't group by (`join_key_not_grouped`). The key a display name
@@ -1182,7 +1189,8 @@ their rows in one statement:
 - **The answer.** Every warning and assumption a part gives alone comes back, with `part` (in
   `details` for a warning) and its message prefixed `parts[i]: `. `parts` holds each part's
   `query`, `window`, `clock`, `observation_scope` and `routes`. `PARTS_JOINED` (every
-  verbosity) names the key columns and each part's column for them, `keep`, and per part its
+  verbosity) names the key columns, each part's column for them and whether the package says
+  they hold the same values (`declared`), `keep`, and per part its
   rows, its NULL-key rows and its keys each other part lacks (`details.parts[].unmatched`),
   counted over the whole joined result before `order_by` and `limit` and never counting a row
   the caller can't see; `kept_rows`; and per column whether it adds up down the rows (a count
@@ -1612,7 +1620,8 @@ The engine trusts the data as it is stored in three cases:
   ratio from a headcount part and a capacity part): it returns both columns.
 - A part grouped by more than the join keys (each list's owners beside its member count) and a
   part with no clock beside a timed call are refused, not answered.
-- Two models that hold the same code join only through a declared relationship between them.
+- Two models that hold the same code join only when one of them declares it in its key, or a
+  relationship pairs them; the engine doesn't check that the codes name the same things.
 
 ### Links and one-per-key models
 
