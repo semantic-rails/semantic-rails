@@ -1460,7 +1460,7 @@ A measure has data in scope when at least one of its rows in scope holds a value
 non-NULL amount, or a count above zero. The scope is the measure's own authored conditions (its
 `filter`, an `aggregate_if` condition or a `CASE`) and policy row filters, before the
 `group_by`, except that a declared edge observes its table's loaded periods whatever a `filter`
-matches (see "The data's edge" below); [`observation_scope`](#observation_scope) says whether the call's `where` counts:
+matches, and then whatever the filtered column holds (see "The data's edge" below); [`observation_scope`](#observation_scope) says whether the call's `where` counts:
 
 - **`dataset`**: it doesn't. "Apples at store 5" reads `0` when store 5 sold no apples, as store
   5 does in a by-store answer. An entity filter is part of the `where`: a period in which it
@@ -1511,8 +1511,11 @@ it): a load log's loaded-through date (`edge_source` `loaded`; `edge`
 is null and the message says "loaded-through date unavailable" when the log holds none) or
 `now` (`edge_source` `now`, with the note `ZERO_AFTER_LAST_ROW` when the answer reaches past the
 last row). Such a table is observed in each of those periods from its first row on, whether or
-not a filtered metric's `filter` has ever matched one of its rows: the metric reads `0` there
-and `NULL` with `NO_DATA_YET` after the edge. Under `observation_scope: "query"`, the call's
+not a filtered metric's `filter` has ever matched one of its rows, and whether or not the
+column it sums holds a value yet: the metric reads `0` there and `NULL` with `NO_DATA_YET`
+after the edge. "Each week's refund rate", refunds over revenue, reads `0.0` in a loaded week of
+paid orders before the first refund; a refunded order whose amount is NULL leaves its week
+`NULL`. Under `observation_scope: "query"`, the call's
 `where` must still keep a row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
