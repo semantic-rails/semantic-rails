@@ -217,6 +217,26 @@ def test_each_group_is_one_meaning_and_a_role_fork_lists_both_roles(tmp_path: Pa
         assert option["query"]["routes"][-1]["via"] == option["relationship_path"]
 
 
+def test_plan_asks_among_the_options_the_groups_list(tmp_path: Path) -> None:
+    """``plan`` asks the same groups and offers only their options, each a draft ready to send;
+    the route the assignments group counts is not offered, and its message says so."""
+    runtime = Runtime.from_path(str(_facilities(tmp_path)))
+    groups = _refusal(runtime, DEPARTMENTS_BY_BUILDING).details["clarification"]["groups"]
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        planned = adapter.call_tool("plan", {"intent": "department count by building name"})
+    finally:
+        adapter.close()
+    assert planned["status"] == "needs_clarification"
+    why = planned["why"]
+    assert why["code"] == "AMBIGUOUS_PATH" and why["details"]["groups"] == groups
+    assert "unrunnable" not in why["details"]
+    listed = [option for group in groups for option in group.get("options") or ()]
+    assert sorted(o["id"] for o in why["details"]["options"]) == sorted(listed)
+    assert (why["details"]["options_total"], why["details"]["listed"]) == (7, 6)
+    assert why["message"].endswith("1 other route between them is counted in groups, not offered.")
+
+
 def test_a_fork_too_big_to_list_names_what_to_decide_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
