@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from difflib import get_close_matches
 from typing import Any
 
 from .errors import SemanticLayerError
-from .schema import PackageConfig, RelationshipConfig, base_of
+from .schema import PackageConfig, RelationshipConfig
 
 
 def _shift_iso_date_backward(start: str, lookback: dict[str, Any]) -> str:
@@ -1427,15 +1427,14 @@ def enrich_expression_ast_error(
 
 
 def enrich_column_expression(
-    exc: SemanticLayerError, config: PackageConfig, scope: Mapping[str, Any] | None = None
+    exc: SemanticLayerError,
+    config: PackageConfig,
+    kept_columns: Callable[[], Iterable[str]] = tuple,
 ) -> SemanticLayerError:
     """Attach ``closest_matches`` to a refused raw ``column`` expression: the dimensions defined
-    on that column, those of its entity or table when it names one that has any. When a measure
-    a policy keeps from the caller in ``scope`` reads a column of that name, mark it: its hint
-    then offers no aggregate over the column."""
-    from .expressions import collect_column_refs
-    from .policies import kept_measure_ids
-
+    on that column, those of its entity or table when it names one that has any. When the
+    column is one of ``kept_columns()`` (read by a measure a policy keeps from the caller),
+    mark it: its hint then offers no aggregate over the column."""
     details = dict(exc.details or {})
     column = str(details.get("column") or "").lower()
     if exc.code != "INVALID_QUERY" or details.get("expression_kind") != "column" or not column:
@@ -1453,14 +1452,7 @@ def enrich_column_expression(
         )
         if matches:
             details["closest_matches"] = matches[:10]
-    base = base_of(config)
-    kept = kept_measure_ids(base, scope)
-    if any(
-        ref.column.lower() == column
-        for row in base.measures
-        if row.id in kept
-        for ref in collect_column_refs(row.expr)
-    ):
+    if column in set(kept_columns()):
         details["column_kept_by_policy"] = True
     if details == dict(exc.details or {}):
         return exc

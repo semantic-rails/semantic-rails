@@ -49,6 +49,7 @@ from .http_request import (
     status_label,
 )
 from .metadata_parts.capabilities import capabilities_payload
+from .policies import kept_column_names
 from .query_call import EXPRESSION_SHAPES
 from .request_context import (
     HeaderPolicyContextResolver,
@@ -59,6 +60,7 @@ from .request_context import (
 )
 from .request_payload import identity_claim_refusal, refuse_identity_claims
 from .runtime import Runtime
+from .schema import base_of
 
 __all__ = [
     "API_VERSION",
@@ -368,7 +370,9 @@ class SemanticHTTPService:
                     "audience": context.audience,
                     "roles": context.roles,
                 }
-                enriched = enrich_column_expression(enriched, config, scope)
+                enriched = enrich_column_expression(
+                    enriched, config, lambda: kept_column_names(base_of(config), scope)
+                )
                 enriched = enrich_path_not_found(enriched, config)
             error_issue = exception_issue(enriched, stage=stage)
             return {

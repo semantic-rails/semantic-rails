@@ -546,11 +546,12 @@ def withheld_measure_ids(
     return reads & measures
 
 
-def kept_measure_ids(config: PackageConfig, scope: Mapping[str, Any] | None) -> set[str]:
-    """Measures a ``deny`` or ``withhold_values`` policy keeps from the caller in ``scope``
-    (its ``environment``, ``audience`` and ``roles``), directly or as a kept metric's input;
-    with no caller known, those it keeps from anyone. Such a policy covers the measure, not
-    its columns."""
+def kept_column_names(config: PackageConfig, scope: Mapping[str, Any] | None) -> frozenset[str]:
+    """The column names, lowercased, that a measure reads when a ``deny`` or
+    ``withhold_values`` policy keeps it from the caller in ``scope`` (its ``environment``,
+    ``audience`` and ``roles``), directly or as a kept metric's input; with no caller known,
+    from anyone. Such a policy covers the measure, not its columns, so a hint offers no
+    aggregate over them."""
 
     def keeps(policy: SemanticPolicyConfig, object_id: str) -> bool:
         if _policy_action(policy) not in {"deny", WITHHOLD}:
@@ -566,7 +567,13 @@ def kept_measure_ids(config: PackageConfig, scope: Mapping[str, Any] | None) -> 
         if any(keeps(policy, object_id) for policy in config.semantic_policies)
     }
     recipes = kept - measures
-    return (kept | (bind_metadata_objects(config, recipes) if recipes else frozenset())) & measures
+    kept |= bind_metadata_objects(config, recipes) if recipes else frozenset()
+    return frozenset(
+        ref.column.lower()
+        for row in config.measures
+        if row.id in kept
+        for ref in collect_column_refs(row.expr)
+    )
 
 
 def withheld_shape(
