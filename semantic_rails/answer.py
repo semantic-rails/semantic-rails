@@ -317,8 +317,8 @@ def read_from(
     those relationship ids follow its values, each once, in the order the SQL read them. A route
     is stated by ``routes`` (chosen among several), a ``ROUTE_PASS_THROUGH`` or ``LISTED_THROUGH``
     note, or a fan-out note's ``paths``. An entity ``routes`` names, with no unstated route into
-    it, is left out: the response already says the call reads it. ``config`` is the caller's view, which the call
-    compiled on, so nothing here names an object the caller can't see."""
+    it, is left out: the response already says the call reads it. ``config`` is the caller's
+    view, which the call compiled on, so nothing here names an object the caller can't see."""
     query = dict(compiled["explain"].normalized_query or {})
     measures = {row.id: row.entity for row in config.measures}
     recipes = {row.id: row for row in config.metric_recipes}
