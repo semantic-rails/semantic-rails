@@ -1004,7 +1004,7 @@ def _predicate_ctes_and_join(
     # Over several measures an entity's value is NULL where one operand is unknown, though the
     # others have data, and the gate below would read that as no data in scope. So that
     # source keeps the earlier settlement, which reads an operand's unknown amounts as 0
-    # where its measure has data in scope; a source beside a distribution keeps it too.
+    # where its measure has data in scope.
     several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
     with earlier_settlement(several):
         earlier = earlier_settlement_applies()

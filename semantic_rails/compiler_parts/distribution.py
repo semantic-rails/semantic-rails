@@ -272,6 +272,12 @@ def _lower_agent_dag_to_sql(
         )
     branch_plan = replace(plan, time={**plan.time, "fill": False}) if dense else plan
     key_aliases = _query_key_aliases(plan)
+    zero = zero_outputs(plan, config) if guard_empty else {}
+    # Each branch settles its own groups: a NULL there is a group whose rows are all unknown.
+    # A guarded branch marks the groups it has a row for, so the combine fills only the groups
+    # it has none for.
+    taken = {name.casefold() for name in [*key_aliases, *plan.post_aggregation_exprs]}
+    present: dict[str, str] = {}
     branch_ctes: list[SqlCte] = []
     output_aliases: list[str] = []
     for index, (alias, expr_payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
@@ -282,6 +288,10 @@ def _lower_agent_dag_to_sql(
             branch_query = _single_expression_branch_select(
                 expr, alias=alias, plan=branch_plan, config=config
             )
+        if alias in zero:
+            present[alias] = _unused_name(f"{branch_name}__present", taken)
+            marker = SqlField(SqlLiteral(1), present[alias])
+            branch_query = replace(branch_query, select=[*branch_query.select, marker])
         record_output_reads(alias, {alias})
         branch_ctes.append(
             SqlCte(name=branch_name, query=_namespace_sql_select(branch_query, f"{branch_name}__"))
@@ -306,8 +316,9 @@ def _lower_agent_dag_to_sql(
 
     combined_name = branch_ctes[0].name
     combine_ctes: list[SqlCte] = []
-    available_aliases = [output_aliases[0]]
+    available_aliases = [output_aliases[0], *_present(output_aliases[0], present)]
     for index, branch in enumerate(branch_ctes[1:], start=2):
+        output = output_aliases[index - 1]
         left_alias = "left_side"
         right_alias = "right_side"
         next_name = f"agent_combined_{index}"
@@ -318,11 +329,9 @@ def _lower_agent_dag_to_sql(
         select_fields.extend(
             SqlField(SqlIdentifier(parts=[left_alias, item]), item) for item in available_aliases
         )
-        select_fields.append(
-            SqlField(
-                SqlIdentifier(parts=[right_alias, output_aliases[index - 1]]),
-                output_aliases[index - 1],
-            )
+        select_fields.extend(
+            SqlField(SqlIdentifier(parts=[right_alias, item]), item)
+            for item in [output, *_present(output, present)]
         )
         combine_ctes.append(
             SqlCte(
@@ -349,7 +358,7 @@ def _lower_agent_dag_to_sql(
             )
         )
         combined_name = next_name
-        available_aliases.append(output_aliases[index - 1])
+        available_aliases.extend([output, *_present(output, present)])
 
     if dense:
         combined = SqlSelect(
@@ -373,10 +382,13 @@ def _lower_agent_dag_to_sql(
         combined_name = "series_base"
 
     # A branch that has no row for a group leaves its output NULL in the combine: settle
-    # those outputs again over the combined result, the same way each branch did.
+    # those outputs again over the combined result, the same way each branch did. Its marker
+    # is NULL there and 1 where the branch settled the group itself.
     guard_ctes: list[SqlCte] = []
-    if guard_empty and (zero := zero_outputs(plan, config)):
-        guard_ctes.extend(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
+    if zero:
+        guard_ctes.extend(
+            guard_empty_groups(combined_name, key_aliases, output_aliases, zero, rows=present)
+        )
         combined_name = GUARDED_BASE
 
     final_source = "agent_projected"
@@ -404,3 +416,18 @@ def _lower_agent_dag_to_sql(
         order_by=_requested_order(plan, final_source),
         limit=plan.query.get("limit"),
     )
+
+
+def _present(output: str, present: dict[str, str]) -> list[str]:
+    """The output's branch marker, if its branch has one."""
+    return [present[output]] if output in present else []
+
+
+def _unused_name(name: str, taken: set[str]) -> str:
+    """``name``, or it with a suffix, until it takes no name in ``taken`` (case-folded); then
+    taken too."""
+    candidate, suffix = name, 2
+    while candidate.casefold() in taken:
+        candidate, suffix = f"{name}_{suffix}", suffix + 1
+    taken.add(candidate.casefold())
+    return candidate

@@ -43,7 +43,6 @@ from .bind import (
     _bound_metric_predicates,
     _expression_alias,
     _parse_public_expr,
-    earlier_settlement,
 )
 from .conversion import _conversion_leaf_cte
 from .dependencies import (
@@ -62,9 +61,9 @@ from .empty_groups import (
     base_reads,
     carried_zero_lookups,
     counts_its_own_key,
+    drops_rows_below_root,
     expr_resolves_to_zero,
     guard_empty_groups,
-    has_nested_case,
     observes_dataset,
     record_balance_output,
     record_zero_output,
@@ -295,11 +294,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     if _plan_requires_agent_dag_lowering(plan, config):
         if totals:
             raise _refuse_total_beside("a distribution")
-        # Arithmetic beside a distribution settles each branch, then their combine, before
-        # it can tell an operand's unknown amounts from its empty groups: every branch keeps
-        # the earlier settlement.
-        with earlier_settlement():
-            return _lower_agent_dag_to_sql(plan, config, guard_empty)
+        return _lower_agent_dag_to_sql(plan, config, guard_empty)
 
     key_aliases = _query_key_aliases(plan)
     measure_aliases: list[str] = []
@@ -663,7 +658,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 earlier={
                     row.bound_measure.alias
                     for row in plan.measure_plans
-                    if has_nested_case(_measure_index(config)[row.bound_measure.measure_id])
+                    if drops_rows_below_root(_measure_index(config)[row.bound_measure.measure_id])
                 },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),

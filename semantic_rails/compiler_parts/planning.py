@@ -44,7 +44,6 @@ from .bind import (
     _collect_conversion_exprs,
     _collect_measure_refs,
     _freeze_payload,
-    earlier_settlement,
     lift_conditional_aggregates,
 )
 from .dependencies import (
@@ -61,7 +60,6 @@ from .leaf_paths import (
     _root_path_summary,
 )
 from .lowering_common import (
-    _expr_contains_distribution,
     _plan_requires_agent_dag_lowering,
     _validate_metric_predicate_filter_envelope,
 )
@@ -119,14 +117,7 @@ def plan_query(
 ) -> LogicalPlan:
     validate_temporal_support(config, payload)
     raw_query = normalize_query(payload, config=config)
-    # A query with a distribution lowers with the earlier settlement (``_lower_query_to_sql``),
-    # so it routes with it too: its plan and explain are the same as before.
-    distribution = any(
-        item.expression is not None and _expr_contains_distribution(item.expression, config)
-        for item in raw_query.select
-    )
-
-    with candidate_planning(), earlier_settlement(distribution):
+    with candidate_planning():
         plan = _plan_query(config, registry, raw_query, collapse_window=True, top_level=True)
     # Last, so a query that fails for any other reason (an unknown or hidden object, a route, a
     # policy) is refused for that reason first.

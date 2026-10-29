@@ -2,8 +2,9 @@
 
 Every sum, count and distinct count a projection reads comes from ``guarded_base``, and no
 other ``COALESCE(<measure>, 0)`` turns a NULL into 0. Each sum there also reads the count of
-the rows it read in the group, so it fills 0 only where there were none, except beside a
-distribution, which keeps the earlier settlement. Under the dataset scope, a filtered query's
+the rows it read in the group, so it fills 0 only where there were none. Beside a
+distribution, the combine reads each branch's mark of the groups it has a row for, and fills
+only the others. Under the dataset scope, a filtered query's
 measures are each observed by a probe of their own rows. Shared by the unit
 tests and the differential correctness corpus, so both hold every query they compile to it.
 """
@@ -18,7 +19,7 @@ from semantic_rails.compiler_parts.bind import _bound_filter_clauses
 from semantic_rails.compiler_parts.empty_groups import (
     GUARDED_BASE,
     base_reads,
-    has_nested_case,
+    drops_rows_below_root,
     observed_outside_filters,
     sql_nodes,
     zero_aliases,
@@ -87,8 +88,8 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
             f"{GUARDED_BASE} settles {len(settled)} measures, expected {sorted(expected)}"
         )
         # Besides its own value (and the keys, for coverage), a sum reads exactly one column:
-        # its row count. A count reads none, nor does anything beside a distribution, which
-        # keeps the earlier settlement. A row count the guard passes through is no key.
+        # its row count, or beside a distribution its branch's mark. A count reads none. A
+        # row count the guard passes through is no key.
         row_counts = set(_row_count_names(plan, _names_in_use(plan, config)).values())
         keys = {
             field.alias
@@ -104,12 +105,12 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
         earlier = {
             row.bound_measure.alias
             for row in plan.measure_plans
-            if has_nested_case(measures[row.bound_measure.measure_id])
+            if drops_rows_below_root(measures[row.bound_measure.measure_id])
         }
         sums = [
             aggregation
             for alias, aggregation in expected.items()
-            if aggregation == "sum" and not dag and alias not in earlier
+            if aggregation == "sum" and (dag or alias not in earlier)
         ]
         assert len(counted) == len(sums), (
             f"{GUARDED_BASE} reads a row count for {len(counted)} measures, "

@@ -86,8 +86,8 @@ from .empty_groups import (
     LeafScope,
     declared_cap,
     declared_edge,
+    drops_rows_below_root,
     expr_resolves_to_zero,
-    has_nested_case,
     reads_every_row,
     record_balance_scope,
     record_leaf_scope,
@@ -616,15 +616,15 @@ def _dataset_scope(
     own metric predicates (a scoped aggregate's, over all time, a window or each period) are
     read through the leaf's joins to their sets (``owned``, renamed as the leaf's CTE names
     them). None for a predicate it can't read that way, a fan-out or a hop valid over time,
-    and for a nested CASE, whose settlement can't tell unknown amounts from no rows: the guard
-    then refuses."""
+    and for a CASE below the root that can drop rows (``drops_rows_below_root``), whose
+    settlement can't tell unknown amounts from no rows: the guard then refuses."""
     bound = row.bound_measure
     measure = _measure_index(config)[bound.measure_id]
     paths = [s for s in row.path_selections if s.purpose in _AUTHORED_PURPOSES]
     if (
         not resolves_to_zero(bound.aggregation, measure)
         or measure.lookup_from
-        or has_nested_case(measure)
+        or drops_rows_below_root(measure)
         or (_bound_metric_predicates(bound) and owned is None)
         or any(
             s.analysis.get("status") != "ok" or _path_has_temporal_validity(s.chosen_path, config)

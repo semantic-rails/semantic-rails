@@ -1852,6 +1852,14 @@ measure.
 Package checks treat literal values as constants with no column dependencies;
 columns inside compound expressions are still checked against the warehouse.
 
+A NULL in a measure's column is an unknown amount: a period or window whose rows all hold NULL
+reads `NULL` ([All NULL reads NULL](QUERY_CALL.md#empty-groups-null-or-0)), and so does a sum or
+difference over it. Where the column's NULL means "none", say so in the measure: a shipping
+refund leaves `goods_amount` NULL, so `expr: COALESCE(goods_amount, 0)` lets "trailing net
+revenue" (revenue less goods refunded) read through the windows that hold only shipping
+refunds. Put a `CASE` that keeps only some rows at the formula's root
+(`CASE WHEN store_id = 'a' THEN amount * 1.1 END`), not below it.
+
 `entity_key:` on `kind: entity_count` measures names the **key column** declared
 in `graph.entities.<entity>.key` (e.g. `order_id`), not the entity name
 (`order`). The loader treats the value as a literal column reference.

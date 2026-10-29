@@ -616,11 +616,14 @@ executed render in text order, and rollup routing is off under a row filter. Duc
 them before connecting. Other adapters deny parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
 observation determines whether zero is defined, each sum's leaf counts the rows it read so
 zero goes only to a group with none (never to rows whose amounts are all NULL; a leaf without
-the count is refused). A query with a distribution branch, and a metric predicate's source
-over several measures under a threshold 0 passes, keep the earlier settlement
-(`earlier_settlement` in `compiler_parts/bind.py`) and plan and lower exactly as before. A
-measure whose expression contains a CASE below its root also keeps the earlier settlement
-individually and refuses rollups; lowering refuses a plan that bypasses that routing rule.
+the count is refused). Beside a distribution each branch settles its own groups, and marks
+the groups it has a row for, so the combine (`compiler_parts/distribution.py`) fills only the
+groups a branch has none for. A metric predicate's source over several measures under a
+threshold 0 passes keeps the earlier settlement (`earlier_settlement` in
+`compiler_parts/bind.py`) and plans and lowers exactly as before. So does, individually, a
+measure whose expression contains a CASE with no ELSE (or ELSE NULL) below its root
+(`drops_rows_below_root`); any CASE below the root refuses rollups, and lowering refuses a plan
+that bypasses that routing rule.
 Each row count is named `m<i>_rows` beside its measure's `m<i>`, renamed until no output, key or
 package column has the name, so the alias registry never rewrites it. Source rollups also
 rename their internal value until it differs from every projected join column, group, time

@@ -871,12 +871,9 @@ def test_an_exact_rollup_of_an_else_zero_sum_matches_the_base(
                 "SELECT store_id AS s, date_trunc('month', ordered_at) AS month, "
                 "SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) AS amount FROM orders GROUP BY 1, 2",
             )
-            # A distribution retains earlier settlement for unknown amounts, independently of ELSE.
+            # Beside a distribution too, a group whose only amount is unknown reads NULL.
             assert results[-1] == {
-                (row["s"], str(row["month"])[:7]): (
-                    0 if row["amount"] is None and beside_distribution else row["amount"]
-                )
-                for row in gold
+                (row["s"], str(row["month"])[:7]): row["amount"] for row in gold
             }
         finally:
             rt.close()
@@ -891,8 +888,7 @@ def test_branch_row_markers_never_shadow_projected_values(
     shop: Runtime, revenue_alias: str, median_alias: str
 ) -> None:
     """Outputs named like a branch's former hidden markers keep their values. Beside a
-    distribution the earlier settlement applies: store a's May, whose only amount is unknown,
-    reads 0 where revenue has data in scope."""
+    distribution, store a's May, whose only amount is unknown, reads NULL, as it does alone."""
     distribution = {
         "kind": "distribution",
         "function": "median",
@@ -900,7 +896,7 @@ def test_branch_row_markers_never_shadow_projected_values(
     }
     for by_store, (key, values) in [
         (False, ((None, "2023-11"), (15, 7.5))),
-        (True, (("a", "2024-05"), (0, None))),
+        (True, (("a", "2024-05"), (None, None))),
     ]:
         response = shop.query(
             {
@@ -916,7 +912,7 @@ def test_branch_row_markers_never_shadow_projected_values(
         gold = _gold(
             shop,
             f"SELECT {'store_id' if by_store else 'NULL'} AS s, "
-            "date_trunc('month', ordered_at) AS month, COALESCE(SUM(amount), 0) AS revenue, "
+            "date_trunc('month', ordered_at) AS month, SUM(amount) AS revenue, "
             "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) AS median "
             f"FROM orders GROUP BY {'1, 2' if by_store else '2'}",
         )
@@ -945,16 +941,32 @@ REFUNDS_BESIDE_A_MEDIAN = {
 }
 
 
-def test_arithmetic_beside_a_distribution_keeps_its_empty_groups_zero(shop: Runtime) -> None:
-    """Beside a distribution, every branch keeps the earlier settlement: an operand's unknown
-    amounts read 0 where its measure has data in scope, so a group with no refunds at all
-    (store a's November) is 0, not NULL."""
+def test_arithmetic_beside_a_distribution_reads_its_branch_as_it_reads_alone(
+    shop: Runtime,
+) -> None:
+    """Beside a distribution, each output settles its own groups as it does alone, and the
+    combine fills only a group its branch has no row for: 0 where the output has a known value
+    in another group, else NULL."""
+    alone = shop.query({**REFUNDS_BESIDE_A_MEDIAN, "select": REFUNDS_BESIDE_A_MEDIAN["select"][:1]})
     response = shop.query(REFUNDS_BESIDE_A_MEDIAN)
     got = {(row[SHOP_STORE], str(row["period"])[:7]): row["total"] for row in typed_rows(response)}
-    assert got[("a", "2023-11")] == 0
-    # Orders 2 (goods 5 + 1), 4 (shipping 3) and 6 (goods 4); every other group has none.
-    refunded = {("b", "2023-11"): 6, ("a", "2024-01"): 3, ("a", "2024-03"): 4}
-    assert got == {key: refunded.get(key, 0) for key in got}
+    # Orders 2 (goods 5 + 1), 4 (shipping 3) and 6 (goods 4): each refunded group has one
+    # operand with no known amount, so its total is NULL, as alone.
+    refunded = {(row[SHOP_STORE], str(row["period"])[:7]) for row in typed_rows(alone)}
+    assert refunded == {("b", "2023-11"), ("a", "2024-01"), ("a", "2024-03")}
+    assert {key: got[key] for key in refunded} == dict.fromkeys(refunded)
+    # No group has a known total, so a group with no refunds at all reads NULL too.
+    assert got == dict.fromkeys(got)
+    assert len(got) == 10
+    # Goods alone has known amounts: a group with no goods refund reads 0, and store a's
+    # January, whose only refund is shipping (goods unknown), NULL.
+    goods = shop.query(
+        {**REFUNDS_BESIDE_A_MEDIAN, "select": [{"expression": SHOP_GOODS, "as": "total"},
+                                               *REFUNDS_BESIDE_A_MEDIAN["select"][1:]]}
+    )  # fmt: skip
+    got = {(row[SHOP_STORE], str(row["period"])[:7]): row["total"] for row in typed_rows(goods)}
+    known = {("b", "2023-11"): 6, ("a", "2024-01"): None, ("a", "2024-03"): 4}
+    assert got == {key: known.get(key, 0) for key in got}
     assert len(got) == 10
 
 
@@ -1477,8 +1489,8 @@ def test_a_threshold_zero_passes_on_a_sum_of_measures_keeps_entities_without_row
         (_amount_when(IN_STORE_A, IN_STORE_B, otherwise=None), False, False),
         (_amount_when(IN_STORE_A, otherwise=0), False, True),
         (_amount_when(IN_STORE_A, IN_STORE_B, otherwise=0), True, True),
-        (_amount_when(IN_STORE_A, IN_STORE_B), True, True),
-        (_amount_when(IN_STORE_A, otherwise=None), True, True),
+        (_amount_when(IN_STORE_A, IN_STORE_B), True, False),
+        (_amount_when(IN_STORE_A, otherwise=None), True, False),
         # A CASE under arithmetic is never routed, alone or beside a distribution.
         (CASE_UNDER_ARITHMETIC, False, False),
         (CASE_UNDER_ARITHMETIC, True, False),
@@ -1490,7 +1502,7 @@ def test_a_rollup_never_answers_a_conditional_sum(
     """A rollup's sum can't tell rows that all fail a CASE condition (0) from rows that meet it
     with no value (NULL), so routing leaves such a measure on the base table. A non-NULL ELSE
     reads every row, as the base path's row count does, so the rollup may answer it. Beside a
-    distribution the plan keeps the earlier settlement, where the rollup answers any of them."""
+    distribution the plan routes the same way."""
     config = _with_measure(load_package_config(str(shop_package)), payload)
     query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
     if beside_a_distribution:
