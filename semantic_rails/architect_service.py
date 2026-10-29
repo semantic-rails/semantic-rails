@@ -75,7 +75,7 @@ _ROLE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 
 # What upsert_model(replace=True) keeps from the model it rewrites: its identity and how
 # its tables are bound (a calendar, and how far they are loaded).
-_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through", "one_per_key")
+_KEPT_ON_REPLACE = ("id", "entities", "calendar_id", "zero_through", "one_per_key", "prefer_over")
 # Model blocks of named objects: dropped_fields names each object a replace drops.
 _MODEL_BLOCKS = ("dimensions", "times", "measures")
 
@@ -778,6 +778,7 @@ class ArchitectProject:
         entities: dict[str, Any] | None = None,
         replace: bool = False,
         one_per_key: bool | None = None,
+        prefer_over: list[str] | None = None,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -787,7 +788,8 @@ class ArchitectProject:
 
         Fields merge into an existing model; ``replace=True`` rewrites it from
         the arguments, keeping only its ``id``, ``entities`` block, ``calendar_id``,
-        ``zero_through`` and ``one_per_key``, and reports what it dropped as ``dropped_fields``.
+        ``zero_through``, ``one_per_key`` and ``prefer_over``, and reports what it dropped as
+        ``dropped_fields``.
         ``entities`` merges parent entities into the model's ``entities`` block, each
         ``{}`` or ``{expr: column}`` (a column or a list of columns also reads as ``expr``).
 
@@ -800,6 +802,9 @@ class ArchitectProject:
         ``one_per_key=True`` reads ``relation`` as one row per ``primary_key``
         (a relation whose stored rows repeat the key), each column the key's one
         value; ``False`` removes it; ``None`` leaves it as it is.
+
+        ``prefer_over`` lists the look-alike models, by model id, whose questions this one
+        answers instead (``config_parts.prefer_over``); ``[]`` removes it; ``None`` leaves it.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         documents: dict[Path, dict[str, Any]] = {}
@@ -822,6 +827,7 @@ class ArchitectProject:
             entities=entities,
             replace=replace,
             one_per_key=one_per_key,
+            prefer_over=prefer_over,
         )
         if not staged["graph_changed"] and staged["graph_path"] != staged["model_path"]:
             documents.pop(staged["graph_path"])
@@ -856,6 +862,7 @@ class ArchitectProject:
                 **({"entities": entities} if entities is not None else {}),
                 "replace": replace,
                 "one_per_key": one_per_key,
+                **({"prefer_over": prefer_over} if prefer_over is not None else {}),
             },
             extra={"entity": staged["entity"], **_field_reports(staged)},
         )
@@ -1039,6 +1046,7 @@ class ArchitectProject:
         replace: bool = False,
         keep_existing: bool = False,
         one_per_key: bool | None = None,
+        prefer_over: list[str] | None = None,
     ) -> dict[str, Any]:
         """Apply one model upsert to ``documents`` (files load on first use).
 
@@ -1123,6 +1131,10 @@ class ArchitectProject:
             model["one_per_key"] = True
         elif one_per_key is False:
             model.pop("one_per_key", None)
+        if prefer_over:
+            model["prefer_over"] = list(prefer_over)
+        elif prefer_over is not None:
+            model.pop("prefer_over", None)
         requested_calendar = str(calendar_id or "").strip()
         if requested_calendar and not _CALENDAR_ID.fullmatch(requested_calendar):
             raise SemanticLayerError(

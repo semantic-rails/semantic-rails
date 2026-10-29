@@ -66,6 +66,7 @@ from .policy_rows import (
     _validate_caveat_refs,
     _validate_policy_scopes,
 )
+from .prefer_over import with_prefer_over
 from .row_values import (
     _ensure_dict_list,
     _ensure_list,
@@ -214,6 +215,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 bridge=model.get("_bridge_declared") is True,
                 model=model_id if entity_spec.get("_row_grain") else "",
                 one_per_key=model.get("one_per_key") is True,
+                model_id=model_id,
             )
         )
         entity_lookup[str(entity_key)] = entity_id
@@ -221,6 +223,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         model_to_entity[model_id] = entity_id
         if model.get("one_per_key") is True:
             one_per_key[entity_id] = relation_table
+    entities = with_prefer_over(entities, model_rows, model_to_entity, path=path)
 
     dimensions: list[DimensionConfig] = []
     temporal_roles: list[TemporalRoleConfig] = []

@@ -3,7 +3,9 @@
 An agent picks a source on purpose: a history copy of a table, or one of several tables that
 count the same thing under one name, answers its question as asked, with another population.
 Only the author knows which one a question means, so validation names each group of
-look-alike models once (``LOOKALIKE_MODELS``) and asks which one is canonical.
+look-alike models once (``LOOKALIKE_MODELS``) and asks which one is canonical, until one
+model's ``prefer_over:`` lists every other model of the group, directly or through another
+(``canonical_of``; ``config_parts.prefer_over`` loads it).
 
 Two kinds of group, read from the YAML alone, never from labels or descriptions:
 
@@ -22,7 +24,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,10 @@ class LookalikeGroup:
 
     kind: str  # "same_rows" or "same_count"
     entities: tuple[str, ...]
+    # Each entity's model id, as the author names it.
+    models: dict[str, str] = field(default_factory=dict)
+    # The entity whose model's prefer_over reaches every other of the group, or "".
+    canonical: str = ""
     # same_rows: each model's key, and for keyless ones the columns its dimensions read.
     keys: dict[str, list[str]] = field(default_factory=dict)
     columns: dict[str, list[str]] = field(default_factory=dict)
@@ -70,6 +76,23 @@ def _components(nodes: Iterable[str], edges: Iterable[tuple[str, str]]) -> list[
     for node in sorted(parent):
         groups[root(node)].append(node)
     return sorted((rows for rows in groups.values() if len(rows) > 1), key=lambda rows: rows[0])
+
+
+def canonical_of(entities: Sequence[str], prefer: dict[str, list[str]]) -> str:
+    """The one of ``entities`` whose model lists every other in its ``prefer_over``, directly or
+    through another model's (``prefer``: entity -> entities), or ``""`` when none does. The
+    loader refuses a circle, so at most one does."""
+    for head in entities:
+        reached: set[str] = set()
+        pending = [head]
+        while pending:
+            for target in prefer.get(pending.pop(), []):
+                if target not in reached:
+                    reached.add(target)
+                    pending.append(target)
+        if set(entities) - {head} <= reached:
+            return head
+    return ""
 
 
 def _unit(measure: Any) -> str:
@@ -115,11 +138,20 @@ def lookalike_groups(config: PackageConfig) -> list[LookalikeGroup]:
     same-count ones, each in order of its first model."""
     grains = _Grains(config)
     entities = {row.id: row for row in config.entities if row.kind != "time"}
+    prefer = {row.id: list(row.prefer_over) for row in config.entities if row.prefer_over}
+
+    def named(rows: Sequence[str]) -> dict[str, Any]:
+        return {
+            "entities": tuple(rows),
+            "models": {entity: entities[entity].model_id or entity for entity in rows},
+            "canonical": canonical_of(rows, prefer),
+        }
+
     same_rows = _components(entities, _same_rows_pairs(grains, entities))
     groups = [
         LookalikeGroup(
             kind="same_rows",
-            entities=tuple(rows),
+            **named(rows),
             keys={entity: list(entities[entity].key_columns) for entity in rows},
             columns={
                 entity: sorted(grains.described.get(entity, set()))
@@ -155,7 +187,7 @@ def lookalike_groups(config: PackageConfig) -> list[LookalikeGroup]:
         groups.append(
             LookalikeGroup(
                 kind="same_count",
-                entities=tuple(sorted(held)),
+                **named(sorted(held)),
                 measures={entity: held[entity] for entity in sorted(held)},
                 unit=_unit(first),
                 name=_measure_names(first, entities.get(first.entity))[0],
@@ -187,12 +219,15 @@ def _same_rows_basis(group: LookalikeGroup) -> str:
             if set(group.columns[right]) <= set(group.columns[left])
             else (right, left)
         )
-        return f"neither has a key, and {wide} reads every column {narrow} does"
+        return (
+            f"neither has a key, and {group.models[wide]} reads every column "
+            f"{group.models[narrow]} does"
+        )
     common = [column for column in keys[0] if all(column in key for key in keys)]
     adds: dict[str, list[str]] = defaultdict(list)
     for entity, key in zip(group.entities, keys, strict=True):
         if extra := [column for column in key if column not in common]:
-            adds[", ".join(extra)].append(entity)
+            adds[", ".join(extra)].append(group.models[entity])
     added = [
         f"{_listed(rows)} add{'s' if len(rows) == 1 else ''} {columns}"
         for columns, rows in adds.items()
@@ -203,35 +238,32 @@ def _same_rows_basis(group: LookalikeGroup) -> str:
 
 def lookalike_warning(group: LookalikeGroup, source_path: Path | str) -> dict[str, Any]:
     """One ``LOOKALIKE_MODELS`` warning: the group's models and the question for the author."""
-    models = list(group.entities)
+    entities = list(group.entities)
+    models = [group.models[entity] for entity in entities]
+    named = {"kind": group.kind, "models": models, "entities": entities}
     if group.kind == "same_rows":
         alike = f"hold the same rows ({_same_rows_basis(group)})"
         fix = (
-            "Say what each one's rows are in its model's description, and remove a copy no "
-            "question needs."
+            "List the others in its model's prefer_over, and say in each model's description "
+            "what its rows are."
         )
-        details: dict[str, Any] = {"kind": group.kind, "entities": models, "keys": group.keys}
+        details: dict[str, Any] = {**named, "keys": group.keys}
     else:
         alike = (
             f"each count {group.unit} under one name ({group.name}) over rows that aren't the "
             "same things"
         )
-        details = {
-            "kind": group.kind,
-            "entities": models,
-            "measures": group.measures,
-            "unit": group.unit,
-            "name": group.name,
-        }
+        details = {**named, "measures": group.measures, "unit": group.unit, "name": group.name}
         fix = (
-            "Name each count for the rows it counts, or set publish: false on those no question "
-            "needs."
+            "When one model answers every question the others do, list them in its "
+            "prefer_over; else name each count for the rows it counts, or set publish: false "
+            "on those no question needs."
         )
     return {
         "code": LOOKALIKE_MODELS,
         "severity": "warning",
         "message": (
-            f"{source_path}: {_listed(models)} {alike}, so an agent can answer one question "
+            f"{source_path}: models {_listed(models)} {alike}, so an agent can answer one question "
             f"from any of them. Which is canonical? {fix}"
         ),
         "details": details,
@@ -239,5 +271,10 @@ def lookalike_warning(group: LookalikeGroup, source_path: Path | str) -> dict[st
 
 
 def lookalike_warnings(config: PackageConfig, source_path: Path | str) -> list[dict[str, Any]]:
-    """The ``LOOKALIKE_MODELS`` warnings of ``config``, one per group."""
-    return [lookalike_warning(group, source_path) for group in lookalike_groups(config)]
+    """The ``LOOKALIKE_MODELS`` warnings of ``config``, one per group no model is declared
+    canonical of."""
+    return [
+        lookalike_warning(group, source_path)
+        for group in lookalike_groups(config)
+        if not group.canonical
+    ]

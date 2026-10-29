@@ -104,11 +104,12 @@ def _name(object_id: str, taken: set[str]) -> str:
 
 
 def _attributes(row: Any, carried: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
-    """``row``'s non-default attributes, except those the Ossie document carries."""
+    """``row``'s non-default attributes, except those the Ossie document carries and a model's
+    id, which names its file: an import names each model after its dataset."""
     out: dict[str, Any] = {}
     for item in fields(row):
         value = getattr(row, item.name)
-        if item.name in carried:
+        if item.name in carried or item.name == "model_id":
             continue
         if item.default is not MISSING and value == item.default:
             continue
