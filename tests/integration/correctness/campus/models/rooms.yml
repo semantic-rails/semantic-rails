@@ -1,0 +1,11 @@
+model:
+  id: rooms
+  label: Rooms
+  relation: rooms
+  entities: {room: {}}
+  dimensions:
+    room_code: {label: Room code, kind: categorical}
+    room_use: {label: Room use, kind: categorical}
+  measures:
+    room_area: {label: Room area, kind: aggregate, expr: area}
+    room_count: {label: Rooms, kind: entity_count, entity_key: room_id}

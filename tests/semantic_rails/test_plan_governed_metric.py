@@ -365,7 +365,8 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
     discovered = SemanticLayerMCPAdapter(runtime).call_tool(
         "discover", {"terms": "active stores"}, request_context=external
     )
-    assert [row["id"] for row in discovered["measures"]] == ([] if building_block else [MEASURE])
+    measures = [row["id"] for row in discovered.get("measures", [])]
+    assert measures == ([] if building_block else [MEASURE])
     # The same policy leaves the metric visible to a different caller, on the next call.
     internal = _plan(runtime, intent, policy_context={**NOW, "audience": "internal"})
     assert hidden_id in [subject["id"] for subject in internal["intent_ir"]["subjects"]]

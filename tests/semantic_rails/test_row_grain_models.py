@@ -373,12 +373,26 @@ def test_the_card_says_it_has_no_key_and_whom_it_looks_up(shop):
     card = inspect_payload(shop, object_id=SCANS)["card"]
     assert card["key"] == []
     assert card["key_note"] == (
-        "No key: every stored row counts. It looks up Order; nothing can look up one of its rows."
+        "No key: every stored row counts. It looks up Order. No model can join to one of its "
+        "rows by key, but its measures still group and filter by its own columns and through "
+        "Order, beside other models' measures."
     )
     assert card["recommended_next_actions"] == ["inspect related measures"]
     keyed = inspect_payload(shop, object_id="entity.shop_order")["card"]
     assert keyed["key"] == ["order_id"] and "key_note" not in keyed
     assert "use as grouping entity" in keyed["recommended_next_actions"]
+
+
+def test_a_card_that_looks_up_nothing_says_its_measures_group_by_its_own_columns(tmp_path):
+    runtime = _runtime(_shop(tmp_path, _scans(lambda model: model.update(entities={}))))
+    try:
+        card = inspect_payload(runtime, object_id=SCANS)["card"]
+    finally:
+        runtime.close()
+    assert card["key_note"] == (
+        "No key: every stored row counts. It looks up nothing. No model can join to one of its "
+        "rows by key, but its measures still group and filter by its own columns."
+    )
 
 
 def test_discover_offers_no_grouping_by_it(shop):

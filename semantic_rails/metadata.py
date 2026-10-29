@@ -944,9 +944,16 @@ def _object_card(
                 for row in config.relationships
                 if row.source_entity == entity.id
             }
+            parents = ", ".join(sorted(looks_up))
+            # No key means no join *into* one of its rows; never that its answers can't combine.
             base["key_note"] = (
-                "No key: every stored row counts. It looks up "
-                f"{', '.join(sorted(looks_up)) or 'nothing'}; nothing can look up one of its rows."
+                f"No key: every stored row counts. It looks up {parents or 'nothing'}. No model "
+                "can join to one of its rows by key, but its measures still group and filter by "
+                + (
+                    f"its own columns and through {parents}, beside other models' measures."
+                    if parents
+                    else "its own columns."
+                )
             )
             linked = sorted(
                 entity_label(config, row.target_entity)
@@ -2218,7 +2225,26 @@ def discover_payload(
                 row["label"],
                 row["id"],
             ),
-        )[:limit]
+        )
+
+    def _ranked(
+        rows: list[dict[str, Any]], value_rows: list[dict[str, Any]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Every bucket's whole ranking; the response cuts each at ``limit``."""
+
+        def of_kind(kind: str) -> list[dict[str, Any]]:
+            return _sort([row for row in rows if row["kind"] == kind])
+
+        return {
+            "measures": of_kind("measure"),
+            "metrics": of_kind("metric"),
+            "segments": of_kind("segment"),
+            "dimensions": of_kind("dimension"),
+            "dimension_values": _sort(value_rows),
+            "entities": of_kind("entity"),
+            **{bucket: of_kind(kind) for kind, bucket in asked.items()},
+            "blocked": _sort([row for row in [*rows, *value_rows] if row["blocked_reason"]]),
+        }
 
     # When the user provided a non-trivial search term but no candidate
     # actually matched it (the "asdjkfhqwiuer" case), drop the floor of
@@ -2248,19 +2274,10 @@ def discover_payload(
         records = [row for row in records if _is_real_match(row)]
         dimension_values = [row for row in dimension_values if _is_real_match(row)]
 
-    measures = _sort([row for row in records if row["kind"] == "measure"])
-    metrics = _sort([row for row in records if row["kind"] == "metric"])
-    segments = _sort([row for row in records if row["kind"] == "segment"])
-    dimensions = _sort([row for row in records if row["kind"] == "dimension"])
-    entities = _sort([row for row in records if row["kind"] == "entity"])
-    extra = {
-        bucket: _sort([row for row in records if row["kind"] == kind])
-        for kind, bucket in asked.items()
-    }
-    values = _sort(dimension_values)
-    blocked = _sort([row for row in [*records, *dimension_values] if row["blocked_reason"]])
-    no_matches = has_real_term and not (
-        measures or metrics or segments or dimensions or values or entities or any(extra.values())
+    ranked = _ranked(records, dimension_values)
+    # A blocked card is also in its kind's bucket.
+    no_matches = has_real_term and not any(
+        ranked[bucket] for bucket in ranked if bucket != "blocked"
     )
 
     # Token-AND fallback: when the holistic single-string match returns
@@ -2373,28 +2390,14 @@ def discover_payload(
                     kind_set = set(kinds)
                     fallback_records = [r for r in fallback_records if r["kind"] in kind_set]
                     fallback_dimvals = [r for r in fallback_dimvals if r["kind"] in kind_set]
-                measures = _sort([row for row in fallback_records if row["kind"] == "measure"])
-                metrics = _sort([row for row in fallback_records if row["kind"] == "metric"])
-                segments = _sort([row for row in fallback_records if row["kind"] == "segment"])
-                dimensions = _sort([row for row in fallback_records if row["kind"] == "dimension"])
-                entities = _sort([row for row in fallback_records if row["kind"] == "entity"])
-                extra = {
-                    bucket: _sort([row for row in fallback_records if row["kind"] == kind])
-                    for kind, bucket in asked.items()
-                }
-                values = _sort(fallback_dimvals)
-                blocked = _sort(
-                    [row for row in [*fallback_records, *fallback_dimvals] if row["blocked_reason"]]
-                )
-                no_matches = not (
-                    measures
-                    or metrics
-                    or segments
-                    or dimensions
-                    or values
-                    or entities
-                    or any(extra.values())
-                )
+                ranked = _ranked(fallback_records, fallback_dimvals)
+                no_matches = not any(ranked[bucket] for bucket in ranked if bucket != "blocked")
+
+    # Each bucket shows its first ``limit`` matches. ``has_more`` names every bucket cut there with
+    # how many more matches it has, so a cut list never reads as the whole catalog. The rows are
+    # the caller's view, so an object hidden from them is never counted.
+    has_more = {bucket: len(rows) - limit for bucket, rows in ranked.items() if len(rows) > limit}
+    buckets = {bucket: rows[:limit] for bucket, rows in ranked.items()}
 
     # Ship a single ready-to-run starter_query_patch on each selectable
     # candidate so blind agents can copy a runnable IR seed directly from
@@ -2403,15 +2406,15 @@ def discover_payload(
     # entities, dimension_values, blocked) intentionally skip — they
     # don't map to a single canonical clause.
     seed = _call_of(partial_query)
-    for row in [*measures, *metrics]:
+    for row in [*buckets["measures"], *buckets["metrics"]]:
         row["starter_query_patch"] = _query_patch_with_selection(
             runtime, seed, {"id": row["id"], "kind": row["kind"], "label": row["label"]}
         )
-    for row in dimensions:
+    for row in buckets["dimensions"]:
         row["starter_query_patch"] = _query_patch_with_group_by(seed, row["id"])
     if verbosity == "full":
         # Reachability stays on the inspect card: it follows the package's routes.
-        for row in entities:
+        for row in buckets["entities"]:
             row["relationships"] = entity_relationships(config, row["id"])
 
     payload = {
@@ -2424,15 +2427,10 @@ def discover_payload(
             "selected_measure_ids": selection["selected_measure_ids"],
             "selected_metric_recipe_ids": selection["selected_metric_recipe_ids"],
         },
-        "measures": measures,
-        "metrics": metrics,
-        "segments": segments,
-        "dimensions": dimensions,
-        "dimension_values": values,
-        "entities": entities,
-        **extra,
-        "blocked": blocked,
+        **buckets,
     }
+    if has_more:
+        payload["has_more"] = has_more
     if fallback_token_match_reason is not None and not no_matches:
         payload["match_strategy"] = {
             "kind": "multi_token_fallback",

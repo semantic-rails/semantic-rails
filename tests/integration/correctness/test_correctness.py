@@ -242,8 +242,11 @@ def _at(offset: str) -> str:
 
 
 def _trailing(span: str) -> str:
+    """Revenue over the ``span`` up to the bucket, as one sum of its rows: 0 without orders, and
+    NULL (unknown) when every amount in it is NULL."""
     return (
-        f"(SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '{span}')"
+        "(SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END"
+        f" FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '{span}')"
     )
 
 
@@ -885,7 +888,7 @@ def _cases() -> Iterator[Case]:
         "month",
         [cumulative, qtd],
         "(SELECT SUM(m.v) FROM m WHERE m.b <= s.b),"
-        " (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b"
+        " (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b"
         " AND date_trunc('quarter', m.b) = date_trunc('quarter', s.b))",
         fill=True,
     )
@@ -950,8 +953,8 @@ def _cases() -> Iterator[Case]:
         "utc_implicit",
         _ask("month", trailing_3, group_by=[STORE]),
         _by_store(
-            "(SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.k IS NOT DISTINCT FROM k.k"
-            " AND m.b <= s.b AND m.b > s.b - INTERVAL '3 month')"
+            "(SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m"
+            " WHERE m.k IS NOT DISTINCT FROM k.k AND m.b <= s.b AND m.b > s.b - INTERVAL '3 month')"
         ),
     )
     yield Case(

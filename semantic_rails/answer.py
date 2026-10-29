@@ -34,6 +34,7 @@ from .clock import (
 from .compiler import observed_only_groups, observed_periods_reason, read_routes
 from .compiler_parts.empty_groups import observation_scope
 from .compiler_parts.listings import is_listing_plan, listing_config
+from .compiler_parts.parent_values import PARENT_VALUE
 from .diagnostics import lean_issue, semantic_issue
 from .errors import SemanticLayerError
 from .fanout import (
@@ -613,11 +614,19 @@ def _withhold_values(out: dict[str, Any], policy_effects: list[dict[str, Any]], 
 
 def _freshness_by_leaf(config, compiled) -> list[dict[str, Any]]:
     entities = {row.id: row for row in config.entities}
+    measures = {row.id: row for row in config.measures}
     aggregate_by_relation = {str(row.relation): row for row in config.aggregate_relations}
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    read = []
     for plan in list(getattr(compiled["logical_plan"], "measure_plans", []) or []):
-        entity = entities.get(plan.source_entity)
+        read.append((plan, plan.source_entity))
+        # A parent value's leaf reads the rows' model and takes its value from the measure's.
+        measure = measures.get(plan.bound_measure.measure_id)
+        if plan.rewrite_strategy == PARENT_VALUE and measure is not None:
+            read.append((plan, measure.entity))
+    for plan, entity_id in read:
+        entity = entities.get(entity_id)
         if entity is None or not (
             entity.freshness_source or entity.freshness_sla_seconds or entity.freshness_as_of
         ):

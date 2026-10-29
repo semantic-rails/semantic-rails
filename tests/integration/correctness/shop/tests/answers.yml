@@ -4967,7 +4967,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5054,7 +5054,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5141,7 +5141,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 22}
       - {period: '2023-12-01', trailing: 22}
@@ -5226,7 +5226,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 22}
       - {period: '2023-12-01', trailing: 22}
@@ -5311,7 +5311,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5398,7 +5398,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15}
       - {period: '2023-12-01', trailing: 22}
@@ -5979,7 +5979,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 day') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '7 day') FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '7 day') FROM s
     expected_rows:
       - {period: '2023-11-03', trailing: 10}
       - {period: '2023-11-04', trailing: 10}
@@ -6166,13 +6166,13 @@ tests:
       - {period: '2024-05-03', trailing: 0}
       - {period: '2024-05-04', trailing: 0}
       - {period: '2024-05-05', trailing: 0}
-      - {period: '2024-05-06', trailing: 0}
-      - {period: '2024-05-07', trailing: 0}
-      - {period: '2024-05-08', trailing: 0}
-      - {period: '2024-05-09', trailing: 0}
-      - {period: '2024-05-10', trailing: 0}
-      - {period: '2024-05-11', trailing: 0}
-      - {period: '2024-05-12', trailing: 0}
+      - {period: '2024-05-06', trailing: null}
+      - {period: '2024-05-07', trailing: null}
+      - {period: '2024-05-08', trailing: null}
+      - {period: '2024-05-09', trailing: null}
+      - {period: '2024-05-10', trailing: null}
+      - {period: '2024-05-11', trailing: null}
+      - {period: '2024-05-12', trailing: null}
       - {period: '2024-05-13', trailing: 0}
       - {period: '2024-05-14', trailing: 0}
       - {period: '2024-05-15', trailing: 0}
@@ -6292,7 +6292,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '3 month') AS g(b))
-              SELECT s.b, CASE WHEN s.b - INTERVAL '6 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '6 month') END, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '6 month') FROM s
+              SELECT s.b, CASE WHEN s.b - INTERVAL '6 month' < (SELECT MIN(b) FROM s) THEN NULL ELSE (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b - INTERVAL '6 month') END, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '6 month') FROM s
     expected_rows:
       - {period: '2023-10-01', prior: null, trailing: 22}
       - {period: '2024-01-01', prior: null, trailing: 54}
@@ -6406,7 +6406,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT SUM(m.v) FROM m WHERE m.b <= s.b), (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND date_trunc('quarter', m.b) = date_trunc('quarter', s.b)) FROM s
+              SELECT s.b, (SELECT SUM(m.v) FROM m WHERE m.b <= s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND date_trunc('quarter', m.b) = date_trunc('quarter', s.b)) FROM s
     expected_rows:
       - {period: '2023-11-01', cumulative: 15, qtd: 15}
       - {period: '2023-12-01', cumulative: 22, qtd: 22}
@@ -6853,7 +6853,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b), (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
+              SELECT s.b, (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b), (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM s
     expected_rows:
       - {period: '2023-11-01', p80: 9, trailing: 15}
       - {period: '2023-12-01', p80: 7, trailing: 22}
@@ -6956,7 +6956,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b) FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), (SELECT percentile_cont(0.8) WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE date_trunc('month', o.ordered_at) = s.b) FROM s
     expected_rows:
       - {period: '2023-11-01', trailing: 15, p80: 9}
       - {period: '2023-12-01', trailing: 22, p80: 7}
@@ -7256,7 +7256,7 @@ tests:
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b)),
               k AS (SELECT DISTINCT m.k FROM m)
-              SELECT k.k, s.b, (SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM k CROSS JOIN s
+              SELECT k.k, s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b <= s.b AND m.b > s.b - INTERVAL '3 month') FROM k CROSS JOIN s
     expected_rows:
       - {dimension.shop_order_store_id: a, period: '2023-11-01', trailing: 10}
       - {dimension.shop_order_store_id: a, period: '2023-12-01', trailing: 17}
@@ -7265,8 +7265,8 @@ tests:
       - {dimension.shop_order_store_id: a, period: '2024-03-01', trailing: 24}
       - {dimension.shop_order_store_id: a, period: '2024-04-01', trailing: 4}
       - {dimension.shop_order_store_id: a, period: '2024-05-01', trailing: 4}
-      - {dimension.shop_order_store_id: a, period: '2024-06-01', trailing: 0}
-      - {dimension.shop_order_store_id: a, period: '2024-07-01', trailing: 0}
+      - {dimension.shop_order_store_id: a, period: '2024-06-01', trailing: null}
+      - {dimension.shop_order_store_id: a, period: '2024-07-01', trailing: null}
       - {dimension.shop_order_store_id: a, period: '2024-08-01', trailing: 2}
       - {dimension.shop_order_store_id: b, period: '2023-11-01', trailing: 5}
       - {dimension.shop_order_store_id: b, period: '2023-12-01', trailing: 5}
@@ -7531,7 +7531,7 @@ tests:
                 FROM orders AS o GROUP BY 1
               ),
               s AS (SELECT g.b FROM generate_series((SELECT MIN(b) FROM m), (SELECT MAX(b) FROM m), INTERVAL '1 month') AS g(b))
-              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b) / CAST(NULLIF((SELECT COALESCE(SUM(m.v), 0) FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), 0) AS DOUBLE PRECISION) FROM s
+              SELECT s.b, (SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b) / CAST(NULLIF((SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(m.v) END FROM m WHERE m.b <= s.b AND m.b > s.b - INTERVAL '3 month'), 0) AS DOUBLE PRECISION) FROM s
     expected_rows:
       - {period: '2023-11-01', of_trailing: 1}
       - {period: '2023-12-01', of_trailing: 0.3181818181818182}

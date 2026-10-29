@@ -89,6 +89,9 @@ All JSON HTTP responses include the operation payload plus additive contract fie
 - `warnings`, `errors` and `recovery_hints`, each only when it has entries
 - `timing_ms`
 
+On `/validate`, `/compile` and `/query`, `ok: true` means the call is valid and, on `/query`,
+ran: never that it answers the question it was written for.
+
 Clients may send `X-Request-ID`, `X-Correlation-ID`, a `request_id` query parameter, or a
 top-level JSON `request_id`. The server echoes the selected value in the response body and
 the `X-Request-ID` response header. If none is provided, the server generates one.
@@ -646,6 +649,9 @@ Response groups:
 - `dimension_values`
 - `entities`
 - `blocked`
+- `has_more` — present when a group was cut at `limit`: each cut group with how many more
+  matches it has (`{"measures": 8}`: eight more beyond the `limit` listed). It counts only
+  objects the caller may see, never a hidden or ungranted one.
 
 Each result includes:
 

@@ -219,7 +219,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank objects by business terms, or each term of a list alone (by_term); empty terms list ids. Compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank objects by business terms, or each term of a list alone (by_term); empty terms list ids. Compact omits blocked cards. Gotcha: 'out_of_scope' or 'low_relevance' with no candidates; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -598,7 +598,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Answer a call; call plan first to draft it. mode 'run' returns rows, 'validate' only checks (skip it: run a call directly), 'sql' adds rendered_sql; only 'run' reads the warehouse. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time (time.end is exclusive), order_by (period: the time column), limit inside it; max_rows and row_format go beside query.",
+      "description": "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and ran, not that it answers the question. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time (time.end is exclusive), order_by (period: time column), limit inside it; max_rows and row_format go beside query.",
       "inputSchema": {
         "$defs": {
           "Condition": {
@@ -1009,7 +1009,7 @@
           },
           "row_format": {
             "default": "records",
-            "description": "'columns': column names once, rows as arrays.",
+            "description": "'columns': names once, rows as arrays.",
             "enum": [
               "records",
               "columns"
@@ -1018,7 +1018,7 @@
           },
           "sql_profile": {
             "default": "audit",
-            "description": "'off' omits rendered_sql and sql_plan.",
+            "description": "'off' omits rendered_sql, sql_plan.",
             "enum": [
               "audit",
               "compact",
@@ -1029,7 +1029,7 @@
           },
           "verbosity": {
             "default": "minimal",
-            "description": "'compact' adds metadata; 'full' adds plans too.",
+            "description": "'compact' adds metadata, 'full' plans too.",
             "enum": [
               "minimal",
               "compact",

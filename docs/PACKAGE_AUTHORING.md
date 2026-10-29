@@ -1561,17 +1561,19 @@ model:                         # models/readings.yml: nothing in graph.entities 
   an aggregate of its rows (an entity filter on the parent, or a child group); its rows can be
   filtered by a parent's other children; and it can be a link table (`bridge: true`), whose
   duplicate rows count twice for its own measures and once for a parent's distinct count.
-- Nothing can look up one of its rows. A relationship into it (another model's `entities:`
-  entry or a `graph.relationships` row) is `INVALID_CONFIG`, and the message shows the row to
-  write from its side instead.
+- No model can join to one of its rows by key. A relationship into it (another model's
+  `entities:` entry or a `graph.relationships` row) is `INVALID_CONFIG`, and the message shows
+  the row to write from its side instead. Its measures still group, filter and sit beside other
+  facts as above.
 - What has to tell its rows apart refuses with `ROW_GRAIN_UNSUPPORTED`, naming the model and the
   fix: segments, entity filters, per-entity values and distributions, conversions and anchored
   sets on it, lookups `via` it, and a sum, first or last of an `additive: false` measure on it.
   An `entity_count` without `entity_key` and a stock (`accumulation: stock`, whose series is the
   key minus the clock) are `INVALID_CONFIG`.
-- `inspect` shows `"key": []` and its `key_note`, what it looks up; `discover` doesn't offer it
-  as a grouping entity, and `semantic-rails project validate` lists it under "Row grain (no
-  key)". Answers carry nothing new.
+- `inspect` shows `"key": []` and its `key_note`: what it looks up, that no model can join to
+  one of its rows by key, and what its measures still group and filter by. `discover` doesn't
+  offer it as a grouping entity, and `semantic-rails project validate` lists it under "Row grain
+  (no key)". Answers carry nothing new.
 
 Declare a key, a graph entity homed on the model, when its rows have one. `kind: fact` is gone:
 give such a model an entity keyed by its time column (a daily series keyed by `[date_day]`), or

@@ -103,6 +103,7 @@ AMOUNT, INVOICE_COUNT = "measure.bank.amount", "measure.bank.invoice_count"
 REGION_NAME, REGION_KEY = "dimension.bank_region_name", "dimension.bank_region_id"
 OWNER_NAME, TIER = "dimension.bank_owner_name", "dimension.bank_membership_tier"
 ACCOUNT_KIND = "dimension.bank_account_kind"
+CHECKING = {"field": ACCOUNT_KIND, "op": "is", "value": "checking"}
 
 BRANCH = ["relationship.accounts_branch_region"]
 BILLING = ["relationship.accounts_billing_region"]
@@ -612,21 +613,24 @@ def test_route_search_expands_only_prefixes_that_can_still_reach_the_target():
             },
             id="equal-lengths",
         ),
+        # The regions with a checking account. Grouped by the account's kind instead, the call
+        # reads each account's own region key (``test_a_grouping_by_an_accounts_kind_...``).
         pytest.param(
             DIAMOND,
-            _query(REGION_COUNT, group_by=[ACCOUNT_KIND]),
-            [ACCOUNT_KIND, "v"],
+            _query(REGION_COUNT, where=[CHECKING]),
+            ["v"],
             REGION,
             ACCOUNT,
             {
                 tuple(BRANCH): (
-                    "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
-                    "JOIN accounts a ON a.branch_region_id = r.region_id GROUP BY 1"
+                    "SELECT COUNT(DISTINCT r.region_id) FROM regions r "
+                    "JOIN accounts a ON a.branch_region_id = r.region_id "
+                    "WHERE a.account_kind = 'checking'"
                 ),
                 tuple(reversed(HOME)): (
-                    "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
+                    "SELECT COUNT(DISTINCT r.region_id) FROM regions r "
                     "JOIN owners o ON o.home_region_id = r.region_id "
-                    "JOIN accounts a USING (owner_id) GROUP BY 1"
+                    "JOIN accounts a USING (owner_id) WHERE a.account_kind = 'checking'"
                 ),
             },
             id="fan-out-only",
@@ -657,12 +661,34 @@ def test_routes_without_one_direct_key_are_refused_and_each_pin_answers_its_gold
     assert len({tuple(_gold(sql)) for sql in golds.values()}) == len(golds)
 
 
+def test_a_grouping_by_an_accounts_kind_reads_each_accounts_own_region(tmp_path):
+    """Regions by account kind groups the accounts' rows: each account's own branch region key
+    reads its region (a parent's value on its children's rows), so nothing asks which route
+    from a region. A row recording a region's accounts as its owners' accounts stands."""
+    query = _query(REGION_COUNT, group_by=[ACCOUNT_KIND])
+    out = Runtime.from_path(str(_write_package(tmp_path / "rows"))).query(query)
+    assert _rows(out, [ACCOUNT_KIND, "v"]) == _gold(
+        "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM accounts a "
+        "JOIN regions r ON r.region_id = a.branch_region_id GROUP BY 1"
+    )  # checking 1, savings 3
+    (note,) = [row for row in out["warnings"] if row["code"] == "REWRITE_APPLIED"]
+    assert (note["details"]["rewrite_kind"], note["details"]["path"]) == ("parent_value", BRANCH)
+    pinned = _write_package(tmp_path / "pinned", pins=[_pin(REGION, ACCOUNT, [*reversed(HOME)])])
+    out = Runtime.from_path(str(pinned)).query(query)
+    assert _rows(out, [ACCOUNT_KIND, "v"]) == _gold(
+        "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
+        "JOIN owners o ON o.home_region_id = r.region_id "
+        "JOIN accounts a USING (owner_id) GROUP BY 1"
+    )  # checking 2, savings 3
+    assert _route_notes(out)[(REGION, ACCOUNT)] == ("recorded", [*reversed(HOME)])
+
+
 def test_the_refusal_reads_the_routes_by_their_labels(tmp_path):
     pkg = _write_package(
         tmp_path,
         labels={"owners_home_region": "Home region", "accounts_branch_region": "Branch region"},
     )
-    err = _refusal(pkg, _query(REGION_COUNT, group_by=[ACCOUNT_KIND]))
+    err = _refusal(pkg, _query(REGION_COUNT, where=[CHECKING]))
     clarification = err.details["clarification"]
     assert clarification["question"] == "Which Account does the question mean for a Region?"
     # One relationship per entity pair: each hop is named by the entity it reaches.

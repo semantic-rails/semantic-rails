@@ -169,6 +169,11 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
     published_time = load_contract("query.v2.json")["properties"]["time"]["properties"]
     assert "exclusive" in published_time["end"]["description"]
+    # A total's over is what it rolls up, not the grain it keeps.
+    total_over = load_contract("query.v2.json")["$defs"]["Kind_total"]["properties"]["over"]
+    assert total_over["description"].startswith(
+        "The group_by ids (or period) the total rolls up, not the grain it keeps"
+    )
     assert execute["max_rows"]["maximum"] == 100_000
     for tool, levels in (
         ("discover", ["minimal", "compact", "full"]),

@@ -109,6 +109,7 @@ from .lowering_common import (
     _value_filter_condition,
 )
 from .namespacing import _namespace_sql_select
+from .parent_values import PARENT_VALUE, parent_value_leaf_select
 from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
@@ -977,6 +978,8 @@ def _measure_leaf_select(
     selected_aggregate = _selected_aggregate_relation(measure_plan, config)
     if selected_aggregate is not None:
         return _aggregate_relation_leaf_select(plan, [measure_plan], selected_aggregate, config)
+    if measure_plan.rewrite_strategy == PARENT_VALUE:
+        return parent_value_leaf_select(plan, measure_plan, config)
 
     predicate_ctes: list[SqlCte] = []
     predicate_joins: list[SqlJoin] = []

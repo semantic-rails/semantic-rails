@@ -261,6 +261,61 @@ one, each entity counts once in every group it has a row in.
 
 Their limits are listed under [Known limitations](#links-and-one-per-key-models).
 
+### A parent's value on its children's rows
+
+A call grouped by a child's columns can select a measure of the parent each child row names:
+each order with its customer's lifetime order count, each room with its building's area. From
+the parent's side that is a walk to its many children, which a package refuses where the
+relationship walks forward only (`PATH_NOT_FOUND`) or asks about where several routes reach the
+children (`AMBIGUOUS_PATH`, "Which Order does the question mean for a Customer?"). The engine
+reads it from the children's rows instead:
+
+```json
+{"select": ["measure.jaffle.lifetime_order_count"],
+ "group_by": ["dimension.jaffle_order_is_large_order"], "totals": []}
+```
+
+Customers with a large order have 13,538 lifetime orders between them, and customers with an
+order that isn't large 58,458, of 59,652 in all: a customer with both kinds counts under both.
+
+- The rows are those of the first entity the call groups by (then filters by) that reaches
+  every entity the call reads by lookups, one row at every hop. The parent is read along the
+  route the call's `routes` or the package's `graph.path_preferences` record from those rows,
+  else the rows' own key to it; the answer's `routes` names it. A route recorded from the
+  parent's side (a building's rooms through its floors), or one the call gives that way, is the
+  business's definition and stands: the call is answered or refused from the parent's side, as
+  without this rule.
+- Each parent counts once, with its whole value, in every group that holds one of its child
+  rows: two rooms of one building each show its whole area, and a group of rooms in two
+  buildings adds each building once. The column repeats per parent and doesn't add up across
+  groups. Child rows stored twice, or with no key, count their parent once.
+- A group whose rows name no parent reads NULL, a count too: no data, not zero. A row that
+  names no parent adds nothing to its group, whatever the measure's expression: a count of 1
+  per parent row, or a `COALESCE` of the parent's column, counts the parents that are there.
+- A [total](#coarser-totals) or [`totals`](#totals) row is the call without the grouping: every
+  parent once, including those with no child rows (the customers who never ordered); with a
+  condition on the children, the parents with such a child.
+- The answer's `REWRITE_APPLIED` (`parent_value`) says so at every verbosity, naming the rows
+  (`details.rows_entity`) and the route (`details.path`).
+- It reads a sum, count, average or distinct count of an additive measure of an entity with a
+  key. Everything else keeps the refusal the call had: a median, minimum, maximum or other
+  statistic; a non-additive measure or a stock; a measure with its own filter or window, or
+  inside a share; an item that sets it against a measure of another entity (room area per
+  building area); a grouping the rows reach only one to many (buildings' area by organization
+  alone, where which link ties a building to an organization is a route question: each
+  option's call answers it from the buildings' side); rows that are a
+  [link](#groups-across-a-link) of the parent; a call with no `group_by`, a `time` window,
+  `having` or an entity filter; and any such call on ClickHouse, which joins lookups inner, so
+  a child row with no parent would drop out there instead of reading NULL. A call the parent's
+  side reads by one route ([groups across a one-to-many hop](#groups-across-a-one-to-many-hop))
+  keeps that reading and its refusals.
+- The caller's view and the package's policies hold as for any call. A row filter on the
+  parents keeps the rows that name a visible parent; one on the children reaches no parent, so
+  the parent's measure is refused (`POLICY_DENIED`, `row_filter_uncovered_root`), as it is
+  asked alone, unless the filter lists the parent as `shared`.
+
+Its limits are listed under [Known limitations](#parent-values).
+
 ### Listings through one-to-many routes
 
 A call of dimensions alone (`group_by`, with no `select`, `time` or `metric_filters`) lists
@@ -1009,7 +1064,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `cumulative` | `{kind: cumulative, input, partition_by?, window_scope?}` |
 | `ratio` | `{kind: ratio, numerator, denominator}` |
 | `share` | `{kind: share, input: <id>, over: [<group_by id> \| "period"]}` |
-| `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own |
+| `total` | `{kind: total, input: <id>, over: [<group_by id> \| "period"]}`: a select item of its own; `over` names the columns rolled up, not the grain kept |
 | `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition, value?}` |
@@ -1134,10 +1189,13 @@ multiplying by 100 returns a percentage). Nested shares omit the optional row co
 `{"kind": "total", "input": <id>, "over": [<group_by id> | "period"]}` is its input at a
 coarser grain beside each row: the call itself without the `over` columns, joined back on the
 columns that remain (within each combination of the other `group_by` columns, and `period`
-unless `over` names it; a NULL group meets its own total). The coarser call keeps the call's
-`where`, `time` window, entity filters, routes, row filters and policies, so the total reads
-the rows the call keeps; `having`, `order_by` and `limit` act on the call's rows after it, as
-for a share. A `having` may filter on a total's column.
+unless `over` names it; a NULL group meets its own total). `over` names the columns the total
+rolls up, never the grain it keeps: grouped by store and month, `over: ["period"]` is one value
+per store on each of its months, and `over: [<store id>]` one value per month across the
+stores. The coarser call keeps the call's `where`, `time` window, entity filters, routes, row
+filters and policies, so the total reads the rows the call keeps; `having`, `order_by` and
+`limit` act on the call's rows after it, as for a share. A `having` may filter on a total's
+column.
 
 Every measure kind is computed at that grain from its own rows, never added up from the rows:
 a distinct count counts distinct values, an average averages every row, a ratio divides the
@@ -1171,7 +1229,7 @@ month. The answer states each total in `assumptions`:
           {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-02-01", "period_partial": false, "ordering_customer_count": 337, "store_customers": 366},
           {"dimension.jaffle_store_name": "Philadelphia", "period": "2017-03-01", "period_partial": false, "ordering_customer_count": 363, "store_customers": 366}],
  "assumptions": [{"code": "TOTAL_OVER", "column": "store_customers", "input": "measure.jaffle.ordering_customer_count", "over": ["period"],
-                  "message": "store_customers is measure.jaffle.ordering_customer_count across period in the rows the call keeps, computed at that grain, not added up from the rows."}]}
+                  "message": "store_customers is measure.jaffle.ordering_customer_count with period rolled up: one value per dimension.jaffle_store_name, repeated on each of its rows, computed from the rows the call keeps, not added up from the rows."}]}
 ```
 
 The input is one measure or metric id, and each `over` item a `group_by` id of the call, or
@@ -1352,6 +1410,18 @@ The engine trusts the data as it is stored in three cases:
   it with NULL; a call whose entities one model reaches by lookups (rooms that hold both their
   department and their building) reads that model's rows, and a department with no rooms has
   none there.
+
+### Parent values
+
+- The side a call is read from decides who is in it. Read from the children's rows, a child
+  with no parent is a NULL group; read from the parent's side (a route recorded or given that
+  way, or one route from the parent), a child with no parent is in no group.
+- A grouping beside a filter on the same child is read on the children's rows where the parent
+  can't reach them, and refused (`MIXED_GRAIN_INVALID`) where it reaches them by one route,
+  since from the parent's side it can mean two things.
+- On ClickHouse, which joins lookups inner, such a call keeps its refusal.
+- A route recorded through an object hidden from the caller leaves that caller no route, as it
+  does for any lookup, while a package without that object reads the rows' own key.
 
 ### Links and one-per-key models
 
@@ -1616,7 +1686,10 @@ so a month so far never reads as a change from the whole previous month.
 Summing windows (`rolling`, `cumulative`, `period_to_date`) need values that add up across
 periods: additive flows (`sum`, `count`), event counts (`count_distinct` of a complete row key),
 and sums, differences and literal multiples of them. A ratio windows its parts:
-`SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Inputs using `avg`, `min`,
+`SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. A window sums the rows of its
+periods as one group, so [All NULL reads NULL](#empty-groups-null-or-0) holds for it too: a
+window whose rows all have a NULL amount reads `NULL`, never the `0` its empty periods add up
+to, while a window with no rows adds up its periods by the empty-group rule. Inputs using `avg`, `min`,
 `max`, `median` or `percentile`, balances, distinct populations, distributions, products of
 measures, nested windows and ratios inside other arithmetic are refused with `ROLLUP_UNSAFE`
 before SQL runs, through derived metrics too.
