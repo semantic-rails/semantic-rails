@@ -32,7 +32,7 @@ from .compiler_parts.conversion import _conversion_supported as _conversion_supp
 from .compiler_parts.dependencies import candidate_planning, plan_bindings
 from .compiler_parts.empty_groups import recording_zero_outputs
 from .compiler_parts.lowering_common import _query_key_aliases
-from .compiler_parts.paths import inner_lookups
+from .compiler_parts.paths import dimension_filter, inner_lookups
 from .compiler_parts.physical_plan import build_performance_plan, build_physical_plan
 from .compiler_parts.plan_checks import NonAdditiveRefusal as NonAdditiveRefusal
 from .compiler_parts.plan_checks import (
@@ -167,11 +167,12 @@ def value_page(
     compiled: dict[str, Any], config: PackageConfig, *, column: str, search: str, offset: int
 ) -> dict[str, Any]:
     """``compiled``, a call listing ``column``'s values under a limit, as one page of them: the
-    known values that contain ``search`` (the ``contains`` word: literal, ignoring case), in
-    ascending order, from ``offset`` on. The page filters the listed rows, after grouping, so a
-    value matches by itself on every route (a call's ``where`` filters the rows a value comes
-    from: across a to-many hop it is refused or keeps every value of a matching row), and the
-    warehouse skips and limits matching values only.
+    known values that contain ``search`` (the ``contains`` word on the dimension ``column``:
+    literal, ignoring case, an id read as its text), in ascending order, from ``offset`` on.
+    The page filters the listed rows, after grouping, so a value matches by itself on every
+    route (a call's ``where`` filters the rows a value comes from: across a to-many hop it is
+    refused or keeps every value of a matching row), and the warehouse skips and limits
+    matching values only.
     """
     statement = compiled["sql_ast"]
     own = call_rows(statement)
@@ -181,7 +182,7 @@ def value_page(
     key = SqlIdentifier(parts=[name, column])
     where = [build_filter_condition(key, "missing", False)]
     if search:
-        where.append(build_filter_condition(key, "contains", search, path="search"))
+        where.append(dimension_filter(key, column, "contains", search, config, path="search"))
     paged = SqlSelect(
         ctes=[*own.ctes, SqlCte(name, replace(own, ctes=[], order_by=[], limit=None))],
         select=[SqlField(SqlIdentifier(parts=[name, row.alias]), row.alias) for row in own.select],

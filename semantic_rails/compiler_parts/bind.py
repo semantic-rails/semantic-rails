@@ -406,7 +406,8 @@ def _text_comparison(
     entity = _resolve_expr_entity(column, measure, config)
     dim = text_dimension(entity, column.column, word, config, measure.id)
     value = unknown_as_null(_config_expr_to_sql(column, measure, config), dim)
-    return build_filter_condition(value, word, text.value)
+    as_text = operators.casts_to_text(dim.data_type)
+    return build_filter_condition(value, word, text.value, as_text=as_text)
 
 
 def _word_comparison(

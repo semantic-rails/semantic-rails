@@ -8,5 +8,5 @@
   before that; it is also `null` on a `needs_live_query` answer, which reads no values.
 - A declared value domain matches `search` the same way: literal, ignoring case, in a value, its
   label or an alias. A search made only of punctuation, such as `_`, used to match every value.
-- A live `search` on a dimension that isn't text (a number, date or id) is refused with
+- A live `search` on a dimension that isn't text (a number or a date) is refused with
   `INVALID_QUERY` at `search` before any read: list its values without `search`.

@@ -1,0 +1,7 @@
+model:
+  id: shipments
+  label: Shipments
+  relation: shipments
+  entities: {shipment: {}}
+  measures:
+    shipment_count: {label: Shipments, kind: entity_count, entity_key: shipment_id}

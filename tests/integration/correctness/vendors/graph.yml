@@ -1,3 +1,5 @@
 graph:
   entities:
     vendor: {label: Vendor, key: [vendor_id], model: vendors}
+    product: {label: Product, key: [sku], model: products}
+    shipment: {label: Shipment, key: [shipment_id], model: shipments}

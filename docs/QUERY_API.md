@@ -889,9 +889,11 @@ a value is found wherever it sorts and a hidden one never matches or counts. Pag
   (`has_more: false`). Before that, and on a page past the last value, a live lookup returns
   `null`: page on with `offset` or narrow `search`. A declared domain's count is always exact.
 
-A live `search` on a dimension that isn't text (a number, date or id) is refused with
-`INVALID_QUERY` at path `search` before any read, as is search text no warehouse lowercases
-alike (such as `ß`); list the values without `search` instead.
+An id (a product code, a UUID, a numeric key) is searched as its text, as the `contains` word
+reads it: a number as its digits, a UUID in lower case with hyphens. A live `search` on another
+dimension that isn't text (a number, date or boolean) is refused with `INVALID_QUERY` at path
+`search` before any read, as is search text no warehouse lowercases alike (such as `ß`); list
+the values without `search` instead.
 
 ### `POST /api/v1/plan`
 

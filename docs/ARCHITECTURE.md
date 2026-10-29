@@ -320,7 +320,8 @@ reference and `schemas/query.v2.json` its schema, generated from the parser's ow
   complement and the SQL aliases. The parser, SQL lowering, planner, clarification complements,
   policy checks and value probes all read it; `not` lowers to `(x <> v OR x IS NULL)`, and a
   `not_` text word to `(fold(x) NOT LIKE fold(p) OR x IS NULL)`, both sides folded by the
-  dialect's one lowercase function. Expression kinds (`comparison`, `in`, `between`) keep SQL's own
+  dialect's one lowercase function; an id reads through the dialect's cast to text
+  (`text_cast`) first. Expression kinds (`comparison`, `in`, `between`) keep SQL's own
   semantics.
 - **The clock.** `semantic_rails/clock.py` parses `now` and resolves `last`/`this`/`start`/
   `end` to half-open bounds in the clock's zone, period bounds and partial flags. It is the

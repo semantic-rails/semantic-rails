@@ -409,9 +409,8 @@ cast and its reported value identifies one date filter, the redacted
   pattern's shape: `'X%'` is `starts_with`, `'%X'` is `ends_with` and `'%X%'` is `contains`
   (`NOT LIKE` takes the `not_` form), each ignoring case. A pattern with `_` or an inner `%`
   has no word; the hint is `is` (or `not`) with the exact values, which `valid-values` lists.
-  In a query call, on a dimension declared as an id or another non-text type, the hint uses exact
-  values instead of a text word, even when the stored codes contain letters. In a
-  `comparison`, use `=` or `<>` with an exact value.
+  In a query call, on a number, date, timestamp or boolean dimension, the hint uses exact
+  values instead of a text word. In a `comparison`, use `=` or `<>` with an exact value.
   A package's own `comparison` (a measure's `expr`) refuses `LIKE` the same way.
 - A text word ignores case by lowering the value and the text with the same function, so it
   gives the same rows on every warehouse. A column's own collation is set aside first: Postgres
@@ -424,11 +423,17 @@ cast and its reported value identifies one date filter, the redacted
   [Known limitations](#known-limitations).
 - A string in a call never holds NUL or a lone surrogate (`\ud800`): no warehouse reads them as
   text, so they are refused at their path, naming the code point.
-- A text word reads text: on an id, number, date, timestamp or boolean dimension it is refused
-  at its path with the words that compare one (`is` or `not` with the exact ids, the ranges for
-  a number, `time` or the ranges for a date). A result (`having`), an entity filter's `having`
-  and a per-entity value compare a number, so a text word or a `LIKE` there is refused with
-  the words that compare a number.
+- A text word reads text: on a number, date, timestamp or boolean dimension it is refused at
+  its path with the words that compare one (the ranges for a number, `time` or the ranges for a
+  date, `is` for a boolean). A result (`having`), an entity filter's `having` and a per-entity
+  value compare a number, so a text word or a `LIKE` there is refused with the words that
+  compare a number.
+- A text word reads an id (an entity's key, or a key it holds of another entity) as its text,
+  whatever type the warehouse stores it as, so a product or order code is found by a fragment:
+  `{"field": "dimension.jaffle_product_sku", "op": "starts_with", "value": "jaf"}`. A number
+  reads as its digits (`ends_with` `"03"` matches 103 and 203, never 3), and a UUID in lower
+  case with hyphens (case is ignored, so `E2C0` matches). `is` and `not` still compare the id
+  as it is stored, and `valid-values` `search` reads an id the same way.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
 ### Unknown values

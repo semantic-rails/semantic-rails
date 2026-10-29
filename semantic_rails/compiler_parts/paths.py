@@ -137,8 +137,9 @@ def dimension_filter(
     expr: Any, field: str, op: Any, value: Any, config: PackageConfig, *, path: str = "where"
 ) -> Any:
     """:func:`build_filter_condition` for a filter on the dimension ``field``: on a date or
-    timestamp dimension, its text values are temporal literals. A text word reads only text; a
-    filter with no field compares each entity's value, a number."""
+    timestamp dimension, its text values are temporal literals. A text word reads text, or an
+    id through a cast to its text; a filter with no field compares each entity's value, a
+    number."""
     dim = _dimension_index(config).get(field)
     word = operators.word_of(op)
     if dim is not None:
@@ -146,7 +147,8 @@ def dimension_filter(
     elif not field:
         operators.check_text_operand(word, "number", f"{path}.op", "each entity's value")
     temporal = dim is not None and dim.data_type in {"date", "timestamp"}
-    return build_filter_condition(expr, op, value, path=path, temporal=temporal)
+    as_text = dim is not None and operators.casts_to_text(dim.data_type)
+    return build_filter_condition(expr, op, value, path=path, temporal=temporal, as_text=as_text)
 
 
 def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
@@ -170,7 +172,8 @@ def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> l
 
 
 def text_dimension(entity: str, column: str, word: str, config: PackageConfig, path: str) -> Any:
-    """The one dimension over ``entity``'s ``column`` that a text word compares, its type text.
+    """The one dimension over ``entity``'s ``column`` that a text word compares, its type text
+    or an id.
     The word reads it as a filter on that dimension does; a column that no dimension, or
     several, declares is refused rather than guessed."""
     dims = dimensions_over_column(entity, column, config)

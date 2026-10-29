@@ -143,6 +143,9 @@ class SqlDialect:
     # How a text word folds both its column and its text ("{}" is the operand), so the two always
     # fold alike: one Unicode-aware lowercase function on every warehouse.
     case_fold = "LOWER({})"
+    # How a text word reads an id's column ("{}") as text before folding it, whatever type the
+    # warehouse stores it as: a number's digits (203), a UUID's lowercase hyphenated form.
+    text_cast = "CAST({} AS VARCHAR)"
     # The type a NULL boolean casts to.
     null_boolean_type = "BOOLEAN"
     # Whether the adapter runs each query in the zone of its time role (the runtime's
@@ -601,6 +604,8 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     # collation, built in wherever Postgres has ICU; without it the query fails rather than
     # folding the two apart.
     case_fold = 'LOWER(CAST({} AS TEXT) COLLATE "und-x-icu")'
+    # The fold already reads any type as text.
+    text_cast = "{}"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # Integer day offsets (DATE - DATE is an integer, DATE + integer a DATE), since
@@ -872,6 +877,7 @@ class BigQueryDialect(SqlDialect):
     call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
     # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
     case_fold = "LOWER(COLLATE({}, ''))"
+    text_cast = "CAST({} AS STRING)"
     date_diff_units = tuple(unit for unit in CONVERSION_WINDOW_UNITS if unit != "week")
     decimal_cast = False
 
@@ -1094,6 +1100,7 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
     # A column's own collation (UNICODE, UTF8_LCASE) is set aside: LIKE reads binary text.
     case_fold = "LOWER(({}) COLLATE UTF8_BINARY)"
+    text_cast = "CAST({} AS STRING)"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
         # SEQUENCE over DATEs includes its end and steps one day by default.
@@ -1381,6 +1388,8 @@ class ClickHouseDialect(SqlDialect):
         "lowerUTF8(if(position(toTypeName({0}), 'FixedString') > 0, "
         "toStringCutToZero(toString({0})), toString({0})))"
     )
+    # The fold already reads any type as text.
+    text_cast = "{}"
     identifiers_case_sensitive = True
     null_boolean_type = "Nullable(Bool)"
     correlated_exists = False  # 24.8 has none

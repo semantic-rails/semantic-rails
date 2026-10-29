@@ -313,7 +313,7 @@ def test_a_text_word_on_a_dimension_that_is_not_text_is_refused(runtime, field, 
     assert data_type in error["message"]
 
 
-@pytest.mark.parametrize("data_type", ["id", "integer", "number", "date", "timestamp", "boolean"])
+@pytest.mark.parametrize("data_type", ["integer", "number", "date", "timestamp", "boolean"])
 def test_each_type_that_is_not_text_names_the_words_that_compare_it(data_type):
     from semantic_rails.errors import SemanticLayerError
 
@@ -324,6 +324,17 @@ def test_each_type_that_is_not_text_names_the_words_that_compare_it(data_type):
     operators.check_text_operand("is", data_type, "where[0].op", "dimension.x")
     operators.check_text_operand("starts_with", "string", "where[0].op", "dimension.x")
     operators.check_text_operand("starts_with", "", "where[0].op", "dimension.x")
+
+
+def test_a_text_word_reads_an_id_through_a_cast_to_its_text():
+    # A code, a UUID or a number: the lowering casts it (``casts_to_text``), and only an id.
+    operators.check_text_operand("starts_with", "id", "where[0].op", "dimension.x")
+    assert [operators.casts_to_text(kind) for kind in ("id", " ID ", "string", "integer")] == [
+        True,
+        True,
+        False,
+        False,
+    ]
 
 
 def test_the_refused_letters_are_every_letter_whose_lowercase_changes_length():

@@ -27,6 +27,7 @@ from semantic_rails.schema import SemanticPolicyConfig
 from semantic_rails.sql_ast import SqlField, SqlIdentifier, SqlOrder, SqlSelect, SqlTableRef
 
 NAME = "dimension.accounts_account_name"
+ACCOUNT = "dimension.accounts_account_id"
 REGION = "dimension.accounts_account_region"
 
 
@@ -72,14 +73,16 @@ def accounts(tmp_path: Path) -> tuple[Any, Path]:
     return replace(config, semantic_policies=[row_filter]), path
 
 
-def _region_values(accounts: tuple[Any, Path], region: str, **arguments: Any) -> dict[str, Any]:
+def _region_values(
+    accounts: tuple[Any, Path], region: str, dimension_id: str = NAME, **arguments: Any
+) -> dict[str, Any]:
     config, path = accounts
     context = RequestContext(attributes={"region": region}).to_policy_context()
     runtime = Runtime.from_config(config, source_path=str(path))
     try:
         return valid_values_payload(
             runtime,
-            dimension_id=NAME,
+            dimension_id=dimension_id,
             query={"policy_context": context},
             allow_live_query=True,
             **arguments,
@@ -102,6 +105,24 @@ def test_a_row_filtered_value_never_matches_or_counts(accounts):
     assert _values(first) + _values(last) == [f"Account {i:03d}" for i in range(1, 237, 2)]
     assert (first["has_more"], first["total_count"]) == (True, None)
     assert (last["has_more"], last["total_count"]) == (False, 118)
+
+
+def test_an_id_search_reads_its_text_after_the_row_filter(accounts):
+    # Account ids are integers, searched as their digits: 236 is the west's, so the east's
+    # search never finds or counts it, and the east's matches page in numeric order.
+    hidden = _region_values(accounts, "east", ACCOUNT, search="236")
+    assert (_values(hidden), hidden["total_count"], hidden["has_more"]) == ([], 0, False)
+    found = _region_values(accounts, "east", ACCOUNT, search="235")
+    assert (_values(found), found["total_count"], found["has_more"]) == ([235], 1, False)
+    east = [number for number in range(1, 237, 2) if "23" in str(number)]
+    assert east == [23, 123, 223, 231, 233, 235]
+    first, last = (
+        _region_values(accounts, "east", ACCOUNT, search="23", limit=4, offset=offset)
+        for offset in (0, 4)
+    )
+    assert _values(first) + _values(last) == east
+    assert (first["has_more"], first["total_count"]) == (True, None)
+    assert (last["has_more"], last["total_count"]) == (False, 6)
 
 
 def test_a_search_matches_each_listed_value_across_a_to_many_hop(runtime_factory):
