@@ -1403,13 +1403,25 @@ def _synthetic_conditional_measure(
     row_grain = next(
         (grain for grain in grains if sorted(grain) != key), grains[0] if grains else []
     )
-    # It reads its table's rows as that table's measures do: with no time window, on their
-    # clock and only through their declared edge (``zero_through``), so "orders over 50 ever"
-    # never counts an order past the load log that revenue beside it leaves out. With no such
-    # measure it has neither, and reads every row.
+    # It reads its table's rows as that table's measures do: with no time window, only through
+    # their declared edge (``zero_through``), so "orders over 50 ever" never counts an order past
+    # the load log that revenue beside it leaves out. Like a measure with no ``times:``, it is
+    # timed by its model's ``default: true`` time; a model that declares none takes the clock
+    # most of its measures default to. With no such measure it has no edge, and reads every row.
     own = [row for row in config.measures if row.entity == entity_id]
     clocks = Counter(row.default_temporal_role for row in own if row.default_temporal_role)
-    clock = clocks.most_common(1)[0][0] if clocks else ""
+    dims = _dimension_index(config)
+    model_clock = next(
+        (
+            row.id
+            for row in config.temporal_roles
+            if row.default_query_time_axis
+            and row.dimension in dims
+            and dims[row.dimension].entity == entity_id
+        ),
+        "",
+    )
+    clock = model_clock or (clocks.most_common(1)[0][0] if clocks else "")
     edge = next((row.zero_through for row in own if row.zero_through is not None), None)
 
     # Build the column-level expression: CASE WHEN cond THEN value END.

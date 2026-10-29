@@ -287,6 +287,113 @@ def test_sales_over_50_ever_written_inline_stop_at_the_load_log_as_revenue_does(
     assert [_number(row["large_value"]) for row in ungrouped["rows"]] == [total]
 
 
+# Orders dated by when they were placed (the model's default time) and when they shipped. The
+# load log ends on Sunday 2024-09-29: order 2 hasn't shipped, order 3 ships after the log and
+# order 4 is placed after it.
+SHIPPED = [
+    (1, "2024-09-03 10:00:00", "2024-09-05 10:00:00", 120),
+    (2, "2024-09-20 10:00:00", None, 80),
+    (3, "2024-09-27 10:00:00", "2024-10-02 10:00:00", 70),
+    (4, "2024-10-01 08:00:00", "2024-10-02 11:00:00", 999),
+    (5, "2024-09-10 09:00:00", "2024-09-11 09:00:00", 30),
+]
+ON_SHIPPED_AT = {"times": ["shipped_at"]}
+SHIPPED_VALUE = {"kind": "aggregate", "expr": "amount", **ON_SHIPPED_AT}
+FEE = {"kind": "aggregate", "expr": {"kind": "literal", "value": 5}, **ON_SHIPPED_AT}
+UNITS = {"kind": "aggregate", "expr": {"kind": "literal", "value": 1}, **ON_SHIPPED_AT}
+# Beside revenue and the declared sum, both on the default time: three measures on shipped_at,
+# then two written after them, then two written before them.
+SHIPPED_MEASURES = {
+    "majority": {"shipped_value": SHIPPED_VALUE, "shipping_fee": FEE, "shipped_units": UNITS},
+    "tie": {"shipped_value": SHIPPED_VALUE, "shipping_fee": FEE},
+    "tie_written_first": {"delivered_value": SHIPPED_VALUE, "delivery_fee": FEE},
+}
+
+
+def _stamp(at):
+    return "NULL" if at is None else f"TIMESTAMP '{at}'"
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("shape", sorted(SHIPPED_MEASURES))
+def test_orders_over_50_ever_written_inline_read_the_model_default_time(
+    request, backend_name, tmp_path, shape
+):
+    """ "The value and number of orders over 50 we have ever had", written inline, read the
+    orders placed through the load log, as revenue and the same sum declared do: they're timed
+    by the model's ``default: true`` time, however many of its measures are on another."""
+    over_50 = {"kind": "comparison", "op": ">", "left": {"kind": "column", "column": "amount"}}
+    over_50["right"] = {"kind": "literal", "value": 50}
+    then_amount = {"when": over_50, "then": {"kind": "column", "column": "amount"}}
+    measures = {
+        "revenue": {"kind": "aggregate", "expr": "amount"},
+        "large_sales": {"kind": "aggregate", "expr": {"kind": "case", "whens": [then_amount]}},
+        **SHIPPED_MEASURES[shape],
+    }
+    models = {
+        "orders": {
+            "id": "orders",
+            "relation": "events",
+            "entities": {"order": {}},
+            "zero_through": {"loaded": "loads.through_day"},
+            "times": {
+                "event_at": EVENT_TIME,
+                "shipped_at": {"column": "shipped_at", "kind": "timestamp", "class": "event_time"},
+            },
+            "measures": measures,
+        },
+        "loads": {
+            "id": "loads",
+            "relation": "loads",
+            "entities": {"load": {}},
+            "times": {"through_day": {"column": "through_day", "kind": "date"}},
+        },
+    }
+    entities = {
+        "order": {"key": ["event_id"], "model": "orders"},
+        "load": {"key": ["run_id"], "model": "loads"},
+    }
+    values = ", ".join(
+        f"({n}, {_stamp(at)}, {_stamp(shipped)}, {a})" for n, at, shipped, a in SHIPPED
+    )
+    seed = (
+        "CREATE TABLE {events} (event_id INTEGER, event_at TIMESTAMP, shipped_at TIMESTAMP, "
+        f"amount INTEGER); INSERT INTO {{events}} VALUES {values};"
+        "CREATE TABLE {loads} (run_id INTEGER, through_day DATE);"
+        "INSERT INTO {loads} VALUES (1, DATE '2024-09-29');"
+    )
+    runtime, tables = _package(request, backend_name, tmp_path, "ship", models, entities, seed)
+    amount = {"kind": "column", "column": "amount", "entity": "entity.ship_order"}
+    condition = {"kind": "comparison", "op": ">", "left": amount}
+    condition["right"] = {"kind": "literal", "value": 50}
+    value = {"kind": "aggregate_if", "aggregation": "sum", "value": amount, "condition": condition}
+    count = {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
+    select = [
+        {"expression": value, "as": "large_value"},
+        {"expression": count, "as": "large_count"},
+        "measure.ship.revenue",
+        "measure.ship.large_sales",
+    ]
+    cap = CAPS["loaded"].format(**tables)
+    try:
+        result = runtime.query({"select": select}, now=NOW)
+        reference = _rows(
+            runtime,
+            "SELECT SUM(CASE WHEN amount > 50 THEN amount END), "
+            "COUNT(CASE WHEN amount > 50 THEN 1 END), SUM(amount), "
+            f"SUM(CASE WHEN amount > 50 THEN amount END) FROM {tables['events']} WHERE {cap}",
+        )
+    finally:
+        if backend_name == "postgres":
+            _rows(runtime, "DROP TABLE {events}; DROP TABLE {loads}".format(**tables))
+        runtime.close()
+    keys = ("large_value", "large_count", "revenue", "large_sales")
+    rows = [tuple(_number(row[key]) for key in keys) for row in result["rows"]]
+    assert rows == [tuple(map(_number, cells)) for cells in reference]
+    # Orders 1, 2 and 3 (120 + 80 + 70) and order 5's 30 in revenue; never order 1 alone.
+    assert rows == [(270.0, 3.0, 300.0, 270.0)]
+
+
 # Refunds dated by their order's clock (another model's), over all time. Orders 1 and 2 are
 # before the load log's Sunday 2024-09-29; order 3 lands on 2024-10-01, after it. No refund is
 # a goods refund unless ``stray`` adds one on order 3.
