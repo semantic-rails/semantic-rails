@@ -622,7 +622,8 @@ groups a branch has none for. A distribution's per-entity values compile with `e
 where their leaves join (several measures' rows on the entity), they settle as a call of their
 own (observation, coverage), but no filtered leaf keeps its source groups and no period is
 filled in, so the entities stay those with rows. Leaves that read the same rows (one leaf, or
-one per measure under an entity filter) need no settling. A metric predicate's source over several measures under a
+one per measure under an entity filter) need no settling unless a sum among several measures
+skips rows (`skips_rows`: a CASE with no ELSE). A metric predicate's source over several measures under a
 threshold 0 passes keeps the earlier settlement (`earlier_settlement` in
 `compiler_parts/bind.py`) and plans and lowers exactly as before. So does, individually, a
 measure whose expression contains a CASE with no ELSE (or ELSE NULL) below its root

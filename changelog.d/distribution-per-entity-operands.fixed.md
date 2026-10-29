@@ -5,7 +5,9 @@
   refunded nothing (`0`) wherever refunds have data in scope, under a `where` and a bounded
   window too; percentiles, `min` and `max` read the same values. An order whose amount is
   unknown still reads `NULL` and is left out, and a distribution over one measure is unchanged.
-  Under the `dataset` scope, such a distribution over measures of different rows (revenue
-  less refunds) with a `where` beside an entity filter is now refused with
-  `EMPTY_GROUPS_UNSETTLED`, naming it, as the call grouped by order is; it read `NULL` in
-  every month. Measures of the same rows (the declared average order value) still answer.
+  A sum whose CASE has no ELSE settles beside another measure too: "median revenue excluding
+  store b" per repeat customer reads `20`, where a customer with no store b order dropped out
+  and it read `12`. Under the `dataset` scope, a distribution that needs settling (revenue less
+  refunds) with a `where` beside an entity filter is now refused with `EMPTY_GROUPS_UNSETTLED`,
+  naming it, as the call grouped by order is; it read `NULL` in every month. Measures that read
+  the same rows, every one of them (the declared average order value), still answer.
