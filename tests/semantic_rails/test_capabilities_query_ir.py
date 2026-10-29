@@ -10,15 +10,16 @@ def test_capabilities_advertise_only_the_query_call(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         python = capabilities_payload(runtime)
-        response = SemanticLayerMCPAdapter(runtime).call_tool("discover", {"terms": ""})
-        assert response["ok"] is True
         resource = SemanticLayerMCPAdapter(runtime).read_resource(
             "semantic-rails://catalog/summary"
         )["payload"]["catalog"]
+        index = SemanticLayerMCPAdapter(runtime).read_resource("semantic-rails://catalog/index")[
+            "payload"
+        ]["catalog"]
         http, status = SemanticHTTPService(runtime).handle("GET", "/capabilities")
         assert status == 200
 
-        for payload in (python, response["catalog"], resource, http):
+        for payload in (python, resource, index, http):
             ir_rows = [
                 row
                 for row in payload["capabilities"] + payload["unsupported_capabilities"]
