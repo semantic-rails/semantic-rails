@@ -192,6 +192,24 @@ def test_a_single_loaded_week_a_filter_never_matched_reads_zero(request, backend
 
 
 @pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(
+    "case_id,output,value",
+    [
+        ("long-tickets-ever-read-zero-under-the-load-log", "long_tickets", 0),
+        ("the-share-of-long-tickets-ever-reads-zero-under-the-load-log", "long_ticket_share", 0.0),
+    ],
+)
+def test_a_filter_never_matched_reads_zero_over_all_time_under_the_load_log(
+    request, backend_name, case_id, output, value
+):
+    """No time window: the load log says the table is loaded, so a filter that matched no
+    row reads 0 with no NO_DATA_IN_SCOPE, and its share 0 / 3."""
+    result = _answer(request, backend_name, case_id)
+    assert result["rows"] == [{output: value}]
+    assert not _warnings(result, "NO_DATA_IN_SCOPE")
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
 def test_a_share_of_a_filter_never_matched_divides_its_settled_operands(request, backend_name):
     """0 / 1 is 0 where a ticket opened, 0 / 0 is NULL where none did, and past the load log
     both operands are NULL."""

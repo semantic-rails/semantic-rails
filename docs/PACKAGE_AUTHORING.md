@@ -3179,6 +3179,10 @@ load log's own model refuses the query for the callers it applies to (`POLICY_DE
 coverage, so a ClickHouse package refuses any value but `data` (`INVALID_CONFIG`). Name one
 load log per load job; a model that another job loads declares its own.
 
+The same holds with no time window: "how many enterprise accounts have we ever had?" reads `0`
+before the first one signs up, once the table holds a row the edge lets through, and `NULL`
+with `NO_DATA_IN_SCOPE` on a model whose edge is `data`.
+
 Known limits:
 
 - An entity filter whose threshold an entity with no rows passes (`lte 0`, `is 0`, `lt 1`),
