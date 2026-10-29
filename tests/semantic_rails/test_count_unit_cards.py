@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.expressions import CaseExpr, CaseWhenExpr, ColumnRefExpr, LiteralExpr
@@ -89,6 +90,40 @@ def test_a_row_count_on_a_keyless_model_counts_its_rows(shop):
     assert _card(shop, "measure.shop.scanned_orders")["count_unit"] == (
         f"distinct order_id across rows of {scans}"
     )
+
+
+def test_a_stock_of_one_reads_the_snapshot_and_names_no_row_unit(tmp_path):
+    # Accounts at month end, counted the way a row count is written (expr: 1, sum) but marked a
+    # stock: the answer reads one snapshot per account, so "rows of" would be wrong.
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    model = package / "models" / "account_days.yml"
+    document = yaml.safe_load(model.read_text(encoding="utf-8"))
+    document["model"]["measures"]["accounts_open"] = {
+        "kind": "aggregate",
+        "expr": 1,
+        "default_agg": "sum",
+        "value_type": "count",
+        "accumulation": {"kind": "stock", "snapshot": "end_of_period"},
+    }
+    model.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    runtime = Runtime.from_config(
+        load_package_config(str(package)), source_path=str(package), package_id="shop"
+    )
+    try:
+        card = _card(runtime, "measure.shop.accounts_open")
+        stored = runtime._get_adapter().query("SELECT COUNT(*) AS n FROM account_days")[0]["n"]
+        [row] = runtime.query(
+            {
+                "select": ["measure.shop.accounts_open"],
+                "time": {"grain": "month", "start": "2024-01-01", "end": "2024-02-01"},
+            }
+        )["rows"]
+    finally:
+        runtime.close()
+    assert card["measure_class"] == "semi_additive"
+    assert "count_unit" not in card
+    assert (row["accounts_open"], stored) == (2, 21)  # the month-end accounts, not its rows
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])

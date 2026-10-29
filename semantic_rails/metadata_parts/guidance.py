@@ -62,11 +62,12 @@ def _aggregation_guidance(measure: Any) -> dict[str, Any]:
 def _count_unit(measure: Any) -> dict[str, Any]:
     """What a count measure counts, read from its definition alone: rows of its model, or
     distinct values of a column across them. ``{}`` for a measure that adds up, averages or
-    carries a value (a lookup), or whose counted expression names no single column.
+    carries a value (a lookup), a stock, or one whose counted expression names no single column.
 
     A count of distinct keys and a count of rows differ wherever a key repeats (customers who
     ordered vs their orders), so the card names which one the measure is."""
-    if measure.lookup_from:
+    # A stock reads one snapshot per series, whatever its aggregation: never every row it holds.
+    if measure.lookup_from or measure.measure_class == "semi_additive":
         return {}
     aggregation = str(measure.default_aggregation or "").lower()
     expr, conditional = measure.expr, False

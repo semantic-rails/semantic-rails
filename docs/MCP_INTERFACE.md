@@ -256,8 +256,8 @@ count of keys and a count of rows differ wherever a key repeats: `measure.jaffle
 is `"distinct order_id across rows of entity.jaffle_order"`, and
 `measure.jaffle.ordering_customer_count` `"distinct customer_id across rows of
 entity.jaffle_order"`, each customer once however many orders they placed. A measure that adds
-up, averages or carries a value, or counts an expression that names no single column, has no
-`count_unit`.
+up, averages or carries a value, a stock (which reads one snapshot per series, even a sum of
+`1`), or one that counts an expression naming no single column, has no `count_unit`.
 
 A measure's card, at every verbosity, names its look-alikes on other models when it has any:
 published measures with the same key or label once each model's table name is taken off, over
