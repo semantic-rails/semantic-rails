@@ -483,6 +483,10 @@ cast and its reported value identifies one date filter, the redacted
   reads as its digits (`ends_with` `"03"` matches 103 and 203, never 3), and a UUID in lower
   case with hyphens (case is ignored, so `E2C0` matches). `is` and `not` still compare the id
   as it is stored, and `valid-values` `search` reads an id the same way.
+- An id stored as a float reads as the warehouse's float text: DuckDB (and so MotherDuck and
+  DuckLake), Databricks and Athena write `203.0`, while Postgres, Snowflake, BigQuery and
+  ClickHouse write `203`. So on DuckDB `ends_with` `"03"` finds nothing and `contains` `"0"`
+  matches every id. Store ids as integers or text.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
 ### Unknown values
@@ -1921,7 +1925,8 @@ warehouse (`AVG` is DOUBLE on DuckDB and NUMERIC on Postgres); `column_types` re
 driver returned. An all-null column has type `null`; an empty result has `column_types: {}`.
 
 The Postgres adapter accepts only Arrow scalar types with exact mappings (integers, decimals,
-floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, NULL); other
-types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
+floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, UUIDs, NULL),
+so a uuid column groups, lists and is searched as its lower-case hyphenated text, as on DuckDB;
+other types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
 without exposing values. Unsupported values, non-finite numbers and conflicting non-null column
 types refuse with `RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error.
