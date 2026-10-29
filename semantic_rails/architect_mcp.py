@@ -53,6 +53,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
+from .lookalike_models import LOOKALIKE_MODELS
 from .mcp import SemanticLayerMCPAdapter, json_text
 from .naming import slug as _slug
 from .package_tools import (
@@ -938,6 +939,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             "Use setup_project_dialog for new-package discovery, then create_project when the required fields are known.",
             "Prefer upsert_model for entity, dimension, time, and measure changes, and upsert_relationship for foreign keys, so graph.yml stays aligned.",
             "Run validate_project with mode=parse after every structural edit; use mode=runtime before promoting.",
+            "A LOOKALIKE_MODELS warning names models an agent can read for one another (the same rows, such as a table and its history, or one count under one name on several tables): decide which is canonical, asking the package owner when the data doesn't say, and never from the names alone.",
             "Treat runtime validation as operational: DuckDB validation can build a missing package database from its seed but never replaces an existing file; declare seed kind external for a database another tool builds. Snowflake validation can issue live queries.",
             "Use impact_project with compare_path or base_ref before release review; use promotion_check with compare_path or base_ref when an environment gate matters.",
         ],
@@ -1555,6 +1557,10 @@ def create_architect_mcp_server(
             parse = _parse_report(project)
             census = parse.pop("route_census", None)
             needed = sum(bool(row["needed_by"]) for row in census["undecided"]) if census else 0
+            lookalikes = sum(
+                isinstance(row, dict) and row.get("code") == LOOKALIKE_MODELS
+                for row in parse.get("warnings") or []
+            )
             out: dict[str, Any] = {
                 "ok": bool(parse.get("ok")),
                 "project_path": str(project),
@@ -1579,6 +1585,17 @@ def create_architect_mcp_server(
                             f"{DECIDE_ROUTES_ACTION}"
                         ]
                         if needed
+                        else []
+                    ),
+                    *(
+                        [
+                            f"Name the canonical model of each of the {lookalikes} "
+                            f"group{'s' if lookalikes > 1 else ''} of look-alike models in "
+                            "parse.warnings (code LOOKALIKE_MODELS; page: parse.warnings lists "
+                            "them all): an agent can answer one question from any model of a "
+                            "group."
+                        ]
+                        if lookalikes
                         else []
                     ),
                     "Run validate_project with mode=runtime before release.",

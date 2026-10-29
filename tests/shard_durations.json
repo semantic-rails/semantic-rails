@@ -135,6 +135,7 @@
   "tests/semantic_rails/test_keyless_lookups.py": 14.373,
   "tests/semantic_rails/test_listings_one_to_many.py": 10.3,
   "tests/semantic_rails/test_load_runs_authoring_checks.py": 6.27,
+  "tests/semantic_rails/test_lookalike_models.py": 6.0,
   "tests/semantic_rails/test_lookup_joins.py": 3.548,
   "tests/semantic_rails/test_lookup_measures.py": 7.837,
   "tests/semantic_rails/test_lookups_keep_rows.py": 28.197,

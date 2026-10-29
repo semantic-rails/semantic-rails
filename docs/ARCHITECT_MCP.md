@@ -488,6 +488,10 @@ same report: `rules` (each with its tier and hits), `proof`, `choices_pending`, 
 - When a write comes back `rolled_back_after_parse_error` or `preview_invalid`, or `project_status`
   can't parse the package, and upgrade rules match the package's files, `next_actions` says how many
   legacy forms `upgrade_project` would rewrite.
+- When the parse report names groups of models an agent can read for one another
+  (`LOOKALIKE_MODELS`, see [look-alike models](PACKAGE_AUTHORING.md#look-alike-models)),
+  `project_status`'s `next_actions` asks for the canonical model of each and counts the groups;
+  `architect_guidance` says to decide it with the package owner, never from the names alone.
 
 ## Join Routes
 
