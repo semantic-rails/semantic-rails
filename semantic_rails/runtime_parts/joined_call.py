@@ -21,6 +21,7 @@ from ..answer import (
     _policy_context,
     _time_zone,
     _withheld_columns,
+    answered,
     finish,
     minimal_route,
 )
@@ -123,15 +124,13 @@ def joined_check(
         )
         assumptions.extend(_tagged_assumption(row, part.index) for row in block["assumptions"])
         blocks.append(_part_block(part, block, verbosity))
-    out: dict[str, Any] = {
-        "ok": True,
-        "status": "ok",
-        "errors": [],
-        "warnings": [_parts_joined(runtime._config, joined, blocks, counts=None), *warnings],
-        "recovery_hints": [],
-        "assumptions": assumptions,
-        "parts": blocks,
-    }
+    out = answered(
+        {
+            "warnings": [_parts_joined(runtime._config, joined, blocks, counts=None), *warnings],
+            "assumptions": assumptions,
+            "parts": blocks,
+        }
+    )
     if kind == "compile":
         out["rendered_sql"] = joined.compiled["sql"]
     out["explain"] = _explain(joined)
@@ -160,12 +159,10 @@ def joined_output_columns(
 
 def joined_query(runtime: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Answer a joined call: the statement run once, each part answered from its own rows."""
-    from ..runtime import _normalize_query_limits
-
     verbosity = resolve_verbosity(payload)
     policy_context = _policy_context(payload)
     joined = _compile(runtime, payload)
-    limits = _normalize_query_limits(payload.get("limits"), joined.zone)
+    limits = runtime._request_limits(payload, joined.zone)
     rows, _, limits_warnings, tie_warnings = runtime._run_statement(
         joined.compiled, payload, policy_context, limits, totaled=False
     )
@@ -208,37 +205,35 @@ def joined_query(runtime: Any, payload: dict[str, Any]) -> dict[str, Any]:
         _part_block(part, answer, verbosity)
         for part, answer in zip(joined.parts, answers, strict=True)
     ]
-    out: dict[str, Any] = {
-        "ok": True,
-        "read_from": _read_from(answers),
-        "rows": out_rows,
-        "column_types": column_types,
-        "row_count": len(out_rows),
-        "truncated": truncated,
-        "rendered_sql": joined.compiled["sql"],
-        "status": "ok",
-        "errors": [],
-        "warnings": [
-            _parts_joined(runtime._config, joined, blocks, counts=counts, ran=True),
-            *(
-                _tagged(row, part.index)
+    out = answered(
+        {
+            "read_from": _read_from(answers),
+            "rows": out_rows,
+            "column_types": column_types,
+            "row_count": len(out_rows),
+            "truncated": truncated,
+            "rendered_sql": joined.compiled["sql"],
+            "warnings": [
+                _parts_joined(runtime._config, joined, blocks, counts=counts, ran=True),
+                *(
+                    _tagged(row, part.index)
+                    for part, answer in zip(joined.parts, answers, strict=True)
+                    for row in answer["warnings"]
+                ),
+                *limits_warnings,
+                *tie_warnings,
+                *runtime._seed_warnings,
+            ],
+            "assumptions": [
+                _tagged_assumption(row, part.index)
                 for part, answer in zip(joined.parts, answers, strict=True)
-                for row in answer["warnings"]
-            ),
-            *limits_warnings,
-            *tie_warnings,
-            *runtime._seed_warnings,
-        ],
-        "recovery_hints": [],
-        "assumptions": [
-            _tagged_assumption(row, part.index)
-            for part, answer in zip(joined.parts, answers, strict=True)
-            for row in answer.get("assumptions") or []
-        ],
-        "parts": blocks,
-        "request_context": answers[0].get("request_context"),
-        "explain": _explain(joined),
-    }
+                for row in answer.get("assumptions") or []
+            ],
+            "parts": blocks,
+            "request_context": answers[0].get("request_context"),
+            "explain": _explain(joined),
+        }
+    )
     withheld = sorted({name for answer in answers for name in answer.get("withheld") or []})
     if withheld:
         out["withheld"] = withheld
@@ -258,8 +253,6 @@ def joined_query(runtime: Any, payload: dict[str, Any]) -> dict[str, Any]:
 def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     """Bind, check and compile every part, in order (the first refusal is the answer), then
     check the join and write the one statement."""
-    from ..runtime import _enrich_runtime_error
-
     config = runtime._config
     policy_context = _policy_context(payload)
     if policy_context.get("metric_allowlist") is not None:
@@ -284,8 +277,8 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         try:
             parts.append(_compile_part(runtime, index, part_payload, policy_context))
         except SemanticLayerError as exc:
-            enriched = runtime._with_lookalike_measures(exc, part_payload, policy_context)
-            raise in_part(_enrich_runtime_error(enriched, config, own_notes), index) from exc
+            refused = runtime._refusal(exc, part_payload, policy_context)
+            raise in_part(refused, index) from exc
     zones = {
         _time_zone(config, part.compiled) for part in parts if part.compiled["logical_plan"].time
     }

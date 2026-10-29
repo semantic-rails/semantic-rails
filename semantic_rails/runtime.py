@@ -2022,6 +2022,18 @@ class Runtime:
             kind="execute",
         )
 
+    def _request_limits(self, payload: dict[str, Any], zone: str) -> dict[str, Any]:
+        """The request's ``limits`` for a statement whose clock reads ``zone``."""
+        return _normalize_query_limits(payload.get("limits"), zone)
+
+    def _refusal(
+        self, exc: SemanticLayerError, payload: dict[str, Any], policy_context: dict[str, Any]
+    ) -> SemanticLayerError:
+        """A compile refusal of ``payload`` as its caller reads it: the measures it may have
+        meant, and every diagnostics enricher over the call's own notes."""
+        enriched = self._with_lookalike_measures(exc, payload, policy_context)
+        return _enrich_runtime_error(enriched, self._config, payload.get("_call_notes"))
+
     def _run_statement(
         self,
         compiled: dict[str, Any],

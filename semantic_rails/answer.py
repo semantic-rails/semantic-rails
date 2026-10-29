@@ -431,6 +431,12 @@ def finish(
     return {key: value for key, value in out.items() if key in _KEPT_EMPTY or value not in _EMPTY}
 
 
+def answered(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """A response that answered, as every answer starts: ``ok``, ``status`` "ok", no errors or
+    recovery hints, then ``fields`` (a joined call's, which ``finish`` completes)."""
+    return {"ok": True, "status": "ok", "errors": [], "recovery_hints": [], **fields}
+
+
 def _call(query: Mapping[str, Any]) -> dict[str, Any] | None:
     """The call that states ``query``; None when it states none (a refused call)."""
     try:
