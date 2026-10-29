@@ -1781,7 +1781,10 @@ sales, reads `0` for store b at a customer with no store b order, as grouped by 
 Measures that read the same rows, each of them every row (the declared average order value:
 revenue over order count), need no settling. Under `dataset`, a `where` beside an entity filter
 refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GROUPS_UNSETTLED`,
-naming it, as it refuses the call grouped by order.
+naming it, as it refuses the call grouped by order. Its groups read their lookups as the call
+does: by store name, an order with no store, or whose store the stores table doesn't hold, is in
+the `NULL` group, alone or beside its count, as grouped by the store's id. Per store, an order
+with no store is no store of its own: "median revenue per store" reads only the stores.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an

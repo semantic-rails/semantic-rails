@@ -2462,8 +2462,6 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
 - a metric predicate's own query, and its route to the entity it qualifies. Its set is
   matched on that entity and on the query's grouped (context) entities, so a row with none
   of them is not in the set;
-- a distribution's per-entity values (its `over`): a row whose lookup of the entity finds
-  no match belongs to no entity, never to a NULL entity of its own;
 - a conversion's converted events (their lookups and properties) and the dimensions a
   query's metric filter on the conversion is matched on. A conversion's base events are its
   rate's denominator, so they keep their rows, in a metric filter's own query too: an event
