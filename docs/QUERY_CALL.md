@@ -1568,7 +1568,12 @@ its sum reads `NULL` (as SQL's `SUM` does) and its count still counts the rows. 
 sum (`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its
 condition: a group whose rows all fail it reads `0`, one whose matching rows all have a NULL
 amount reads `NULL`. A sum of a `CASE` with no `ELSE` follows that rule; an explicit non-NULL
-`ELSE` (including `ELSE 0`) contributes on every row.
+`ELSE` (including `ELSE 0`) contributes on every row. So does a `CASE` with an `ELSE` below a
+formula's root (`amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2 END`). Every output beside
+a `distribution` settles as it does without it. One shape can't tell the two apart: a `CASE`
+with no `ELSE` below the root (`1.1 * CASE WHEN store_id = 'a' THEN amount END`) reads `0` in a
+group whose matching amounts are all NULL, where the measure has a value in scope. Write the
+condition at the root instead (`CASE WHEN store_id = 'a' THEN amount * 1.1 END`).
 
 **Metrics.** Arithmetic settles each operand first, then combines them: an operand that is
 unknown or has no data in scope is `NULL`, and so is the result (`revenue - refunds` is `NULL`

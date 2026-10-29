@@ -27,6 +27,17 @@ model:
       expr: {kind: case, whens: [{when: {kind: comparison, op: '=',
         left: {kind: column, column: store_id}, right: {kind: literal, value: a}},
         then: {kind: column, column: amount}}], else: {kind: literal, value: 0}}
+    # Revenue with each store's sales tax, 10% at store a and 20% elsewhere: the CASE below the
+    # formula's root gives every order a multiplier, so an order with no amount stays unknown.
+    gross_revenue:
+      label: Gross revenue
+      kind: aggregate
+      accumulation: {kind: flow}
+      value_type: currency
+      expr: {kind: arithmetic, op: multiply, left: {kind: column, column: amount},
+        right: {kind: case, whens: [{when: {kind: comparison, op: '=',
+          left: {kind: column, column: store_id}, right: {kind: literal, value: a}},
+          then: {kind: literal, value: 1.1}}], else: {kind: literal, value: 1.2}}}
     store_a_orders:
       label: Store a orders
       kind: entity_count

@@ -1,9 +1,11 @@
 """Settle additive empty groups once, below projection: observed and loaded means 0.
 
 A sum reads 0 only in a group where it read no rows; rows whose values are all NULL are
-unknown and stay NULL. A query with a distribution branch, and a metric predicate's source
-over several measures under a threshold that 0 passes, keep the earlier settlement, which
-reads them as 0 (``earlier_settlement``). Probes and coverage respect row filters.
+unknown and stay NULL. Beside a distribution, each branch settles its own groups and the
+combine fills only those a branch has no row for. A metric predicate's source over several
+measures under a threshold that 0 passes keeps the earlier settlement, which reads them as 0
+(``earlier_settlement``), as does a measure with a CASE below its root that can drop rows
+(``drops_rows_below_root``). Probes and coverage respect row filters.
 Projection bypasses and sums without a row count refuse with EMPTY_GROUPS_UNSETTLED. Stocks
 and non-additive values remain NULL.
 
@@ -98,13 +100,13 @@ def counts_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
     """Whether the measure's leaf counts the rows it reads in each group, beside its value.
 
     A sum settles to 0 only where that count is 0; a count is already 0 there. Under the
-    earlier settlement no leaf counts its rows; a measure with a nested CASE retains that
-    settlement individually.
+    earlier settlement no leaf counts its rows; a measure with a conditional CASE below its
+    root retains that settlement individually (``drops_rows_below_root``).
     """
     if (
         earlier_settlement_applies()
         or measure is None
-        or has_nested_case(measure)
+        or drops_rows_below_root(measure)
         or not resolves_to_zero(aggregation, measure)
     ):
         return False
@@ -112,7 +114,7 @@ def counts_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
 
 
 def has_nested_case(measure: MeasureConfig) -> bool:
-    """A CASE below the expression root keeps base settlement and cannot read a rollup.
+    """A CASE below the expression root cannot read a rollup.
 
     Detect the unsupported shape without interpreting arithmetic or deriving its row marker.
     """
@@ -121,13 +123,26 @@ def has_nested_case(measure: MeasureConfig) -> bool:
     )
 
 
+def drops_rows_below_root(measure: MeasureConfig) -> bool:
+    """Whether a CASE below the expression root can leave a row without a value: one with no
+    ELSE (or ELSE NULL), whose failed conditions a count of the rows can't tell from an unknown
+    amount without interpreting the arithmetic around it. Such a measure keeps the earlier
+    settlement individually. A CASE below the root that gives every row a value, such as
+    ``amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2 END``, reads every row as any other
+    arithmetic does."""
+    return any(
+        isinstance(node, CaseExpr) and node is not measure.expr and is_conditional_case(node)
+        for node in sql_nodes(measure.expr)
+    )
+
+
 def reads_every_row(measure: MeasureConfig) -> bool:
     """Whether a sum of the measure reads every row it is given, so a count of the rows says
     whether a group has data. A CASE with no ELSE (or ELSE NULL) reads only the rows its
     conditions keep, which a rollup's pre-aggregated value can't tell apart; the leaf's row
-    marker (``_row_marker``) applies the same test. A nested CASE cannot prove this either
-    and keeps base settlement instead of deriving a marker."""
-    return not (has_nested_case(measure) or is_conditional_case(measure.expr))
+    marker (``_row_marker``) applies the same test. Below the root, such a CASE cannot prove
+    this either and keeps base settlement instead of deriving a marker."""
+    return not (drops_rows_below_root(measure) or is_conditional_case(measure.expr))
 
 
 def counts_its_own_key(
@@ -148,7 +163,7 @@ def absent_marker(alias: str, aggregation: str, rows: Mapping[str, str]) -> SqlI
     """The guard's source column that is NULL exactly where the measure's own rows never
     reached the group (another measure's rows hold it): a count's value, which is never NULL
     where it read a row, or a sum's row count. None for a sum that counts no rows (the earlier
-    settlement, or a nested CASE), which can't tell."""
+    settlement, or a CASE below the root that can drop rows), which can't tell."""
     if aggregation in _COUNTING:
         return SqlIdentifier(parts=["base", alias])
     if alias in rows and not earlier_settlement_applies():
@@ -314,7 +329,8 @@ def guard_empty_groups(
     0, never where its rows' values are all NULL. A sum without one is refused, as are
     scopes and ``time_key`` without a dialect with time coverage. Inside
     ``earlier_settlement`` a NULL sum reads 0 wherever its measure has data in scope. Aliases
-    in ``earlier`` use that same rule individually for measures containing a nested CASE.
+    in ``earlier`` use that same rule individually, for measures with a CASE below the root
+    that can drop rows (``drops_rows_below_root``).
 
     Under the ``dataset`` scope, the request's own outputs are observed where ``observed``
     (each measure's own rows under its authored conditions, never the query's filters) holds

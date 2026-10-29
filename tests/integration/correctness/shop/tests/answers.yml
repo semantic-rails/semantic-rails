@@ -6447,7 +6447,7 @@ tests:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
       group_by: []
-    reference_sql: SELECT date_trunc('month', o.ordered_at) AS b, COALESCE(SUM(o.amount), 0), percentile_cont(0.5) WITHIN
+    reference_sql: SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount), percentile_cont(0.5) WITHIN
       GROUP (ORDER BY o.amount) FROM orders AS o WHERE TRUE GROUP BY 1
     expected_rows:
       - {period: '2023-11-01', agent_branch_1__rows: 15, median: 7.5}
@@ -6461,7 +6461,7 @@ tests:
   shop/distribution_marker_own_output_by_store:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for distribution marker own output by store.
+    why: Freeze the declared inputs and independent reference for distribution marker own output by store. Store a's May, whose only order has no amount, reads NULL beside the median, as revenue does alone.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
@@ -6489,14 +6489,14 @@ tests:
         grain: month
       group_by:
       - dimension.shop_order_store_id
-    reference_sql: SELECT o.store_id, date_trunc('month', o.ordered_at) AS b, COALESCE(SUM(o.amount), 0), percentile_cont(0.5)
+    reference_sql: SELECT o.store_id, date_trunc('month', o.ordered_at) AS b, SUM(o.amount), percentile_cont(0.5)
       WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE TRUE GROUP BY 1, 2
     expected_rows:
       - {dimension.shop_order_store_id: a, period: '2023-11-01', agent_branch_1__rows: 10, median: 10}
       - {dimension.shop_order_store_id: a, period: '2023-12-01', agent_branch_1__rows: 7, median: 7}
       - {dimension.shop_order_store_id: a, period: '2024-01-01', agent_branch_1__rows: 20, median: 20}
       - {dimension.shop_order_store_id: a, period: '2024-03-01', agent_branch_1__rows: 4, median: 4}
-      - {dimension.shop_order_store_id: a, period: '2024-05-01', agent_branch_1__rows: 0, median: null}
+      - {dimension.shop_order_store_id: a, period: '2024-05-01', agent_branch_1__rows: null, median: null}
       - {dimension.shop_order_store_id: a, period: '2024-08-01', agent_branch_1__rows: 2, median: 2}
       - {dimension.shop_order_store_id: b, period: '2023-11-01', agent_branch_1__rows: 5, median: 5}
       - {dimension.shop_order_store_id: b, period: '2024-03-01', agent_branch_1__rows: 8, median: 8}
@@ -6531,7 +6531,7 @@ tests:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: month
       group_by: []
-    reference_sql: SELECT date_trunc('month', o.ordered_at) AS b, COALESCE(SUM(o.amount), 0), percentile_cont(0.5) WITHIN
+    reference_sql: SELECT date_trunc('month', o.ordered_at) AS b, SUM(o.amount), percentile_cont(0.5) WITHIN
       GROUP (ORDER BY o.amount) FROM orders AS o WHERE TRUE GROUP BY 1
     expected_rows:
       - {period: '2023-11-01', revenue: 15, agent_branch_1__rows: 7.5}
@@ -6545,7 +6545,7 @@ tests:
   shop/distribution_marker_other_output_by_store:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for distribution marker other output by store.
+    why: Freeze the declared inputs and independent reference for distribution marker other output by store. Store a's May, whose only order has no amount, reads NULL beside the median, as revenue does alone.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
@@ -6572,20 +6572,180 @@ tests:
         grain: month
       group_by:
       - dimension.shop_order_store_id
-    reference_sql: SELECT o.store_id, date_trunc('month', o.ordered_at) AS b, COALESCE(SUM(o.amount), 0), percentile_cont(0.5)
+    reference_sql: SELECT o.store_id, date_trunc('month', o.ordered_at) AS b, SUM(o.amount), percentile_cont(0.5)
       WITHIN GROUP (ORDER BY o.amount) FROM orders AS o WHERE TRUE GROUP BY 1, 2
     expected_rows:
       - {dimension.shop_order_store_id: a, period: '2023-11-01', revenue: 10, agent_branch_1__rows: 10}
       - {dimension.shop_order_store_id: a, period: '2023-12-01', revenue: 7, agent_branch_1__rows: 7}
       - {dimension.shop_order_store_id: a, period: '2024-01-01', revenue: 20, agent_branch_1__rows: 20}
       - {dimension.shop_order_store_id: a, period: '2024-03-01', revenue: 4, agent_branch_1__rows: 4}
-      - {dimension.shop_order_store_id: a, period: '2024-05-01', revenue: 0, agent_branch_1__rows: null}
+      - {dimension.shop_order_store_id: a, period: '2024-05-01', revenue: null, agent_branch_1__rows: null}
       - {dimension.shop_order_store_id: a, period: '2024-08-01', revenue: 2, agent_branch_1__rows: 2}
       - {dimension.shop_order_store_id: b, period: '2023-11-01', revenue: 5, agent_branch_1__rows: 5}
       - {dimension.shop_order_store_id: b, period: '2024-03-01', revenue: 8, agent_branch_1__rows: 8}
       - {dimension.shop_order_store_id: b, period: '2024-06-01', revenue: 3, agent_branch_1__rows: 3}
       - {dimension.shop_order_store_id: b, period: '2024-07-01', revenue: 9, agent_branch_1__rows: 9}
       - {dimension.shop_order_store_id: null, period: '2024-05-01', revenue: 6, agent_branch_1__rows: 6}
+  shop/trailing-revenue-beside-the-median-order-reads-null-where-every-amount-is-unknown:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Each store's trailing three-month revenue beside its median order: store a's June and July windows hold only order 7, whose amount is unknown, so they read NULL, as the window does without the median. A window with no orders at all (store b's February) reads 0."
+    cites: &beside_median_cites
+      - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero, time-window]
+    query:
+      select:
+      - expression:
+          kind: rolling
+          input: measure.shop.revenue
+          window: {unit: month, value: 3}
+        as: trailing
+      - expression:
+          kind: distribution
+          function: median
+          over: {kind: entity_value, entity: entity.shop_order, input: measure.shop.revenue}
+        as: median
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2023-11-01', trailing: 10, median: 10}
+      - {dimension.shop_order_store_id: a, period: '2024-08-01', trailing: 2, median: 2}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', trailing: 37, median: 20}
+      - {dimension.shop_order_store_id: a, period: '2024-03-01', trailing: 24, median: 4}
+      - {dimension.shop_order_store_id: a, period: '2023-12-01', trailing: 17, median: 7}
+      - {dimension.shop_order_store_id: a, period: '2024-02-01', trailing: 27, median: null}
+      - {dimension.shop_order_store_id: a, period: '2024-04-01', trailing: 4, median: null}
+      - {dimension.shop_order_store_id: a, period: '2024-05-01', trailing: 4, median: null}
+      - {dimension.shop_order_store_id: a, period: '2024-06-01', trailing: null, median: null}
+      - {dimension.shop_order_store_id: a, period: '2024-07-01', trailing: null, median: null}
+      - {dimension.shop_order_store_id: b, period: '2024-06-01', trailing: 3, median: 3}
+      - {dimension.shop_order_store_id: b, period: '2023-11-01', trailing: 5, median: 5}
+      - {dimension.shop_order_store_id: b, period: '2024-03-01', trailing: 8, median: 8}
+      - {dimension.shop_order_store_id: b, period: '2024-07-01', trailing: 12, median: 9}
+      - {dimension.shop_order_store_id: b, period: '2023-12-01', trailing: 5, median: null}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', trailing: 5, median: null}
+      - {dimension.shop_order_store_id: b, period: '2024-02-01', trailing: 0, median: null}
+      - {dimension.shop_order_store_id: b, period: '2024-04-01', trailing: 8, median: null}
+      - {dimension.shop_order_store_id: b, period: '2024-05-01', trailing: 8, median: null}
+      - {dimension.shop_order_store_id: b, period: '2024-08-01', trailing: 12, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-05-01', trailing: 6, median: 6}
+      - {dimension.shop_order_store_id: null, period: '2023-11-01', trailing: 0, median: null}
+      - {dimension.shop_order_store_id: null, period: '2023-12-01', trailing: 0, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-01-01', trailing: 0, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-02-01', trailing: 0, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-03-01', trailing: 0, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-04-01', trailing: 0, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-06-01', trailing: 6, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-07-01', trailing: 6, median: null}
+      - {dimension.shop_order_store_id: null, period: '2024-08-01', trailing: 0, median: null}
+    reference_sql: |
+      WITH s AS (
+        SELECT g.b FROM generate_series(
+          (SELECT MIN(date_trunc('month', ordered_at)) FROM orders),
+          (SELECT MAX(date_trunc('month', ordered_at)) FROM orders), INTERVAL '1 month') AS g(b)
+      ),
+      k AS (SELECT DISTINCT store_id AS k FROM orders)
+      SELECT k.k, s.b,
+        CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END,
+        (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY m.amount) FROM orders AS m
+          WHERE m.store_id IS NOT DISTINCT FROM k.k AND date_trunc('month', m.ordered_at) = s.b)
+      FROM k CROSS JOIN s
+      LEFT JOIN orders AS o ON o.store_id IS NOT DISTINCT FROM k.k
+        AND o.ordered_at >= s.b - INTERVAL '2 month' AND o.ordered_at < s.b + INTERVAL '1 month'
+      GROUP BY k.k, s.b
+  shop/gross-revenue-by-store-reads-null-where-every-amount-is-unknown:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Each store's monthly revenue with its sales tax (amount times 1.1 at store a, 1.2 elsewhere, a CASE below the formula's root): store a's May holds only order 7, whose amount is unknown, so it reads NULL, as revenue does."
+    cites: &gross_cites
+      - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.gross_revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero, time-window]
+    query:
+      select: [measure.shop.gross_revenue]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2024-08-01', gross_revenue: 2.2}
+      - {dimension.shop_order_store_id: a, period: '2024-03-01', gross_revenue: 4.4}
+      - {dimension.shop_order_store_id: a, period: '2023-12-01', gross_revenue: 7.7}
+      - {dimension.shop_order_store_id: a, period: '2023-11-01', gross_revenue: 11}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', gross_revenue: 22}
+      - {dimension.shop_order_store_id: a, period: '2024-05-01', gross_revenue: null}
+      - {dimension.shop_order_store_id: b, period: '2024-07-01', gross_revenue: 10.8}
+      - {dimension.shop_order_store_id: b, period: '2024-06-01', gross_revenue: 3.6}
+      - {dimension.shop_order_store_id: b, period: '2024-03-01', gross_revenue: 9.6}
+      - {dimension.shop_order_store_id: b, period: '2023-11-01', gross_revenue: 6}
+      - {dimension.shop_order_store_id: null, period: '2024-05-01', gross_revenue: 7.2}
+    reference_sql: |
+      SELECT o.store_id, date_trunc('month', o.ordered_at),
+        SUM(o.amount * CASE WHEN o.store_id = 'a' THEN 1.1 ELSE 1.2 END)
+      FROM orders AS o GROUP BY 1, 2
+  shop/trailing-gross-revenue-by-store-reads-null-where-every-amount-is-unknown:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Each store's trailing three-month revenue with its sales tax: store a's June and July windows hold only order 7, whose amount is unknown, so they read NULL; a window with no orders reads 0."
+    cites: *gross_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      select:
+      - expression:
+          kind: rolling
+          input: measure.shop.gross_revenue
+          window: {unit: month, value: 3}
+        as: trailing
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+      group_by: [dimension.shop_order_store_id]
+    expected_rows:
+      - {dimension.shop_order_store_id: a, period: '2023-11-01', trailing: 11}
+      - {dimension.shop_order_store_id: a, period: '2023-12-01', trailing: 18.7}
+      - {dimension.shop_order_store_id: a, period: '2024-01-01', trailing: 40.7}
+      - {dimension.shop_order_store_id: a, period: '2024-02-01', trailing: 29.7}
+      - {dimension.shop_order_store_id: a, period: '2024-03-01', trailing: 26.4}
+      - {dimension.shop_order_store_id: a, period: '2024-04-01', trailing: 4.4}
+      - {dimension.shop_order_store_id: a, period: '2024-05-01', trailing: 4.4}
+      - {dimension.shop_order_store_id: a, period: '2024-06-01', trailing: null}
+      - {dimension.shop_order_store_id: a, period: '2024-07-01', trailing: null}
+      - {dimension.shop_order_store_id: a, period: '2024-08-01', trailing: 2.2}
+      - {dimension.shop_order_store_id: b, period: '2023-11-01', trailing: 6}
+      - {dimension.shop_order_store_id: b, period: '2023-12-01', trailing: 6}
+      - {dimension.shop_order_store_id: b, period: '2024-01-01', trailing: 6}
+      - {dimension.shop_order_store_id: b, period: '2024-02-01', trailing: 0}
+      - {dimension.shop_order_store_id: b, period: '2024-03-01', trailing: 9.6}
+      - {dimension.shop_order_store_id: b, period: '2024-04-01', trailing: 9.6}
+      - {dimension.shop_order_store_id: b, period: '2024-05-01', trailing: 9.6}
+      - {dimension.shop_order_store_id: b, period: '2024-06-01', trailing: 3.6}
+      - {dimension.shop_order_store_id: b, period: '2024-07-01', trailing: 14.4}
+      - {dimension.shop_order_store_id: b, period: '2024-08-01', trailing: 14.4}
+      - {dimension.shop_order_store_id: null, period: '2023-11-01', trailing: 0}
+      - {dimension.shop_order_store_id: null, period: '2023-12-01', trailing: 0}
+      - {dimension.shop_order_store_id: null, period: '2024-01-01', trailing: 0}
+      - {dimension.shop_order_store_id: null, period: '2024-02-01', trailing: 0}
+      - {dimension.shop_order_store_id: null, period: '2024-03-01', trailing: 0}
+      - {dimension.shop_order_store_id: null, period: '2024-04-01', trailing: 0}
+      - {dimension.shop_order_store_id: null, period: '2024-05-01', trailing: 7.2}
+      - {dimension.shop_order_store_id: null, period: '2024-06-01', trailing: 7.2}
+      - {dimension.shop_order_store_id: null, period: '2024-07-01', trailing: 7.2}
+      - {dimension.shop_order_store_id: null, period: '2024-08-01', trailing: 0}
+    reference_sql: |
+      WITH s AS (
+        SELECT g.b FROM generate_series(
+          (SELECT MIN(date_trunc('month', ordered_at)) FROM orders),
+          (SELECT MAX(date_trunc('month', ordered_at)) FROM orders), INTERVAL '1 month') AS g(b)
+      ),
+      k AS (SELECT DISTINCT store_id AS k FROM orders)
+      SELECT k.k, s.b,
+        CASE WHEN COUNT(o.order_id) = 0 THEN 0
+          ELSE SUM(o.amount * CASE WHEN o.store_id = 'a' THEN 1.1 ELSE 1.2 END) END
+      FROM k CROSS JOIN s
+      LEFT JOIN orders AS o ON o.store_id IS NOT DISTINCT FROM k.k
+        AND o.ordered_at >= s.b - INTERVAL '2 month' AND o.ordered_at < s.b + INTERVAL '1 month'
+      GROUP BY k.k, s.b
   shop/distribution_median:
     kind: query_matches_snapshot
     expect: answer
