@@ -29,6 +29,9 @@ SWITCHED = {
     # A distinct count across links needs no row key; every other aggregation reads `.key`.
     ("compiler_parts/leaves.py", "_fanout_dedup_leaf_select"),
     # A listing's start row is told apart by its key; a row-grain start by its own columns.
+    # Two parts join on a column of one name one of their models keys; a model with no key
+    # keys nothing, so its columns join only beside a model that keys them.
+    ("compiler_parts/joined_parts.py", "_keys"),
     ("compiler_parts/listings.py", "listing_rows"),
     ("compiler_parts/lowering_common.py", "_entity_in_terms_of_anchor_plan"),
     # A parent with no key has no value to read on its children's rows; the leaf reads the
