@@ -54,9 +54,9 @@
   "query.v2.session.lean.max_step_structured_tokens": 881,
   "query.v2.session.lean.structured_tokens": 4615,
   "query.v2.session.lean.text_tokens": 4615,
-  "query.v2.tools_list.largest_tool_tokens": 1588,
-  "query.v2.tools_list.model_visible_tokens": 2871,
+  "query.v2.tools_list.largest_tool_tokens": 1710,
+  "query.v2.tools_list.model_visible_tokens": 2993,
   "query.v2.tools_list.tools": 6,
-  "query.v2.tools_list.wire_tokens": 3706
+  "query.v2.tools_list.wire_tokens": 3808
  }
 }

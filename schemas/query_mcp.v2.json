@@ -738,96 +738,6 @@
               "NOT IN"
             ]
           },
-          "Part": {
-            "additionalProperties": false,
-            "patternProperties": {
-              "^_": {}
-            },
-            "properties": {
-              "group_by": {
-                "items": {
-                  "$ref": "#/$defs/Text"
-                },
-                "type": "array"
-              },
-              "observation_scope": {
-                "enum": [
-                  "dataset",
-                  "query"
-                ]
-              },
-              "routes": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "from": {
-                      "$ref": "#/$defs/Text"
-                    },
-                    "to": {
-                      "$ref": "#/$defs/Text"
-                    },
-                    "via": {
-                      "items": {
-                        "$ref": "#/$defs/Text"
-                      },
-                      "minItems": 1,
-                      "type": "array"
-                    }
-                  },
-                  "required": [
-                    "from",
-                    "to",
-                    "via"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "select": {
-                "items": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/$defs/Ref"
-                    },
-                    {
-                      "pattern": "^dimension\\.[^\\s]+$",
-                      "type": "string"
-                    },
-                    {
-                      "additionalProperties": false,
-                      "properties": {
-                        "as": {
-                          "$ref": "#/$defs/Text"
-                        },
-                        "expression": {
-                          "$ref": "#/$defs/Expression"
-                        }
-                      },
-                      "required": [
-                        "expression"
-                      ],
-                      "type": "object"
-                    }
-                  ]
-                },
-                "type": "array"
-              },
-              "where": {
-                "items": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/$defs/Condition"
-                    },
-                    {
-                      "$ref": "#/$defs/EntityFilter"
-                    }
-                  ]
-                },
-                "type": "array"
-              }
-            },
-            "type": "object"
-          },
           "Ref": {
             "pattern": "^(measure|metric)\\.[^\\s]+$",
             "type": "string"
@@ -895,10 +805,8 @@
                       },
                       {
                         "items": {
-                          "minimum": 0,
                           "type": "integer"
                         },
-                        "minItems": 1,
                         "type": "array"
                       }
                     ]
@@ -908,10 +816,8 @@
                       "items": {
                         "$ref": "#/$defs/Text"
                       },
-                      "minItems": 1,
                       "type": "array"
                     },
-                    "minItems": 1,
                     "type": "array"
                   }
                 },
@@ -953,9 +859,8 @@
               },
               "parts": {
                 "items": {
-                  "$ref": "#/$defs/Part"
+                  "type": "object"
                 },
-                "minItems": 1,
                 "type": "array"
               },
               "routes": {
