@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
@@ -542,6 +543,51 @@ def test_a_package_snapshot_test_reads_a_joined_call(depts):
     assert failed["error"]["code"] == "SNAPSHOT_MISMATCH"
 
 
+def test_parts_on_clocks_in_two_zones_are_refused(tmp_path):
+    """Reservations dated in New York beside work orders dated in UTC: one statement buckets
+    every part's months in one zone, so the call is refused, not answered in either."""
+    package = tmp_path / "depts"
+    shutil.copytree(DEPTS, package)
+    reservations = package / "models" / "reservations.yml"
+    model = yaml.safe_load(reservations.read_text(encoding="utf-8"))
+    model["model"]["times"]["reserved_at"].update(
+        {"timezone": "America/New_York", "column_timezone": "UTC"}
+    )
+    reservations.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    try:
+        call = {
+            "parts": [WORK_ORDERS, RESERVATIONS],
+            "join": {"on": [[ROOM, ROOM]]},
+            "time": MONTHS,
+        }
+        code, message, details = _refusal(lambda: runtime.query(call, now=NOW))
+    finally:
+        runtime.close()
+    assert (code, message) == (
+        "INVALID_QUERY",
+        "parts: the parts read clocks in different time zones (America/New_York, UTC): one "
+        "statement buckets every part in one zone",
+    )
+    assert details["reason"] == "parts_time_zones_differ"
+
+
+def test_a_metric_grant_is_refused_a_joined_call():
+    store = "dimension.jaffle_store_name"
+    metrics = ("metric.sales.repeat_customer_orders", "metric.sales.high_value_customer_orders")
+    call = {
+        "parts": [{"select": [metric], "group_by": [store]} for metric in metrics],
+        "join": {"on": [[store, store]]},
+    }
+    runtime = Runtime("jaffle_shop")
+    try:
+        grant = RequestContext(metric_allowlist=metrics, dimension_allowlist=(store,))
+        refused = _refusal(lambda: runtime.query(call, now="2017-09-04T12:00:00Z", context=grant))
+    finally:
+        runtime.close()
+    assert refused[:2] == ("RESOURCE_ACCESS_DENIED", "Resource access is not permitted.")
+
+
 REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
     (
         "having in a part",
@@ -593,6 +639,63 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         "INVALID_QUERY",
         "parts[0]: a part is a call of its own, not a joined call",
         {"path": "parts[0]"},
+    ),
+    (
+        "no parts",
+        {"parts": [], "join": {"on": [[DEPT]]}},
+        "INVALID_QUERY",
+        "parts: is a list of one or more calls",
+        {"path": "parts"},
+    ),
+    (
+        "a part that isn't a call",
+        {"parts": ["measure.depts.headcount"], "join": {"on": [[DEPT]]}},
+        "INVALID_QUERY",
+        "parts[0]: is a call: an object",
+        {"path": "parts[0]"},
+    ),
+    (
+        "an unknown key in a part",
+        {**BY_DEPARTMENT, "parts": [{**HEADCOUNT, "filters": []}, SPACE]},
+        "INVALID_QUERY",
+        "parts[0].filters: unknown key; a part has ['select', 'group_by', 'where', 'routes', "
+        "'observation_scope']",
+        {"path": "parts[0].filters"},
+    ),
+    (
+        "an unknown key beside parts",
+        {**BY_DEPARTMENT, "sort": []},
+        "INVALID_QUERY",
+        "sort: unknown key; a joined call has ['parts', 'join', 'time', 'order_by', 'limit']",
+        {"path": "sort"},
+    ),
+    (
+        "a retired key beside parts",
+        {**BY_DEPARTMENT, "metric_filters": []},
+        "INVALID_QUERY",
+        "metric_filters: is not part of a query call",
+        {"path": "metric_filters"},
+    ),
+    (
+        "an unknown key in join",
+        {**BY_DEPARTMENT, "join": {"on": [[DEPT, SPACE_DEPT]], "how": "left"}},
+        "INVALID_QUERY",
+        "join.how: unknown key; the keys are ['on', 'keep']",
+        {"path": "join.how"},
+    ),
+    (
+        "no tuple",
+        {**BY_DEPARTMENT, "join": {"on": []}},
+        "INVALID_QUERY",
+        "join.on: join.on names at least one tuple, one dimension of every part",
+        {"path": "join.on"},
+    ),
+    (
+        "a column joined twice",
+        {**BY_DEPARTMENT, "join": {"on": [[DEPT, SPACE_DEPT], [DEPT, SPACE_DEPT]]}},
+        "INVALID_QUERY",
+        f"join.on[1]: names {DEPT} of parts[0] again (join.on[0])",
+        {"path": "join.on[1]", "reason": "join_key_repeated", "part": 0},
     ),
     (
         "no join",
