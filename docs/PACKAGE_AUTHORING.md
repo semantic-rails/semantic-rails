@@ -847,6 +847,18 @@ kind names must match exactly.
   (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
   of nothing).
 
+  A UUID column (an account or owner key) takes `type: uuid` on its id or categorical
+  dimension. The attribute is a string holding a UUID: 32 hex digits in any case, hyphenated
+  `8-4-4-4-12` or not, in braces or not. It binds as its lower-case hyphenated text, so
+  `3F2504E0-4F89-11D3-9A0C-0305E82C3301` and `{3f2504e0-4f89-11d3-9a0c-0305e82c3301}` read
+  the same rows. Any other value, another string included, is of another type: the request
+  is denied (`POLICY_DENIED`, `attribute_type_mismatch`, naming the attribute, never its
+  value) by `validate` and every other surface, before any SQL runs. Postgres compares
+  `<column> = CAST(? AS UUID)`, so the column must be `uuid` there (a UUID kept as text takes
+  `type: string`) and its index still serves the filter; DuckDB reads the value in the
+  column's own type; on Snowflake, which has no UUID type, the column holds the lower-case
+  hyphenated text.
+
   **What a filtered caller sees.** Each caller reads a *visible database*: the package's
   data with every row they can't see removed, and every answer (totals, groups, shares,
   distinct counts, `EXISTS` filters, windows, prior periods, coverage dates and
