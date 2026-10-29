@@ -40,8 +40,8 @@ model:
           then: {kind: literal, value: 1.1}}], else: {kind: literal, value: 1.2}}}
     # Store b's sales with no ELSE: another store's order has no value here, so a customer
     # whose orders are all at other stores reads 0, data of nothing.
-    store_b_revenue:
-      label: Store b revenue
+    store_b_sales:
+      label: Store b sales
       kind: aggregate
       accumulation: {kind: flow}
       value_type: currency
