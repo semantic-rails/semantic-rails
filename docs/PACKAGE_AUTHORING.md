@@ -3563,12 +3563,12 @@ table's history, which holds one row per version of each room, and answer with a
 population. Only the package's author knows which model a question means, so `parse-config`,
 `validate-config`, `check`, and the Architect's `validate_project` and `project_status` name each
 group of look-alike models once, with a `LOOKALIKE_MODELS` warning that asks which one is
-canonical. The groups come from the YAML alone, never from labels or descriptions:
+canonical. The groups come from the YAML alone, never from descriptions:
 
 | `details.kind` | The models | Example |
 | --- | --- | --- |
 | `same_rows` | Rows that are the same things. Either both are keyed by the same key, or one is keyed by the other's key plus time columns of its own (columns a `times:` role reads). Or neither has a key, and one's dimensions read every column the other's do, and at least one. Every key column must say what it identifies, so a bare `id` never counts. | `rooms` (key `room_id`) and `rooms_hist` (key `room_id`, `valid_from`); a keyless survey and its snapshots, which add a snapshot date |
-| `same_count` | Rows that aren't the same things, each with a published count of the same name over the same column, counted the same way (its card's `count_unit`, without the model). | `floors` and `space_detail`, each counting distinct `building_id` as `distinct_building_id` |
+| `same_count` | Rows that aren't the same things, each with a published count of the same label (without a `(<table>)` suffix) over the same column, counted the same way (its card's `count_unit`, without the model). | `floors` and `space_detail`, each counting distinct `building_id` as "Distinct buildings" |
 
 A group links its models pair by pair, so a table, its history and a staging copy make one
 group. The message names up to five models (`details.models` has them all). A `same_rows`
@@ -3587,9 +3587,10 @@ A warning names the models by model id (`details.models`), and their entities in
 [`prefer_over:`](#prefer_over--the-canonical-model-of-look-alikes), which clears the group's
 warning. For a `same_rows` group, also say what each model's rows are in its `description` (a
 refusal's look-alike rows and a measure's card show its first sentence). For a `same_count`
-group where no model answers every question the others do, name each count for the rows it
-counts instead, or set `publish: false` on those no question needs. `project_status` adds a next
-action that counts the groups no model is declared canonical of.
+group where no model answers every question the others do, label each count for the rows it
+counts instead ("Buildings with a floor"), which takes it out of the group, or set
+`publish: false` on those no question needs. `project_status` adds a next action that counts the
+groups no model is declared canonical of.
 
 ## Upgrading a package
 

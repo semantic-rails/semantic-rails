@@ -1,13 +1,13 @@
 """Models an agent can read for one another, which the package author decides between.
 
 An agent picks a source on purpose: a history copy of a table, or one of several tables that
-count the same thing under one name, answers its question as asked, with another population.
+count the same thing under one label, answers its question as asked, with another population.
 Only the author knows which one a question means, so validation names each group of
 look-alike models once (``LOOKALIKE_MODELS``) and asks which one is canonical, until one
 model's ``prefer_over:`` lists every other model of the group, directly or through another
 (``canonical_of``; ``config_parts.prefer_over`` loads it).
 
-Two kinds of group, read from the YAML alone, never from labels or descriptions:
+Two kinds of group, read from the YAML alone, never from descriptions:
 
 - **Same rows** (``same_rows``): models whose rows are the same things, as the look-alike
   measure rule reads them (``path_gap._Grains.same_things``): keyed by the same key, or by
@@ -15,9 +15,11 @@ Two kinds of group, read from the YAML alone, never from labels or descriptions:
   column the other does. A calendar (``kind: time``) is the package's time axis, which every
   date-keyed model shares by design, so it is in no group.
 - **Same count** (``same_count``): models whose rows are not the same things, each with a
-  published count of the same name over the same column, counted the same way
-  (``path_gap._alike``; its unit is the count card's ``count_unit``). Each counts the column's
-  values across its own rows, so each answers "how many" for another population.
+  published count of the same label over the same column, counted the same way
+  (``path_gap._alike``, and the labels equal without their model's table; its unit is the count
+  card's ``count_unit``). Each counts the column's values across its own rows, so each answers
+  "how many" for another population. A label is the author's answer to which rows a count
+  counts, so relabelling one count takes it out of its group.
 """
 
 from __future__ import annotations
@@ -52,10 +54,10 @@ class LookalikeGroup:
     # same_rows: each model's key, and for keyless ones the columns its dimensions read.
     keys: dict[str, list[str]] = field(default_factory=dict)
     columns: dict[str, list[str]] = field(default_factory=dict)
-    # same_count: each model's look-alike counts, and the unit and name they share.
+    # same_count: each model's look-alike counts, and the unit and label they share.
     measures: dict[str, list[str]] = field(default_factory=dict)
     unit: str = ""
-    name: str = ""
+    label: str = ""
 
 
 def _components(nodes: Iterable[str], edges: Iterable[tuple[str, str]]) -> list[list[str]]:
@@ -101,6 +103,14 @@ def _unit(measure: Any) -> str:
     return unit.replace(f" across rows of {measure.entity}", "").replace(
         f"rows of {measure.entity}", "rows"
     )
+
+
+def _label(measure: Any, entity: Any) -> str:
+    """A count's label without its model's ``(<table>)`` suffix, as ``_measure_names`` compares
+    it, in the author's case."""
+    compared = _measure_names(measure, entity)[1]
+    shown = str(measure.label or "").strip()[: len(compared)]
+    return shown if shown.casefold() == compared else compared
 
 
 def _same_rows_pairs(grains: _Grains, entities: dict[str, Any]) -> set[tuple[str, str]]:
@@ -176,7 +186,13 @@ def lookalike_groups(config: PackageConfig) -> list[LookalikeGroup]:
                     right.entity, -2
                 ):
                     continue
-                if _alike(left, right, entities):
+                # `_alike` matches a key or a label; here the labels must match too, so a
+                # label of the author's own settles which rows each count counts.
+                if (
+                    _alike(left, right, entities)
+                    and _measure_names(left, entities[left.entity])[1]
+                    == _measure_names(right, entities[right.entity])[1]
+                ):
                     edges.append((left.id, right.id))
                     by_id.update({left.id: left, right.id: right})
     for measure_ids in _components(by_id, edges):
@@ -190,7 +206,7 @@ def lookalike_groups(config: PackageConfig) -> list[LookalikeGroup]:
                 **named(sorted(held)),
                 measures={entity: held[entity] for entity in sorted(held)},
                 unit=_unit(first),
-                name=_measure_names(first, entities.get(first.entity))[0],
+                label=_label(first, entities[first.entity]),
             )
         )
     return groups
@@ -250,13 +266,13 @@ def lookalike_warning(group: LookalikeGroup, source_path: Path | str) -> dict[st
         details: dict[str, Any] = {**named, "keys": group.keys}
     else:
         alike = (
-            f"each count {group.unit} under one name ({group.name}) over rows that aren't the "
+            f"each count {group.unit} under one label ({group.label}) over rows that aren't the "
             "same things"
         )
-        details = {**named, "measures": group.measures, "unit": group.unit, "name": group.name}
+        details = {**named, "measures": group.measures, "unit": group.unit, "label": group.label}
         fix = (
             "When one model answers every question the others do, list them in its "
-            "prefer_over; else name each count for the rows it counts, or set publish: false "
+            "prefer_over; else label each count for the rows it counts, or set publish: false "
             "on those no question needs."
         )
     return {

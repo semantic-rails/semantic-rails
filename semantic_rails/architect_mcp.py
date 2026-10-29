@@ -939,7 +939,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             "Use setup_project_dialog for new-package discovery, then create_project when the required fields are known.",
             "Prefer upsert_model for entity, dimension, time, and measure changes, and upsert_relationship for foreign keys, so graph.yml stays aligned.",
             "Run validate_project with mode=parse after every structural edit; use mode=runtime before promoting.",
-            "A LOOKALIKE_MODELS warning names models an agent can read for one another (the same rows, such as a table and its history, or one count under one name on several tables): decide which is canonical, asking the package owner when the data doesn't say, and never from the names alone, then list the others in its prefer_over.",
+            "A LOOKALIKE_MODELS warning names models an agent can read for one another (the same rows, such as a table and its history, or one count under one label on several tables): decide which is canonical, asking the package owner when the data doesn't say, and never from the names alone, then list the others in its prefer_over.",
             "Treat runtime validation as operational: DuckDB validation can build a missing package database from its seed but never replaces an existing file; declare seed kind external for a database another tool builds. Snowflake validation can issue live queries.",
             "Use impact_project with compare_path or base_ref before release review; use promotion_check with compare_path or base_ref when an environment gate matters.",
         ],
