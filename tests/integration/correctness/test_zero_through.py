@@ -513,12 +513,22 @@ def test_no_row_past_the_load_log_is_read_by_anything(logged, backend_name, expr
     assert total["rows"] == [{"event_count": 2}]
 
 
-def _package(request, backend_name, tmp_path, name, models, entities, seed, metrics=None):
+def _package(
+    request,
+    backend_name,
+    tmp_path,
+    name,
+    models,
+    entities,
+    seed,
+    metrics=None,
+    names=("events", "purchases", "loads"),
+):
     """A package of its own on ``backend_name``: ``models`` and graph ``entities`` by key,
-    tables named in ``seed`` as ``{table}`` (made unique per run), seeded by ``seed``, and
-    ``metrics`` by name."""
+    tables ``names`` named in ``seed`` as ``{table}`` (made unique per run), seeded by
+    ``seed``, and ``metrics`` by name."""
     backend = _backend(request, backend_name)
-    tables = {table: f"{table}_{uuid4().hex}" for table in ("events", "purchases", "loads")}
+    tables = {table: f"{table}_{uuid4().hex}" for table in names}
     documents = {
         "package.yml": {
             "schema_version": 1,
