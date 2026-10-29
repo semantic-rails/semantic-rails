@@ -7,9 +7,9 @@ their building's addresses: a lookup, then a one-to-many hop. Where the route is
 the package walks the hop from the building, each room row counts once, with its whole value,
 in every city its building has an address in (B-1's two Springfield addresses count once), so
 the cities don't add up to the total and the answer says so; a room whose building has no
-address (R-201, R-202) or that names no building (R-103) is the NULL city; and a total is the
-call without the grouping. A package that walks forward only keeps its refusal, and an
-undecided route its question.
+address (R-201, R-202) or that names no building (R-103, R-105) is the NULL city; and a total
+is the call without the grouping. A package that walks forward only keeps its refusal, an
+undecided route its question, and ClickHouse (which joins lookups inner) the call's own.
 
 Every number equals independent reference SQL written from the tables, never from the compiled
 SQL, and every refusal that isn't such a call stays the call's own.
@@ -23,8 +23,12 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import leaf_paths
+from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.query_call import read_call
+from semantic_rails.registry import Registry
 from semantic_rails.visible_view import hidden_object_ids
 from tests.semantic_rails.hidden_absent import absent, visibility_policy, with_policies
 
@@ -43,6 +47,7 @@ from .test_parent_values import (
     VIA_FLOORS,
     Campus,
     _execute,
+    _on_clickhouse,
     _refusal,
     _values,
 )
@@ -133,8 +138,8 @@ def _without_child_values() -> Iterator[None]:
 @pytest.mark.parametrize("variant", ["two_way", "address_route"])
 def test_a_room_counts_once_in_every_city_its_building_has_an_address_in(campus, variant):
     """B-1's rooms (65 of area, 3 rooms) count in Springfield and in Shelbyville, and B-1's two
-    Springfield addresses count once: not 130. B-2's rooms and R-103 are the NULL city. The
-    route is the call's own, or the package's recorded one."""
+    Springfield addresses count once: not 130. B-2's rooms, R-103 and R-105 are the NULL city.
+    The route is the call's own, or the package's recorded one."""
     call = BY_CITY if variant == "two_way" else {**BY_CITY, "routes": []}
     with _without_child_values(), pytest.raises(SemanticLayerError) as refused:
         campus.query(call, variant)
@@ -142,7 +147,7 @@ def test_a_room_counts_once_in_every_city_its_building_has_an_address_in(campus,
     out = campus.query(call, variant)
     assert _values(out) == _reference(campus, "by_city")
     rows = {row[0]: row[1:] for row in _values(out)}
-    assert rows == {"Springfield": (65, 3), "Shelbyville": (65, 3), None: (100, 3)}
+    assert rows == {"Springfield": (65, 3), "Shelbyville": (65, 3), None: (125, 4)}
     notes = _notes(out)
     assert [note["object_ids"] for note in notes] == [[ROOM_AREA], [ROOMS]]
     assert notes[0]["message"] == NOTE
@@ -160,12 +165,12 @@ def test_a_room_counts_once_in_every_city_its_building_has_an_address_in(campus,
 
 
 def test_the_cities_dont_add_up_to_the_total(campus):
-    """Springfield, Shelbyville and the NULL city hold 230 of area between them; the total, the
-    call without the grouping, is every room once: 165."""
+    """Springfield, Shelbyville and the NULL city hold 255 of area between them; the total, the
+    call without the grouping, is every room once: 190."""
     out = campus.query({**BY_CITY, "totals": []}, "two_way")
     groups = [row for row in out["rows"] if row["total_over"] is None]
     (total,) = [row for row in out["rows"] if row["total_over"] is not None]
-    assert sum(row["room_area"] for row in groups) == 230
+    assert sum(row["room_area"] for row in groups) == 255
     assert [(total["room_area"], total["room_count"])] == campus.sql(REFERENCE["total"])
     assert "don't add up to the total" in _notes(out)[0]["message"]
 
@@ -208,7 +213,7 @@ def test_two_columns_of_the_child_are_the_values_one_address_holds(campus):
             ("Shelbyville", "9 Elm St", 65),
             ("Springfield", "1 Main St", 65),
             ("Springfield", "3 Main St", 65),
-            (None, None, 100),
+            (None, None, 125),
         ],
         key=repr,
     )
@@ -281,3 +286,21 @@ def test_any_other_call_keeps_its_own_refusal(campus, name):
     with _without_child_values():
         assert refused == _refusal(lambda: campus.query(call, variant))
     assert refused[0] == CODES.get(name, "MIXED_GRAIN_INVALID")
+
+
+@pytest.mark.parametrize("variant", ["two_way", "address_route"])
+def test_clickhouse_keeps_the_refusal(packages, variant):
+    """ClickHouse joins lookups INNER (its outer join reads a type default for an unmatched
+    row), so a room with no building, or whose building has no address, would drop out there
+    instead of being the NULL city: the call keeps its own refusal."""
+    config = _on_clickhouse(load_package_config(str(packages[variant])))
+    registry = Registry(config)
+    call = BY_CITY if variant == "two_way" else {**BY_CITY, "routes": []}
+
+    def compiled() -> Any:
+        return compile_query(config, registry, read_call(call, config=config)[0])
+
+    refused = _refusal(compiled)
+    with _without_child_values():
+        assert refused == _refusal(compiled)
+    assert refused[0] == "MIXED_GRAIN_INVALID"

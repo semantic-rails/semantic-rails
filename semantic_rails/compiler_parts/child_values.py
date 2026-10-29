@@ -13,7 +13,9 @@ values its parent holds: two child rows with the same values count once, and a r
 parent has no child row, or that names no parent, is the NULL group. The groups overlap, so
 they don't add up to the total; a total is the call without the grouping.
 
-``child_values_route`` says which leaves read this way; anything else keeps its refusal.
+``child_values_route`` says which leaves read this way; anything else keeps its refusal, as does
+every such call on a warehouse that joins lookups INNER (ClickHouse, whose outer join reads a
+type default for an unmatched row), where a row with no parent or no child would drop out.
 """
 
 from __future__ import annotations
@@ -77,7 +79,8 @@ def child_values_route(
     crossing = [row for row in selections if row.analysis.get("status") != "ok"]
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if (
-        query.time is not None
+        not _outer_joins(config)
+        or query.time is not None
         or query.metric_filters
         or child_groups(query.where)
         or len(crossing) != 1
@@ -139,12 +142,9 @@ def child_value_dimension(dim_id: str, child: str, cte: str, config: PackageConf
     return unknown_as_null(_column_ref(cte, dim.column), dim)
 
 
-def keep_rows(joins: list[SqlJoin], cte: str, config: PackageConfig) -> list[SqlJoin]:
+def keep_rows(joins: list[SqlJoin], cte: str) -> list[SqlJoin]:
     """``joins`` with the one to the child's values LEFT: a row whose parent has none is the
-    NULL group. A warehouse whose outer join reads a type default for an unmatched row
-    (ClickHouse) joins it INNER, as it joins lookups: there such a row is in no group."""
-    if not _outer_joins(config):
-        return joins
+    NULL group."""
     return [
         SqlJoin("LEFT", join.table, join.on)
         if isinstance(join.table, SqlTableRef) and join.table.name == cte

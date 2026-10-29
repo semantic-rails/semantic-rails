@@ -1145,7 +1145,7 @@ def _measure_leaf_select(
             time_spec=plan.time,
             table_overrides={child: child_cte.name} if child_cte else None,
         )
-        return keep_rows(joins, child_cte.name, config) if child_cte else joins
+        return keep_rows(joins, child_cte.name) if child_cte else joins
 
     leaf_alias = measure_plan.bound_measure.alias
     if measure_plan.rewrite_strategy == "parent_lookup":
