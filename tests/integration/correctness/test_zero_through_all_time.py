@@ -356,3 +356,189 @@ def test_refunds_whose_clock_has_two_routes_read_as_without_a_declared_edge(
     [warning] = _warnings(result, "NO_DATA_IN_SCOPE")
     assert "goods_refunds" in warning["message"]
     assert series.value.code == "AMBIGUOUS_PATH"
+
+
+# Order lines read on four clocks, with no window: booked by the order's `ordered_at`, fulfilled
+# by its `fulfilled_at` (orders 3 and 4 are not fulfilled), shipped and invoiced by the line's own
+# times. Order 3 and the late times land after the load log's Sunday 2024-09-29; line 26's order
+# is missing and line 25 hasn't shipped.
+FOLD_ORDERS = [
+    (1, "2024-09-03 10:00:00", "'2024-09-10 09:00:00'"),
+    (2, "2024-09-20 12:00:00", "'2024-10-02 08:00:00'"),
+    (3, "2024-10-01 08:00:00", "NULL"),
+    (4, "2024-09-25 09:00:00", "NULL"),
+]
+FOLD_LINES = [
+    (21, 1, 5, "'2024-09-05 10:00:00'", "'2024-09-06 10:00:00'"),
+    (22, 1, 3, "'2024-09-08 10:00:00'", "'2024-10-03 10:00:00'"),
+    (23, 2, 7, "'2024-09-22 10:00:00'", "'2024-09-23 10:00:00'"),
+    (24, 3, 11, "'2024-10-02 10:00:00'", "'2024-10-02 11:00:00'"),
+    (25, 4, 2, "NULL", "'2024-09-26 10:00:00'"),
+    (26, 99, 13, "'2024-09-15 10:00:00'", "'2024-09-16 10:00:00'"),
+]
+FOLD_CLOCKS = {
+    "booked": ("temporal_role.folded_order_ordered_at", "o.ordered_at"),
+    "fulfilled": ("temporal_role.folded_order_fulfilled_at", "o.fulfilled_at"),
+    "shipped": ("shipped_at", "l.shipped_at"),
+    "invoiced": ("invoiced_at", "l.invoiced_at"),
+}
+# Each alone, by hand from the rows above: (load log, now).
+FOLD_ALONE = {"booked": (17, 28), "fulfilled": (8, 15), "shipped": (28, 39), "invoiced": (27, 41)}
+
+
+def _folded(request, backend_name, tmp_path, edge):
+    """Order lines whose four amounts are each read on its own clock, under ``edge``."""
+    stamp = {"kind": "timestamp", "class": "event_time"}
+    models = {
+        "lines": {
+            "id": "lines",
+            "relation": "events",
+            "entities": {"line": {}, "order": {}},
+            "zero_through": {"loaded": "loads.through_day"} if edge == "loaded" else "now",
+            "times": {
+                "shipped_at": {**stamp, "column": "shipped_at", "default": True},
+                "invoiced_at": {**stamp, "column": "invoiced_at"},
+            },
+            "measures": {
+                name: {
+                    "kind": "aggregate",
+                    "expr": "amount",
+                    "default_agg": "sum",
+                    "value_type": "currency",
+                    "accumulation": {"kind": "flow"},
+                    "times": [clock],
+                }
+                for name, (clock, _) in FOLD_CLOCKS.items()
+            },
+        },
+        "orders": {
+            "id": "orders",
+            "relation": "purchases",
+            "entities": {"order": {}},
+            "times": {
+                "ordered_at": {**stamp, "column": "ordered_at", "default": True},
+                "fulfilled_at": {**stamp, "column": "fulfilled_at"},
+            },
+        },
+        "loads": {
+            "id": "loads",
+            "relation": "loads",
+            "entities": {"load": {}},
+            "times": {"through_day": {"column": "through_day", "kind": "date"}},
+        },
+    }
+    metrics = {
+        "fulfilment_rate": {
+            "as": "metric.folded.fulfilment_rate",
+            "label": "Fulfilment rate",
+            "kind": "ratio",
+            "numerator": "fulfilled",
+            "denominator": "booked",
+            "value_type": "number",
+        },
+        "unfulfilled": {
+            "as": "metric.folded.unfulfilled",
+            "label": "Booked, not fulfilled",
+            "kind": "derived",
+            "value_type": "currency",
+            "expression": {
+                "kind": "arithmetic",
+                "op": "subtract",
+                "left": {"kind": "measure", "measure": "measure.folded.booked"},
+                "right": {"kind": "measure", "measure": "measure.folded.fulfilled"},
+            },
+        },
+    }
+    entities = {
+        "line": {"key": ["event_id"], "model": "lines"},
+        "order": {"key": ["order_id"], "model": "orders"},
+        "load": {"key": ["run_id"], "model": "loads"},
+    }
+    seed = (
+        "CREATE TABLE {purchases} (order_id INTEGER, ordered_at TIMESTAMP, fulfilled_at "
+        "TIMESTAMP); INSERT INTO {purchases} VALUES "
+        + ", ".join(
+            f"({n}, TIMESTAMP '{at}', CAST({done} AS TIMESTAMP))" for n, at, done in FOLD_ORDERS
+        )
+        + "; CREATE TABLE {events} (event_id INTEGER, order_id INTEGER, amount INTEGER, "
+        "shipped_at TIMESTAMP, invoiced_at TIMESTAMP); INSERT INTO {events} VALUES "
+        + ", ".join(
+            f"({n}, {order}, {amount}, CAST({shipped} AS TIMESTAMP), CAST({invoiced} AS TIMESTAMP))"
+            for n, order, amount, shipped, invoiced in FOLD_LINES
+        )
+        + "; CREATE TABLE {loads} (run_id INTEGER, through_day DATE);"
+        "INSERT INTO {loads} VALUES (1, DATE '2024-09-29');"
+    )
+    return _package(request, backend_name, tmp_path, "folded", models, entities, seed, metrics)
+
+
+def _folded_reference(runtime, tables, edge, name):
+    """Plain SQL of one amount on its own clock: the lines whose clock (the order's, through
+    the line's order, or the line's own) the edge lets through."""
+    column = FOLD_CLOCKS[name][1]
+    cap = CAPS[edge].replace("event_at", column).format(**tables)
+    sql = (
+        "SELECT SUM(l.amount) FROM {events} l LEFT JOIN {purchases} o "
+        "ON o.order_id = l.order_id WHERE "
+    ).format(**tables) + cap
+    [[value]] = _rows(runtime, sql)
+    return int(value)
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("edge", ["loaded", "now"])
+@pytest.mark.parametrize(
+    "pair",
+    [
+        ("booked", "fulfilled"),  # two clocks of another model
+        ("shipped", "booked"),  # the line's own clock beside the order's
+        ("shipped", "invoiced"),  # two of the line's own clocks
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_two_amounts_on_two_clocks_each_read_their_own_clock_ever(
+    request, backend_name, tmp_path, edge, pair, reverse
+):
+    """ "What are our booked and fulfilled revenue, all time?": asked together, in either
+    order, each amount reads the lines its own clock lets through, as it does alone."""
+    pair = tuple(reversed(pair)) if reverse else pair
+    runtime, tables = _folded(request, backend_name, tmp_path, edge)
+    try:
+        together = runtime.query({"select": [f"measure.folded.{name}" for name in pair]}, now=NOW)
+        reference = {name: _folded_reference(runtime, tables, edge, name) for name in pair}
+    finally:
+        if backend_name == "postgres":
+            _rows(
+                runtime,
+                "DROP TABLE {events}; DROP TABLE {purchases}; DROP TABLE {loads}".format(**tables),
+            )
+        runtime.close()
+    alone = {name: FOLD_ALONE[name][edge == "now"] for name in pair}
+    assert reference == alone
+    assert [{name: int(value) for name, value in row.items()} for row in together["rows"]] == [
+        alone
+    ]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("edge,rate,unfulfilled", [("loaded", 8 / 17, 9), ("now", 15 / 28, 13)])
+def test_the_fulfilment_rate_and_the_unfulfilled_amount_read_each_side_on_its_clock(
+    request, backend_name, tmp_path, edge, rate, unfulfilled
+):
+    """ "Fulfilment rate" and "booked, not fulfilled", all time: fulfilled over booked and
+    booked less fulfilled, each side on its own order clock."""
+    runtime, tables = _folded(request, backend_name, tmp_path, edge)
+    try:
+        result = runtime.query(
+            {"select": ["metric.folded.fulfilment_rate", "metric.folded.unfulfilled"]}, now=NOW
+        )
+    finally:
+        if backend_name == "postgres":
+            _rows(
+                runtime,
+                "DROP TABLE {events}; DROP TABLE {purchases}; DROP TABLE {loads}".format(**tables),
+            )
+        runtime.close()
+    [row] = result["rows"]
+    assert float(row["fulfilment_rate"]) == pytest.approx(rate)
+    assert int(row["unfulfilled"]) == unfulfilled

@@ -1225,7 +1225,10 @@ def _foldable_leaf_signature(
         _path_signature(measure_plan.path_selections),
         tuple(plan.group_by),
         _freeze_payload(plan.time),
-        _leaf_time_role(measure_plan.bound_measure, query, config),
+        # With no window, a declared edge caps each measure on its own clock (``_edge_cap``),
+        # so only measures on one clock share that scan's cap.
+        _leaf_time_role(measure_plan.bound_measure, query, config)
+        or (measure.default_temporal_role if measure.zero_through is not None else ""),
         _freeze_payload(plan.query.get("where", []) or []),
         _freeze_payload(measure_plan.bound_measure.filter_spec),
         _preserves_filtered_series(plan, measure_plan, config),
