@@ -351,7 +351,7 @@ def _compile_part(
     if not domain.taken:
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
-            "this call can't be a part of a joined call in this version",
+            "this call can't be a part of a joined call yet",
             details={"reason": "part_not_joinable"},
         )
     keys = tuple(domain.keys)

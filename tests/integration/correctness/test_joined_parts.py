@@ -540,8 +540,8 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
             ],
         },
         "INVALID_QUERY",
-        "parts[0].having: a part has no having in this version: a group it removed would read "
-        "as 0 beside the other parts",
+        "parts[0].having: a part has no having: a group it removed would read as 0 beside the "
+        "other parts",
         {"path": "parts[0].having"},
     ),
     (
@@ -619,9 +619,9 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         },
         "INVALID_QUERY",
         f"join.on[0]: pairs {EMPLOYEE_DEPT} with {SPACE_DEPT}: no declared relationship pairs "
-        "'dept_code' of 'entity.depts_employee' with 'dept_code' of 'entity.depts_space'. In "
-        "this version parts join on the same dimension in every part, or on the two columns a "
-        "declared relationship joins",
+        "'dept_code' of 'entity.depts_employee' with 'dept_code' of 'entity.depts_space'. Parts "
+        "join only on the same dimension in every part, or on the two columns a declared "
+        "relationship joins",
         {"path": "join.on[0]", "reason": "join_key_not_shared"},
     ),
     (
@@ -636,8 +636,8 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         "INVALID_QUERY",
         f"join.on[0]: pairs {DEPT_NAME} with {BUILDING}: 'dept_name' doesn't say it identifies "
         "anything: a join column names an identifier (a code, key or id) and what it identifies. "
-        "In this version parts join on the same dimension in every part, or on the two columns a "
-        "declared relationship joins",
+        "Parts join only on the same dimension in every part, or on the two columns a declared "
+        "relationship joins",
         {"path": "join.on[0]", "reason": "join_key_not_shared"},
     ),
     (
@@ -651,8 +651,8 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         },
         "INVALID_QUERY",
         f"parts[0]: groups by {BUILDING} beyond the join key ({SPACE_DEPT}): joined, each of its "
-        "rows would repeat beside the other parts' rows. In this version every part is grouped "
-        "by the join key only",
+        "rows would repeat beside the other parts' rows. Every part is grouped by the join key "
+        "only",
         {"path": "parts[0]", "reason": "parts_grain_mismatch", "part": 0},
     ),
     (
@@ -660,7 +660,7 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         {"parts": [WORK_ORDERS, HEADCOUNT], "join": {"on": [[ROOM, DEPT]]}, "time": MONTHS},
         "INVALID_QUERY",
         "parts[1]: selects nothing with a clock, so the joined call's time can't apply to it: a "
-        "part with no time role beside a timed joined call isn't answered in this version",
+        "part with no time role beside a timed joined call isn't answered yet",
         {"path": "parts[1]", "reason": "part_untimed"},
     ),
     (

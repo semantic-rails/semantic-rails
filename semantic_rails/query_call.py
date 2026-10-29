@@ -564,7 +564,7 @@ def _check_joined_top_level(payload: Mapping[str, Any]) -> None:
                 f"a joined call has {list(JOINED_FIELDS)}; {key} belongs to a part",
                 fix=f"Move '{key}' into the part it is for."
                 if key in PART_FIELDS
-                else f"Remove '{key}': a joined call has no {key} in this version.",
+                else f"Remove '{key}': a joined call has no {key}.",
                 supported_keys=list(JOINED_FIELDS),
             )
         if key in RETIRED:
@@ -591,8 +591,7 @@ def _check_part_keys(raw: Mapping[str, Any], path: str) -> None:
     if "having" in raw:
         raise refusal(
             f"{path}.having",
-            "a part has no having in this version: a group it removed would read as 0 beside "
-            "the other parts",
+            "a part has no having: a group it removed would read as 0 beside the other parts",
             fix="Filter the returned rows, or keep only the keys of a filtered part with "
             "join.keep.",
         )
@@ -610,7 +609,7 @@ def _check_part_keys(raw: Mapping[str, Any], path: str) -> None:
                 "a part has no order_by, limit or totals; they belong to the joined call",
                 fix="Move order_by and limit to the joined call."
                 if key != "totals"
-                else "Remove totals: a joined call has no totals in this version.",
+                else "Remove totals: a joined call has no totals.",
             )
     if "parts" in raw or "join" in raw:
         raise refusal(
@@ -631,8 +630,8 @@ def _check_part_keys(raw: Mapping[str, Any], path: str) -> None:
 def _refuse_untimed_part(
     raw: Mapping[str, Any], path: str, default_clock: Callable[[str], str] | None
 ) -> None:
-    """A part none of whose selected ids reads a clock can't take the call's time block: in
-    this version such a part is refused beside a timed call, never answered untimed."""
+    """A part none of whose selected ids reads a clock can't take the call's time block: such
+    a part is refused beside a timed call, never answered untimed."""
     if default_clock is None:
         return
     measured = _named_ids(raw.get("select") or [])
@@ -641,7 +640,7 @@ def _refuse_untimed_part(
     raise refusal(
         path,
         "selects nothing with a clock, so the joined call's time can't apply to it: a part "
-        "with no time role beside a timed joined call isn't answered in this version",
+        "with no time role beside a timed joined call isn't answered yet",
         fix="Ask for it in a call of its own.",
         reason="part_untimed",
     )

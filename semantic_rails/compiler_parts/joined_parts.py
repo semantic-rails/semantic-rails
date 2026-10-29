@@ -92,7 +92,7 @@ def join_allowed(config: PackageConfig, dimension_ids: Sequence[str]) -> str:
     """The gate on one ``join.on`` tuple (a dimension of each part): ``""`` when the parts may
     be joined on it, else why not.
 
-    This version joins only on what the package itself says names the same thing: the same
+    The gate joins only on what the package itself says names the same thing: the same
     dimension in every part, or columns a declared relationship pairs (its own key columns,
     one each), each an identifier column (``path_gap._identifier``: a word that says it
     identifies and one saying what) of one data type. Two models holding a column of the same
@@ -173,7 +173,7 @@ def join_keys(
     Every tuple names a column each part groups by, once, and passes ``join_allowed``. A key
     the binding added beside a name that every part's tuple names joins with that tuple, so
     two same-named entities stay two rows. Every key of every part is a key of the join: a
-    part grouped by more (a finer part) is refused in this version.
+    part grouped by more (a finer part) is refused.
     """
     parts = len(group_bys)
     seen: list[dict[str, int]] = [{} for _ in range(parts)]
@@ -204,9 +204,9 @@ def join_keys(
         if reason:
             raise refusal(
                 path,
-                f"pairs {' with '.join(dict.fromkeys(row))}: {reason}. In this version parts "
-                "join on the same dimension in every part, or on the two columns a declared "
-                "relationship joins",
+                f"pairs {' with '.join(dict.fromkeys(row))}: {reason}. Parts join only on the "
+                "same dimension in every part, or on the two columns a declared relationship "
+                "joins",
                 fix="Group every part by the same dimension, or ask the package author to "
                 "declare the relationship between these models.",
                 reason="join_key_not_shared",
@@ -234,8 +234,8 @@ def join_keys(
             raise refusal(
                 _part(part),
                 f"groups by {', '.join(extra)} beyond the join key ({', '.join(joined)}): "
-                "joined, each of its rows would repeat beside the other parts' rows. In this "
-                "version every part is grouped by the join key only",
+                "joined, each of its rows would repeat beside the other parts' rows. Every part "
+                "is grouped by the join key only",
                 fix=f"Add {extra[0]} to join.on with a column of every other part, or group "
                 f"{_part(part)} by the join key only.",
                 reason="parts_grain_mismatch",
@@ -293,7 +293,7 @@ def joined_statement(
         if at < 0 or names.count(_keys_cte(prefix)) != 1:
             raise SemanticLayerError(
                 "REWRITE_NOT_SUPPORTED",
-                f"{_part(index)}: this call can't be a part of a joined call in this version",
+                f"{_part(index)}: this call can't be a part of a joined call yet",
                 details={"path": _part(index), "part": index, "reason": "part_not_joinable"},
             )
         own = flat.ctes[at]
