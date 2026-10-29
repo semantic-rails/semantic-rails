@@ -42,6 +42,7 @@ DECISIONS = {
     "docs/QUERY_CALL.md#totals",
     "docs/QUERY_CALL.md#inline-expression-kinds",
     "docs/QUERY_CALL.md#empty-groups-null-or-0",
+    "docs/QUERY_CALL.md#groups-across-a-one-to-many-hop",
     "docs/QUERY_CALL.md#groups-across-a-link",
     "docs/PACKAGE_AUTHORING.md#one-row-per-key",
 }

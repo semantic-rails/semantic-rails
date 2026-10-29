@@ -1722,15 +1722,27 @@ class Runtime:
         """
         instant = parse_now(now)
         policy = _context_mapping(context)
+        clock = self._default_clock
+        granted = policy.get("metric_allowlist") is not None
+        if granted:
+            metrics = frozenset(policy["metric_allowlist"])
+
+            def clock(object_id: str) -> str:
+                # A granted metric's clock comes from its whole definition (its measures).
+                return self._default_clock(object_id) if object_id in metrics else ""
+
         with self.request_scope():
             # The request boundary's order: the environment first, then the caller's view.
             check_request_environment(self.package_config, str(policy.get("environment") or ""))
             with visible_view.request_view(self, policy):
+                # A metric grant reads the call in what it grants, so an id outside it answers
+                # exactly like an id the package lacks, wherever the reading looks it up.
+                config = visible_view.grant_view(self._config, policy) if granted else self._config
                 internal, notes = read_call(
                     query,
-                    config=self._config,
+                    config=config,
                     now=instant,
-                    default_clock=self._default_clock,
+                    default_clock=clock,
                     text_dimension=text_dimension,
                     column_dimensions=dimensions_over_column,
                     partial=partial,
@@ -1946,6 +1958,7 @@ class Runtime:
             _zero_after_last_row_notes,
             closing_day_disclosures,
         )
+        from .runtime_parts.zero_filled import zero_filled_groups_notes
 
         refusal = _scope_refusal(payload)
         if refusal is not None:
@@ -2111,6 +2124,9 @@ class Runtime:
                     dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
                     runtime=self,
                     payload=payload,
+                ),
+                *zero_filled_groups_notes(
+                    self._config, compiled, rows, hidden, excluded_outputs=withheld
                 ),
                 *closing_warnings,
                 *_filter_value_warnings(self, compiled, payload),
@@ -2583,7 +2599,8 @@ class Runtime:
                     seed_warnings=self._seed_warnings,
                 )
             ) from exc
-        visible_rows = strip_segment_preview_metric(list(rows))
+        # The preview's rows, without the columns its SQL carries for the engine alone.
+        visible_rows = strip_segment_preview_metric(list(split_hidden(rows, preview_compiled)[0]))
         member_count = int(count_rows[0].get("member_count", 0)) if count_rows else 0
         return {
             "segment": {

@@ -4,9 +4,8 @@ Defines :class:`RequestContext` (actor, tenant, project, roles,
 environment, audience, request_id, host-only :class:`TrustedAttributes`)
 and the helpers that resolve it from headers, JSON payloads, or a
 pluggable :class:`PolicyContextResolver`. API-key auth lives in
-:mod:`semantic_rails.api_keys`, which reads headers through :func:`_header`; the audit
-sink lives in :mod:`semantic_rails.audit`, whose public names are re-exported here until
-0.3.3.
+:mod:`semantic_rails.api_keys`, which reads headers through :func:`_header`, and the audit
+sink in :mod:`semantic_rails.audit`.
 """
 
 from __future__ import annotations
@@ -18,14 +17,6 @@ from functools import partial
 from types import MappingProxyType
 from typing import Any, NoReturn, Protocol, runtime_checkable
 
-from .audit import (  # noqa: F401 — audit names are re-exported from their old home
-    AuditSink,
-    StderrAuditSink,
-    audit_logging_enabled,
-    emit_audit_event,
-    get_audit_sink,
-    set_audit_sink,
-)
 from .sql_preparation import ATTRIBUTE_NAME
 
 AttributeValue = str | int | bool | tuple[str, ...] | tuple[int, ...] | tuple[bool, ...]

@@ -1,9 +1,12 @@
 """Window answers checked against independent SQL; unsafe windows refuse."""
 
 import pytest
+import yaml
 
 from semantic_rails.errors import SemanticLayerError
 
+from .answer_ledger import load_entries
+from .conftest import _runtime, _write_variant
 from .test_correctness import (
     AVERAGE,
     CLOCK,
@@ -130,3 +133,71 @@ def test_rolling_statistic_refuses_before_sql(request, backend_name, input_expr,
     with pytest.raises(SemanticLayerError) as raised:
         runtime.query(query)
     assert raised.value.code == "ROLLUP_UNSAFE"
+
+
+def test_an_authored_ratio_over_a_prior_period_reads_every_period(tmp_path):
+    """A package metric written as a ratio over the prior month answers as the inline ratio
+    frozen in shop/ratio_over_prior_month: March 2024 follows a month with no orders, so it
+    reads NULL, never March over January."""
+    package = _write_variant(tmp_path, "utc_authored")
+    path = package / "metrics" / "metrics.yml"
+    metrics = yaml.safe_load(path.read_text(encoding="utf-8"))
+    revenue = {"kind": "aggregate", "measure": REVENUE}
+    prior = {"kind": "prior_period", "input": revenue, "offset": {"unit": "month", "value": 1}}
+    metrics["metrics"]["shop.revenue_vs_prior_month"] = {
+        "as": "metric.shop.revenue_vs_prior_month",
+        "label": "Revenue vs prior month",
+        "kind": "derived",
+        "value_type": "number",
+        "expression": {"kind": "ratio", "numerator": revenue, "denominator": prior},
+    }
+    path.write_text(yaml.safe_dump(metrics, sort_keys=False), encoding="utf-8")
+    runtime = _runtime(package)
+    try:
+        authored = runtime.query(_ask("month", "metric.shop.revenue_vs_prior_month"))
+        inline = runtime.query(dict(load_entries())["shop/ratio_over_prior_month"]["query"])
+    finally:
+        runtime.close()
+    rows = {row["period"]: row["revenue_vs_prior_month"] for row in authored["rows"]}
+    assert rows == {row["period"]: row["vs_prior"] for row in inline["rows"]}
+    assert rows["2024-02-01"] == 0 and rows["2024-03-01"] is None
+
+
+@pytest.mark.parametrize("case_id", ["ratio_over_prior_month", "divide_by_prior_month"])
+def test_a_ratio_over_a_prior_period_refuses_without_a_day_spine(packages, case_id):
+    """ClickHouse has no implicit calendar to list the empty months, so a ratio over a prior
+    period refuses as division does, instead of reading only the months with orders."""
+    runtime = _runtime(packages["utc_implicit"], warehouse="clickhouse")
+    try:
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.compile(dict(load_entries())[f"shop/{case_id}"]["query"])
+    finally:
+        runtime.close()
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert str(raised.value) == (
+        "Warehouse 'clickhouse' has no implicit calendar, so time.fill, rolling and "
+        "prior_period are not supported on it yet"
+    )
+    assert raised.value.details == {"warehouse": "clickhouse", "rewrite": "day_series"}
+
+
+@pytest.mark.parametrize("form", ["ratio", "divide"])
+def test_a_distribution_of_a_ratio_over_a_prior_period_refuses(request, form):
+    """Each customer's revenue over their prior month needs every customer in every month, so
+    a distribution of it would count customers in months they have no rows: refused, whether
+    the input divides as a ratio or as arithmetic."""
+    runtime = _backend(request, "duckdb").runtimes["utc_authored"]
+    prior = {"kind": "prior_period", "input": REVENUE, "offset": {"unit": "month", "value": 1}}
+    inputs = {
+        "ratio": {"kind": "ratio", "numerator": REVENUE, "denominator": prior},
+        "divide": {"kind": "arithmetic", "op": "divide", "left": REVENUE, "right": prior},
+    }
+    over = {"kind": "entity_value", "entity": "entity.shop_customer", "input": inputs[form]}
+    query = _ask("month", _item({"kind": "distribution", "function": "median", "over": over}, "m"))
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.compile(query)
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert str(raised.value) == (
+        "A distribution is not supported when its input or a metric filter has a rolling or "
+        "prior-period window: it would count entities in periods where they have no rows."
+    )

@@ -24,11 +24,13 @@ SWITCHED = {
     ("compiler_parts/indexes.py", "_measure_has_source_row_key"),
     # A distinct count across links needs no row key; every other aggregation reads `.key`.
     ("compiler_parts/leaves.py", "_fanout_dedup_leaf_select"),
+    # A listing's start row is told apart by its key; a row-grain start by its own columns.
+    ("compiler_parts/listings.py", "listing_rows"),
     ("compiler_parts/lowering_common.py", "_entity_in_terms_of_anchor_plan"),
     ("compiler_parts/paths.py", "_direct_dimension_source_expr"),
     ("compiler_parts/paths.py", "display_key"),
     ("compiler_parts/paths.py", "keyed_entity"),
-    ("compiler_parts/plan_checks.py", "_fanout_dedup_refusal"),
+    ("compiler_parts/plan_checks.py", "_dedup_refusal"),
     ("compiler_parts/plan_checks.py", "child_group_route"),
     # Also the keyed sum of a non-additive measure: a row-grain model's refuses with its own fix.
     ("compiler_parts/plan_checks.py", "_validate_non_additive_sums"),

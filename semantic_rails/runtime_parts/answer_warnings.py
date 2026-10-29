@@ -16,6 +16,7 @@ from ..clock import UNITS, engine_window, local_date, local_now, period_end
 from ..compiler import read_routes
 from ..compiler_parts.empty_groups import GUARDED_BASE, base_reads, sql_nodes
 from ..compiler_parts.indexes import get_package_analysis
+from ..compiler_parts.listings import is_listing_plan
 from ..compiler_parts.paths import _leaf_time_role
 from ..compiler_parts.total_rows import call_rows
 from ..diagnostics import rewrite_warning_payload, semantic_issue
@@ -28,6 +29,7 @@ from ..fanout import (
     pass_through_disclosure,
     reads_end_of_day,
     route_hops,
+    route_reading,
 )
 from ..query_call import TOTAL_OVER
 from ..sql_ast import filter_rejects_null
@@ -41,6 +43,8 @@ def _pass_through_notes(config, compiled) -> list[dict[str, Any]]:
     ``routes`` decided is the caller's own choice and gets none; the answer's ``routes`` names
     every route chosen among several (``answer.routes_taken``)."""
     plan = compiled["logical_plan"]
+    if is_listing_plan(plan):
+        return []  # A listing counts nothing: its route is stated as LISTED_THROUGH.
     decided = {
         (row["source_entity"], row["target_entity"])
         for row in compiled.get("route_decisions") or []
@@ -76,6 +80,49 @@ def _pass_through_notes(config, compiled) -> list[dict[str, Any]]:
                 }
             notes.append(note)
     return notes
+
+
+def _listing_notes(config, compiled) -> list[dict[str, Any]]:
+    """LISTED_THROUGH for a listing (``compiler_parts.listings``): from its start, the route to
+    each entity it reaches through a one-to-many hop, in business words and by relationship.
+    The message names each route no other one extends."""
+    plan = compiled["logical_plan"]
+    if not is_listing_plan(plan):
+        return []
+    start = plan.root_entity
+    routes = [
+        {
+            "from": start,
+            "to": target,
+            "via": list(path),
+            "meaning": route_reading(config, start, path),
+        }
+        for target, path in sorted((plan.selected_paths or {}).items())
+        if any(hop[2] == "many" for hop in route_hops(config, start, path))
+    ]
+    longest = [
+        route["meaning"]
+        for route in routes
+        if not any(
+            other["via"][: len(route["via"])] == route["via"] and other is not route
+            for other in routes
+        )
+    ]
+    label = entity_label(config, start)
+    message = (
+        f"Listed as distinct rows through one-to-many hops, so nothing is counted: "
+        f"{'; '.join(longest)}. Where a {label} reaches no row, those columns read NULL."
+    )
+    return [
+        semantic_issue(
+            code="LISTED_THROUGH",
+            message=message,
+            severity="info",
+            stage="planning",
+            details={"routes": routes},
+            object_ids=[start, *(route["to"] for route in routes)],
+        )
+    ]
 
 
 def _validity_moments(config, relationship: str) -> tuple[str, str]:
@@ -232,6 +279,7 @@ def _compiled_warnings(
         *_measure_validity_warnings(visible_view.base_of(config), compiled["logical_plan"], config),
         *_stock_key_gap_warnings(compiled),
         *_pass_through_notes(config, compiled),
+        *_listing_notes(config, compiled),
         *_time_zone_warnings(config, compiled),
         *mixed_time_role_warnings(config, compiled["logical_plan"]),
     ]
@@ -245,20 +293,37 @@ def _compiled_warnings(
 
 
 def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Tell the caller which select shorthands were rewritten, with the canonical form."""
+    """Tell the caller in one notice which select items were moved to group_by, with the
+    canonical form: one item's own note, or, for several, every moved dimension at ``select``."""
+    if not notes:
+        return []
+    if len(notes) == 1:
+        (details,) = notes
+        moved = f"{details['path']} was"
+    else:
+        paths = [str(note["path"]) for note in notes]
+        moved = f"{', '.join(paths[:-1])} and {paths[-1]} were"
+        details = {
+            "path": "select",
+            "received": [note["received"] for note in notes],
+            "canonical": {
+                "group_by": list(
+                    dict.fromkeys(f for note in notes for f in note["canonical"]["group_by"])
+                )
+            },
+        }
     return [
         semantic_issue(
             code="QUERY_SHORTHAND_NORMALIZED",
             message=(
-                f"{note['path']} was accepted as shorthand and rewritten; next time send "
-                f"{json.dumps(note['canonical'], separators=(',', ':'))}."
+                f"{moved} accepted as shorthand and rewritten; next time send "
+                f"{json.dumps(details['canonical'], separators=(',', ':'))}."
             ),
             severity="warning",
             stage="compile",
-            path=note["path"],
-            details=note,
+            path=details["path"],
+            details=details,
         )
-        for note in notes
     ]
 
 

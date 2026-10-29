@@ -852,3 +852,145 @@ def test_restricted_warehouse_failure_keeps_safe_operational_code(granted_runtim
     assert "Warehouse query execution failed" in str(exc.value)
     assert "private" not in json.dumps(exc.value.details)
     assert "hidden" not in json.dumps(exc.value.details)
+
+
+# What a granted caller can learn about ids outside the grant: nothing. An ungranted
+# metric or measure must be refused exactly like an id the package doesn't have, including
+# where the call's clock would come from the object (a grain or a window without a role).
+_UNGRANTED = {"metric": AOV, "measure": "measure.jaffle.revenue_usd"}
+# Made-up ids far from every real one, so no typo suggestion differs from the ungranted id's.
+_UNKNOWN = {"metric": "metric.sales.qqq_nothing", "measure": "measure.jaffle.qqq_nothing"}
+_OUTSIDE_CALLS = {
+    "plain": lambda x: {"select": [x]},
+    "grain": lambda x: {"select": [x], "time": {"grain": "day"}},
+    "window": lambda x: {"select": [x], "time": {"last": {"unit": "day", "value": 3}}},
+    "grain_and_window": lambda x: {
+        "select": [x],
+        "time": {"grain": "day", "last": {"unit": "day", "value": 3}},
+    },
+}
+_PER_CALL = ("request_id", "timing_ms")  # differ between any two calls
+
+
+def _answers(runtime, call, trusted, *, seeds=False):
+    """What a caller is sent for ``call``: REST validate and query, MCP execute in both modes,
+    and with ``seeds`` the routes that read a call as a seed (discover, inspect, build-options
+    and plan on REST, discover, inspect and plan on MCP)."""
+    service = SemanticHTTPService(runtime)
+    adapter = SemanticLayerMCPAdapter(runtime)
+    routes = [("/validate", {"query": call}), ("/query", {"query": call})]
+    tools = [("execute", {"query": call, "mode": mode}) for mode in ("validate", "run")]
+    if seeds:
+        routes += [
+            ("/discover", {"terms": "customer", "query": call}),
+            ("/inspect", {"object_id": CUSTOMERS, "query": call}),
+            ("/build-options", {"query": call}),
+            ("/plan", {"intent": CUSTOMERS, "query": call}),
+        ]
+        tools += [
+            ("discover", {"terms": "customer", "query": call}),
+            ("inspect", {"object_id": CUSTOMERS, "query": call}),
+            ("plan", {"intent": CUSTOMERS, "query": call}),
+        ]
+    answers = []
+    for path, body in routes:
+        try:
+            payload, status = service.handle("POST", path, body, context=trusted)
+        except SemanticLayerError as exc:  # the HTTP boundary's own envelope for a refusal
+            payload, status = service.exception_payload(exc, stage=path[1:], context=trusted)
+        answers.append((path, status, payload))
+    for tool, arguments in tools:
+        result = adapter.call_tool(tool, arguments, request_context=trusted)
+        answers.append(
+            (tool, {key: value for key, value in result.items() if key not in _PER_CALL})
+        )
+    return answers
+
+
+@pytest.mark.parametrize("kind", sorted(_UNGRANTED))
+@pytest.mark.parametrize("shape", sorted(_OUTSIDE_CALLS))
+def test_an_ungranted_id_is_refused_exactly_like_an_unknown_one(granted_runtime, kind, shape):
+    build = _OUTSIDE_CALLS[shape]
+    seen = {}
+    for label, object_id in (("ungranted", _UNGRANTED[kind]), ("unknown", _UNKNOWN[kind])):
+        answers = _answers(granted_runtime, build(object_id), context())
+        seen[label] = json.dumps(answers, sort_keys=True, default=str).replace(object_id, "<id>")
+    assert '"ok": false' in seen["ungranted"]
+    assert seen["ungranted"] == seen["unknown"], shape  # byte for byte, on every transport
+    assert not granted_runtime.adapter.statements
+    # The granted metric still takes its own clock from its definition, once time is granted.
+    time_granted = context(dimensions=("temporal_role.jaffle_customer_first_order_at",))
+    assert granted_runtime.validate(build(CUSTOMERS), context=time_granted)["ok"], shape
+
+
+# Every other lookup while a granted caller's call is read: a dimension in a measure's place,
+# a text word on a dimension that isn't text, an aggregation override, an entity's column.
+_OUTSIDE_LOOKUPS = {
+    "dimension_as_a_measure": (
+        SECRET_DIMENSION,
+        "dimension.jaffle_qqq_nothing",
+        lambda x: {"select": [{"expression": x, "as": "n"}]},
+    ),
+    "text_word_on_a_timestamp": (
+        "dimension.jaffle_order_ordered_at",
+        "dimension.jaffle_qqq_nothing",
+        lambda x: {
+            "select": [CUSTOMERS],
+            "where": [{"field": x, "op": "contains", "value": "2024"}],
+        },
+    ),
+    "aggregation_override": (
+        "measure.jaffle.order_count",
+        "measure.jaffle.qqq_nothing",
+        lambda x: {
+            "select": [
+                {"expression": {"kind": "measure", "measure": x, "aggregation": "sum"}, "as": "v"}
+            ]
+        },
+    ),
+    "entity_column": (
+        "entity.jaffle_order",
+        "entity.qqq_nothing",
+        lambda x: {
+            "select": [
+                {
+                    "expression": {
+                        "kind": "aggregate_if",
+                        "aggregation": "count",
+                        "condition": {
+                            "kind": "comparison",
+                            "op": "contains",
+                            "left": {"kind": "column", "entity": x, "column": "order_id"},
+                            "right": {"kind": "literal", "value": "abc"},
+                        },
+                    },
+                    "as": "v",
+                }
+            ]
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_OUTSIDE_LOOKUPS))
+def test_every_lookup_answers_an_ungranted_id_like_an_unknown_one(granted_runtime, name):
+    ungranted, unknown, build = _OUTSIDE_LOOKUPS[name]
+    seen = {}
+    for label, object_id in (("ungranted", ungranted), ("unknown", unknown)):
+        answers = _answers(granted_runtime, build(object_id), context(), seeds=True)
+        seen[label] = json.dumps(answers, sort_keys=True, default=str).replace(object_id, "<id>")
+    assert seen["ungranted"] == seen["unknown"], name  # byte for byte, on every route
+    assert not granted_runtime.adapter.statements
+
+
+def test_a_granted_dimension_in_a_measure_place_points_at_nothing_outside_the_grant(
+    granted_runtime,
+):
+    """An agent counting distinct customers with a granted dimension: the refusal names no
+    measure, which no grant can authorize."""
+    customer = "dimension.jaffle_customer_id"  # measure.jaffle.customer_count counts it
+    call = {"select": [{"expression": customer, "as": "n"}]}
+    trusted = context(dimensions=(customer,))
+    answers = json.dumps(_answers(granted_runtime, call, trusted, seeds=True), default=str)
+    assert '"ok": false' in answers
+    assert "measure." not in answers

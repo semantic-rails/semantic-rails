@@ -33,6 +33,7 @@ ROLE = "temporal_role.shop_order_ordered_at"
 SIGNUP_ROLE = "temporal_role.shop_customer_signed_up_at"
 STORE = "dimension.shop_order_store_id"
 CHANNEL = "dimension.shop_customer_channel"  # looked up from the order's customer
+CUSTOMER = "dimension.shop_customer_id"  # the order's own customer key
 REVENUE = "measure.shop.revenue"
 ORDERS = "measure.shop.order_count"
 AVERAGE = "measure.shop.average_order"
@@ -197,14 +198,17 @@ def _series(grain: str, value: str, *, clock: str = "utc") -> str:
     """
 
 
-def _by_store(value: str, *, bounds: tuple[str, str] = ()) -> str:
-    """One row per store and month of the series (like ``_series``), plus ``value``."""
+def _by_store(
+    value: str, *, bounds: tuple[str, str] = (), key: str = "o.store_id", grain: str = "month"
+) -> str:
+    """One row per store (or ``key``) and bucket of the series (like ``_series``), plus
+    ``value``."""
     return f"""
         WITH m AS (
-          SELECT o.store_id AS k, date_trunc('month', o.ordered_at) AS b, SUM(o.amount) AS v
+          SELECT {key} AS k, date_trunc('{grain}', o.ordered_at) AS b, SUM(o.amount) AS v
           FROM orders AS o GROUP BY 1, 2
         ),
-        s AS (SELECT g.b FROM generate_series({_span(bounds)}, INTERVAL '1 month') AS g(b)),
+        s AS (SELECT g.b FROM generate_series({_span(bounds)}, INTERVAL '{STEP[grain]}') AS g(b)),
         k AS (SELECT DISTINCT m.k FROM m)
         SELECT k.k, s.b, {value} FROM k CROSS JOIN s
     """
@@ -955,6 +959,51 @@ def _cases() -> Iterator[Case]:
         "utc_authored",
         _ask("month", revenue, group_by=[STORE], start="2023-11-01", end="2024-08-01"),
         _by_store(STORE_NOW, bounds=("2023-11-01", "2024-07-01")),
+    )
+
+    # A ratio over a prior period reads the gapless series, as arithmetic does: the month after
+    # a month with no orders divides by its 0 and reads NULL, never by the last month with data.
+    # February 2024 has no orders, store b none from December to February, and customer 101
+    # none in the first quarter of 2024.
+    prior, prior_quarter = prior_month["expression"], _prior("quarter")["expression"]
+    divide = {"kind": "arithmetic", "op": "divide", "left": REVENUE, "right": prior}
+    ratio = {"kind": "ratio", "numerator": REVENUE, "denominator": prior}
+    rate_of = "{} / CAST(NULLIF({}, 0) AS DOUBLE PRECISION)".format
+    for name, expression in (("ratio_over_prior_month", ratio), ("divide_by_prior_month", divide)):
+        select = [revenue, _item(expression, "vs_prior")]
+        value = f"{NOW}, {rate_of(NOW, _at('1 month'))}"
+        yield _dense(name, "utc_authored", "month", select, value)
+    growth = {**ratio, "numerator": {**divide, "op": "subtract"}}
+    value = rate_of(f"({NOW} - {_at('1 month')})", _at("1 month"))
+    yield _dense(
+        "growth_over_prior_month", "utc_authored", "month", [_item(growth, "growth")], value
+    )
+    # A rolling window inside a ratio too: March's trailing three months are January to March.
+    of_trailing = _item({**ratio, "denominator": trailing_3["expression"]}, "of_trailing")
+    value = rate_of(NOW, _trailing("3 month"))
+    yield _dense("ratio_over_trailing_3_months", "utc_authored", "month", [of_trailing], value)
+    first = "CASE WHEN s.b = (SELECT MIN(b) FROM s) THEN NULL ELSE {} END".format
+    yield Case(
+        "ratio_over_prior_month_by_store",
+        "utc_authored",
+        _ask("month", revenue, _item(ratio, "vs_prior"), group_by=[STORE]),
+        _by_store(f"{STORE_NOW}, {rate_of(STORE_NOW, first(store_prior))}"),
+    )
+    customer_prior = STORE_NOW.replace("m.b = s.b", "m.b = s.b - INTERVAL '3 month'")
+    yield Case(
+        "ratio_over_prior_quarter_by_customer",
+        "utc_authored",
+        _ask(
+            "quarter",
+            revenue,
+            _item({**ratio, "denominator": prior_quarter}, "vs_prior"),
+            group_by=[CUSTOMER],
+        ),
+        _by_store(
+            f"{STORE_NOW}, {rate_of(STORE_NOW, first(customer_prior))}",
+            key="o.customer_id",
+            grain="quarter",
+        ),
     )
 
     # Conversion within 7 days of signup (half-open), by the signup's bucket. A ratio and a

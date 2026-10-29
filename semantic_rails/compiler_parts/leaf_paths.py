@@ -47,6 +47,7 @@ from .indexes import (
     _measure_index,
     _temporal_role_index,
 )
+from .listings import listing_active
 from .paths import (
     _direct_dimension_source_expr,
     _leaf_time_role,
@@ -57,6 +58,7 @@ from .plan_checks import (
     _fanout_dedup_refusal,
     _hop_conditions,
     _one_link_conditions,
+    _overlapping_share,
     _two_hop_conditions,
     _validate_where_value_type,
     child_group_route,
@@ -164,9 +166,13 @@ def _leaf_path_selections(
     ):
         conditions = _hop_conditions(bound, unsupported, config, query)
         if len(conditions) <= 1:
-            return selections, sorted(required_entities), "entity_in_terms_of"
-        # Conditions on one link read one row together, which the de-duplicated leaf answers.
-        refusal = None if _one_link_conditions(conditions) else _two_hop_conditions(conditions)
+            # Its groups overlap as the de-duplicated leaf's do, so a share over them is refused.
+            refusal = _overlapping_share(measure, bound, selections, config, query)
+            if refusal is None:
+                return selections, sorted(required_entities), "entity_in_terms_of"
+        else:
+            # Conditions on one link read one row together, which the de-duplicated leaf answers.
+            refusal = None if _one_link_conditions(conditions) else _two_hop_conditions(conditions)
     else:
         refusal = None
     if refusal is None:
@@ -479,7 +485,9 @@ def _candidate_root_summary(
             chosen,
             time_bound_relationships=_time_bound_relationship_ids(query, config),
         )
-        if analysis.get("status") != "ok":
+        # A listing reads distinct rows through one-to-many hops: nothing is counted.
+        listed = listing_active() and analysis.get("status") == "rewrite_required"
+        if analysis.get("status") != "ok" and not listed:
             raise SemanticLayerError(
                 "MIXED_GRAIN_INVALID",
                 f"Path to '{target_entity}' requires a rewrite that is not supported for distinct-values queries",
@@ -523,7 +531,17 @@ def _infer_root_entity_for_distinct_query(
 
     candidates: list[dict[str, Any]] = []
     failures: list[tuple[str, SemanticLayerError]] = []
-    for entity in config.entities:
+    starts = config.entities
+    if listing_active():
+        # A listing starts at the first entity it reads that may start a query.
+        own = _preferred_root_order(query, config)
+        entities = _entity_index(config)
+        starts = [
+            entity
+            for entity in (entities[entity_id] for entity_id in own if entity_id in entities)
+            if entity.allowed_as_root
+        ][:1]
+    for entity in starts:
         if not entity.allowed_as_root:
             continue
         try:

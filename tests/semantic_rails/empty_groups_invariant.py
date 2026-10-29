@@ -74,10 +74,13 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
     )
     if expected:
         guard = next(node for node in guards if node.name == GUARDED_BASE)
+        # The marks of the groups a measure's own rows never reached settle nothing.
+        marks = {name for names in (compiled.get("absent_rows") or {}).values() for name in names}
         settled = [
             field
             for field in guard.query.select
-            if isinstance(field.expression, SqlCase) or _is_zero_fill(field.expression)
+            if field.alias not in marks
+            and (isinstance(field.expression, SqlCase) or _is_zero_fill(field.expression))
         ]
         assert len(settled) == len(expected), (
             f"{GUARDED_BASE} settles {len(settled)} measures, expected {sorted(expected)}"

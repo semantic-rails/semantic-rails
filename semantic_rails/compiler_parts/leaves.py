@@ -85,6 +85,7 @@ from .indexes import (
     _relationship_index,
     _temporal_role_index,
 )
+from .listings import is_listing_plan, listing_rows
 from .lowering_common import (
     _aggregate_relation_index,
     _all_metric_predicates,
@@ -1090,6 +1091,9 @@ def _measure_leaf_select(
         target.append(condition := _filter_condition_for_item(measure.entity, item, config))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
+    # The authored filter's conditions, wherever they apply: a declared edge's probe leaves
+    # them out (_record_time_scope).
+    filter_conditions: list[Any] = []
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         target = (
             child_where
@@ -1099,6 +1103,7 @@ def _measure_leaf_select(
             else where_clauses
         )
         target.append(condition := _filter_condition_for_item(measure.entity, item, config))
+        filter_conditions.append(condition)
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     where_clauses.extend(_edge_cap(measure, leaf_time_role, config))
@@ -1298,6 +1303,7 @@ def _measure_leaf_select(
             raw_time=coverage_time,
             bucket=time_expr,
             local=time_source_local,
+            authored=filter_conditions,
         )
     return leaf
 
@@ -1313,10 +1319,12 @@ def _distinct_value_path_selections(
         if plan.time
         else None
     )
+    # A listing's one-to-many hops keep their rows, as its lookups do (``_joins_for_paths``).
+    purpose = "listing" if is_listing_plan(plan) else "distinct_values"
     return [
         PathSelection(
             target_entity=target_entity,
-            purpose="time" if target_entity == time_entity else "distinct_values",
+            purpose="time" if target_entity == time_entity else purpose,
             chosen_path=list(path),
             candidate_paths=[
                 list(candidate)
@@ -1376,13 +1384,14 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
             time_spec=plan.time,
         )
     )
-    return SqlSelect(
+    select = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=entities[plan.root_entity].table),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,
     )
+    return listing_rows(select, plan, config) if is_listing_plan(plan) else select
 
 
 def _source_rollup_strategy(
@@ -1510,10 +1519,11 @@ def _measure_group_leaf_select(
     preserve_buckets = all(_preserves_filtered_series(plan, row, config) for row in measure_plans)
     for item in refuse_child_groups(query.get("where"), "in a folded leaf"):
         where_clauses.append(_filter_condition_for_item(first_measure.entity, item, config))
+    filter_conditions: list[Any] = []
     for item in _bound_filter_clauses(first_plan.bound_measure, config):
-        (authored_conditions if preserve_buckets else where_clauses).append(
-            _filter_condition_for_item(first_measure.entity, item, config)
-        )
+        condition = _filter_condition_for_item(first_measure.entity, item, config)
+        (authored_conditions if preserve_buckets else where_clauses).append(condition)
+        filter_conditions.append(condition)
     where_clauses.extend(_edge_cap(first_measure, leaf_time_role, config))
     untimed = [*where_clauses, *authored_conditions]
     if plan.time:
@@ -1570,5 +1580,6 @@ def _measure_group_leaf_select(
             raw_time=coverage_time,
             bucket=time_expr,
             local=time_source_local,
+            authored=filter_conditions,
         )
     return leaf

@@ -375,6 +375,8 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
         False,
         "OBJECT_NOT_FOUND",
     ),
+    # An order-grain median by an item dimension: each order would count whole under every
+    # product it holds, which a sum, count or average answers and a median does not.
     (
         "validate_fanout",
         "execute",
@@ -382,7 +384,16 @@ ERROR_PROBES: list[tuple[str, str, dict[str, Any], bool, str]] = [
             "mode": "validate",
             "query": {
                 **Q2,
-                "select": Q1["select"],
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "measure",
+                            "measure": REVENUE,
+                            "aggregation": "median",
+                        },
+                        "as": "revenue_usd",
+                    }
+                ],
                 "order_by": [{"field": "revenue_usd", "direction": "desc"}],
             },
         },

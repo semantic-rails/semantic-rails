@@ -77,6 +77,12 @@ beside `query` and `options` is refused. A tool argument sent inside the call (`
 key of the call sent beside `query` (`"limit"`, ...) with the hint to move it inside. MCP also
 reads a `query` sent as a JSON string.
 
+MCP `row_format` shapes the rows: `records` (objects, the default) or `columns` (`columns` once,
+each row an array). When a call sends no `row_format` and its rows as records exceed the MCP
+response budget but fit as columns, `execute` returns columns with the note
+`ROW_FORMAT_COLUMNS`, from the one warehouse run, so read `row_format` before `rows`
+([MCP interface](MCP_INTERFACE.md#query-verbosity-tiers-execute-modes)).
+
 ```bash
 uv run semantic-rails query --package jaffle_shop --now 2017-09-04T12:00:00Z \
   --query-json '{"select": ["measure.jaffle.order_count"], "time": {"last": {"unit": "week", "value": 1}}}'
@@ -148,9 +154,9 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
   `OUTPUT_NAME_GOVERNED`, naming the governed object and a name to use instead, so its numbers
   never read as the governed one's. The object itself answers under its name however it is
   written: by id, as its default aggregate, or rounded with `ROUND`.
-- A `dimension.` id in `select` is moved to `group_by` when `group_by` is empty or already
-  lists it (the answer notes `QUERY_SHORTHAND_NORMALIZED`); beside a `group_by` that lists
-  other dimensions it is refused.
+- Each `dimension.` id in `select` is moved to `group_by` when the call's `group_by` is empty
+  or already lists it (one `QUERY_SHORTHAND_NORMALIZED` note lists every id moved); beside a
+  `group_by` that lists other dimensions it is refused.
 - Without `select`, a call with `group_by` lists the distinct rows:
 
 ```json
@@ -170,9 +176,11 @@ Each item is a measure or metric id, or `{"expression": <id or inline kind>, "as
 
 Dimension ids. Each becomes a column named by its full id, so a reader keys on it without
 guessing. Time is never a `group_by` item: ask for `time.grain` and the answer has a `period`
-column. Groups with no rows stay absent: the engine never cross-joins dimension values. A
-policy's `required_group_by` on the clock's own date dimension is met by any `time.grain` at or
-below that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
+column. Groups with no rows stay absent: the engine never cross-joins dimension values.
+Beside another measure whose rows hold a group, a count or sum with no rows there reads `0`,
+and the answer says so ([Zero-filled groups](#empty-groups-null-or-0)). A policy's
+`required_group_by` on the clock's own date dimension is met by any `time.grain` at or below
+that dimension's grain. A call that meets no required cut is refused with `POLICY_DENIED`
 naming it ("measure.x can only be read by day: group by dimension.d, or set time.grain to
 day."), and the one hint's `patch.merge` is the call fragment that meets it
 (`{"time": {"grain": "day"}}`), built from the policy's own cuts.
@@ -183,6 +191,47 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 `assumptions` carries `GROUPED_BY_KEY {dimension, key, message}`. A call grouped by an entity's
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
+
+### Groups across a one-to-many hop
+
+A dimension of a child entity (an order's items or tags, a department's courses) holds several
+values per row of the measure's entity. Grouped by one, each row of the measure's entity counts
+once, with its whole value, in every group it has a child row in: departments by course level
+counts a department under each level it teaches, and order revenue by item product type is the
+revenue of the orders that included each type.
+
+```json
+{"select": ["measure.jaffle.revenue_usd"], "group_by": ["dimension.jaffle_product_type"]}
+```
+
+An order holding a beverage and a jaffle counts its whole total under both, so the two groups
+add up to more than all revenue (691,101.53 and 485,267.73 of 745,893.03). Item revenue
+(`measure.jaffle.item_revenue_usd`) splits the totals over the items instead: the call says
+which measure it reads.
+
+- A sum, count, average or distinct count of the entity's own measure is over one row per
+  (entity key, group). An average is over the rows in each group, and a ratio of two measures of
+  the entity divides each group's own totals.
+- The hops must be one-to-many from the measure's entity, each joined on the declared key of its
+  one side, before any lookup: orders to their items, then each item's product, is answered;
+  orders to their customer, then the customer's sessions, is many-to-many and refused.
+- A row with no child row is in no group, and a group no row reaches is absent; a child row
+  with no value is the NULL group.
+- The groups can overlap, so their sum can exceed the total. The answer's `REWRITE_APPLIED`
+  (`fanout_dedup`) says so and names the hop: `details.overlapping_groups` holds the `group_by`
+  ids and the one-to-many `relationships`, and `whole_amounts: true` marks a sum or average of a
+  value, which `plan` repeats in its `warnings` when it drafts one.
+- A [total](#coarser-totals) or [`totals`](#totals) row is the call without the grouping, so it
+  counts each row once (all revenue above). A share over such a grouping is refused with
+  `MIXED_GRAIN_INVALID`: its total would add up the overlapping groups. A share over a column of
+  the entity's own within each group (each coupon's share within a product type) stays.
+- Still refused with `MIXED_GRAIN_INVALID`, with the message they had: a median, minimum,
+  maximum or other statistic; a non-additive measure, a stock, or a measure whose rows are finer
+  than its entity's key; a window, per-entity value, distribution or metric predicate over it; an
+  item that combines it with a measure of another entity (order revenue per item revenue); and a
+  second grouping or filter across a one-to-many hop beside it.
+- A relationship authored `allowed_directions: [forward]` is never walked from its one side, so
+  such a grouping is refused with `PATH_NOT_FOUND` naming it.
 
 ### Groups across a link
 
@@ -211,6 +260,52 @@ one, each entity counts once in every group it has a row in.
   refused, since nothing tells its rows apart.
 
 Their limits are listed under [Known limitations](#links-and-one-per-key-models).
+
+### Listings through one-to-many routes
+
+A call of dimensions alone (`group_by`, with no `select`, `time` or `metric_filters`) lists
+distinct rows. It reads the rows of an entity that reaches every entity the call reads by
+lookups, one row at every hop. When none does, because the entities connect only through a
+one-to-many hop (a store reaches the supplies its menu uses only through its orders' items),
+the call is answered as a listing through that route:
+
+```json
+{"group_by": ["dimension.jaffle_store_name", "dimension.jaffle_supply_name"],
+ "where": [{"field": "dimension.jaffle_supply_is_perishable", "op": "is", "value": true}]}
+```
+
+- The listing starts at the first entity the call reads (its first `group_by` dimension's,
+  then its `where` fields'), and reaches each other entity by the [route rules](#routes): the
+  call's `routes`, the package's recorded rows, the start's own key, the only route, or the one
+  lookup among several. Two or more routes none of these chooses are refused with
+  `AMBIGUOUS_PATH`, asking which route the question means, and nothing runs. When that question
+  with every route would not fit the response budget (a package of many facts over shared
+  dimensions can offer dozens), the call keeps the refusal it had without listings, which names
+  what blocks the pair. A listing walks a relationship either way, whatever its
+  `allowed_directions`: nothing is counted, so a hop to many rows only lists more rows.
+- The rows are the distinct values of exactly the requested dimensions, ordered and capped
+  (`limit`, `max_rows`) as for any call. Every hop joins as a lookup does (a left join, inner
+  on ClickHouse), so each row of the start is listed. A start row that reaches nothing lists
+  once, with NULL in the columns past a one-to-many hop (no data is NULL) and its own and its
+  lookups' values, such as its school: a department with no rooms. One that reaches rows lists only those: a department with rooms in two cities and a
+  unit with no room lists its two cities, with no blank row beside them. A row the call asks
+  for keeps its own NULLs, as a lookup with no match does: a room with no building lists with
+  no city.
+- The answer's `assumptions` carries `LISTED_THROUGH {message, routes}` at every verbosity:
+  each route from the start that crosses a one-to-many hop, as `{from, to, via, meaning}`, and
+  the message reads the longest ones in business words ("any of the Supplies of the Product of
+  any of the Items of any of the Store's Orders"). A listing states no `ROUTE_PASS_THROUGH`:
+  nothing counts under several groups.
+- The caller's view and the package's policies hold as for any call. A route through an object
+  hidden from the caller is no route for them, so the call is refused as it is for a package
+  without that object. A row filter applies to each table the route reads, where it joins, a
+  listing that starts at a model no row filter reaches is held (`POLICY_DENIED`,
+  `row_filter_uncovered_root`), and a denied object on the route refuses the call.
+- A call with a measure or a metric keeps every fan-out guard: departments counted by the
+  cities their rooms reach would count each department once per city, so that call is refused
+  as before.
+
+Its limits are listed under [Known limitations](#listings).
 
 ## `where`
 
@@ -961,6 +1056,15 @@ ones they return, so a window that cuts their lookback is refused
 with `WINDOWED_TIME_FILTER_UNSUPPORTED` ("ask for a series with a grain and read the periods
 you need from it").
 
+A `prior_period` or `rolling` window counts periods on the calendar, never rows: wherever it sits
+(alone, in an `arithmetic`, a `ratio`, a `case` or a metric), the answer runs over every period
+from the first to the last and returns the empty ones too. The prior of the month after a month
+with no rows is that month, which reads by the [empty-group rule](#empty-groups-null-or-0) (`0`
+inside the data), so "revenue over the previous month" reads `NULL` there (÷0), never revenue
+over the last month that had any. Such an item is refused on ClickHouse, which has no day
+spine, and as a distribution's input, which would then count entities in periods where they
+have no rows (`REWRITE_NOT_SUPPORTED`).
+
 ### The `aggregation` override
 
 `{"kind": "measure", "measure": <id>, "aggregation": <statistic>}` (and the same key on
@@ -1229,9 +1333,25 @@ The engine trusts the data as it is stored in three cases:
   Keep join columns the same type.
 - **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
   their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
-  children carry, so the totals across
+  children carry, with its whole value ([groups across a one-to-many
+  hop](#groups-across-a-one-to-many-hop)), so the totals across
   groups can exceed the whole, and a parent with no child rows is left out of that grouping.
   Combined labels ("Lab + Office") are a possible future option.
+
+### Listings
+
+- A call of dimensions with a `time` window keeps the refusal it had: only a call of
+  dimensions alone (`where` filters allowed) is answered through a one-to-many route.
+- `plan` drafts every question with a measure or metric, so it never drafts a listing: send the
+  call of dimensions alone to `execute`.
+- A package row (`graph.path_preferences`) can record only the walks a relationship's
+  `allowed_directions` allow, so a listing route that walks one the other way is chosen per
+  call (`routes`), or after allowing that direction.
+- Where a call starts decides whether a department with no rooms is listed. A listing
+  through a one-to-many route starts at the first entity it reads, the department, and lists
+  it with NULL; a call whose entities one model reaches by lookups (rooms that hold both their
+  department and their building) reads that model's rows, and a department with no rooms has
+  none there.
 
 ### Links and one-per-key models
 
@@ -1288,7 +1408,8 @@ The engine trusts the data as it is stored in three cases:
   Keep join columns the same type.
 - **Many-valued groups.** A parent grouped by a value that only its child rows carry (orders by
   their items' product type: 55,974 and 18,261 of 59,652 orders) counts under each value its
-  children carry, so the totals across
+  children carry, with its whole value ([groups across a one-to-many
+  hop](#groups-across-a-one-to-many-hop)), so the totals across
   groups can exceed the whole, and a parent with no child rows is left out of that grouping.
   Combined labels ("Lab + Office") are a possible future option.
 
@@ -1338,7 +1459,8 @@ period with no rows reads one or the other, by one rule, in every call:
 A measure has data in scope when at least one of its rows in scope holds a value: a sum with a
 non-NULL amount, or a count above zero. The scope is the measure's own authored conditions (its
 `filter`, an `aggregate_if` condition or a `CASE`) and policy row filters, before the
-`group_by`; [`observation_scope`](#observation_scope) says whether the call's `where` counts:
+`group_by`, except that a declared edge observes its table's loaded periods whatever a `filter`
+matches (see "The data's edge" below); [`observation_scope`](#observation_scope) says whether the call's `where` counts:
 
 - **`dataset`**: it doesn't. "Apples at store 5" reads `0` when store 5 sold no apples, as store
   5 does in a by-store answer. An entity filter is part of the `where`: a period in which it
@@ -1388,7 +1510,10 @@ the period ends by that edge (or, after a load that reached the start of today, 
 it): a load log's loaded-through date (`edge_source` `loaded`; `edge`
 is null and the message says "loaded-through date unavailable" when the log holds none) or
 `now` (`edge_source` `now`, with the note `ZERO_AFTER_LAST_ROW` when the answer reaches past the
-last row). Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+last row). Such a table is observed in each of those periods from its first row on, whether or
+not a filtered metric's `filter` has ever matched one of its rows: the metric reads `0` there
+and `NULL` with `NO_DATA_YET` after the edge. Under `observation_scope: "query"`, the call's
+`where` must still keep a row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
@@ -1399,6 +1524,35 @@ reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those
 has data, and neither does a truncated answer. An ungrouped distinct-population count over
 nothing reads `0` with no warning, a known limitation
 ([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+
+**Zero-filled groups.** Two selected measures that the `group_by` joins answer a row for every
+group either one's rows hold, so a group can hold rows of one and none of the other. "Signups
+and orders by customer" has a row for a customer who signed up and never ordered, whose order
+count is `0`: data of nothing. The note `ZERO_FILLED_GROUPS` says so, read from the answer's own
+statement, which marks those groups (no other query runs):
+
+```jsonc
+{"code": "ZERO_FILLED_GROUPS", "severity": "info",
+ "message": "1 of 8 groups has no rows of entity.shop_order in this call, so its order_count is 0 (to leave it out, add {\"field\": \"order_count\", \"op\": \"not\", \"value\": 0} to having). A 0 there is data of nothing, not missing data.",
+ "details": {"outputs": [{"output": "order_count", "zero_filled": 1, "entities": ["entity.shop_order"],
+                          "having": {"field": "order_count", "op": "not", "value": 0}}],
+             "groups": 8, "truncated": false, "agent_action": "mention_when_interpreting_results"}}
+```
+
+`zero_filled` counts the returned groups (total rows aside) where the output reads `0` and no
+row of its measure reaches the group; outputs zero in the same groups share one sentence.
+`entities` names the entity with no rows there. `having` is a condition that leaves out exactly
+those groups. It names an output that counts its own entity's key, which reads `0` only where
+its rows never reached the group; a sum or a conditional count can read a real `0` as well. With
+no such output among them, or when another returned row reads the same `0`, the note gives none
+(signups and large orders by customer: a customer whose orders are all small reads a real 0
+large orders). A truncated answer counts the rows shown, as a lower bound
+("at least 1 group (1 of the 3 rows shown)"). A group that reads `NULL` (no data in scope) or
+whose rows sum to `0` is never counted. The note comes under either `observation_scope`; under
+`query`, a measure with no value inside the call's filters reads `NULL` in every group instead,
+with `NO_DATA_IN_SCOPE`, and nothing is noted. A call with one measure, or several read from
+the same rows, holds no such group, since groups with no rows stay absent, and a series' empty
+periods are periods, not groups: neither carries the note.
 
 ClickHouse fills an unmatched outer-join field with a type default unless the join yields
 NULLs, so every ClickHouse statement ends with `SETTINGS join_use_nulls = 1`.

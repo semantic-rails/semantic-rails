@@ -189,6 +189,121 @@ def test_the_load_log_mark_compiles_beside_coverage_on_every_warehouse_that_read
     assert "edge_1_rows" in sql and "ticket_loads" in sql and "loaded_before" in sql
 
 
+# Long tickets (over 480 minutes, metric.shop.long_tickets): no ticket has run that long.
+LONG = "metric.shop.long_tickets"
+FIVE_WEEKS = {"start": "2024-09-02", "end": "2024-10-07", "grain": "week"}
+LOADED_THEN_NOT = [0, 0, 0, 0, None]  # the weeks of Sep 2 to 23, then the week after the log
+TOUCHED = {"field": "dimension.shop_ticket_minutes", "op": "gt", "value": 0}  # every ticket
+ANY_MINUTES = {"entity": "entity.shop_ticket", "over": "all_time", "having": [{"field": "measure.shop.ticket_minutes", "op": "gt", "value": 0}]}  # fmt: skip
+
+
+def _query(package: Path, call: dict[str, Any], now: str = NOW) -> dict[str, Any]:
+    runtime = Runtime.from_config(load_package_config(str(package)), source_path=str(package))
+    try:
+        return runtime.query(call, now=now)
+    finally:
+        runtime.close()
+
+
+def _column(result: dict[str, Any], name: str) -> list[Any]:
+    return [row[name] for row in result["rows"]]
+
+
+def _codes(result: dict[str, Any]) -> list[str]:
+    return sorted(row["code"] for row in result.get("warnings", []))
+
+
+def test_the_load_log_observes_every_loaded_day_a_filter_never_matched(shop):
+    """From the first ticket (September 2) on, every day the load log covers reads 0 long
+    tickets, quiet days included; the day before the first ticket reads NULL. Without a load
+    log, a day with no ticket at all stays unobserved: NULL, as before."""
+    days = {"select": [LONG], "time": {"start": "2024-09-01", "end": "2024-09-12", "grain": "day"}}
+    loaded = _query(shop, days)
+    assert _column(loaded, "long_tickets") == [None] + [0] * 10
+    assert "NO_DATA_IN_SCOPE" not in _codes(loaded)
+    _tickets(shop, "data")
+    # Tickets open on September 2, 4 and 11 (the last row).
+    by_last_row = [None, 0, None, 0, None, None, None, None, None, None, 0]
+    assert _column(_query(shop, days), "long_tickets") == by_last_row
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param({}, id="no where"),
+        pytest.param({"where": [TOUCHED]}, id="a where, observed outside it"),
+        pytest.param(
+            {"where": [TOUCHED], "observation_scope": "query"}, id="a where, observed inside it"
+        ),
+        pytest.param({"where": [ANY_MINUTES]}, id="an entity filter"),
+        pytest.param({"select": [LONG, "measure.shop.ticket_minutes"]}, id="beside another leaf"),
+    ],
+)
+def test_a_filter_never_matched_reads_zero_in_every_loaded_week(shop, call):
+    """Whatever else the call says, the load log decides which weeks are observed; the week
+    after it reads NULL, no data yet."""
+    result = _query(shop, {"select": [LONG], "time": FIVE_WEEKS, **call})
+    assert _column(result, "long_tickets") == LOADED_THEN_NOT
+    assert "NO_DATA_IN_SCOPE" not in _codes(result)
+    assert "NO_DATA_YET" in _codes(result)
+
+
+def test_a_where_the_call_observes_inside_still_reads_null_where_it_keeps_no_row(shop):
+    """``observation_scope: query`` judges inside the call's own filters: one that keeps no
+    ticket observes nothing, so every week reads NULL, as before."""
+    nothing = {"field": "dimension.shop_ticket_minutes", "op": "gt", "value": 5000}
+    call = {"select": [LONG], "time": FIVE_WEEKS, "where": [nothing], "observation_scope": "query"}
+    assert _column(_query(shop, call), "long_tickets") == [None] * 5
+
+
+def test_a_filter_that_matched_somewhere_reads_as_before(shop):
+    """Tickets under 25 minutes: ticket 3 (September 11) and the stray ticket 4, after the load
+    log. The week of September 9 counts ticket 3, the quiet loaded weeks read 0 and the week
+    after the log NULL, as they did before the log decided which weeks are observed."""
+    quick = {
+        "expression": {
+            "kind": "aggregate",
+            "measure": "measure.shop.tickets_opened",
+            "filter": {
+                "all": [{"field": "dimension.shop_ticket_minutes", "op": "lt", "value": 25}]
+            },
+        },
+        "as": "quick",
+    }
+    result = _query(shop, {"select": [quick], "time": FIVE_WEEKS})
+    assert _column(result, "quick") == [0, 1, 0, 0, None]
+
+
+def test_an_always_loaded_table_reads_a_filter_never_matched_as_zero_up_to_now(shop):
+    """``zero_through: now`` observes every week up to now, the week after the last ticket
+    included, and says so (ZERO_AFTER_LAST_ROW)."""
+    _tickets(shop, "now")
+    result = _query(shop, {"select": [LONG], "time": FIVE_WEEKS})
+    assert _column(result, "long_tickets") == [0, 0, 0, 0, 0]
+    assert _codes(result) == ["ZERO_AFTER_LAST_ROW"]
+
+
+def test_an_open_series_of_a_share_reads_its_settled_operands(shop):
+    """An open window reads no probe of its own, but under the load log the share's long-ticket
+    operand is still observed: 0 / 2 and 0 / 1 read 0."""
+    result = _query(shop, {"select": ["metric.shop.long_ticket_share"], "time": {"grain": "week"}})
+    assert _column(result, "long_ticket_share") == [0, 0]
+
+
+@pytest.mark.parametrize("warehouse", ["snowflake", "bigquery", "databricks", "athena", "postgres"])
+def test_the_unfiltered_probe_compiles_on_every_warehouse_that_reads_coverage(shop, warehouse):
+    """Where EXISTS may not sit in a select, the probe is read through CTEs; either way the
+    probe reads the tickets without the authored filter, which only the leaf applies."""
+    config = load_package_config(str(shop))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    runtime = Runtime.from_config(config, source_path=str(shop))
+    try:
+        sql = runtime.compile({"select": [LONG], "time": FIVE_WEEKS}, now=NOW)["rendered_sql"]
+    finally:
+        runtime.close()
+    assert sql.count("> 480") == 1
+
+
 def test_a_declared_edge_reads_its_base_never_a_rollup(shop):
     """A declared edge caps the rows a measure reads at an instant, which a rollup's buckets
     can't: an open monthly window that reads the rollup without an edge reads the base, capped,

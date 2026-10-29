@@ -192,7 +192,9 @@ policies. Callers cannot select those measures or columns independently. Groupin
 filters, and explicit time roles require corresponding dimension grants. Raw measures,
 column/conditional aggregates, runtime expression composition, entity filters, `having`,
 and dimension-only queries are unavailable in this bounded contract. Denial occurs before
-compilation or warehouse access, including cache hits. Metric and dimension grants do not
+compilation or warehouse access, including cache hits. The call is read against what the grant
+names, so an id outside the grant gets exactly the answer an id the package lacks would get:
+a refusal never tells a caller which ids exist. Metric and dimension grants do not
 authorize caller-selected entity scopes; an `any`/`none` entity filter is denied even when all
 its condition dimensions are granted.
 
@@ -666,11 +668,14 @@ Supported request controls:
 - `stage`
 - `verbosity`
 - `kinds` — an array, a comma-separated string, or a JSON array in a string. Ranked kinds are
-  `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value` and `relationship`,
-  each also by its plural (`measures`); a value that does not parse or names another kind is
-  refused with `400` instead of returning empty buckets. Relationships are ranked only when
-  `kinds` names them, in a `relationships` bucket whose cards carry `source_entity`,
-  `target_entity`, `cardinality`, `allowed_directions`, `source_columns` and `target_columns`.
+  `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value`, `relationship`,
+  `temporal_role` and `value_domain`, each also by its plural (`measures`); a value that does
+  not parse or names another kind is refused with `400` instead of returning empty buckets.
+  Relationships are ranked only when `kinds` names them, in a `relationships` bucket whose cards
+  carry `source_entity`, `target_entity`, `cardinality`, `allowed_directions`, `source_columns`
+  and `target_columns`. Time roles and value domains are too, in `temporal_roles` (cards carry
+  the `dimension` they time and its `supported_grains`) and `value_domains` (cards carry the
+  `dimensions` they describe).
   With `verbosity: "full"`, an entity card carries its `relationships` as `inspect` returns
   them.
   In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced, and the
@@ -1202,6 +1207,12 @@ The response `warnings` array can carry these non-error signals:
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result, nor, under `observation_scope: "dataset"`, on an empty answer to a filtered query.
   See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
+- `ZERO_FILLED_GROUPS` (a note) — fires on `execute` when a count or sum reads `0` in groups
+  its own rows never reach while another selected measure's rows hold them (signups and orders
+  by customer: a customer who never ordered). `details.outputs` lists `{output, zero_filled,
+  entities, having}` (`having` only when that condition leaves out exactly those groups),
+  `details.groups` the returned rows counted and `details.truncated` whether the count is a
+  lower bound. See [Empty groups](QUERY_CALL.md#empty-groups-null-or-0).
 - `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
   default) when a string `is` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
@@ -1233,8 +1244,10 @@ The response `warnings` array can carry these non-error signals:
   `details.dropped_expression` and `details.compiled_kind` so the agent
   can decide whether to retry with a different shape.
 - `QUERY_SHORTHAND_NORMALIZED` — fires on `validate`, `compile` and `execute`
-  (not `plan`) once per `dimension.` id in `select` that was moved to `group_by`.
-  Carries `details.path`, `details.received` and `details.canonical`. See
+  (not `plan`) once for the `dimension.` ids in `select` that were moved to `group_by`.
+  Carries `details.path`, `details.received` and `details.canonical`: for one id, its
+  `select[i]` path and the id; for several, `select`, the list of ids, and a `canonical`
+  `group_by` listing them all. See
   [`select`](QUERY_CALL.md#select).
 - `SEMANTIC_CAVEAT_APPLIED` — fires when a package-authored caveat is
   relevant to the compiled query shape and time window. Caveats are

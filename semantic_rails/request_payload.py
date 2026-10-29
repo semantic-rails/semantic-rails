@@ -8,6 +8,7 @@ claims an identity, so a new transport cannot accept a caller's claim.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -80,9 +81,6 @@ def checked_string_list(value: Any, *, field: str) -> list[str]:
         ) from exc
 
 
-DISCOVER_RANKED_KINDS: frozenset[str] = frozenset(
-    {"measure", "metric", "segment", "dimension", "entity", "dimension_value", "relationship"}
-)
 # A kind may also be named by its results' bucket: ``measures`` means ``measure``.
 _KIND_PLURALS = {
     "measures": "measure",
@@ -97,8 +95,11 @@ _KIND_PLURALS = {
 }
 
 
-# Every spelling accepted by ranked discovery or the empty-terms catalog listing.
-DISCOVER_KIND_NAMES = frozenset(_KIND_PLURALS) | frozenset(_KIND_PLURALS.values())
+# Every kind discover takes, ranked (with terms) and listed (empty terms) alike. The tool
+# schema's ``kinds`` enum is these and their plurals (``DISCOVER_KIND_NAMES``), so a kind the
+# schema offers is one the handler accepts.
+DISCOVER_KINDS: frozenset[str] = frozenset(_KIND_PLURALS.values())
+DISCOVER_KIND_NAMES = frozenset(_KIND_PLURALS) | DISCOVER_KINDS
 
 
 def singular_kinds(kinds: Sequence[str] | None) -> list[str]:
@@ -175,3 +176,20 @@ def refuse_identity_claims(
     path = identity_claim_path(request)
     if path is not None:
         raise identity_claim_refusal(path, remote=remote, transport=transport)
+
+
+# Every final response payload, serialized as the MCP text channels do, fits this character
+# budget (``SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS`` sets another); an error envelope must itself
+# fit, even with an unusably small operator setting.
+DEFAULT_MAX_RESULT_CHARS = 32_000
+MIN_RESULT_CHARS = 512
+MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
+
+
+def max_result_chars() -> int:
+    """One final-payload budget, with room for a bounded refusal envelope."""
+    try:
+        configured = int(os.environ.get(MAX_RESULT_CHARS_ENV) or 0)
+    except (TypeError, ValueError, OverflowError):
+        configured = 0
+    return max(MIN_RESULT_CHARS, configured if configured > 0 else DEFAULT_MAX_RESULT_CHARS)

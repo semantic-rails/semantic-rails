@@ -75,13 +75,16 @@ CODES: dict[str, str] = {
         UNKNOWN_ROWS_KEPT VALID_VALUES_NO_DOMAIN VALID_VALUES_UNKNOWN_ARG
         """,
     ),
-    **_codes(NOTE, "PLAN_TOTALS_HINT REWRITE_APPLIED VALUES_WITHHELD ZERO_AFTER_LAST_ROW"),
+    **_codes(
+        NOTE,
+        "PLAN_TOTALS_HINT REWRITE_APPLIED ROW_FORMAT_COLUMNS VALUES_WITHHELD ZERO_AFTER_LAST_ROW",
+    ),
     # One entry per disclosure an answer states under ``assumptions``.
     **_codes(
         ASSUMPTION,
         """
         AGGREGATION_OVERRIDE BALANCE_CLOSING_DAY ENTITY_FILTER_OVER GOVERNED_METRIC_EXISTS GROUPED_BY_KEY
-        OBSERVED_PERIODS_ONLY PARTIAL_PERIOD SHARE_OF_TOTAL SHOWN_BY_KEY TOTALS TOTAL_OVER
+        LISTED_THROUGH OBSERVED_PERIODS_ONLY PARTIAL_PERIOD SHARE_OF_TOTAL SHOWN_BY_KEY TOTALS TOTAL_OVER
         WINDOW_TOTAL
         """,
     ),
@@ -121,6 +124,8 @@ CODES: dict[str, str] = {
         WAREHOUSE_COLUMN_NOT_FOUND WAREHOUSE_TABLE_NOT_FOUND
         """,
     ),
+    # A note an answer reads from marks its own statement carries (``runtime_parts.zero_filled``).
+    **_codes(NOTE, "ZERO_FILLED_GROUPS"),
 }
 ERROR_CODES = frozenset(code for code, kind in CODES.items() if kind == REFUSAL)
 WARNING_CODES = frozenset(code for code, kind in CODES.items() if kind in {WARNING, NOTE})

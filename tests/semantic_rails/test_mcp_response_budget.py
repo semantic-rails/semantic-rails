@@ -322,6 +322,146 @@ def test_oversized_errors_and_tiny_operator_budgets_are_bounded(
     assert len(json_text(result)) <= max(limit, MCP_MIN_RESULT_CHARS)
 
 
+# Each order with its store and customer: ten columns keyed by full ids. At the default 200 rows
+# its records run over 100,000 characters and its columns about 28,000.
+ORDER_LISTING = {
+    "group_by": [
+        f"dimension.jaffle_{name}"
+        for name in (
+            "order_id",
+            "order_ordered_at",
+            "order_customer_order_number",
+            "order_is_new_customer_order",
+            "order_is_large_order",
+            "order_has_food_item",
+            "order_has_drink_item",
+            "store_name",
+            "customer_name",
+            "customer_type",
+        )
+    ],
+    "order_by": [{"field": "dimension.jaffle_order_id", "direction": "asc"}],
+}
+
+
+def _per_call(response: dict[str, Any]) -> dict[str, Any]:
+    """``response`` without the fields every call sets afresh."""
+    return {key: value for key, value in response.items() if key not in ("request_id", "timing_ms")}
+
+
+def test_rows_too_wide_as_records_come_back_as_columns_with_a_note(
+    jaffle_adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rpc = handle_jsonrpc_message(
+        jaffle_adapter,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "execute", "arguments": {"query": ORDER_LISTING}},
+        },
+    )
+    assert rpc is not None
+    response = rpc["result"]["structuredContent"]
+    assert json.loads(rpc["result"]["content"][0]["text"]) == response
+    assert len(rpc["result"]["content"][0]["text"]) <= MCP_DEFAULT_MAX_RESULT_CHARS
+    assert response["ok"], response
+    assert response["row_format"] == "columns"
+    assert response["columns"] == ORDER_LISTING["group_by"]
+    assert response["row_count"] == len(response["rows"]) == 200
+    *warnings, note = response["warnings"]
+    assert [warning["code"] for warning in warnings] == ["EXECUTE_ROWS_TRUNCATED"]
+    assert note["details"].pop("records_chars") > 100_000
+    assert note == {
+        "code": "ROW_FORMAT_COLUMNS",
+        "severity": "info",
+        "message": "Rows are returned as columns: as records they exceed the 32,000-character "
+        "response budget. Each row is an array in the order of 'columns'.",
+        "details": {"max_result_chars": MCP_DEFAULT_MAX_RESULT_CHARS},
+    }
+    # Exactly what the call asking for columns returns, beside the note.
+    asked = jaffle_adapter.call_tool("execute", {"query": ORDER_LISTING, "row_format": "columns"})
+    assert _per_call({**response, "warnings": warnings}) == _per_call(asked)
+    # The same rows, in the same order, as the records an unlimited budget returns.
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "10000000")
+    records = jaffle_adapter.call_tool("execute", {"query": ORDER_LISTING})
+    assert "row_format" not in records
+    columns = response["columns"]
+    assert [dict(zip(columns, row, strict=True)) for row in response["rows"]] == records["rows"]
+
+
+def test_rows_that_fit_as_records_are_returned_as_records_unchanged(
+    jaffle_adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arguments = {"query": ORDER_LISTING, "max_rows": 50}
+    response = jaffle_adapter.call_tool("execute", arguments)
+    assert response["ok"], response
+    assert "row_format" not in response and "columns" not in response
+    assert all(isinstance(row, dict) for row in response["rows"])
+    assert [warning["code"] for warning in response["warnings"]] == ["EXECUTE_ROWS_TRUNCATED"]
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "10000000")
+    unbudgeted = jaffle_adapter.call_tool("execute", arguments)
+    assert json_text(_per_call(response)) == json_text(_per_call(unbudgeted))
+
+
+@pytest.mark.parametrize(
+    ("options", "rows"),
+    [
+        ({"max_rows": 300}, 300),
+        ({"max_rows": 300, "row_format": "columns"}, 300),
+        # Columns would fit, but the caller asked for records by name.
+        ({"row_format": "records"}, 200),
+    ],
+    ids=["too-wide-as-columns", "asked-for-columns", "asked-for-records"],
+)
+def test_rows_that_cant_fit_as_asked_are_refused_as_before(
+    jaffle_adapter: SemanticLayerMCPAdapter, options: dict[str, Any], rows: int
+) -> None:
+    response = jaffle_adapter.call_tool("execute", {"query": ORDER_LISTING, **options})
+    assert not response["ok"] and "rows" not in response
+    assert response["error"] == {"code": "RESULT_TOO_LARGE"}
+    (issue,) = response["errors"]
+    assert issue["details"].pop("result_chars") > MCP_DEFAULT_MAX_RESULT_CHARS
+    records = options.get("row_format") != "columns"
+    assert issue == {
+        "code": "RESULT_TOO_LARGE",
+        "message": f"The result has more than {rows} rows and exceeds the 32,000-character "
+        "response budget without optional details. No rows returned. Retry "
+        + ('with row_format "columns", ' if records else "")
+        + "selecting fewer columns ('dimension.jaffle_order_id' is the largest); or filter, or "
+        "group by fewer dimensions, or lower max_rows.",
+        "details": {
+            "max_result_chars": MCP_DEFAULT_MAX_RESULT_CHARS,
+            "largest_field": "dimension.jaffle_order_id",
+            **({"retry": {"row_format": "columns"}} if records else {}),
+            "row_count": rows,
+            "total_row_count": None,
+        },
+    }
+
+
+def test_rows_too_wide_as_records_take_one_warehouse_query(
+    jaffle_adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warehouse = jaffle_adapter.runtime._get_adapter()
+    query = warehouse.query
+    statements: list[str] = []
+
+    def counted(sql: str, **options: Any) -> Any:
+        statements.append(sql)
+        return query(sql, **options)
+
+    monkeypatch.setattr(warehouse, "query", counted)
+    # An agent following the refusal's retry hint until the rows arrive.
+    arguments: dict[str, Any] = {"query": ORDER_LISTING}
+    response = jaffle_adapter.call_tool("execute", arguments)
+    while not response["ok"] and len(statements) < 3:
+        arguments = {**arguments, **response["errors"][0]["details"]["retry"]}
+        response = jaffle_adapter.call_tool("execute", arguments)
+    assert response["ok"] and response["row_count"] == 200
+    assert len(statements) == 1
+
+
 @pytest.mark.parametrize(
     ("expression", "kind", "path"),
     [
@@ -363,7 +503,7 @@ def test_unsupported_expression_reports_received_kind_and_request_path(
 # execute embeds the call's schema with each expression kind's keys as one line of a table.
 # A budget may only shrink.
 TOOL_MAX_BYTES = {
-    "discover": 1_751,
+    "discover": 1_732,
     "inspect": 1_123,
     "valid-values": 1_388,
     "plan": 1_887,
@@ -382,7 +522,7 @@ def test_each_tool_definition_fits_its_byte_budget() -> None:
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= 13_922  # the call's totals field
+    assert len(json_text({"tools": list_tool_definitions()})) <= 13_910  # discover's kinds
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without

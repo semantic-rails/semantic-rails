@@ -33,6 +33,7 @@ from .clock import (
 )
 from .compiler import observed_only_groups, observed_periods_reason, read_routes
 from .compiler_parts.empty_groups import observation_scope
+from .compiler_parts.listings import is_listing_plan, listing_config
 from .diagnostics import lean_issue, semantic_issue
 from .errors import SemanticLayerError
 from .fanout import (
@@ -160,7 +161,9 @@ def answer_fields(
     if len(clocks) == 1:
         out["clock"] = clocks.pop()
     out["observation_scope"] = observation_scope(plan.query, config)
-    out["routes"] = routes_taken(config, compiled)
+    # A listing's routes are its own (``compiler_parts.listings``).
+    routed = listing_config(config) if is_listing_plan(plan) else config
+    out["routes"] = routes_taken(routed, compiled)
     out["assumptions"] = assumptions
     return out
 

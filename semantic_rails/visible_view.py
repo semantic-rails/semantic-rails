@@ -566,6 +566,23 @@ def build_view(
     return VisiblePackageConfig(**changes, view=ViewOf(base, hidden, tokens))
 
 
+def grant_view(config: PackageConfig, policy: Mapping[str, Any]) -> PackageConfig:
+    """The package as a call under a metric grant reads it: the granted metrics, dimensions and
+    temporal roles, and no measures or segments (a grant names neither). Wherever the call's
+    reading looks an id up, one outside the grant is then one the package lacks. Enforcement
+    still reads the whole package (``resource_access``)."""
+    metrics = frozenset(policy.get("metric_allowlist") or ())
+    dimensions = frozenset(policy.get("dimension_allowlist") or ())
+    return replace(
+        config,
+        metric_recipes=[row for row in config.metric_recipes if row.id in metrics],
+        dimensions=[row for row in config.dimensions if row.id in dimensions],
+        temporal_roles=[row for row in config.temporal_roles if row.id in dimensions],
+        measures=[],
+        segments=[],
+    )
+
+
 def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list[dict[str, Any]]:
     """The policy effects a response may carry: each private effect as its display policy
     states it, with hidden ids left out. A violation is shown whole or not at all: one whose

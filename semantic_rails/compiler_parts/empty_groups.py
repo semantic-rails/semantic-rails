@@ -11,8 +11,10 @@ A table's declared edge (``zero_through``: ``now``, or a load log's loaded-throu
 caps what its measures read (``declared_cap``): no row past the edge exists for any leaf,
 nested or not. It also replaces the last row as the upper bound of loaded coverage: an empty
 period reads 0 only when it ends at or before that edge (or, under a load log that reached
-today, starts before it), and NULL after it. The lower bound (the first row) and observation
-are unchanged.
+today, starts before it), and NULL after it. The lower bound (the first row) is unchanged.
+The edge, not a matching row, says such a period is observed: its probes read the table's rows
+without the measure's authored filter conditions (``LeafScope.source_where``), so a filter that
+never matched reads 0 there.
 
 ``observation_scope`` says where "observed" is judged: ``dataset`` (the default) in the
 measure's own rows under its authored conditions, ``query`` inside the query's filters too.
@@ -60,7 +62,12 @@ from ..sql_ast import (
     SqlWindow,
     sql_nodes,
 )
-from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
+from .bind import (
+    _measure_count_distinct_key_columns,
+    _parse_public_expr,
+    earlier_settlement_applies,
+    is_conditional_case,
+)
 from .dependencies import holding, plan_is_root, settles_as_a_call
 from .indexes import _measure_index, _recipe_index
 from .temporal import _source_filter_refusals
@@ -121,6 +128,32 @@ def reads_every_row(measure: MeasureConfig) -> bool:
     marker (``_row_marker``) applies the same test. A nested CASE cannot prove this either
     and keeps base settlement instead of deriving a marker."""
     return not (has_nested_case(measure) or is_conditional_case(measure.expr))
+
+
+def counts_its_own_key(
+    aggregation: str, measure: MeasureConfig | None, config: PackageConfig
+) -> bool:
+    """Whether a count of the measure is at least 1 in every group its rows reach: it counts its
+    own entity's key, which every row holds (``_measure_count_distinct_key_columns``). Only then
+    is a 0 a group its rows never reached; a conditional count, a count of another column and a
+    sum read a real 0 as well."""
+    return (
+        measure is not None
+        and aggregation in _COUNTING
+        and bool(_measure_count_distinct_key_columns(measure, config))
+    )
+
+
+def absent_marker(alias: str, aggregation: str, rows: Mapping[str, str]) -> SqlIdentifier | None:
+    """The guard's source column that is NULL exactly where the measure's own rows never
+    reached the group (another measure's rows hold it): a count's value, which is never NULL
+    where it read a row, or a sum's row count. None for a sum that counts no rows (the earlier
+    settlement, or a nested CASE), which can't tell."""
+    if aggregation in _COUNTING:
+        return SqlIdentifier(parts=["base", alias])
+    if alias in rows and not earlier_settlement_applies():
+        return SqlIdentifier(parts=["base", rows[alias]])
+    return None
 
 
 def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str, str]:
@@ -188,7 +221,10 @@ class DeclaredEdge:
 
 @dataclass(frozen=True)
 class LeafScope:
-    """A plain leaf's aggregate, untimed filters and base time axis."""
+    """A plain leaf's aggregate, untimed filters and base time axis. Under a declared edge,
+    ``source_where`` is ``where`` without the measure's authored filter conditions: the rows
+    whose loaded periods the edge says are observed (None: no authored condition to leave
+    out, or no edge)."""
 
     from_table: SqlTableRef
     joins: tuple[SqlJoin, ...]
@@ -199,6 +235,7 @@ class LeafScope:
     storage_zone: str = "UTC"
     bounded: bool = False
     edge: DeclaredEdge | None = None
+    source_where: tuple[Any, ...] | None = None
 
 
 _leaf_scopes: ContextVar[dict[str, LeafScope] | None] = ContextVar("leaf_scopes", default=None)
@@ -266,6 +303,7 @@ def guard_empty_groups(
     bucketed: bool = True,
     keep: Iterable[str] = (),
     names: Mapping[str, Sequence[str]] | None = None,
+    absent: Mapping[str, str] | None = None,
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -283,19 +321,26 @@ def guard_empty_groups(
     observed where its probe has a row, even if none meets the condition, but only for an
     output whose bucket the loaded-bucket check gates (``time_key`` and the scope's bucket)
     or that has no time bucket (``bucketed=False``: one total over its scope). Earlier
-    settlement retains its value-based observation.
+    settlement retains its value-based observation. Where a declared edge gates the output
+    (the scope's ``edge``), its probes read the source rows without the measure's authored
+    filter conditions (``source_where``), bounded or not: the edge, not a matching row, says a
+    loaded period is observed.
     ``observed_buckets`` names leaves whose conditional operand retained the pre-filter
     source groups. Where the loaded-bucket check gates the output, their non-NULL count
     (including 0) proves that specific bucket was observed; the sum's matching-row count
     still prevents filling unknown amounts. Ungated, a retained leaf gets no such proof.
     ``keep`` names source columns passed through unchanged.
     ``names`` gives each measure alias's output names, which a refusal states.
+    ``absent`` names, for a measure alias, a column reading 1 in each group its own rows never
+    reached (``absent_marker``) and 0 elsewhere: what the answer's ``ZERO_FILLED_GROUPS``
+    counts. It changes no value.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.reads_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     rows = rows or {}
     measures = list(measures)
     observed = observed or {}
+    absent = absent or {}
     dataset = observes_dataset()
     if dataset and (unobserved := [a for a in measures if a in zero and a not in observed]):
         named = (names or {}).get
@@ -322,9 +367,14 @@ def guard_empty_groups(
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
 
+    markers: list[SqlField] = []
     for alias in measures:
         value: Any = SqlIdentifier(parts=["base", alias])
         aggregation = zero.get(alias)
+        marker = absent_marker(alias, aggregation, rows) if aggregation is not None else None
+        if marker is not None and alias in absent:
+            unreached = SqlCaseWhen(SqlIsNull(marker), SqlLiteral(1))
+            markers.append(SqlField(SqlCase([unreached], else_expr=SqlLiteral(0)), absent[alias]))
         if aggregation is not None:
             seen: Any = SqlBinary(
                 SqlWindow(
@@ -338,8 +388,19 @@ def guard_empty_groups(
             # Source rows settle a never-matched condition only where the loaded-bucket check
             # below gates the output's bucket, or where the output has no time bucket.
             source_rows = gated or not bucketed
+            # Under a declared edge, the edge says which gated periods are observed: its probes
+            # read the source rows whether or not the authored filter ever matched one.
+            declared = (
+                scope is not None
+                and gated
+                and scope.edge is not None
+                and alias not in earlier
+                and not earlier_settlement_applies()
+            )
             if dataset:
-                probe = _seen_outside_window(observed[alias], source_rows=source_rows).query
+                probe = _seen_outside_window(
+                    observed[alias], source_rows=source_rows, declared=declared
+                ).query
                 seen = SqlBinary(seen, "OR", probed(probe))
             if alias in observed_buckets:
                 # A retained leaf group proves rows existed before its authored filter.
@@ -356,12 +417,16 @@ def guard_empty_groups(
                     )
                     seen = SqlBinary(seen, "OR", SqlBinary(marker, ">=", SqlLiteral(0)))
             if scope is not None:
-                if scope.bounded and not dataset:
+                # An unbounded answer sees every matching row itself, but not the source rows
+                # a declared edge observes without its authored filter.
+                unfiltered = declared and scope.source_where is not None
+                if (scope.bounded or unfiltered) and not dataset:
                     outside = _seen_outside_window(
                         scope,
                         source_rows=source_rows
                         and alias not in earlier
                         and not earlier_settlement_applies(),
+                        declared=declared,
                     )
                     # Where EXISTS may not sit in a select (Snowflake, Spark), the probe is read
                     # through plain CTEs instead.
@@ -415,6 +480,7 @@ def guard_empty_groups(
                     whens=[SqlCaseWhen(seen, SqlCall("COALESCE", [value, SqlLiteral(0)]))],
                 )
         fields_.append(SqlField(value, alias))
+    fields_.extend(markers)
     fields_.extend(SqlField(SqlIdentifier(parts=["base", name]), name) for name in keep)
     guard = SqlSelect(
         select=fields_, from_table=SqlTableRef(name=source, alias="base"), joins=joins
@@ -422,7 +488,12 @@ def guard_empty_groups(
     return [*ctes, SqlCte(name=GUARDED_BASE, query=guard)]
 
 
-def _seen_outside_window(scope: LeafScope, *, source_rows: bool = False) -> SqlExists:
+def _seen_outside_window(
+    scope: LeafScope, *, source_rows: bool = False, declared: bool = False
+) -> SqlExists:
+    """Whether the scope has a row that holds a value. ``declared`` (a declared edge gates the
+    output) reads the scope's rows without the measure's authored filter conditions."""
+    where = scope.source_where if declared and scope.source_where is not None else scope.where
     if (
         not isinstance(scope.value, SqlCall)
         or scope.value.name not in {"SUM", "COUNT", "COUNT_IF", "COUNTIF"}
@@ -444,7 +515,7 @@ def _seen_outside_window(scope: LeafScope, *, source_rows: bool = False) -> SqlE
             # when it never matched. Its row count still protects matching NULL sums.
             # Keep every scope filter and leave unsupported/earlier settlement alone.
             where=[
-                *scope.where,
+                *where,
                 *([] if source_rows and is_conditional_case(operand) else [observed]),
             ],
             limit=1,
@@ -815,7 +886,21 @@ def recording_outputs_as(names: Mapping[str, str]) -> Iterator[None]:
             ]
 
 
-def record_zero_output(output: str, measure_ids: Iterable[str]) -> None:
+def record_zero_output(
+    output: str,
+    measure_ids: Iterable[str],
+    absent: Sequence[str] = (),
+    *,
+    zero_means_absent: bool = False,
+) -> None:
+    """``absent`` names the guard's columns marking the groups each measure the output reads
+    never reached (``guard_empty_groups``); a group all of them mark, read as 0, is zero-filled.
+    ``zero_means_absent``: the output reads 0 in no other group (``counts_its_own_key``)."""
     outputs = _zero_outputs.get()
     if outputs is not None:
-        outputs.append({"output": output, "measures": sorted(set(measure_ids))})
+        item: dict[str, Any] = {"output": output, "measures": sorted(set(measure_ids))}
+        if absent:
+            item["absent"] = list(absent)
+        if zero_means_absent:
+            item["zero_means_absent"] = True
+        outputs.append(item)

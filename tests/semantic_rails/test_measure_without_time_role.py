@@ -306,13 +306,21 @@ def test_the_refusal_does_not_say_grouped_by_when_time_has_no_grain(tmp_path):
 
 
 def _mixed_grain_error(package: Path, measures: list[str]) -> dict[str, Any]:
-    """The MIXED_GRAIN_INVALID a real validate raises for these measures grouped by a payment time."""
+    """The MIXED_GRAIN_INVALID a real validate raises for medians of these measures grouped by
+    a payment time (their sums count each claim once per payment time)."""
     engine = Runtime.from_path(str(package))
     try:
         report = engine.validate(
             {
                 "select": [
-                    {"expression": {"kind": "measure", "measure": measure}, "as": f"v{index}"}
+                    {
+                        "expression": {
+                            "kind": "measure",
+                            "measure": measure,
+                            "aggregation": "median",
+                        },
+                        "as": f"v{index}",
+                    }
                     for index, measure in enumerate(measures)
                 ],
                 "group_by": ["dimension.ins_payment_paid_at"],

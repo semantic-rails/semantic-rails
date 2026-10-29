@@ -417,7 +417,9 @@ def _restricted_plan(
     if dimensions:
         call.setdefault("group_by", dimensions)
     try:
-        query = runtime.engine_seed(call, now=kwargs.get("now"))
+        # Read in the grant, like every other call of this caller.
+        seed = {**call, "policy_context": access.context.to_policy_context()}
+        query = runtime.engine_seed(seed, now=kwargs.get("now"))
     except SemanticLayerError:
         raise access_denied() from None
     if call["select"] != granted:

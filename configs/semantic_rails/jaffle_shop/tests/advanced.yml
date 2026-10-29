@@ -370,6 +370,58 @@ tests:
       - dimension.jaffle_store_name: Philadelphia
         revenue_usd: 452138.42
 
+  order_revenue_by_product_type_snapshot:
+    # Grouped by a product dimension, each order counts once, with its whole
+    # total, under every product type it holds, so the groups overlap: their
+    # sum is above all revenue (745893.03). Item revenue splits the totals
+    # instead. Rounded to cents as above. From data/jaffle_shop.duckdb:
+    #   SELECT t.product_type, ROUND(SUM(o.order_total_cents / 100.0), 2)
+    #   FROM jaffle_order o JOIN (SELECT DISTINCT i.order_id, p.product_type
+    #     FROM jaffle_item i JOIN jaffle_product p ON p.sku = i.sku) t
+    #     ON t.order_id = o.order_id GROUP BY 1
+    kind: query_matches_snapshot
+    query:
+      select:
+        - as: revenue
+          expression:
+            kind: call
+            name: ROUND
+            args:
+              - measure.jaffle.revenue_usd
+              - {kind: literal, value: 2}
+      group_by: [dimension.jaffle_product_type]
+    expected_rows:
+      - dimension.jaffle_product_type: beverage
+        revenue: 691101.53
+      - dimension.jaffle_product_type: jaffle
+        revenue: 485267.73
+
+  order_revenue_by_product_name_snapshot:
+    # The same through each item's product, by its name: the SQL above with
+    # p.product_name for p.product_type.
+    kind: query_matches_snapshot
+    query:
+      select:
+        - as: revenue
+          expression:
+            kind: call
+            name: ROUND
+            args:
+              - measure.jaffle.revenue_usd
+              - {kind: literal, value: 2}
+      group_by: [dimension.jaffle_product_name]
+    expected_rows:
+      - {dimension.jaffle_product_name: adele-ade, revenue: 180513.26}
+      - {dimension.jaffle_product_name: chai and mighty, revenue: 190525.27}
+      - {dimension.jaffle_product_name: doctor stew, revenue: 152757.33}
+      - {dimension.jaffle_product_name: flame impala, revenue: 165933.26}
+      - {dimension.jaffle_product_name: "for richer or pourover ", revenue: 219100.91}
+      - {dimension.jaffle_product_name: mel-bun, revenue: 161245.95}
+      - {dimension.jaffle_product_name: "nutellaphone who dis?", revenue: 154085.12}
+      - {dimension.jaffle_product_name: tangaroo, revenue: 203644.15}
+      - {dimension.jaffle_product_name: the krautback, revenue: 156641.3}
+      - {dimension.jaffle_product_name: vanilla ice, revenue: 204183.27}
+
   ordering_customers_by_item_product_type_snapshot:
     # Grouped by an item dimension, a distinct count counts each order (here,
     # each customer) once in every product type it bought.
