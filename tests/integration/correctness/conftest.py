@@ -4,7 +4,8 @@ Each backend runs the ``shop`` package over the same seed (``shop/data/seed.sql`
 in SQL that DuckDB and Postgres both accept). DuckDB always runs. Postgres runs when the
 ``SR_POSTGRES_*`` variables name a server (``make test-postgres`` starts a throwaway one)
 and otherwise skips; ``SR_INTEGRATION_STRICT=1`` turns an unreachable server into a failure.
-The seed goes into a schema of its own, dropped afterwards, so a shared server is safe.
+The seed goes into a schema of its own, dropped afterwards, so a shared server is safe. The
+``vendors`` fixture runs the ``vendors`` package the same way, on each backend in turn.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from semantic_rails.db_parts.adbc import (
     _check_postgres_result_values,
     _postgres_value,
 )
+from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 
@@ -181,3 +183,73 @@ def _postgres(package: Path, options: dict[str, str]) -> Runtime:
         seed=SeedSpec(),
         connection=ConnectionSpec(kind="postgres_native", name="", options=options),
     )
+
+
+VENDORS = Path(__file__).resolve().parent / "vendors"
+VENDOR_NAME = "dimension.vendors_vendor_name"
+
+
+class Vendors:
+    """The ``vendors`` package on one backend: 236 vendors named Vendor 001 to Vendor 236 and
+    one with no name, 236 products by a code (JAF-002, SES-001) and 236 shipments by a UUID."""
+
+    def __init__(self, runtime: Runtime) -> None:
+        self.runtime = runtime
+
+    def names(self, needle: str = "") -> list[str]:
+        """Every known name holding ``needle`` (any case), in order: the reference."""
+        rows = _rows(
+            self.runtime,
+            "SELECT vendor_name FROM vendors WHERE vendor_name IS NOT NULL ORDER BY vendor_name",
+        )
+        return [name for (name,) in rows if needle.lower() in name.lower()]
+
+    def page(self, dimension_id: str = VENDOR_NAME, **arguments: Any) -> dict[str, Any]:
+        return valid_values_payload(
+            self.runtime, dimension_id=dimension_id, allow_live_query=True, **arguments
+        )
+
+
+@pytest.fixture(scope="module", params=["duckdb", "postgres"])
+def vendors(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[Vendors]:
+    package = tmp_path_factory.mktemp("vendors") / "vendors"
+    shutil.copytree(VENDORS, package)
+    if request.param == "duckdb":
+        runtime = _runtime(package)
+        try:
+            _rows(runtime, "SELECT 1")  # the fixture owns the connection
+            yield Vendors(runtime)
+        finally:
+            runtime.close()
+        return
+    required = ("SR_POSTGRES_HOST", "SR_POSTGRES_USER", "SR_POSTGRES_PASSWORD")
+    if any(not os.environ.get(name, "").strip() for name in required):
+        pytest.skip("postgres: SR_POSTGRES_* unset (run through with_postgres.sh)")
+    schema = f"sr_vendors_{uuid.uuid4().hex[:12]}"
+    options = {
+        "host_env": "SR_POSTGRES_HOST",
+        "port": os.environ.get("SR_POSTGRES_PORT", "5433"),
+        "database": os.environ.get("SR_POSTGRES_DATABASE", "sr_jaffle"),
+        "user_env": "SR_POSTGRES_USER",
+        "password_env": "SR_POSTGRES_PASSWORD",
+    }
+    admin = _postgres(package, options)
+    try:
+        _rows(admin, f"CREATE SCHEMA {schema}")
+    except Exception as exc:
+        admin.close()
+        if _strict():
+            raise
+        pytest.skip(f"postgres: unreachable ({type(exc).__name__})")
+    runtime = _postgres(package, {**options, "schema": schema})
+    try:
+        _rows(runtime, (VENDORS / "data" / "seed.sql").read_text(encoding="utf-8"))
+        yield Vendors(runtime)
+    finally:
+        runtime.close()
+        try:
+            _rows(admin, f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        finally:
+            admin.close()

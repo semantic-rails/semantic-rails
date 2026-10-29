@@ -476,8 +476,8 @@ def test_a_comparison_text_word_on_a_column_no_one_dimension_declares_is_refused
 
 
 ORDER_COUNT = "measure.shop.order_count"
+CUSTOMER_ID = "dimension.shop_order_customer_id"
 NOT_TEXT = [
-    (ORDER_COUNT, "dimension.shop_order_customer_id", "id"),
     (ORDER_COUNT, "dimension.shop_order_ordered_at", "timestamp"),
     ("measure.shop.seats", "dimension.shop_account_day_snapshot_day", "date"),
 ]
@@ -504,6 +504,27 @@ def test_a_text_word_on_a_value_that_is_not_text_is_refused_at_its_path(
         assert error["details"]["path"] == path
         assert data_type in error["message"]
         assert "starts_with" not in error["recovery_hints"][0]["message"]
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+def test_a_text_word_reads_an_id_as_its_text_on_every_surface(request, backend_name):
+    # Customer ids are integers, and only 101's ends in 1: it placed orders 1, 3 and 8.
+    runtime = _runtime(request, backend_name)
+    condition = {"field": CUSTOMER_ID, "op": "ends_with", "value": "1"}
+    aggregate = {"kind": "aggregate", "measure": ORDER_COUNT, "filter": {"all": [condition]}}
+    column = {"kind": "column", "column": "customer_id", "entity": "entity.shop_order"}
+    calls = {
+        "where": {"select": [ORDERS], "where": [condition]},
+        "aggregate filter": {"select": [{"expression": aggregate, "as": "orders"}]},
+        "comparison": _count_if("ends_with", "1", column),
+    }
+    ids = _reference(request, backend_name, "SELECT customer_id FROM orders")
+    expected = sum(str(customer).endswith("1") for (customer,) in ids)
+    counts = {
+        surface: [next(iter(row.values())) for row in runtime.query(call)["rows"]]
+        for surface, call in calls.items()
+    }
+    assert counts == dict.fromkeys(calls, [expected]) == dict.fromkeys(calls, [3])
 
 
 def test_a_comparison_text_word_on_a_timestamp_column_is_refused_at_its_path(duckdb_backend):

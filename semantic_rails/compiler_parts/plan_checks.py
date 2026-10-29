@@ -1617,7 +1617,7 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
     """
     operators.refuse_unknown_spelling(dim, item.op, item.value, f"{path}.value")
     # ``missing`` takes a boolean, not a value of the dimension; the text words take text, of a
-    # dimension that is text.
+    # dimension that is text or an id.
     operators.check_text_operand(item.op, getattr(dim, "data_type", ""), f"{path}.op", dim.id)
     if item.op == "missing" or item.op in operators.TEXT_WORDS:
         return

@@ -357,11 +357,13 @@ class SqlBinary:
 @dataclass(frozen=True)
 class SqlLike:
     """``fold(expr) [NOT] LIKE fold(pattern)``, both sides folded by the dialect's one lowercase
-    function; ``\\`` escapes ``%``, ``_`` and itself in ``pattern``."""
+    function; ``\\`` escapes ``%``, ``_`` and itself in ``pattern``. ``as_text`` reads ``expr``
+    through the dialect's cast to text first (an id stored as a number or a UUID)."""
 
     expr: SqlExpr
     pattern: str
     negated: bool = False
+    as_text: bool = False
 
 
 @dataclass(frozen=True)
@@ -657,7 +659,13 @@ def filter_rejects_null(op: Any, value: Any) -> bool:
 
 
 def build_filter_condition(
-    expr: SqlExpr, op: Any, value: Any, *, path: str = "where", temporal: bool = False
+    expr: SqlExpr,
+    op: Any,
+    value: Any,
+    *,
+    path: str = "where",
+    temporal: bool = False,
+    as_text: bool = False,
 ) -> SqlExpr:
     """The SQL condition for a ``{field, op, value}`` filter, read from the operator table.
 
@@ -666,7 +674,8 @@ def build_filter_condition(
     portable form on every dialect. The text words are case-insensitive literal matches, and
     their ``not_`` forms keep unknown rows the same way.
     ``temporal`` says the field is a date or timestamp, so its text values are temporal
-    literals.
+    literals. ``as_text`` says the field is an id (``operators.casts_to_text``), which a text
+    word reads through a cast to its text; every other word compares it as stored.
     """
 
     def literal(item: Any) -> SqlLiteral:
@@ -694,7 +703,7 @@ def build_filter_condition(
     if word in operators.RANGE_WORDS:
         return SqlBinary(expr, operators.COMPARISON_SQL[word], literal(value))
     negated = word in operators.NEGATED_WORDS
-    like = SqlLike(expr, operators.like_pattern(word, str(value)), negated)
+    like = SqlLike(expr, operators.like_pattern(word, str(value)), negated, as_text=as_text)
     return SqlBinary(like, "OR", SqlIsNull(expr=expr)) if negated else like
 
 
