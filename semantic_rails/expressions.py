@@ -1131,14 +1131,74 @@ def parameter_schema_for_aggregation(aggregation: str) -> dict[str, str]:
     return dict(_PARAMETER_SCHEMAS_BY_AGGREGATION.get(str(aggregation or "").lower(), {}))
 
 
+def filter_word(expr: SemanticExpr) -> str:
+    """The filter word a comparison reads as ``where`` does, or "": a word that compares a value
+    (``is``, ``not``, the ranges, ``missing``), on a column, against a literal, ``is`` and ``not``
+    against a value other than true, false or null (those keep their SQL null tests)."""
+    if not (
+        isinstance(expr, ComparisonExpr)
+        and isinstance(expr.left, ColumnRefExpr)
+        and isinstance(expr.right, LiteralExpr)
+    ):
+        return ""
+    word = " ".join(expr.op.lower().split())
+    if word not in operators.NUMBER_WORDS:
+        return ""
+    value = expr.right.value
+    if word in {"is", "not"} and (value is None or isinstance(value, bool)):
+        return ""
+    return word
+
+
 def _comparison(op: str, left: SemanticExpr, right: SemanticExpr, path: str) -> SemanticExpr:
     """A comparison whose op is a filter word reads as that word's ``where`` filter (see
-    ``operators``): ``gt``/``gte``/``lt``/``lte`` and ``is`` as their SQL comparison, ``not``
-    keeping rows with no value, and ``missing`` with a literal true or false as a null test. A
-    text word stays a word (``bind`` reads it as its dimension's filter); a SQL op is kept."""
+    ``operators``). On a column against a literal the word is kept, and ``bind`` reads it as the
+    filter on the column's dimension: a list as membership, declared unknown values as no value.
+    Elsewhere ``gt``/``gte``/``lt``/``lte`` and ``is`` are their SQL comparison, ``not`` keeps
+    rows with no value, and ``missing`` with a literal true or false is a null test. A text word
+    stays a word (``bind`` reads it as its dimension's filter); a SQL op is kept."""
     word = " ".join(op.lower().split())
     # The right side's literal value; any other expression is neither a flag nor null.
     literal: Any = right.value if isinstance(right, LiteralExpr) else ...
+    if word == "missing" and not isinstance(literal, bool):
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"{path}.right: 'missing' takes a literal true or false",
+            details={
+                "path": f"{path}.right",
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": (
+                            'Write "right": {"kind": "literal", "value": true} for rows '
+                            "with no value, or false for rows with one."
+                        ),
+                    }
+                ],
+            },
+        )
+    kept = ComparisonExpr(op=word, left=left, right=right)
+    if filter_word(kept):
+        operators.check_value(word, literal, path=f"{path}.right")
+        return kept
+    if isinstance(literal, (list, tuple)):
+        # A list compares only as a filter word's value on a column; SQL would read it as text.
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"{path}.right: a list is the value of 'is' or 'not' on a column",
+            details={
+                "path": f"{path}.right",
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": (
+                            'For membership in a list write {"kind": "in", "expr": ..., '
+                            '"values": [...]}.'
+                        ),
+                    }
+                ],
+            },
+        )
     if word in operators.RANGE_WORDS:
         return ComparisonExpr(op=operators.COMPARISON_SQL[word], left=left, right=right)
     if word == "is" and not isinstance(literal, bool):
@@ -1152,23 +1212,6 @@ def _comparison(op: str, left: SemanticExpr, right: SemanticExpr, path: str) -> 
         unknown = ComparisonExpr(op="=", left=left, right=LiteralExpr(value=None))
         return BooleanExpr(op="or", args=[differs, unknown])
     if word == "missing":
-        if not isinstance(literal, bool):
-            raise SemanticLayerError(
-                "INVALID_EXPRESSION_AST",
-                f"{path}.right: 'missing' takes a literal true or false",
-                details={
-                    "path": f"{path}.right",
-                    "recovery_hints": [
-                        {
-                            "code": "FIX_QUERY_CALL",
-                            "message": (
-                                'Write "right": {"kind": "literal", "value": true} for rows '
-                                "with no value, or false for rows with one."
-                            ),
-                        }
-                    ],
-                },
-            )
         sql = operators.COMPARISON_SQL["is" if literal else "not"]
         return ComparisonExpr(op=sql, left=left, right=LiteralExpr(value=None))
     return ComparisonExpr(op=op, left=left, right=right)

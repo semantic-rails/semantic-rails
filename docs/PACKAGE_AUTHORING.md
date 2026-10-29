@@ -758,8 +758,9 @@ kind names must match exactly.
   seeing its values ("the 3 biggest accounts in EMEA"); see below. A `deny` or
   `withhold_values` policy covers the measure or metric it lists, not the columns that
   measure reads: an `aggregate_if` over such a column still answers, though a raw-column
-  refusal's hint never offers that aggregate to a caller the policy names. To keep a column
-  from a caller, declare a dimension over it and put a `deny` or `hidden` policy on that
+  refusal's hint never offers that aggregate to a caller the policy names (unless the measure
+  is also hidden from them: the hint then reads as if the package didn't have it). To keep a
+  column from a caller, declare a dimension over it and put a `deny` or `hidden` policy on that
   dimension, as above.
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to

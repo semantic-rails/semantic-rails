@@ -946,6 +946,26 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
             allowed=words,
             closest_matches=closest,
         )
+    if (
+        spelling in {"is", "not"}
+        and context.config is not None
+        and context.column_dimensions is not None
+        and isinstance(left, Mapping)
+        and left.get("kind") == "column"
+        and isinstance(right, Mapping)
+        and right.get("kind") == "literal"
+    ):
+        # A value its dimension reads as unknown is refused here, at its path, as in where.
+        from .expressions import resolve_table_entity
+
+        entity = str(left.get("entity") or "").strip() or resolve_table_entity(
+            context.config, str(left.get("table") or "")
+        )
+        dims = context.column_dimensions(entity or "", str(left.get("column")), context.config)
+        if dims and len({tuple(dim.unknown_values or ()) for dim in dims}) == 1:
+            operators.refuse_unknown_spelling(
+                dims[0], spelling, right.get("value"), f"{path}.right", comparison=True
+            )
     word = operators.word_of(spelling)
     if word not in operators.TEXT_WORDS:
         return None

@@ -1456,30 +1456,7 @@ def _validate_where_value_type(dim, item, path: str = "where") -> None:
 
     Skip dimensions without a classified catalog data type.
     """
-    unknown = [
-        value
-        for value in operators.values_of(item.op, item.value)
-        if value in list(getattr(dim, "unknown_values", None) or [])
-    ]
-    if unknown:
-        # The dimension reads that spelling as unknown, so is / not never sees it.
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"{path}.value: {unknown[0]!r} is how {dim.id} records an unknown value",
-            details={
-                "path": f"{path}.value",
-                "unknown_values": list(dim.unknown_values),
-                "recovery_hints": [
-                    {
-                        "code": "FIX_QUERY_CALL",
-                        "message": (
-                            f'Say missing: {{"field": "{dim.id}", "op": "missing", "value": '
-                            f"{'true' if item.op == 'is' else 'false'}}}."
-                        ),
-                    }
-                ],
-            },
-        )
+    operators.refuse_unknown_spelling(dim, item.op, item.value, f"{path}.value")
     # ``missing`` takes a boolean, not a value of the dimension; the text words take text, of a
     # dimension that is text.
     operators.check_text_operand(item.op, getattr(dim, "data_type", ""), f"{path}.op", dim.id)

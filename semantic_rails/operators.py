@@ -464,6 +464,33 @@ def values_of(word: str, value: Any) -> list[Any]:
     return list(value) if isinstance(value, (list, tuple)) else [value]
 
 
+def refuse_unknown_spelling(
+    dim: Any, word: str, value: Any, at: str, *, comparison: bool = False
+) -> None:
+    """Refuse an ``is``/``not`` value (at ``at``) that the dimension declares as an unknown
+    spelling: the dimension reads it as no value, so ``is`` / ``not`` never sees it. The hint
+    says ``missing`` as a where filter, or as a ``comparison``."""
+    declared = list(getattr(dim, "unknown_values", None) or [])
+    unknown = [row for row in values_of(word, value) if row in declared]
+    if not unknown:
+        return
+    flag = "true" if word == "is" else "false"
+    fix = (
+        f'Write "op": "missing" and "right": {{"kind": "literal", "value": {flag}}}.'
+        if comparison
+        else f'Say missing: {{"field": "{dim.id}", "op": "missing", "value": {flag}}}.'
+    )
+    raise SemanticLayerError(
+        "INVALID_QUERY",
+        f"{at}: {unknown[0]!r} is how {dim.id} records an unknown value",
+        details={
+            "path": at,
+            "unknown_values": declared,
+            "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": fix}],
+        },
+    )
+
+
 def rejects_unknown(word: str, value: Any) -> bool:
     """Whether a row whose value is unknown fails the condition."""
     if word == "missing":

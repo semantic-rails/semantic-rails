@@ -29,6 +29,7 @@ from .expressions import (
     InExpr,
     LiteralExpr,
     SemanticExpr,
+    filter_word,
     parse_config_expression,
     parse_semantic_expression,
     reads_temporal_value,
@@ -138,6 +139,12 @@ def _semantic_expr_to_sql(
             op,
             _semantic_expr_to_sql(expr.right, default_alias=default_alias, warehouse=warehouse),
         )
+    if isinstance(expr, ComparisonExpr) and (word := filter_word(expr)):
+        # A filter word on a column reads as a where filter on it (a list as membership).
+        assert isinstance(expr.right, LiteralExpr)
+        column = _semantic_expr_to_sql(expr.left, default_alias=default_alias, warehouse=warehouse)
+        temporal = _temporal(expr.left)
+        return build_filter_condition(column, word, expr.right.value, temporal=temporal)
     if isinstance(expr, ComparisonExpr):
         return build_comparison_condition(
             _operand_sql(expr.left, _temporal(expr.right), default_alias, warehouse),

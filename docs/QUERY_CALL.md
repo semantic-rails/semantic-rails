@@ -945,7 +945,13 @@ expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NU
 unknown. A `comparison`'s `op` is a SQL comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`) or a filter
 word, read as in `where`: `gt`, `gte`, `lt`, `lte` and `is` as `>`, `>=`, `<`, `<=` and `=`; `not`
 as `<>` that keeps rows with no value; and `missing`, with a literal `true` or `false` `right`, as
-a test for no value. It also takes a text word as its `op`, with a text literal `right`
+a test for no value. A filter word whose `left` is a column and whose `right` is a literal is
+exactly the `where` filter on the dimension over that column: `is` or `not` with a list is
+membership (`is ["a", "b"]` keeps either, `not ["a"]` keeps every other row and those with no
+value), the dimension's `unknown_values` read as no value (so `missing` counts them, and `is` one
+of them is refused as in `where`), and a column no dimension declares reads as itself. A list
+anywhere else, or after a SQL comparison, is refused: write `in`. It also takes a text word as its
+`op`, with a text literal `right`
 (`{"kind": "comparison", "op": "starts_with", "left": <column>, "right": {"kind": "literal",
 "value": "K"}}`). Its `left` is a column that exactly one dimension declares, named as the
 warehouse names columns (the exact name first, then an unquoted name in any ASCII case on every

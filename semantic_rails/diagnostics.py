@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import date, timedelta
 from difflib import get_close_matches
 from typing import Any
@@ -1153,36 +1153,12 @@ def recovery_hints_for_error(
                     "data_type": data_type,
                 }
             ]
-        kind = str(details.get("expression_kind", "") or "")
-        if kind and details.get("supported_kinds"):
-            # A row-level kind (a raw column, ...) as a query value (see ast).
-            # A policy that keeps a measure over this column covers the measure, not the
-            # column: the hint offers no aggregate over it (see enrich_column_expression).
-            kept = bool(details.get("column_kept_by_policy"))
-            message = (
-                f"'{kind}' reads row values, and a select item aggregates rows: write an id or one "
-                f"of the kinds {list(details['supported_kinds'])}"
-            )
-            message += "." if kept else " (aggregate_if aggregates row values)."
-            if kept:
-                message += (
-                    " To split or filter by a column, name a dimension on it in group_by or where."
-                )
-            elif kind == "column":
-                owner = {key: details[key] for key in ("entity", "table") if details.get(key)}
-                column = {"kind": "column", "column": details.get("column") or "<column>"}
-                call: dict[str, Any] = {
-                    "kind": "aggregate_if",
-                    "aggregation": "sum",
-                    "value": {**column, **(owner or {"entity": "<entity id>"})},
-                }
-                message += (
-                    f" To aggregate this column, write {json.dumps(call)}, with count, avg, "
-                    "min, max or another aggregation; its value may also be a case or a call such "
-                    "as LENGTH over columns, and a condition keeps only the rows it matches. To "
-                    "split or filter by a column, name a dimension on it in group_by or where."
-                )
-            return [{"code": "FIX_QUERY_CALL", "message": message}]
+        if details.get("expression_kind") and details.get("supported_kinds"):
+            # A row-level kind (a raw column, ...) as a query value (see ast); a raw column a
+            # policy keeps has its hint already (see enrich_column_expression).
+            if details.get("recovery_hints"):
+                return list(details["recovery_hints"])
+            return _row_value_hints(details, offer=True)
         return list(details.get("recovery_hints", []) or [])
     if code == "QUERY_EXECUTION_ERROR" and details.get("segment_id"):
         segment = details["segment_id"]
@@ -1426,6 +1402,34 @@ def enrich_expression_ast_error(
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
+def _row_value_hints(details: Mapping[str, Any], *, offer: bool) -> list[dict[str, Any]]:
+    """The hint for a row-level kind as a select item. With ``offer`` a raw column's hint
+    writes the ``aggregate_if`` call over it; without, it names no aggregate."""
+    kind = str(details.get("expression_kind", "") or "")
+    message = (
+        f"'{kind}' reads row values, and a select item aggregates rows: write an id or one "
+        f"of the kinds {list(details['supported_kinds'])}"
+    )
+    message += " (aggregate_if aggregates row values)." if offer else "."
+    if offer and kind == "column":
+        owner = {key: details[key] for key in ("entity", "table") if details.get(key)}
+        column = {"kind": "column", "column": details.get("column") or "<column>"}
+        call: dict[str, Any] = {
+            "kind": "aggregate_if",
+            "aggregation": "sum",
+            "value": {**column, **(owner or {"entity": "<entity id>"})},
+        }
+        message += (
+            f" To aggregate this column, write {json.dumps(call)}, with count, avg, "
+            "min, max or another aggregation; its value may also be a case or a call such "
+            "as LENGTH over columns, and a condition keeps only the rows it matches. To "
+            "split or filter by a column, name a dimension on it in group_by or where."
+        )
+    elif not offer:
+        message += " To split or filter by a column, name a dimension on it in group_by or where."
+    return [{"code": "FIX_QUERY_CALL", "message": message}]
+
+
 def enrich_column_expression(
     exc: SemanticLayerError,
     config: PackageConfig,
@@ -1434,7 +1438,8 @@ def enrich_column_expression(
     """Attach ``closest_matches`` to a refused raw ``column`` expression: the dimensions defined
     on that column, those of its entity or table when it names one that has any. When the
     column is one of ``kept_columns()`` (read by a measure a policy keeps from the caller),
-    mark it: its hint then offers no aggregate over the column."""
+    its hint offers no aggregate over the column. That hint is the error's only trace of the
+    policy: no detail says a policy keeps the column."""
     details = dict(exc.details or {})
     column = str(details.get("column") or "").lower()
     if exc.code != "INVALID_QUERY" or details.get("expression_kind") != "column" or not column:
@@ -1453,7 +1458,7 @@ def enrich_column_expression(
         if matches:
             details["closest_matches"] = matches[:10]
     if column in set(kept_columns()):
-        details["column_kept_by_policy"] = True
+        details["recovery_hints"] = _row_value_hints(details, offer=False)
     if details == dict(exc.details or {}):
         return exc
     return SemanticLayerError(exc.code, str(exc), details=details)

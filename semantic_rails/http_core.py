@@ -60,7 +60,6 @@ from .request_context import (
 )
 from .request_payload import identity_claim_refusal, refuse_identity_claims
 from .runtime import Runtime
-from .schema import base_of
 
 __all__ = [
     "API_VERSION",
@@ -371,7 +370,7 @@ class SemanticHTTPService:
                     "roles": context.roles,
                 }
                 enriched = enrich_column_expression(
-                    enriched, config, lambda: kept_column_names(base_of(config), scope)
+                    enriched, config, lambda: kept_column_names(config, scope)
                 )
                 enriched = enrich_path_not_found(enriched, config)
             error_issue = exception_issue(enriched, stage=stage)

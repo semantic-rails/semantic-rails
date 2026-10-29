@@ -502,6 +502,8 @@ def test_a_raw_column_hint_offers_no_aggregate_over_a_kept_measures_column(
     hint = _hint(error)
     assert error["code"] == "INVALID_QUERY"
     assert '"kind": "aggregate_if"' not in hint and "order_total_cents" not in hint
+    # The hint is the policy's only trace: no detail says a policy keeps the column.
+    assert "kept_by_policy" not in json.dumps(error) and "recovery_hints" not in error["details"]
     assert hint.endswith(
         "To split or filter by a column, name a dimension on it in group_by or where."
     )

@@ -150,7 +150,6 @@ from .runtime_parts.responses import (
     resolve_sql_profile,
     resolve_verbosity,
 )
-from .schema import base_of
 from .scope import classify_question
 from .seed_provenance import (
     missing_duckdb_relations,
@@ -251,7 +250,7 @@ def _enrich_runtime_error(
     if caller is not None:
         scope = {key: caller.get(key, "") for key in ("environment", "audience")}
         scope["roles"] = caller.get("roles", ())
-    exc = enrich_column_expression(exc, config, lambda: kept_column_names(base_of(config), scope))
+    exc = enrich_column_expression(exc, config, lambda: kept_column_names(config, scope))
     exc = enrich_path_not_found(exc, config)
     return exc
 

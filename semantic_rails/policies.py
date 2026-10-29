@@ -59,7 +59,7 @@ from .policy_rules import visible_only_listed as _visible_only_listed
 from .query_call import refusal
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
+from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, base_of, require_base
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 
 WITHHOLD = "withhold_values"
@@ -547,11 +547,12 @@ def withheld_measure_ids(
 
 
 def kept_column_names(config: PackageConfig, scope: Mapping[str, Any] | None) -> frozenset[str]:
-    """The column names, lowercased, that a measure reads when a ``deny`` or
+    """The column names, lowercased, that a measure of ``config`` reads when a ``deny`` or
     ``withhold_values`` policy keeps it from the caller in ``scope`` (its ``environment``,
     ``audience`` and ``roles``), directly or as a kept metric's input; with no caller known,
     from anyone. Such a policy covers the measure, not its columns, so a hint offers no
-    aggregate over them."""
+    aggregate over them. ``config`` is the caller's view: a measure hidden from the caller is
+    one the package doesn't have, so its columns are never kept."""
 
     def keeps(policy: SemanticPolicyConfig, object_id: str) -> bool:
         if _policy_action(policy) not in {"deny", WITHHOLD}:
@@ -560,14 +561,15 @@ def kept_column_names(config: PackageConfig, scope: Mapping[str, Any] | None) ->
             return not policy.object_ids or object_id in policy.object_ids
         return _policy_matches(policy, object_id=object_id, **scope)
 
-    measures = {row.id for row in config.measures}
+    base = base_of(config)
+    measures = {row.id for row in base.measures}
     kept = {
         object_id
-        for object_id in [*measures, *(row.id for row in config.metric_recipes)]
-        if any(keeps(policy, object_id) for policy in config.semantic_policies)
+        for object_id in [*measures, *(row.id for row in base.metric_recipes)]
+        if any(keeps(policy, object_id) for policy in base.semantic_policies)
     }
     recipes = kept - measures
-    kept |= bind_metadata_objects(config, recipes) if recipes else frozenset()
+    kept |= bind_metadata_objects(base, recipes) if recipes else frozenset()
     return frozenset(
         ref.column.lower()
         for row in config.measures
