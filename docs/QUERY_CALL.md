@@ -1743,7 +1743,11 @@ condition: a group whose rows all fail it reads `0`, one whose matching rows all
 amount reads `NULL`. A sum of a `CASE` with no `ELSE` follows that rule; an explicit non-NULL
 `ELSE` (including `ELSE 0`) contributes on every row. So does a `CASE` with an `ELSE` below a
 formula's root (`amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2 END`). Every output beside
-a `distribution` settles as it does without it. One shape can't tell the two apart: a `CASE`
+a `distribution` settles as it does without it, except in three shapes that read `NULL` beside it
+where they read `0` alone: a sum of two columns of one table (goods plus shipping refunds) under
+`observation_scope: "query"` when no group in the answer has both known; a `COALESCE` of a
+filtered sum over a bounded window, in its empty periods; and a filtered sum or count under a
+declared edge (`zero_through`), in its loaded periods. One shape can't tell the two apart: a `CASE`
 with no `ELSE` below the root (`1.1 * CASE WHEN store_id = 'a' THEN amount END`) reads `0` in a
 group whose matching amounts are all NULL, where the measure has a value in scope. Write the
 condition at the root instead (`CASE WHEN store_id = 'a' THEN amount * 1.1 END`).
@@ -1761,6 +1765,23 @@ filter's scope, and `NULL` where it has none. So `large_order_count is 0` ("cust
 large orders") keeps every customer without one when some order in scope is large, and keeps
 nobody when none is. `NULL` fails every threshold, `is 0`, `lt 1` and `not 0` included. Only a count or
 sum threshold that 0 passes reaches an entity with no rows at all.
+
+**Distributions.** A `distribution` settles each entity's value before it aggregates. An input
+over several measures reads each one as a sum grouped by the entity does: `0` for an entity with
+no rows of it where its measure has data in scope (outside a bounded window too, and under
+`dataset` outside the call's `where`), `NULL` where it has none. "Median net order value", revenue less goods refunds
+per order, counts an order with no refund row at its amount, in a month with no refund at all
+too. An order whose amount is unknown, or whose only refund has no goods amount, reads `NULL`
+and is left out. A percentile, `min` and `max` read the same values. An entity enters a period
+where one of the input's measures has rows for it there, after that measure's own `filter`: a
+bounded window never adds an order to a month it has no rows in, as a call grouped by order
+fills it in. A sum whose CASE has no ELSE skips the rows its conditions fail, so beside another
+measure it settles too: "median revenue excluding store b" per customer, revenue less store b
+sales, reads `0` for store b at a customer with no store b order, as grouped by customer.
+Measures that read the same rows, each of them every row (the declared average order value:
+revenue over order count), need no settling. Under `dataset`, a `where` beside an entity filter
+refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GROUPS_UNSETTLED`,
+naming it, as it refuses the call grouped by order.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an
@@ -1782,7 +1803,12 @@ column it sums holds a value yet: the metric reads `0` there and `NULL` with `NO
 after the edge. "Each week's refund rate", refunds over revenue, reads `0.0` in a loaded week of
 paid orders before the first refund; a refunded order whose amount is NULL leaves its week
 `NULL`. Under `observation_scope: "query"`, the call's
-`where` must still keep a row. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
+`where` must still keep a row. The edge is the measure's own table's, however far away the
+group's column is: "weekly revenue by customer region" (orders, then customers, then regions)
+reads `0` in a week the orders' load log covers with no order and `NULL` before the first order
+and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
+read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
+not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
 empty period reads `0` only while the measure has data inside the window. Those warehouses
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).

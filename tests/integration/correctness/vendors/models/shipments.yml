@@ -3,5 +3,7 @@ model:
   label: Shipments
   relation: shipments
   entities: {shipment: {}}
+  dimensions:
+    owner: {label: Owner, column: owner_id, kind: categorical}
   measures:
     shipment_count: {label: Shipments, kind: entity_count, entity_key: shipment_id}

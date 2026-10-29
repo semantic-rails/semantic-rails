@@ -40,7 +40,14 @@ from .sql_ast import (
 from .sql_preparation import ParameterSlot, checked_slot_value, parameters_denied
 
 ROW_FILTER = "row_filter"
-_SLOT_TYPES = frozenset({"string", "integer", "boolean"})
+# The dimension types each slot type compares. A UUID column is a key (``id``) or categorical
+# (``string``) dimension: the warehouse's UUID type, or its canonical text where there is none.
+_SLOT_COLUMNS = {
+    "string": {"string", "id"},
+    "integer": {"integer", "id"},
+    "boolean": {"boolean", "id"},
+    "uuid": {"string", "id"},
+}
 _COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -71,7 +78,7 @@ class RowFilter:
     def for_value(self, value: Any) -> RowFilter:
         """This filter for one request's attribute value, or a denial naming the attribute.
 
-        A list of strings or integers matches any of its items, each checked against the
+        A list of strings, integers or UUIDs matches any of its items, each checked against the
         slot's type; an empty list leaves no row to read, so it is denied, never bound."""
         if type(value) is tuple and not value:
             raise parameters_denied("empty_attribute_list", attribute=self.slot.attribute)
@@ -168,10 +175,11 @@ def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter
         raise invalid("'dimension' must name a dimension of this package")
     declared = dimension.data_type
     slot_type = str(policy.config.get("type", declared))
-    if slot_type not in _SLOT_TYPES or declared not in {slot_type, "id"}:
+    if declared not in _SLOT_COLUMNS.get(slot_type, ()):
         raise invalid(
             f"dimension '{dimension.id}' has type {declared!r}; a row filter compares a "
-            "string, integer or boolean column (an id dimension needs 'type')"
+            "string, integer or boolean column, or a UUID column as type 'uuid' (an id "
+            "dimension needs 'type')"
         )
     entities = {row.id: row for row in config.entities}
     entity = entities.get(dimension.entity)

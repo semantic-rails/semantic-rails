@@ -847,6 +847,18 @@ kind names must match exactly.
   (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
   of nothing).
 
+  A UUID column (an account or owner key) takes `type: uuid` on its id or categorical
+  dimension. The attribute is a string holding a UUID: 32 hex digits in any case, hyphenated
+  `8-4-4-4-12` or not, in braces or not. It binds as its lower-case hyphenated text, so
+  `3F2504E0-4F89-11D3-9A0C-0305E82C3301` and `{3f2504e0-4f89-11d3-9a0c-0305e82c3301}` read
+  the same rows. Any other value, another string included, is of another type: the request
+  is denied (`POLICY_DENIED`, `attribute_type_mismatch`, naming the attribute, never its
+  value) by `validate` and every other surface, before any SQL runs. Postgres compares
+  `<column> = CAST(? AS UUID)`, so the column must be `uuid` there (a UUID kept as text takes
+  `type: string`) and its index still serves the filter; DuckDB reads the value in the
+  column's own type; on Snowflake, which has no UUID type, the column holds the lower-case
+  hyphenated text.
+
   **What a filtered caller sees.** Each caller reads a *visible database*: the package's
   data with every row they can't see removed, and every answer (totals, groups, shares,
   distinct counts, `EXISTS` filters, windows, prior periods, coverage dates and
@@ -3191,6 +3203,15 @@ load log's own model refuses the query for the callers it applies to (`POLICY_DE
 `row_filter_on_load_log`), so the log is never read unfiltered. ClickHouse reads no loaded
 coverage, so a ClickHouse package refuses any value but `data` (`INVALID_CONFIG`). Name one
 load log per load job; a model that another job loads declares its own.
+
+**Whose edge.** A measure's periods are covered by its own table's edge, however far away the
+column it is grouped by lives. Weekly revenue by customer region (orders, then customers, then
+regions) reads `0` in a week the orders' load log covers with no order, and `NULL` before the
+first order and past the log, as revenue by customer tier does. A load log declared only on
+the customers model says how far signups are loaded, not orders: the orders read with edge
+`data` (`0` through their last row, `PARTIAL_DATA` where a week runs past it). An order whose
+customer the customers table doesn't hold yet reads under no region (a `NULL` group); a
+customers table that lags never drops it, and never changes which weeks read `0`.
 
 The same holds with no time window: "how many enterprise accounts have we ever had?" reads `0`
 before the first one signs up, once the table holds a row the edge lets through, and `NULL`
