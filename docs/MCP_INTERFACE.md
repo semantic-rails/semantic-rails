@@ -1510,7 +1510,9 @@ expression kind names the received kind and its request path (for example,
 A `PATH_NOT_FOUND` with no relationship chain between its start and target, or whose start
 reaches no entity, also carries `details.shared_key_columns`: the columns of either side's
 declared key that both hold, each saying what it identifies, spelled as the key declares them
-(empty when they share none), and, with any, `shared_key_unique_on_target`: whether they hold
+(the target's spelling when both keys hold one; empty when they share none), with
+`shared_key_columns_on_start` beside it when the start spells one with other capitals, and,
+with any, `shared_key_unique_on_target`: whether they hold
 the target's whole key, so that each start row matches at most one target row on them. Columns
 that only date the rows (a load, snapshot or validity date, typed as a date or time on either
 side) are shared only when they are one side's whole key, as a calendar's date is. When no
@@ -1519,7 +1521,8 @@ on which one start row can match many target rows (part of the target's key, or 
 key). The caller's split hint (`drop_or_split`, `isolated_source_entity`) names the shared
 columns and, when they aren't the target's whole key, says that a total across rows matched on
 them counts a start row once per target row. The author hint then gives the
-`graph.relationships` row on those columns (`via:` and `target:`) and both cardinalities it can
+`graph.relationships` row on those columns (`via:` as the start spells them, `target:` as the
+target does, so the row loads) and both cardinalities it can
 declare, since which one holds depends on rows the engine doesn't read: `many_to_one` when no
 two target rows hold the same values (or, for versions, none valid at the same time, with their
 window in `temporal_validity:`), so each start row meets one target row; otherwise
