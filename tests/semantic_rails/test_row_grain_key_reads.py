@@ -20,6 +20,10 @@ EXCLUDED = ("architect_", "dbt_artifacts.py", "upgrade/", "repl/")
 SWITCHED = {
     ("cli/commands/project.py", "cmd_project_validate"),
     ("compiler_parts/bind.py", "_measure_count_distinct_key_columns"),
+    # A child's values join its parent on the parent's declared key; rows with no key of their
+    # own are named by their model.
+    ("compiler_parts/child_values.py", "child_values_route"),
+    ("compiler_parts/child_values.py", "child_values_step"),
     ("compiler_parts/bind.py", "_synthetic_conditional_measure"),
     ("compiler_parts/indexes.py", "_measure_has_source_row_key"),
     # A distinct count across links needs no row key; every other aggregation reads `.key`.
