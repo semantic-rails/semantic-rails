@@ -621,8 +621,14 @@ def test_two_groupings_across_one_link_read_one_stored_row(shop):
             {"select": ["measure.shop.bookings"], "group_by": [DEPARTMENT]},
             "is not defined over one row per 'entity.shop_room_bookings' key",
         ),
-        (  # not a link: bookings are not on the rooms' relation
-            {"select": [HEADCOUNT], "group_by": ["dimension.shop_room_bookings_booker"]},
+        (  # not a link: bookings are not on the rooms' relation, and over a time window a
+            # lookup before the one-to-many hop stays refused (without one, the ledger's
+            # shop/not-a-link-people-by-booker counts each person under every booker of their room)
+            {
+                "select": [HEADCOUNT],
+                "group_by": ["dimension.shop_room_bookings_booker"],
+                "time": {"temporal_role": "temporal_role.shop_person_started_on", "grain": "month"},
+            },
             "is many-to-many (a lookup before the one-to-many hop",
         ),
         (  # a room counts whole under each of its bookers (the ledger's

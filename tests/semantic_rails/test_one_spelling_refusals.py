@@ -39,7 +39,7 @@ FINGERPRINTS = {
         "sha256:f8c92d80d83457bc1798b4ab08988097e9c8b76cc4e9dd8041923a832bfe25fd"
     ),
     "tests/integration/correctness/shop": (
-        "sha256:4dd3cd47f468bbd60009a3ca5af2f3202c2ab7cfcb4b91178a3bf0f865ff9a0a"
+        "sha256:bb70ca12163be9c2e342a16a94dfaf36361781ee91dbc8201c2498d98d3884b1"
     ),
     "configs/examples/semantic_rails_package_starter.yml": (
         "sha256:f36767381832a57c493ccd1194e6baedef91ca14a81a2f9e9042db83310c7069"

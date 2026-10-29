@@ -588,21 +588,69 @@ def call_measures(call: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(ref for key in _VALUE_KEYS for ref in walk(call.get(key))))
 
 
+class _Grains:
+    """Each entity's declared key, the columns its dimensions read, and those of its own times
+    (the dimensions a temporal role reads)."""
+
+    def __init__(self, config: PackageConfig) -> None:
+        self.columns = _Columns(config)
+        roles = {role.dimension for role in config.temporal_roles}
+        self.described: dict[str, set[str]] = {}
+        self.times: dict[str, set[str]] = {}
+        for dim in config.dimensions:
+            if not _COLUMN.match(dim.column or ""):
+                continue
+            self.described.setdefault(dim.entity, set()).add(dim.column.casefold())
+            if dim.id in roles:
+                self.times.setdefault(dim.entity, set()).add(dim.column.casefold())
+
+    def same_things(self, entity: str, other: str) -> bool:
+        """Whether two entities' rows are the same things.
+
+        - Keyed: both by the same key (a copy, such as a staging or mirrored table), or one by
+          the other's key and time columns of its own (a history or snapshot, one row per
+          version of each). Every key column says what it identifies.
+        - Keyless: neither declares a key, and one's dimensions read every column the other's
+          do (a copy, or one that adds columns such as a snapshot date or validity range).
+
+        A relationship, or a table that holds another's key (payments holding each invoice's),
+        relates different things, and so do two keyless tables that each read columns the
+        other doesn't."""
+        near, far = self.columns.key_of(entity), self.columns.key_of(other)
+        if not near and not far:
+            mine, theirs = self.described.get(entity, set()), self.described.get(other, set())
+            return bool(mine and theirs) and (mine <= theirs or theirs <= mine)
+        if not near or not far or not all(_specific(column) for column in near | far):
+            return False
+        return (
+            near == far
+            or (near < far and far - near <= self.times.get(other, set()))
+            or (far < near and near - far <= self.times.get(entity, set()))
+        )
+
+
 def lookalike_swaps(
     config: PackageConfig, measure_ids: Sequence[str], start: str
 ) -> list[tuple[str, dict[str, str]]]:
     """Each other entity that holds a look-alike of every one of ``measure_ids`` (the call's
     measures on ``start``), with each measure's look-alike there. A look-alike is a published
     measure on another entity with the same key or label, each without its model's table name,
-    that totals the same way (``_alike``). An entity with two look-alikes of one measure has no
-    one look-alike, so it is left out."""
+    that totals the same way (``_alike``), on an entity whose rows are the same things
+    (``_Grains.same_things``). An entity with two look-alikes of one measure has no one look-alike, so
+    it is left out."""
     entities = {row.id: row for row in config.entities}
     asked = [row for row in config.measures if row.id in set(measure_ids) and row.entity == start]
     if not asked:
         return []
     found: dict[str, dict[str, list[str]]] = {}
+    grains = _Grains(config)
+    same: dict[str, bool] = {}
     for other in config.measures:
         if other.entity == start or not other.publish:
+            continue
+        if other.entity not in same:
+            same[other.entity] = grains.same_things(start, other.entity)
+        if not same[other.entity]:
             continue
         for measure in asked:
             if _alike(measure, other, entities):
@@ -616,16 +664,21 @@ def lookalike_swaps(
 
 
 def measure_lookalikes(config: PackageConfig, measure_id: str) -> list[Any]:
-    """The published look-alikes (``_alike``) of one measure on other entities, by id."""
+    """The published look-alikes (``_alike``) of one measure on other entities whose rows
+    are the same things (``_Grains.same_things``), by id."""
     entities = {row.id: row for row in config.entities}
     asked = next((row for row in config.measures if row.id == measure_id), None)
     if asked is None:
         return []
+    grains = _Grains(config)
     return sorted(
         (
             other
             for other in config.measures
-            if other.entity != asked.entity and other.publish and _alike(asked, other, entities)
+            if other.entity != asked.entity
+            and other.publish
+            and _alike(asked, other, entities)
+            and grains.same_things(asked.entity, other.entity)
         ),
         key=lambda row: row.id,
     )
@@ -744,7 +797,8 @@ def lookalike_advice(rows: Sequence[dict[str, Any]]) -> str:
     """The caller hint: each look-alike by id, how to read it, and the caveat. What each one's
     model holds is in ``details.lookalike_measures`` and, in full, on the measure's card."""
     renames = (
-        " Where the call names a result column (order_by, having), use the row's `columns`."
+        " Where the call names a result column (select `as`, order_by, having), use the row's "
+        "`columns`."
         if any(row.get("columns") for row in rows)
         else ""
     )

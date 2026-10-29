@@ -63,18 +63,32 @@ CREATE TABLE customers (customer_id INTEGER, region VARCHAR);
 INSERT INTO customers VALUES (1, 'north'), (2, 'south');
 CREATE TABLE rooms (room_id INTEGER, building_id INTEGER, area DOUBLE);
 INSERT INTO rooms VALUES (1, 1, 30), (2, 1, 20), (3, 2, 50);
-CREATE TABLE rooms_hist (version_id INTEGER, room_id INTEGER, area DOUBLE);
-INSERT INTO rooms_hist VALUES (1, 1, 25), (2, 1, 30), (3, 2, 20), (4, 3, 50);
+CREATE TABLE rooms_hist (version_id INTEGER, room_id INTEGER, valid_from DATE, area DOUBLE);
+INSERT INTO rooms_hist VALUES (1, 1, '2026-01-01', 25), (2, 1, '2026-06-01', 30),
+  (3, 2, '2026-01-01', 20), (4, 3, '2026-01-01', 50);
 CREATE TABLE rooms_legacy (room_id INTEGER, building_id INTEGER, area VARCHAR);
 INSERT INTO rooms_legacy VALUES (1, 1, '30 m2');
 CREATE TABLE rooms_v2 (room_id INTEGER, building_id INTEGER, area DOUBLE);
 INSERT INTO rooms_v2 VALUES (1, 1, 30);
 CREATE TABLE buildings (building_id INTEGER, name VARCHAR);
 INSERT INTO buildings VALUES (1, 'Hall'), (2, 'Annex');
-CREATE TABLE invoices (id INTEGER, amount DOUBLE);
-INSERT INTO invoices VALUES (1, 10), (2, 20);
+CREATE TABLE accounts (id INTEGER, amount DOUBLE);
+INSERT INTO accounts VALUES (1, 10), (2, 20);
 CREATE TABLE subscriptions (id INTEGER, plan VARCHAR);
 INSERT INTO subscriptions VALUES (1, 'pro');
+CREATE TABLE invoices (invoice_id INTEGER, amount DOUBLE);
+INSERT INTO invoices VALUES (1, 100), (2, 50);
+CREATE TABLE payments (payment_id INTEGER, invoice_id INTEGER, method VARCHAR, amount DOUBLE);
+INSERT INTO payments VALUES (1, 1, 'card', 60), (2, 1, 'wire', 40);
+CREATE TABLE room_log (room_name VARCHAR, floor VARCHAR, area DOUBLE);
+INSERT INTO room_log VALUES ('Hall 1', 'ground', 30), ('Hall 2', 'first', 20);
+CREATE TABLE room_log_hist (room_name VARCHAR, floor VARCHAR, area DOUBLE, snapshot_date DATE);
+INSERT INTO room_log_hist VALUES ('Hall 1', 'ground', 25, '2026-01-01'),
+  ('Hall 1', 'ground', 30, '2026-06-01'), ('Hall 2', 'first', 20, '2026-06-01');
+CREATE TABLE cash_sales (register VARCHAR, amount DOUBLE);
+INSERT INTO cash_sales VALUES ('front', 12), ('back', 8);
+CREATE TABLE refunds (reason VARCHAR, amount DOUBLE);
+INSERT INTO refunds VALUES ('damaged', 5);
 """
 
 
@@ -123,6 +137,12 @@ def _rooms(model_id: str, entity: str, description: str, *, building: bool, meas
             "relation": model_id,
             "description": description,
             "entities": {entity: {}, **({"building": {}} if building else {})},
+            # The history copy: one row per version of a room, from its valid_from date.
+            **(
+                {"times": {"valid_from": {"column": "valid_from", "kind": "date"}}}
+                if model_id == "rooms_hist"
+                else {}
+            ),
             "dimensions": {"area": {"kind": "categorical"}} if not measure else {},
             "measures": {
                 f"{model_id}_area": _measure(f"Area ({model_id.upper()})", "area"),
@@ -147,11 +167,14 @@ def _files(v2: bool) -> dict[str, Any]:
         "attributed_order": {"key": ["order_id"], "model": "attributed_orders"},
         "customer": {"key": ["customer_id"], "model": "customers"},
         "room": {"key": ["room_id"], "model": "rooms"},
-        "room_hist": {"key": ["version_id"], "model": "rooms_hist"},
+        "room_hist": {"key": ["room_id", "valid_from"], "model": "rooms_hist"},
         "room_legacy": {"key": ["room_id"], "model": "rooms_legacy"},
         "building": {"key": ["building_id"], "model": "buildings"},
+        # Invoices and their payments: each payment row holds the invoice it pays.
+        "invoice": {"key": ["invoice_id"], "model": "invoices"},
+        "payment": {"key": ["payment_id"], "model": "payments"},
         # A connector schema's tables, each keyed by a plain `id`.
-        "invoice": {"key": ["id"], "model": "invoices"},
+        "account": {"key": ["id"], "model": "accounts"},
         "subscription": {"key": ["id"], "model": "subscriptions"},
     }
     relationships = {
@@ -218,7 +241,7 @@ def _files(v2: bool) -> dict[str, Any]:
         },
     }
     for model_id, entity, dimension in (
-        ("invoices", "invoice", {}),
+        ("accounts", "account", {}),
         ("subscriptions", "subscription", {"plan": {"kind": "categorical"}}),
     ):
         files[f"models/{model_id}.yml"] = {
@@ -235,6 +258,45 @@ def _files(v2: bool) -> dict[str, Any]:
                         "accumulation": {"kind": "population"},
                         "value_type": "count",
                     }
+                },
+            }
+        }
+    for model_id, entity, dimension in (
+        ("invoices", "invoice", {}),
+        ("payments", "payment", {"method": {"kind": "categorical"}}),
+    ):
+        files[f"models/{model_id}.yml"] = {
+            "model": {
+                "id": model_id,
+                "relation": model_id,
+                "entities": {entity: {}},
+                "dimensions": dimension,
+                "measures": {f"{model_id}_amount": _measure("Amount", "amount", "currency")},
+            }
+        }
+    # Keyless tables (row grain): a room log and its history, which reads every column of the log
+    # and a snapshot date; and two unrelated tables that each sum an amount.
+    for model_id, dimensions, measure in (
+        ("room_log", ["room_name", "floor"], "area"),
+        ("room_log_hist", ["room_name", "floor"], "area"),
+        ("cash_sales", ["register"], "amount"),
+        ("refunds", ["reason"], "amount"),
+    ):
+        files[f"models/{model_id}.yml"] = {
+            "model": {
+                "id": model_id,
+                "relation": model_id,
+                "entities": {},
+                **(
+                    {"times": {"snapshot_date": {"column": "snapshot_date", "kind": "date"}}}
+                    if model_id == "room_log_hist"
+                    else {}
+                ),
+                "dimensions": {column: {"kind": "categorical"} for column in dimensions},
+                "measures": {
+                    f"{model_id}_{measure}": _measure(
+                        f"{measure.title()} ({model_id.upper()})", measure
+                    )
                 },
             }
         }
@@ -353,8 +415,8 @@ def test_the_one_model_holding_the_campaign_answers_and_says_its_rows(shop):
     assert hint["message"] == (
         "Read the same measure from another model in details.lookalike_measures, keeping this "
         f"call's group_by, where and time: '{ATTRIBUTED_REVENUE}' in place of '{REVENUE}' (on "
-        "'entity.shop_attributed_order'). Where the call names a result column (order_by, "
-        "having), use the row's `columns`. Each model holds its own rows, which may be fewer, "
+        "'entity.shop_attributed_order'). Where the call names a result column (select `as`, "
+        "order_by, having), use the row's `columns`. Each model holds its own rows, which may be fewer, "
         "more or other rows (such as every version of each row) than the user asked about: "
         "inspect the measure for its model's description, and tell the user which model the "
         "answer reads."
@@ -429,15 +491,129 @@ def test_two_tables_row_counts_are_never_lookalikes(shop):
 
 
 def test_counts_of_tables_keyed_by_a_plain_id_are_never_lookalikes(shop):
-    # "Invoices per plan": a count of invoice ids is not a count of subscription ids.
+    # "Accounts per plan": a count of account ids is not a count of subscription ids.
     runtime = shop()
-    invoices, subscriptions = "measure.shop.invoices_count", "measure.shop.subscriptions_count"
-    call = {"select": [invoices], "group_by": ["dimension.shop_subscription_plan"]}
+    accounts, subscriptions = "measure.shop.accounts_count", "measure.shop.subscriptions_count"
+    call = {"select": [accounts], "group_by": ["dimension.shop_subscription_plan"]}
     error = _refusal(_validate(runtime, call))
     assert "lookalike_measures" not in error["details"]
     assert subscriptions not in json.dumps(error)
+    assert lookalike_swaps(runtime.package_config, [accounts], "entity.shop_account") == []
+    assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, accounts))
+
+
+def test_an_invoice_and_its_payments_are_never_lookalikes(shop):
+    # "Invoice amount by payment method": the payments table's amount is cash collected, not the
+    # amount billed. A payment is related to an invoice, not the same thing.
+    runtime = shop()
+    invoices, payments = "measure.shop.invoices_amount", "measure.shop.payments_amount"
+    call = {"select": [invoices], "group_by": ["dimension.shop_payment_method"]}
+    error = _refusal(_validate(runtime, call))
+    assert "lookalike_measures" not in error["details"]
+    assert payments not in json.dumps(error)
     assert lookalike_swaps(runtime.package_config, [invoices], "entity.shop_invoice") == []
     assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, invoices))
+    config = runtime.package_config
+
+    def keyed(**keys: list[str]) -> Any:
+        return replace(
+            config,
+            entities=[
+                replace(row, key_columns=keys[row.id.rpartition("_")[2]])
+                if row.id.rpartition("_")[2] in keys
+                else row
+                for row in config.entities
+            ],
+        )
+
+    # Nor once a relationship says each payment holds its invoice's key.
+    (link,) = (row for row in config.relationships if row.id == "relationship.order_customer")
+    linked = replace(
+        config,
+        relationships=[
+            *config.relationships,
+            replace(
+                link,
+                id="relationship.payment_invoice",
+                source_entity="entity.shop_payment",
+                target_entity="entity.shop_invoice",
+                source_column="invoice_id",
+                target_column="invoice_id",
+                source_columns=["invoice_id"],
+                target_columns=["invoice_id"],
+            ),
+        ],
+    )
+    for other in (
+        linked,
+        # Nor when payments are keyed by the invoice and their own id: one row per payment.
+        keyed(payment=["invoice_id", "payment_id"]),
+        # Nor when neither declares a key: each reads a column the other doesn't (the invoice's
+        # id; the payment's id and method).
+        keyed(invoice=[], payment=[]),
+        # Nor when both are keyed by a plain `id`, as a connector schema keys every table.
+        keyed(invoice=["id"], payment=["id"]),
+    ):
+        assert lookalike_swaps(other, [invoices], "entity.shop_invoice") == []
+
+
+def test_a_history_keyed_by_the_rooms_key_and_its_own_time_is_a_lookalike(shop):
+    # One row per version of each room, keyed by the room and its valid_from date: the same rooms.
+    config = shop().package_config
+    room, hist = "entity.shop_room", "entity.shop_room_hist"
+    assert lookalike_swaps(config, [ROOMS_AREA], room) == [(hist, {ROOMS_AREA: HIST_AREA})]
+    assert lookalike_swaps(config, [HIST_AREA], hist) == [(room, {HIST_AREA: ROOMS_AREA})]
+
+    def hist_keyed(key: list[str]) -> Any:
+        return replace(
+            config,
+            entities=[
+                replace(row, key_columns=key) if row.id == hist else row for row in config.entities
+            ],
+        )
+
+    # Keyed by a version id of its own, or by the room and a column that isn't one of its
+    # times, it holds rows of something else.
+    for key in (["version_id"], ["room_id", "version_id"]):
+        assert lookalike_swaps(hist_keyed(key), [ROOMS_AREA], room) == [], key
+
+
+def test_a_keyless_history_reading_every_column_of_its_table_is_a_lookalike(shop):
+    # Neither table declares a key; the history reads every column the log does, and a snapshot
+    # date: the same rooms, one row per snapshot.
+    runtime = shop()
+    config = runtime.package_config
+    log, hist = "entity.shop_room_log", "entity.shop_room_log_hist"
+    log_area, hist_area = "measure.shop.room_log_area", "measure.shop.room_log_hist_area"
+    assert lookalike_swaps(config, [log_area], log) == [(hist, {log_area: hist_area})]
+    assert lookalike_swaps(config, [hist_area], hist) == [(log, {hist_area: log_area})]
+    assert [row["measure"] for row in _card(runtime, log_area)["lookalike_measures"]] == [hist_area]
+    # A history that no longer reads the floor holds other rows.
+    narrowed = replace(
+        config,
+        dimensions=[
+            row for row in config.dimensions if not (row.entity == hist and row.column == "floor")
+        ],
+    )
+    assert lookalike_swaps(narrowed, [log_area], log) == []
+
+
+def test_unrelated_keyless_tables_sharing_only_an_amount_are_never_lookalikes(shop):
+    # Cash sales by register and refunds by reason: each reads a column the other doesn't.
+    runtime = shop()
+    sales, refunds = "measure.shop.cash_sales_amount", "measure.shop.refunds_amount"
+    assert lookalike_swaps(runtime.package_config, [sales], "entity.shop_cash_sales") == []
+    assert lookalike_swaps(runtime.package_config, [refunds], "entity.shop_refunds") == []
+    assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, sales))
+    # Refunds that read no column at all say nothing about which rows they hold.
+    bare = replace(
+        runtime.package_config,
+        dimensions=[
+            row for row in runtime.package_config.dimensions if row.entity != "entity.shop_refunds"
+        ],
+    )
+    assert lookalike_swaps(bare, [sales], "entity.shop_cash_sales") == []
+    assert lookalike_swaps(bare, [refunds], "entity.shop_refunds") == []
 
 
 def _copies(root: Path, count: int) -> None:

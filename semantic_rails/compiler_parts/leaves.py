@@ -59,6 +59,7 @@ from .bind import (
     _bound_metric_predicates,
     _config_expr_to_sql,
 )
+from .child_values import CHILD_VALUES, child_value_dimension, child_values_cte, keep_rows
 from .dependencies import (
     cut_owners,
     leaf_predicate_roles,
@@ -981,6 +982,12 @@ def _measure_leaf_select(
         return _aggregate_relation_leaf_select(plan, [measure_plan], selected_aggregate, config)
     if measure_plan.rewrite_strategy == PARENT_VALUE:
         return parent_value_leaf_select(plan, measure_plan, config)
+    # A grouping by a child's values after a lookup joins those values, distinct per parent.
+    child, child_cte = (
+        child_values_cte(measure_plan, plan.group_by, config)
+        if measure_plan.rewrite_strategy == CHILD_VALUES
+        else ("", None)
+    )
 
     predicate_ctes: list[SqlCte] = []
     predicate_joins: list[SqlJoin] = []
@@ -1006,6 +1013,8 @@ def _measure_leaf_select(
         if predicate in owned_predicates:
             owned_joins.extend(joins)
             owned_conditions.extend(row_conditions)
+    if child_cte is not None:
+        predicate_ctes.append(child_cte)
     owned_reads = _owned_predicate_reads.get()
     # A contextual predicate's set reads the query's own filters: no probe sees past them.
     if (
@@ -1030,9 +1039,15 @@ def _measure_leaf_select(
         measure_plan.bound_measure, normalize_query(plan.query), config
     )
     for dim_id in plan.group_by:
-        expr, alias = _direct_dimension_source_expr(
-            measure.entity, dim_id, config
-        ) or _resolve_dimension_expr(dim_id, config)
+        child_expr = (
+            child_value_dimension(dim_id, child, child_cte.name, config) if child_cte else None
+        )
+        expr, alias = (
+            (child_expr, dim_id)
+            if child_expr is not None
+            else _direct_dimension_source_expr(measure.entity, dim_id, config)
+            or _resolve_dimension_expr(dim_id, config)
+        )
         select_fields.append(SqlField(expr, alias))
         group_fields.append(expr)
     if plan.time:
@@ -1127,13 +1142,15 @@ def _measure_leaf_select(
     def path_joins() -> list[SqlJoin]:
         """The leaf's joins along its paths; built in the branch that uses them, since building
         records the routes they take."""
-        return _joins_for_paths(
+        joins = _joins_for_paths(
             measure.entity,
             measure_plan.path_selections,
             config,
             measure_entity=measure.entity,
             time_spec=plan.time,
+            table_overrides={child: child_cte.name} if child_cte else None,
         )
+        return keep_rows(joins, child_cte.name) if child_cte else joins
 
     leaf_alias = measure_plan.bound_measure.alias
     if measure_plan.rewrite_strategy == "parent_lookup":
@@ -1173,19 +1190,25 @@ def _measure_leaf_select(
             where=where_clauses,
             value_expr=leaf_value_expr,
         )
-    entity_in_terms_of = _entity_in_terms_of_leaf_select(plan, measure_plan, config)
+    entity_in_terms_of = (
+        None if child_cte else _entity_in_terms_of_leaf_select(plan, measure_plan, config)
+    )
     if entity_in_terms_of is not None:
         return entity_in_terms_of
-    source_rollup = _source_rollup_leaf_select(
-        plan,
-        measure_plan,
-        config,
-        where_clauses=where_clauses,
-        leaf_value_expr=leaf_value_expr,
-        leaf_alias=leaf_alias,
-        time_alias=time_alias,
-        time_expr=time_expr,
-        time_source_local=time_source_local,
+    source_rollup = (
+        None
+        if child_cte
+        else _source_rollup_leaf_select(
+            plan,
+            measure_plan,
+            config,
+            where_clauses=where_clauses,
+            leaf_value_expr=leaf_value_expr,
+            leaf_alias=leaf_alias,
+            time_alias=time_alias,
+            time_expr=time_expr,
+            time_source_local=time_source_local,
+        )
     )
     if source_rollup is not None:
         return source_rollup

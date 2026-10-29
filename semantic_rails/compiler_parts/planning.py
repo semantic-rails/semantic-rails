@@ -44,9 +44,9 @@ from .bind import (
     _collect_conversion_exprs,
     _collect_measure_refs,
     _freeze_payload,
-    earlier_settlement,
     lift_conditional_aggregates,
 )
+from .child_values import CHILD_VALUES, child_values_step
 from .dependencies import (
     candidate_planning,
 )
@@ -61,7 +61,6 @@ from .leaf_paths import (
     _root_path_summary,
 )
 from .lowering_common import (
-    _expr_contains_distribution,
     _plan_requires_agent_dag_lowering,
     _validate_metric_predicate_filter_envelope,
 )
@@ -126,14 +125,7 @@ def plan_query(
 ) -> LogicalPlan:
     validate_temporal_support(config, payload)
     raw_query = normalize_query(payload, config=config)
-    # A query with a distribution lowers with the earlier settlement (``_lower_query_to_sql``),
-    # so it routes with it too: its plan and explain are the same as before.
-    distribution = any(
-        item.expression is not None and _expr_contains_distribution(item.expression, config)
-        for item in raw_query.select
-    )
-
-    with candidate_planning(), earlier_settlement(distribution):
+    with candidate_planning():
         plan = _plan_query(config, registry, raw_query, collapse_window=True, top_level=True)
     # Last, so a query that fails for any other reason (an unknown or hidden object, a route, a
     # policy) is refused for that reason first.
@@ -288,8 +280,8 @@ def _plan_query(
                 if any(step.measure_id == bound.measure_id for step in rewrite_steps)
                 else "direct"
             )
-            if crossing == "fanout_dedup":
-                rewrite_strategy = "fanout_dedup"
+            if crossing in {"fanout_dedup", CHILD_VALUES}:
+                rewrite_strategy = crossing
             if measures[bound.measure_id].lookup_from:
                 rewrite_strategy = "parent_lookup"
             source_entity = measures[bound.measure_id].entity
@@ -301,6 +293,11 @@ def _plan_query(
                 )
                 aggregate_relation_id = ""
                 aggregate_relation_rejections: dict[str, str] = {}
+            elif crossing == CHILD_VALUES:
+                # The child's values join the measure's own rows, never a rollup of its model.
+                (route,) = [row for row in path_selections if row.analysis.get("status") != "ok"]
+                rewrite_steps.append(child_values_step(config, query, bound, route))
+                aggregate_relation_id, aggregate_relation_rejections = "", {}
             else:
                 # Every leaf that crosses a one-to-many hop says how.
                 rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config, query))

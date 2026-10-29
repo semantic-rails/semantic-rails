@@ -2,7 +2,9 @@
 -- A room names its building by its own key and its floor by another: R-202 names B-2 but sits
 -- on a floor of B-1, so the two routes from a room to its building read different buildings
 -- for it. R-103 and R-105 name no building and no floor, so the offices mix rooms with and
--- without a building. B-3 has no room. room_rows stores the rooms again without a key, R-101 twice.
+-- without a building. B-3 has no room. room_rows stores the rooms again without a key, R-101
+-- twice. B-1 has addresses in two cities, two of them in Springfield. B-2 has none. B-3's
+-- address is in Shelbyville.
 CREATE TABLE buildings (
   building_id INTEGER, building_name VARCHAR(8), campus VARCHAR(8), assignable_area INTEGER,
   occupants INTEGER
@@ -33,3 +35,10 @@ INSERT INTO room_rows VALUES
   ('R-101', 1, 1, 'lab', 30), ('R-101', 1, 1, 'lab', 30), ('R-102', 1, 1, 'office', 20),
   ('R-104', 1, 1, 'lab', 15), ('R-201', 2, 2, 'office', 50), ('R-202', 2, 2, 'seminar', 40),
   ('R-103', NULL, 1, 'storage', 10), ('R-105', NULL, 2, 'office', 25);
+
+CREATE TABLE addresses (
+  address_id INTEGER, building_id INTEGER, city VARCHAR(16), street VARCHAR(16)
+);
+INSERT INTO addresses VALUES
+  (1, 1, 'Springfield', '1 Main St'), (2, 1, 'Springfield', '3 Main St'),
+  (3, 1, 'Shelbyville', '9 Elm St'), (4, 3, 'Shelbyville', '4 Oak St');

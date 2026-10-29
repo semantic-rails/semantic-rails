@@ -147,11 +147,9 @@ def earlier_settlement(enabled: bool = True) -> Iterator[None]:
     """While ``enabled``, settle as before unknown amounts stayed NULL: the guard
     (``empty_groups``) reads a NULL sum as 0 wherever its measure has data in scope, whether
     its group has no rows or only rows of unknown amounts, so no leaf counts its rows;
-    a rollup may answer a CASE measure. A query with a distribution branch turns it on for
-    every branch (``_lower_query_to_sql``), and so
-    does a metric predicate's source over several measures under a threshold that 0 passes
-    (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
-    off."""
+    a rollup may answer a CASE measure. A metric predicate's source over several measures
+    under a threshold that 0 passes turns it on (``_predicate_ctes_and_join``). It is off by
+    default, and a nested block never turns it off."""
     with holding(_earlier_settlement, enabled or _earlier_settlement.get()):
         yield
 

@@ -389,23 +389,36 @@ def test_two_one_to_many_routes_ask_which_one_the_question_means(tmp_path):
         runtime.close()
 
 
+def _outcome(call: Any) -> tuple[Any, ...]:
+    """A call's rows and notices, or its refusal."""
+    try:
+        out = call()
+    except SemanticLayerError as error:
+        return error.code, str(error), error.details
+    return "answer", sorted(out["rows"], key=repr), out.get("warnings")
+
+
 def test_a_measure_in_the_call_keeps_its_guards(runtime, monkeypatch):
     """The listing answers; the same grouping with a count of departments (each department
     counted once per address its rooms reach) or a count of rooms by city, or a room's
-    non-additive capacity per building (summed across rooms), is refused exactly as before
-    listings."""
+    non-additive capacity per building (summed across rooms), reads exactly as before listings:
+    refused, except the rooms by city where the package walks from a building to its addresses
+    (each room once in every city of its building's addresses)."""
     assert runtime.query(BY_CITY)["rows"]
     calls = [
         {**BY_CITY, "select": ["measure.campus.department_count"]},
         {"select": ["measure.campus.room_count"], "group_by": [CITY]},
         {"select": ["measure.campus.capacity"], "group_by": [BUILDING_KEY]},
     ]
-    listed = [_refusal(lambda call=call: runtime.query(call)) for call in calls]
+    listed = [_outcome(lambda call=call: runtime.query(call)) for call in calls]
     _as_main(monkeypatch)
-    before = [_refusal(lambda call=call: runtime.query(call)) for call in calls]
-    for now, then in zip(listed, before, strict=True):
-        assert (now.code, str(now), now.details) == (then.code, str(then), then.details)
-    assert listed[2].code == "ROLLUP_UNSAFE"
+    assert listed == [_outcome(lambda call=call: runtime.query(call)) for call in calls]
+    walks_back = all("reverse" in rel.allowed_directions for rel in runtime.config.relationships)
+    assert [outcome[0] for outcome in listed] == [
+        "MIXED_GRAIN_INVALID" if walks_back else "PATH_NOT_FOUND",
+        "answer" if walks_back else "PATH_NOT_FOUND",
+        "ROLLUP_UNSAFE",
+    ]
 
 
 def _visitor(**attributes: Any) -> RequestContext:
