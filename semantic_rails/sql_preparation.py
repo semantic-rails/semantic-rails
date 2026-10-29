@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
@@ -18,21 +19,27 @@ from .errors import SemanticLayerError
 ParameterValue = str | int | bool
 # The name rule for trusted request attributes, which parameter slots name.
 ATTRIBUTE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
-_SLOT_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool}
+# A ``uuid`` slot takes a string holding a UUID (``_canonical_uuid``).
+_SLOT_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool, "uuid": str}
+# A UUID as DuckDB and Postgres both read one: 32 hex digits in any case, hyphenated 8-4-4-4-12
+# or not, in braces or not.
+_UUID_DIGITS = r"(?:[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})"
+_UUID = re.compile(rf"{_UUID_DIGITS}|\{{{_UUID_DIGITS}\}}")
 
 
 @dataclass(frozen=True)
 class ParameterSlot:
     """One positional placeholder, bound per request from a trusted attribute.
 
-    The value must have exactly the declared type: ``string``, ``integer`` or
-    ``boolean``. A slot with an ``index`` binds that item of a list attribute (strings
-    or integers), and only a list does. A compiled statement holds only slots, never
-    their values.
+    The value must have exactly the declared type: ``string``, ``integer``,
+    ``boolean`` or ``uuid`` (a string holding a UUID, bound as its canonical lower-case
+    text). A slot with an ``index`` binds that item of a list attribute (strings, integers
+    or UUIDs), and only a list does. A compiled statement holds only slots, never their
+    values.
     """
 
     attribute: str
-    type: Literal["string", "integer", "boolean"]
+    type: Literal["string", "integer", "boolean", "uuid"]
     index: int | None = None
 
     def __post_init__(self) -> None:
@@ -98,8 +105,9 @@ def checked_parameter_values(
 def checked_bound_values(
     prepared: PreparedQuery, values: Sequence[Any]
 ) -> tuple[ParameterValue, ...]:
-    """The values an adapter binds, one per slot: no NULL, no coercion, no extra or missing
-    value. An indexed slot takes its item itself, never the list."""
+    """The values an adapter binds, one per slot: no NULL, no coercion (a UUID only takes its
+    canonical text), no extra or missing value. An indexed slot takes its item itself, never
+    the list."""
     if len(values) != len(prepared.parameters):
         raise parameters_denied("parameter_count_mismatch")
     return tuple(map(_checked_item, prepared.parameters, values))
@@ -120,7 +128,18 @@ def _checked_item(slot: ParameterSlot, value: Any) -> ParameterValue:
         raise parameters_denied("missing_attribute", attribute=slot.attribute)
     if type(value) is not _SLOT_TYPES[slot.type]:
         raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
+    if slot.type == "uuid":
+        return _canonical_uuid(slot, cast(str, value))
     return cast(ParameterValue, value)
+
+
+def _canonical_uuid(slot: ParameterSlot, value: str) -> str:
+    """``value`` as its canonical lower-case hyphenated text, which a warehouse with a UUID type
+    casts to one (``SqlDialect.uuid_parameter``) and one without compares as text. Any other
+    string is denied here, before a statement runs, so no warehouse error can quote it."""
+    if not _UUID.fullmatch(value):
+        raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
+    return str(uuid.UUID(hex=value.strip("{}").replace("-", "")))
 
 
 # Consume complete Postgres identifiers and E-strings before looking for binds.
