@@ -33,6 +33,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import query_route_decisions, resolve_path
 from semantic_rails.package_tools import impact_report, promote_package_report
 from semantic_rails.route_census import census_pairs, route_census
+from semantic_rails.route_groups import route_groups
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.test_role_paths import (
@@ -136,9 +137,14 @@ DIMENSION = {
 }
 
 
+# What an answer adds to a route refusal's clarification: its options grouped.
+GROUPED = ("options_total", "groups_total", "listed", "ordered", "groups")
+
+
 def _package_part(details: dict) -> dict:
-    """A route refusal without what only a query has: each option's call and the hint."""
-    clarification = details["clarification"]
+    """A route refusal without what only a query has: each option's call, the hint and the
+    groups an answer shows its options in."""
+    clarification = {k: v for k, v in details["clarification"].items() if k not in GROUPED}
     options = [
         {key: value for key, value in option.items() if key != "query"}
         for option in clarification["options"]
@@ -166,6 +172,10 @@ def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tm
                 resolve_path(config, start=start, target=target)
         assert exc_info.value.code == "AMBIGUOUS_PATH"
         assert _package_part(exc_info.value.details) == _package_part(details)
+        # A query's refusal groups the census pair's own options; the resolver's never does.
+        grouped = route_groups(config, start, target, details["clarification"]["options"])
+        shown = exc_info.value.details["clarification"]
+        assert {k: shown[k] for k in GROUPED if k in shown} == (grouped if start in MEASURE else {})
         # A query's refusal also hands back each option as that query with its route.
         for option in exc_info.value.details["clarification"]["options"]:
             if start in MEASURE:
@@ -489,6 +499,13 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     status = _mcp(server, "project_status", {"project_path": str(pkg), "full_report": True})
     assert _pairs(status["route_census"]["undecided"]) == DIAMOND_UNDECIDED
     assert "route_census" not in status["parse"]
+    # Each pair's question is grouped as an answer asks it.
+    config = load_package_config(str(pkg))
+    for row in status["route_census"]["undecided"]:
+        clarification = row["details"]["clarification"]
+        start, target = row["source_entity"], row["target_entity"]
+        grouped = route_groups(config, start, target, clarification["options"])
+        assert {key: clarification[key] for key in grouped} == grouped
     # No metric, example or test walks an undecided pair: nothing to decide now.
     assert not any(action.startswith("Decide") for action in status["next_actions"])
     summary = _mcp(server, "project_status", {"project_path": str(pkg)})["route_census"]

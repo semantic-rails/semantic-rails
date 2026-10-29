@@ -1,0 +1,11 @@
+model:
+  id: space
+  label: Space
+  relation: space
+  entities: {space: {}, department: {}}
+  dimensions:
+    building_key: {label: Building, kind: integer}
+  measures:
+    area: {label: Assigned area, kind: aggregate, expr: area_sqft, rollup: additive}
+    buildings: {label: Buildings, kind: entity_count, entity_key: building_key}
+    average_area: {label: Average area, kind: aggregate, expr: area_sqft, default_agg: avg}

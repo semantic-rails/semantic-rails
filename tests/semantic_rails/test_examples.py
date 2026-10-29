@@ -165,13 +165,13 @@ _REFUSED = re.compile(r"\A\s*//\s*([A-Z][A-Z_]+[A-Z])\b")
 
 
 def _is_call(node: Any) -> bool:
-    from semantic_rails.query_call import FIELDS, IGNORED
+    from semantic_rails.query_call import FIELDS, IGNORED, JOINED_FIELDS
 
-    return (
-        isinstance(node, dict)
-        and bool(node)
-        and all(key in FIELDS or key in IGNORED or str(key).startswith("_") for key in node)
-        and any(key in node for key in ("select", "group_by", "time"))
+    if not isinstance(node, dict) or not node:
+        return False
+    fields = JOINED_FIELDS if "parts" in node else FIELDS
+    return all(key in fields or key in IGNORED or str(key).startswith("_") for key in node) and (
+        "parts" in node or any(key in node for key in ("select", "group_by", "time"))
     )
 
 
@@ -263,14 +263,14 @@ def test_doc_call_is_a_valid_call(
     runtime: Runtime, where: str, call: dict[str, Any], code: str
 ) -> None:
     from semantic_rails.errors import SemanticLayerError
-    from semantic_rails.query_call import read_call
+    from semantic_rails.query_call import read_call, read_joined_call
 
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(SCHEMA_PATH.read_text())
     errors = list(jsonschema.Draft202012Validator(schema).iter_errors(call))
     assert not errors, f"{where}: {[(list(e.absolute_path), e.message[:120]) for e in errors[:3]]}"
     try:
-        read_call(call, now=DOC_NOW)
+        (read_joined_call if "parts" in call else read_call)(call, now=DOC_NOW)
     except SemanticLayerError as exc:
         assert exc.code == code, f"{where}: {exc.code}: {exc}"
         return

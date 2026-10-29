@@ -57,7 +57,8 @@ surface.
   whose pair they walk through, if one remains; anything else is refused as
   `AMBIGUOUS_PATH` (`reason: route_decision_required`, with
   `details.clarification`: the question in business words and, per route, its
-  meaning and the row that decides it), whatever the routes' lengths. Hop count
+  meaning and the row that decides it, grouped by the entity each route reaches
+  first), whatever the routes' lengths. Hop count
   and weights never decide, and adding a route never changes an answer silently.
 - route choice per call (`routes`, from the chosen option's `query`; disclosed
   in the answer's `routes` with one-step switches to the other options, refused

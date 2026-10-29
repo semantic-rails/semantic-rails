@@ -847,6 +847,18 @@ kind names must match exactly.
   (`POLICY_DENIED`) if the attribute is missing, of another type, or an empty list (a grant
   of nothing).
 
+  A UUID column (an account or owner key) takes `type: uuid` on its id or categorical
+  dimension. The attribute is a string holding a UUID: 32 hex digits in any case, hyphenated
+  `8-4-4-4-12` or not, in braces or not. It binds as its lower-case hyphenated text, so
+  `3F2504E0-4F89-11D3-9A0C-0305E82C3301` and `{3f2504e0-4f89-11d3-9a0c-0305e82c3301}` read
+  the same rows. Any other value, another string included, is of another type: the request
+  is denied (`POLICY_DENIED`, `attribute_type_mismatch`, naming the attribute, never its
+  value) by `validate` and every other surface, before any SQL runs. Postgres compares
+  `<column> = CAST(? AS UUID)`, so the column must be `uuid` there (a UUID kept as text takes
+  `type: string`) and its index still serves the filter; DuckDB reads the value in the
+  column's own type; on Snowflake, which has no UUID type, the column holds the lower-case
+  hyphenated text.
+
   **What a filtered caller sees.** Each caller reads a *visible database*: the package's
   data with every row they can't see removed, and every answer (totals, groups, shares,
   distinct counts, `EXISTS` filters, windows, prior periods, coverage dates and
@@ -2475,8 +2487,6 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
 - a metric predicate's own query, and its route to the entity it qualifies. Its set is
   matched on that entity and on the query's grouped (context) entities, so a row with none
   of them is not in the set;
-- a distribution's per-entity values (its `over`): a row whose lookup of the entity finds
-  no match belongs to no entity, never to a NULL entity of its own;
 - a conversion's converted events (their lookups and properties) and the dimensions a
   query's metric filter on the conversion is matched on. A conversion's base events are its
   rate's denominator, so they keep their rows, in a metric filter's own query too: an event
@@ -2700,6 +2710,44 @@ words built only from package labels:
   still answers per call.
 - `query` is the refused call with the option's route added to
   [`routes`](QUERY_CALL.md#routes) (`{from, to, via}`), ready to send.
+
+An answer (and Architect's route census) adds `groups` beside the options, so a pair with
+many routes asks among a few meanings. The hops every route shares are set aside, and the
+routes that take the same next hop form a group, named by the entity it reaches (`via`). In
+a group, routes rank by their one-to-many hops, then hops, then id; the group then lists:
+
+- one route: its option;
+- two or more lookups from `via` to the target (a work order's billing building and its
+  serviced room's building): each as an option, never one as the group's meaning;
+- else one route ranked first: its option, the others counted in `more_routes`;
+- else up to three routes: each as an option;
+- else no option: `decide_first` names the entity its routes pass through (`via`) and the
+  target. A package author decides which of the group's routes the asked pair means.
+
+```json
+{"options_total": 41, "groups_total": 3, "listed": 3,
+ "ordered": "by one-to-many hops, then hops, then id; not a preference",
+ "groups": [
+   {"id": "staff_building", "via": "entity.staff", "routes": 1, "more_routes": 0,
+    "options": ["staff_building"]},
+   {"id": "via_work_order", "via": "entity.work_order", "routes": 2, "more_routes": 0,
+    "options": ["work_order_building", "work_order_room_building"]},
+   {"id": "via_project", "via": "entity.project", "routes": 38,
+    "decide_first": {"source_entity": "entity.project", "target_entity": "entity.building"}}]}
+```
+
+Grouping chooses nothing and changes no answer: `options` keeps every route, which route a
+query takes and every policy result read the routes as before, and a group's option is a
+whole route with its own `decision` row.
+
+To decide a `decide_first` group, record **the asked pair's own route**: the `decision` of
+the option for the chosen route (the route census row lists every option). Don't record a row
+for the `decide_first` pair (`via` to the target) on its own: a route for that pair can
+pass back through the asked pair's start, and the asked pair is then answered by another
+group's route, which nobody chose. To record that pair too, send its row and the asked pair's
+row together in one `record_route_decision` `decisions` batch, previewed with `dry_run`: the
+batch is refused unless the changed package resolves each row's pair, the asked pair
+included, to that row's route.
 
 Every option can be applied two ways. For the person who asked, the agent
 sends the option's `query`: that call only, not a
@@ -3189,8 +3237,9 @@ model:
 before its edge, on the clock the query reads it by (for a load log, rows before the next local
 midnight after its date, or at or before its timestamp; for `now`, rows at or before the
 request's `now`): series, totals, an answer without a window, running totals, shares, prior
-periods, entity filters and each operand of a conversion all see the same rows. A stray row after the edge is not read, so
-its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
+periods, entity filters and each operand of a conversion all see the same rows, and so does an
+`aggregate_if` over the model's rows, on its model's `default: true` time. A stray row after the
+edge is not read, so its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
 base table, never a rollup, whose buckets can't stop at an instant. A measure dated by another
 model's clock (refunds dated by their order's `ordered_at`, through `times:`) is capped on that
 clock with no time window: a refund is read when its order is at or before the edge, so a refund
@@ -3216,6 +3265,15 @@ load log's own model refuses the query for the callers it applies to (`POLICY_DE
 `row_filter_on_load_log`), so the log is never read unfiltered. ClickHouse reads no loaded
 coverage, so a ClickHouse package refuses any value but `data` (`INVALID_CONFIG`). Name one
 load log per load job; a model that another job loads declares its own.
+
+**Whose edge.** A measure's periods are covered by its own table's edge, however far away the
+column it is grouped by lives. Weekly revenue by customer region (orders, then customers, then
+regions) reads `0` in a week the orders' load log covers with no order, and `NULL` before the
+first order and past the log, as revenue by customer tier does. A load log declared only on
+the customers model says how far signups are loaded, not orders: the orders read with edge
+`data` (`0` through their last row, `PARTIAL_DATA` where a week runs past it). An order whose
+customer the customers table doesn't hold yet reads under no region (a `NULL` group); a
+customers table that lags never drops it, and never changes which weeks read `0`.
 
 The same holds with no time window: "how many enterprise accounts have we ever had?" reads `0`
 before the first one signs up, once the table holds a row the edge lets through, and `NULL`

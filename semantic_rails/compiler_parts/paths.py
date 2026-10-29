@@ -710,9 +710,8 @@ _KEEPS_ROWS_PURPOSES = frozenset(
 
 @contextmanager
 def inner_lookups() -> Iterator[None]:
-    """Join every lookup INNER while a metric predicate's own query or a distribution's
-    per-entity values lower: each holds the entities that have rows, never a NULL key for rows
-    that have none."""
+    """Join every lookup INNER while a metric predicate's own query lowers: it holds the
+    entities that have rows, never a NULL key for rows that have none."""
     with holding(_inner_lookups, True):
         yield
 
@@ -746,12 +745,11 @@ def _joins_for_paths(
     or unmatched stays, with NULL for everything the hop looks up, whatever reads it (a
     grouping, a filter, the measure's own filter, an aggregate_if's condition or its
     expression). It joins INNER only when a read in ``_INNER_LOOKUP_PURPOSES`` walks the same
-    hop, inside a metric predicate's own query or a distribution's per-entity values
-    (``inner_lookups``), on the path to a dimension a rollup of the measure's model holds
-    pre-joined (so the base answers as the rollup does), or on a warehouse whose outer join
-    reads a type default instead of NULL (``_is_lookup_hop``). Hops that fan out join INNER,
-    except a listing's (``listings``), which keep their rows as its lookups do, and every hop
-    after a temporal-validity hop joins LEFT.
+    hop, inside a metric predicate's own query (``inner_lookups``), on the path to a dimension
+    a rollup of the measure's model holds pre-joined (so the base answers as the rollup does),
+    or on a warehouse whose outer join reads a type default instead of NULL (``_is_lookup_hop``).
+    Hops that fan out join INNER, except a listing's (``listings``), which keep their rows as its
+    lookups do, and every hop after a temporal-validity hop joins LEFT.
 
     ``measure_entity`` is the model of the measure the leaf aggregates, or None for dimensions
     alone and conversions. A rollup belongs to the measures of the model it aggregates, so

@@ -1,0 +1,9 @@
+graph:
+  entities:
+    department: {label: Department, key: [dept_code], model: departments, display: dept_name}
+    employee: {label: Employee, key: [employee_id], model: employees, display: employee_name}
+    space: {label: Space, key: [space_id], model: space}
+    training: {label: Training, key: [training_id], model: trainings}
+    room: {label: Room, key: [room_key], model: rooms}
+    work_order: {label: Work order, key: [work_order_id], model: work_orders}
+    reservation: {label: Reservation, key: [reservation_id], model: reservations}

@@ -1,0 +1,11 @@
+model:
+  id: employees
+  label: Employees
+  relation: employees
+  entities: {employee: {}, department: {}}
+  dimensions:
+    employee_name: {label: Employee name, kind: categorical}
+    site: {label: Site, kind: categorical}
+  measures:
+    headcount: {label: Headcount, kind: entity_count, entity_key: employee_id}
+    salary: {label: Salary, kind: aggregate, expr: salary, rollup: additive}

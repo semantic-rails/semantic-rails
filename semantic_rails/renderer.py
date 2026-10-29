@@ -71,7 +71,8 @@ if TYPE_CHECKING:
 # inside single-quoted literals and the rest do not, so the same value has to
 # be escaped differently per warehouse. Every other dialect choice is already
 # baked into the AST by the lowering pass, except typed boolean NULL casts
-# (``SqlDialect.null_boolean_type``).
+# (``SqlDialect.null_boolean_type``) and UUID parameters
+# (``SqlDialect.uuid_parameter``).
 #
 # It is a ContextVar rather than a parameter because `render_expr` recurses
 # through ~35 internal call sites; threading an argument through all of them
@@ -265,11 +266,15 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         return ".".join(names)
     if isinstance(expr, SqlParameter):
         emitting = _EMITTED_SLOTS.get()
-        if emitting is None:
-            return "?"
-        nonce, emitted = emitting
-        emitted.append(expr.slot)
-        return f"{nonce}{len(emitted) - 1}{nonce}"
+        marker = "?"
+        if emitting is not None:
+            nonce, emitted = emitting
+            emitted.append(expr.slot)
+            marker = f"{nonce}{len(emitted) - 1}{nonce}"
+        dialect = _ACTIVE_DIALECT.get()
+        if expr.slot.type == "uuid" and dialect is not None:
+            return dialect.uuid_parameter.format(marker)
+        return marker
     if isinstance(expr, SqlLiteral):
         if expr.value is None:
             return "NULL"

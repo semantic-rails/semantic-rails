@@ -1,0 +1,7 @@
+model:
+  id: rooms
+  label: Rooms
+  relation: rooms
+  entities: {room: {}}
+  dimensions:
+    room_key: {label: Room key, kind: categorical}

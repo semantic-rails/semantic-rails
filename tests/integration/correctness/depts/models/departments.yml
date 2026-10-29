@@ -1,0 +1,8 @@
+model:
+  id: departments
+  label: Departments
+  relation: departments
+  entities: {department: {}}
+  dimensions:
+    dept_code: {label: Department code, kind: categorical, unknown_values: [UNASSIGNED]}
+    dept_name: {label: Department name, kind: categorical}

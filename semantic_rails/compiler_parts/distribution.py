@@ -30,6 +30,7 @@ from ..schema import (
     PackageConfig,
 )
 from ..sql_ast import (
+    SqlBinary,
     SqlCall,
     SqlCast,
     SqlCte,
@@ -56,7 +57,9 @@ from .dependencies import (
 from .empty_groups import (
     GUARDED_BASE,
     guard_empty_groups,
+    recording_zero_outputs,
     refuse_unsettled,
+    unobserved_as,
     zero_outputs,
 )
 from .indexes import (
@@ -74,7 +77,6 @@ from .lowering_common import (
 from .namespacing import _namespace_sql_select
 from .paths import (
     _entity_key_dimension_ids,
-    inner_lookups,
 )
 from .post_aggregation import (
     _expr_requires_dense_series,
@@ -172,14 +174,20 @@ def _distribution_select(
         value_alias,
         extra_group_by=entity_key_dims,
     )
-    # Like a metric predicate's set, the per-entity values join their lookups INNER: a row whose
-    # lookup of the entity finds no match is no entity, never one NULL entity of its own.
-    with inner_lookups():
+    # The per-entity values read their lookups as the call grouped by the entity does: a row
+    # whose lookup for a group finds no match (an order with no store, read by store name) reads
+    # in the NULL group, never in no group. Where the input's measures read separate leaves, each
+    # operand settles as a sum grouped by the entity does: one with no rows for an entity the
+    # others have reads 0 where its measure has data in scope (an order with no refund row
+    # refunded nothing), NULL where it has none. The entities stay those with rows of the input's
+    # measures in the period. The settled values are internal: no NO_DATA_IN_SCOPE output of their
+    # own, and a refusal to settle them names this output.
+    with recording_zero_outputs(), unobserved_as(value_alias, alias):
         sql_ast = nested.query_sql(
             config,
             entity_value_query,
             project_cut=project_is_cut() or bool(expr.over.where),
-            guard_empty=False,
+            entity_values=True,
         )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
@@ -219,9 +227,17 @@ def _distribution_select(
         ],
         from_table=SqlTableRef(name=source_name),
         where=[
-            _value_filter_condition(value_ref, item, config)
-            for item in list(expr.over.where or [])
-            if str(item.get("kind", "value_filter")) == "value_filter"
+            # A row with no key of the entity (an order with no store, read per store) is no
+            # entity, never one NULL entity of its own.
+            *(
+                SqlBinary(SqlIdentifier(parts=[source_name, key]), "IS NOT", SqlLiteral(None))
+                for key in entity_key_dims
+            ),
+            *(
+                _value_filter_condition(value_ref, item, config)
+                for item in list(expr.over.where or [])
+                if str(item.get("kind", "value_filter")) == "value_filter"
+            ),
         ],
         group_by=[SqlIdentifier(parts=[source_name, key]) for key in key_aliases],
     )

@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from datetime import time as clock_time
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 
@@ -172,7 +173,7 @@ def test_postgres_end_of_day_time_refuses_without_wrapping(adbc, positional):
     assert adbc.query("SELECT TIME '00:00:00' AS payload") == [{"payload": clock_time(0, 0)}]
 
 
-def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
+def test_postgres_semantic_dimension_on_uuid_key_groups_as_its_lower_case_text(adbc, tmp_path):
     root = _package(tmp_path / "uuid_keys", [])
     config = load_package_config(str(root))
     package = replace(
@@ -193,34 +194,38 @@ def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
     )
     runtime.set_adapter(adbc)
     try:
-        with pytest.raises(SemanticLayerError) as caught:
-            runtime.query(
-                {
-                    "select": [
-                        {
-                            "expression": {
-                                "kind": "aggregate",
-                                "measure": "measure.rf.revenue",
-                                "aggregation": "sum",
-                            },
-                            "as": "revenue",
-                        }
-                    ],
-                    "group_by": ["dimension.rf_order_order_ref"],
-                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "asc"}],
-                }
-            )
-        assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
+        result = runtime.query(
+            {
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "aggregate",
+                            "measure": "measure.rf.revenue",
+                            "aggregation": "sum",
+                        },
+                        "as": "revenue",
+                    }
+                ],
+                "group_by": ["dimension.rf_order_order_ref"],
+                "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "asc"}],
+            }
+        )
     finally:
         runtime.close()
+    # Each order's uuid reads back as its lower-case hyphenated text, as on DuckDB.
+    assert [
+        (row["dimension.rf_order_order_ref"], int(row["revenue"])) for row in result["rows"]
+    ] == [
+        ("12345678-1234-5678-9abc-def012345678", 10),
+        ("fedcba98-7654-3210-9abc-def012345678", 20),
+    ]
+    assert result["column_types"]["dimension.rf_order_order_ref"] == {"type": "uuid"}
 
 
 @pytest.mark.parametrize("empty", [False, True])
 @pytest.mark.parametrize(
     "expression",
     [
-        "'12345678-1234-5678-9abc-def012345678'::UUID",
-        "NULL::UUID",
         "ARRAY[1.20, 2.30, NULL]::NUMERIC[]",
         "ARRAY[123456789012345678.123456789]::NUMERIC[]",
         "NULL::NUMERIC[]",
@@ -243,6 +248,18 @@ def test_postgres_unsupported_result_columns_refuse_and_recover(adbc, expression
     assert caught.value.details["type"]
     assert adbc._conn is None
     assert adbc.query("SELECT 42 n") == [{"n": 42}]
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_postgres_uuid_result_columns_read_as_uuids(adbc, empty):
+    suffix = " WHERE FALSE" if empty else ""
+    value = UUID("12345678-1234-5678-9abc-def012345678")
+    assert adbc.query(f"SELECT '{value}'::UUID AS payload" + suffix) == (
+        [] if empty else [{"payload": value}]
+    )
+    assert adbc.query("SELECT NULL::UUID AS payload" + suffix) == (
+        [] if empty else [{"payload": None}]
+    )
 
 
 @pytest.mark.parametrize(

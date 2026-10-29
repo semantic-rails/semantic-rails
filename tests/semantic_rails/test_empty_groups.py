@@ -1592,7 +1592,14 @@ def test_a_rollup_never_answers_a_conditional_sum(
 
 
 def _unguarded_source(config: Any, payload: dict[str, Any]) -> Any:
-    return compiler._compile_query_sql_ast(config, payload, project_cut=True, guard_empty=False)
+    guarded = compiler.lower_to_sql
+
+    def unguarded(plan: Any, config: Any, **options: Any) -> Any:
+        return guarded(plan, config, **options, guard_empty=False)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(compiler, "lower_to_sql", unguarded)
+        return compiler._compile_query_sql_ast(config, payload, project_cut=True)
 
 
 def _row_counts_named_revenue(plan: Any, taken: Any) -> dict[str, str]:

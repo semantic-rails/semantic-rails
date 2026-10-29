@@ -1254,6 +1254,40 @@
       },
       "type": "array"
     },
+    "join": {
+      "additionalProperties": false,
+      "properties": {
+        "keep": {
+          "anyOf": [
+            {
+              "const": "all"
+            },
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          ],
+          "description": "all (the default): every key of every part; or the indexes of the parts each kept row has a row of."
+        },
+        "on": {
+          "description": "Per key column, one group_by dimension id of every part, in the order of parts.",
+          "items": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "on"
+      ],
+      "type": "object"
+    },
     "limit": {
       "minimum": 1,
       "type": "integer"
@@ -1282,6 +1316,14 @@
         "required": [
           "field"
         ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "parts": {
+      "description": "A joined call: calls answered as their own, joined on join.on in one statement. Beside parts a call has only join, time, order_by and limit.",
+      "items": {
+        "description": "A call with select, group_by, where, routes, observation_scope: no having, time, order_by, limit or totals.",
         "type": "object"
       },
       "type": "array"
