@@ -340,6 +340,89 @@ def _direct_dimension_source_expr(
     return unknown_as_null(expr, dim), dim.id
 
 
+def route_key_source_expr(
+    source_entity: str,
+    dim_id: str,
+    path_selections: Iterable[PathSelection],
+    config: PackageConfig,
+    *,
+    table_overrides: dict[str, str] | None = None,
+) -> tuple[Any, str] | None:
+    """An entity's key ``dim_id``, read from the model the leaf's route joins just before that
+    entity: the column its rows name the entity by, as a leaf rooted at that model reads it
+    (``_direct_dimension_source_expr``). A refund reaches its customer through its order, so it
+    reads ``orders.customer_id``, never the customers table's own column, which is NULL for a
+    customer that table doesn't hold yet: the refund and the order then group under one key.
+    An attribute of the entity (a tier, a region) still reads the entity's own table.
+
+    None when the route reaches the entity in one hop (the direct read answers), when the leaf
+    has no single route to it, when the last hop enters a validity window (a version must be
+    chosen there), or when this leaf replaces the near model's table."""
+    dim = _dimension_index(config).get(dim_id)
+    if dim is None:
+        return None
+    entities = _entity_index(config)
+    target = entities.get(dim.entity)
+    if target is None or dim.column not in set(target.key_columns):
+        return None
+    paths = {tuple(row.chosen_path) for row in path_selections if row.target_entity == dim.entity}
+    if len(paths) != 1:
+        return None
+    path = next(iter(paths))
+    if len(path) < 2:
+        return None
+    relationships = _relationship_index(config)
+    near = source_entity
+    for rel_id in path[:-1]:
+        rel = relationships[rel_id]
+        near = rel.target_entity if near == rel.source_entity else rel.source_entity
+    last = relationships[path[-1]]
+    if near == dim.entity or near in (table_overrides or {}):
+        return None
+    if last.source_entity == near and last.target_entity == dim.entity:
+        near_columns = last.source_columns or [last.source_column]
+        far_columns = last.target_columns or [last.target_column]
+    elif last.target_entity == near and last.source_entity == dim.entity:
+        near_columns = last.target_columns or [last.target_column]
+        far_columns = last.source_columns or [last.source_column]
+    else:
+        return None
+    table = entities[near].table
+    if enters_validity_window(last, table):
+        return None
+    column = next(
+        (
+            near_col
+            for near_col, far_col in zip(near_columns, far_columns, strict=True)
+            if far_col == dim.column
+        ),
+        None,
+    )
+    if column is None:
+        return None
+    return unknown_as_null(_column_ref(table, column), dim), dim.id
+
+
+def leaf_dimension_expr(
+    source_entity: str,
+    dim_id: str,
+    path_selections: Iterable[PathSelection],
+    config: PackageConfig,
+    *,
+    table_overrides: dict[str, str] | None = None,
+) -> tuple[Any, str]:
+    """``dim_id`` as a leaf rooted at ``source_entity`` reads it over its routes: the source
+    table's own column when it holds it, an entity's key from the model the route reaches it
+    from (``route_key_source_expr``), else the dimension's own column."""
+    return (
+        _direct_dimension_source_expr(source_entity, dim_id, config)
+        or route_key_source_expr(
+            source_entity, dim_id, path_selections, config, table_overrides=table_overrides
+        )
+        or _resolve_dimension_expr(dim_id, config)
+    )
+
+
 def keyed_entity(config: PackageConfig, dimension_id: str) -> Any:
     """The entity whose one-column key ``dimension_id`` is (never a calendar), else None."""
     dimension = _dimension_index(config).get(dimension_id)

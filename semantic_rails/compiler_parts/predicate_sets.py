@@ -114,6 +114,7 @@ from .paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    route_key_source_expr,
 )
 from .predicate import (
     _inline_threshold_cte_and_where,
@@ -840,12 +841,26 @@ def _anchored_snapshot_ctes(
 
 
 def _dimension_expr_from_anchor(
-    dim_id: str, *, anchor_name: str, measure_entity: str, config: PackageConfig
+    dim_id: str,
+    *,
+    anchor_name: str,
+    measure_entity: str,
+    path_selections: list[PathSelection],
+    config: PackageConfig,
 ) -> Any:
     direct = _direct_dimension_source_expr(measure_entity, dim_id, config)
     if direct is not None:
         return SqlIdentifier(parts=[anchor_name, dim_id])
-    return _resolve_dimension_expr(dim_id, config)[0]
+    return (
+        route_key_source_expr(
+            measure_entity,
+            dim_id,
+            path_selections,
+            config,
+            table_overrides={measure_entity: anchor_name},
+        )
+        or _resolve_dimension_expr(dim_id, config)
+    )[0]
 
 
 def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelect | None:
@@ -884,7 +899,11 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
             anchor_select_fields[key_alias] = SqlIdentifier(parts=["snapshot", key_alias])
     for dim_id in plan.group_by:
         anchor_select_fields[dim_id] = _dimension_expr_from_anchor(
-            dim_id, anchor_name="snapshot", measure_entity=measure.entity, config=config
+            dim_id,
+            anchor_name="snapshot",
+            measure_entity=measure.entity,
+            path_selections=measure_plan.path_selections,
+            config=config,
         )
     if time_alias:
         anchor_select_fields[time_alias] = SqlIdentifier(parts=["snapshot", time_alias])
