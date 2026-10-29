@@ -43,6 +43,7 @@ from ..expressions import (
 )
 from ..fanout import (
     analyze_fanout,
+    record_route_choice,
     recording_route_choices,
     resolve_path,
 )
@@ -62,8 +63,12 @@ from ..sql_ast import (
     SqlCase,
     SqlCaseWhen,
     SqlCast,
+    SqlExists,
+    SqlField,
     SqlIdentifier,
+    SqlInQuery,
     SqlIsNull,
+    SqlJoin,
     SqlLiteral,
     SqlSelect,
     SqlSetQuery,
@@ -115,6 +120,7 @@ from .paths import (
     _path_selection,
     _resolve_dimension_expr,
     _role_conversion,
+    clock_hops,
     dimension_filter,
     rollup_held_lookups,
 )
@@ -475,8 +481,11 @@ def _edge_cap(
     """What a measure's declared edge (``zero_through``) lets the leaf that reads it on the
     clock ``role_id`` (an untimed read: the measure's default clock) read: the rows at or
     before the edge (``declared_cap``). None past it exist for anything the leaf feeds, nested
-    predicates and windows included. A clock on another model isn't capped; its edge isn't
-    read there either (``_record_time_scope``)."""
+    predicates and windows included. An untimed read on a clock of another model is capped
+    through the to-one route that dates each row (``clock_hops``): a row whose dating row is
+    missing or past the edge isn't read. A series or window on such a clock isn't capped, and
+    its edge isn't read there either (``_record_time_scope``)."""
+    untimed = not role_id
     role_id = role_id or measure.default_temporal_role
     if measure.zero_through is None or not role_id:
         return []
@@ -484,14 +493,27 @@ def _edge_cap(
     refuse_declared_edges([measure], dialect)
     role = _temporal_role_index(config)[role_id]
     dim = _dimension_index(config)[role.dimension]
-    direct = _direct_dimension_source_expr(entity or measure.entity, role.dimension, config)
-    if direct is None and dim.entity != (entity or measure.entity):
-        return []
+    source = entity or measure.entity
+    direct = _direct_dimension_source_expr(source, role.dimension, config)
     entities = _entity_index(config)
     raw = direct[0] if direct is not None else _column_ref(entities[dim.entity].table, dim.column)
     zone = role.column_timezone or role.timezone or "UTC"
     local = _apply_role_timezone(raw, role, config)
-    return declared_cap(measure.zero_through, raw, local, zone, dialect)
+    cap = declared_cap(measure.zero_through, raw, local, zone, dialect)
+    if direct is not None or dim.entity == source:
+        return cap
+    hops = clock_hops(source, dim.entity, config) if untimed else None
+    if hops is None:
+        return []
+    route, ((on, table), *joins) = hops
+    record_route_choice(source, dim.entity, route)
+    rest = [SqlJoin("INNER", SqlTableRef(name=name), condition) for condition, name in joins]
+    if isinstance(on, SqlBinary) and on.op == "=":
+        # A one-column key: the rows whose key a dating row inside the edge holds.
+        keys = SqlSelect([SqlField(on.right, "dated")], SqlTableRef(name=table), rest, where=cap)
+        return [SqlInQuery(on.left, keys)]
+    dated = SqlSelect([SqlField(SqlLiteral(1), "dated")], SqlTableRef(name=table), rest, [on, *cap])
+    return [SqlExists(dated)]
 
 
 def _record_time_scope(
@@ -572,7 +594,8 @@ def _record_all_time_scope(
     table declares its edge: the edge caps every row it reads (``_edge_cap``), so the table is
     loaded through the whole answer, and its rows without the authored filter
     (``source_where``), not a matching row, say it is observed (``guard_empty_groups``).
-    A leaf with CTEs of its own (an entity filter's population) records nothing."""
+    A leaf with CTEs of its own (an entity filter's population) records nothing, nor does a
+    measure on a clock its edge can't cap (one on another model no to-one route reaches)."""
     if not authored or leaf.ctes or not isinstance(leaf.from_table, SqlTableRef):
         return
     for row in rows:
@@ -581,6 +604,10 @@ def _record_all_time_scope(
             row.bound_measure.aggregation, measure
         ):
             continue
+        # Only a check: the leaf already noted the route its cap reads.
+        with recording_route_choices():
+            if measure.default_temporal_role and not _edge_cap(measure, "", config):
+                continue
         alias = row.bound_measure.alias
         record_leaf_scope(
             alias,

@@ -3158,8 +3158,13 @@ midnight after its date, or at or before its timestamp; for `now`, rows at or be
 request's `now`): series, totals, an answer without a window, running totals, shares, prior
 periods, entity filters and each operand of a conversion all see the same rows. A stray row after the edge is not read, so
 its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
-base table, never a rollup, whose buckets can't stop at an instant. A clock on another model
-than the measure's own is not capped.
+base table, never a rollup, whose buckets can't stop at an instant. A measure dated by another
+model's clock (refunds dated by their order's `ordered_at`, through `times:`) is capped on that
+clock with no time window: a refund is read when its order is at or before the edge, so a refund
+on an order after the load log, or whose order is missing, isn't read. That needs one route of
+to-one relationships to the clock's model, the route a series on that clock joins; a model the
+measure reaches by two routes the package hasn't decided between isn't capped, and its answers
+with no window read as under `data`. A series or window on another model's clock is not capped.
 
 The edge is only the upper bound: a period before the table's first row still reads `NULL`.
 Up to the edge, the table is observed whether or not a metric's `filter` matches any of its
@@ -3181,7 +3186,10 @@ load log per load job; a model that another job loads declares its own.
 
 The same holds with no time window: "how many enterprise accounts have we ever had?" reads `0`
 before the first one signs up, once the table holds a row the edge lets through, and `NULL`
-with `NO_DATA_IN_SCOPE` on a model whose edge is `data`.
+with `NO_DATA_IN_SCOPE` on a model whose edge is `data`. On another model's clock the edge
+lets a row through by that clock: "how many goods refunds have we ever issued?" reads `0` before
+the first goods refund once a refund's order is loaded, and `NULL` under an empty load log, as
+every refund count does there.
 
 Known limits:
 
