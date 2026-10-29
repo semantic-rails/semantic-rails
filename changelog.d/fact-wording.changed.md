@@ -1,7 +1,7 @@
 - Deterministic notes now say exactly what they checked. `REWRITE_APPLIED` for measures of
-  different models reads "Each model's measures were aggregated from its own rows to the call's
-  groups before the join, so no row is counted twice. It does not check that these models
-  answer the question." (`details.rewrite_classification`: `independent_leaf_alignment`). A
+  different models reads "Each model's measures were aggregated to the call's groups before the
+  join, so the join counts no row twice. It does not check that these models answer the
+  question." (`details.rewrite_classification`: `independent_leaf_alignment`). A
   row-grain model's `key_note` on `inspect` says no model can join to one of its rows by key,
   and what its measures still group and filter by. `TOTAL_OVER` names what a total rolls up
   and the grain it keeps ("with period rolled up: one value per store, repeated on each of its

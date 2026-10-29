@@ -457,6 +457,12 @@ def test_an_unresolved_current_without_a_state_offers_no_state_hint(package_conf
 # --- A cross-fact rewrite is a note -------------------------------------------------------------
 
 
+CROSS_FACT_NOTE = (
+    "Each model's measures were aggregated to the call's groups before the join, so the join "
+    "counts no row twice. It does not check that these models answer the question."
+)
+
+
 def test_a_cross_fact_rewrite_is_a_note_that_says_only_what_it_checked(runtime):
     result = runtime.query(
         {
@@ -468,10 +474,27 @@ def test_a_cross_fact_rewrite_is_a_note_that_says_only_what_it_checked(runtime):
     (rewrite,) = [w for w in result["warnings"] if w["code"] == "REWRITE_APPLIED"]
     assert rewrite["severity"] == "info"
     # How the rows combine, and nothing that reads as "the answer is right".
-    assert rewrite["message"] == (
-        "Each model's measures were aggregated from its own rows to the call's groups before "
-        "the join, so no row is counted twice. It does not check that these models answer the "
-        "question."
-    )
+    assert rewrite["message"] == CROSS_FACT_NOTE
     assert rewrite["details"]["rewrite_classification"] == "independent_leaf_alignment"
     assert "safe" not in json.dumps(rewrite).lower()
+
+
+def test_the_cross_fact_note_stays_true_where_a_measure_crosses_into_overlapping_groups(runtime):
+    # Orders and item revenue per product type: an order with a drink and a food item counts in
+    # both groups, so the order counts add up past the total. The note claims only the join.
+    result = runtime.query(
+        {
+            "select": ["measure.jaffle.order_count", "measure.jaffle.item_revenue_usd"],
+            "group_by": ["dimension.jaffle_product_type"],
+        }
+    )
+    assert result["ok"]
+    total = runtime.query({"select": ["measure.jaffle.order_count"]})["rows"][0]["order_count"]
+    assert sum(row["order_count"] for row in result["rows"]) > total
+    kinds = {
+        w["details"]["rewrite_kind"]: w["message"]
+        for w in result["warnings"]
+        if w["code"] == "REWRITE_APPLIED"
+    }
+    assert kinds["leaf_preaggregate_join"] == CROSS_FACT_NOTE
+    assert "entity_in_terms_of" in kinds  # order_count read through the item rows

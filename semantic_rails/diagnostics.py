@@ -1728,9 +1728,9 @@ def rewrite_warning_payload(step: Any) -> dict[str, Any]:
         # call reads the right measures or tables.
         details.setdefault("rewrite_classification", "independent_leaf_alignment")
         message = (
-            "Each model's measures were aggregated from its own rows to the call's groups "
-            "before the join, so no row is counted twice. It does not check that these models "
-            "answer the question."
+            "Each model's measures were aggregated to the call's groups before the join, so "
+            "the join counts no row twice. It does not check that these models answer the "
+            "question."
         )
     # A disclosure of how the rows were computed: a note, not a warning to act on.
     return semantic_issue(
