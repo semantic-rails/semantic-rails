@@ -181,3 +181,83 @@ def test_text_with_a_letter_whose_lowercase_is_unstable_is_refused(word, letter)
     assert caught.value.details["path"] == "where[0].value"
     hint = caught.value.details["recovery_hints"][0]["message"]
     assert '"op": "is"' in hint and "valid-values" in hint
+
+
+# An id reads through the dialect's cast to text before both sides fold; Postgres and ClickHouse
+# fold any type as text already, so their SQL is the text column's.
+ID_TEXT = "e2c0"
+ID_STANDARD = r"(LOWER(CAST(t.id AS VARCHAR)) LIKE LOWER('%e2c0%') ESCAPE '\')"
+ID_EXPECTED = {
+    "duckdb": ID_STANDARD,
+    "motherduck": ID_STANDARD,
+    "ducklake": ID_STANDARD,
+    "athena": ID_STANDARD,
+    "postgres": (
+        r'(LOWER(CAST(t.id AS TEXT) COLLATE "und-x-icu") LIKE '
+        r"""LOWER(CAST('%e2c0%' AS TEXT) COLLATE "und-x-icu") ESCAPE '\')"""
+    ),
+    "snowflake": (
+        r"(LOWER(COLLATE(CAST(t.id AS VARCHAR), '')) LIKE LOWER(COLLATE('%e2c0%', '')) "
+        r"ESCAPE '\\')"
+    ),
+    "databricks": (
+        r"(LOWER((CAST(t.id AS STRING)) COLLATE UTF8_BINARY) LIKE "
+        r"LOWER(('%e2c0%') COLLATE UTF8_BINARY) ESCAPE '\\')"
+    ),
+    "bigquery": r"(LOWER(COLLATE(CAST(t.id AS STRING), '')) LIKE LOWER(COLLATE('%e2c0%', '')))",
+    "clickhouse": "(" + _clickhouse_fold("t.id") + " LIKE " + _clickhouse_fold("'%e2c0%'") + ")",
+}
+
+
+def _id_where(warehouse: str, word: str, value: object) -> str:
+    column = SqlIdentifier(["t", "id"])
+    select = SqlSelect(
+        select=[SqlField(column, "id")],
+        from_table=SqlTableRef("t"),
+        where=[build_filter_condition(column, word, value, as_text=True)],
+    )
+    sql = render_select_for_profile(select, dialect=dialect_for_warehouse(warehouse))
+    return " ".join(sql.split("WHERE", 1)[1].split())
+
+
+def test_an_id_reads_through_each_dialects_cast_to_text():
+    assert set(ID_EXPECTED) == set(EXPECTED)
+    for warehouse, expected in ID_EXPECTED.items():
+        assert _id_where(warehouse, "contains", ID_TEXT) == expected, warehouse
+        # A not_ form keeps the rows with no id, read as stored; is compares the id as stored.
+        assert _id_where(warehouse, "not_contains", ID_TEXT).endswith(" OR (t.id IS NULL))")
+        assert _id_where(warehouse, "is", 203) == "t.id = 203", warehouse
+
+
+# Integer and UUID ids, as DuckDB stores them: each word reads the id's canonical text.
+IDS = [
+    (3, "e2c0be24-560d-78c5-e599-c2a9c9d0bbd2"),
+    (103, None),
+    (203, "00000000-0000-4000-8000-0000000000e2"),
+    (None, None),
+]
+ID_MATCHES = [
+    ("id", "ends_with", "03", [103, 203]),
+    ("id", "starts_with", "3", [3]),
+    ("id", "not_contains", "0", [3, None]),
+    ("u", "starts_with", "E2C0", [3]),
+    ("u", "contains", "-560D-", [3]),
+    ("u", "ends_with", "E2", [203]),
+    ("u", "not_starts_with", "e2c0", [103, 203, None]),
+]
+
+
+@pytest.mark.parametrize(("column", "word", "text", "expected"), ID_MATCHES)
+def test_each_text_word_matches_an_id_by_its_canonical_text(column, word, text, expected):
+    condition = build_filter_condition(SqlIdentifier(["t", column]), word, text, as_text=True)
+    select = SqlSelect(
+        select=[SqlField(SqlIdentifier(["t", "id"]), "id")],
+        from_table=SqlTableRef("t"),
+        where=[condition],
+    )
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE t (id INTEGER, u UUID)")
+        connection.executemany("INSERT INTO t VALUES (?, ?)", IDS)
+        sql = render_select_for_profile(select, dialect=dialect_for_warehouse("duckdb"))
+        found = [row[0] for row in connection.execute(sql).fetchall()]
+    assert sorted(found, key=lambda number: (number is None, number)) == expected

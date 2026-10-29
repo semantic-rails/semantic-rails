@@ -1,0 +1,7 @@
+model:
+  id: products
+  label: Products
+  relation: products
+  entities: {product: {}}
+  measures:
+    product_count: {label: Products, kind: entity_count, entity_key: sku}

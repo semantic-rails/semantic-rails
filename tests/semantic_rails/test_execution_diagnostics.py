@@ -77,21 +77,18 @@ def _code_filter(surface, op, value):
 
 @pytest.mark.parametrize("surface", ["where", "entity", "aggregate", "scoped", "comparison"])
 @pytest.mark.parametrize("op", ["LIKE", "NOT LIKE", "ILIKE"])
-def test_like_on_an_id_hints_exact_values_instead_of_an_unusable_text_word(runtime, surface, op):
+def test_like_on_an_id_hints_the_text_word_that_reads_it_as_text(runtime, surface, op):
     result = runtime.validate(_code_filter(surface, op, "%1"))
     assert not result["ok"]
     issue = result["errors"][0]
     assert issue["code"] == "INVALID_QUERY"
     hint = issue["recovery_hints"][0]["message"]
-    assert "exact values" in hint
-    assert "ends_with" not in hint
-    if surface == "comparison":
-        assert "= or <>" in hint
-    else:
-        assert "not" in hint if op == "NOT LIKE" else "is" in hint
-    # The suggested exact-value filter is accepted on this same surface.
-    fixed = _code_filter(surface, "not" if op == "NOT LIKE" else "is", "customer_1")
-    accepted = runtime.validate(fixed)
+    word = "not_ends_with" if op == "NOT LIKE" else "ends_with"
+    operand = "right" if surface == "comparison" else "value"
+    assert hint.startswith(f'Write {{"op": "{word}", "{operand}": '), hint
+    assert "exact values" not in hint
+    # The hinted text word is accepted on this same surface: it reads the id as its text.
+    accepted = runtime.validate(_code_filter(surface, word, "1"))
     assert accepted["ok"], accepted
 
 

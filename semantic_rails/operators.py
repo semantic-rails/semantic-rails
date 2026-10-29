@@ -170,9 +170,9 @@ def like_hint(spelling: str, pattern: Any, *, operand: str = "value") -> str:
 
 
 # Each data type a text word cannot read (it would fold a number, a date or a flag), and the
-# words that compare it. A text word reads only text ("string"), or a type nothing classified.
+# words that compare it. A text word reads text ("string"), an id through a cast to its text,
+# or a type nothing classified.
 _NOT_TEXT = {
-    "id": "is or not with the exact values",
     "integer": "is, not, gt, gte, lt or lte",
     "number": "is, not, gt, gte, lt or lte",
     "date": "time with start and end, or gt, gte, lt or lte",
@@ -190,10 +190,18 @@ _KIND_TYPES = {
 }
 
 
+def casts_to_text(data_type: Any) -> bool:
+    """Whether a text word reads values of ``data_type`` through a cast to their text: an id,
+    which a warehouse may store as a number or a UUID (a product or order code is looked up by
+    a fragment of it). ``is`` and ``not`` still compare an id as it is stored."""
+    return str(data_type or "").strip().lower() == "id"
+
+
 def reads_text(data_type: Any) -> bool:
-    """Whether a text word reads values of ``data_type``: text, or a type nothing classified."""
+    """Whether a text word reads values of ``data_type``: text, an id (through a cast to its
+    text), or a type nothing classified."""
     canonical = str(data_type or "").strip().lower()
-    return _KIND_TYPES.get(canonical, canonical) in {"string", ""}
+    return _KIND_TYPES.get(canonical, canonical) in {"string", ""} or casts_to_text(canonical)
 
 
 def check_text_operand(

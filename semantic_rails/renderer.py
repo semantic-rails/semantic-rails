@@ -321,7 +321,12 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         )
         fold = dialect.case_fold if dialect is not None else "LOWER({})"
         negated = " NOT" if expr.negated else ""
-        value = fold.format(render_expr(expr.expr))
+        value = render_expr(expr.expr)
+        if expr.as_text:
+            value = (dialect.text_cast if dialect is not None else "CAST({} AS VARCHAR)").format(
+                value
+            )
+        value = fold.format(value)
         pattern = fold.format(_render_string_literal(expr.pattern))
         return f"({value}{negated} LIKE {pattern}{escape})"
     if isinstance(expr, SqlIn):
