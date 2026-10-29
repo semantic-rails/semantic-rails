@@ -47,7 +47,7 @@ from .fanout import (
     route_reading,
 )
 from .issues import ASSUMPTION, CODES
-from .query_call import call_from_query, call_where
+from .query_call import call_from_query, call_where, joined_call_from_query
 from .request_context import context_from_policy_context
 
 # Said when a time window with no grain was aggregated as one total.
@@ -434,6 +434,8 @@ def finish(
 def _call(query: Mapping[str, Any]) -> dict[str, Any] | None:
     """The call that states ``query``; None when it states none (a refused call)."""
     try:
+        if "parts" in query:
+            return joined_call_from_query(query)
         return call_from_query(query)
     except (SemanticLayerError, KeyError, TypeError, AttributeError):
         return None

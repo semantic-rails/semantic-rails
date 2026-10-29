@@ -78,7 +78,10 @@ CODES: dict[str, str] = {
     ),
     **_codes(
         NOTE,
-        "PLAN_TOTALS_HINT REWRITE_APPLIED ROW_FORMAT_COLUMNS VALUES_WITHHELD ZERO_AFTER_LAST_ROW",
+        """
+        PARTS_JOINED PLAN_TOTALS_HINT REWRITE_APPLIED ROW_FORMAT_COLUMNS VALUES_WITHHELD
+        ZERO_AFTER_LAST_ROW
+        """,
     ),
     # One entry per disclosure an answer states under ``assumptions``.
     **_codes(

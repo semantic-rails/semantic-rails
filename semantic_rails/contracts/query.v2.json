@@ -1228,6 +1228,102 @@
         }
       }
     },
+    "Part": {
+      "additionalProperties": false,
+      "description": "A call of its own inside a joined call: no having, time, order_by, limit or totals.",
+      "patternProperties": {
+        "^_": {}
+      },
+      "properties": {
+        "group_by": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "observation_scope": {
+          "enum": [
+            "dataset",
+            "query"
+          ]
+        },
+        "routes": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "to": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "via": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "via"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "select": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Ref"
+              },
+              {
+                "pattern": "^dimension\\.[^\\s]+$",
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "as": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expression": {
+                    "$ref": "#/$defs/Expression"
+                  }
+                },
+                "required": [
+                  "expression"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "where": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Condition"
+              },
+              {
+                "$ref": "#/$defs/EntityFilter"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "Ref": {
       "pattern": "^(measure|metric)\\.[^\\s]+$",
       "type": "string"
@@ -1253,6 +1349,44 @@
         "$ref": "#/$defs/Condition"
       },
       "type": "array"
+    },
+    "join": {
+      "additionalProperties": false,
+      "properties": {
+        "keep": {
+          "anyOf": [
+            {
+              "const": "all"
+            },
+            {
+              "items": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ],
+          "description": "all (the default): every key of every part; or the indexes of the parts each kept row has a row of."
+        },
+        "on": {
+          "description": "Per key column, one group_by dimension id of every part, in the order of parts.",
+          "items": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "on"
+      ],
+      "type": "object"
     },
     "limit": {
       "minimum": 1,
@@ -1284,6 +1418,14 @@
         ],
         "type": "object"
       },
+      "type": "array"
+    },
+    "parts": {
+      "description": "A joined call: calls answered as their own, joined on join.on in one statement. Beside parts a call has only join, time, order_by and limit.",
+      "items": {
+        "$ref": "#/$defs/Part"
+      },
+      "minItems": 1,
       "type": "array"
     },
     "routes": {

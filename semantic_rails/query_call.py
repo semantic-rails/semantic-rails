@@ -528,7 +528,12 @@ def read_joined_call(
         "timed": bool(isinstance(time, Mapping) and time.get("grain")),
     }
     if "order_by" in payload:
-        out["order_by"] = _order_by(payload.get("order_by"), [], [])
+        # A measure id names the one column of any part that reads it as itself.
+        out["order_by"] = _order_by(
+            payload.get("order_by"),
+            [row for part in parts for row in part.get("select") or []],
+            config.measures if config is not None else [],
+        )
     if "limit" in payload:
         out["limit"] = _limit(payload.get("limit"))
     return out, notes
@@ -2117,6 +2122,35 @@ def call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
         call["observation_scope"] = query["observation_scope"]
     if query.get("totals") is not None:
         call["totals"] = list(query["totals"])
+    return call
+
+
+def joined_call_from_query(query: Mapping[str, Any]) -> dict[str, Any]:
+    """The joined call that states an engine query of ``read_joined_call``: each part as its
+    call (``call_from_query``), the one time block on the call."""
+    parts = [call_from_query(part) for part in query.get("parts") or []]
+    times = [part.pop("time") for part in parts if "time" in part]
+    join = dict(query.get("join") or {})
+    call: dict[str, Any] = {
+        "parts": parts,
+        "join": {
+            "on": [list(row) for row in join.get("on") or []],
+            **({"keep": list(join["keep"])} if join.get("keep", "all") != "all" else {}),
+        },
+    }
+    if times:
+        call["time"] = times[0]
+    order = [
+        {
+            "field": str(item.get("field") or ""),
+            "direction": str(item.get("direction", "asc")).lower(),
+        }
+        for item in list(query.get("order_by") or [])
+    ]
+    if order:
+        call["order_by"] = order
+    if query.get("limit") is not None:
+        call["limit"] = query["limit"]
     return call
 
 

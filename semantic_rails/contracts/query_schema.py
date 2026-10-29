@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterable
 from typing import Any
 
@@ -203,7 +204,7 @@ def query_call_schema_document() -> dict[str, Any]:
         },
         **kind_defs,
     }
-    return {
+    document = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMA_ID,
         "title": "Semantic Rails query call",
@@ -307,6 +308,58 @@ def query_call_schema_document() -> dict[str, Any]:
         "additionalProperties": False,
         "x-fields": list(FIELDS),
         "$defs": defs,
+    }
+    _add_joined_call(document)
+    return document
+
+
+def _add_joined_call(document: dict[str, Any]) -> None:
+    """A joined call's keys (``query_call.read_joined_call``): ``parts``, each a ``Part`` whose
+    keys are the call's own, and ``join``. The parser refuses a key of a call beside ``parts``,
+    and one of a part that acts on the joined rows, at its path."""
+    from semantic_rails.query_call import PART_FIELDS
+
+    properties = document["properties"]
+    document["$defs"]["Part"] = {
+        "type": "object",
+        "description": "A call of its own inside a joined call: no having, time, order_by, "
+        "limit or totals.",
+        "properties": {key: copy.deepcopy(properties[key]) for key in PART_FIELDS},
+        "patternProperties": {"^_": {}},
+        "additionalProperties": False,
+    }
+    properties["parts"] = {
+        "type": "array",
+        "items": {"$ref": "#/$defs/Part"},
+        "minItems": 1,
+        "description": "A joined call: calls answered as their own, joined on join.on in one "
+        "statement. Beside parts a call has only join, time, order_by and limit.",
+    }
+    properties["join"] = {
+        "type": "object",
+        "properties": {
+            "on": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "description": "Per key column, one group_by dimension id of every part, in "
+                "the order of parts.",
+            },
+            "keep": {
+                "anyOf": [
+                    {"const": "all"},
+                    {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 0}},
+                ],
+                "description": "all (the default): every key of every part; or the indexes of "
+                "the parts each kept row has a row of.",
+            },
+        },
+        "required": ["on"],
+        "additionalProperties": False,
     }
 
 

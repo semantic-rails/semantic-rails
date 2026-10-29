@@ -130,7 +130,7 @@ from .policies import (
     withheld_rank_order,
 )
 from .policy_rules import check_request_environment
-from .query_call import TOTAL_OVER, read_call, route_options
+from .query_call import TOTAL_OVER, read_call, read_joined_call, route_options
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .renderer import render_with_slots
@@ -1748,14 +1748,16 @@ class Runtime:
                 # A metric grant reads the call in what it grants, so an id outside it answers
                 # exactly like an id the package lacks, wherever the reading looks it up.
                 config = visible_view.grant_view(self._config, policy) if granted else self._config
-                internal, notes = read_call(
+                # A joined call (``parts``) reads each part as a call (``read_joined_call``).
+                joined = not partial and isinstance(query, Mapping) and "parts" in query
+                internal, notes = (read_joined_call if joined else read_call)(
                     query,
                     config=config,
                     now=instant,
                     default_clock=clock,
                     text_dimension=text_dimension,
                     column_dimensions=dimensions_over_column,
-                    partial=partial,
+                    **({} if joined else {"partial": partial}),
                 )
         payload: dict[str, Any] = {**internal, "policy_context": policy}
         payload["policy_context"]["now"] = format_now(instant)
@@ -1845,6 +1847,10 @@ class Runtime:
             refusal = _scope_refusal(payload)
             if refusal is not None:
                 raise refusal
+            if "parts" in payload:
+                from .runtime_parts.joined_call import joined_check
+
+                return joined_check(self, payload, kind="validate", started=started)
             policy_effects, compiled = self._enforced_compile(payload, policy_context)
             report = ValidationReport(
                 version=2,
@@ -1887,8 +1893,9 @@ class Runtime:
                 kind="validate",
             )
         except SemanticLayerError as exc:
-            exc = self._with_lookalike_measures(exc, payload, policy_context)
-            exc = _enrich_runtime_error(exc, self._config, payload.get("_call_notes"))
+            if "parts" not in payload:  # a joined call's part refusals are already its own
+                exc = self._with_lookalike_measures(exc, payload, policy_context)
+                exc = _enrich_runtime_error(exc, self._config, payload.get("_call_notes"))
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -1927,6 +1934,10 @@ class Runtime:
         refusal = _scope_refusal(payload)
         if refusal is not None:
             raise refusal
+        if "parts" in payload:
+            from .runtime_parts.joined_call import joined_check
+
+            return joined_check(self, payload, kind="compile")
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
@@ -1966,18 +1977,13 @@ class Runtime:
         """Run an engine payload. ``value_page`` (valid-values' ``column``, ``search`` and
         ``offset``) runs a value listing as one page of its matching values
         (:func:`semantic_rails.compiler.value_page`)."""
-        from .runtime_parts.answer_warnings import (
-            _compiled_warnings,
-            _no_data_yet_warnings,
-            _partial_data_warnings,
-            _zero_after_last_row_notes,
-            closing_day_disclosures,
-        )
-        from .runtime_parts.zero_filled import zero_filled_groups_notes
-
         refusal = _scope_refusal(payload)
         if refusal is not None:
             raise refusal
+        if "parts" in payload:
+            from .runtime_parts.joined_call import joined_query
+
+            return joined_query(self, payload)
         verbosity = resolve_verbosity(payload)
         sql_profile = resolve_sql_profile(payload)
         policy_context = _policy_context(payload)
@@ -1989,13 +1995,46 @@ class Runtime:
             enriched = self._with_lookalike_measures(exc, payload, policy_context)
             raise _enrich_runtime_error(enriched, self._config, payload.get("_call_notes")) from exc
         zone = _time_zone(self._config, compiled)
-        now = _answer_now(payload)
-        withheld = _withheld_columns(policy_effects)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
         # from the request envelope through to the warehouse adapter. Hosted
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
         limits = _normalize_query_limits(payload.get("limits"), zone)
+        totaled = compiled["logical_plan"].query.get("totals") is not None
+        rows, hidden, limits_warnings, tie_warnings = self._run_statement(
+            compiled, payload, policy_context, limits, totaled=totaled
+        )
+        out = self._answer(
+            compiled,
+            payload,
+            rows,
+            hidden,
+            policy_effects=policy_effects,
+            policy_context=policy_context,
+            limits=limits,
+            call_warnings=[*limits_warnings, *tie_warnings, *self._seed_warnings],
+            verbosity=verbosity,
+        )
+        return apply_response_verbosity(
+            finish(out, payload=payload, compiled=compiled),
+            verbosity=verbosity,
+            sql_profile=sql_profile,
+            kind="execute",
+        )
+
+    def _run_statement(
+        self,
+        compiled: dict[str, Any],
+        payload: dict[str, Any],
+        policy_context: dict[str, Any],
+        limits: dict[str, Any],
+        *,
+        totaled: bool,
+    ) -> tuple[Any, dict[str, list[Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Run ``compiled``'s statement once, under the request's ``limits``: its rows and hidden
+        columns (``split_hidden``), and the warnings about how it ran (a statement timeout the
+        adapter can't honour, ties at the limit). ``totaled``: the rows include total rows,
+        which follow the call's own and are never cut."""
         limit = call_rows(compiled["sql_ast"]).limit
         probe = compiled.get("limit_probe")
         # A resource fence that hides the boundary row takes precedence over
@@ -2051,7 +2090,6 @@ class Runtime:
                 from .top_n import limit_rows
 
                 # Total rows (``total_over`` set) follow the call's own rows and are never cut.
-                totaled = compiled["logical_plan"].query.get("totals") is not None
                 own = [row for row in rows if not totaled or row.get(TOTAL_OVER) is None]
                 assert limit is not None  # a boundary probe exists only under a limit
                 cut, tie_warnings = limit_rows(own, limit, compiled["limit_order_keys"])
@@ -2090,6 +2128,36 @@ class Runtime:
                 if len(paths) == 1:
                     details["path"] = paths[0]
             raise query_execution_error(details) from exc
+        return rows, hidden, limits_warnings, tie_warnings
+
+    def _answer(
+        self,
+        compiled: dict[str, Any],
+        payload: dict[str, Any],
+        rows: Any,
+        hidden: dict[str, list[Any]],
+        *,
+        policy_effects: list[dict[str, Any]],
+        policy_context: dict[str, Any],
+        limits: dict[str, Any],
+        call_warnings: list[dict[str, Any]],
+        verbosity: str,
+    ) -> dict[str, Any]:
+        """The answer to a call whose statement ran (``rows``, ``hidden``), before ``finish``
+        and verbosity: its rows, warnings and every field it states. ``call_warnings`` follow
+        the call's own (how the statement ran)."""
+        from .runtime_parts.answer_warnings import (
+            _compiled_warnings,
+            _no_data_yet_warnings,
+            _partial_data_warnings,
+            _zero_after_last_row_notes,
+            closing_day_disclosures,
+        )
+        from .runtime_parts.zero_filled import zero_filled_groups_notes
+
+        zone = _time_zone(self._config, compiled)
+        now = _answer_now(payload)
+        withheld = _withheld_columns(policy_effects)
         mark_partial_periods(rows, compiled, now=now, zone=zone or "UTC")
         # Disclosures about the call's rows read only those: total rows are the call at
         # coarser grains, and their rolled-up NULLs are no group of the call's.
@@ -2148,9 +2216,7 @@ class Runtime:
                 *closing_warnings,
                 *_filter_value_warnings(self, compiled, payload),
                 *_unknown_rows_kept_warnings(self, compiled, payload),
-                *limits_warnings,
-                *tie_warnings,
-                *self._seed_warnings,
+                *call_warnings,
             ],
             "recovery_hints": [],
             **self._answer_block(
@@ -2292,13 +2358,7 @@ class Runtime:
             out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
         # First, where an agent reads it before the rows: which model each value comes from.
         # A metric grant's response never carries it (``resource_access`` keeps its own keys).
-        out = {"ok": True, "read_from": read_from(self._config, compiled, out), **out}
-        return apply_response_verbosity(
-            finish(out, payload=payload, compiled=compiled),
-            verbosity=verbosity,
-            sql_profile=sql_profile,
-            kind="execute",
-        )
+        return {"ok": True, "read_from": read_from(self._config, compiled, out), **out}
 
     def _answer_block(
         self,

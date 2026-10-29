@@ -598,7 +598,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and ran, not that it answers the question. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time (time.end is exclusive), order_by (period: time column), limit inside it; max_rows and row_format go beside query.",
+      "description": "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and ran, not that it answers the question. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time (time.end is exclusive), order_by (period: time column), limit inside it; max_rows and row_format go beside query. Calls side by side, each with its own where: {parts: [call, ...], join: {on: [[id per part]]}}.",
       "inputSchema": {
         "$defs": {
           "Condition": {
@@ -738,6 +738,96 @@
               "NOT IN"
             ]
           },
+          "Part": {
+            "additionalProperties": false,
+            "patternProperties": {
+              "^_": {}
+            },
+            "properties": {
+              "group_by": {
+                "items": {
+                  "$ref": "#/$defs/Text"
+                },
+                "type": "array"
+              },
+              "observation_scope": {
+                "enum": [
+                  "dataset",
+                  "query"
+                ]
+              },
+              "routes": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "from": {
+                      "$ref": "#/$defs/Text"
+                    },
+                    "to": {
+                      "$ref": "#/$defs/Text"
+                    },
+                    "via": {
+                      "items": {
+                        "$ref": "#/$defs/Text"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to",
+                    "via"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "select": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Ref"
+                    },
+                    {
+                      "pattern": "^dimension\\.[^\\s]+$",
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "as": {
+                          "$ref": "#/$defs/Text"
+                        },
+                        "expression": {
+                          "$ref": "#/$defs/Expression"
+                        }
+                      },
+                      "required": [
+                        "expression"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "where": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Condition"
+                    },
+                    {
+                      "$ref": "#/$defs/EntityFilter"
+                    }
+                  ]
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
           "Ref": {
             "pattern": "^(measure|metric)\\.[^\\s]+$",
             "type": "string"
@@ -795,6 +885,41 @@
                 },
                 "type": "array"
               },
+              "join": {
+                "additionalProperties": false,
+                "properties": {
+                  "keep": {
+                    "anyOf": [
+                      {
+                        "const": "all"
+                      },
+                      {
+                        "items": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      }
+                    ]
+                  },
+                  "on": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/$defs/Text"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "on"
+                ],
+                "type": "object"
+              },
               "limit": {
                 "minimum": 1,
                 "type": "integer"
@@ -824,6 +949,13 @@
                   ],
                   "type": "object"
                 },
+                "type": "array"
+              },
+              "parts": {
+                "items": {
+                  "$ref": "#/$defs/Part"
+                },
+                "minItems": 1,
                 "type": "array"
               },
               "routes": {

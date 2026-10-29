@@ -113,7 +113,8 @@ def join_allowed(config: PackageConfig, dimension_ids: Sequence[str]) -> str:
                 f"'{row.column}' doesn't say it identifies anything: a join column names an "
                 "identifier (a code, key or id) and what it identifies"
             )
-    types = list(dict.fromkeys(row.data_type for row in rows))
+    # An ``id`` column holds its key's values, whatever their type: it agrees with any type.
+    types = list(dict.fromkeys(row.data_type for row in rows if row.data_type != "id"))
     if len(types) > 1:
         return f"the columns' types differ ({', '.join(types)})"
     linked = {rows[0].id}
@@ -419,7 +420,7 @@ def _joined_rows(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> Sql
     aliases = [f"part_{index}" for index in range(len(parts))]
     fields: list[SqlField] = []
     for key in keys:
-        values = [
+        values: list[Any] = [
             SqlIdentifier(parts=[alias, key.columns[index]]) for index, alias in enumerate(aliases)
         ]
         fields.append(
@@ -494,6 +495,15 @@ def _joined_rows(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> Sql
         from_table=SqlTableRef(name="joined_part_0", alias=aliases[0]),
         joins=joins,
     )
+
+
+def presence_order(count: int) -> list[SqlOrder]:
+    """The last terms of every joined call's order: rows tied on every other term (two parts'
+    NULL-key rows) in the order of their parts."""
+    return [
+        SqlOrder(SqlIdentifier(parts=[IN.format(part=part)]), "DESC", nulls_last=True)
+        for part in range(count - 1)
+    ]
 
 
 def _order(order_by: Sequence[Mapping[str, Any]], keys: Sequence[JoinKey]) -> list[SqlOrder]:

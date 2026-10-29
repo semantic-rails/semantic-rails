@@ -1,5 +1,5 @@
 -- Portable seed: DuckDB and Postgres run this same script, and comments here hold no semicolons.
--- HR and facilities both carry a department code. Engineering has two people named Alex.
+-- HR and facilities both carry a department code. Engineering is two people, both named Alex.
 -- Two people have no department and one is filed under UNASSIGNED, a code no department has.
 -- Marketing has people and no space, Legal space and no people, and 900 sq ft is assigned to
 -- no department.
@@ -13,7 +13,7 @@ CREATE TABLE employees (
 );
 INSERT INTO employees VALUES
   (1, 'Alex', 'ENG', 'north', 100), (2, 'Alex', 'ENG', 'south', 120),
-  (3, 'Bea', 'ENG', 'north', 90), (4, 'Cal', 'FIN', 'north', 80),
+  (3, 'Bea', 'OPS', 'north', 90), (4, 'Cal', 'FIN', 'north', 80),
   (5, 'Dee', 'OPS', 'south', 70), (6, 'Eli', 'OPS', 'south', 75),
   (7, 'Ivy', 'MKT', 'north', 60), (8, 'Fay', NULL, 'north', 50),
   (9, 'Gus', NULL, 'south', 55), (10, 'Hal', 'UNASSIGNED', 'north', 65);
