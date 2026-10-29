@@ -473,11 +473,26 @@ def _options_note(pair: dict[str, Any], start: int, shown: int, total: int, path
     return f"{where}: the last of them"
 
 
+def _parts_paged(
+    groups: list[dict[str, Any]], path: str, pages: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """``groups`` without their forks' ``parts``, each named in ``pages`` from its first."""
+    shown: list[dict[str, Any]] = []
+    for index, group in enumerate(groups):
+        decide = group.get("decide_first")
+        if isinstance(decide, dict) and decide.get("parts"):
+            where = f"{path}.groups.{index}.decide_first.parts"
+            pages[where] = {"total_count": len(decide["parts"]), "next_offset": 0}
+            group = {**group, "decide_first": {k: v for k, v in decide.items() if k != "parts"}}
+        shown.append(group)
+    return shown
+
+
 def _grouped_pair(pair: Any, room: int, where: str, pages: dict[str, Any]) -> Any:
     """``pair`` with the options its first groups list, as many groups as fit in ``room``
     (at least one), an ``options_note`` saying so, and ``pages`` naming its options (every one
-    of them pages from the first it leaves out) and its groups, when it leaves one out; None
-    when even one group doesn't fit, or the pair has no groups."""
+    of them pages from the first it leaves out), its forks' parts and its groups, when it
+    leaves one out; None when even one group doesn't fit, or the pair has no groups."""
     details = pair["details"]
     clarification = details["clarification"]
     options, groups = clarification["options"], clarification.get("groups")
@@ -494,9 +509,12 @@ def _grouped_pair(pair: Any, room: int, where: str, pages: dict[str, Any]) -> An
             f"{names}: every option is on the pages of {path}.options"
             + (f", and every group on the pages of {path}.groups" if part else "")
         )
-        shown = {**clarification, "groups": groups[:count], "options": listed}
+        parts: dict[str, Any] = {}
+        shown = {**clarification, "groups": _parts_paged(groups[:count], path, parts)}
+        shown["options"] = listed
         row = {**pair, "details": {**details, "clarification": {**shown, "options_note": note}}}
-        if _json_size(row) <= room:
+        if _json_size(row) + _json_size(parts) <= room:
+            pages.update(parts)
             left_out = (n for n, option in enumerate(options) if option.get("id") not in wanted)
             pages[f"{path}.options"] = {
                 "total_count": len(options),
@@ -979,10 +997,10 @@ def _parse_report(project: Path) -> dict[str, Any]:
 
 
 def _with_groups(config: Any, pair: dict[str, Any]) -> dict[str, Any]:
+    """``pair`` with its groups, each fork's with the parts a package author decides."""
     clarification = pair["details"]["clarification"]
-    groups = route_groups(
-        config, pair["source_entity"], pair["target_entity"], clarification["options"]
-    )
+    start, target = pair["source_entity"], pair["target_entity"]
+    groups = route_groups(config, start, target, clarification["options"], parts=True)
     return {**pair, "details": {**pair["details"], "clarification": {**clarification, **groups}}}
 
 
