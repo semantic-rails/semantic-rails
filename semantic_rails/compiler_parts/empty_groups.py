@@ -829,6 +829,30 @@ def _unobserved_error(outputs: list[str]) -> SemanticLayerError:
     )
 
 
+@contextmanager
+def unobserved_as(inner: str, output: str) -> Iterator[None]:
+    """A refusal that a nested compile can't observe its output ``inner`` names ``output``, the
+    request's own, whether it is raised here or deferred until binding finishes."""
+    deferred = _source_filter_refusals.get()
+    start = len(deferred) if deferred is not None else 0
+
+    def named(error: SemanticLayerError) -> SemanticLayerError:
+        if error.code == "EMPTY_GROUPS_UNSETTLED" and error.details.get("outputs") == [inner]:
+            return _unobserved_error([output])
+        return error
+
+    try:
+        yield
+    except SemanticLayerError as error:
+        renamed = named(error)
+        if renamed is error:
+            raise
+        raise renamed from error
+    finally:
+        if deferred is not None:
+            deferred[start:] = [named(error) for error in deferred[start:]]
+
+
 def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:
     return SemanticLayerError(
         "EMPTY_GROUPS_UNSETTLED",

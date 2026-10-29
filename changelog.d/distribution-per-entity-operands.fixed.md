@@ -5,3 +5,6 @@
   refunded nothing (`0`) wherever refunds have data in scope, under a `where` and a bounded
   window too; percentiles, `min` and `max` read the same values. An order whose amount is
   unknown still reads `NULL` and is left out, and a distribution over one measure is unchanged.
+  Under the `dataset` scope, such a distribution with a `where` beside an entity filter is now
+  refused with `EMPTY_GROUPS_UNSETTLED`, naming it, as the call grouped by order is; it read
+  `NULL` in every month.

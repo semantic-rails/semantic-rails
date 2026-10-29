@@ -58,6 +58,7 @@ from .empty_groups import (
     guard_empty_groups,
     recording_zero_outputs,
     refuse_unsettled,
+    unobserved_as,
     zero_outputs,
 )
 from .indexes import (
@@ -191,9 +192,9 @@ def _distribution_select(
     # rows for an entity the others have reads 0 where its measure has data in scope (an order
     # with no refund row refunded nothing), NULL where it has none. The entities stay those with
     # rows of the input's measures in the period. The settled values are internal: no
-    # NO_DATA_IN_SCOPE output of their own.
+    # NO_DATA_IN_SCOPE output of their own, and a refusal to settle them names this output.
     several = _reads_several_measures(expr.over.input, config, normalize_query(plan.query))
-    with inner_lookups(), recording_zero_outputs():
+    with inner_lookups(), recording_zero_outputs(), unobserved_as(value_alias, alias):
         sql_ast = nested.query_sql(
             config,
             entity_value_query,
