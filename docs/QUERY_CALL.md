@@ -1518,6 +1518,13 @@ empty period reads `0` only while the measure has data inside the window. Those 
 read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 
+**No time window.** A call with no `time` reads one total over all of a table's rows that its
+declared edge lets through. Such a table is observed there whether or not a filtered metric's
+`filter` has matched one of them, so "how many enterprise accounts have we ever had?" reads `0`
+before the first one, with no `NO_DATA_IN_SCOPE`. It needs a row the edge lets through (under
+`observation_scope: "query"`, one the call's `where` keeps): an empty load log lets none through,
+so it reads `NULL`. Without a declared edge, the filter must match a row, as above.
+
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
 `prior_period`, ratio or rolling output never does, since it can be `NULL` while its measure
