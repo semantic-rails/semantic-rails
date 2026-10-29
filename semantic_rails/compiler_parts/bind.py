@@ -420,26 +420,11 @@ def _word_comparison(
     column = expr.left
     entity = _resolve_expr_entity(column, measure, config)
     dims = dimensions_over_column(entity, column.column, config)
-    if len({tuple(dim.unknown_values or ()) for dim in dims}) > 1:
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"{measure.id}: '{word}' reads {entity}.{column.column}, whose dimensions declare "
-            "different unknown values",
-            details={
-                "dimensions": [dim.id for dim in dims],
-                "recovery_hints": [
-                    {
-                        "code": "USE_FILTER_WORD",
-                        "message": "Filter on one dimension: an aggregate's filter "
-                        f'{{"all": [{{"field": "<dimension id>", "op": "{word}", "value": ...}}]}}.',
-                    }
-                ],
-            },
-        )
+    operators.check_column_word(
+        dims, word, expr.right.value, f"{entity}.{column.column}", measure.id
+    )
     value = _config_expr_to_sql(column, measure, config)
     if dims:
-        at = f"{measure.id}.right"
-        operators.refuse_unknown_spelling(dims[0], word, expr.right.value, at, comparison=True)
         value = unknown_as_null(value, dims[0])
     temporal = _temporal_result(column, measure, config)
     return build_filter_condition(value, word, expr.right.value, path=measure.id, temporal=temporal)

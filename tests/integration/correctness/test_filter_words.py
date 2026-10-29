@@ -421,6 +421,31 @@ def test_a_comparison_reads_a_list_as_where_does(
     assert [float(row["revenue"]) for row in by_filter["rows"]] == [amount]
 
 
+def test_a_word_on_a_column_whose_dimensions_read_it_differently_is_refused(tmp_path):
+    # Two dimensions over store_id, one declaring "b" unknown: which filter the word is would
+    # be a guess, so it is refused with the filter on one dimension.
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    orders = package / "models" / "orders.yml"
+    model = orders.read_text(encoding="utf-8")
+    old = "    store_id: {label: Store, kind: categorical}\n"
+    assert model.count(old) == 1
+    code = "    store_code: {label: Store code, column: store_id, kind: categorical, unknown_values: [b]}\n"
+    orders.write_text(model.replace(old, old + code))
+    runtime = runtime_for(package)
+    try:
+        [error] = runtime.validate(_amount_if("is", "a"))["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == "INVALID_QUERY"
+    assert "whose dimensions declare different unknown values" in error["message"]
+    assert error["details"] == {
+        "path": "select[0].expression.condition.left",
+        "dimensions": ["dimension.shop_order_store_code", "dimension.shop_order_store_id"],
+    }
+    assert '"op": "is"' in error["recovery_hints"][0]["message"]
+
+
 @pytest.mark.parametrize("op", ["=", "<>", "!="])
 def test_a_list_after_a_sql_comparison_is_refused(duckdb_backend, op):
     # SQL would compare the column with the list's text; membership is a word's or `in`'s.

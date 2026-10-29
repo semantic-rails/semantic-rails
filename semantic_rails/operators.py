@@ -491,6 +491,31 @@ def refuse_unknown_spelling(
     )
 
 
+def check_column_word(dims: list[Any], word: str, value: Any, column: str, path: str) -> None:
+    """Refuse a comparison word on ``column`` (the comparison at ``path``) that is no one
+    dimension's filter: the dimensions over the column, ``dims``, declare different unknown
+    values, or the value is one the dimension declares unknown."""
+    if len({tuple(getattr(dim, "unknown_values", None) or ()) for dim in dims}) > 1:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}.left: '{word}' reads {column}, whose dimensions declare different unknown "
+            "values",
+            details={
+                "path": f"{path}.left",
+                "dimensions": sorted(dim.id for dim in dims),
+                "recovery_hints": [
+                    {
+                        "code": "USE_FILTER_WORD",
+                        "message": "Filter on one dimension: an aggregate's filter "
+                        f'{{"all": [{{"field": "<dimension id>", "op": "{word}", "value": ...}}]}}.',
+                    }
+                ],
+            },
+        )
+    if dims:
+        refuse_unknown_spelling(dims[0], word, value, f"{path}.right", comparison=True)
+
+
 def rejects_unknown(word: str, value: Any) -> bool:
     """Whether a row whose value is unknown fails the condition."""
     if word == "missing":

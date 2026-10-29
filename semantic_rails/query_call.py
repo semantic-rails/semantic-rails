@@ -947,25 +947,29 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
             closest_matches=closest,
         )
     if (
-        spelling in {"is", "not"}
+        kind == "comparison"
+        and spelling in operators.NUMBER_WORDS
         and context.config is not None
         and context.column_dimensions is not None
         and isinstance(left, Mapping)
         and left.get("kind") == "column"
         and isinstance(right, Mapping)
         and right.get("kind") == "literal"
+        and not (
+            spelling in {"is", "not"}
+            and (right.get("value") is None or isinstance(right.get("value"), bool))
+        )
     ):
-        # A value its dimension reads as unknown is refused here, at its path, as in where.
+        # A word on a column is its dimension's filter (``expressions.filter_word``): refused
+        # here, at its path, when it is no one dimension's filter.
         from .expressions import resolve_table_entity
 
         entity = str(left.get("entity") or "").strip() or resolve_table_entity(
             context.config, str(left.get("table") or "")
         )
-        dims = context.column_dimensions(entity or "", str(left.get("column")), context.config)
-        if dims and len({tuple(dim.unknown_values or ()) for dim in dims}) == 1:
-            operators.refuse_unknown_spelling(
-                dims[0], spelling, right.get("value"), f"{path}.right", comparison=True
-            )
+        column = str(left.get("column"))
+        dims = context.column_dimensions(entity or "", column, context.config)
+        operators.check_column_word(dims, spelling, right.get("value"), f"{entity}.{column}", path)
     word = operators.word_of(spelling)
     if word not in operators.TEXT_WORDS:
         return None
