@@ -287,6 +287,16 @@ entity.jaffle_order"`, each customer once however many orders they placed. A mea
 up, averages or carries a value, a stock (which reads one snapshot per series, even a sum of
 `1`), or one that counts an expression naming no single column, has no `count_unit`.
 
+A metric's card says the same of the counts it reads. A metric that is one count measure has
+`count_unit`: that measure's unit at the aggregation the metric reads it with, with
+`" where its filter holds"` when the metric keeps only some of its rows
+(`metric.sales.high_value_customer_orders` is `"distinct order_id across rows of
+entity.jaffle_order where its filter holds"`). A ratio has `count_units`, with the `numerator`
+and the `denominator` that are counts, a metric named as a side read through to its own
+count: `metric.sales.aov_usd`, revenue over orders, has `{"denominator": "distinct order_id
+across rows of entity.jaffle_order"}`. A side or metric that sums values, averages, reads a
+stock, or computes arithmetic or a window over counts names no unit.
+
 A measure's card, at every verbosity, names its look-alikes on other models when it has any:
 published measures with the same key or label once each model's table name is taken off, over
 the same column expression, that total the same way, on a model whose rows are the same things:
