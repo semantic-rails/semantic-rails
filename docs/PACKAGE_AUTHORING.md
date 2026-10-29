@@ -1704,9 +1704,11 @@ model:
 ```
 
 - Either model may list the other: one list sets the pair apart.
-- The pair leaves its `LOOKALIKE_MODELS` group, of either kind, and their counts form no count
-  group. A larger group keeps its other links: setting `rooms_hist` apart from `rooms` leaves
-  `rooms` grouped with `rooms_audit`.
+- The pair leaves its `same_rows` `LOOKALIKE_MODELS` group. A larger group keeps its other links:
+  setting `rooms_hist` apart from `rooms` leaves `rooms` grouped with `rooms_audit`.
+- A `same_count` group is separate. Two models that each publish a count under one label stay in
+  one, set apart or not: an agent asked "how many rooms" still sees two "Rooms" counts over
+  different rows, so label each count for the rows it counts, as the warning asks.
 - `discover` marks neither as the other's look-alike, and a `PATH_NOT_FOUND` refusal or a
   measure's card never names a measure of one as the other's look-alike (see
   [MCP_INTERFACE.md](MCP_INTERFACE.md)).
@@ -3678,9 +3680,10 @@ group has each model's key in `details.keys`; a `same_count` group has its count
 A warning names the models by model id (`details.models`), and their entities in
 `details.entities`. For either kind, list the others in the canonical model's
 [`prefer_over:`](#prefer_over--the-canonical-model-of-look-alikes), which clears the group's
-warning. When two of its models are different things, list one in the other's
+warning. When two models of a `same_rows` group are different things, list one in the other's
 [`distinct_from:`](#distinct_from--models-that-only-look-alike) instead, which takes the pair out
-of the group. For a `same_rows` group, also say what each model's rows are in its `description` (a
+of the group; it never settles a `same_count` group, which the counts' labels settle. For a
+`same_rows` group, also say what each model's rows are in its `description` (a
 refusal's look-alike rows and a measure's card show its first sentence). For a `same_count`
 group where no model answers every question the others do, label each count for the rows it
 counts instead ("Buildings with a floor"), which takes it out of the group, or set

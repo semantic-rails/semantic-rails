@@ -6,8 +6,8 @@ Only the author knows which one a question means, so validation names each group
 look-alike models once (``LOOKALIKE_MODELS``) and asks which one is canonical, until one
 model's ``prefer_over:`` lists every other model of the group, directly or through another
 (``canonical_of``; ``config_parts.prefer_over`` loads it). Two models one of which lists the
-other in ``distinct_from:`` hold different things, so they are linked in no group of either
-kind.
+other in ``distinct_from:`` hold different things, so they are in no same-rows group; two counts
+of theirs under one label still form a count group, which their labels settle.
 
 Two kinds of group, read from the YAML alone, never from descriptions:
 
@@ -217,10 +217,8 @@ def lookalike_groups(config: PackageConfig) -> list[LookalikeGroup]:
     for rows in buckets.values():
         for index, left in enumerate(rows):
             for right in rows[index + 1 :]:
-                if (
-                    left.entity == right.entity
-                    or group_of.get(left.entity, -1) == group_of.get(right.entity, -2)
-                    or frozenset((left.entity, right.entity)) in grains.distinct
+                if left.entity == right.entity or group_of.get(left.entity, -1) == group_of.get(
+                    right.entity, -2
                 ):
                     continue
                 # `_alike` matches a key or a label; here the labels must match too, so a

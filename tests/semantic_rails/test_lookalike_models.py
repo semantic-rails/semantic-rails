@@ -756,20 +756,37 @@ def _with_distinct(files: dict[str, Any], **distinct: list[str]) -> dict[str, An
         ({"rooms_hist": ["rooms"]}, {ROOM_HIST: [ROOM]}),
     ],
 )
-def test_models_set_apart_by_either_one_are_in_no_group(tmp_path, declared, loaded):
+def test_models_set_apart_leave_their_same_rows_group_and_keep_a_count_group(
+    tmp_path, declared, loaded
+):
     """The author has looked: rooms_hist holds room inspections, not versions of rooms. Whichever
-    of the two lists the other, they are in no group, and their counts of rooms under one label
-    form no count group either; the audit table stays grouped with the rooms."""
-    root = _write(tmp_path / "pair", _with_distinct(_files(), **declared))
-    report, _ = parse_config_report(PackageReference(source_path=str(root)))
-    assert report["ok"]
-    assert [row["details"]["models"] for row in _lookalikes(report)] == [
-        ["space_detail", "space_detail_hist"],
-        ["floors", "space_detail"],
+    of the two lists the other, they leave their same-rows group. Each still counts distinct
+    room_id under the label "Rooms", so they form a count group, which asks for a label of each
+    count's rows; the audit table stays grouped with the rooms."""
+
+    def warned(root: Path) -> list[dict[str, Any]]:
+        report, _ = parse_config_report(PackageReference(source_path=str(root)))
+        assert report["ok"]
+        return _lookalikes(report)
+
+    def groups(warnings: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
+        return [(row["details"]["kind"], row["details"]["models"]) for row in warnings]
+
+    survey_and_floors = [
+        ("same_rows", ["space_detail", "space_detail_hist"]),
+        ("same_count", ["floors", "space_detail"]),
     ]
+    assert groups(warned(_write(tmp_path / "plain", _files()))) == [
+        ("same_rows", ["rooms", "rooms_hist"]),
+        *survey_and_floors,
+    ]
+    warnings = warned(_write(tmp_path / "pair", _with_distinct(_files(), **declared)))
+    assert groups(warnings) == [*survey_and_floors, ("same_count", ["rooms", "rooms_hist"])]
+    assert (
+        "under one label (Rooms) over rows that aren't the same things" in (warnings[-1]["message"])
+    )
     root = _write(tmp_path / "three", _with_distinct(_rooms_audit(_files()), **declared))
-    report, _ = parse_config_report(PackageReference(source_path=str(root)))
-    assert [row["details"]["models"] for row in _lookalikes(report)][0] == ["rooms", "rooms_audit"]
+    assert groups(warned(root))[0] == ("same_rows", ["rooms", "rooms_audit"])
     rows = load_package_config(str(root)).entities
     assert {row.id: row.distinct_from for row in rows if row.distinct_from} == loaded
 
