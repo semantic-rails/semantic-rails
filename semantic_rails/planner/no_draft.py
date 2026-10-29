@@ -10,7 +10,10 @@ offers none and says why instead:
   outside stopwords, aggregation words ("count", "total", "average"), units of time and
   numbers. When none of them names a subject of the draft and some name nothing in the
   catalog's dimensions, entities and values either, plan names those words, with the measures
-  and metrics whose names or descriptions say one of them. A subject that shares any of the
+  and metrics whose names or descriptions say one of them (``candidates``) and the dimensions,
+  time roles, segments and entities that do (``other_matches``, each with its kind: they can
+  group or filter, but none is a measure). It says nothing in the catalog mentions them only
+  when no object of any kind the caller sees does. A subject that shares any of the
   words is named, even by an entity's name ("customer satisfaction score" names the customer
   count): a limitation, never a wrong answer, since that draft stays held;
 - the draft fails validation because its measure can't reach a dimension it reads
@@ -131,37 +134,70 @@ def unmatched_subject_why(
     if not terms:
         return None
     said = {_normal(word) for word in terms}
+    # Every kind the caller's view holds is checked before plan says nothing mentions the
+    # words; the view holds nothing hidden from the caller, so a hidden object never matches.
     candidates = [
         {"id": item.id, "label": item.label}
-        for item in sorted(
-            [*config.measures, *config.metric_recipes], key=lambda item: (item.label, item.id)
-        )
-        if said & {_normal(word) for word in _tokens(_object_text(item))}
+        for item in _mentioning(said, [*config.measures, *config.metric_recipes])
     ][:5]
-    closest = (
-        "The closest catalog objects mention them: "
-        + ", ".join(f"{item['label']} ({item['id']})" for item in candidates)
-        + "; plan again naming one of them, or ask the user."
-        if candidates
-        else "Nothing in the catalog mentions them, so the package may not hold this."
-    )
+    others = [
+        {"kind": kind, "id": item.id, "label": item.label}
+        for kind, rows in (
+            ("dimension", visible_dimensions(config)),
+            ("temporal_role", config.temporal_roles),
+            ("segment", config.segments),
+            ("entity", config.entities),
+        )
+        for item in _mentioning(said, rows)
+    ][:5]
+    closest = []
+    if candidates:
+        closest.append(
+            "The closest catalog objects mention them: "
+            + ", ".join(f"{item['label']} ({item['id']})" for item in candidates)
+            + "; plan again naming one of them, or ask the user."
+        )
+    if others:
+        shown = [
+            f"{item['kind'].replace('_', ' ')} {item['label']} ({item['id']})" for item in others
+        ]
+        named = f"{', '.join(shown[:-1])} and {shown[-1]}" if len(shown) > 1 else shown[0]
+        not_a_measure = "isn't a measure" if len(shown) == 1 else "aren't measures"
+        lead, end = (
+            ("They also", ".")
+            if candidates
+            else ("These words", "; name the measure or metric to count, or ask the user.")
+        )
+        closest.append(f"{lead} match {named}, which can group or filter but {not_a_measure}{end}")
     return {
         "code": "PLAN_SUBJECT_UNMATCHED",
         "message": (
             f"No measure or metric matches what the question asks about ({', '.join(terms)}), "
-            f"so plan offers no draft on an unrelated one. {closest}"
+            "so plan offers no draft on an unrelated one. "
+            + (" ".join(closest) or "Nothing in the catalog mentions them.")
         ),
-        "details": {"terms": terms, "candidates": candidates},
+        "details": {"terms": terms, "candidates": candidates, "other_matches": others},
         "recovery_hints": [
             {
                 "kind": "name_the_measure",
                 "message": (
-                    "Ask again naming a measure or metric discover lists, or ask the user what "
-                    "the words mean."
+                    "Run discover on these words to see what the package holds for them, then "
+                    "ask again naming a measure or metric it lists, or ask the user what the "
+                    "words mean."
                 ),
             }
         ],
     }
+
+
+def _mentioning(said: set[str], rows: list[Any]) -> list[Any]:
+    """The rows whose id, names, description or topics say one of the words, by label."""
+
+    return [
+        item
+        for item in sorted(rows, key=lambda item: (item.label, item.id))
+        if said & {_normal(word) for word in _tokens(_object_text(item))}
+    ]
 
 
 def unconnected_why(

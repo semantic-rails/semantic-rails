@@ -229,8 +229,10 @@ Statuses are:
   or a validating fallback would drift from the requested target, grouping, qualification,
   filters, or time scope (`PLAN_FALLBACK_SEMANTIC_DRIFT`: `best.query` is then the draft that
   fails, and `why.details.primary_errors` says why). `PLAN_SUBJECT_UNMATCHED` offers no draft
-  (`best: null`): it names the question's words no measure matches, with the catalog objects
-  that mention them. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
+  (`best: null`): it names the question's words no measure matches, with the measures and
+  metrics that mention them (`why.details.candidates`) and the dimensions, time roles, segments
+  and entities that do (`why.details.other_matches`, each with its `kind`: they can group or
+  filter, but none is a measure). For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
   `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
   June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
   resolves.) On a package without time, every plan with a draft yields `low_confidence`,
@@ -239,8 +241,9 @@ Statuses are:
   for a time breakdown or window."
 - `unrealizable`: the intent parsed, but no pattern or fallback produced a call; the draft's
   measure can't reach a dimension it reads (`PLAN_UNCONNECTED` names the pair, with no draft);
-  or the words the question asks about name no measure or metric and nothing in the catalog
-  mentions them (`PLAN_SUBJECT_UNMATCHED`).
+  or the words the question asks about name no measure or metric and no object of any kind
+  you can see mentions them (`PLAN_SUBJECT_UNMATCHED`). The words matched no object's names
+  or description; run `discover` on them before telling the user the package lacks them.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 
 Use `detail="query"` for a compact MCP QA loop, `detail="best"` for normal clients,
