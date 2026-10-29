@@ -548,7 +548,8 @@ def test_an_invoice_and_its_payments_are_never_lookalikes(shop):
         linked,
         # Nor when payments are keyed by the invoice and their own id: one row per payment.
         keyed(payment=["invoice_id", "payment_id"]),
-        # Nor when neither declares a key, so that no key says what either one's rows are.
+        # Nor when neither declares a key: each reads a column the other doesn't (the invoice's
+        # id; the payment's id and method).
         keyed(invoice=[], payment=[]),
         # Nor when both are keyed by a plain `id`, as a connector schema keys every table.
         keyed(invoice=["id"], payment=["id"]),
