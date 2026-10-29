@@ -416,26 +416,33 @@ def _measure_names(measure: Any, entity: Any) -> tuple[str, str]:
     return key, label.casefold()
 
 
-def _reads_column(expr: Any) -> bool:
+def _columns_read(expr: Any) -> Iterator[str]:
     if isinstance(expr, dict):
-        return expr.get("kind") == "column" or any(_reads_column(item) for item in expr.values())
-    if isinstance(expr, list):
-        return any(_reads_column(item) for item in expr)
-    return False
+        if expr.get("kind") == "column":
+            yield str(expr.get("column") or "")
+        for item in expr.values():
+            yield from _columns_read(item)
+    elif isinstance(expr, list):
+        for item in expr:
+            yield from _columns_read(item)
 
 
 def _alike(asked: Any, other: Any, entities: dict[str, Any]) -> bool:
     """The same key or label (each without its model's table name) over the same expression of
     its own table's columns, totalled the same way: the same default aggregation, measure
     class, additivity, value type and currency. An expression that reads no column (a row
-    count's literal) counts its own model's rows, so it is no other model's measure."""
+    count's literal), or a column whose name doesn't say what it identifies (a plain ``id``,
+    ``_specific``), counts its own model's rows, so it is no other model's measure."""
     asked_key, asked_label = _measure_names(asked, entities.get(asked.entity))
     other_key, other_label = _measure_names(other, entities.get(other.entity))
     named = asked_key == other_key or bool(asked_label) and asked_label == other_label
     if not named:
         return False
     expression = expr_to_dict(asked.expr)
-    if not _reads_column(expression) or expression != expr_to_dict(other.expr):
+    columns = list(_columns_read(expression))
+    if not columns or not all(_specific(column) for column in columns):
+        return False
+    if expression != expr_to_dict(other.expr):
         return False
     return all(
         getattr(asked, field) == getattr(other, field)

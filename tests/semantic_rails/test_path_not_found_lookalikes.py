@@ -71,6 +71,10 @@ CREATE TABLE rooms_v2 (room_id INTEGER, building_id INTEGER, area DOUBLE);
 INSERT INTO rooms_v2 VALUES (1, 1, 30);
 CREATE TABLE buildings (building_id INTEGER, name VARCHAR);
 INSERT INTO buildings VALUES (1, 'Hall'), (2, 'Annex');
+CREATE TABLE invoices (id INTEGER, amount DOUBLE);
+INSERT INTO invoices VALUES (1, 10), (2, 20);
+CREATE TABLE subscriptions (id INTEGER, plan VARCHAR);
+INSERT INTO subscriptions VALUES (1, 'pro');
 """
 
 
@@ -146,6 +150,9 @@ def _files(v2: bool) -> dict[str, Any]:
         "room_hist": {"key": ["version_id"], "model": "rooms_hist"},
         "room_legacy": {"key": ["room_id"], "model": "rooms_legacy"},
         "building": {"key": ["building_id"], "model": "buildings"},
+        # A connector schema's tables, each keyed by a plain `id`.
+        "invoice": {"key": ["id"], "model": "invoices"},
+        "subscription": {"key": ["id"], "model": "subscriptions"},
     }
     relationships = {
         "order_customer": {"entities": ["order", "customer"], "cardinality": "many_to_one"},
@@ -210,6 +217,27 @@ def _files(v2: bool) -> dict[str, Any]:
             }
         },
     }
+    for model_id, entity, dimension in (
+        ("invoices", "invoice", {}),
+        ("subscriptions", "subscription", {"plan": {"kind": "categorical"}}),
+    ):
+        files[f"models/{model_id}.yml"] = {
+            "model": {
+                "id": model_id,
+                "relation": model_id,
+                "entities": {entity: {}},
+                "dimensions": dimension,
+                "measures": {
+                    f"{model_id}_count": {
+                        "label": f"Count ({model_id.upper()})",
+                        "kind": "entity_count",
+                        "entity_key": "id",
+                        "accumulation": {"kind": "population"},
+                        "value_type": "count",
+                    }
+                },
+            }
+        }
     if v2:
         entities["room_v2"] = {"key": ["room_id"], "model": "rooms_v2"}
         relationships["v2_building"] = {
@@ -398,6 +426,18 @@ def test_two_tables_row_counts_are_never_lookalikes(shop):
     assert lookalike_swaps(
         runtime.package_config, ["measure.shop.rooms_count"], "entity.shop_room"
     ) == [("entity.shop_room_v2", {"measure.shop.rooms_count": "measure.shop.rooms_v2_count"})]
+
+
+def test_counts_of_tables_keyed_by_a_plain_id_are_never_lookalikes(shop):
+    # "Invoices per plan": a count of invoice ids is not a count of subscription ids.
+    runtime = shop()
+    invoices, subscriptions = "measure.shop.invoices_count", "measure.shop.subscriptions_count"
+    call = {"select": [invoices], "group_by": ["dimension.shop_subscription_plan"]}
+    error = _refusal(_validate(runtime, call))
+    assert "lookalike_measures" not in error["details"]
+    assert subscriptions not in json.dumps(error)
+    assert lookalike_swaps(runtime.package_config, [invoices], "entity.shop_invoice") == []
+    assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, invoices))
 
 
 def _copies(root: Path, count: int) -> None:
