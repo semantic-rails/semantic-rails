@@ -589,12 +589,12 @@ def test_a_dimension_only_query_lists_the_rows_with_no_match(runtime, gold):
 
 
 def _region_amounts(group: str = "") -> str:
-    """Each region's amount, through the lookups: R1 53 (orders 1, 2 and 9), R2 5, R3 7, R4 11
-    and R5 13. Orders 7, 8, 10 and 11 (96 in all) reach no region."""
+    """Each region's amount, by the region its customer names: R1 53 (orders 1, 2 and 9), R2 5,
+    R3 7, R4 11, R5 13 and R9 19 (order 8: C7 names R9, which the regions table doesn't hold).
+    Orders 7, 10 and 11 (77 in all) name no region."""
     return (
-        f"SELECT {group}r.region_id, SUM(o.amount) AS v FROM orders AS o, customers AS c,"
-        " regions AS r WHERE c.customer_id = o.customer_id AND r.region_id = c.region_id"
-        " GROUP BY ALL"
+        f"SELECT {group}c.region_id, SUM(o.amount) AS v FROM orders AS o, customers AS c"
+        " WHERE c.customer_id = o.customer_id AND c.region_id IS NOT NULL GROUP BY ALL"
     )
 
 
@@ -615,17 +615,19 @@ def _distribution(function: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("function", list(DISTRIBUTIONS))
-def test_a_distribution_reads_only_the_entities_its_lookups_find(runtime, gold, function):
-    """The regions' values are [53, 5, 7, 11, 13], so the median is 11. The orders that reach
-    no region are no entity, never a sixth NULL region worth 96 (median 12). Beside it, the
-    plain amount grouped by segment keeps its NULL group (orders 9, 10 and 11)."""
+def test_a_distribution_reads_only_the_entities_its_rows_name(runtime, gold, function):
+    """The regions' values are [53, 5, 7, 11, 13, 19], so the median is 12. R9 is a region of
+    its own: C7 names it, as grouping the amount by region reads it, though the regions table
+    doesn't hold it. The orders whose customer names no region are no entity, never a seventh
+    NULL region worth 77 (median 13). Beside it, the plain amount grouped by segment keeps its
+    NULL group (orders 9, 10 and 11)."""
     aggregate = DISTRIBUTIONS[function]
 
     alone = _rows(runtime, _query(_distribution(function)))[None]
 
     assert alone == pytest.approx(gold(f"SELECT {aggregate} FROM ({_region_amounts()})")[None])
     if function == "median":
-        assert alone == 11
+        assert alone == 12
     query = _query(_distribution(function), group_by=[SEGMENT])
     query["select"].append("measure.geo.amount")
     rows = runtime.query(query)["rows"]

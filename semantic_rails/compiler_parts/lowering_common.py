@@ -116,10 +116,10 @@ from .paths import (
     _joins_for_paths,
     _leaf_time_role,
     _path_selection,
-    _resolve_dimension_expr,
     _role_conversion,
     clock_hops,
     dimension_filter,
+    leaf_dimension_expr,
     rollup_held_lookups,
 )
 from .post_aggregation import (
@@ -888,12 +888,14 @@ def _value_filter_condition(
 
 
 def _filter_condition_for_item(
-    measure_entity: str, item: dict[str, Any], config: PackageConfig
+    measure_entity: str,
+    item: dict[str, Any],
+    config: PackageConfig,
+    path_selections: Iterable[PathSelection] = (),
 ) -> Any:
-    """``item``'s condition on the measure's own column when it has one, else on its dimension."""
-    expr, _ = _direct_dimension_source_expr(
-        measure_entity, str(item["field"]), config
-    ) or _resolve_dimension_expr(str(item["field"]), config)
+    """``item``'s condition on the measure's own column when it has one, else on its dimension;
+    an entity's key on ``path_selections`` reads as the leaf groups by it (``leaf_dimension_expr``)."""
+    expr, _ = leaf_dimension_expr(measure_entity, str(item["field"]), path_selections, config)
     return _value_filter_condition(expr, item, config)
 
 

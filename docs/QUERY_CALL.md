@@ -194,6 +194,13 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
+An entity's key reads where the rows name the entity: the model the route reaches it from.
+Refunds reach their customer through their order, so "net revenue by customer" reads the
+refunds' customer from `orders.customer_id`, as the orders do. A customer the customers table
+doesn't hold yet (one who hasn't signed up) has its refunds beside its orders under its own key,
+grouped or filtered by it. The entity's other dimensions (its tier, region or name) read its own
+table, so grouped by one, that customer is in the `NULL` group.
+
 ### Groups across a one-to-many hop
 
 A dimension of a child entity (an order's items or tags, a department's courses) holds several
@@ -1784,7 +1791,9 @@ refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GR
 naming it, as it refuses the call grouped by order. Its groups read their lookups as the call
 does: by store name, an order with no store, or whose store the stores table doesn't hold, is in
 the `NULL` group, alone or beside its count, as grouped by the store's id. Per store, an order
-with no store is no store of its own: "median revenue per store" reads only the stores.
+with no store is no store of its own: "median revenue per store" reads only the stores. An
+entity is the key its rows name: per region, a region a customer names that the regions table
+doesn't hold is a region of its own, as revenue grouped by region reads it.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an
@@ -1964,7 +1973,9 @@ before SQL runs, through derived metrics too.
   filters, or a lookup from the child are refused with `MIXED_GRAIN_INVALID`.
 
 A lookup dimension (many-to-one) is NULL on a row whose lookup found no match: `missing: true`
-keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read.
+keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read. The
+looked-up entity's key is read from the row that names it ([`group_by`](#group_by)), so it is
+NULL only where that row names none.
 ClickHouse keeps lookups as inner joins, so it drops such a row from every call that reads the
 looked-up dimension.
 

@@ -2484,6 +2484,11 @@ condition is written: `missing: true` selects it, so "passengers excluding crew"
 crew-roster lookup is `crew_role` with `missing: true`; `is` never matches it and `not`
 keeps it.
 
+The entity's key is the exception: the row that names the entity holds it. Refunds reach their
+customer through their order, so grouped or filtered by the customer's key they read
+`orders.customer_id`, as orders do. A customer the customers table doesn't hold yet keeps its
+refunds under its own key, beside its orders, and its tier, region or name read NULL.
+
 Only these reads join a lookup with an inner join, so a row with no match is left out:
 
 - a time role read through a lookup (a row with no time has no time bucket), and so any
