@@ -6977,6 +6977,89 @@ tests:
           ORDER BY revenue.revenue - CASE WHEN goods.customer_id IS NULL THEN 0 ELSE goods.goods END)
       FROM revenue LEFT JOIN goods ON goods.customer_id = revenue.customer_id AND goods.b = revenue.b
       GROUP BY revenue.b
+  shop/median-revenue-excluding-store-b-of-repeat-customers:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Store b revenue has no ELSE, so a customer with no store b order read store b as NULL and dropped out. As grouped by customer, it reads 0 there: customers 101 (23 less 0), 102 (9 less 5) and 103 (23 less 3) read 23, 4 and 20, so 20."
+    cites: &store_b_cites
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.store_b_revenue
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over: &revenue_excluding_store_b
+            kind: entity_value
+            entity: entity.shop_customer
+            input: {kind: arithmetic, op: subtract, left: measure.shop.revenue, right: measure.shop.store_b_revenue}
+        as: median
+      where:
+      - {entity: entity.shop_customer, having: [{field: measure.shop.order_count, op: gte, value: 2}], over: all_time}
+    expected_rows:
+      - {median: 20}
+    reference_sql: |
+      WITH per_customer AS (
+        SELECT customer_id,
+          SUM(amount) - CASE WHEN COUNT(CASE WHEN store_id = 'b' THEN 1 END) = 0 THEN 0
+            ELSE SUM(CASE WHEN store_id = 'b' THEN amount END) END AS excluding_b
+        FROM orders GROUP BY customer_id HAVING COUNT(DISTINCT order_id) >= 2
+      )
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY excluding_b) FROM per_customer
+  shop/median-revenue-excluding-store-b-per-customer:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Every customer with a known revenue: 101 (23), 102 (4), 103 (20), 104 and 106 (store b only, 0) and 108 (2); 105's only order has no amount. The median of six is 3."
+    cites: *store_b_cites
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression: {kind: distribution, function: median, over: *revenue_excluding_store_b}
+        as: median
+    expected_rows:
+      - {median: 3}
+    reference_sql: |
+      WITH per_customer AS (
+        SELECT customer_id,
+          SUM(amount) - CASE WHEN COUNT(CASE WHEN store_id = 'b' THEN 1 END) = 0 THEN 0
+            ELSE SUM(CASE WHEN store_id = 'b' THEN amount END) END AS excluding_b
+        FROM orders GROUP BY customer_id
+      )
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY excluding_b) FROM per_customer
+  shop/median-aov-of-repeat-web-customers:
+    kind: query_matches_snapshot
+    expect: answer
+    why: "Revenue and order count read the same order rows, every one of them, so each customer holds both and nothing needs settling: the default scope answers. Customers 101 (23 over 3) and 103 (23 over 2), so 9.583."
+    cites:
+      - tests/integration/correctness/shop/metrics/metrics.yml#metrics.shop.average_order_value
+      - docs/QUERY_CALL.md#empty-groups-null-or-0
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          kind: distribution
+          function: median
+          over: {kind: entity_value, entity: entity.shop_customer, input: metric.shop.average_order_value}
+        as: median
+      where:
+      - {entity: entity.shop_customer, having: [{field: measure.shop.order_count, op: gte, value: 2}], over: all_time}
+      - {field: dimension.shop_customer_channel, op: is, value: web}
+    expected_rows:
+      - {median: 9.583333333333334}
+    reference_sql: |
+      WITH per_customer AS (
+        SELECT o.customer_id, CAST(SUM(o.amount) AS DOUBLE PRECISION) / COUNT(DISTINCT o.order_id) AS aov
+        FROM orders AS o JOIN signups AS s ON s.customer_id = o.customer_id
+        WHERE s.channel = 'web'
+          AND o.customer_id IN (SELECT customer_id FROM orders GROUP BY customer_id HAVING COUNT(DISTINCT order_id) >= 2)
+        GROUP BY o.customer_id
+      )
+      SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY aov) FROM per_customer
   shop/distribution_median:
     kind: query_matches_snapshot
     expect: answer

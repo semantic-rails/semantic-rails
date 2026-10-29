@@ -73,6 +73,7 @@ from .empty_groups import (
     refuse_shared_names,
     refuse_unsettled,
     require_time_scopes,
+    skips_rows,
     zero_aliases,
 )
 from .indexes import (
@@ -553,16 +554,28 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     shares = share_group_counts(plan, config) if plan_is_root() else {}
     # The one place an empty group reads 0 instead of NULL: the projection reads every such
     # measure through the guard below, so nothing after it can change what it sees. A
-    # distribution's per-entity values need it only where an entity can lack an operand: two
-    # or more leaves joined on its keys that read different rows. Leaves that read the same
-    # rows (one leaf, or one per measure under an entity filter) hold the same entities.
+    # distribution's per-entity values need it only where an entity can lack an operand's
+    # value: two or more leaves joined on its keys that read different rows, or an operand
+    # beside another whose sum skips rows (a CASE with no ELSE: "revenue less store b
+    # revenue" reads 0 for store b at a customer with no store b order). Sums of the same rows
+    # that read every row (the declared average order value) need none, in one leaf or one per
+    # measure under an entity filter: an amount all NULL reads NULL either way.
+    measures = _measure_index(config)
     settled = guard_empty and (
         not lowers_entity_values()
         or (joined and any(read != leaf_rows[0] for read in leaf_rows[1:]))
+        or (
+            len(plan.measure_plans) > 1
+            and any(
+                skips_rows(
+                    row.bound_measure.aggregation, measures.get(row.bound_measure.measure_id)
+                )
+                for row in plan.measure_plans
+            )
+        )
     )
     zero = zero_aliases(plan.measure_plans, config) if settled else {}
     if zero and plan.time:
-        measures = _measure_index(config)
         refuse_declared_edges(
             (
                 measures[row.bound_measure.measure_id]

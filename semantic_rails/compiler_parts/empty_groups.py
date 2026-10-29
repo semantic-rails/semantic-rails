@@ -145,6 +145,18 @@ def reads_every_row(measure: MeasureConfig) -> bool:
     return not (drops_rows_below_root(measure) or is_conditional_case(measure.expr))
 
 
+def skips_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
+    """Whether a sum of the measure can read NULL for a group it holds rows of because a CASE
+    with no ELSE (or ELSE NULL) gives them no value (``reads_every_row``): the guard reads such
+    a group 0 where the measure has data in scope. A count reads 0 there by itself."""
+    return (
+        measure is not None
+        and resolves_to_zero(aggregation, measure)
+        and (aggregation or measure.default_aggregation).lower() not in _COUNTING
+        and not reads_every_row(measure)
+    )
+
+
 def counts_its_own_key(
     aggregation: str, measure: MeasureConfig | None, config: PackageConfig
 ) -> bool:
