@@ -26,6 +26,7 @@ from ..ast import (
 from ..config_parts.lookup_measures import lookup_links
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
+from ..fanout import recording_route_choices
 from ..ir import (
     LogicalPlan,
     MeasurePlan,
@@ -1152,6 +1153,25 @@ def _measure_leaf_select(
         )
         return keep_rows(joins, child_cte.name) if child_cte else joins
 
+    def record_scope(leaf: SqlSelect) -> None:
+        """The scope of the rows ``leaf`` reads, for the empty-group guard."""
+        if plan.time:
+            _record_time_scope(
+                plan,
+                config,
+                leaf,
+                [measure_plan],
+                untimed,
+                raw_time=coverage_time,
+                bucket=time_expr,
+                local=time_source_local,
+                authored=filter_conditions,
+            )
+        else:
+            _record_all_time_scope(
+                config, leaf, [measure_plan], untimed, authored=filter_conditions
+            )
+
     leaf_alias = measure_plan.bound_measure.alias
     if measure_plan.rewrite_strategy == "parent_lookup":
         return _parent_lookup_leaf_select(
@@ -1211,6 +1231,27 @@ def _measure_leaf_select(
         )
     )
     if source_rollup is not None:
+        # It adds up the measure's own rows before the hops: those rows, as the plain leaf
+        # reads them, are its scope, so its empty groups settle as a one-hop grouping's do. The
+        # rollup's own joins note the route.
+        with recording_route_choices():
+            scope_joins = path_joins()
+        value = _aggregation_expr(
+            leaf_value_expr,
+            measure_plan.bound_measure.aggregation,
+            order_expr=order_expr,
+            parameters=measure_plan.bound_measure.aggregation_params,
+            dialect=dialect_for_warehouse(config.package.warehouse),
+        )
+        record_scope(
+            SqlSelect(
+                select=[*select_fields, SqlField(value, leaf_alias)],
+                from_table=SqlTableRef(name=entities[measure.entity].table),
+                joins=scope_joins,
+                where=where_clauses,
+                group_by=group_fields,
+            )
+        )
         return source_rollup
     joins = [
         *path_joins(),
@@ -1320,20 +1361,7 @@ def _measure_leaf_select(
         where=where_clauses,
         group_by=group_fields,
     )
-    if plan.time:
-        _record_time_scope(
-            plan,
-            config,
-            leaf,
-            [measure_plan],
-            untimed,
-            raw_time=coverage_time,
-            bucket=time_expr,
-            local=time_source_local,
-            authored=filter_conditions,
-        )
-    else:
-        _record_all_time_scope(config, leaf, [measure_plan], untimed, authored=filter_conditions)
+    record_scope(leaf)
     return leaf
 
 
