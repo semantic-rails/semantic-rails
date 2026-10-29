@@ -735,7 +735,18 @@ def test_jaffle_reference_package_has_release_authoring_profile():
         w
         for w in report["warnings"]
         if not (isinstance(w, dict) and str(w.get("code", "")).startswith("SEMANTIC_TERM_"))
-        and w["code"] not in {"ROUTES_UNDECIDED", "ROUTE_PASS_THROUGH"}
+        and w["code"] not in {"ROUTES_UNDECIDED", "ROUTE_PASS_THROUGH", "LOOKALIKE_MODELS"}
+    ]
+    # It keeps a customer history, an order lifecycle table and inventory snapshots beside the
+    # tables whose rows they hold: each pair is a look-alike group its author is asked about.
+    assert [
+        (w["details"]["kind"], w["details"]["entities"])
+        for w in report["warnings"]
+        if w["code"] == "LOOKALIKE_MODELS"
+    ] == [
+        ("same_rows", ["entity.jaffle_customer", "entity.jaffle_customer_history"]),
+        ("same_rows", ["entity.jaffle_order", "entity.jaffle_order_lifecycle"]),
+        ("same_rows", ["entity.jaffle_store", "entity.jaffle_store_inventory_snapshot"]),
     ]
     # Lifetime spend is a stock on the one-row-per-customer table, a current-state
     # shape the snapshot-key warning can't tell from a mis-keyed snapshot table.

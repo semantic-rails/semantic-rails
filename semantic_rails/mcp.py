@@ -531,7 +531,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "ran, not that it answers the question. Call: select ids or {expression, as}, "
             "group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] "
             "and entity filters, time (time.end is exclusive), order_by (period: time column), "
-            "limit inside it; max_rows and row_format go beside query."
+            "limit inside it; max_rows and row_format go beside query. Calls side by side, "
+            "each with its own where: {parts: [call, ...], join: {on: [[id per part]]}}."
         ),
         input_schema={
             **_schema(

@@ -964,13 +964,11 @@ def _callers(function: str) -> set[str]:
 def test_one_place_decides_how_a_relationship_joins():
     """Every leaf joins its paths through ``_joins_for_paths``, the one caller of the join
     condition builder, so no leaf can choose a lookup's join type on its own; only a metric
-    predicate's own query and a distribution's per-entity values ask it to join lookups INNER;
-    and only it reads which lookups a rollup holds, for the rollup's own model."""
+    predicate's own query asks it to join lookups INNER (a distribution's per-entity values
+    keep their rows, as the call grouped by the entity does); and only it reads which lookups a
+    rollup holds, for the rollup's own model."""
     assert _callers("_join_on_for_relationship") == {"paths:_joins_for_paths"}
-    assert _callers("inner_lookups") == {
-        "compiler:_compile_predicate_source_ast",
-        "distribution:_distribution_select",
-    }
+    assert _callers("inner_lookups") == {"compiler:_compile_predicate_source_ast"}
     assert _callers("rollup_dimension_entities") == {
         "paths:_joins_for_paths",
         "paths:rollup_held_lookups",

@@ -4,8 +4,10 @@ An account reaches a brand by 212 routes: through each of 14 activities an accou
 from there. They are asked as 14 groups (11 options and 3 forks of 16 or 17 routes), the same in
 ``execute``, ``plan``, ``inspect`` and Architect's route census, and the answer fits its budget
 for every undecided pair of the package with every group listed: never ``RESULT_TOO_LARGE``.
+Each fork's routes are listed as parts a package author decides it by, for the asked pair only.
 
-One test, so the package (about 20 seconds to build) and its census are made once.
+The package takes about 20 seconds to build, once per worker. The census walks every pair one
+at a time, keeping no refusal once it is checked, so memory stays flat.
 """
 
 from __future__ import annotations
@@ -14,33 +16,60 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from itertools import chain
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from scripts.large_warehouse import ALL_MARTS, build_large_workspace, call_tool
-from semantic_rails.architect_mcp import (
-    PAGE_CHARS,
-    PAGE_ITEMS,
-    _report_page,
-    create_architect_mcp_server,
-)
+from scripts.large_warehouse import ALL_MARTS, LargeWorkspace, build_large_workspace
+from semantic_rails.architect_mcp import PAGE_CHARS, PAGE_ITEMS, _report_page, _with_groups
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import package_hop_limit, package_route, route_hops
 from semantic_rails.mcp import SemanticLayerMCPAdapter, json_text
 from semantic_rails.query_call import route_options
 from semantic_rails.request_payload import max_result_chars
-from semantic_rails.route_census import census_pairs, resolve_pairs
+from semantic_rails.route_census import census_pairs
 from semantic_rails.route_groups import grouped_refusal, route_groups, shorter_route_asks
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PathPreferenceConfig
+
+# The package's build (about 20 seconds here) counts toward a test's time limit, and a slower
+# machine can take three times as long: each test declares its limit.
+pytestmark = pytest.mark.timeout(180)
 
 ACCOUNT, BRAND = "entity.large_account", "entity.large_brand"
 ACCOUNTS_BY_BRAND = {
     "select": ["measure.large.account_count"],
     "group_by": ["dimension.large_brand_brand_name"],
 }
+
+
+@pytest.fixture(scope="module")
+def workspace(tmp_path_factory: pytest.TempPathFactory) -> LargeWorkspace:
+    return build_large_workspace(tmp_path_factory.mktemp("all_marts"), marts=ALL_MARTS)
+
+
+@pytest.fixture(scope="module")
+def runtime(workspace: LargeWorkspace) -> Runtime:
+    return Runtime.from_path(str(workspace.root / workspace.package))
+
+
+@pytest.fixture(scope="module")
+def answer(runtime: Runtime) -> Any:
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        return adapter.call_tool("execute", {"query": ACCOUNTS_BY_BRAND, "mode": "validate"})
+    finally:
+        adapter.close()
+
+
+def _refusal(config: Any, start: str, target: str) -> SemanticLayerError | None:
+    """The pair's route refusal (``AMBIGUOUS_PATH``), or None when the package answers it."""
+    try:
+        package_route(config, start=start, target=target)
+    except SemanticLayerError as exc:
+        if exc.code == "AMBIGUOUS_PATH":
+            return exc
+    return None
 
 
 def _size(value: Any) -> int:
@@ -84,26 +113,20 @@ def _asked(answer: Any, runtime: Runtime) -> list[dict[str, Any]]:
     return groups
 
 
-def _fit_every_pair(runtime: Runtime, undecided: list[Any], answer: Any) -> None:
-    """Each undecided pair's question in the answer ``execute`` gives (the account's refusal,
-    with that pair's message and details) fits whole, or with only the options its groups
-    list, or as one call and a route per option: none needs fewer groups than it has."""
-    config = runtime.config
-    assert len(undecided) == 3_580
-    budget, steps, fork_free = max_result_chars(), [], 0
-    for _pair, outcome in undecided:
-        raised = SemanticLayerError("AMBIGUOUS_PATH", "", details=deepcopy(outcome.details))
-        refusal = grouped_refusal(raised, config)
-        details = refusal.details
-        route_options(ACCOUNTS_BY_BRAND, details)
-        fork_free += not any("decide_first" in g for g in details["clarification"]["groups"])
-        shown = deepcopy(answer)
-        shown["errors"][0].update(message=str(refusal), details=details)
-        shown["error"]["message"] = str(refusal)
-        tries = chain([shown], shorter_route_asks(shown))
-        steps.append(next(n for n, step in enumerate(tries) if len(json_text(step)) <= budget))
-    assert fork_free == 848
-    assert max(steps) <= 2, "a pair's question lost a group to fit"
+def _fits(config: Any, raised: SemanticLayerError, answer: Any, budget: int) -> tuple[int, bool]:
+    """The first step at which the pair's question, in the answer ``execute`` gives (the
+    account's refusal, with that pair's message and details), fits ``budget``: 0 whole, 1 the
+    options its groups list, 2 one call and a route per option, 3 or more fewer groups; and
+    whether its groups have no fork."""
+    refusal = grouped_refusal(raised, config)
+    details = refusal.details
+    route_options(ACCOUNTS_BY_BRAND, details)
+    fork_free = not any("decide_first" in g for g in details["clarification"]["groups"])
+    shown = deepcopy(answer)
+    shown["errors"][0].update(message=str(refusal), details=details)
+    shown["error"]["message"] = str(refusal)
+    tries = chain([shown], shorter_route_asks(shown))
+    return next(n for n, step in enumerate(tries) if len(json_text(step)) <= budget), fork_free
 
 
 def _without_parts(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -128,9 +151,14 @@ def _walk(report: Any, path: str) -> list[Any]:
         offset = page["next_offset"]
 
 
-def _paged(pair: Any, groups: list[dict[str, Any]], options: list[Any]) -> None:
-    """Architect's census row of the pair shows its groups and their options, pages every one
-    of its 212 routes once, and each fork's routes as the parts a package author decides."""
+def _paged(config: Any, groups: list[dict[str, Any]], options: list[Any]) -> None:
+    """Architect's census row of the pair, as ``project_status`` makes it, shows its groups and
+    their options, pages every one of its 212 routes once, and each fork's routes as the parts
+    a package author decides."""
+    raised = _refusal(config, ACCOUNT, BRAND)
+    assert raised is not None
+    ends = {"source_entity": ACCOUNT, "target_entity": BRAND}
+    pair = _with_groups(config, {**ends, "details": raised.details, "needed_by": []})
     whole = pair["details"]["clarification"]
     assert _without_parts(whole["groups"]) == groups and len(whole["options"]) == 212
     report = {"route_census": {"undecided": [pair]}}
@@ -163,15 +191,43 @@ def _paged(pair: Any, groups: list[dict[str, Any]], options: list[Any]) -> None:
             )
 
 
-def _decide_forks(runtime: Runtime, undecided: list[Any]) -> None:
-    """Every fork's parts are free of the start and shorter than the hop ceiling. On each of
-    the first 60 pairs asked as one option and one fork, recording the fork's first part's row
-    decides the pair by exactly that route, and leaves the fork's own pair undecided."""
+def test_212_routes_are_asked_as_14_groups_everywhere(runtime: Runtime, answer: Any) -> None:
+    groups = _asked(answer, runtime)
+    _paged(runtime.config, groups, answer["errors"][0]["details"]["clarification"]["options"])
+
+
+def test_every_undecided_pair_fits_its_answer_with_all_its_groups(
+    runtime: Runtime, answer: Any
+) -> None:
+    """All 3,580 undecided pairs, one at a time: each fits at the second step or before, and
+    848 of them have no fork."""
+    config, budget = runtime.config, max_result_chars()
+    undecided = fork_free = latest = 0
+    for start, target in census_pairs(config):
+        raised = _refusal(config, start, target)
+        if raised is None:
+            continue
+        undecided += 1
+        step, no_fork = _fits(config, raised, answer, budget)
+        fork_free += no_fork
+        assert step <= 2, f"{start} to {target} lost a group to fit (step {step})"
+        latest = max(latest, step)
+    assert (undecided, fork_free, latest) == (3_580, 848, 2)
+
+
+def test_a_package_author_decides_each_fork_by_one_of_its_parts(runtime: Runtime) -> None:
+    """Every fork's parts, on every undecided pair, are free of the start and shorter than the
+    hop ceiling. On each of the first 60 pairs asked as one option and one fork, recording the
+    fork's first part's row decides the pair by exactly that route, and leaves the fork's own
+    pair undecided."""
     config = runtime.config
     ceiling = package_hop_limit(config)
     two_groups = []
-    for (start, target), outcome in undecided:
-        options = outcome.details["clarification"]["options"]
+    for start, target in census_pairs(config):
+        raised = _refusal(config, start, target)
+        if raised is None:
+            continue
+        options = raised.details["clarification"]["options"]
         grouped = route_groups(config, start, target, options, parts=True)
         forks = [g for g in grouped["groups"] if "decide_first" in g]
         for fork in forks:
@@ -180,10 +236,12 @@ def _decide_forks(runtime: Runtime, undecided: list[Any]) -> None:
                 assert start not in {far for _rel, far, _reach in hops}
                 assert len(part["relationship_path"]) <= ceiling - 1
         if grouped["groups_total"] == 2 and len(forks) == 1:
-            two_groups.append((start, target, forks[0]))
-    assert len(two_groups) >= 60
-    for start, target, fork in two_groups[:60]:
-        row = fork["decide_first"]["parts"][0]["decision"]
+            two_groups.append(
+                (start, target, forks[0]["via"], forks[0]["decide_first"]["parts"][0])
+            )
+    assert len(two_groups) == 233
+    for start, target, via, part in sorted(two_groups, key=lambda row: row[:2])[:60]:
+        row = part["decision"]
         recorded = replace(
             config, path_preferences=[*config.path_preferences, PathPreferenceConfig(**row)]
         )
@@ -193,35 +251,5 @@ def _decide_forks(runtime: Runtime, undecided: list[Any]) -> None:
             row["relationship_path"],
         )
         with pytest.raises(SemanticLayerError) as own_pair:
-            package_route(recorded, start=fork["via"], target=target)
+            package_route(recorded, start=via, target=target)
         assert own_pair.value.code == "AMBIGUOUS_PATH"
-
-
-def test_212_routes_are_14_groups_everywhere_and_every_pair_fits_with_all_its_groups(
-    tmp_path: Path,
-) -> None:
-    workspace = build_large_workspace(tmp_path, marts=ALL_MARTS)
-    runtime = Runtime.from_path(str(workspace.root / workspace.package))
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        answer = adapter.call_tool("execute", {"query": ACCOUNTS_BY_BRAND, "mode": "validate"})
-    finally:
-        adapter.close()
-    groups = _asked(answer, runtime)
-
-    server = create_architect_mcp_server(workspace_root=workspace.root)
-    full = call_tool(
-        server, "project_status", {"project_path": workspace.package, "full_report": True}
-    )
-    # The whole census is about 115 MB; keep the one pair.
-    (pair,) = [
-        row
-        for row in full.pop("route_census")["undecided"]
-        if (row["source_entity"], row["target_entity"]) == (ACCOUNT, BRAND)
-    ]
-    del full
-    _paged(pair, groups, answer["errors"][0]["details"]["clarification"]["options"])
-    outcomes = resolve_pairs(runtime.config, census_pairs(runtime.config))
-    undecided = [(p, o) for p, o in outcomes.items() if o.refused == "AMBIGUOUS_PATH"]
-    _fit_every_pair(runtime, undecided, answer)
-    _decide_forks(runtime, sorted(undecided, key=lambda row: row[0]))

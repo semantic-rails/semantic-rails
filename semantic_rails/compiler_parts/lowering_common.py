@@ -316,6 +316,10 @@ def _snapshot_series_columns(measure, temporal_role_id: str, config: PackageConf
     return [column for column in key if column != order_column]
 
 
+# The one bucket of a window total's rows (``_time_bucket_expr``).
+WINDOW_TOTAL_BUCKET = 0
+
+
 def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig) -> Any:
     """The expression a leaf groups its time axis by.
 
@@ -327,7 +331,8 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
         return _dialect(config).date_trunc(time["grain"], raw_expr)
     if time.get("window_total"):
         return SqlCase(
-            whens=[SqlCaseWhen(SqlIsNull(raw_expr), SqlLiteral(0))], else_expr=SqlLiteral(0)
+            whens=[SqlCaseWhen(SqlIsNull(raw_expr), SqlLiteral(WINDOW_TOTAL_BUCKET))],
+            else_expr=SqlLiteral(WINDOW_TOTAL_BUCKET),
         )
     return raw_expr
 

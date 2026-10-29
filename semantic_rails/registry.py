@@ -58,6 +58,10 @@ class Registry:
             payload = asdict(entity)
             # Read only by the look-alike notices, which state it where it decides a reading.
             payload.pop("model_description", None)
+            # Read only by the look-alike models' warnings, which name each model by its id
+            # and say which one an author declared canonical.
+            payload.pop("model_id", None)
+            payload.pop("prefer_over", None)
             self._add(
                 SemanticObject(
                     entity.id,

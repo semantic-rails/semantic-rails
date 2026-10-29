@@ -105,6 +105,9 @@ package with one model, its count and amount metrics, an example, a package test
    differently from the parent's key) merges parent entities into any model's `entities` block.
    `one_per_key: true` writes a [one-per-key model](PACKAGE_AUTHORING.md#one-row-per-key)
    (refused with `primary_key: []`); `false` removes it, and `replace` keeps it.
+   `prefer_over` (model ids) writes the model's
+   [`prefer_over:`](PACKAGE_AUTHORING.md#prefer_over--the-canonical-model-of-look-alikes) list;
+   `[]` removes it, and `replace` keeps it.
    `upsert_relationship` relates `from_entity` to `to_entity`: `columns` on `from_entity`'s
    model hold `to_entity`'s key, in key order, and go in that model's `entities` block (as
    `expr` when named differently). Name either entity by its key (`order`) or its id
@@ -491,6 +494,13 @@ same report: `rules` (each with its tier and hits), `proof`, `choices_pending`, 
 - When a write comes back `rolled_back_after_parse_error` or `preview_invalid`, or `project_status`
   can't parse the package, and upgrade rules match the package's files, `next_actions` says how many
   legacy forms `upgrade_project` would rewrite.
+- When the parse report names groups of models an agent can read for one another
+  (`LOOKALIKE_MODELS`, see [look-alike models](PACKAGE_AUTHORING.md#look-alike-models)),
+  `project_status`'s `next_actions` asks for the canonical model of each and counts the groups;
+  `architect_guidance` says to decide it with the package owner, never from the names alone.
+  Record the answer with `upsert_model`'s `prefer_over` on the canonical model (the
+  [`prefer_over:`](PACKAGE_AUTHORING.md#prefer_over--the-canonical-model-of-look-alikes) list),
+  which clears its group's warning.
 
 ## Join Routes
 

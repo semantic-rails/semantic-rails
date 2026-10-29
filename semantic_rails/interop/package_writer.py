@@ -123,6 +123,8 @@ class _Writer:
                     renames={**_RENAMES, "model_description": "description"},
                 )
             )
+            if entity.prefer_over:  # by the model ids this writer names the models with
+                model["prefer_over"] = [self.keys[other][0] for other in entity.prefer_over]
             if entity.foreign_keys:  # graph.relationships states every join, which replaces
                 model["entities"].update({n: {"expr": c} for n, c in entity.foreign_keys.items()})
                 model["entities"]["bridge"] = entity.bridge  # each one a link table infers
@@ -132,6 +134,7 @@ class _Writer:
             role = next(iter(entity.key_roles.values()), "primary")
             columns = list(entity.key_columns)
             skip = {"table", "key_columns", "relation_id", "identifiers", "key_roles", "bridge"}
+            skip |= {"model_id", "prefer_over"}  # the model's own id and list, written above
             entities[key] = {
                 **alias,
                 "key": columns if role == "primary" else {"columns": columns, "role": role},

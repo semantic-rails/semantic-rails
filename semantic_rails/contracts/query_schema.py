@@ -203,7 +203,7 @@ def query_call_schema_document() -> dict[str, Any]:
         },
         **kind_defs,
     }
-    return {
+    document = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": SCHEMA_ID,
         "title": "Semantic Rails query call",
@@ -307,6 +307,44 @@ def query_call_schema_document() -> dict[str, Any]:
         "additionalProperties": False,
         "x-fields": list(FIELDS),
         "$defs": defs,
+    }
+    _add_joined_call(document)
+    return document
+
+
+def _add_joined_call(document: dict[str, Any]) -> None:
+    """A joined call's keys (``query_call.read_joined_call``): ``parts``, each a call, and
+    ``join``. Like an expression's keys, a part's are the parser's to check (each as a call's,
+    at its path, with a hint), so the tool carries no second copy of the call per part."""
+    from semantic_rails.query_call import PART_FIELDS
+
+    document["properties"]["parts"] = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "description": f"A call with {', '.join(PART_FIELDS)}: no having, time, order_by, "
+            "limit or totals.",
+        },
+        "description": "A joined call: calls answered as their own, joined on join.on in one "
+        "statement. Beside parts a call has only join, time, order_by and limit.",
+    }
+    document["properties"]["join"] = {
+        "type": "object",
+        "properties": {
+            "on": {
+                "type": "array",
+                "items": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                "description": "Per key column, one group_by dimension id of every part, in "
+                "the order of parts.",
+            },
+            "keep": {
+                "anyOf": [{"const": "all"}, {"type": "array", "items": {"type": "integer"}}],
+                "description": "all (the default): every key of every part; or the indexes of "
+                "the parts each kept row has a row of.",
+            },
+        },
+        "required": ["on"],
+        "additionalProperties": False,
     }
 
 

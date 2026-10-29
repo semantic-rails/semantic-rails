@@ -44,7 +44,8 @@ _MINIMAL_KEYS_EXECUTE: frozenset[str] = frozenset(
     {"ok", "status", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
 )
 # What the answer means survives the cheapest response (``answer.py``): verbosity never
-# removes a warning, an assumption or a route.
+# removes a warning, an assumption or a route. A joined call states each part's under
+# ``parts`` (``runtime_parts.joined_call``).
 _ANSWER_KEYS: tuple[str, ...] = (
     "read_from",
     "window",
@@ -53,6 +54,7 @@ _ANSWER_KEYS: tuple[str, ...] = (
     "routes",
     "assumptions",
     "withheld",
+    "parts",
 )
 
 # Heavy keys dropped at the top-level response when verbosity="compact".

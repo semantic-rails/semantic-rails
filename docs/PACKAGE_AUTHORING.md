@@ -1659,6 +1659,35 @@ model:
   instead of reading NULL. `inspect` shows its `key_note`, and `semantic-rails project validate` lists it
   under "One row per key".
 
+### `prefer_over:` — the canonical model of look-alikes
+
+When validation names a group of [look-alike models](#look-alike-models), such as a table and its
+history, list the others in the canonical model's `prefer_over:`, by model id. It says that
+model answers their questions instead, so validation stops asking about the group:
+
+```yaml
+# models/rooms.yml: one row per room in use; rooms_hist holds one row per version
+model:
+  id: rooms
+  relation: rooms
+  entities: {room: {}}
+  prefer_over: [rooms_hist]
+```
+
+- A group is decided when one model lists every other, directly or through another model's list
+  (`rooms` lists `rooms_hist`, and `rooms_hist` lists `rooms_audit`). Until then the group's
+  `LOOKALIKE_MODELS` warning stays.
+- A model may list one no rule groups with it, when the author knows they hold the same things.
+- Each id must be another model of the package, and the lists never run in a circle: one model of
+  a group is the canonical one. Either mistake is `INVALID_CONFIG`, naming the unknown id with the
+  closest model ids, or the circle (`rooms -> rooms_hist -> rooms`).
+- `discover` lists the canonical model's rows first among its look-alikes' and marks each
+  look-alike's card with `look_alike` (`history copy of <entity>` or `prefer <entity>`; see
+  [MCP_INTERFACE.md](MCP_INTERFACE.md)).
+- A caller who can't see a listed model reads the list without it, and hiding it never hides the
+  model that lists it.
+- `plan` and `execute` read the models as before: `prefer_over:` changes no answer.
+
 ### `bridge:` — link tables and junction tables
 
 `bridge: true` on the entities block declares the model a link table: a route
@@ -2462,8 +2491,6 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
 - a metric predicate's own query, and its route to the entity it qualifies. Its set is
   matched on that entity and on the query's grouped (context) entities, so a row with none
   of them is not in the set;
-- a distribution's per-entity values (its `over`): a row whose lookup of the entity finds
-  no match belongs to no entity, never to a NULL entity of its own;
 - a conversion's converted events (their lookups and properties) and the dimensions a
   query's metric filter on the conversion is matched on. A conversion's base events are its
   rate's denominator, so they keep their rows, in a metric filter's own query too: an event
@@ -3219,8 +3246,9 @@ model:
 before its edge, on the clock the query reads it by (for a load log, rows before the next local
 midnight after its date, or at or before its timestamp; for `now`, rows at or before the
 request's `now`): series, totals, an answer without a window, running totals, shares, prior
-periods, entity filters and each operand of a conversion all see the same rows. A stray row after the edge is not read, so
-its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
+periods, entity filters and each operand of a conversion all see the same rows, and so does an
+`aggregate_if` over the model's rows, on its model's `default: true` time. A stray row after the
+edge is not read, so its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
 base table, never a rollup, whose buckets can't stop at an instant. A measure dated by another
 model's clock (refunds dated by their order's `ordered_at`, through `times:`) is capped on that
 clock with no time window: a refund is read when its order is at or before the edge, so a refund
@@ -3594,6 +3622,42 @@ by label/name/search_terms from every other in its class. Treat any
 flagged pair as an authoring debt: tighten the label or differentiate
 search_terms so an LLM-driven agent can pick the right object without
 context.
+
+### Look-alike models
+
+An agent picks its source on purpose: asked how many rooms there are, it can count a rooms
+table's history, which holds one row per version of each room, and answer with another
+population. Only the package's author knows which model a question means, so `parse-config`,
+`validate-config`, `check`, and the Architect's `validate_project` and `project_status` name each
+group of look-alike models once, with a `LOOKALIKE_MODELS` warning that asks which one is
+canonical. The groups come from the YAML alone, never from descriptions:
+
+| `details.kind` | The models | Example |
+| --- | --- | --- |
+| `same_rows` | Rows that are the same things. Either both are keyed by the same key, or one is keyed by the other's key plus time columns of its own (columns a `times:` role reads). Or neither has a key, and one's dimensions read every column the other's do, and at least one. Every key column must say what it identifies, so a bare `id` never counts. | `rooms` (key `room_id`) and `rooms_hist` (key `room_id`, `valid_from`); a keyless survey and its snapshots, which add a snapshot date |
+| `same_count` | Rows that aren't the same things, each with a published count of the same label (without a `(<table>)` suffix) over the same column, counted the same way (its card's `count_unit`, without the model). | `floors` and `space_detail`, each counting distinct `building_id` as "Distinct buildings" |
+
+A group links its models pair by pair, so a table, its history and a staging copy make one
+group. The message names up to five models (`details.models` has them all). A `same_rows`
+group has each model's key in `details.keys`; a `same_count` group has its counts by model in
+`details.measures`, with their `unit` and `name`. These are never a group:
+
+- a table and one that holds its key, such as invoices and their payments, whether or not a
+  relationship links them;
+- a calendar (`kind: time`) and a model keyed by its date: the calendar is the package's time
+  axis;
+- two tables whose only shared count is a row count, such as a `sum` of `1`: each counts its own
+  rows.
+
+A warning names the models by model id (`details.models`), and their entities in
+`details.entities`. For either kind, list the others in the canonical model's
+[`prefer_over:`](#prefer_over--the-canonical-model-of-look-alikes), which clears the group's
+warning. For a `same_rows` group, also say what each model's rows are in its `description` (a
+refusal's look-alike rows and a measure's card show its first sentence). For a `same_count`
+group where no model answers every question the others do, label each count for the rows it
+counts instead ("Buildings with a floor"), which takes it out of the group, or set
+`publish: false` on those no question needs. `project_status` adds a next action that counts the
+groups no model is declared canonical of.
 
 ## Upgrading a package
 

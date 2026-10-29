@@ -25,24 +25,24 @@ from tests.semantic_rails.conftest import copy_package_config, write_single_file
 
 # Semantic fingerprints of the bundled packages, which refusing the retired spellings leaves
 # unchanged (re-pinned only when the snapshot gains or loses a field, such as an entity's
-# `display` or its model's description, a package gains objects, an authored relationship alias
-# becomes its id, or a rollup stops reading the measures its `columns:` doesn't name, as the
-# shop's monthly did).
+# `display`, its model's description or its `prefer_over`, a package gains objects, an authored
+# relationship alias becomes its id, or a rollup stops reading the measures its `columns:`
+# doesn't name, as the shop's monthly did).
 FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
-        "sha256:f69abe060c2cb533fc5daef321f371de537b47ec64d0cacec30fcafd41abe433"
+        "sha256:6906c94bd1610d27f77353af383512c32db3efc0721ccdc1abc959c3bb829198"
     ),
     "configs/semantic_rails/tpch_sf1_showcase": (
-        "sha256:d325c913317de9fc3dbd01bcd2eb2fc6db271c786603b5ddf14bf23b22df545f"
+        "sha256:7ce41d79e65af19b1993d8f143480aba024dc8f94aa991f7955ef114805b3c27"
     ),
     "comparisons/semantic_layers/semantic_rails/package": (
-        "sha256:f8c92d80d83457bc1798b4ab08988097e9c8b76cc4e9dd8041923a832bfe25fd"
+        "sha256:a23f16af75bc24bc02240866c63a86b2041db6925abab33dfcba0cf038767301"
     ),
     "tests/integration/correctness/shop": (
-        "sha256:bb70ca12163be9c2e342a16a94dfaf36361781ee91dbc8201c2498d98d3884b1"
+        "sha256:8595d9604c5546e13bf702e6cd6451292b66979c32a7fbd9d87800d1aebc110e"
     ),
     "configs/examples/semantic_rails_package_starter.yml": (
-        "sha256:f36767381832a57c493ccd1194e6baedef91ca14a81a2f9e9042db83310c7069"
+        "sha256:013b3c038c5318cb58ae7733af9ddea33546871a1fd1f32292656252a4b36422"
     ),
 }
 

@@ -53,6 +53,7 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
+from .lookalike_models import LOOKALIKE_MODELS
 from .mcp import SemanticLayerMCPAdapter, json_text
 from .naming import slug as _slug
 from .package_tools import (
@@ -1014,6 +1015,7 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             "Use setup_project_dialog for new-package discovery, then create_project when the required fields are known.",
             "Prefer upsert_model for entity, dimension, time, and measure changes, and upsert_relationship for foreign keys, so graph.yml stays aligned.",
             "Run validate_project with mode=parse after every structural edit; use mode=runtime before promoting.",
+            "A LOOKALIKE_MODELS warning names models an agent can read for one another (the same rows, such as a table and its history, or one count under one label on several tables): decide which is canonical, asking the package owner when the data doesn't say, and never from the names alone, then list the others in its prefer_over.",
             "Treat runtime validation as operational: DuckDB validation can build a missing package database from its seed but never replaces an existing file; declare seed kind external for a database another tool builds. Snowflake validation can issue live queries.",
             "Use impact_project with compare_path or base_ref before release review; use promotion_check with compare_path or base_ref when an environment gate matters.",
         ],
@@ -1631,6 +1633,10 @@ def create_architect_mcp_server(
             parse = _parse_report(project)
             census = parse.pop("route_census", None)
             needed = sum(bool(row["needed_by"]) for row in census["undecided"]) if census else 0
+            lookalikes = sum(
+                isinstance(row, dict) and row.get("code") == LOOKALIKE_MODELS
+                for row in parse.get("warnings") or []
+            )
             out: dict[str, Any] = {
                 "ok": bool(parse.get("ok")),
                 "project_path": str(project),
@@ -1655,6 +1661,17 @@ def create_architect_mcp_server(
                             f"{DECIDE_ROUTES_ACTION}"
                         ]
                         if needed
+                        else []
+                    ),
+                    *(
+                        [
+                            f"Name the canonical model of each of the {lookalikes} "
+                            f"group{'s' if lookalikes > 1 else ''} of look-alike models in "
+                            "parse.warnings (code LOOKALIKE_MODELS; page: parse.warnings lists "
+                            "them all), and list the others in its prefer_over (upsert_model): "
+                            "an agent can answer one question from any model of a group."
+                        ]
+                        if lookalikes
                         else []
                     ),
                     "Run validate_project with mode=runtime before release.",
@@ -1783,21 +1800,19 @@ def create_architect_mcp_server(
         description=(
             "Upsert a model and its graph entity. calendar: true makes "
             'it the package calendar for calendar_id (default "default", which a package with '
-            "calendars needs): its columns are ordinary dimensions; time.fill and every time "
-            "bucket use the implicit Gregorian calendar. calendar: false reverts that. "
-            "On a regular model, calendar_id binds its times to a calendar; a non-default "
-            "calendar is refused in this release. Fields merge into "
-            "an existing model. An existing dimension, time or measure given only label, "
-            "description, synonyms or meta keeps its other fields; given anything else it is "
-            "rewritten, and dropped_fields lists what that drops. replace: true rewrites the "
-            "model from the arguments, keeping only its id, entities, calendar_id, "
-            "zero_through (how far its tables are loaded) and one_per_key, and lists "
-            "what it drops in dropped_fields. one_per_key: true reads a relation whose rows "
-            "repeat the key as one row per primary_key, each column the key's one value (NULL "
-            "where its rows disagree); keep the columns that vary on a row-grain model of the "
-            "same relation. primary_key [] makes a row-grain model (no key); entities "
-            "({parent: {} or {expr: column}}) merges the model's parent entities. "
-            "Relationships also go through upsert_relationship."
+            "calendars needs), its columns ordinary dimensions; time.fill and time buckets stay "
+            "Gregorian. false reverts it. calendar_id on a regular model binds its times to a "
+            "calendar (only the default in this release). Fields merge into an existing model: "
+            "a dimension, time or measure given only label, description, synonyms or meta keeps "
+            "its other fields; given more, it is rewritten. replace: true rewrites the model "
+            "from the arguments, keeping its id, entities, calendar_id, zero_through (how far "
+            "its tables are loaded), one_per_key and prefer_over. dropped_fields lists what a "
+            "rewrite drops. one_per_key: true reads a relation whose rows repeat the key as one "
+            "row per primary_key, each column the key's one value (NULL where its rows "
+            "disagree); put columns that vary on a row-grain model of the same relation. "
+            "prefer_over: look-alike model ids it answers for; [] removes. primary_key [] makes "
+            "a row-grain model (no key); entities ({parent: {} or {expr: column}}) merges "
+            "parent entities. Relate models with upsert_relationship."
         ),
     )
     def upsert_model(
@@ -1819,6 +1834,7 @@ def create_architect_mcp_server(
         entities: dict[str, Any] | None = None,
         replace: bool = False,
         one_per_key: bool | None = None,
+        prefer_over: list[str] | None = None,
         dry_run: bool = False,
         full_report: FullReport = False,
     ) -> ArchitectMutationResult:
@@ -1841,6 +1857,7 @@ def create_architect_mcp_server(
                     entities=entities,
                     replace=replace,
                     one_per_key=one_per_key,
+                    prefer_over=prefer_over,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
