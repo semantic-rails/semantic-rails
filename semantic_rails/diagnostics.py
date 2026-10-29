@@ -1476,6 +1476,7 @@ _GAP_KEYS = (
     "closest_dimensions",
     "unknown_entity",
     "shared_key_columns",
+    "shared_key_columns_on_start",
     "shared_key_unique_on_target",
 )
 # A caller's own id is echoed at most this long (a refusal's own message names it whole).

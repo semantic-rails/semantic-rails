@@ -483,6 +483,10 @@ cast and its reported value identifies one date filter, the redacted
   reads as its digits (`ends_with` `"03"` matches 103 and 203, never 3), and a UUID in lower
   case with hyphens (case is ignored, so `E2C0` matches). `is` and `not` still compare the id
   as it is stored, and `valid-values` `search` reads an id the same way.
+- An id stored as a float reads as the warehouse's float text: DuckDB (and so MotherDuck and
+  DuckLake), Databricks and Athena write `203.0`, while Postgres, Snowflake, BigQuery and
+  ClickHouse write `203`. So on DuckDB `ends_with` `"03"` finds nothing and `contains` `"0"`
+  matches every id. Store ids as integers or text.
 - Two `is` conditions on one field are an AND (usually no row); a list is the OR.
 
 ### Unknown values
@@ -1701,7 +1705,10 @@ declared edge lets through. Such a table is observed there whether or not a filt
 `filter` has matched one of them, so "how many enterprise accounts have we ever had?" reads `0`
 before the first one, with no `NO_DATA_IN_SCOPE`. It needs a row the edge lets through (under
 `observation_scope: "query"`, one the call's `where` keeps): an empty load log lets none through,
-so it reads `NULL`. Without a declared edge, the filter must match a row, as above.
+so it reads `NULL`. Without a declared edge, the filter must match a row, as above. A measure
+dated by another model's clock (a refund by its order's time) is let through by that clock, so a
+refund whose order is after the edge isn't read
+([Empty periods](PACKAGE_AUTHORING.md#empty-periods)).
 
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
@@ -1923,7 +1930,8 @@ warehouse (`AVG` is DOUBLE on DuckDB and NUMERIC on Postgres); `column_types` re
 driver returned. An all-null column has type `null`; an empty result has `column_types: {}`.
 
 The Postgres adapter accepts only Arrow scalar types with exact mappings (integers, decimals,
-floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, NULL); other
-types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
+floats, text, booleans, dates, microsecond times and timestamps, binary, intervals, UUIDs, NULL),
+so a uuid column groups, lists and is searched as its lower-case hyphenated text, as on DuckDB;
+other types refuse with `RESULT_TYPE_UNSUPPORTED` before rows are read, naming the column and type
 without exposing values. Unsupported values, non-finite numbers and conflicting non-null column
 types refuse with `RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error.

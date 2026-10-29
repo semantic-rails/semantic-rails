@@ -59,7 +59,7 @@ from .bind import (
     is_conditional_aggregate,
 )
 from .indexes import _dimension_index, _entity_index, _measure_index, _relationship_index
-from .lowering_common import _edge_cap, _filter_condition_for_item
+from .lowering_common import _caps_untimed_reads, _filter_condition_for_item
 from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
@@ -203,7 +203,7 @@ def parent_value_route(
         or bound.window_spec
         or _bound_metric_predicates(bound)
         or _bound_filter_clauses(bound, config)
-        or _edge_cap(measure, "", config)
+        or _caps_untimed_reads(measure, config)
         or _beside_another_entity(measure, config, query)
         or any(
             measure_id == bound.measure_id

@@ -66,27 +66,42 @@ def _hops(graph: dict[str, list[tuple[str, str]]], start: str, limit: int) -> di
 
 
 class _Columns:
-    """Each entity's key and the columns it holds (dimension, key, foreign-key and join columns)."""
+    """Each entity's key and the columns it holds (dimension, key, foreign-key and join columns),
+    with how it spells each (``spelling``): as its key does, else as it first names it."""
 
     def __init__(self, config: PackageConfig) -> None:
         self.keys = {row.id: list(row.key_columns) for row in config.entities}
-        held: dict[str, set[str]] = {
-            row.id: {column.casefold() for column in row.key_columns} for row in config.entities
-        }
+        self.spellings: dict[str, dict[str, str]] = {row.id: {} for row in config.entities}
+        held: dict[str, set[str]] = {row.id: set() for row in config.entities}
+
+        def hold(entity: str, column: str) -> None:
+            held[entity].add(column.casefold())
+            self.spellings[entity].setdefault(column.casefold(), column)
+
+        for row in config.entities:
+            for column in row.key_columns:
+                hold(row.id, column)
         for row in config.entities:
             for columns in row.foreign_keys.values():
-                held[row.id].update(column.casefold() for column in columns)
+                for column in columns:
+                    hold(row.id, column)
         for dim in config.dimensions:
             if dim.entity in held and _COLUMN.match(dim.column or ""):
-                held[dim.entity].add(dim.column.casefold())
+                hold(dim.entity, dim.column)
         for rel in config.relationships:
             for entity, columns in (
                 (rel.source_entity, rel.source_columns or [rel.source_column]),
                 (rel.target_entity, rel.target_columns or [rel.target_column]),
             ):
                 if entity in held:
-                    held[entity].update(c.casefold() for c in columns if _COLUMN.match(c or ""))
+                    for column in columns:
+                        if _COLUMN.match(column or ""):
+                            hold(entity, column)
         self.held = held
+
+    def spelling(self, entity: str, column: str) -> str:
+        """How ``entity`` spells ``column`` (casefolded), or ``""`` when it doesn't hold it."""
+        return self.spellings.get(entity, {}).get(column, "")
 
     def key_of(self, entity: str) -> set[str]:
         return {column.casefold() for column in self.keys.get(entity, [])}
@@ -370,15 +385,22 @@ def shared_key(config: PackageConfig, start: str, target: str) -> dict[str, Any]
         shared = set()
     if not shared:
         return {"shared_key_columns": []}
-    # A relationship's columns compare as written, so name them as the keys do.
+    # A relationship's columns compare as written, so name them as the keys do: the target's
+    # spelling, and the start's own beside it when it spells one differently (``via:``).
     spelled = {
         column.casefold(): column
         for entity in (start, target)
         for column in columns.keys.get(entity, [])
     }
+    ordered = sorted(shared, key=lambda column: spelled.get(column, column))
+    on_target = [spelled.get(column, column) for column in ordered]
+    on_start = [
+        columns.spelling(start, column) or spelled.get(column, column) for column in ordered
+    ]
     key = columns.key_of(target)
     return {
-        "shared_key_columns": sorted(spelled.get(column, column) for column in shared),
+        "shared_key_columns": on_target,
+        **({"shared_key_columns_on_start": on_start} if on_start != on_target else {}),
         "shared_key_unique_on_target": bool(key) and key <= shared,
     }
 
@@ -443,9 +465,11 @@ def shared_key_fix(details: dict[str, Any]) -> str:
     start, target, shared, columns = _shared(details)
     if not shared or details.get("shared_key_unique_on_target"):
         return ""
+    # Each side's columns as that side spells them, so the row loads.
+    via = ", ".join(details.get("shared_key_columns_on_start") or shared)
     return (
         f"'{start}' and '{target}' share {columns}, not the whole key of '{target}'. A "
-        f"graph.relationships row from '{start}' to '{target}' with `via: [{columns}]` and "
+        f"graph.relationships row from '{start}' to '{target}' with `via: [{via}]` and "
         f"`target: [{columns}]` is `cardinality: many_to_one` when no two '{target}' rows hold "
         f"the same {columns} (or, for versions, none valid at the same time, with their window "
         f"in `temporal_validity:`): each '{start}' row then meets one '{target}' row. Otherwise "

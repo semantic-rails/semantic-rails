@@ -183,3 +183,103 @@ def test_the_unit_is_read_from_the_definition_alone(jaffle, aggregation, expr, u
 def test_a_lookup_carries_a_value_and_counts_nothing(jaffle):
     measure = next(m for m in jaffle.config.measures if m.id == "measure.jaffle.order_count")
     assert _count_unit(replace(measure, lookup_from="measure.jaffle.order_count")) == {}
+
+
+SHOP_ORDER = "entity.shop_order"
+TICKET = "entity.shop_ticket"
+
+
+@pytest.mark.parametrize(
+    ("metric", "unit"),
+    [
+        # One count, at the aggregation the metric reads it with.
+        (
+            "metric.sales.customer_count",
+            "distinct customer_id across rows of entity.jaffle_customer",
+        ),
+        # A count of the orders its filter keeps (customers who match a metric predicate).
+        (
+            "metric.sales.high_value_customer_orders",
+            f"distinct order_id across rows of {ORDER} where its filter holds",
+        ),
+    ],
+)
+def test_a_metric_that_is_one_count_names_its_unit(jaffle, metric, unit):
+    card = _card(jaffle, metric)
+    assert card["count_unit"] == unit
+    assert "count_units" not in card
+
+
+def test_a_ratio_names_the_unit_of_each_side_that_is_a_count(jaffle, shop):
+    # Revenue over distinct orders: only the denominator counts anything.
+    aov = _card(jaffle, "metric.sales.aov_usd")
+    assert aov["count_units"] == {"denominator": f"distinct order_id across rows of {ORDER}"}
+    assert "count_unit" not in aov
+    # A metric as the numerator reads that metric's count, its filter included.
+    assert _card(shop, "metric.shop.long_ticket_share")["count_units"] == {
+        "numerator": f"distinct ticket_id across rows of {TICKET} where its filter holds",
+        "denominator": f"distinct ticket_id across rows of {TICKET}",
+    }
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "metric.sales.food_revenue_share",  # a sum over a sum
+        "metric.sales.average_customer_lifetime_value",  # an average
+        "metric.sales.open_store_count_eop",  # a stock of a stored count
+        "metric.sales.cumulative_revenue",  # a window over a sum
+    ],
+)
+def test_a_metric_that_counts_nothing_itself_has_no_count_unit(jaffle, metric):
+    card = _card(jaffle, metric)
+    assert "count_unit" not in card
+    assert "count_units" not in card
+
+
+def test_a_ratio_over_a_stock_names_no_unit_for_the_stock(tmp_path):
+    # Orders per account open at month end: the stock reads one snapshot per account, so
+    # "rows of" would be wrong for the denominator, as on the stock's own card.
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    model = package / "models" / "account_days.yml"
+    document = yaml.safe_load(model.read_text(encoding="utf-8"))
+    document["model"]["measures"]["accounts_open"] = {
+        "kind": "aggregate",
+        "expr": 1,
+        "default_agg": "sum",
+        "value_type": "count",
+        "accumulation": {"kind": "stock", "snapshot": "end_of_period"},
+    }
+    model.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    metrics = package / "metrics" / "metrics.yml"
+    document = yaml.safe_load(metrics.read_text(encoding="utf-8"))
+    document["metrics"]["orders_per_open_account"] = {
+        "as": "metric.shop.orders_per_open_account",
+        "label": "Orders per open account",
+        "kind": "ratio",
+        "numerator": "order_count",
+        "denominator": "accounts_open",
+        "value_type": "number",
+    }
+    metrics.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    runtime = Runtime.from_config(
+        load_package_config(str(package)), source_path=str(package), package_id="shop"
+    )
+    try:
+        card = _card(runtime, "metric.shop.orders_per_open_account")
+    finally:
+        runtime.close()
+    assert card["count_units"] == {"numerator": f"distinct order_id across rows of {SHOP_ORDER}"}
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_a_metric_count_unit_is_on_the_mcp_card_at_every_verbosity(jaffle, verbosity):
+    adapter = SemanticLayerMCPAdapter(jaffle)
+    response = adapter.call_tool(
+        "inspect", {"object_id": "metric.sales.aov_usd", "verbosity": verbosity}
+    )
+    assert response["ok"], response
+    assert response["card"]["count_units"] == {
+        "denominator": f"distinct order_id across rows of {ORDER}"
+    }

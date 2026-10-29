@@ -20,6 +20,7 @@ caller.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..expressions import (
@@ -94,6 +95,52 @@ def _count_unit(measure: Any) -> dict[str, Any]:
     if aggregation == "count":
         return {"count_unit": f"{rows} with a non-NULL {column}"}
     return {"count_unit": f"distinct {column} across {rows}"}
+
+
+def _metric_count_units(config: PackageConfig, recipe: Any) -> dict[str, Any]:
+    """What a metric counts, read from its definition alone, as its count measures' cards say
+    (``_count_unit``): ``count_unit`` for a metric that is one count, or ``count_units`` with
+    the ``numerator`` and ``denominator`` of a ratio, for each side that is one. ``{}`` when
+    neither is.
+
+    "Average order value" divides revenue by a count of distinct orders, not of order rows:
+    the card names which, so an agent that picks the metric reads what the measure says."""
+    expr = recipe.expression
+    if isinstance(expr, ArithmeticExpr) and expr.op == "divide":
+        sides = {
+            "numerator": _expression_count_unit(config, expr.left, {recipe.id}),
+            "denominator": _expression_count_unit(config, expr.right, {recipe.id}),
+        }
+        units = {side: unit for side, unit in sides.items() if unit}
+        return {"count_units": units} if units else {}
+    unit = _expression_count_unit(config, expr, {recipe.id})
+    return {"count_unit": unit} if unit else {}
+
+
+def _expression_count_unit(config: PackageConfig, expr: SemanticExpr, seen: set[str]) -> str:
+    """The unit of the one count measure ``expr`` reads, at the aggregation it reads it with,
+    or of the metric it names; ``" where its filter holds"`` when it keeps only some rows.
+    ``""`` for anything else: a sum of values, a stock, arithmetic or a window over counts."""
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = {row.id: row for row in config.metric_recipes}.get(expr.metric_recipe)
+        if recipe is None or recipe.id in seen:
+            return ""
+        return _expression_count_unit(config, recipe.expression, seen | {recipe.id})
+    if not isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+        return ""
+    measure = {row.id: row for row in config.measures}.get(expr.measure)
+    if measure is None:
+        return ""
+    if expr.aggregation:
+        measure = replace(measure, default_aggregation=expr.aggregation)
+    unit = str(_count_unit(measure).get("count_unit", ""))
+    filtered = (isinstance(expr, AggregateExpr) and expr.filter) or (
+        isinstance(expr, ScopedAggregateExpr)
+        and (expr.where or expr.predicates or expr.anchor or expr.window)
+    )
+    if not unit or not filtered:
+        return unit
+    return unit + (" and its filter holds" if " where " in unit else " where its filter holds")
 
 
 def _metric_measure_ids(
