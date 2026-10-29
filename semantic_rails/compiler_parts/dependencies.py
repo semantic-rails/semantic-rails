@@ -180,6 +180,23 @@ def settles_as_a_call() -> bool:
     return plan is not None and plan.settles
 
 
+_entity_values: ContextVar[bool] = ContextVar("entity_values", default=False)
+
+
+@contextmanager
+def lowering_entity_values() -> Iterator[None]:
+    """While a distribution's per-entity values lower. Its entities are those with rows of the
+    input's measures, so no leaf keeps the source groups its own filter removed."""
+    with holding(_entity_values, True):
+        yield
+
+
+def retains_filtered_groups() -> bool:
+    """Whether a filtered leaf may keep its source groups (``_preserves_filtered_series``): in a
+    call that settles its empty groups, but not in a distribution's per-entity values."""
+    return settles_as_a_call() and not _entity_values.get()
+
+
 def record_retained_filtered_series(alias: str) -> None:
     plan = _plan.get()
     if plan is not None and plan.root:

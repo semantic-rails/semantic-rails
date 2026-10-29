@@ -49,6 +49,7 @@ from .bind import (
 )
 from .dependencies import (
     binding_cut,
+    lowering_entity_values,
     owning,
     project_is_cut,
     recipe_objects,
@@ -191,14 +192,14 @@ def _distribution_select(
     # an operand with no rows for an entity the others have reads 0 where its measure has data
     # in scope (an order with no refund row refunded nothing), NULL where it has none. The
     # settled values are internal: no NO_DATA_IN_SCOPE output of their own.
-    with inner_lookups(), recording_zero_outputs():
+    several = _reads_several_measures(expr.over.input, config, normalize_query(plan.query))
+    with inner_lookups(), lowering_entity_values(), recording_zero_outputs():
         sql_ast = nested.query_sql(
             config,
             entity_value_query,
             project_cut=project_is_cut() or bool(expr.over.where),
-            guard_empty=_reads_several_measures(
-                expr.over.input, config, normalize_query(plan.query)
-            ),
+            guard_empty=several,
+            standalone=several,
         )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
