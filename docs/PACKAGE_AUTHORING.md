@@ -755,7 +755,13 @@ kind names must match exactly.
   or `object_visibility` policy is declared, it may not read another entity's column
   that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
   `action: withhold_values` lets the scoped caller rank by a metric or measure without
-  seeing its values ("the 3 biggest accounts in EMEA"); see below.
+  seeing its values ("the 3 biggest accounts in EMEA"); see below. A `deny` or
+  `withhold_values` policy covers the measure or metric it lists, not the columns that
+  measure reads: an `aggregate_if` over such a column still answers, though a raw-column
+  refusal's hint never offers that aggregate to a caller the policy names (unless the measure
+  is also hidden from them: the hint then reads as if the package didn't have it). To keep a
+  column from a caller, declare a dimension over it and put a `deny` or `hidden` policy on that
+  dimension, as above.
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
   protected objects as release-gated.
@@ -1122,7 +1128,9 @@ diagnostics. Any unresolved filter or threshold dependency refuses with reason
 granted objects, and the runtime's output descriptors after the withheld column is removed.
 `valid-values` never anchors a live lookup on a withheld
 measure, or on one a withheld metric reads. As with `deny`, a policy on a metric does not
-govern its measures when they are selected directly: list them too.
+govern its measures when they are selected directly: list them too. Nor does it govern the
+columns its measures read; a policy on a dimension declared over a column keeps the column
+(see [`object_access`](#policiesyml)).
 
 The annotated policy example lives in
 [configs/semantic_rails/jaffle_shop/policies.yml](../configs/semantic_rails/jaffle_shop/policies.yml);

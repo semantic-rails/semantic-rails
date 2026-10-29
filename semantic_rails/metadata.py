@@ -2419,7 +2419,7 @@ def discover_payload(
         for row in buckets["entities"]:
             row["relationships"] = entity_relationships(config, row["id"])
 
-    payload = {
+    payload: dict[str, Any] = {
         "terms": terms,
         "stage": stage,
         "verbosity": verbosity,
@@ -2472,6 +2472,11 @@ def discover_payload(
                 ),
             },
         ]
+    if verbosity == "full":
+        # The statistics each measure reads (the aggregation override), not only its default.
+        measure_index = _config_maps(config)["measures"]
+        for row in payload["measures"]:
+            row["allowed_aggregations"] = list(measure_index[row["id"]].allowed_aggregations)
     return _slim_discover_minimal(payload) if verbosity == "minimal" else payload
 
 

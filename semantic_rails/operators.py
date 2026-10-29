@@ -470,6 +470,58 @@ def values_of(word: str, value: Any) -> list[Any]:
     return list(value) if isinstance(value, (list, tuple)) else [value]
 
 
+def refuse_unknown_spelling(
+    dim: Any, word: str, value: Any, at: str, *, comparison: bool = False
+) -> None:
+    """Refuse an ``is``/``not`` value (at ``at``) that the dimension declares as an unknown
+    spelling: the dimension reads it as no value, so ``is`` / ``not`` never sees it. The hint
+    says ``missing`` as a where filter, or as a ``comparison``."""
+    declared = list(getattr(dim, "unknown_values", None) or [])
+    unknown = [row for row in values_of(word, value) if row in declared]
+    if not unknown:
+        return
+    flag = "true" if word == "is" else "false"
+    fix = (
+        f'Write "op": "missing" and "right": {{"kind": "literal", "value": {flag}}}.'
+        if comparison
+        else f'Say missing: {{"field": "{dim.id}", "op": "missing", "value": {flag}}}.'
+    )
+    raise SemanticLayerError(
+        "INVALID_QUERY",
+        f"{at}: {unknown[0]!r} is how {dim.id} records an unknown value",
+        details={
+            "path": at,
+            "unknown_values": declared,
+            "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": fix}],
+        },
+    )
+
+
+def check_column_word(dims: list[Any], word: str, value: Any, column: str, path: str) -> None:
+    """Refuse a comparison word on ``column`` (the comparison at ``path``) that is no one
+    dimension's filter: the dimensions over the column, ``dims``, declare different unknown
+    values, or the value is one the dimension declares unknown."""
+    if len({tuple(getattr(dim, "unknown_values", None) or ()) for dim in dims}) > 1:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}.left: '{word}' reads {column}, whose dimensions declare different unknown "
+            "values",
+            details={
+                "path": f"{path}.left",
+                "dimensions": sorted(dim.id for dim in dims),
+                "recovery_hints": [
+                    {
+                        "code": "USE_FILTER_WORD",
+                        "message": "Filter on one dimension: an aggregate's filter "
+                        f'{{"all": [{{"field": "<dimension id>", "op": "{word}", "value": ...}}]}}.',
+                    }
+                ],
+            },
+        )
+    if dims:
+        refuse_unknown_spelling(dims[0], word, value, f"{path}.right", comparison=True)
+
+
 def rejects_unknown(word: str, value: Any) -> bool:
     """Whether a row whose value is unknown fails the condition."""
     if word == "missing":

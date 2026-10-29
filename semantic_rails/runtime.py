@@ -124,6 +124,7 @@ from .path_gap import (
 )
 from .policies import (
     enforce_query_policies,
+    kept_column_names,
     row_filters_for_context,
     withheld_rank_order,
 )
@@ -250,7 +251,14 @@ def _enrich_runtime_error(
     exc = _caller_select_paths(exc, notes)
     exc = enrich_object_not_found(exc, config)
     exc = enrich_expression_ast_error(exc, config)
-    exc = enrich_column_expression(exc, config)
+    # The caller the request pinned; without one, a hint assumes every policy's caller.
+    view = visible_view.pinned()
+    caller = view.policy_context if view is not None else None
+    scope = None
+    if caller is not None:
+        scope = {key: caller.get(key, "") for key in ("environment", "audience")}
+        scope["roles"] = caller.get("roles", ())
+    exc = enrich_column_expression(exc, config, lambda: kept_column_names(config, scope))
     exc = enrich_path_not_found(exc, config)
     return exc
 

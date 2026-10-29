@@ -232,7 +232,9 @@ domains are too: a `temporal_roles` card keeps the `dimension` it times and its
 card keeps the `dimensions` it describes, and a search matches its label, description, its
 dimensions' labels and its values' labels. At `verbosity="full"` an
 entity card also carries its `relationships`, as `inspect` returns them; reachability follows the
-package's routes and stays on the `inspect` card.
+package's routes and stays on the `inspect` card. A measure card there also carries its
+`allowed_aggregations`, the statistics the [`aggregation` override](QUERY_CALL.md#the-aggregation-override)
+reads, as `inspect` lists them; the slim cards leave them to `inspect`.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked. Minimal cards omit `score`; order gives rank.
 An aggregate metric at its measure's default aggregation, without filters, windows, parameters

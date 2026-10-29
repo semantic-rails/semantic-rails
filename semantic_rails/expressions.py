@@ -267,7 +267,8 @@ class ConditionalAggregateExpr:
     condition THEN value END)`` (or ``COUNT_IF(condition)`` /
     ``SUM_IF(value, condition)`` natively on Snowflake). When the
     aggregation is ``count``, ``value`` may be omitted; the node then
-    represents ``COUNT_IF(condition)``.
+    represents ``COUNT_IF(condition)``. With no ``condition`` it reads
+    every row: ``<AGG>(value)``.
 
     Unlike ``AggregateExpr`` / ``ScopedAggregateExpr``, this node does
     not reference a configured measure id. The condition and value are
@@ -280,7 +281,7 @@ class ConditionalAggregateExpr:
     """
 
     aggregation: str
-    condition: SemanticExpr
+    condition: SemanticExpr | None = None
     value: SemanticExpr | None = None
 
 
@@ -762,11 +763,9 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             out["window"] = {"unit": expr.window_unit, "value": expr.window_value}
         return out
     if isinstance(expr, ConditionalAggregateExpr):
-        out = {
-            "kind": "aggregate_if",
-            "aggregation": expr.aggregation,
-            "condition": expr_to_dict(expr.condition),
-        }
+        out = {"kind": "aggregate_if", "aggregation": expr.aggregation}
+        if expr.condition is not None:
+            out["condition"] = expr_to_dict(expr.condition)
         if expr.value is not None:
             out["value"] = expr_to_dict(expr.value)
         return out
@@ -1132,6 +1131,92 @@ def parameter_schema_for_aggregation(aggregation: str) -> dict[str, str]:
     return dict(_PARAMETER_SCHEMAS_BY_AGGREGATION.get(str(aggregation or "").lower(), {}))
 
 
+def filter_word(expr: SemanticExpr) -> str:
+    """The filter word a comparison reads as ``where`` does, or "": a word that compares a value
+    (``is``, ``not``, the ranges, ``missing``), on a column, against a literal, ``is`` and ``not``
+    against a value other than true, false or null (those keep their SQL null tests)."""
+    if not (
+        isinstance(expr, ComparisonExpr)
+        and isinstance(expr.left, ColumnRefExpr)
+        and isinstance(expr.right, LiteralExpr)
+    ):
+        return ""
+    word = " ".join(expr.op.lower().split())
+    if word not in operators.NUMBER_WORDS:
+        return ""
+    value = expr.right.value
+    if word in {"is", "not"} and (value is None or isinstance(value, bool)):
+        return ""
+    return word
+
+
+def _comparison(op: str, left: SemanticExpr, right: SemanticExpr, path: str) -> SemanticExpr:
+    """A comparison whose op is a filter word reads as that word's ``where`` filter (see
+    ``operators``). On a column against a literal the word is kept, and ``bind`` reads it as the
+    filter on the column's dimension: a list as membership, declared unknown values as no value.
+    Elsewhere ``gt``/``gte``/``lt``/``lte`` and ``is`` are their SQL comparison, ``not`` keeps
+    rows with no value, and ``missing`` with a literal true or false is a null test. A text word
+    stays a word (``bind`` reads it as its dimension's filter); a SQL op is kept."""
+    word = " ".join(op.lower().split())
+    # The right side's literal value; any other expression is neither a flag nor null.
+    literal: Any = right.value if isinstance(right, LiteralExpr) else ...
+    if word == "missing" and not isinstance(literal, bool):
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"{path}.right: 'missing' takes a literal true or false",
+            details={
+                "path": f"{path}.right",
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": (
+                            'Write "right": {"kind": "literal", "value": true} for rows '
+                            "with no value, or false for rows with one."
+                        ),
+                    }
+                ],
+            },
+        )
+    kept = ComparisonExpr(op=word, left=left, right=right)
+    if filter_word(kept):
+        operators.check_value(word, literal, path=f"{path}.right")
+        return kept
+    if isinstance(literal, (list, tuple)):
+        # A list compares only as a filter word's value on a column; SQL would read it as text.
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"{path}.right: a list is the value of 'is' or 'not' on a column",
+            details={
+                "path": f"{path}.right",
+                "recovery_hints": [
+                    {
+                        "code": "FIX_QUERY_CALL",
+                        "message": (
+                            'For membership in a list write {"kind": "in", "expr": ..., '
+                            '"values": [...]}.'
+                        ),
+                    }
+                ],
+            },
+        )
+    if word in operators.RANGE_WORDS:
+        return ComparisonExpr(op=operators.COMPARISON_SQL[word], left=left, right=right)
+    if word == "is" and not isinstance(literal, bool):
+        return ComparisonExpr(op="=", left=left, right=right)
+    if word == "not":
+        if isinstance(literal, bool):
+            return ComparisonExpr(op="IS NOT", left=left, right=right)
+        differs = ComparisonExpr(op=operators.COMPARISON_SQL[word], left=left, right=right)
+        if literal is None:
+            return differs
+        unknown = ComparisonExpr(op="=", left=left, right=LiteralExpr(value=None))
+        return BooleanExpr(op="or", args=[differs, unknown])
+    if word == "missing":
+        sql = operators.COMPARISON_SQL["is" if literal else "not"]
+        return ComparisonExpr(op=sql, left=left, right=LiteralExpr(value=None))
+    return ComparisonExpr(op=op, left=left, right=right)
+
+
 def _closest_key_matches(name: str, candidates: Iterable[str], *, limit: int = 3) -> list[str]:
     from difflib import get_close_matches
 
@@ -1360,11 +1445,13 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST",
                 "aggregate_if expressions require 'aggregation' (count, sum, avg, min, max, …)",
             )
-        if "condition" not in expr:
-            raise SemanticLayerError(
-                "INVALID_EXPRESSION_AST", "aggregate_if expressions require 'condition'"
-            )
-        condition = parse_semantic_expression(expr.get("condition"), context=context)
+        # No condition reads every row.
+        raw_condition = expr.get("condition")
+        condition = (
+            None
+            if raw_condition is None
+            else parse_semantic_expression(raw_condition, context=context)
+        )
         raw_value = expr.get("value")
         if raw_value is None:
             if aggregation.lower() != "count":
@@ -1481,10 +1568,11 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             right=parse_semantic_expression(expr.get("right"), context=context),
         )
     if kind == "comparison":
-        return ComparisonExpr(
-            op=str(expr.get("op", "")).strip(),
-            left=parse_semantic_expression(expr.get("left"), context=context),
-            right=parse_semantic_expression(expr.get("right"), context=context),
+        return _comparison(
+            str(expr.get("op", "")).strip(),
+            parse_semantic_expression(expr.get("left"), context=context),
+            parse_semantic_expression(expr.get("right"), context=context),
+            path or "expression",
         )
     if kind == "boolean":
         raw_op = str(expr.get("op", "")).strip()
@@ -2374,9 +2462,9 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
             _walk(node.converted)
             return
         if isinstance(node, ConditionalAggregateExpr):
-            _walk(node.condition)
-            if node.value is not None:
-                _walk(node.value)
+            for part in (node.condition, node.value):
+                if part is not None:
+                    _walk(part)
             return
         raise TypeError(f"Unsupported expression node: {type(node)!r}")
 

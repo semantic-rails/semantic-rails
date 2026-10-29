@@ -165,6 +165,45 @@ def test_visibility_is_invisible_to_enforcement(runtimes, enforcement, visibilit
         assert '"withheld"' in text
 
 
+RAW_REVENUE = {
+    "select": [
+        {
+            "expression": {
+                "kind": "column",
+                "column": "order_total_cents",
+                "entity": "entity.jaffle_order",
+            },
+            "as": "total",
+        }
+    ]
+}
+KEEPS = {
+    "deny": lambda target: access_policy("deny", target),
+    "withhold_values": lambda target: replace(
+        access_policy("withhold_values", target), config={"max_rank": 3}
+    ),
+}
+
+
+@pytest.mark.parametrize("surface", ["run", "validate", "sql", "http /query"])
+@pytest.mark.parametrize("keep", list(KEEPS))
+@pytest.mark.parametrize("visibility", ACTIONS)
+@pytest.mark.parametrize("target", [REVENUE, AOV])
+def test_a_hidden_kept_measure_leaves_the_raw_column_hint_as_absent(
+    runtimes, target, visibility, keep, surface
+):
+    """Revenue, or average order value (a ratio over revenue), hidden from support and also
+    denied or withheld: support's raw column over order_total_cents is answered as if it were
+    absent, the aggregate offered and no detail naming a policy, on every surface."""
+    policies = (visibility_policy(visibility, target), KEEPS[keep](target))
+    hidden = _enforced(runtimes(*policies), keep, surface, RAW_REVENUE)
+    expected = _enforced(runtimes(*policies, hide=frozenset({target})), keep, surface, RAW_REVENUE)
+    assert envelope(hidden) == envelope(expected)
+    text = json.dumps(hidden, default=str)
+    assert "INVALID_QUERY" in text and '\\"kind\\": \\"aggregate_if\\"' in text
+    assert "kept_by_policy" not in text
+
+
 def test_enforcement_never_takes_a_view(runtimes):
     from semantic_rails.answer import _withhold_values
     from semantic_rails.ast import normalize_query

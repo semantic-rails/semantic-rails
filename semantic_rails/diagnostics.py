@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import date, timedelta
 from difflib import get_close_matches
 from typing import Any
@@ -1158,18 +1158,12 @@ def recovery_hints_for_error(
                     "data_type": data_type,
                 }
             ]
-        kind = str(details.get("expression_kind", "") or "")
-        if kind and details.get("supported_kinds"):
-            # A row-level kind (a raw column, ...) as a query value (see ast).
-            message = (
-                f"'{kind}' reads row values, and a query reads measures and metrics: write an id, "
-                f"or one of the kinds {list(details['supported_kinds'])}."
-            )
-            if kind == "column":
-                message += (
-                    " To split or filter by a column, name a dimension on it in group_by or where."
-                )
-            return [{"code": "FIX_QUERY_CALL", "message": message}]
+        if details.get("expression_kind") and details.get("supported_kinds"):
+            # A row-level kind (a raw column, ...) as a query value (see ast); a raw column a
+            # policy keeps has its hint already (see enrich_column_expression).
+            if details.get("recovery_hints"):
+                return list(details["recovery_hints"])
+            return _row_value_hints(details, offer=True)
         return list(details.get("recovery_hints", []) or [])
     if code == "QUERY_EXECUTION_ERROR" and details.get("segment_id"):
         segment = details["segment_id"]
@@ -1413,30 +1407,65 @@ def enrich_expression_ast_error(
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
-def enrich_column_expression(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
+def _row_value_hints(details: Mapping[str, Any], *, offer: bool) -> list[dict[str, Any]]:
+    """The hint for a row-level kind as a select item. With ``offer`` a raw column's hint
+    writes the ``aggregate_if`` call over it; without, it names no aggregate."""
+    kind = str(details.get("expression_kind", "") or "")
+    message = (
+        f"'{kind}' reads row values, and a select item aggregates rows: write an id or one "
+        f"of the kinds {list(details['supported_kinds'])}"
+    )
+    message += " (aggregate_if aggregates row values)." if offer else "."
+    if offer and kind == "column":
+        owner = {key: details[key] for key in ("entity", "table") if details.get(key)}
+        column = {"kind": "column", "column": details.get("column") or "<column>"}
+        call: dict[str, Any] = {
+            "kind": "aggregate_if",
+            "aggregation": "sum",
+            "value": {**column, **(owner or {"entity": "<entity id>"})},
+        }
+        message += (
+            f" To aggregate this column, write {json.dumps(call)}, with count, avg, "
+            "min, max or another aggregation; its value may also be a case or a call such "
+            "as LENGTH over columns, and a condition keeps only the rows it matches. To "
+            "split or filter by a column, name a dimension on it in group_by or where."
+        )
+    elif not offer:
+        message += " To split or filter by a column, name a dimension on it in group_by or where."
+    return [{"code": "FIX_QUERY_CALL", "message": message}]
+
+
+def enrich_column_expression(
+    exc: SemanticLayerError,
+    config: PackageConfig,
+    kept_columns: Callable[[], Iterable[str]] = tuple,
+) -> SemanticLayerError:
     """Attach ``closest_matches`` to a refused raw ``column`` expression: the dimensions defined
-    on that column, those of its entity or table when it names one that has any."""
+    on that column, those of its entity or table when it names one that has any. When the
+    column is one of ``kept_columns()`` (read by a measure a policy keeps from the caller),
+    its hint offers no aggregate over the column. That hint is the error's only trace of the
+    policy: no detail says a policy keeps the column."""
     details = dict(exc.details or {})
     column = str(details.get("column") or "").lower()
-    if (
-        exc.code != "INVALID_QUERY"
-        or details.get("expression_kind") != "column"
-        or not column
-        or details.get("closest_matches")
-    ):
+    if exc.code != "INVALID_QUERY" or details.get("expression_kind") != "column" or not column:
         return exc
-    owners = {
-        entity.id
-        for entity in config.entities
-        if details.get("entity") in (entity.id, entity.name) or details.get("table") == entity.table
-    }
-    on_column = [row for row in config.dimensions if row.column.lower() == column]
-    matches = sorted(
-        row.id for row in [row for row in on_column if row.entity in owners] or on_column
-    )
-    if not matches:
+    if not details.get("closest_matches"):
+        owners = {
+            entity.id
+            for entity in config.entities
+            if details.get("entity") in (entity.id, entity.name)
+            or details.get("table") == entity.table
+        }
+        on_column = [row for row in config.dimensions if row.column.lower() == column]
+        matches = sorted(
+            row.id for row in [row for row in on_column if row.entity in owners] or on_column
+        )
+        if matches:
+            details["closest_matches"] = matches[:10]
+    if column in set(kept_columns()):
+        details["recovery_hints"] = _row_value_hints(details, offer=False)
+    if details == dict(exc.details or {}):
         return exc
-    details["closest_matches"] = matches[:10]
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 

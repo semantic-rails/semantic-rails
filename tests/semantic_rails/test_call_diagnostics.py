@@ -908,3 +908,80 @@ def test_malformed_package_date_diff_refused_at_load(package, args):
         load_package_config(str(package))
     assert exc.value.code == "INVALID_EXPRESSION_AST"
     assert exc.value.details["required_args"] == 3
+
+
+def count_where(condition):
+    """The count of rows an aggregate_if condition keeps (each row's id, so none is NULL)."""
+    return {"kind": "aggregate_if", "aggregation": "count", "condition": condition, "value": column("id")}  # fmt: skip
+
+
+def compared(op, value):
+    return {"kind": "comparison", "op": op, "left": column("amount"), "right": literal(value)}
+
+
+# The amounts are 9.5, 120.25, 64.0 and NULL. Each word keeps the rows its where filter keeps: a
+# range or `is` drops the row with no amount, `not` keeps it, `missing` tests for it.
+@pytest.mark.parametrize(
+    ("op", "value", "kept"),
+    [
+        ("gt", 64.0, 1), ("gte", 64.0, 2), ("lt", 64.0, 1), ("lte", 64.0, 2), ("GT", 10, 2),
+        ("is", 64.0, 1), ("not", 64.0, 3), ("missing", True, 1), ("missing", False, 3),
+    ],
+)  # fmt: skip
+def test_a_comparison_reads_a_filter_word_as_where_does(package, op, value, kept):
+    config = load_package_config(str(package))
+    assert execute(config, count_where(compared(op, value))) == [(kept,)]
+    runtime = Runtime.from_path(str(package))
+    try:
+        where = [{"field": "dimension.numbers_row_amount", "op": op.lower(), "value": value}]
+        rows = query({"kind": "aggregate_if", "aggregation": "count", "value": column("id")})
+        assert runtime.query({**rows, "where": where})["rows"] == [{"v": kept}]
+    finally:
+        runtime.close()
+
+
+def test_missing_in_a_comparison_takes_true_or_false(package):
+    runtime = Runtime.from_path(str(package))
+    try:
+        report = runtime.validate(query(count_where(compared("missing", 64.0))))
+    finally:
+        runtime.close()
+    (error,) = report["errors"]
+    assert (error["code"], error["message"]) == (
+        "INVALID_EXPRESSION_AST",
+        "expression.right: 'missing' takes a literal true or false",
+    )
+    assert error["details"]["path"] == "expression.right"
+    assert error["recovery_hints"][0]["message"] == (
+        'Write "right": {"kind": "literal", "value": true} for rows with no value, or false for '
+        "rows with one."
+    )
+
+
+def test_an_aggregate_if_without_a_condition_reads_every_row(package):
+    """No condition is every row: the sum a dummy `1 = 1` condition gave, and its measure's."""
+    config = load_package_config(str(package))
+    every = {"kind": "aggregate_if", "aggregation": "sum", "value": column("amount")}
+    dummy = {**every, "condition": compared("=", 1) | {"left": literal(1)}}
+    assert execute(config, every) == execute(config, dummy) == [(193.75,)]
+    assert execute(config, {**every, "condition": None}) == [(193.75,)]
+    rows = {"kind": "aggregate_if", "aggregation": "count", "value": column("id")}
+    assert execute(config, rows) == [(4,)]
+    measure = {"kind": "measure", "measure": "measure.numbers.amount"}
+    assert execute(config, measure) == [(193.75,)]
+
+
+def test_an_aggregate_if_of_nothing_says_to_name_a_value(package):
+    runtime = Runtime.from_path(str(package))
+    try:
+        report = runtime.validate(query({"kind": "aggregate_if", "aggregation": "count"}))
+    finally:
+        runtime.close()
+    (error,) = report["errors"]
+    assert (error["code"], error["message"]) == (
+        "UNSUPPORTED_CONDITIONAL_AGGREGATE",
+        "aggregate_if expressions must reference at least one column",
+    )
+    assert error["details"]["hint"] == (
+        "Name the column to aggregate in 'value'; to count an entity's rows, its key."
+    )

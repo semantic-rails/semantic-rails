@@ -59,7 +59,7 @@ from .policy_rules import visible_only_listed as _visible_only_listed
 from .query_call import refusal
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
+from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, base_of, require_base
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 
 WITHHOLD = "withhold_values"
@@ -544,6 +544,38 @@ def withheld_measure_ids(
     recipes = set(withheld) - measures
     reads = set(withheld) | (bind_metadata_objects(config, recipes) if recipes else frozenset())
     return reads & measures
+
+
+def kept_column_names(config: PackageConfig, scope: Mapping[str, Any] | None) -> frozenset[str]:
+    """The column names, lowercased, that a measure of ``config`` reads when a ``deny`` or
+    ``withhold_values`` policy keeps it from the caller in ``scope`` (its ``environment``,
+    ``audience`` and ``roles``), directly or as a kept metric's input; with no caller known,
+    from anyone. Such a policy covers the measure, not its columns, so a hint offers no
+    aggregate over them. ``config`` is the caller's view: a measure or metric hidden from the
+    caller is one the package doesn't have, so it never keeps a column."""
+
+    def keeps(policy: SemanticPolicyConfig, object_id: str) -> bool:
+        if _policy_action(policy) not in {"deny", WITHHOLD}:
+            return False
+        if scope is None:
+            return not policy.object_ids or object_id in policy.object_ids
+        return _policy_matches(policy, object_id=object_id, **scope)
+
+    base = base_of(config)
+    measures = {row.id for row in base.measures}
+    kept = {
+        object_id
+        for object_id in [*measures, *(row.id for row in config.metric_recipes)]
+        if any(keeps(policy, object_id) for policy in base.semantic_policies)
+    }
+    recipes = kept - measures
+    kept |= bind_metadata_objects(base, recipes) if recipes else frozenset()
+    return frozenset(
+        ref.column.lower()
+        for row in config.measures
+        if row.id in kept
+        for ref in collect_column_refs(row.expr)
+    )
 
 
 def withheld_shape(
@@ -1130,7 +1162,8 @@ def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> 
     """The fields a conditional aggregate's condition reads: the dimensions over each column,
     or ``<entity>.<column>`` for a column no dimension declares (which no allowed_where lists)."""
     out: list[str] = []
-    for ref in collect_column_refs(expr.condition):
+    refs = collect_column_refs(expr.condition) if expr.condition is not None else []
+    for ref in refs:
         entity = _resolve_column_entity(ref, config)
         over = [row.id for row in dimensions_over_column(entity, ref.column, config)]
         out.extend(over or [f"{entity}.{ref.column}"])

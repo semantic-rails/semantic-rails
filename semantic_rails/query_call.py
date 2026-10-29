@@ -180,7 +180,7 @@ KIND_REQUIRED: dict[str, tuple[str, ...]] = {
     "prior_period": ("input", "offset"),
     "period_to_date": ("input", "period"),
     "metric_predicate": ("entity", "input", "op", "value", "over"),
-    "aggregate_if": ("aggregation", "condition"),
+    "aggregate_if": ("aggregation",),
     "ratio": ("numerator", "denominator"),
     "share": ("input", "over"),
     "total": ("input", "over"),
@@ -304,15 +304,15 @@ EXPRESSION_SHAPES: tuple[dict[str, Any], ...] = (
     {
         "name": "aggregate_if",
         "description": (
-            "shorthand for <AGG>(CASE WHEN cond THEN value END). Column refs "
+            "shorthand for <AGG>(CASE WHEN cond THEN value END); with no `condition`, "
+            "<AGG>(value) over every row. Column refs "
             "inside `condition` / `value` must specify `entity` or `table` "
             "(no surrounding measure to inherit from). It aggregates the rows "
             "of the value's entity; `condition` may also read entities that "
             "entity reaches over many-to-one relationships. A value row with no "
             "match there never satisfies it; a condition such a row could "
-            "satisfy (a missing test, OR with the value's own column) is refused. Compiles to "
-            "COUNT_IF / SUM_IF natively on Snowflake; portable CASE WHEN "
-            "elsewhere. `value` may be omitted when aggregation=count."
+            "satisfy (a missing test, OR with the value's own column) is refused. "
+            "`value` may be omitted when aggregation=count."
         ),
         "example": {
             "kind": "aggregate_if",
@@ -946,6 +946,30 @@ def _check_op(raw: Mapping[str, Any], kind: str, path: str, context: CallContext
             allowed=words,
             closest_matches=closest,
         )
+    if (
+        kind == "comparison"
+        and spelling in operators.NUMBER_WORDS
+        and context.config is not None
+        and context.column_dimensions is not None
+        and isinstance(left, Mapping)
+        and left.get("kind") == "column"
+        and isinstance(right, Mapping)
+        and right.get("kind") == "literal"
+        and not (
+            spelling in {"is", "not"}
+            and (right.get("value") is None or isinstance(right.get("value"), bool))
+        )
+    ):
+        # A word on a column is its dimension's filter (``expressions.filter_word``): refused
+        # here, at its path, when it is no one dimension's filter.
+        from .expressions import resolve_table_entity
+
+        entity = str(left.get("entity") or "").strip() or resolve_table_entity(
+            context.config, str(left.get("table") or "")
+        )
+        column = str(left.get("column"))
+        dims = context.column_dimensions(entity or "", column, context.config)
+        operators.check_column_word(dims, spelling, right.get("value"), f"{entity}.{column}", path)
     word = operators.word_of(spelling)
     if word not in operators.TEXT_WORDS:
         return None

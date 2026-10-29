@@ -352,6 +352,110 @@ def test_a_comparison_text_word_reads_the_dimensions_unknown_values(
     assert unknown_channel.query(_count_if("=", "zzz"))["rows"] == [{"n": None}]
 
 
+@pytest.mark.parametrize(("missing", "signups"), [(True, 1), (False, 6)])
+def test_missing_in_a_comparison_reads_the_dimensions_unknown_values(
+    unknown_channel, missing, signups
+):
+    # 105's "N/A" is unknown, so it has no channel: missing true counts it alone, missing false
+    # the other six signups, exactly as the filter on the dimension reads it.
+    by_filter = unknown_channel.query(
+        {"select": [SIGNUPS], "where": [{"field": CHANNEL, "op": "missing", "value": missing}]}
+    )
+    by_comparison = unknown_channel.query(_count_if("missing", missing))
+    assert [row["signups"] for row in by_filter["rows"]] == [signups]
+    assert [row["n"] for row in by_comparison["rows"]] == [signups]
+
+
+def test_a_comparison_refuses_a_declared_unknown_value_as_where_does(unknown_channel):
+    where = {"select": [SIGNUPS], "where": [{"field": CHANNEL, "op": "is", "value": "N/A"}]}
+    [by_filter] = unknown_channel.validate(where)["errors"]
+    [by_comparison] = unknown_channel.validate(_count_if("is", "N/A"))["errors"]
+    assert by_filter["code"] == by_comparison["code"] == "INVALID_QUERY"
+    said = "'N/A' is how dimension.shop_customer_channel records an unknown value"
+    assert said in by_filter["message"] and said in by_comparison["message"]
+    assert by_comparison["details"]["path"] == "select[0].expression.condition.right"
+
+
+STORE_COLUMN = {"kind": "column", "column": "store_id", "entity": "entity.shop_order"}
+AMOUNT_COLUMN = {"kind": "column", "column": "amount", "entity": "entity.shop_order"}
+
+
+def _amount_if(op, value):
+    condition = {
+        "kind": "comparison",
+        "op": op,
+        "left": STORE_COLUMN,
+        "right": {"kind": "literal", "value": value},
+    }
+    expression = {
+        "kind": "aggregate_if",
+        "aggregation": "sum",
+        "value": AMOUNT_COLUMN,
+        "condition": condition,
+    }
+    return {"select": [{"expression": expression, "as": "amount"}]}
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize(
+    ("op", "value", "condition", "amount"),
+    [
+        ("is", ["a", "b"], "store_id IN ('a', 'b')", 68),
+        ("not", ["a"], "store_id <> 'a' OR store_id IS NULL", 31),
+    ],
+)
+def test_a_comparison_reads_a_list_as_where_does(
+    request, backend_name, op, value, condition, amount
+):
+    # Store a's orders total 43 and b's 25; order 8 (6) has no store, which `not` keeps.
+    runtime = _runtime(request, backend_name)
+    by_comparison = runtime.query(_amount_if(op, value))
+    by_filter = runtime.query(
+        {"select": [REVENUE], "where": [{"field": STORE, "op": op, "value": value}]}
+    )
+    [expected] = _reference(
+        request, backend_name, f"SELECT SUM(amount) FROM orders WHERE {condition}"
+    )
+    assert float(expected[0]) == amount
+    assert [float(row["amount"]) for row in by_comparison["rows"]] == [amount]
+    assert [float(row["revenue"]) for row in by_filter["rows"]] == [amount]
+
+
+def test_a_word_on_a_column_whose_dimensions_read_it_differently_is_refused(tmp_path):
+    # Two dimensions over store_id, one declaring "b" unknown: which filter the word is would
+    # be a guess, so it is refused with the filter on one dimension.
+    package = tmp_path / "shop"
+    shutil.copytree(SHOP, package)
+    orders = package / "models" / "orders.yml"
+    model = orders.read_text(encoding="utf-8")
+    old = "    store_id: {label: Store, kind: categorical}\n"
+    assert model.count(old) == 1
+    code = "    store_code: {label: Store code, column: store_id, kind: categorical, unknown_values: [b]}\n"
+    orders.write_text(model.replace(old, old + code))
+    runtime = runtime_for(package)
+    try:
+        [error] = runtime.validate(_amount_if("is", "a"))["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == "INVALID_QUERY"
+    assert "whose dimensions declare different unknown values" in error["message"]
+    assert error["details"] == {
+        "path": "select[0].expression.condition.left",
+        "dimensions": ["dimension.shop_order_store_code", "dimension.shop_order_store_id"],
+    }
+    assert '"op": "is"' in error["recovery_hints"][0]["message"]
+
+
+@pytest.mark.parametrize("op", ["=", "<>", "!="])
+def test_a_list_after_a_sql_comparison_is_refused(duckdb_backend, op):
+    # SQL would compare the column with the list's text; membership is a word's or `in`'s.
+    runtime = duckdb_backend.runtimes["utc_authored"]
+    [error] = runtime.validate(_amount_if(op, ["a", "b"]))["errors"]
+    assert error["code"] == "INVALID_EXPRESSION_AST"
+    assert "a list is the value of 'is' or 'not' on a column" in error["message"]
+    assert '{"kind": "in"' in error["recovery_hints"][0]["message"]
+
+
 @pytest.mark.parametrize(
     ("column", "says"),
     [
