@@ -20,6 +20,10 @@ then shows:
 * else at most ``EXPAND_MAX`` routes: each as an option;
 * else a fork: no option to send, and ``decide_first`` names the part a package author decides.
 
+For a package author (Architect's route census), a fork's ``decide_first`` also lists its
+``parts``: each of its routes from ``via`` on, which never revisits the start, read from
+``via``, with the row that records it (``_part_rows``).
+
 Grouping chooses nothing: an option is a route with its own row, and the person still says
 which one the question means. Groups list options before forks, then by one-to-many hops, hops
 and id, and ``ordered`` says that this order is not a preference.
@@ -34,7 +38,7 @@ from typing import Any
 from .compiler_parts.indexes import get_package_analysis
 from .config_parts.route_rows import walk_entities
 from .errors import SemanticLayerError
-from .fanout import _entity_keys, _plural, entity_label, route_hops
+from .fanout import _entity_keys, _plural, entity_label, route_hops, route_reading
 from .query_call import GROUPS_HINT
 from .schema import PackageConfig
 
@@ -59,6 +63,39 @@ def _is_lookup(config: PackageConfig, start: str, path: Sequence[str]) -> bool:
     return bool(path) and all(reach != "many" for _r, _f, reach in route_hops(config, start, path))
 
 
+def _part_rows(option: Mapping[str, Any]) -> dict[str, Any]:
+    """The rows a fork's part offers to record. Product choice: only the asked pair's own row,
+    the option's ``decision`` (its whole route, through the part). The part's own pair (``via``
+    to the target) stays undecided; a row recorded for it later must agree with this one
+    (rows must agree), so the asked pair keeps the route that was chosen."""
+    return {"decision": option["decision"]}
+
+
+def _parts(
+    config: PackageConfig,
+    via: str,
+    members: Sequence[Sequence[str]],
+    shared: int,
+    options: Mapping[tuple[str, ...], Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """A fork's routes from ``via`` on, in its order: each with its option's ``id``, its
+    ``meaning`` read from ``via`` (with its relationships when two read alike, as an option's
+    meaning is) and the rows it offers to record."""
+    tails = [list(path[shared + 1 :]) for path in members]
+    meanings = [route_reading(config, via, tail) for tail in tails]
+    if len(set(meanings)) < len(meanings):
+        meanings = [f"{m} ({', '.join(t)})" for m, t in zip(meanings, tails, strict=True)]
+    return [
+        {
+            "id": str(options[tuple(path)]["id"]),
+            "meaning": meaning,
+            "relationship_path": tail,
+            **_part_rows(options[tuple(path)]),
+        }
+        for path, tail, meaning in zip(members, tails, meanings, strict=True)
+    ]
+
+
 def _shared_hops(paths: list[list[str]]) -> int:
     """How many leading hops every route shares, leaving at least one hop of each."""
     shared = 0
@@ -68,14 +105,22 @@ def _shared_hops(paths: list[list[str]]) -> int:
 
 
 def route_groups(
-    config: PackageConfig, start: str, target: str, options: Sequence[Mapping[str, Any]]
+    config: PackageConfig,
+    start: str,
+    target: str,
+    options: Sequence[Mapping[str, Any]],
+    *,
+    parts: bool = False,
 ) -> dict[str, Any]:
     """``options`` (a route refusal's, one per route) grouped at their first divergence: the
     counts (``options_total``, ``groups_total``, ``listed``: the options the groups list, each
     a route a call can send), the ``ordered`` note and the ``groups``. Each route is in exactly
-    one group; a group names its listed options by ``id``."""
+    one group; a group names its listed options by ``id``. With ``parts``, a fork's
+    ``decide_first`` lists each of its routes from ``via`` on (``id``, ``meaning`` read from
+    ``via``, ``relationship_path``) with the row that records it."""
     paths = [list(option["relationship_path"]) for option in options]
     ids = {tuple(path): str(option["id"]) for path, option in zip(paths, options, strict=True)}
+    by_path = {tuple(path): option for path, option in zip(paths, options, strict=True)}
     relationships = get_package_analysis(config).relationships
     shared = _shared_hops(paths) if len(paths) > 1 else 0
     pivot = walk_entities(relationships, start, paths[0][:shared])[-1] if paths else start
@@ -114,6 +159,8 @@ def route_groups(
             )
         else:
             group["decide_first"] = {"source_entity": via, "target_entity": target}
+            if parts:
+                group["decide_first"]["parts"] = _parts(config, via, members, shared, by_path)
         ranked.append(((not listed, *first, hop), group))
     groups = [group for _key, group in sorted(ranked, key=lambda row: row[0])]
     return {

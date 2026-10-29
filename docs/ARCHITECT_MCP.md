@@ -159,7 +159,8 @@ pair larger than that shows its groups and the options they list, as many groups
 an `options_note` such as "the 11 options its groups list, of 212 for A to B: every option is
 on the pages of route_census.undecided.0.details.clarification.options"; a pair none of whose
 groups fits shows the options that fit, with `options_total` and an `options_note` such as
-"options 1-11 of 212 for A to B, continued on the next page of …"), `project_status`
+"options 1-11 of 212 for A to B, continued on the next page of …"; a shown group's
+`decide_first.parts` page on their own, named in `pages`), `project_status`
 `files` without those under dot-directories (transaction receipts), only the failing `probes`,
 `examples` and `tests`, every other list as its first rows within 2,000 characters, and file
 `changes` with their `diff` but no `proposed_content` (diffs share a 12,000-character budget; a
@@ -512,7 +513,10 @@ Which route between two entities a question means is a business definition (see
   entity pairs a question can need that are refused until a `graph.path_preferences` row records
   their route, each with the `AMBIGUOUS_PATH` refusal's `details.clarification.options`
   (pass an option's `decision` to `record_route_decision`) and its `groups` (the distinct
-  meanings, as an answer asks them), and `needed_by`, the package's own
+  meanings, as an answer asks them; a group with `decide_first` lists its `parts`, each of its
+  routes from `via` on with `decision`, the pair's own row for that route: record that row, not
+  one for `via` to the target alone; preview with `dry_run`: `route_changes` lists every pair
+  it moves, and some may be off the part's route), and `needed_by`, the package's own
   metrics, examples and tests that walk it (those pairs come first; the summary's
   `counts.undecided_needed` counts them); `assumed` lists the multi-route pairs
   answered by the start entity's own key, to confirm; `defaults` lists the multi-route pairs
