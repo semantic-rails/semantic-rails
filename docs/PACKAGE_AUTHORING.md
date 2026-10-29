@@ -3552,6 +3552,38 @@ flagged pair as an authoring debt: tighten the label or differentiate
 search_terms so an LLM-driven agent can pick the right object without
 context.
 
+### Look-alike models
+
+An agent picks its source on purpose: asked how many rooms there are, it can count a rooms
+table's history, which holds one row per version of each room, and answer with another
+population. Only the package's author knows which model a question means, so `parse-config`,
+`validate-config`, `check`, and the Architect's `validate_project` and `project_status` name each
+group of look-alike models once, with a `LOOKALIKE_MODELS` warning that asks which one is
+canonical. The groups come from the YAML alone, never from descriptions:
+
+| `details.kind` | The models | Example |
+| --- | --- | --- |
+| `same_rows` | Rows that are the same things. Either both are keyed by the same key, or one is keyed by the other's key plus time columns of its own (columns a `times:` role reads). Or neither has a key, and one's dimensions read every column the other's do, and at least one. Every key column must say what it identifies, so a bare `id` never counts. | `rooms` (key `room_id`) and `rooms_hist` (key `room_id`, `valid_from`); a keyless survey and its snapshots, which add a snapshot date |
+| `same_count` | Rows that aren't the same things, each with a published count of the same label (without a `(<table>)` suffix) over the same column, counted the same way (its card's `count_unit`, without the model). | `floors` and `space_detail`, each counting distinct `building_id` as "Distinct buildings" |
+
+A group links its models pair by pair, so a table, its history and a staging copy make one
+group. The message names up to five models (`details.entities` has them all). A `same_rows`
+group has each model's key in `details.keys`; a `same_count` group has its counts by model in
+`details.measures`, with their `unit` and `name`. These are never a group:
+
+- a table and one that holds its key, such as invoices and their payments, whether or not a
+  relationship links them;
+- a calendar (`kind: time`) and a model keyed by its date: the calendar is the package's time
+  axis;
+- two tables whose only shared count is a row count, such as a `sum` of `1`: each counts its own
+  rows.
+
+For a `same_rows` group, say what each model's rows are in its `description` (a refusal's
+look-alike rows and a measure's card show its first sentence), and remove a copy no question
+needs. For a `same_count` group, label each count for the rows it counts ("Buildings with a
+floor"), which takes it out of the group, or set `publish: false` on those no question needs.
+`project_status` adds a next action that counts the groups.
+
 ## Upgrading a package
 
 A package written for an earlier release can hold forms this engine refuses. One command rewrites

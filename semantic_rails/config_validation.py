@@ -61,6 +61,7 @@ from .expressions import (
     parse_semantic_expression,
     resolve_filter_dimension,
 )
+from .lookalike_models import lookalike_warnings
 from .meta_contract import validate_meta_payload
 from .metadata import _default_time_spec_for_metric
 from .metadata_parts.valid_values import max_valid_values_limit, valid_values_payload
@@ -972,6 +973,7 @@ def _compiled_package_warnings(
                 )
             )
     warnings.extend(semantic_collision_warnings(config, source_path))
+    warnings.extend(lookalike_warnings(config, source_path))
     warnings.extend(
         _error_payload(
             "ROW_FILTER_SCOPED_BY_ROLE",

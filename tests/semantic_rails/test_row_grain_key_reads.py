@@ -58,6 +58,9 @@ SWITCHED = {
     ("path_gap.py", "_Columns.__init__"),
     ("path_gap.py", "path_gap"),
     ("interop/ossie/export.py", "_Exporter.datasets"),
+    # A keyless model's rows are told by the columns its dimensions read, as path_gap does.
+    ("lookalike_models.py", "_same_rows_pairs"),
+    ("lookalike_models.py", "lookalike_groups"),
     ("interop/package_writer.py", "_Writer.dimensions"),
     ("interop/package_writer.py", "_Writer.graph"),
     ("interop/package_writer.py", "_Writer.model"),
