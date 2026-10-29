@@ -3176,8 +3176,9 @@ model:
 before its edge, on the clock the query reads it by (for a load log, rows before the next local
 midnight after its date, or at or before its timestamp; for `now`, rows at or before the
 request's `now`): series, totals, an answer without a window, running totals, shares, prior
-periods, entity filters and each operand of a conversion all see the same rows. A stray row after the edge is not read, so
-its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
+periods, entity filters and each operand of a conversion all see the same rows, and so does an
+`aggregate_if` over the model's rows, on its model's `default: true` time. A stray row after the
+edge is not read, so its period reads `NULL` like any other period the load hasn't reached. Such a measure reads its
 base table, never a rollup, whose buckets can't stop at an instant. A measure dated by another
 model's clock (refunds dated by their order's `ordered_at`, through `times:`) is capped on that
 clock with no time window: a refund is read when its order is at or before the edge, so a refund
