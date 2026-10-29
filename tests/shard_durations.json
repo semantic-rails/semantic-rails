@@ -10,6 +10,7 @@
   "tests/semantic_rails/test_aggregate_if_many_to_one.py": 23.366,
   "tests/semantic_rails/test_anchored_window.py": 0.574,
   "tests/semantic_rails/test_answer_envelope.py": 9.999,
+  "tests/semantic_rails/test_answer_read_from.py": 3.5,
   "tests/semantic_rails/test_architect_calendar.py": 3.724,
   "tests/semantic_rails/test_architect_checks.py": 5.446,
   "tests/semantic_rails/test_architect_compact_reports.py": 10.283,

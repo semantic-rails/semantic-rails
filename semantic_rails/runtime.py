@@ -51,6 +51,7 @@ from .answer import (
     finish,
     load_log_name,
     mark_partial_periods,
+    read_from,
 )
 from .ast import (
     every_filter,
@@ -2289,6 +2290,9 @@ class Runtime:
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])
             out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
+        # First, where an agent reads it before the rows: which model each value comes from.
+        # A metric grant's response never carries it (``resource_access`` keeps its own keys).
+        out = {"ok": True, "read_from": read_from(self._config, compiled, out), **out}
         return apply_response_verbosity(
             finish(out, payload=payload, compiled=compiled),
             verbosity=verbosity,

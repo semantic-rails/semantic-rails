@@ -1320,6 +1320,7 @@ apply before the per-entity aggregation.
 
 ```jsonc
 {"status": "ok",
+ "read_from": {"entity.<id>": ["<id>", ...]},         // a run's answer: each value's model, unless `routes` names it
  "rows": [...],                                       // one column per group_by id, then period, period_partial, then select columns
  "window": {"start", "end", "now", "partial", "data_through", "data_through_source"},  // whenever a window or a grain series was resolved
  "clock": "temporal_role.<id>",                       // whenever a time-bearing measure was read
@@ -1341,14 +1342,27 @@ apply before the per-entity aggregation.
   window's series). `data_through_source` says where a declared edge comes from: the load log
   as the package declares it (`export_runs.through_day`; `loaded` when the caller can't see
   that model), or `now`; it is left out when the edge is the last row.
+- `read_from` comes first, before the rows, on a call that ran (not `validate` or `sql`). It
+  lists, under each model's entity, the ids the answer read from it: each selected measure or
+  metric (under each model a metric reads), and each `group_by` and `where` dimension. When the
+  SQL reached a dimension's model through relationships and nothing else in the response states
+  that route, the relationship ids follow the model's values, each once: `"entity.building":
+  ["dimension.building_name", "relationship.room_building"]`. A route is stated by `routes`, a
+  `ROUTE_PASS_THROUGH` or `LISTED_THROUGH` note, or a fan-out note's `paths`. A model `routes`
+  already names, with no other route into it, is left out, and so is `read_from` when nothing
+  is left. It says where each value was read, never that it is the value the question means:
+  two models can hold the same kind of value (a staging copy, a history, another system's
+  table), and the ids say which one this answer used. It names only what the caller sees, and a
+  metric grant's response leaves it out.
 - No field is empty: `routes`, `assumptions`, `warnings` and `errors` appear only when they
   have entries, and a list, object or string with nothing in it is left out (`rows` stays: an
   empty result is an answer).
 - Each assumption is `{code, message, ...}`; any code the engine registers as an assumption
   is stated here, never among the warnings.
-- Verbosity trims only after the answer is built: `window`, `clock`, `observation_scope`,
-  `routes` (each `{from, to, via}`, with a call's `other_routes`), every assumption and every
-  warning survive every verbosity, because they change what the numbers mean.
+- Verbosity trims only after the answer is built: `read_from`, `window`, `clock`,
+  `observation_scope`, `routes` (each `{from, to, via}`, with a call's `other_routes`), every
+  assumption and every warning survive every verbosity, because they change what the numbers
+  mean.
 - Each warning and each error has a stable `code` and a `message`, and like the answer leaves
   out its empty fields (an empty `path`, no `details`, no hints), on every transport. Codes,
   `status` and `routes` are server-authored, so a host can record them per call without the

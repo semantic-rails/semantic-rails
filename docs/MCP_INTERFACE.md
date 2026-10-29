@@ -1069,7 +1069,7 @@ the HTTP `/api/v1/*` default remains `compact`.
 
 | Verbosity | What's kept | When to use |
 |---|---|---|
-| `minimal` (MCP default) | Outcome, errors and warnings; mode `sql` adds `rendered_sql`; mode `run` adds rows and counts | Answering a question |
+| `minimal` (MCP default) | Outcome, errors and warnings; mode `sql` adds `rendered_sql`; mode `run` adds rows and counts, after `read_from` (each value's model, and a route nothing else states: see [The answer](QUERY_CALL.md#the-answer)) | Answering a question |
 | `compact` | Adds query metadata, output columns and the semantic trace; excludes `explain` and logical, physical, performance, fanout and SQL plans | Reviewing how an answer was formed |
 | `full` | Adds compiler plans inside `explain`, subject to the same response budget | Debugging |
 

@@ -370,7 +370,8 @@ raw relation.
 tool, `execute` with `mode` `validate`, `sql` or `run`, which defaults to `minimal` instead: it
 keeps only `{ok, status, errors, warnings}` (plus `error` on failure) and `rendered_sql` in mode
 `sql` and `rows` + `row_count` in mode `run`, plus the answer fields that change what the
-numbers mean (`window`, `clock`, `observation_scope`, `routes`, `assumptions`) — see
+numbers mean (`read_from` in mode `run`, `window`, `clock`, `observation_scope`, `routes`,
+`assumptions`) — see
 [MCP_INTERFACE.md](MCP_INTERFACE.md). Recovery hints live on each issue in `errors`.
 An explicit `verbosity` argument overrides the default on both surfaces; inside the call it is
 refused.
