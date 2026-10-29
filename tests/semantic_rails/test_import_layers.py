@@ -32,7 +32,7 @@ LAYERS = [
     "metadata metadata_parts catalog_service",
     "runtime runtime_parts runtime_parts.answer_warnings answer manifest segments caveats resource_access policies cache"
     " request_context api_keys audit visible_view",
-    "compiler compiler_parts fanout route_census relation_pipelines renderer ir registry"
+    "compiler compiler_parts fanout route_census route_groups relation_pipelines renderer ir registry"
     " diagnostics path_gap acceleration top_n period_completeness row_filter_visibility",
     "db db_parts seed_provenance",
     "config config_parts package_snapshot yaml_loader operational meta_contract"

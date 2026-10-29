@@ -152,9 +152,11 @@ whatever the package's size: each `warnings` list as `warning_counts` by code an
 warnings without their `details`, the first of each code before any repeat, in report order
 (`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
 pairs, up to 3, that fit whole in 8,000 characters (`undecided_omitted` counts the rest; a first
-pair larger than that shows the options that fit, with `options_total` and an `options_note`
-such as "options 1-11 of 212 for A to B, continued on the next page of
-route_census.undecided.0.details.clarification.options"), `project_status`
+pair larger than that shows its groups and the options they list, as many groups as fit, with
+an `options_note` such as "the 11 options its groups list, of 212 for A to B: every option is
+on the pages of route_census.undecided.0.details.clarification.options"; a pair none of whose
+groups fits shows the options that fit, with `options_total` and an `options_note` such as
+"options 1-11 of 212 for A to B, continued on the next page of …"), `project_status`
 `files` without those under dot-directories (transaction receipts), only the failing `probes`,
 `examples` and `tests`, every other list as its first rows within 2,000 characters, and file
 `changes` with their `diff` but no `proposed_content` (diffs share a 12,000-character budget; a
@@ -499,7 +501,8 @@ Which route between two entities a question means is a business definition (see
   `route_census` once, outside `parse`: `undecided` lists the
   entity pairs a question can need that are refused until a `graph.path_preferences` row records
   their route, each with the `AMBIGUOUS_PATH` refusal's `details.clarification.options`
-  (pass an option's `decision` to `record_route_decision`) and `needed_by`, the package's own
+  (pass an option's `decision` to `record_route_decision`) and its `groups` (the distinct
+  meanings, as an answer asks them), and `needed_by`, the package's own
   metrics, examples and tests that walk it (those pairs come first; the summary's
   `counts.undecided_needed` counts them); `assumed` lists the multi-route pairs
   answered by the start entity's own key, to confirm; `defaults` lists the multi-route pairs

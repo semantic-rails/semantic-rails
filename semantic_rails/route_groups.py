@@ -35,21 +35,14 @@ from .compiler_parts.indexes import get_package_analysis
 from .config_parts.route_rows import walk_entities
 from .errors import SemanticLayerError
 from .fanout import _entity_keys, _plural, entity_label, route_hops
+from .query_call import GROUPS_HINT
 from .schema import PackageConfig
 
 # A group with no first route and at most this many routes lists each of them as an option.
 EXPAND_MAX = 3
 ORDERED = "by one-to-many hops, then hops, then id; not a preference"
-# The answer's advice on groups, and on a group whose routes the question names (founder
-# question 3, the agent's policy: the engine only words it).
-GROUPS_HINT = (
-    "groups lists the distinct meanings: ask among their options. A question that names a "
-    "group's entity chooses the group, not its route: send its option without asking only when "
-    "the group has one route (more_routes 0). A group with decide_first has no option to send "
-    "here: a package author decides those routes."
-)
-# Founder question 1 (a): a fork is counted and named, never offered at query time: an
-# option is a whole route the person can choose, and a fork's routes are a package author's.
+# Product choice: a fork is counted and named, never offered at query time: an option is a
+# whole route the person can choose, and a fork's routes are a package author's.
 FORK_NOTE = "a package author can define which one"
 
 
@@ -216,7 +209,8 @@ def _listed(ask: dict[str, Any], groups: list[dict[str, Any]]) -> list[dict[str,
 
 def _as_template(ask: dict[str, Any], key: str) -> bool:
     """``ask``'s options as one ``call`` and each option's ``route`` (the entry to append to
-    ``call.routes``), when every option's call is that call with its route added."""
+    ``call.routes``), when every option's call is that call with its route added. The route's
+    ``via`` is the option's ``relationship_path``, which is then not repeated."""
     options = ask.get("options") or []
     calls = [option.get(key) for option in options]
     if not calls or not all(isinstance(call, dict) and call.get("routes") for call in calls):
@@ -231,6 +225,8 @@ def _as_template(ask: dict[str, Any], key: str) -> bool:
     for option, call in zip(options, calls, strict=True):
         option.pop(key)
         option["route"] = call["routes"][-1]
+        if option.get("relationship_path") == option["route"].get("via"):
+            option.pop("relationship_path")
     return True
 
 
@@ -277,7 +273,10 @@ def shorter_route_asks(payload: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
     yield deepcopy(step)
     for _holder, ask, key in _asks(step):
         if _as_template(ask, key):
-            ask["note"] = f"{note} Send call with the option's route appended to call.routes."
+            ask["note"] = (
+                f"{note} Send call with the option's route appended to call.routes; the route's "
+                "via is the option's relationship_path."
+            )
     yield deepcopy(step)
     widest = max(len(ask["groups"]) for _holder, ask, _key in _asks(step))
     for count in range(widest, 0, -1):

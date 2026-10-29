@@ -33,8 +33,8 @@ from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.request_context import RequestContext, context_from_policy_context
+from semantic_rails.route_groups import ORDERED
 from semantic_rails.row_filter_visibility import coverage
-from semantic_rails.route_groups import ORDERED, route_groups
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails import test_route_resolution as bank
 from tests.semantic_rails.hidden_absent import hidden_tokens, leaks
@@ -93,10 +93,8 @@ def _facilities(root: Path, relationships: dict[str, tuple[str, str, str]] = FAC
     columns["department"].append("opened_at")
     for source, _target, column in relationships.values():
         columns[source].append(column)
-    seed = "".join(
-        f"CREATE TABLE {key}s ({', '.join(f'{c} {TYPES.get(c, "VARCHAR")}' for c in columns[key])});\n"
-        for key in keys
-    )
+    typed = {key: [f"{c} {TYPES.get(c, 'VARCHAR')}" for c in columns[key]] for key in keys}
+    seed = "".join(f"CREATE TABLE {key}s ({', '.join(typed[key])});\n" for key in keys)
     (pkg / "seed.sql").write_text(seed)
     (pkg / "package.yml").write_text(
         textwrap.dedent(
@@ -290,7 +288,8 @@ def test_two_keys_one_hop_down_stay_two_options_and_the_row_filter_still_refuses
     region is refused invoices, never shown every region's. Grouping at the answer's edge
     leaves that coverage exactly as the resolver's flat options make it."""
     pkg = bank._write_package(
-        tmp_path, relationships=("invoices_account", "accounts_branch_region", "accounts_billing_region")
+        tmp_path,
+        relationships=("invoices_account", "accounts_branch_region", "accounts_billing_region"),
     )
     (pkg / "policies.yml").write_text(yaml.safe_dump({"semantic_policies": [REGION_FILTER]}))
     config = load_package_config(str(pkg))
@@ -382,7 +381,8 @@ def test_each_step_is_taken_only_when_the_one_before_does_not_fit(
     try:
         whole = _execute(adapter, DEPARTMENTS_BY_BUILDING, mode="validate")
         clarification = whole["errors"][0]["details"]["clarification"]
-        assert "note" not in clarification and len(clarification["options"]) == 7
+        whole_options = clarification["options"]
+        assert "note" not in clarification and len(whole_options) == 7
         monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", str(_size(whole) - SLACK))
         listed = _execute(adapter, DEPARTMENTS_BY_BUILDING, mode="validate")
         clarification = listed["errors"][0]["details"]["clarification"]
@@ -393,9 +393,11 @@ def test_each_step_is_taken_only_when_the_one_before_does_not_fit(
         template = _execute(adapter, DEPARTMENTS_BY_BUILDING, mode="validate")
         clarification = template["errors"][0]["details"]["clarification"]
         assert clarification["call"] == DEPARTMENTS_BY_BUILDING
-        assert clarification["note"].endswith("appended to call.routes.")
+        assert clarification["note"].endswith("the route's via is the option's relationship_path.")
+        paths = {o["id"]: o["relationship_path"] for o in whole_options}
         for option in clarification["options"]:
-            assert "query" not in option and option["route"]["via"] == option["relationship_path"]
+            assert "query" not in option and "relationship_path" not in option
+            assert option["route"]["via"] == paths[option["id"]]
         assert len(clarification["groups"]) == 4
     finally:
         adapter.close()

@@ -1805,11 +1805,19 @@ def route_entry(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# Product choice: the answer's advice on route groups (``route_groups``), and on a group whose
+# routes the question names. Which option to send is the agent's call; the engine only words it.
+GROUPS_HINT = (
+    "groups lists the distinct meanings: ask among their options. A question that names a "
+    "group's entity chooses the group, not its route: send its option without asking only when "
+    "the group has one route (more_routes 0). A group with decide_first has no option to send "
+    "here: a package author decides those routes."
+)
+
+
 def route_options(call: Any, details: dict[str, Any]) -> None:
     """Make each option of an ``AMBIGUOUS_PATH`` refusal a complete call: ``call`` with the
     option's route added to ``routes``, ready to send."""
-    from .route_groups import GROUPS_HINT
-
     clarification = details.get("clarification") or {}
     options = clarification.get("options") or []
     if not isinstance(call, Mapping) or not options:
