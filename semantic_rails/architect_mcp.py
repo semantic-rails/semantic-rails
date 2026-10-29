@@ -85,6 +85,8 @@ PROFILE_PAGE_COLUMNS = 50
 # A default response is a summary an MCP client shows whole; full_report returns everything.
 SUMMARY_WARNINGS = 10
 SUMMARY_UNDECIDED_ROUTES = 3
+# The undecided pairs a summary shows are whole, every option with them, within this budget.
+SUMMARY_PAIRS_CHARS = 8_000
 SUMMARY_DIFF_CHARS = 12_000
 # Any other summary list keeps the first items that fit in this many characters (at least one).
 SUMMARY_LIST_CHARS = 2_000
@@ -97,29 +99,33 @@ class _Cut:
     warnings: int = SUMMARY_WARNINGS
     list_chars: int = SUMMARY_LIST_CHARS
     diff_chars: int = SUMMARY_DIFF_CHARS
+    pairs_chars: int = SUMMARY_PAIRS_CHARS
 
 
 # A summary that passes PAGE_CHARS is cut again, each time to half as much (the fewest: one
 # warning, and the first row of each list), so a large package's summary still fits a page.
 _CUTS = tuple(
     _Cut(
-        max(1, SUMMARY_WARNINGS >> level), SUMMARY_LIST_CHARS >> level, SUMMARY_DIFF_CHARS >> level
+        max(1, SUMMARY_WARNINGS >> level),
+        SUMMARY_LIST_CHARS >> level,
+        SUMMARY_DIFF_CHARS >> level,
+        SUMMARY_PAIRS_CHARS >> level,
     )
     for level in range(4)
 )
-# Refusals and the files a write changed are never cut.
-_NEVER_CUT = frozenset({"error", "errors", "changed_files"})
+# Refusals, a release's blockers, the next actions and the files a write changed are never cut.
+_NEVER_CUT = frozenset({"error", "errors", "blockers", "next_actions", "changed_files"})
 _SUMMARY_NOTE = (
     "summary: the first warnings without details, the route census's counts and first undecided "
-    "pairs, failing checks only, the first items of long lists; pages names each list cut short, "
-    "with its total_count and next_offset: pass page (its path), offset and limit for the rest, "
-    "or full_report: true for the whole report"
+    "pairs (whole), failing checks only, the first items of long lists; pages names each list "
+    "cut short, with its total_count and next_offset: pass page (its path), offset and limit "
+    "for the rest, or full_report: true for the whole report"
 )
 _WRITE_SUMMARY_NOTE = (
     "summary: the first warnings without details, the route census's counts and first undecided "
-    "pairs, the first items of long lists, and the first file changes, their diffs without file "
-    "contents; pages counts each list cut short. The same call with full_report: true returns "
-    "everything (a retry with the same idempotency_key replays a write)"
+    "pairs (whole), the first items of long lists, and the first file changes, their diffs "
+    "without file contents; pages counts each list cut short. The same call with full_report: "
+    "true returns everything (a retry with the same idempotency_key replays a write)"
 )
 FullReport = Annotated[bool, Field(description="true: the whole report, not a summary")]
 # Paging is a convention every list tool shares, which the server instructions state once.
@@ -387,18 +393,17 @@ def _summary(
             _note_page(pages, where, len(value), shown)
         elif key == "route_census" and isinstance(value, dict):
             undecided = list(value.get("undecided") or [])
-            shown = list(range(min(len(undecided), SUMMARY_UNDECIDED_ROUTES)))
+            shown = _whole_pairs(undecided, cut)
             out[key] = {
                 "counts": {
                     **{name: len(rows) for name, rows in value.items()},
                     "undecided_needed": sum(bool(row.get("needed_by")) for row in undecided),
                 },
-                # Each pair whole but for its long lists, such as its options' first ones.
-                "undecided": [
-                    _summary(undecided[index], pages, f"{where}.undecided.{index}.", cut)
-                    for index in shown
-                ],
+                # Whole pairs only: a route is chosen from all of a pair's options.
+                "undecided": [undecided[index] for index in shown],
             }
+            if len(undecided) > len(shown):
+                out[key]["undecided_omitted"] = len(undecided) - len(shown)
             for name, rows in value.items():
                 if isinstance(rows, list):
                     _note_page(
@@ -433,6 +438,25 @@ def _first_rows(
         pages.update(nested)
         used += size + 1
     return kept, shown
+
+
+def _whole_pairs(pairs: list[Any], cut: _Cut) -> list[int]:
+    """The indexes of the first undecided pairs, up to ``SUMMARY_UNDECIDED_ROUTES``, that fit
+    whole in ``cut.pairs_chars``: none when the first doesn't."""
+    shown: list[int] = []
+    used = 0
+    for index, pair in enumerate(pairs[:SUMMARY_UNDECIDED_ROUTES]):
+        used += _json_size(pair) + 1
+        if used > cut.pairs_chars:
+            break
+        shown.append(index)
+    return shown
+
+
+def _census_list(path: str) -> bool:
+    """Whether ``path`` names a route census list, whose rows a page keeps whole."""
+    parts = path.split(".")
+    return len(parts) >= 2 and parts[-2] == "route_census"
 
 
 def _note_page(pages: dict[str, Any], where: str, total: int, shown: Any) -> None:
@@ -544,6 +568,25 @@ def _check_list_paging(offset: int, full_report: bool, what: str) -> None:
             "full_report to page",
             details={"offset": offset},
         )
+
+
+def _read_revision(project: Path, expected_revision: str) -> str:
+    """The package's revision; a page call that names another one (the revision of the page
+    before) refuses, since its offsets count a list the package no longer has."""
+    current = project_revision(project)
+    if expected_revision and expected_revision != current:
+        raise SemanticLayerError(
+            "CONFIG_CONFLICT",
+            "the package changed after the answer that gave expected_revision, so its offsets "
+            "count another list: read the summary again, or page from offset 0 with the "
+            "current revision",
+            details={
+                "conflict_kind": "stale_revision",
+                "expected_revision": expected_revision,
+                "current_revision": current,
+            },
+        )
+    return current
 
 
 def _check_report_paging(page: str, offset: int, full_report: bool) -> None:
@@ -667,18 +710,20 @@ def _paged_suggestion(
 def _report_or_page(
     report: dict[str, Any],
     project: Path,
+    revision: str,
     full_report: bool,
     page: str,
     offset: int,
     limit: int,
 ) -> dict[str, Any]:
-    """The report's summary, the whole report, or one page of a list in it."""
+    """The report's summary with the revision it read, the whole report, or one page of a list
+    in it."""
+    if full_report:
+        return report
     if not page:
-        return _full_or_summary(report, full_report)
-    envelope = {"ok": report.get("ok"), "project_path": str(project)}
-    return _report_page(
-        report, page, offset, limit, {**envelope, "revision": project_revision(project)}
-    )
+        return _full_or_summary({**report, "revision": revision}, False)
+    envelope = {"ok": report.get("ok"), "project_path": str(project), "revision": revision}
+    return _report_page(report, page, offset, limit, envelope)
 
 
 def _report_page(
@@ -708,9 +753,10 @@ def _report_page(
     room, used = PAGE_CHARS - _json_size(head), 0
     items: list[Any] = []
     pages: dict[str, Any] = {}
+    whole = _census_list(page)
     for index in range(offset, len(target)):
         nested: dict[str, Any] = {}
-        item = _summary(target[index], nested, f"{page}.{index}.")
+        item = target[index] if whole else _summary(target[index], nested, f"{page}.{index}.")
         size = _json_size(item) + _json_size(nested)
         if len(items) >= limit or (items and used + size > room):
             break
@@ -1240,9 +1286,10 @@ def create_architect_mcp_server(
             "rolled back, and a stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
             "write_project_files. Writes, validate_project and project_status answer with a "
             "summary; full_report: true returns every detail. Long lists come in pages: pass "
-            "the answer's next_offset as offset for the next; a summary's pages names each list "
-            "it cut short, which page (its path) pages. This server doesn't manage cloud "
-            "services."
+            "the answer's next_offset as offset for the next, and its revision as "
+            "expected_revision to refuse a package that changed in between; a summary's pages "
+            "names each list it cut short, which page (its path) pages. This server doesn't "
+            "manage cloud services."
         ),
         host=host,
         port=port,
@@ -1414,10 +1461,12 @@ def create_architect_mcp_server(
         page: Page = "",
         offset: Offset = 0,
         limit: Limit = PAGE_ITEMS,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         try:
             _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
+            revision = _read_revision(project, expected_revision)
             parse = _parse_report(project)
             census = parse.pop("route_census", None)
             needed = sum(bool(row["needed_by"]) for row in census["undecided"]) if census else 0
@@ -1425,7 +1474,7 @@ def create_architect_mcp_server(
                 "ok": bool(parse.get("ok")),
                 "project_path": str(project),
                 "workspace_root": str(root),
-                "revision": project_revision(project),
+                "revision": revision,
                 "files": _project_files(project),
                 "parse": parse,
                 "route_census": census,
@@ -1440,7 +1489,8 @@ def create_architect_mcp_server(
                             f"Decide the {needed} join route{'s' if needed > 1 else ''} the "
                             "package's own metrics, examples or tests need: the first pairs in "
                             "route_census.undecided, each naming them in needed_by (a summary "
-                            "lists the first; page: route_census.undecided lists the rest). "
+                            "lists the first that fit whole; page: route_census.undecided lists "
+                            "the rest). "
                             f"{DECIDE_ROUTES_ACTION}"
                         ]
                         if needed
@@ -1472,6 +1522,7 @@ def create_architect_mcp_server(
         offset: Offset = 0,
         limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         """List files inside a Semantic Rails project directory."""
         try:
@@ -1480,7 +1531,7 @@ def create_architect_mcp_server(
             payload = {
                 "ok": True,
                 "project_path": str(project),
-                "revision": project_revision(project),
+                "revision": _read_revision(project, expected_revision),
                 "files": _project_files(project),
             }
             return _paged(payload, "files", offset, limit, full_report, "files")
@@ -2181,20 +2232,30 @@ def create_architect_mcp_server(
         offset: Offset = 0,
         limit: Limit = PAGE_ITEMS,
         full_report: FullList = False,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         try:
             _check_list_paging(offset, full_report, "candidate")
-            context = (
-                ArchitectProject(project_path, workspace_root=root).link_context(relation)
-                if project_path
-                else {}
-            )
+            if expected_revision and not project_path:
+                raise SemanticLayerError(
+                    "INVALID_MCP_ARGUMENTS",
+                    "expected_revision checks the package project_path names: pass "
+                    "project_path, or drop expected_revision",
+                    details={"expected_revision": expected_revision},
+                )
+            package: dict[str, Any] = {}
+            context: dict[str, Any] = {}
+            if project_path:
+                project = ArchitectProject(project_path, workspace_root=root)
+                package["revision"] = _read_revision(project.project_path, expected_revision)
+                context = project.link_context(relation)
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
                 links = introspection.suggest_links(
                     warehouse, relation, columns, min_coverage=min_coverage, **context
                 )
             payload = {
                 "ok": True,
+                **package,
                 **links,
                 "counts": {bucket: len(links[bucket]) for bucket in _LINK_BUCKETS},
             }
@@ -2348,10 +2409,12 @@ def create_architect_mcp_server(
         page: Page = "",
         offset: Offset = 0,
         limit: Limit = PAGE_ITEMS,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         try:
             _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
+            revision = _read_revision(project, expected_revision)
             ref = _package_ref(project)
             check = str(mode or "parse").strip().lower()
             if check == "parse":
@@ -2383,7 +2446,7 @@ def create_architect_mcp_server(
                 raise SemanticLayerError(
                     "INVALID_CONFIG", "Unsupported validation mode", details={"mode": mode}
                 )
-            return _report_or_page(report, project, full_report, page, offset, limit)
+            return _report_or_page(report, project, revision, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
@@ -2396,17 +2459,19 @@ def create_architect_mcp_server(
         page: Page = "",
         offset: Offset = 0,
         limit: Limit = PAGE_ITEMS,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         """Diff one project against another path or a git base ref."""
         try:
             _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
+            revision = _read_revision(project, expected_revision)
             report = diff_package_report(
                 _package_ref(project),
                 compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                 base_ref=base_ref,
             )
-            return _report_or_page(report, project, full_report, page, offset, limit)
+            return _report_or_page(report, project, revision, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
@@ -2419,17 +2484,19 @@ def create_architect_mcp_server(
         page: Page = "",
         offset: Offset = 0,
         limit: Limit = PAGE_ITEMS,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         """Return behavior-change impact, reviewer teams, and risk for a package change."""
         try:
             _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
+            revision = _read_revision(project, expected_revision)
             report = impact_report(
                 _package_ref(project),
                 compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                 base_ref=base_ref,
             )
-            return _report_or_page(report, project, full_report, page, offset, limit)
+            return _report_or_page(report, project, revision, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
@@ -2450,17 +2517,19 @@ def create_architect_mcp_server(
         page: Page = "",
         offset: Offset = 0,
         limit: Limit = PAGE_ITEMS,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         try:
             _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
+            revision = _read_revision(project, expected_revision)
             report = promote_package_report(
                 _package_ref(project),
                 environment=environment,
                 compare_path=_resolve_compare_path(compare_path, workspace_root=root),
                 base_ref=base_ref,
             )
-            return _report_or_page(report, project, full_report, page, offset, limit)
+            return _report_or_page(report, project, revision, full_report, page, offset, limit)
         except Exception as exc:
             return _report_error(exc)
 
