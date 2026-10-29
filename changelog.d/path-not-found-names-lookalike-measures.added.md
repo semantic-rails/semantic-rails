@@ -2,10 +2,10 @@
   filtered dimension now names the same measure on another model that answers the call as it
   stands, when one does: `details.lookalike_measures` (each once, with the first sentence of its
   model's description and the result columns to rename) and a `use_lookalike_measure` hint. A
-  look-alike has the same name and the same column expression, on a model about the same
-  things (a relationship joins the two, or one's table holds the other's key); a table's row
-  count never has one, and two unlinked tables that both sum an `amount` are not alike. Each
-  is checked by compiling the call with it, under
+  look-alike has the same name and the same column expression, on a model whose rows are the
+  same things: keyed by the same key (a copy), or by that key and its own time columns (a
+  history). A table's row count never has one, and invoices and their payments are not
+  alike. Each is checked by compiling the call with it, under
   the caller's own visibility and policies; a measure the caller can't see or read is never
   named, and none is chosen for the caller. See the `PATH_NOT_FOUND` row in
   [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
