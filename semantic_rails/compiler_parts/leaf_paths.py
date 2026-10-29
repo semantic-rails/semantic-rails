@@ -40,6 +40,7 @@ from .bind import (
     conditional_aggregate_route_refusal,
     is_conditional_aggregate,
 )
+from .child_values import CHILD_VALUES, child_values_route
 from .grain_recovery import mixed_grain_pairing_enrichment
 from .indexes import (
     _dimension_index,
@@ -74,7 +75,7 @@ def _leaf_path_selections(
     bound: BoundMeasure, config: PackageConfig, query: NormalizedQuery
 ) -> tuple[list[PathSelection], list[str], str]:
     """The leaf's paths, the entities it reads, and how it crosses one-to-many hops: "",
-    "entity_in_terms_of" or "fanout_dedup"."""
+    "entity_in_terms_of", "fanout_dedup" or "child_values"."""
     measures = _measure_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -181,6 +182,9 @@ def _leaf_path_selections(
         )
         if refusal is None:
             return selections, sorted(required_entities), "fanout_dedup"
+        # A grouping across a lookup, then a one-to-many hop, reads the child's distinct values.
+        if child_values_route(measure, bound, selections, config, query) is not None:
+            return selections, sorted(required_entities), CHILD_VALUES
     why_invalid, row = refusal
     raise _mixed_grain_error(
         target_entity=row.target_entity,

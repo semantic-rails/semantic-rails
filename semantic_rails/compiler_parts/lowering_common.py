@@ -1120,6 +1120,7 @@ def _foldable_leaf_signature(
     if measure.measure_class == "semi_additive" or measure_plan.rewrite_strategy in {
         "parent_lookup",
         "parent_value",
+        "child_values",
     }:
         return None
     if _all_metric_predicates(plan, measure_plan):
