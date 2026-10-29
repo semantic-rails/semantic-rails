@@ -233,9 +233,9 @@ def test_each_group_of_lookalike_models_is_named_once_with_the_question(campus):
         f"key, and {SPACE_DETAIL_HIST} reads every column {SPACE_DETAIL} does), so"
     )
     assert buildings["message"] == (
-        f"{campus}: {FLOOR} and {SPACE_DETAIL} each count distinct building_id under one name "
-        "(distinct_building_id) over rows that aren't the same things, so an agent can answer "
-        "one question from any of them. Which is canonical? Name each count for the rows it "
+        f"{campus}: {FLOOR} and {SPACE_DETAIL} each count distinct building_id under one label "
+        "(Distinct buildings) over rows that aren't the same things, so an agent can answer "
+        "one question from any of them. Which is canonical? Label each count for the rows it "
         "counts, or set publish: false on those no question needs."
     )
     assert buildings["details"] == {
@@ -243,8 +243,49 @@ def test_each_group_of_lookalike_models_is_named_once_with_the_question(campus):
         "entities": [FLOOR, SPACE_DETAIL],
         "measures": {FLOOR: [FLOOR_BUILDINGS], SPACE_DETAIL: [SPACE_BUILDINGS]},
         "unit": "distinct building_id",
-        "name": "distinct_building_id",
+        "label": "Distinct buildings",
     }
+
+
+@pytest.mark.parametrize(
+    ("floors", "space_detail", "grouped"),
+    [
+        # The author labels one count for the rows it counts: that answers the question.
+        (
+            ("floors_distinct_building_id", "Buildings with a floor"),
+            ("space_detail_distinct_building_id", "Distinct buildings"),
+            False,
+        ),
+        # Labels mirrored from each table still say nothing of the rows.
+        (
+            ("floors_distinct_building_id", "Distinct buildings (FLOORS)"),
+            ("space_detail_distinct_building_id", "Distinct buildings (SPACE_DETAIL)"),
+            True,
+        ),
+        # A new key alone leaves the label each card shows.
+        (
+            ("buildings_with_a_floor", "Distinct buildings"),
+            ("space_detail_distinct_building_id", "Distinct buildings"),
+            True,
+        ),
+    ],
+)
+def test_a_count_labelled_for_its_rows_leaves_its_group(tmp_path, floors, space_detail, grouped):
+    files = _files()
+    for path, (key, label) in (
+        ("models/floors.yml", floors),
+        ("models/space_detail.yml", space_detail),
+    ):
+        measures = files[path]["model"]["measures"]
+        old = next(name for name in measures if name.endswith("distinct_building_id"))
+        measures[key] = {**measures.pop(old), "label": label}
+    config = load_package_config(str(_write(tmp_path, files)))
+    kinds = [(group.kind, group.entities) for group in lookalike_groups(config)]
+    assert (("same_count", (FLOOR, SPACE_DETAIL)) in kinds) is grouped
+    assert [kind for kind in kinds if kind[0] == "same_rows"] == [
+        ("same_rows", (ROOM, ROOM_HIST)),
+        ("same_rows", (SPACE_DETAIL, SPACE_DETAIL_HIST)),
+    ]
 
 
 def test_a_table_and_the_table_holding_its_key_are_never_lookalikes(campus):
