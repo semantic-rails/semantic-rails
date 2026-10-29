@@ -268,6 +268,63 @@ def test_report_pages_come_from_the_tool_the_same_on_every_call(
     assert _walk_report(fetch, "route_census.assumed") == full["route_census"]["assumed"]
 
 
+def test_a_pair_with_more_options_than_a_page_continues_them_on_marked_pages(
+    server: Any, workspace: LargeWorkspace
+) -> None:
+    full = call_tool(
+        server, "project_status", {"project_path": workspace.package, "full_report": True}
+    )
+    census = full["route_census"]
+    pair = census["undecided"][0]
+    clarification = pair["details"]["clarification"]
+    # 212 routes between one pair, as a package of 85 marts has: each its own option.
+    many = [
+        {**clarification["options"][n % len(clarification["options"])], "id": f"route_{n}"}
+        for n in range(212)
+    ]
+    big = {
+        **pair,
+        "details": {**pair["details"], "clarification": {**clarification, "options": many}},
+    }
+    report = {**full, "route_census": {**census, "undecided": [big, *census["undecided"][1:]]}}
+    path = "route_census.undecided.0.details.clarification.options"
+    names = f"{pair['source_entity']} to {pair['target_entity']}"
+
+    # The summary shows the first options that fit, says how many of how many, and where the
+    # rest are.
+    summary = _full_or_summary(report, False)
+    shown = summary["route_census"]["undecided"][0]["details"]["clarification"]
+    count = len(shown["options"])
+    assert _size(summary) <= PAGE_CHARS and 0 < count < 212
+    assert (shown["options"], shown["options_total"]) == (many[:count], 212)
+    assert shown["options_note"] == (
+        f"options 1-{count} of 212 for {names}, continued on the next page of {path}"
+    )
+    assert summary["pages"][path] == {"total_count": 212, "next_offset": count}
+    first = _report_page(report, "route_census.undecided", 0, PAGE_ITEMS, {})
+    assert _size(first) <= PAGE_CHARS
+    assert first["items"][0]["details"]["clarification"]["options_total"] == 212
+    assert first["pages"][path]["total_count"] == 212
+
+    # Its options page on, each page under budget and marked, each option on exactly one page.
+    seen: list[Any] = []
+    notes: list[str] = []
+    offset = 0
+    while True:
+        page = _report_page(report, path, offset, PAGE_ITEMS, {})
+        assert _size(page) <= PAGE_CHARS
+        assert page["pair"] == {key: pair[key] for key in ("source_entity", "target_entity")}
+        seen += page["items"]
+        notes.append(page["options_note"])
+        assert notes[-1].startswith(f"options {offset + 1}-{len(seen)} of 212 for {names}")
+        if not page["has_more"]:
+            break
+        offset = page["next_offset"]
+    assert seen == many and len(notes) > 2
+    assert all(note.endswith(f"continued on the next page of {path}") for note in notes[:-1])
+    assert notes[-1].endswith(": the last of them")
+
+
 def test_a_release_summary_keeps_every_blocker_and_next_action_whole(
     server: Any, workspace: LargeWorkspace
 ) -> None:
@@ -360,6 +417,15 @@ def test_a_page_after_a_write_refuses_with_the_revision_it_read(
     for tool, arguments in (
         ("project_status", {**package, "page": "route_census.undecided", **stale}),
         ("validate_project", {**package, "page": "route_census.undecided", **stale}),
+        (
+            "project_status",
+            {
+                **package,
+                "page": "route_census.undecided.0.details.clarification.options",
+                "offset": 1,
+                "expected_revision": first["revision"],
+            },
+        ),
         ("list_project_files", {**package, "expected_revision": first["revision"]}),
     ):
         assert _refusal(call_tool(server, tool, arguments)) == (

@@ -393,14 +393,13 @@ def _summary(
             _note_page(pages, where, len(value), shown)
         elif key == "route_census" and isinstance(value, dict):
             undecided = list(value.get("undecided") or [])
-            shown = _whole_pairs(undecided, cut)
+            first, shown = _first_pairs(undecided, cut, pages, f"{where}.undecided")
             out[key] = {
                 "counts": {
                     **{name: len(rows) for name, rows in value.items()},
                     "undecided_needed": sum(bool(row.get("needed_by")) for row in undecided),
                 },
-                # Whole pairs only: a route is chosen from all of a pair's options.
-                "undecided": [undecided[index] for index in shown],
+                "undecided": first,
             }
             if len(undecided) > len(shown):
                 out[key]["undecided_omitted"] = len(undecided) - len(shown)
@@ -440,23 +439,79 @@ def _first_rows(
     return kept, shown
 
 
-def _whole_pairs(pairs: list[Any], cut: _Cut) -> list[int]:
-    """The indexes of the first undecided pairs, up to ``SUMMARY_UNDECIDED_ROUTES``, that fit
-    whole in ``cut.pairs_chars``: none when the first doesn't."""
-    shown: list[int] = []
+def _first_pairs(
+    pairs: list[Any], cut: _Cut, pages: dict[str, Any], where: str
+) -> tuple[list[Any], list[int]]:
+    """The first undecided pairs, up to ``SUMMARY_UNDECIDED_ROUTES``, that fit whole in
+    ``cut.pairs_chars``, and their indexes. A first pair that doesn't fit shows the options that
+    do, marked (``_fit_pair``), so a route is never chosen from a list that looks whole."""
+    rows: list[Any] = []
     used = 0
     for index, pair in enumerate(pairs[:SUMMARY_UNDECIDED_ROUTES]):
-        used += _json_size(pair) + 1
-        if used > cut.pairs_chars:
+        room = cut.pairs_chars - used
+        if rows and _json_size(pair) > room:
             break
-        shown.append(index)
-    return shown
+        row = _fit_pair(pair, room, f"{where}.{index}.", pages)
+        rows.append(row)
+        used += _json_size(row) + 1
+    return rows, list(range(len(rows)))
+
+
+def _pair_options(pair: Any) -> list[Any] | None:
+    clarification = pair.get("details", {}).get("clarification") if isinstance(pair, dict) else None
+    options = clarification.get("options") if isinstance(clarification, dict) else None
+    return options if isinstance(options, list) else None
+
+
+def _options_note(pair: dict[str, Any], start: int, shown: int, total: int, path: str) -> str:
+    """What part of a pair's options an answer shows, and where the rest is."""
+    where = f"options {start + 1}-{start + shown} of {total} for {pair.get('source_entity')} to "
+    where += str(pair.get("target_entity"))
+    if start + shown < total:
+        return f"{where}, continued on the next page of {path}"
+    return f"{where}: the last of them"
+
+
+def _fit_pair(pair: Any, room: int, where: str, pages: dict[str, Any]) -> Any:
+    """``pair`` whole when it fits in ``room`` characters; else with the first of its options
+    that fit (at least one), ``options_total`` and an ``options_note`` saying which they are,
+    and ``pages`` naming the options list, which pages from where this one stops."""
+    options = _pair_options(pair)
+    if _json_size(pair) <= room or not options:
+        return pair
+    path = f"{where}details.clarification.options"
+    details = pair["details"]
+    clarification = details["clarification"]
+
+    def shown(count: int) -> dict[str, Any]:
+        marked = {
+            **clarification,
+            "options": options[:count],
+            "options_total": len(options),
+            "options_note": _options_note(pair, 0, count, len(options), path),
+        }
+        return {**pair, "details": {**details, "clarification": marked}}
+
+    # One option at least; then each that fits (the note's numbers may grow a few digits).
+    count, used = 1, _json_size(shown(1)) + 8
+    while count < len(options) and used + _json_size(options[count]) + 1 <= room:
+        used += _json_size(options[count]) + 1
+        count += 1
+    pages[path] = {"total_count": len(options), "next_offset": count}
+    return shown(count)
 
 
 def _census_list(path: str) -> bool:
-    """Whether ``path`` names a route census list, whose rows a page keeps whole."""
+    """Whether ``path`` names a route census list, whose rows a page keeps whole (a pair larger
+    than a page continues its options on pages of their own)."""
     parts = path.split(".")
     return len(parts) >= 2 and parts[-2] == "route_census"
+
+
+def _options_pair(path: str) -> str:
+    """The path of the census pair whose options ``path`` names, or ``""``."""
+    head, _, tail = path.rpartition(".details.clarification.options")
+    return head if not tail and _census_list(head.rpartition(".")[0]) else ""
 
 
 def _note_page(pages: dict[str, Any], where: str, total: int, shown: Any) -> None:
@@ -749,14 +804,29 @@ def _report_page(
             details={"page": page, "pages": sorted(listed)},
         )
     _check_offset(offset, len(target), f"items in {page}")
-    head = {**envelope, "page": page, **_page_fields(offset, 0, len(target))}
-    room, used = PAGE_CHARS - _json_size(head), 0
+    census, pair_path = _census_list(page), _options_pair(page)
+    pair = _at_path(report, pair_path) if pair_path else None
+
+    def marked(shown: int) -> dict[str, Any]:
+        # A pair's options say which pair they are and which part of its options they are.
+        if not isinstance(pair, dict):
+            return {}
+        note = _options_note(pair, offset, shown, len(target), page)
+        return {"pair": {key: pair.get(key) for key in _PAIR_KEYS}, "options_note": note}
+
+    head = {**envelope, "page": page, **_page_fields(offset, 0, len(target)), **marked(0)}
+    # Room for the pages entry a pair larger than the page adds, and the note's longer numbers.
+    room, used = PAGE_CHARS - _json_size(head) - 200, 0
     items: list[Any] = []
     pages: dict[str, Any] = {}
-    whole = _census_list(page)
     for index in range(offset, len(target)):
         nested: dict[str, Any] = {}
-        item = target[index] if whole else _summary(target[index], nested, f"{page}.{index}.")
+        if census and not items:
+            item = _fit_pair(target[index], room, f"{page}.{index}.", nested)
+        elif census or pair_path:
+            item = target[index]
+        else:
+            item = _summary(target[index], nested, f"{page}.{index}.")
         size = _json_size(item) + _json_size(nested)
         if len(items) >= limit or (items and used + size > room):
             break
@@ -768,8 +838,23 @@ def _report_page(
         "page": page,
         "items": items,
         **_page_fields(offset, len(items), len(target)),
+        **marked(len(items)),
         **({"pages": pages} if pages else {}),
     }
+
+
+_PAIR_KEYS = ("source_entity", "target_entity")
+
+
+def _at_path(report: Any, path: str) -> Any:
+    for part in path.split("."):
+        if isinstance(report, dict):
+            report = report.get(part)
+        elif isinstance(report, list) and part.isdigit() and int(part) < len(report):
+            report = report[int(part)]
+        else:
+            return None
+    return report
 
 
 def _mutation_error_result(

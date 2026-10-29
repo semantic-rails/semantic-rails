@@ -151,8 +151,10 @@ Writes, `validate_project`, `project_status`, `promotion_check`, `diff_project` 
 whatever the package's size: each `warnings` list as `warning_counts` by code and 10 of its
 warnings without their `details`, the first of each code before any repeat, in report order
 (`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
-pairs, up to 3, that fit whole in 8,000 characters (a route is chosen from all of a pair's
-options, so a pair is never cut; `undecided_omitted` counts the rest), `project_status`
+pairs, up to 3, that fit whole in 8,000 characters (`undecided_omitted` counts the rest; a first
+pair larger than that shows the options that fit, with `options_total` and an `options_note`
+such as "options 1-11 of 212 for A to B, continued on the next page of
+route_census.undecided.0.details.clarification.options"), `project_status`
 `files` without those under dot-directories (transaction receipts), only the failing `probes`,
 `examples` and `tests`, every other list as its first rows within 2,000 characters, and file
 `changes` with their `diff` but no `proposed_content` (diffs share a 12,000-character budget; a
@@ -165,8 +167,11 @@ the summary leaves rows out of by its path (`parse.warnings`, `route_census.unde
 
 On the read-only report tools, `page` (a path from `pages`) answers with that list instead:
 `items` from `offset`, each shown as the summary shows rows (route census pairs whole), with the
-[paging](#paging) fields and `pages` for the lists its items cut short in turn. Every summary and
-page names the `revision` it read. A write's summary counts what it leaves out
+[paging](#paging) fields and `pages` for the lists its items cut short in turn. A pair larger than
+a page shows the options that fit, marked as in the summary; the pages of its options carry the
+`pair` and an `options_note` ("options 12-33 of 212 for A to B, continued on the next page of
+…", and on the last page "…: the last of them"), so a route is never chosen from a list that
+looks whole. Every summary and page names the `revision` it read. A write's summary counts what it leaves out
 in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
 the same `idempotency_key` replays the write).
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use

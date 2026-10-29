@@ -6,8 +6,9 @@
   stops at 200 tables, nor `suggest_models_from_dbt` at 20 models. Summaries (writes,
   `validate_project`, `project_status`, `promotion_check`, and now `diff_project` and
   `impact_project`) fit one page and name each list they cut short in `pages`; `page` reads that
-  list. Every item stays reachable, and `full_report: true` still returns everything. A route
-  pair, a release's blockers and the next actions are never cut. Pass a page's `revision` as
+  list. Every item stays reachable, and `full_report: true` still returns everything. A
+  release's blockers and the next actions are never cut, and a route pair's options are cut only
+  with a note saying which of how many they are and where the rest are. Pass a page's `revision` as
   `expected_revision` on the next page: a package that changed in between refuses with
   `CONFIG_CONFLICT` instead of skipping items. See [Paging](docs/ARCHITECT_MCP.md#paging).
 - A write without `expected_revision` says which values it takes, and `suggest_links` names the
