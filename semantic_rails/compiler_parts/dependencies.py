@@ -192,11 +192,16 @@ def settles_as_a_call() -> bool:
     return plan is not None and plan.settles
 
 
+def lowers_entity_values() -> bool:
+    """Whether the plan being lowered is a distribution's per-entity values (``plan_bindings``)."""
+    plan = _plan.get()
+    return plan is not None and plan.entity_values
+
+
 def retains_filtered_groups() -> bool:
     """Whether a filtered leaf may keep its source groups (``_preserves_filtered_series``): in a
     call that settles its empty groups, but not in a distribution's per-entity values."""
-    plan = _plan.get()
-    return plan is not None and plan.settles and not plan.entity_values
+    return settles_as_a_call() and not lowers_entity_values()
 
 
 def record_retained_filtered_series(alias: str) -> None:

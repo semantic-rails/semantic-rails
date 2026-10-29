@@ -48,6 +48,7 @@ from .conversion import _conversion_leaf_cte
 from .dependencies import (
     binding_cut,
     cut_owners,
+    lowers_entity_values,
     plan_is_root,
     project_is_cut,
     record_retained_filtered_series,
@@ -532,8 +533,11 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     )
     shares = share_group_counts(plan, config) if plan_is_root() else {}
     # The one place an empty group reads 0 instead of NULL: the projection reads every such
-    # measure through the guard below, so nothing after it can change what it sees.
-    zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
+    # measure through the guard below, so nothing after it can change what it sees. A
+    # distribution's per-entity values need it only where an entity can lack an operand: two
+    # or more leaves joined on its keys. One leaf holds each entity's rows of every measure.
+    settled = guard_empty and (joined or not lowers_entity_values())
+    zero = zero_aliases(plan.measure_plans, config) if settled else {}
     if zero and plan.time:
         measures = _measure_index(config)
         refuse_declared_edges(
@@ -630,7 +634,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     config,
                 ),
             )
-        elif guard_empty and (
+        elif settled and (
             lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)
         ):
             record_zero_output(alias, lookups)
@@ -740,7 +744,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             )
         ]
 
-    if guard_empty:
+    if settled:
         refuse_unsettled(
             SqlSelect(select=projected_fields, from_table=base_table),
             plan,
