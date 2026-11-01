@@ -7,3 +7,4 @@ graph:
     room: {label: Room, key: [room_key], model: rooms}
     work_order: {label: Work order, key: [work_order_id], model: work_orders}
     reservation: {label: Reservation, key: [reservation_id], model: reservations}
+    assignment: {label: Space assignment, key: [building_key, dept_code], model: assignments}
