@@ -1681,12 +1681,45 @@ model:
 - Each id must be another model of the package, and the lists never run in a circle: one model of
   a group is the canonical one. Either mistake is `INVALID_CONFIG`, naming the unknown id with the
   closest model ids, or the circle (`rooms -> rooms_hist -> rooms`).
-- `discover` lists the canonical model's rows first among its look-alikes' and marks each
-  look-alike's card with `look_alike` (`history copy of <entity>` or `prefer <entity>`; see
-  [MCP_INTERFACE.md](MCP_INTERFACE.md)).
+- `discover` keeps its match order, lists the canonical model's first row ahead of its
+  look-alikes' rows, and marks each look-alike's card with `look_alike` (`history copy of
+  <entity>` or `prefer <entity>`; see [MCP_INTERFACE.md](MCP_INTERFACE.md)).
 - A caller who can't see a listed model reads the list without it, and hiding it never hides the
   model that lists it.
 - `plan` and `execute` read the models as before: `prefer_over:` changes no answer.
+
+### `distinct_from:` — models that only look alike
+
+When validation groups models whose rows are different things, such as stores and the daily
+inventory snapshots of each store, list one in the other's `distinct_from:`, by model id. It says
+the two are no look-alikes, so validation stops asking about the pair:
+
+```yaml
+# models/stores.yml: one row per store; store_inventory_snapshots holds one row per store a day
+model:
+  id: stores
+  relation: stores
+  entities: {store: {}}
+  distinct_from: [store_inventory_snapshots]
+```
+
+- Either model may list the other: one list sets the pair apart.
+- The pair leaves its `same_rows` `LOOKALIKE_MODELS` group. A larger group keeps its other links:
+  setting `rooms_hist` apart from `rooms` leaves `rooms` grouped with `rooms_audit`.
+- A `same_count` group is separate. Two models that each publish a count under one label stay in
+  one, set apart or not: an agent asked "how many rooms" still sees two "Rooms" counts over
+  different rows, so label each count for the rows it counts, as the warning asks.
+- `discover` marks neither as the other's look-alike, and a `PATH_NOT_FOUND` refusal or a
+  measure's card never names a measure of one as the other's look-alike (see
+  [MCP_INTERFACE.md](MCP_INTERFACE.md)).
+- Each id must be another model of the package. A pair is never in both a `prefer_over:` and a
+  `distinct_from:`, whichever model lists it in each, since a model answers only for its
+  look-alikes. Either mistake is `INVALID_CONFIG`, naming the unknown id with the closest model
+  ids, or both lists.
+- A caller who can't see a listed model reads the list without it, and hiding it never hides the
+  model that lists it.
+- `plan` and `execute` read the models as before. The semantic fingerprint records the list; a
+  package that declares none keeps its fingerprint.
 
 ### `bridge:` — link tables and junction tables
 
@@ -2749,8 +2782,20 @@ Grouping chooses nothing and changes no answer: `options` keeps every route, whi
 query takes and every policy result read the routes as before, and a group's option is a
 whole route with its own `decision` row.
 
-To decide a `decide_first` group, record **the asked pair's own route**: the `decision` of
-the option for the chosen route (the route census row lists every option). Don't record a row
+To decide a `decide_first` group, record **the asked pair's own route**. In Architect's route
+census, the group's `decide_first.parts` lists each of its routes from `via` on: its option
+`id`, its `meaning` read from `via` ("the Building of any of the Project's Tasks") and its
+`relationship_path` from there, with `decision`, the asked pair's row for the whole route
+through that part. Pass the chosen part's `decision` to `record_route_decision`. Preview it
+with `dry_run` and read `route_changes` before writing: a row holds wherever a route walks its
+pair, so other pairs whose routes walk the asked pair by another route move too. Such a pair
+that answered is refused when the route that follows the row is longer than `max_hops`
+(`PATH_NOT_FOUND`, `excluded_by_decision`), and an undecided pair whose other routes are all
+excluded is answered by the one left (`inherited`), which nobody chose. A part longer than the
+pair's shortest route is the usual cause; if a listed change isn't what the business means,
+choose another part. The pair
+`via` to the target stays undecided; a row recorded for it later must agree with this one
+(see "Rows must agree" below), so the asked pair keeps the route that was chosen. Don't record a row
 for the `decide_first` pair (`via` to the target) on its own: a route for that pair can
 pass back through the asked pair's start, and the asked pair is then answered by another
 group's route, which nobody chose. To record that pair too, send its row and the asked pair's
@@ -3652,7 +3697,10 @@ group has each model's key in `details.keys`; a `same_count` group has its count
 A warning names the models by model id (`details.models`), and their entities in
 `details.entities`. For either kind, list the others in the canonical model's
 [`prefer_over:`](#prefer_over--the-canonical-model-of-look-alikes), which clears the group's
-warning. For a `same_rows` group, also say what each model's rows are in its `description` (a
+warning. When two models of a `same_rows` group are different things, list one in the other's
+[`distinct_from:`](#distinct_from--models-that-only-look-alike) instead, which takes the pair out
+of the group; it never settles a `same_count` group, which the counts' labels settle. For a
+`same_rows` group, also say what each model's rows are in its `description` (a
 refusal's look-alike rows and a measure's card show its first sentence). For a `same_count`
 group where no model answers every question the others do, label each count for the rows it
 counts instead ("Buildings with a floor"), which takes it out of the group, or set

@@ -117,7 +117,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
         "id table key_columns kind relation_id identifiers foreign_keys calendar_id "
         "allowed_as_root freshness_sla_seconds bridge model one_per_key model_id",
         text="label description model_description freshness_source freshness_as_of display",
-        texts="key_roles foreign_key_roles topics disallowed_names prefer_over",
+        texts="key_roles foreign_key_roles topics disallowed_names prefer_over distinct_from",
         identity="name aliases",
     ),
     DimensionConfig: _classes(
@@ -305,13 +305,13 @@ def _declared_references(config: PackageConfig) -> dict[str, frozenset[str]]:
     if analysis.declared_references is None:
         ids = {row.id for row in _rows(config)}
         # An entity's display only names a dimension shown beside its key: hiding that
-        # dimension blanks the display (a text field), never the entity. Its prefer_over only
-        # names the look-alikes it answers for: hiding one drops it from the list, never the
-        # entity.
+        # dimension blanks the display (a text field), never the entity. Its prefer_over and
+        # distinct_from only name the look-alikes it answers for and the models it differs
+        # from: hiding one drops it from the list, never the entity.
         analysis.declared_references = {
             row.id: frozenset(
                 _strings(
-                    replace(row, display="", prefer_over=[])
+                    replace(row, display="", prefer_over=[], distinct_from=[])
                     if isinstance(row, EntityConfig)
                     else row
                 )

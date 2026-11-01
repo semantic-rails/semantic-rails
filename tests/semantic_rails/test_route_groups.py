@@ -29,8 +29,12 @@ import pytest
 import yaml
 
 import semantic_rails.route_groups as route_groups_module
+from scripts.large_warehouse import call_tool
+from semantic_rails.architect_mcp import create_architect_mcp_server
+from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.fanout import package_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.request_context import RequestContext, context_from_policy_context
 from semantic_rails.route_groups import ORDERED
@@ -152,6 +156,10 @@ def _facilities(root: Path, relationships: dict[str, tuple[str, str, str]] = FAC
                 }
             }
         (pkg / "models" / f"{key}s.yml").write_text(yaml.safe_dump({"model": model}))
+    (pkg / "metrics").mkdir()
+    count = {"kind": "aggregate", "measure": "measure.fac.department_count", "value_type": "count"}
+    metrics = {"metrics": {"department_count": {**count, "description": "Departments."}}}
+    (pkg / "metrics" / "departments.yml").write_text(yaml.safe_dump(metrics))
     return pkg
 
 
@@ -254,6 +262,72 @@ def test_a_fork_too_big_to_list_names_what_to_decide_first(
     }
     assert err.details["clarification"]["listed"] == 4
     assert str(err).endswith("; 2 routes through Projects (a package author can define which one)")
+
+
+def test_a_package_author_decides_a_fork_by_one_of_its_parts_for_the_asked_pair_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Architect's census lists a fork's parts: each of its routes from the project on, read
+    from the project, with the row that records it, the asked pair's own row (the answer
+    lists no part: a fork has nothing to send). Recording a part's row answers departments by
+    building by that route, and the pairs it moves are each answered along the row. Projects
+    by building stays undecided, and a row recorded for it later must agree with this one."""
+    monkeypatch.setattr(route_groups_module, "EXPAND_MAX", 1)
+    pkg = _facilities(tmp_path)
+    answered = _refusal(Runtime.from_path(str(pkg)), DEPARTMENTS_BY_BUILDING).details
+    assert "parts" not in answered["clarification"]["groups"][-1]["decide_first"]
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    status = call_tool(server, "project_status", {"project_path": str(pkg), "full_report": True})
+    (row,) = [
+        row
+        for row in status["route_census"]["undecided"]
+        if (row["source_entity"], row["target_entity"]) == (DEPARTMENT, BUILDING)
+    ]
+    clarification = row["details"]["clarification"]
+    decisions = {o["id"]: o["decision"] for o in clarification["options"]}
+    fork = clarification["groups"][-1]
+    assert fork["decide_first"]["parts"] == [
+        {
+            "id": "project_task_building",
+            "meaning": "the Building of any of the Project's Tasks",
+            "relationship_path": TASKS[1:],
+            "decision": decisions["project_task_building"],
+        },
+        {
+            "id": "project_visit_building",
+            "meaning": "the Building of any of the Project's Visits",
+            "relationship_path": VISITS[1:],
+            "decision": decisions["project_visit_building"],
+        },
+    ]
+    tasks = fork["decide_first"]["parts"][0]["decision"]
+    assert tasks == {
+        "source_entity": DEPARTMENT,
+        "target_entity": BUILDING,
+        "relationship_path": TASKS,
+        "label": "the Building of any of the Tasks of any of the Department's Projects",
+    }
+
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    preview = project.record_route_decision(**tasks, dry_run=True).report
+    moved = {(c["source_entity"], c["target_entity"]): c["head"] for c in preview["route_changes"]}
+    assert moved[(DEPARTMENT, BUILDING)] == {"relationship_path": TASKS}
+    assert (PROJECT, BUILDING) not in moved
+    for head in moved.values():  # each along the row, either way
+        path = head["relationship_path"]
+        assert any(way[n : n + len(path)] == path for way in (TASKS, TASKS[::-1]) for n in range(3))
+    assert project.record_route_decision(**tasks).report["ok"] is True
+    config = load_package_config(str(pkg))
+    assert package_route(config, start=DEPARTMENT, target=BUILDING).basis == "decided"
+    with pytest.raises(SemanticLayerError) as own_pair:
+        package_route(config, start=PROJECT, target=BUILDING)
+    assert own_pair.value.code == "AMBIGUOUS_PATH"
+    visits = {**decisions["project_visit_building"], "source_entity": PROJECT}
+    visits["relationship_path"] = VISITS[1:]
+    with pytest.raises(SemanticLayerError) as disagrees:
+        project.record_route_decision(**{k: v for k, v in visits.items() if k != "label"})
+    assert disagrees.value.code == "INVALID_CONFIG" and "rows disagree" in str(disagrees.value)
+    assert [r["source_entity"] for r in disagrees.value.details["rows"]] == [DEPARTMENT, PROJECT]
 
 
 def test_a_view_that_hides_a_groups_first_route_offers_the_next_one(tmp_path: Path) -> None:

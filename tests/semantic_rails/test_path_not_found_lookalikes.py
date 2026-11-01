@@ -557,6 +557,32 @@ def test_an_invoice_and_its_payments_are_never_lookalikes(shop):
         assert lookalike_swaps(other, [invoices], "entity.shop_invoice") == []
 
 
+@pytest.mark.parametrize("declared_by", ["entity.shop_room", "entity.shop_room_hist"])
+def test_a_model_its_author_sets_apart_is_never_named_as_a_lookalike(shop, declared_by):
+    # Room area by building, where the author says rooms_hist holds room inspections, not
+    # versions of rooms (a distinct_from on either model): the refusal and the card name no
+    # look-alike.
+    room, hist = "entity.shop_room", "entity.shop_room_hist"
+
+    def set_apart(config: Any) -> Any:
+        other = hist if declared_by == room else room
+        return replace(
+            config,
+            entities=[
+                replace(row, distinct_from=[other]) if row.id == declared_by else row
+                for row in config.entities
+            ],
+        )
+
+    runtime = shop(change=set_apart)
+    error = _refusal(_validate(runtime, AREA_BY_BUILDING))
+    assert "lookalike_measures" not in error["details"]
+    assert "lookalike_measures" not in error["message"]
+    assert "use_lookalike_measure" not in [hint["kind"] for hint in error["recovery_hints"]]
+    assert lookalike_swaps(runtime.package_config, [HIST_AREA], hist) == []
+    assert not {"lookalike_measures", "lookalike_notice"} & set(_card(runtime, HIST_AREA))
+
+
 def test_a_history_keyed_by_the_rooms_key_and_its_own_time_is_a_lookalike(shop):
     # One row per version of each room, keyed by the room and its valid_from date: the same rooms.
     config = shop().package_config
