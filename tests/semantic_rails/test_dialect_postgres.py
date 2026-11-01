@@ -20,6 +20,7 @@ from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.db_parts.postgres import create_adapter
 from semantic_rails.dialects import (
     PostgresDialect,
+    connection_option_errors,
     dialect_for_warehouse,
     warehouse_connector,
 )
@@ -248,6 +249,54 @@ def test_adapter_rejects_unsupported_and_literal_secret_options():
         assert exc.value.code == "INVALID_CONFIG"
         assert named in str(exc.value)
         assert "hunter2" not in str(exc.value) + repr(exc.value.details)
+
+
+@pytest.mark.parametrize("address", ["203.0.113.7", "2001:db8::7"])
+def test_a_pinned_address_reaches_libpq_beside_the_host_name(
+    monkeypatch: pytest.MonkeyPatch, address: str
+):
+    _set_pg_env(monkeypatch)
+    pinned = AdbcAdapter({**VALID_OPTIONS, "hostaddr": f" {address} "})
+
+    assert pinned.options["hostaddr"] == address
+    uri = pinned._connect_uri()
+    assert "host='pg.example.test'" in uri
+    assert uri.endswith(f"hostaddr='{address}' dbname='sr_jaffle'")
+    # Without it, the connection string is exactly what it was.
+    assert AdbcAdapter(VALID_OPTIONS)._connect_uri() == uri.replace(f" hostaddr='{address}'", "")
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        (
+            {"hostaddr": "db.example.com"},
+            "package.connection option 'hostaddr' must be one IPv4 or IPv6 address, "
+            "without brackets or a zone",
+        ),
+        ({"hostaddr": "203.0.113.7,198.51.100.2"}, "must be one IPv4 or IPv6 address"),
+        ({"hostaddr": "[2001:db8::7]"}, "must be one IPv4 or IPv6 address"),
+        ({"hostaddr": "fe80::7%eth0"}, "must be one IPv4 or IPv6 address"),
+        (
+            {"host_env": None, "hostaddr": "203.0.113.7"},
+            "package.connection option 'hostaddr' needs host or host_env: "
+            "the server name that TLS verifies",
+        ),
+    ],
+    ids=["name", "list", "brackets", "zone", "no-host"],
+)
+def test_a_pinned_address_must_be_one_address_of_a_named_host(options, message):
+    authored = {**VALID_OPTIONS, **options}
+    authored = {key: value for key, value in authored.items() if value is not None}
+
+    # Package loading and the adapter report the same refusal before any connection.
+    errors = connection_option_errors("postgres", "postgres_native", authored)
+    assert any(message in error for error in errors), errors
+    with pytest.raises(SemanticLayerError) as exc:
+        AdbcAdapter(authored)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert str(exc.value).startswith("postgres postgres_native connection has invalid options: ")
+    assert message in str(exc.value)
 
 
 def test_adapter_rejects_invalid_numeric_options_before_connecting(

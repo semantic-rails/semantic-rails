@@ -9,6 +9,7 @@ and compiler call. Also owns the connection-option schema used by
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -1644,6 +1645,9 @@ SNOWFLAKE_ADBC_CONNECTION_OPTIONS: tuple[str, ...] = (
 POSTGRES_CONNECTION_OPTIONS: tuple[str, ...] = (
     "host",
     "host_env",
+    # One address that `host` is reached at: libpq dials it without looking `host` up, while
+    # TLS still sends and verifies `host`.
+    "hostaddr",
     "port",
     "database",
     "schema",
@@ -1845,7 +1849,34 @@ def connection_option_errors(warehouse: str, kind: str, options: dict[str, Any])
                 f"package.connection option '{raw_key}' must be one of: "
                 + ", ".join(SNOWFLAKE_CERT_REVOCATION_CHECK_MODES)
             )
+        elif key == "hostaddr":
+            errors.extend(_hostaddr_errors(raw_key, value, options))
     return tuple(errors)
+
+
+def _hostaddr_errors(raw_key: Any, value: str, options: dict[str, Any]) -> list[str]:
+    """A pinned address is one plain IP address of the server `host` names.
+
+    libpq would also read a comma-separated list, or dial `hostaddr` alone and verify TLS
+    against no name at all; neither is the address of one named server.
+    """
+    errors = []
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        address = None
+    if address is None or getattr(address, "scope_id", None):
+        errors.append(
+            f"package.connection option '{raw_key}' must be one IPv4 or IPv6 address, "
+            "without brackets or a zone"
+        )
+    keys = {normalize_connection_option_name(str(key)) for key in options}
+    if not keys & {"host", "host_env"}:
+        errors.append(
+            f"package.connection option '{raw_key}' needs host or host_env: "
+            "the server name that TLS verifies"
+        )
+    return errors
 
 
 def snowflake_adbc_connect_errors(options: dict[str, Any]) -> tuple[str, ...]:

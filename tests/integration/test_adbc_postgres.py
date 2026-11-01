@@ -4,6 +4,8 @@ Uses the standard SR_POSTGRES_* fixture environment.
 """
 
 import json
+import os
+import socket
 import threading
 import time
 from dataclasses import replace
@@ -84,6 +86,21 @@ def test_postgres_noon_day_keys_keep_an_intraday_window(adbc, physical, grain, b
         runtime.close()
 
     assert [(str(day), count) for day, count in rows] == [(bucket, 1)]
+
+
+def test_postgres_answers_at_a_pinned_address_without_resolving_the_host(adbc):
+    # The server's own address, under a host name no resolver answers (RFC 6761).
+    address = socket.getaddrinfo(os.environ["SR_POSTGRES_HOST"], None, type=socket.SOCK_STREAM)
+    options = {
+        **{key: value for key, value in TARGET.connection_options.items() if key != "host_env"},
+        "host": "warehouse.example.invalid",
+        "hostaddr": address[0][4][0],
+    }
+    pinned = AdbcAdapter(options)
+    try:
+        assert pinned.query("SELECT 1 AS one") == [{"one": 1}]
+    finally:
+        pinned.close()
 
 
 def test_postgres_exact_types(adbc):

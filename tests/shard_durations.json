@@ -245,6 +245,7 @@
   "tests/semantic_rails/test_policy_environments.py": 12.639,
   "tests/semantic_rails/test_policy_kinds.py": 25.454,
   "tests/semantic_rails/test_postgres_ci_gate.py": 4.606,
+  "tests/semantic_rails/test_postgres_pinned_address.py": 0.4,
   "tests/semantic_rails/test_predicate_clock_choice.py": 9.324,
   "tests/semantic_rails/test_predicate_thresholds.py": 6.189,
   "tests/semantic_rails/test_prepared_parameters.py": 4.057,
