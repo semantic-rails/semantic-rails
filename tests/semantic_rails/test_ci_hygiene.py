@@ -556,19 +556,25 @@ def test_workflow_limits_guard_to_hosted_merge_groups_and_validates_quarantine()
     assert any("--validate-quarantine" in step.get("run", "") for step in backend["steps"])
 
 
+ADBC_MODULES = ("test_adbc_adapter", "test_adbc_snowflake", "test_postgres_pinned_address")
+
+
 @pytest.mark.parametrize(
     "cases, succeeds",
     [
         ([], False),
         ([("unrelated", False)], False),
-        ([("test_adbc_adapter", False)], False),
-        ([("test_adbc_snowflake", False)], False),
-        ([("test_adbc_adapter", True), ("test_adbc_snowflake", False)], False),
-        ([("test_adbc_adapter", False), ("test_adbc_snowflake", True)], False),
-        ([("test_adbc_adapter", False), ("test_adbc_snowflake", False)], True),
+        *[([(module, False)], False) for module in ADBC_MODULES],
+        # Each module missing, or one of its tests skipped, fails the guard.
+        *[
+            ([(other, False) for other in ADBC_MODULES if other != module], False)
+            for module in ADBC_MODULES
+        ],
+        *[([(other, other == module) for other in ADBC_MODULES], False) for module in ADBC_MODULES],
+        ([(module, False) for module in ADBC_MODULES], True),
     ],
 )
-def test_adbc_ci_guard_requires_both_modules_without_skips(tmp_path, cases, succeeds):
+def test_adbc_ci_guard_requires_every_module_without_skips(tmp_path, cases, succeeds):
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     guard = next(
         step

@@ -132,7 +132,7 @@ jobs:
           from scripts.test_sharding import in_shard
 
           cases = ET.parse("backend-results.xml").findall(".//testcase")
-          for module in ("test_adbc_adapter", "test_adbc_snowflake"):
+          for module in ("test_adbc_adapter", "test_adbc_snowflake", "test_postgres_pinned_address"):
               if not in_shard(f"tests/semantic_rails/{module}.py"):
                   continue
               selected = [case for case in cases if case.get("classname") == f"tests.semantic_rails.{module}"]
