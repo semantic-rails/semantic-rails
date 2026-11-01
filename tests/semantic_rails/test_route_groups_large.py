@@ -4,7 +4,8 @@ An account reaches a brand by 212 routes: through each of 14 activities an accou
 from there. They are asked as 14 groups (11 options and 3 forks of 16 or 17 routes), the same in
 ``execute``, ``plan``, ``inspect`` and Architect's route census, and the answer fits its budget
 for every undecided pair of the package with every group listed: never ``RESULT_TOO_LARGE``.
-Each fork's routes are listed as parts a package author decides it by, for the asked pair only.
+Each fork's routes are listed as parts a package author decides it by, for the asked pair only,
+and recording a part marks each pair it moves off its row.
 
 The package takes about 20 seconds to build, once per worker. The census walks every pair one
 at a time, keeping no refusal once it is checked, so memory stays flat.
@@ -13,6 +14,7 @@ at a time, keeping no refusal once it is checked, so memory stays flat.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 from itertools import chain
@@ -22,12 +24,14 @@ import pytest
 
 from scripts.large_warehouse import ALL_MARTS, LargeWorkspace, build_large_workspace
 from semantic_rails.architect_mcp import PAGE_CHARS, PAGE_ITEMS, _report_page, _with_groups
+from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.config_parts.route_rows import walk_entities
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import package_hop_limit, package_route, route_hops
 from semantic_rails.mcp import SemanticLayerMCPAdapter, json_text
 from semantic_rails.query_call import route_options
 from semantic_rails.request_payload import max_result_chars
-from semantic_rails.route_census import census_pairs
+from semantic_rails.route_census import EXCLUDED_NOTE, OFF_ROW_NOTES, census_pairs
 from semantic_rails.route_groups import grouped_refusal, route_groups, shorter_route_asks
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PathPreferenceConfig
@@ -40,6 +44,13 @@ ACCOUNT, BRAND = "entity.large_account", "entity.large_brand"
 ACCOUNTS_BY_BRAND = {
     "select": ["measure.large.account_count"],
     "group_by": ["dimension.large_brand_brand_name"],
+}
+EMPLOYEE = "entity.large_employee"
+# Two fork parts, each 4 hops where its pair's shortest route is 2, and the pairs recording
+# each one moves: answered off its row (``inherited``), and refused (``excluded_by_decision``).
+OFF_ROW_PARTS = {
+    (BRAND, EMPLOYEE): ("people_order_account_people_visit_employee", 24, 6),
+    (ACCOUNT, EMPLOYEE): ("finance_ticket_brand_people_visit_employee", 0, 26),
 }
 
 
@@ -253,3 +264,43 @@ def test_a_package_author_decides_each_fork_by_one_of_its_parts(runtime: Runtime
         with pytest.raises(SemanticLayerError) as own_pair:
             package_route(recorded, start=via, target=target)
         assert own_pair.value.code == "AMBIGUOUS_PATH"
+
+
+# Each preview resolves every pair of the package twice (about 40 seconds here, beside the build).
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("pair", list(OFF_ROW_PARTS), ids=lambda pair: pair[0].split("_")[-1])
+def test_a_part_longer_than_its_pairs_shortest_route_marks_each_pair_it_moves_off_its_row(
+    workspace: LargeWorkspace, runtime: Runtime, pair: tuple[str, str]
+) -> None:
+    """Recording such a part moves the asked pair and its reverse along its row, unmarked, and
+    other pairs off it: the ``record_route_decision`` preview's ``route_changes`` marks each one
+    answered by the only route its exclusion left, a route not through the asked pair, and each
+    one refused."""
+    config, (start, target) = runtime.config, pair
+    part_id, answered, refused = OFF_ROW_PARTS[pair]
+    raised = _refusal(config, start, target)
+    assert raised is not None
+    options = raised.details["clarification"]["options"]
+    groups = route_groups(config, start, target, options, parts=True)["groups"]
+    (part,) = [
+        part
+        for group in groups
+        if "decide_first" in group
+        for part in group["decide_first"]["parts"]
+        if part["id"] == part_id
+    ]
+    project = ArchitectProject(workspace.root / workspace.package, workspace_root=workspace.root)
+    preview = project.record_route_decision(**part["decision"], validate_after=False, dry_run=True)
+    changes = preview.report["route_changes"]
+    unmarked = {(c["source_entity"], c["target_entity"]) for c in changes if "note" not in c}
+    assert unmarked == {(start, target), (target, start)}
+    notes = Counter(change.get("note") for change in changes)
+    assert (notes[OFF_ROW_NOTES["inherited"]], notes[EXCLUDED_NOTE]) == (answered, refused)
+    relationships = {rel.id: rel for rel in config.relationships}
+    for change in changes:
+        if change.get("note") == EXCLUDED_NOTE:
+            assert change["head"] == {"refused": "PATH_NOT_FOUND"}
+        elif change.get("note"):
+            path = change["head"]["relationship_path"]
+            walked = walk_entities(relationships, change["source_entity"], path)
+            assert not {start, target} <= set(walked)
