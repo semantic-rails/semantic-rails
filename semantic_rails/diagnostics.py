@@ -549,6 +549,24 @@ def recovery_hints_for_error(
         return hints
     if code == "UNSUPPORTED_AGGREGATION":
         aggregation = str(details.get("aggregation", "") or "")
+        if "unread_parameters" in details:
+            unread = list(details["unread_parameters"])
+            # A measure's statistic of a row value is an aggregate_if (all of these take one).
+            row_value = (
+                " To aggregate a row expression (a column, or a call such as LENGTH), write "
+                f'{{"kind": "aggregate_if", "aggregation": "{aggregation}", "value": '
+                "<expression>}."
+                if details.get("measure")
+                and aggregation in {"count", "count_distinct", "sum", "avg", "min", "max", "median"}
+                else ""
+            )
+            return [
+                {
+                    "kind": "remove_unread_parameters",
+                    "message": f"Remove {', '.join(unread)}.{row_value}",
+                    "unread_parameters": unread,
+                }
+            ]
         if "allowed" in details:
             allowed = list(details["allowed"])
             default = str(details.get("default_aggregation", "") or "")

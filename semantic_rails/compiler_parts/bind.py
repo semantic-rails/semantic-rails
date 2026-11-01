@@ -41,6 +41,7 @@ from ..expressions import (
     collect_column_refs,
     expr_to_dict,
     filter_word,
+    parameter_schema_for_aggregation,
     parse_semantic_expression,
     reads_temporal_value,
     resolve_filter_dimension,
@@ -204,6 +205,34 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
     if agg in {"avg", "min", "max"}:
         return dialect.conditional_aggregate(agg, condition, body)
     return None
+
+
+def _refuse_unread_parameters(
+    aggregation: str, parameters: dict[str, Any], *, measure: str = "", prefix: str = "parameters."
+) -> None:
+    """Refuse a parameter ``aggregation`` doesn't read: the SQL would drop it and answer the
+    plain aggregation, e.g. "average title length" as ``AVG`` of the measure itself. Without a
+    ``measure``, the parameters are a distribution's (its ``p`` has no ``prefix``)."""
+    accepted = sorted(parameter_schema_for_aggregation(aggregation))
+    unread = sorted(str(key) for key in parameters if key not in accepted)
+    if not unread:
+        return
+    takes = (
+        f"takes only {', '.join(f'parameters.{key}' for key in accepted)}"
+        if accepted
+        else "takes no parameters"
+    )
+    raise SemanticLayerError(
+        "UNSUPPORTED_AGGREGATION",
+        f"{aggregation} {takes}: {', '.join(prefix + key for key in unread)} on "
+        f"{measure or 'the distribution'} would be ignored.",
+        details={
+            "aggregation": aggregation,
+            **({"measure": measure} if measure else {}),
+            "unread_parameters": [prefix + key for key in unread],
+            "parameters_accepted": accepted,
+        },
+    )
 
 
 def _aggregation_expr(
@@ -628,6 +657,7 @@ def _bind_measure(
                 "default_aggregation": measure.default_aggregation,
             },
         )
+    _refuse_unread_parameters(aggregation, dict(expr.parameters or {}), measure=measure_id)
     temporal_role = resolve_measure_temporal_role(
         measure,
         expr.temporal_role,
