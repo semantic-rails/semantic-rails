@@ -1572,6 +1572,22 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         {"path": "parts[1]", "reason": "parts_grain_mismatch", "part": 1, "extra": [WING]},
     ),
     (
+        "a select alias naming the finer part's column",
+        {
+            "parts": [
+                AREA_BY_BUILDING,
+                {
+                    "select": [{"expression": "measure.depts.headcount", "as": BUILDING}],
+                    "group_by": [DEPT],
+                },
+            ],
+            "join": {"on": [[SPACE_DEPT, DEPT]]},
+        },
+        "DUPLICATE_OUTPUT_ALIAS",
+        f"parts[1]: selects '{BUILDING}' and so does parts[0]'s group_by",
+        {"path": "parts[1]", "part": 1, "alias": BUILDING},
+    ),
+    (
         "no part with a clock",
         {"parts": [SEATS], "join": {"on": [[ROOM]]}, "time": MONTHS},
         "INVALID_QUERY",

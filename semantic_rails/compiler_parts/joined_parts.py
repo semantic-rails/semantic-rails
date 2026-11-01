@@ -381,7 +381,8 @@ def refuse_shared_outputs(shape: JoinShape, outputs: Sequence[Sequence[str]]) ->
     """Every column of the joined answer is named once: a key, the finer part's further key
     or a select alias of one part that another part's select alias repeats is refused."""
     taken = {key.name: "the join key" for key in shape.keys}
-    taken.update({column: f"{_part(shape.finer)}'s group_by" for column in shape.extra})
+    if shape.finer is not None:
+        taken.update({column: f"{_part(shape.finer)}'s group_by" for column in shape.extra})
     for part, names in enumerate(outputs):
         for name in names:
             if name in taken:

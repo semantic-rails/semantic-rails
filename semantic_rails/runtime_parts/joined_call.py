@@ -481,8 +481,8 @@ def _joined_rows(
             if key.name == TIME_AXIS and (PERIOD_PARTIAL in source or partial):
                 out[PERIOD_PARTIAL] = source.get(PERIOD_PARTIAL)
         if finer is not None:
-            at = where[finer][position]
-            source = answers[finer]["rows"][at] if at >= 0 else {}
+            own = where[finer][position]
+            source = answers[finer]["rows"][own] if own >= 0 else {}
             out.update({name: source.get(name) for name in joined.shape.extra})
         for part, answer, at in zip(joined.parts, answers, where, strict=True):
             row = answer["rows"][at[position]] if at[position] >= 0 else {}

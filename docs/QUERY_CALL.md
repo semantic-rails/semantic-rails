@@ -1112,8 +1112,9 @@ scope it used.
 
 Some questions are several calls answered side by side: each store's orders from new customers
 beside all its orders and revenue, headcount beside assigned area per department, the
-headcount of only the departments that have space in one building. Each call needs its own
-`where`, so one call can't ask it. A joined call sends the calls as `parts` and names the
+headcount of only the departments that have space in one building, each mailing list's owners
+beside its member count, monthly work orders beside each room's seats. Each call needs its own
+`where` or grouping, so one call can't ask it. A joined call sends the calls as `parts` and names the
 columns they share in `join.on`; the engine answers each part as the call it is and joins
 their rows in one statement:
 
@@ -1169,23 +1170,33 @@ their rows in one statement:
   of one name name the same things (one model's `ENG` may be the other's `ENGR`). Such a key is
   `declared: false` in `PARTS_JOINED`, whose message says the join is the caller's choice; its
   counts of each part's keys with no row in the other part are where a mismatch shows.
-- **Every part is grouped by its join keys only.** A part grouped by a further column would
-  repeat each of its rows beside the other parts' rows, so it is refused (`parts_grain_mismatch`);
-  so is a join column the part doesn't group by (`join_key_not_grouped`). The key a display name
-  adds joins with its name.
+- **One part may be grouped finer than the join keys.** Each list's owners (grouped by list and
+  owner) beside its member count (grouped by list): one row per list and owner, the member count
+  repeated on each of the list's rows. The finer part's further columns come after the key
+  columns. The key a display name adds is one of those columns, so two people named Alex in one
+  department are two rows beside its headcount; a key joined in every part joins with its name.
+  Two parts grouped finer would repeat each other's rows, so the call is refused
+  (`parts_grain_mismatch`, `details.finer` naming both), as is a join column a part doesn't group
+  by (`join_key_not_grouped`).
 - **Keys and NULL.** The parts join on plain equality: a key's row holds each part's values for
   it. A key only another part has reads, in this part, what an empty group of the part alone
   reads ([Empty groups: NULL or 0](#empty-groups-null-or-0)): a count or sum 0 where the part's
-  rows are in scope and loaded (data of nothing), NULL otherwise, an average NULL. A NULL key
-  never matches: each part's NULL-key row is its own row, NULL in every other part.
+  rows are in scope and loaded (data of nothing), NULL otherwise, an average NULL. A key the
+  finer part lacks is one row, its further columns and values NULL: the part has no row there
+  (a list with no owner shows once, with no owner). A NULL key never matches: each part's
+  NULL-key row is its own row, NULL in every other part.
 - **`keep`.** `"all"` keeps every key of every part. `[1]` keeps the keys `parts[1]` has, its
   NULL-key row included: headcount beside the departments with space in building 32 is those
   departments' people, not every department's. `[0, 1]` keeps a key only where both parts have
   it, so neither NULL-key row stays.
 - **`time`.** The call's one `time` block reads every part, each by its own clock and load edge
   (work orders loaded through February read NULL in March beside March's reservations), and
-  the key includes `period` when it has a grain. A part with no clock beside a timed call is
-  refused (`part_untimed`): ask for it in a call of its own.
+  the key includes `period` when it has a grain. A part whose selects read no clock (seats per
+  room, a listing) takes no window and is matched on every key but `period`: its values repeat
+  on each period's row, and a key of it no part with a clock has is a row of its own, with a
+  NULL `period`. `keep` naming it keeps every period of its keys. Such a part can't be the finer
+  part (`parts_grain_mismatch`), and a call whose parts all lack a clock is refused at `time`
+  (`part_untimed`).
 - **The answer.** Every warning and assumption a part gives alone comes back, with `part` (in
   `details` for a warning) and its message prefixed `parts[i]: `. `parts` holds each part's
   `query`, `window`, `clock`, `observation_scope` and `routes`. `PARTS_JOINED` (every
@@ -1195,7 +1206,10 @@ their rows in one statement:
   counted over the whole joined result before `order_by` and `limit` and never counting a row
   the caller can't see; `kept_rows`; and per column whether it adds up down the rows (a count
   or sum of an additive measure does; a distinct count, an average, a ratio, or a column whose
-  part's groups overlap, as that part's own `REWRITE_APPLIED` says, is not stated to).
+  part's groups overlap, as that part's own `REWRITE_APPLIED` says, is not stated to) and
+  whether it `repeats` (every other part's columns beside the finer part, named in
+  `details.finer` with its further columns; a part with no clock under a grain, `untimed` in
+  `details.parts`): a repeated column never adds up, and the message says what repeats where.
   `validate` and `sql` state the join without counts. The warehouse runs once.
 
 ## Inline expression kinds
@@ -1618,8 +1632,10 @@ The engine trusts the data as it is stored in three cases:
 
 - A joined call has no `having` or `totals`, and computes nothing across parts (an occupancy
   ratio from a headcount part and a capacity part): it returns both columns.
-- A part grouped by more than the join keys (each list's owners beside its member count) and a
-  part with no clock beside a timed call are refused, not answered.
+- At most one part is grouped finer than the join keys, and it has a clock when the call has a
+  grain; two finer parts are refused, not answered.
+- A key of a part with no clock that no part with a clock has is one row with a NULL `period`,
+  not a row per period reading 0.
 - Two models that hold the same code join only when one of them declares it in its key, or a
   relationship pairs them; the engine doesn't check that the codes name the same things.
 
