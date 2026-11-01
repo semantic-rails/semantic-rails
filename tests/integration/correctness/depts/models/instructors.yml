@@ -1,0 +1,8 @@
+model:
+  id: instructors
+  label: Instructors
+  relation: instructors
+  entities: {instructor: {}}
+  dimensions:
+    instructor_key: {label: Instructor key, kind: categorical}
+    instructor_name: {label: Instructor name, kind: categorical}

@@ -27,8 +27,10 @@ INSERT INTO space VALUES
 CREATE TABLE trainings (training_id INTEGER, employee_id INTEGER);
 INSERT INTO trainings VALUES (1, 1), (2, 1), (3, 3), (4, 4), (5, 8);
 
-CREATE TABLE rooms (room_key VARCHAR(8));
-INSERT INTO rooms VALUES ('R1'), ('R2'), ('R3');
+-- Each room's seats, which have no month, and its wing. R4 has no work orders or reservations.
+CREATE TABLE rooms (room_key VARCHAR(8), wing VARCHAR(8), seats INTEGER);
+INSERT INTO rooms VALUES ('R1', 'east', 10), ('R2', 'east', 20), ('R3', 'west', 6),
+  ('R4', 'west', 8);
 
 CREATE TABLE work_orders (work_order_id INTEGER, room_key VARCHAR(8), opened_at TIMESTAMP);
 INSERT INTO work_orders VALUES
@@ -46,3 +48,23 @@ INSERT INTO reservations VALUES
 CREATE TABLE assignments (building_key INTEGER, dept_code VARCHAR(12), area_sqft INTEGER);
 INSERT INTO assignments VALUES
   (32, 'ENG', 500), (40, 'ENG', 200), (40, 'OPS', 400), (40, 'LAW', 100), (41, 'LAB', 250);
+
+-- Mailing lists and their members, a membership row per list and person with a role. A list has
+-- several owners (L1), one (L2) or none (L3), and lists share members (c is on L1 and L2).
+CREATE TABLE lists (list_key VARCHAR(8), list_name VARCHAR(16));
+INSERT INTO lists VALUES ('L1', 'Staff'), ('L2', 'Labs'), ('L3', 'Alumni');
+
+CREATE TABLE list_members (list_key VARCHAR(8), member_email VARCHAR(16), member_role VARCHAR(8));
+INSERT INTO list_members VALUES
+  ('L1', 'a@x', 'owner'), ('L1', 'b@x', 'owner'), ('L1', 'c@x', 'member'),
+  ('L2', 'c@x', 'owner'), ('L2', 'd@x', 'member'), ('L3', 'e@x', 'member');
+
+-- Instructors keyed by key and name: I1 is filed under two names. Course reserves hold the
+-- key only: I9 is no instructor listed, and one reserve names none.
+CREATE TABLE instructors (instructor_key VARCHAR(8), instructor_name VARCHAR(16));
+INSERT INTO instructors VALUES ('I1', 'Ann Lee'), ('I1', 'Ann Li'), ('I2', 'Bo Chu'),
+  ('I3', 'Cy Diaz');
+
+CREATE TABLE course_reserves (reserve_id INTEGER, instructor_key VARCHAR(8));
+INSERT INTO course_reserves VALUES (1, 'I1'), (2, 'I1'), (3, 'I1'), (4, 'I2'), (5, 'I9'),
+  (6, 'I9'), (7, NULL);

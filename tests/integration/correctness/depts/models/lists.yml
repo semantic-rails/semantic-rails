@@ -1,0 +1,8 @@
+model:
+  id: lists
+  label: Mailing lists
+  relation: lists
+  entities: {list: {}}
+  dimensions:
+    list_key: {label: List key, kind: categorical}
+    list_name: {label: List name, kind: categorical}

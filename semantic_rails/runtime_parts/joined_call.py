@@ -603,12 +603,17 @@ def _parts_joined(
     add up."""
     from ..diagnostics import semantic_issue
 
+    shape = joined.shape
     keys = [
-        {"column": key.name, "parts": list(key.columns), "declared": not key.chosen}
+        {"column": key.name, "parts": _key_columns(key), "declared": not key.chosen}
         for key in joined.keys
     ]
     parts = [
-        {"part": part.index, **({"window": block["window"]} if block.get("window") else {})}
+        {
+            "part": part.index,
+            **({"window": block["window"]} if block.get("window") else {}),
+            **({"untimed": True} if shape.untimed(part.index) else {}),
+        }
         for part, block in zip(joined.parts, blocks, strict=True)
     ]
     details: dict[str, Any] = {
@@ -616,9 +621,11 @@ def _parts_joined(
         "keep": "all" if joined.keep is None else list(joined.keep),
         "parts": parts,
     }
+    if shape.finer is not None:
+        details["finer"] = {"part": shape.finer, "columns": list(shape.extra)}
     on = ", ".join(
         key.name
-        if len(set(key.columns)) == 1
+        if {column for column in key.columns if column} == {key.name}
         else f"{key.name} ({', '.join(f'parts[{i}]: {c}' for i, c in enumerate(key.columns))})"
         for key in joined.keys
     )
@@ -657,13 +664,24 @@ def _parts_joined(
     columns: list[dict[str, Any]] = []
     for part in joined.parts:
         adds = _adds_up(config, part)
+        # A part's columns repeat beside a finer part's rows of their key, and an untimed
+        # part's on each period's row: summed down the rows, they count again.
+        repeats = (shape.finer is not None and part.index != shape.finer) or shape.untimed(
+            part.index
+        )
         columns.extend(
-            {"column": name, "part": part.index, "adds_up": adds.get(name, False)}
+            {
+                "column": name,
+                "part": part.index,
+                "adds_up": adds.get(name, False) and not repeats,
+                **({"repeats": True} if repeats else {}),
+            }
             for name in _visible_outputs(part)
         )
     details["columns"] = columns
+    sentences.extend(_repeats(joined, columns))
     summed = [row["column"] for row in columns if row["adds_up"]]
-    others = [row["column"] for row in columns if not row["adds_up"]]
+    others = [row["column"] for row in columns if not row["adds_up"] and not row.get("repeats")]
     if summed:
         sentences.append(
             f"Summed down the rows, {_listed(summed)} add{'s' if len(summed) == 1 else ''} up."
@@ -691,6 +709,46 @@ def _parts_joined(
         stage="compile",
         details=details,
     )
+
+
+def _key_columns(key: JoinKey) -> list[str | None]:
+    """A key's column in each part, None in a part with no clock (no period)."""
+    return [column or None for column in key.columns]
+
+
+def _repeats(joined: _Joined, columns: list[dict[str, Any]]) -> list[str]:
+    """What repeats down the rows: every other part's columns on each of the finer part's rows
+    of a key, and an untimed part's on each period's row of its key."""
+    shape = joined.shape
+    out: list[str] = []
+
+    def named(parts: set[int]) -> list[str]:
+        return [row["column"] for row in columns if row["part"] in parts]
+
+    if shape.finer is not None:
+        repeated = named({part.index for part in joined.parts} - {shape.finer})
+        if repeated:
+            out.append(
+                f"parts[{shape.finer}] groups by {_listed(list(shape.extra))} beyond the join "
+                f"key: {_listed(repeated)} {'repeats' if len(repeated) == 1 else 'repeat'} on "
+                "each of its rows of a key, so "
+                f"{'it does' if len(repeated) == 1 else 'they do'} not add up down the rows."
+            )
+    for part in joined.parts:
+        if not shape.untimed(part.index):
+            continue
+        repeated = named({part.index})
+        said = (
+            f"{_listed(repeated)} {'repeats' if len(repeated) == 1 else 'repeat'} on each "
+            "period's row of its key"
+            if repeated
+            else "its rows repeat on each period's row of their key"
+        )
+        out.append(
+            f"parts[{part.index}] has no clock: {said}, and a key no part with a clock has is a "
+            "row of its own, with no period."
+        )
+    return out
 
 
 def _listed(items: list[str]) -> str:
@@ -792,7 +850,7 @@ def _explain(joined: _Joined) -> dict[str, Any]:
             for part in joined.parts
         ],
         "join": {
-            "on": [list(key.columns) for key in joined.keys],
+            "on": [_key_columns(key) for key in joined.keys],
             "keep": "all" if joined.keep is None else list(joined.keep),
         },
     }

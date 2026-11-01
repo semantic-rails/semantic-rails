@@ -5,3 +5,6 @@ model:
   entities: {room: {}}
   dimensions:
     room_key: {label: Room key, kind: categorical}
+    wing: {label: Wing, kind: categorical}
+  measures:
+    seats: {label: Seats, kind: aggregate, expr: seats, rollup: additive}

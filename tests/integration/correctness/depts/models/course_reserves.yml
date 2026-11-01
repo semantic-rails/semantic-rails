@@ -1,0 +1,11 @@
+# The reserve holds the instructor's key only: no relationship can be declared to a model keyed by
+# key and name.
+model:
+  id: course_reserves
+  label: Course reserves
+  relation: course_reserves
+  entities: {course_reserve: {}}
+  dimensions:
+    instructor_key: {label: Instructor key, kind: categorical}
+  measures:
+    reserves: {label: Reserves, kind: entity_count, entity_key: reserve_id}

@@ -1,0 +1,11 @@
+# A row per list and person, with no key of its own (row grain).
+model:
+  id: list_members
+  label: List members
+  relation: list_members
+  entities: {list: {}}
+  dimensions:
+    member_email: {label: Member email, kind: categorical}
+    member_role: {label: Member role, kind: categorical}
+  measures:
+    members: {label: Members, kind: entity_count, entity_key: member_email}

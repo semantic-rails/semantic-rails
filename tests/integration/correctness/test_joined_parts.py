@@ -8,7 +8,9 @@ Marketing have no assignment). Engineering is two people, both named Alex;
 two people have no department and one is filed under UNASSIGNED, a code read as unknown;
 Marketing has people and no space, Legal space and no people, and 900 sq ft is assigned to no
 department. Work orders are loaded through 25 February and reservations through 15 March; room
-R3 has reservations only.
+R3 has reservations only, and R4 neither (rooms have seats, with no clock). Mailing lists have
+several owners, one or none, and share members; an instructor key is filed under two names, and
+course reserves hold the key only.
 
 The hand SQL settles a key the way the engine's rule says, written out: a part's count or sum
 reads 0 on a key only another part has, its average NULL; a NULL key never joins, so each
@@ -36,7 +38,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_tools import _run_test
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, PackageConfig, SeedSpec, SemanticPolicyConfig
-from tests.semantic_rails.hidden_absent import visibility_policy
+from tests.semantic_rails.hidden_absent import absent, visibility_policy
 
 from .conftest import _rows, _runtime, _strict
 
@@ -78,6 +80,28 @@ WORK_ORDERS = {"select": ["measure.depts.work_orders"], "group_by": [ROOM]}
 RESERVATIONS = {"select": ["measure.depts.reservations"], "group_by": [ROOM]}
 MONTHS = {"grain": "month", "start": "2024-01-01", "end": "2024-04-01"}
 SITE = "dimension.depts_employee_site"
+WING = "dimension.depts_room_wing"
+# Seats per room: rooms have no clock, so beside a timed part they repeat on each period's row.
+SEATS = {"select": ["measure.depts.seats"], "group_by": [ROOM]}
+# Area per department and building: grouped by more than the department code (a finer part).
+AREA_BY_BUILDING = {"select": ["measure.depts.area"], "group_by": [SPACE_DEPT, BUILDING]}
+# Salary per person of each department: the name groups by the employee key beside it.
+SALARY_BY_NAME = {"select": ["measure.depts.salary"], "group_by": [DEPT, NAME]}
+LIST = "dimension.depts_list_list_key"
+EMAIL = "dimension.depts_list_members_member_email"
+ROLE = "dimension.depts_list_members_member_role"
+INSTRUCTOR_KEY = "dimension.depts_instructor_instructor_key"
+INSTRUCTOR_NAME = "dimension.depts_instructor_instructor_name"
+RESERVE_INSTRUCTOR = "dimension.depts_course_reserve_instructor_key"
+# Reserve counts per instructor key beside the instructor listing (key and name): no
+# relationship can be declared from a reserve to a model keyed by key and name.
+BY_INSTRUCTOR = {
+    "parts": [
+        {"select": ["measure.depts.reserves"], "group_by": [RESERVE_INSTRUCTOR]},
+        {"group_by": [INSTRUCTOR_KEY, INSTRUCTOR_NAME]},
+    ],
+    "join": {"on": [[RESERVE_INSTRUCTOR, INSTRUCTOR_KEY]]},
+}
 # Departments with more than 2 people: an entity filter, which removes whole keys of its part.
 BIG_DEPARTMENTS = {
     "entity": "entity.depts_department",
@@ -910,6 +934,375 @@ def test_a_metric_grant_is_refused_a_joined_call():
     assert refused[:2] == ("RESOURCE_ACCESS_DENIED", "Resource access is not permitted.")
 
 
+# Area per department and building beside each department's headcount, by hand: the space rows
+# grouped by code and building, each beside its department's headcount (repeated on each of its
+# buildings); a code with people and no space is one row with no building and NULL area; a code
+# with space and no people reads headcount 0; each NULL-code row is its own row.
+AREA_BY_BUILDING_SQL = f"""
+WITH fac AS (
+  SELECT dept_code AS code, building_key, SUM(area_sqft) AS area, 1 AS present
+  FROM space GROUP BY dept_code, building_key),
+hr AS (
+  SELECT {UNKNOWN_AS_NULL} AS code, COUNT(*) AS headcount, 1 AS present
+  FROM employees GROUP BY {UNKNOWN_AS_NULL})
+SELECT COALESCE(fac.code, hr.code), fac.building_key, fac.area,
+  CASE WHEN hr.present = 1 THEN hr.headcount WHEN fac.code IS NOT NULL THEN 0 END
+FROM fac FULL OUTER JOIN hr ON fac.code = hr.code"""
+
+
+def test_a_finer_part_repeats_the_other_parts_values_on_each_of_its_rows(depts):
+    """Area per department and building beside the department's headcount: Engineering's 2
+    people repeat on both its buildings, and the note says headcount repeats and doesn't add
+    up, while area does."""
+    out = depts.query(
+        {"parts": [AREA_BY_BUILDING, HEADCOUNT], "join": {"on": [[SPACE_DEPT, DEPT]]}}
+    )
+
+    rows = depts.sql(AREA_BY_BUILDING_SQL)
+    assert _values(out) == rows
+    assert [row for row in rows if row[0] == "ENG"] == [("ENG", 32, 500, 2), ("ENG", 40, 200, 2)]
+    assert [row for row in rows if row[0] in ("LAW", "MKT")] == [
+        ("LAW", 40, 100, 0),
+        ("MKT", None, None, 1),
+    ]
+    assert sorted((row[1:] for row in rows if row[0] is None), key=repr) == [
+        (41, 900, None),
+        (None, None, 3),
+    ]
+    assert sum(row["area"] for row in out["rows"] if row["area"] is not None) == 2400
+    assert list(out["rows"][0]) == [SPACE_DEPT, BUILDING, "area", "headcount"]
+    note = _joined(out)
+    assert note["details"]["finer"] == {"part": 0, "columns": [BUILDING]}
+    assert note["details"]["columns"] == [
+        {"column": "area", "part": 0, "adds_up": True},
+        {"column": "headcount", "part": 1, "adds_up": False, "repeats": True},
+    ]
+    # Each part's rows once: the space rows, and the departments, each once however many of
+    # their buildings it repeats on.
+    assert _counts(note) == (6, 1, 1, 5, 1, 1)
+    assert note["message"] == (
+        f"The answer joins 2 parts on {SPACE_DEPT} (parts[0]: {SPACE_DEPT}, parts[1]: {DEPT}), "
+        "keeping every key of every part. parts[0] has 6 rows: 1 with no row in parts[1] and 1 "
+        "with a NULL key (its own row, NULL in every other part). parts[1] has 5 rows: 1 with no "
+        "row in parts[0] and 1 with a NULL key (its own row, NULL in every other part). "
+        f"parts[0] groups by {BUILDING} beyond the join key: headcount repeats on each of its "
+        "rows of a key, so it does not add up down the rows. Summed down the rows, area adds "
+        f"up. {CAVEAT}"
+    )
+    # Each part answers from each of its rows once: the headcount part zero-fills Legal alone.
+    filled = {row["details"]["part"]: row["message"] for row in _note(out, "ZERO_FILLED_GROUPS")}
+    assert filled == {
+        1: "parts[1]: 1 of 6 groups has no rows of entity.depts_employee in this call, so its "
+        "headcount is 0. A 0 there is data of nothing, not missing data."
+    }
+    # The execute tool states the same, at its default verbosity.
+    tool = SemanticLayerMCPAdapter(depts.base).call_tool(
+        "execute",
+        {
+            "query": {"parts": [AREA_BY_BUILDING, HEADCOUNT], "join": {"on": [[SPACE_DEPT, DEPT]]}},
+            "now": NOW,
+        },
+    )
+    assert _values(tool) == rows
+    assert _joined(tool)["details"]["finer"] == note["details"]["finer"]
+
+
+# Headcount per department beside salary per person, by hand: each person of a department beside
+# its headcount; the people with no department (or UNASSIGNED) are their own rows, as is the
+# headcount of no department.
+SALARY_BY_NAME_SQL = f"""
+WITH hr AS (SELECT {UNKNOWN_AS_NULL} AS code, COUNT(*) AS headcount
+            FROM employees WHERE {{where}} GROUP BY {UNKNOWN_AS_NULL}),
+pay AS (SELECT {UNKNOWN_AS_NULL} AS code, employee_id, employee_name, SUM(salary) AS salary
+        FROM employees WHERE {{where}} GROUP BY {UNKNOWN_AS_NULL}, employee_id, employee_name)
+SELECT COALESCE(hr.code, pay.code), pay.employee_id, pay.employee_name, hr.headcount, pay.salary
+FROM hr FULL OUTER JOIN pay ON hr.code = pay.code"""
+SALARY_BESIDE_HEADCOUNT = {"parts": [HEADCOUNT, SALARY_BY_NAME], "join": {"on": [[DEPT, DEPT]]}}
+
+
+def test_two_people_named_alex_are_two_rows_beside_their_departments_headcount(depts):
+    """Salary per person by name beside the department's headcount: the name groups by the
+    employee key, so the two Alexes are two rows, each with Engineering's 2 people."""
+    out = depts.query(SALARY_BESIDE_HEADCOUNT)
+
+    rows = depts.sql(SALARY_BY_NAME_SQL.format(where="TRUE"))
+    assert _values(out) == rows
+    assert [row for row in rows if row[0] == "ENG"] == [
+        ("ENG", 1, "Alex", 2, 100),
+        ("ENG", 2, "Alex", 2, 120),
+    ]
+    assert list(out["rows"][0]) == [DEPT, EMPLOYEE, NAME, "headcount", "salary"]
+    note = _joined(out)
+    assert note["details"]["finer"] == {"part": 1, "columns": [EMPLOYEE, NAME]}
+    assert _counts(note) == (5, 1, 0, 10, 3, 0)
+    assert (
+        f"parts[1] groups by {EMPLOYEE} and {NAME} beyond the join key: headcount repeats on "
+        "each of its rows of a key, so it does not add up down the rows. Summed down the rows, "
+        "salary adds up."
+    ) in note["message"]
+    assert [row["code"] for row in out["assumptions"]] == ["GROUPED_BY_KEY"]
+    assert out["assumptions"][0]["part"] == 1
+
+
+def test_a_row_filter_reads_the_visible_rows_beside_a_finer_part(depts):
+    """A south site lead: the south people only, each beside their department's south
+    headcount; nothing of a north person shows, as a row or a count."""
+    lead = depts.runtime(_site_filter())
+    try:
+        out = lead.query(SALARY_BESIDE_HEADCOUNT, now=NOW, context=SITE_LEAD)
+    finally:
+        lead.close()
+
+    rows = depts.sql(SALARY_BY_NAME_SQL.format(where="site = 'south'"))
+    assert _values(out) == rows
+    assert [row[1:] for row in rows if row[0] == "ENG"] == [(2, "Alex", 1, 120)]
+    assert _counts(_joined(out)) == (3, 1, 0, 4, 1, 0)
+
+
+# Reserves per instructor key beside the instructor listing, by hand: a key with two names
+# repeats its count on each name; a listed instructor with no reserve reads 0; a key no
+# instructor has is one row with no name; the reserve with no key is its own row.
+BY_INSTRUCTOR_SQL = """
+WITH rs AS (SELECT instructor_key AS k, COUNT(*) AS n, 1 AS present
+            FROM course_reserves GROUP BY instructor_key),
+ins AS (SELECT DISTINCT instructor_key AS k, instructor_name FROM instructors)
+SELECT COALESCE(rs.k, ins.k), ins.instructor_name,
+  CASE WHEN rs.present = 1 THEN rs.n WHEN ins.k IS NOT NULL THEN 0 END
+FROM rs FULL OUTER JOIN ins ON rs.k = ins.k"""
+
+
+def test_reserves_by_instructor_name_repeat_each_keys_count_on_each_name(depts):
+    """Reserves by instructor name, where the reserve holds the key only and one key carries two
+    names: the count per key, listed once per name, said to repeat; keep narrows it to the
+    listed instructors, or to those with reserves too."""
+    out = depts.query(BY_INSTRUCTOR)
+
+    rows = depts.sql(BY_INSTRUCTOR_SQL)
+    assert (
+        _values(out)
+        == rows
+        == [
+            ("I1", "Ann Lee", 3),
+            ("I1", "Ann Li", 3),
+            ("I2", "Bo Chu", 1),
+            ("I3", "Cy Diaz", 0),
+            ("I9", None, 2),
+            (None, None, 1),
+        ]
+    )
+    note = _joined(out)
+    assert note["details"]["keys"][0]["declared"] is False
+    assert note["details"]["finer"] == {"part": 1, "columns": [INSTRUCTOR_NAME]}
+    assert note["details"]["columns"] == [
+        {"column": "reserves", "part": 0, "adds_up": False, "repeats": True}
+    ]
+    assert _counts(note) == (4, 1, 1, 4, 0, 1)
+    assert (
+        f"parts[1] groups by {INSTRUCTOR_NAME} beyond the join key: reserves repeats on each of "
+        "its rows of a key, so it does not add up down the rows."
+    ) in note["message"]
+    assert "not stated to add up" not in note["message"]
+    listed = depts.query({**BY_INSTRUCTOR, "join": {**BY_INSTRUCTOR["join"], "keep": [1]}})
+    assert _values(listed) == depts.sql(
+        f"SELECT * FROM ({BY_INSTRUCTOR_SQL}) AS j(k, name, n) WHERE name IS NOT NULL"
+    )
+    assert [row[0] for row in _values(listed)] == ["I1", "I1", "I2", "I3"]
+    both = depts.query({**BY_INSTRUCTOR, "join": {**BY_INSTRUCTOR["join"], "keep": [0, 1]}})
+    assert [row[:2] for row in _values(both)] == [
+        ("I1", "Ann Lee"),
+        ("I1", "Ann Li"),
+        ("I2", "Bo Chu"),
+    ]
+    # Alone, the pair has no path: the shared key isn't the instructor's whole key.
+    alone = _refusal(
+        lambda: depts.query({"select": ["measure.depts.reserves"], "group_by": [INSTRUCTOR_NAME]})
+    )
+    assert alone[0] == "PATH_NOT_FOUND"
+
+
+def test_a_hidden_column_of_the_finer_part_is_refused_as_one_that_isnt_there(package):
+    """A caller who can't see instructor names is refused the listing beside the reserves
+    exactly as a package with no such column refuses it."""
+    config = load_package_config(str(package))
+    policy = visibility_policy("hidden", INSTRUCTOR_NAME)
+    hidden = Runtime.from_config(
+        replace(config, semantic_policies=[*config.semantic_policies, policy]),
+        source_path=str(package),
+    )
+    absent_config = absent(config, [INSTRUCTOR_NAME])
+    without = Runtime.from_config(absent_config, source_path=str(package))
+    support = RequestContext(roles=("support",))
+    try:
+        refused = _refusal(lambda: hidden.query(BY_INSTRUCTOR, now=NOW, context=support))
+        assert refused == _refusal(lambda: without.query(BY_INSTRUCTOR, now=NOW))
+        assert refused[0] == "OBJECT_NOT_FOUND" and refused[2]["part"] == 1
+    finally:
+        hidden.close()
+        without.close()
+
+
+# Each list with its owners and its member count, by hand: the distinct members of a list
+# beside each of its owners (the count repeated on each); a list with no owner is one row.
+BY_LIST_SQL = """
+WITH mem AS (SELECT list_key AS k, COUNT(DISTINCT member_email) AS n
+             FROM list_members GROUP BY list_key),
+own AS (SELECT DISTINCT list_key AS k, member_email FROM list_members
+        WHERE member_role = 'owner')
+SELECT COALESCE(mem.k, own.k), own.member_email, mem.n
+FROM mem FULL OUTER JOIN own ON mem.k = own.k"""
+
+
+def test_each_list_with_its_owners_and_its_member_count(depts):
+    """Two parts on one membership model with no key of its own: each list's members beside
+    its owners. The count repeats per owner, so the rows sum to more members than there are."""
+    out = depts.query(
+        {
+            "parts": [
+                {"select": ["measure.depts.members"], "group_by": [LIST]},
+                {
+                    "group_by": [LIST, EMAIL],
+                    "where": [{"field": ROLE, "op": "is", "value": "owner"}],
+                },
+            ],
+            "join": {"on": [[LIST, LIST]]},
+        }
+    )
+
+    rows = depts.sql(BY_LIST_SQL)
+    assert (
+        _values(out)
+        == rows
+        == [
+            ("L1", "a@x", 3),
+            ("L1", "b@x", 3),
+            ("L2", "c@x", 2),
+            ("L3", None, 1),
+        ]
+    )
+    assert sum(row["members"] for row in out["rows"]) == 9
+    assert depts.sql("SELECT COUNT(DISTINCT member_email) FROM list_members") == [(5,)]
+    note = _joined(out)
+    assert note["details"]["finer"] == {"part": 1, "columns": [EMAIL]}
+    assert note["details"]["columns"] == [
+        {"column": "members", "part": 0, "adds_up": False, "repeats": True}
+    ]
+    assert _counts(note) == (3, 0, 1, 3, 0, 0)
+
+
+MONTHS_LIST = (
+    "SELECT DATE '2024-01-01' AS period UNION ALL SELECT DATE '2024-02-01' UNION ALL "
+    "SELECT DATE '2024-03-01'"
+)
+# Work orders per room and month beside each room's seats, by hand: the rooms with work orders
+# in the window, every month (March NULL: loaded through February), each beside its seats; a
+# room with seats and no work orders is a row of its own, with no period.
+SEATS_BY_MONTH_SQL = f"""
+WITH months AS ({MONTHS_LIST}),
+seen AS (SELECT DISTINCT room_key FROM work_orders
+         WHERE opened_at >= TIMESTAMP '2024-01-01 00:00:00'
+           AND opened_at < TIMESTAMP '2024-04-01 00:00:00'),
+wo AS (SELECT room_key, CAST(date_trunc('month', opened_at) AS DATE) AS period, COUNT(*) AS n
+       FROM work_orders GROUP BY room_key, CAST(date_trunc('month', opened_at) AS DATE)),
+timed AS (
+  SELECT s.room_key, m.period,
+    CASE WHEN m.period < DATE '2024-03-01' THEN COALESCE(wo.n, 0) END AS n
+  FROM seen AS s CROSS JOIN months AS m
+  LEFT JOIN wo ON wo.room_key = s.room_key AND wo.period = m.period),
+seats AS (SELECT room_key, SUM(seats) AS seats FROM rooms GROUP BY room_key)
+SELECT COALESCE(timed.room_key, seats.room_key), timed.period, timed.n, seats.seats
+FROM timed FULL OUTER JOIN seats ON timed.room_key = seats.room_key"""
+SEATS_BY_MONTH = {"parts": [WORK_ORDERS, SEATS], "join": {"on": [[ROOM, ROOM]]}, "time": MONTHS}
+
+
+def _seated(out: dict[str, Any], *columns: str) -> list[tuple[Any, ...]]:
+    return sorted(
+        (_plain(tuple(row[name] for name in (ROOM, "period", *columns))) for row in out["rows"]),
+        key=repr,
+    )
+
+
+def test_a_part_with_no_clock_repeats_on_each_periods_row(depts):
+    """Monthly work orders beside each room's seats, which have no month: the seats repeat on
+    each month's row, said so; a room with seats and no work orders is its own row, with no
+    period; keep on the seats part keeps every month."""
+    out = depts.query(SEATS_BY_MONTH)
+
+    rows = depts.sql(SEATS_BY_MONTH_SQL)
+    assert _seated(out, "work_orders", "seats") == rows
+    assert [row for row in rows if row[0] == "R1"] == [
+        ("R1", "2024-01-01", 1, 10),
+        ("R1", "2024-02-01", 1, 10),
+        ("R1", "2024-03-01", None, 10),
+    ]
+    assert [row for row in rows if row[1] is None] == [("R3", None, None, 6), ("R4", None, None, 8)]
+    assert {row["period_partial"] for row in out["rows"] if row["period"] is None} == {None}
+    note = _joined(out)
+    assert note["details"]["keys"][1] == {
+        "column": "period",
+        "parts": ["period", None],
+        "declared": True,
+    }
+    assert note["details"]["parts"][1] == {
+        "part": 1,
+        "untimed": True,
+        "rows": 4,
+        "null_keys": 0,
+        "unmatched": {"0": 2},
+    }
+    assert "window" in note["details"]["parts"][0]
+    assert note["details"]["columns"] == [
+        {"column": "work_orders", "part": 0, "adds_up": False},
+        {"column": "seats", "part": 1, "adds_up": False, "repeats": True},
+    ]
+    assert (
+        f"The answer joins 2 parts on {ROOM}, period, keeping every key of every part."
+    ) in note["message"]
+    assert (
+        "parts[1] has no clock: seats repeats on each period's row of its key, and a key no part "
+        "with a clock has is a row of its own, with no period."
+    ) in note["message"]
+    assert out["explain"]["join"]["on"] == [[ROOM, ROOM], ["period", None]]
+    assert "window" not in out["parts"][1]
+    # Keep the seats part's keys: every room, every month of the timed rooms (N2).
+    seated = depts.query({**SEATS_BY_MONTH, "join": {"on": [[ROOM, ROOM]], "keep": [1]}})
+    assert _seated(seated, "work_orders", "seats") == rows
+    timed = depts.query({**SEATS_BY_MONTH, "join": {"on": [[ROOM, ROOM]], "keep": [0]}})
+    assert _seated(timed, "work_orders", "seats") == [row for row in rows if row[1] is not None]
+    # The part with no clock may come first: the same rows.
+    first = depts.query({**SEATS_BY_MONTH, "parts": [SEATS, WORK_ORDERS]})
+    assert _seated(first, "work_orders", "seats") == rows
+    # A package's own snapshot test of it compares its rows.
+    spec = {
+        "kind": "query_matches_snapshot",
+        "query": SEATS_BY_MONTH,
+        "expected_rows": [dict(row) for row in out["rows"]],
+    }
+    assert _run_test(depts.base, "seats", spec, NOW) == {"id": "seats", "ok": True}
+
+
+def test_a_part_with_no_clock_beside_two_timed_parts(depts):
+    """Work orders and reservations per room and month beside each room's seats: the timed
+    parts join on the room and the month, the seats on the room only."""
+    out = depts.query(
+        {
+            "parts": [WORK_ORDERS, RESERVATIONS, SEATS],
+            "join": {"on": [[ROOM, ROOM, ROOM]]},
+            "time": MONTHS,
+        }
+    )
+
+    reference = f"""
+WITH timed AS ({BY_ROOM_AND_MONTH}),
+seats AS (SELECT room_key, SUM(seats) AS seats FROM rooms GROUP BY room_key)
+SELECT COALESCE(timed.room_key, seats.room_key), timed.period, timed.wo, timed.rv, seats.seats
+FROM (SELECT * FROM timed) AS timed(room_key, period, wo, rv)
+FULL OUTER JOIN seats ON timed.room_key = seats.room_key"""
+    rows = depts.sql(reference)
+    assert _seated(out, "work_orders", "reservations", "seats") == rows
+    assert [row for row in rows if row[1] is None] == [("R4", None, None, None, 8)]
+    assert [row[-1] for row in rows if row[0] == "R3"] == [6, 6, 6]
+
+
 REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
     (
         "having in a part",
@@ -1111,27 +1504,32 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str, dict[str, Any]]] = [
         {"path": "join.on[0]", "reason": "join_key_not_shared"},
     ),
     (
-        "a finer part",
-        {
-            "parts": [
-                {**IN_BUILDING_32, "where": [], "group_by": [SPACE_DEPT, BUILDING]},
-                HEADCOUNT,
-            ],
-            "join": {"on": [[SPACE_DEPT, DEPT]]},
-        },
+        "two finer parts",
+        {"parts": [AREA_BY_BUILDING, SALARY_BY_NAME], "join": {"on": [[SPACE_DEPT, DEPT]]}},
         "INVALID_QUERY",
-        f"parts[0]: groups by {BUILDING} beyond the join key ({SPACE_DEPT}): joined, each of its "
-        "rows would repeat beside the other parts' rows. Every part is grouped by the join key "
-        "only",
-        {"path": "parts[0]", "reason": "parts_grain_mismatch", "part": 0},
+        f"parts: parts[0] groups by {BUILDING} and parts[1] by {EMPLOYEE}, {NAME} beyond the join "
+        f"key ({SPACE_DEPT}): joined, each row of one would repeat for every row of the other",
+        {"path": "parts", "reason": "parts_grain_mismatch", "part": 1, "finer": [0, 1]},
     ),
     (
-        "an untimed part under a timed call",
-        {"parts": [WORK_ORDERS, HEADCOUNT], "join": {"on": [[ROOM, DEPT]]}, "time": MONTHS},
+        "a finer part with no clock",
+        {
+            "parts": [WORK_ORDERS, {**SEATS, "group_by": [ROOM, WING]}],
+            "join": {"on": [[ROOM, ROOM]]},
+            "time": MONTHS,
+        },
         "INVALID_QUERY",
-        "parts[1]: selects nothing with a clock, so the joined call's time can't apply to it: a "
-        "part with no time role beside a timed joined call isn't answered yet",
-        {"path": "parts[1]", "reason": "part_untimed"},
+        f"parts[1]: groups by {WING} beyond the join key ({ROOM}, period) but has no period: "
+        "joined, its rows would repeat on each period's row and each period's rows on its rows",
+        {"path": "parts[1]", "reason": "parts_grain_mismatch", "part": 1, "extra": [WING]},
+    ),
+    (
+        "no part with a clock",
+        {"parts": [SEATS], "join": {"on": [[ROOM]]}, "time": MONTHS},
+        "INVALID_QUERY",
+        "time: no part selects anything with a clock, so the joined call's time applies to none "
+        "of them",
+        {"path": "time", "reason": "part_untimed"},
     ),
     (
         "two parts selecting one name",

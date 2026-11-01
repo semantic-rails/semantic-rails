@@ -343,7 +343,7 @@ def join_keys(
     if len(finer) > 1:
         one, other = finer[:2]
         raise refusal(
-            _part(other),
+            "parts",
             f"{_part(one)} groups by {', '.join(extras[one])} and {_part(other)} by "
             f"{', '.join(extras[other])} beyond the join key ({joined}): joined, each row of one "
             "would repeat for every row of the other",
@@ -459,7 +459,7 @@ def joined_statement(
             source = KEYS_CTE
             if shape.untimed(index):
                 source = f"{prefix}__every_keys"
-                every_own.append(_every_and_own(source, own_keys.name, [key.name for key in held]))
+                every_own.extend(_every_and_own(source, own_keys.name, [key.name for key in held]))
             else:
                 sources.append(own_keys.name)
             replaced = SqlCte(
@@ -533,30 +533,38 @@ def joined_statement(
 _MARKS = ("joined_first_", "joined_null_key_", "joined_has_")
 
 
-def _every_and_own(name: str, own_keys: str, columns: Sequence[str]) -> SqlCte:
-    """An untimed part's keys: every key of the call without its period, and the part's own."""
-    return SqlCte(
-        name=name,
-        query=SqlSetQuery(
-            "UNION",
-            [
-                SqlSelect(
-                    select=[
-                        SqlField(SqlIdentifier(parts=["every", column]), column)
-                        for column in columns
-                    ],
-                    from_table=SqlTableRef(name=KEYS_CTE, alias="every"),
-                ),
-                SqlSelect(
-                    select=[
-                        SqlField(SqlIdentifier(parts=["own_keys", column]), column)
-                        for column in columns
-                    ],
-                    from_table=SqlTableRef(name=own_keys, alias="own_keys"),
-                ),
-            ],
+def _every_and_own(name: str, own_keys: str, columns: Sequence[str]) -> list[SqlCte]:
+    """An untimed part's keys, each once: every key of the call without its period, and the
+    part's own (the last CTE is ``name``)."""
+    both = f"{name}__both"
+    return [
+        SqlCte(
+            name=both,
+            query=SqlSetQuery(
+                "UNION ALL",
+                [
+                    SqlSelect(
+                        select=[
+                            SqlField(SqlIdentifier(parts=[alias, column]), column)
+                            for column in columns
+                        ],
+                        from_table=SqlTableRef(name=source, alias=alias),
+                    )
+                    for source, alias in ((KEYS_CTE, "every"), (own_keys, "own_keys"))
+                ],
+            ),
         ),
-    )
+        SqlCte(
+            name=name,
+            query=SqlSelect(
+                select=[
+                    SqlField(SqlIdentifier(parts=["either", column]), column) for column in columns
+                ],
+                from_table=SqlTableRef(name=both, alias="either"),
+                distinct=True,
+            ),
+        ),
+    ]
 
 
 def _counts(count: int) -> list[SqlField]:

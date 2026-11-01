@@ -505,9 +505,9 @@ def read_joined_call(
         if not isinstance(raw, Mapping):
             raise refusal(path, "is a call: an object", fix='Write {"select": [...], ...}.')
         _check_part_keys(raw, path)
-        if time is not None:
-            _refuse_untimed_part(raw, path, default_clock)
-        call = {**raw, **({"time": time} if time is not None else {})}
+        # A part with no clock takes no time: its values repeat on each period's row.
+        clocked = time is not None and _has_clock(raw, default_clock)
+        call = {**raw, **({"time": time} if clocked else {})}
         try:
             internal, part_notes = read_call(
                 call,
@@ -521,6 +521,14 @@ def read_joined_call(
             raise in_part(exc, index) from None
         parts.append(internal)
         notes.extend({**note, "part": index} for note in part_notes)
+    if time is not None and not any("time" in part for part in parts):
+        raise refusal(
+            "time",
+            "no part selects anything with a clock, so the joined call's time applies to none "
+            "of them",
+            fix="Remove time, or add a part whose measures have a time role.",
+            reason="part_untimed",
+        )
     _refuse_shared_aliases(parts)
     join = _join(payload.get("join"), parts)
     if len(raw_parts) > 1:
@@ -630,23 +638,12 @@ def _check_part_keys(raw: Mapping[str, Any], path: str) -> None:
         )
 
 
-def _refuse_untimed_part(
-    raw: Mapping[str, Any], path: str, default_clock: Callable[[str], str] | None
-) -> None:
-    """A part none of whose selected ids reads a clock can't take the call's time block: such
-    a part is refused beside a timed call, never answered untimed."""
+def _has_clock(raw: Mapping[str, Any], default_clock: Callable[[str], str] | None) -> bool:
+    """Whether a part takes the joined call's time block: some id it selects reads a clock (a
+    listing selects none). With no package to ask, every part takes it."""
     if default_clock is None:
-        return
-    measured = _named_ids(raw.get("select") or [])
-    if measured and any(default_clock(ref) for ref in measured):
-        return
-    raise refusal(
-        path,
-        "selects nothing with a clock, so the joined call's time can't apply to it: a part "
-        "with no time role beside a timed joined call isn't answered yet",
-        fix="Ask for it in a call of its own.",
-        reason="part_untimed",
-    )
+        return True
+    return any(default_clock(ref) for ref in _named_ids(raw.get("select") or []))
 
 
 def _named_ids(value: Any) -> list[str]:
