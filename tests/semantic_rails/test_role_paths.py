@@ -728,13 +728,11 @@ def test_one_role_declared_from_both_sides_is_listed_because_its_queries_refuse(
 ORPHAN_LEG = "INSERT INTO legs VALUES (5, 'ORD', 'SFO', 7, 'LAX');\n"
 
 
-def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airport_groups_under_null(
-    tmp_path,
-):
-    """With several roles the key comes from the pinned relationship's join, like any other
-    airport column. That is a lookup read grouped through one many-to-one hop, so a leg whose
-    code matches no airport row is kept under a NULL key. A single role reads the key from the
-    leg's own column and groups the leg under its code."""
+def test_a_pinned_role_reads_its_key_from_the_legs_column_as_a_single_role_does(tmp_path):
+    """With several roles the key comes from the leg's column of the pinned relationship, as a
+    single role reads it: a leg whose code matches no airport row groups under its code, never
+    under a NULL key (the airport's other columns read NULL for it). Recording a second role
+    moves no key."""
     query = _seats_query(group_by=[CODE])
     con = duckdb.connect(":memory:")
     con.execute(SEED_SQL + ORPHAN_LEG)
@@ -765,7 +763,7 @@ def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airpor
         tmp_path / "two", extra_seed=ORPHAN_LEG, **_pin("destination", "explicit_origin_first")
     )
     two_roles = Runtime.from_path(str(tmp_path / "two" / "air"))
-    assert _rows(two_roles, query, [CODE], key=str) == joined
+    assert _rows(two_roles, query, [CODE], key=str) == own_column
 
     _write_package(tmp_path / "one", explicit=("destination",), extra_seed=ORPHAN_LEG)
     one_role = Runtime.from_path(str(tmp_path / "one" / "air"))
