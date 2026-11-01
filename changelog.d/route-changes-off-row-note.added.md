@@ -1,4 +1,5 @@
-- `route_changes` (in Architect's write previews and results, and in `impact-report`) marks a
+- `route_changes` (in Architect's write previews and results, the `ROUTE_DECISION_NOT_RECORDED`
+  refusal's `details.route_changes`, and `impact-report`) marks a
   pair moved off the row a change records. A pair whose other routes the recorded row
   excluded, answered by a route left that walks none of the recorded rows, has the `note`
   "answered by its only remaining route, not by the recorded one". A pair refused because

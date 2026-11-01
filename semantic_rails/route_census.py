@@ -348,18 +348,25 @@ def route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, An
     or the code it is ``refused`` with. No recovery rows are suggested. A ``note``
     (:func:`_note`) marks a pair the rows ``head`` records answer by a route off them, and a
     pair refused because every route walks a recorded pair by another route."""
+    return _payloads(base, head, _changes(base, head))
+
+
+def _payloads(
+    base: PackageConfig, head: PackageConfig, changes: list[RouteChange]
+) -> list[dict[str, Any]]:
+    """``changes`` as ``route_changes`` entries, each with its ``note`` when it has one."""
     before = get_package_analysis(base).path_preferences
     analysis = get_package_analysis(head)
     recorded = {
         pair: path for pair, path in analysis.path_preferences.items() if before.get(pair) != path
     }
-    changes = []
-    for change in _changes(base, head):
+    payloads = []
+    for change in changes:
         payload = change.payload()
         if note := _note(change.pair[0], change.head, recorded, analysis.relationships):
             payload["note"] = note
-        changes.append(payload)
-    return changes
+        payloads.append(payload)
+    return payloads
 
 
 def _note(
@@ -418,9 +425,10 @@ def _unkept(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
 
 
 def unkept_route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
-    """Answered pairs still moved without their own row, including an unkeepable route swap.
-    A deliberate cut may refuse a pair whose earlier route cannot be kept."""
-    return [change.payload() for change in _unkept(base, head)]
+    """Answered pairs still moved without their own row, including an unkeepable route swap,
+    noted as ``route_changes`` notes them. A deliberate cut may refuse a pair whose earlier
+    route cannot be kept."""
+    return _payloads(base, head, _unkept(base, head))
 
 
 def route_change_lines(

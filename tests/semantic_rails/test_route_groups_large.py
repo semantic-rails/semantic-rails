@@ -31,7 +31,13 @@ from semantic_rails.fanout import package_hop_limit, package_route, route_hops
 from semantic_rails.mcp import SemanticLayerMCPAdapter, json_text
 from semantic_rails.query_call import route_options
 from semantic_rails.request_payload import max_result_chars
-from semantic_rails.route_census import EXCLUDED_NOTE, OFF_ROW_NOTES, census_pairs
+from semantic_rails.route_census import (
+    EXCLUDED_NOTE,
+    OFF_ROW_NOTES,
+    census_pairs,
+    route_changes,
+    unkept_route_changes,
+)
 from semantic_rails.route_groups import grouped_refusal, route_groups, shorter_route_asks
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PathPreferenceConfig
@@ -48,10 +54,13 @@ ACCOUNTS_BY_BRAND = {
 EMPLOYEE = "entity.large_employee"
 # Two fork parts, each 4 hops where its pair's shortest route is 2, and the pairs recording
 # each one moves: answered off its row (``inherited``), and refused (``excluded_by_decision``).
+# The first is previewed through Architect; the second's changes are read from the package as
+# loaded, whose own resolutions are already cached.
 OFF_ROW_PARTS = {
     (BRAND, EMPLOYEE): ("people_order_account_people_visit_employee", 24, 6),
     (ACCOUNT, EMPLOYEE): ("finance_ticket_brand_people_visit_employee", 0, 26),
 }
+PREVIEWED = (BRAND, EMPLOYEE)
 
 
 @pytest.fixture(scope="module")
@@ -266,16 +275,14 @@ def test_a_package_author_decides_each_fork_by_one_of_its_parts(runtime: Runtime
         assert own_pair.value.code == "AMBIGUOUS_PATH"
 
 
-# Each preview resolves every pair of the package twice (about 40 seconds here, beside the build).
-@pytest.mark.timeout(300)
 @pytest.mark.parametrize("pair", list(OFF_ROW_PARTS), ids=lambda pair: pair[0].split("_")[-1])
 def test_a_part_longer_than_its_pairs_shortest_route_marks_each_pair_it_moves_off_its_row(
     workspace: LargeWorkspace, runtime: Runtime, pair: tuple[str, str]
 ) -> None:
     """Recording such a part moves the asked pair and its reverse along its row, unmarked, and
-    other pairs off it: the ``record_route_decision`` preview's ``route_changes`` marks each one
-    answered by the only route its exclusion left, a route not through the asked pair, and each
-    one refused."""
+    other pairs off it: ``route_changes`` (in the ``record_route_decision`` preview) marks each
+    one answered by the only route its exclusion left, a route not through the asked pair, and
+    each one refused."""
     config, (start, target) = runtime.config, pair
     part_id, answered, refused = OFF_ROW_PARTS[pair]
     raised = _refusal(config, start, target)
@@ -289,9 +296,22 @@ def test_a_part_longer_than_its_pairs_shortest_route_marks_each_pair_it_moves_of
         for part in group["decide_first"]["parts"]
         if part["id"] == part_id
     ]
-    project = ArchitectProject(workspace.root / workspace.package, workspace_root=workspace.root)
-    preview = project.record_route_decision(**part["decision"], validate_after=False, dry_run=True)
-    changes = preview.report["route_changes"]
+    if pair == PREVIEWED:
+        root, package = workspace.root, workspace.package
+        project = ArchitectProject(root / package, workspace_root=root)
+        preview = project.record_route_decision(
+            **part["decision"], validate_after=False, dry_run=True
+        )
+        changes = preview.report["route_changes"]
+    else:
+        row = PathPreferenceConfig(**part["decision"])
+        recorded = replace(config, path_preferences=[*config.path_preferences, row])
+        changes = route_changes(config, recorded)
+        # Written by hand, not as a decision, the row is refused for the pairs that answered,
+        # each noted the same way.
+        unkept = unkept_route_changes(config, recorded)
+        assert unkept == [c for c in changes if "note" in c]
+        assert len(unkept) == refused and {c["note"] for c in unkept} == {EXCLUDED_NOTE}
     unmarked = {(c["source_entity"], c["target_entity"]) for c in changes if "note" not in c}
     assert unmarked == {(start, target), (target, start)}
     notes = Counter(change.get("note") for change in changes)

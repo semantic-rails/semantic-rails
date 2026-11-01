@@ -2991,7 +2991,7 @@ or answer it by another route, is refused with `ROUTE_DECISION_NOT_RECORDED`
 until the author records a decision. Previews use the same guard; nothing is
 written and no route rows are generated without an explicit keep choice. The
 refusal lists affected pairs in
-`details.route_changes`. Its message names the explicit `graph.path_preferences`
+`details.route_changes`, each with its `note` as "Route changes" above describes. Its message names the explicit `graph.path_preferences`
 fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting
 rows. Architect `upsert_relationship(..., keep_existing_routes=True)` records each
 moved pair's previous path in the same transaction and confirms newly ambiguous
