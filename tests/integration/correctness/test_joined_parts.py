@@ -944,7 +944,7 @@ WITH fac AS (
   FROM space GROUP BY dept_code, building_key),
 hr AS (
   SELECT {UNKNOWN_AS_NULL} AS code, COUNT(*) AS headcount, 1 AS present
-  FROM employees GROUP BY {UNKNOWN_AS_NULL})
+  FROM employees WHERE {{employees}} GROUP BY {UNKNOWN_AS_NULL})
 SELECT COALESCE(fac.code, hr.code), fac.building_key, fac.area,
   CASE WHEN hr.present = 1 THEN hr.headcount WHEN fac.code IS NOT NULL THEN 0 END
 FROM fac FULL OUTER JOIN hr ON fac.code = hr.code"""
@@ -958,7 +958,7 @@ def test_a_finer_part_repeats_the_other_parts_values_on_each_of_its_rows(depts):
         {"parts": [AREA_BY_BUILDING, HEADCOUNT], "join": {"on": [[SPACE_DEPT, DEPT]]}}
     )
 
-    rows = depts.sql(AREA_BY_BUILDING_SQL)
+    rows = depts.sql(AREA_BY_BUILDING_SQL.format(employees="TRUE"))
     assert _values(out) == rows
     assert [row for row in rows if row[0] == "ENG"] == [("ENG", 32, 500, 2), ("ENG", 40, 200, 2)]
     assert [row for row in rows if row[0] in ("LAW", "MKT")] == [
@@ -1042,6 +1042,27 @@ def test_two_people_named_alex_are_two_rows_beside_their_departments_headcount(d
     ) in note["message"]
     assert [row["code"] for row in out["assumptions"]] == ["GROUPED_BY_KEY"]
     assert out["assumptions"][0]["part"] == 1
+    # Area and its average per department beside each person: a department with space and no
+    # people is one row with no person; one with people and no space reads area 0, average NULL.
+    space = depts.query({"parts": [SPACE, SALARY_BY_NAME], "join": {"on": [[SPACE_DEPT, DEPT]]}})
+    reference = f"""
+WITH fac AS (SELECT dept_code AS code, SUM(area_sqft) AS area,
+               COUNT(DISTINCT building_key) AS buildings, AVG(area_sqft) AS average_area,
+               1 AS present
+             FROM space GROUP BY dept_code),
+pay AS (SELECT {UNKNOWN_AS_NULL} AS code, employee_id, employee_name, SUM(salary) AS salary
+        FROM employees GROUP BY {UNKNOWN_AS_NULL}, employee_id, employee_name)
+SELECT COALESCE(fac.code, pay.code), pay.employee_id, pay.employee_name,
+  CASE WHEN fac.present = 1 THEN fac.area WHEN pay.code IS NOT NULL THEN 0 END,
+  CASE WHEN fac.present = 1 THEN fac.buildings WHEN pay.code IS NOT NULL THEN 0 END,
+  fac.average_area, pay.salary
+FROM fac FULL OUTER JOIN pay ON fac.code = pay.code"""
+    rows = depts.sql(reference)
+    assert _values(space) == rows
+    assert [row for row in rows if row[0] in ("LAW", "MKT")] == [
+        ("LAW", None, None, 100, 1, Decimal("100"), None),
+        ("MKT", 7, "Ivy", 0, 0, None, 60),
+    ]
 
 
 def test_a_row_filter_reads_the_visible_rows_beside_a_finer_part(depts):
@@ -1057,6 +1078,20 @@ def test_a_row_filter_reads_the_visible_rows_beside_a_finer_part(depts):
     assert _values(out) == rows
     assert [row[1:] for row in rows if row[0] == "ENG"] == [(2, "Alex", 1, 120)]
     assert _counts(_joined(out)) == (3, 1, 0, 4, 1, 0)
+    # Beside the shared space rows per building: a department whose people the filter hides
+    # reads headcount 0 beside its space, as the headcount part reads it alone.
+    shared = depts.runtime(_site_filter(shared=["entity.depts_space"]))
+    try:
+        by_building = shared.query(
+            {"parts": [AREA_BY_BUILDING, HEADCOUNT], "join": {"on": [[SPACE_DEPT, DEPT]]}},
+            now=NOW,
+            context=SITE_LEAD,
+        )
+    finally:
+        shared.close()
+    rows = depts.sql(AREA_BY_BUILDING_SQL.format(employees="site = 'south'"))
+    assert _values(by_building) == rows
+    assert [row for row in rows if row[0] == "FIN"] == [("FIN", 32, 300, 0)]
 
 
 # Reserves per instructor key beside the instructor listing, by hand: a key with two names
@@ -1278,6 +1313,19 @@ def test_a_part_with_no_clock_repeats_on_each_periods_row(depts):
         "expected_rows": [dict(row) for row in out["rows"]],
     }
     assert _run_test(depts.base, "seats", spec, NOW) == {"id": "seats", "ok": True}
+    # A window without a grain has no period: each room once, its work orders over the window
+    # (0 where it has none) beside its seats, nothing repeated.
+    window = {"start": "2024-01-01", "end": "2024-04-01"}
+    total = depts.query({**SEATS_BY_MONTH, "time": window})
+    reference = """
+SELECT r.room_key,
+  (SELECT COUNT(*) FROM work_orders AS w WHERE w.room_key = r.room_key
+     AND w.opened_at >= TIMESTAMP '2024-01-01 00:00:00'
+     AND w.opened_at < TIMESTAMP '2024-04-01 00:00:00'),
+  r.seats
+FROM rooms AS r"""
+    assert _values(total) == depts.sql(reference)
+    assert "repeats" not in str(_joined(total)["details"]["columns"])
 
 
 def test_a_part_with_no_clock_beside_two_timed_parts(depts):

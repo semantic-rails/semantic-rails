@@ -9,7 +9,9 @@ the parts join on, and ``join_allowed``: whether they may be joined) and writes 
 statement (``joined_statement``): each part's CTEs, the keys of every part, each part's rows,
 then the parts joined on plain equality. A NULL key never matches: each part's NULL-key row is
 its own row, NULL in every other part. ``keep`` keeps a row only where every named part has
-its own row there. The counts the answer states (``PARTS_JOINED``) are window aggregates over
+its own row there. One part may be grouped by more than the join key (the finer part): every
+other part's row repeats on each of its rows of a key. A part with no clock beside a timed call
+is matched on every key but the period: its row repeats on each period's row. The counts the answer states (``PARTS_JOINED``) are window aggregates over
 the joined rows before ``keep``, ``order_by`` and ``limit``, so a page states the whole
 result's counts, read from the caller's own rows only.
 """
@@ -666,17 +668,13 @@ def _joined_rows(parts: Sequence[PartStatement], shape: JoinShape) -> SqlSelect:
     """The parts' rows joined on the keys by plain equality, each part's presence beside them
     and the marks the counts read.
 
-    The parts that hold every key join first, then the untimed parts (on every key but the
-    period), then the finer part, each on the keys it holds, compared with the value the parts
-    before it have there; a key's column is the first value any part has."""
+    The parts join in order, the finer part last, each on the keys it holds (an untimed part on
+    every key but the period), compared with the value the parts before it have there; a key's
+    column is the first value any part has."""
     keys = shape.keys
     aliases = [f"part_{index}" for index in range(len(parts))]
     finer = [] if shape.finer is None else [shape.finer]
-    order = [
-        *(i for i in range(len(parts)) if i not in finer and not shape.untimed(i)),
-        *(i for i in range(len(parts)) if i not in finer and shape.untimed(i)),
-        *finer,
-    ]
+    order = [*(index for index in range(len(parts)) if index not in finer), *finer]
 
     def column(index: int, key: JoinKey) -> Any:
         return SqlIdentifier(parts=[aliases[index], key.columns[index]])
