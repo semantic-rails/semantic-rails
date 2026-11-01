@@ -11,9 +11,10 @@ then the parts joined on plain equality. A NULL key never matches: each part's N
 its own row, NULL in every other part. ``keep`` keeps a row only where every named part has
 its own row there. One part may be grouped by more than the join key (the finer part): every
 other part's row repeats on each of its rows of a key. A part with no clock beside a timed call
-is matched on every key but the period: its row repeats on each period's row. The counts the answer states (``PARTS_JOINED``) are window aggregates over
-the joined rows before ``keep``, ``order_by`` and ``limit``, so a page states the whole
-result's counts, read from the caller's own rows only.
+is matched on every key but the period: its row repeats on each period's row. The counts the
+answer states (``PARTS_JOINED``) are window aggregates over the joined rows before ``keep``,
+``order_by`` and ``limit``, so a page states the whole result's counts, read from the caller's
+own rows only.
 """
 
 from __future__ import annotations

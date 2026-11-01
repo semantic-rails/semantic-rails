@@ -1114,9 +1114,9 @@ Some questions are several calls answered side by side: each store's orders from
 beside all its orders and revenue, headcount beside assigned area per department, the
 headcount of only the departments that have space in one building, each mailing list's owners
 beside its member count, monthly work orders beside each room's seats. Each call needs its own
-`where` or grouping, so one call can't ask it. A joined call sends the calls as `parts` and names the
-columns they share in `join.on`; the engine answers each part as the call it is and joins
-their rows in one statement:
+`where` or grouping, so one call can't ask it. A joined call sends the calls as `parts` and
+names the columns they share in `join.on`; the engine answers each part as the call it is and
+joins their rows in one statement:
 
 ```json
 {"parts": [
@@ -1192,10 +1192,11 @@ their rows in one statement:
 - **`time`.** The call's one `time` block reads every part, each by its own clock and load edge
   (work orders loaded through February read NULL in March beside March's reservations), and
   the key includes `period` when it has a grain. A part whose selects read no clock (seats per
-  room, a listing) takes no window and is matched on every key but `period`: its values repeat
-  on each period's row, and a key of it no part with a clock has is a row of its own, with a
-  NULL `period`. `keep` naming it keeps every period of its keys. Such a part can't be the finer
-  part (`parts_grain_mismatch`), and a call whose parts all lack a clock is refused at `time`
+  room, a listing) takes no window and is matched on every key but `period` (its column for
+  `period` reads `null` in `PARTS_JOINED`): its values repeat on each period's row, and a key
+  that no part with a clock has is a row of its own, with a NULL `period`. `keep` naming it
+  keeps every period of its keys. Under a grain it can't be the finer part
+  (`parts_grain_mismatch`), and a call whose parts all lack a clock is refused at `time`
   (`part_untimed`).
 - **The answer.** Every warning and assumption a part gives alone comes back, with `part` (in
   `details` for a warning) and its message prefixed `parts[i]: `. `parts` holds each part's
