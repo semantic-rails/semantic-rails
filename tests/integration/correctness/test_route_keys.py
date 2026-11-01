@@ -5,8 +5,9 @@ orders name their customer themselves. Customer 108 hasn't signed up: the custom
 doesn't hold it, but order 11 names it. These tests give order 11 a goods refund of 1 (the
 shop fixture has none), so "net revenue by customer" reads 108 at 2 - 1 = 1, its refund beside
 its order under its own key, never under a NULL customer. Grouped by an attribute of the
-customer (the signup channel), 108 has none, so its refund is in the NULL group. Hand SQL reads
-the raw tables: a refund's customer is its order's ``customer_id``.
+customer (the signup channel), 108 has none, so its refund is in the NULL group. Where orders
+also name a referrer, an order's customer is its buyer, and both sides read the buyer's key.
+Hand SQL reads the raw tables: a refund's customer is its order's ``customer_id``.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+import yaml
 
 from semantic_rails.runtime import Runtime
 
@@ -51,13 +53,50 @@ FROM o FULL JOIN r ON o.customer_id = r.customer_id
 """
 
 
+# A second role into customers: an order's referrer. The package records that an order's
+# customer is its buyer, so a route from orders to customers takes ``customer_id``.
+REFERRERS = (
+    "ALTER TABLE orders ADD COLUMN referrer_id INTEGER;\n"
+    "UPDATE orders SET referrer_id = CASE order_id WHEN 4 THEN 101 WHEN 11 THEN 102 END;\n"
+)
+REFERRER = {
+    "as": "relationship.order_referrer",
+    "entities": ["order", "customer"],
+    "cardinality": "many_to_one",
+    "via": ["referrer_id"],
+    "target": ["customer_id"],
+}
+BUYER = {
+    "source_entity": "order",
+    "target_entity": "customer",
+    "relationship_path": ["relationship.orders_customer"],
+}
+
+
 @pytest.fixture(scope="module", params=["duckdb", "postgres"])
 def shop(request, tmp_path_factory) -> Iterator[Runtime]:
     """The shop package with a goods refund on order 11, on DuckDB or in a Postgres schema of
     its own (dropped afterwards)."""
-    package = _write_variant(tmp_path_factory.mktemp("route_keys"), "utc_authored")
-    seed = SEED.rstrip() + "\n" + REFUND_OF_108
+    yield from _opened(request, tmp_path_factory.mktemp("route_keys"), REFUND_OF_108)
+
+
+@pytest.fixture(scope="module", params=["duckdb", "postgres"])
+def two_roles(request, tmp_path_factory) -> Iterator[Runtime]:
+    """``shop``, where orders also name a referrer (orders 4 and 11)."""
+    root = tmp_path_factory.mktemp("route_keys_two_roles")
+    yield from _opened(request, root, REFUND_OF_108 + REFERRERS, two_roles=True)
+
+
+def _opened(request, root, extra: str, two_roles: bool = False) -> Iterator[Runtime]:
+    package = _write_variant(root, "utc_authored")
+    seed = SEED.rstrip() + "\n" + extra
     (package / "data" / "seed.sql").write_text(seed, encoding="utf-8")
+    if two_roles:
+        graph_path = package / "graph.yml"
+        graph = yaml.safe_load(graph_path.read_text(encoding="utf-8"))
+        graph["graph"].setdefault("relationships", {})["order_referrer"] = REFERRER
+        graph["graph"]["path_preferences"] = [BUYER]
+        graph_path.write_text(yaml.safe_dump(graph, sort_keys=False), encoding="utf-8")
     if request.param == "duckdb":
         runtime = _shop_runtime(package)
         try:
@@ -205,3 +244,26 @@ def test_average_net_revenue_per_customer_counts_108_at_1(shop: Runtime):
     (row,) = shop.query(call, now=NOW)["rows"]
     (hand,) = _rows(shop, f"SELECT AVG(v) FROM ({NET_SQL}) AS per_customer (customer_id, v)")
     assert _number(row["avg_net"]) == pytest.approx(_number(hand[0])) == pytest.approx(8.0)
+
+
+def test_with_a_referrer_on_orders_net_revenue_by_customer_reads_the_buyer_on_both_sides(
+    two_roles: Runtime,
+):
+    """Orders name a buyer and a referrer, and an order's customer is its buyer. The orders
+    reach the customer in one hop and the refunds in two: both read the buyer's key from the
+    orders, so 108 reads 2 - 1 = 1 (one hop read the customers table's key: 108 read -1, its
+    order in a NULL row)."""
+    call = {"select": [{"expression": NET, "as": "net"}], "group_by": [CUSTOMER]}
+    answer = two_roles.query(call, now=NOW)
+    assert _by(answer["rows"], CUSTOMER, "net") == _hand(two_roles, NET_SQL)
+    assert _by(answer["rows"], CUSTOMER, "net")[108] == 1.0
+    revenue = two_roles.query({"select": [REVENUE], "group_by": [CUSTOMER]}, now=NOW)
+    hand = _hand(two_roles, "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id")
+    assert _by(revenue["rows"], CUSTOMER, "revenue") == hand
+    assert hand[108] == 2.0
+    (row,) = two_roles.query(
+        {"select": [{"expression": NET, "as": "net"}],
+         "where": [{"field": CUSTOMER, "op": "is", "value": 108}]},
+        now=NOW,
+    )["rows"]  # fmt: skip
+    assert _number(row["net"]) == 1.0

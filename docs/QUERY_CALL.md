@@ -198,8 +198,11 @@ An entity's key reads where the rows name the entity: the model the route reache
 Refunds reach their customer through their order, so "net revenue by customer" reads the
 refunds' customer from `orders.customer_id`, as the orders do. A customer the customers table
 doesn't hold yet (one who hasn't signed up) has its refunds beside its orders under its own key,
-grouped or filtered by it. The entity's other dimensions (its tier, region or name) read its own
-table, so grouped by one, that customer is in the `NULL` group.
+grouped or filtered by it. Where orders name two customers (a buyer and a referrer), the route
+the package records (`graph.path_preferences`: an order's customer is its buyer) says which
+column, and the orders and their refunds both read the buyer's. The entity's other dimensions
+(its tier, region or name) read its own table, so grouped by one, that customer is in the `NULL`
+group.
 
 ### Groups across a one-to-many hop
 

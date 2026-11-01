@@ -4,5 +4,6 @@
   keeps its refunds under its own key instead of a `NULL` customer (net revenue read `2` for
   such a customer with a `1` refund on a `2` order, and the refund sat in a `NULL` row). The
   same holds filtered by the key ("net revenue of one customer") and per entity in a
-  distribution. Grouped by the customer's tier, region or name, that customer stays in the
-  `NULL` group.
+  distribution, and where orders name a buyer and a referrer, both sides read the buyer the
+  package's route names. Grouped by the customer's tier, region or name, that customer stays in
+  the `NULL` group.
