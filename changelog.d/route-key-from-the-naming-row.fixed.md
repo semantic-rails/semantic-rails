@@ -7,3 +7,7 @@
   distribution, and where orders name a buyer and a referrer, both sides read the buyer the
   package's route names. Grouped by the customer's tier, region or name, that customer stays in
   the `NULL` group.
+- A recorded role reads its key from the column its relationship joins on, as a single role
+  does. "Seats by destination airport", with the legs' origin also recorded, reads a leg whose
+  code the airports table doesn't hold under that code (`SFO` `7`), where it read a `NULL`
+  airport; filtered by that code, it reads `7`, not `NULL`.
