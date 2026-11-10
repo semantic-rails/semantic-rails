@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import sys
 import time
@@ -126,6 +127,59 @@ JSON_OBJECT_SCHEMA: dict[str, Any] = {
     "additionalProperties": True,
 }
 
+# A host that lets its agent write the call itself can hide ``plan``: set this to one of
+# HIDE_PLAN_VALUES (unset or empty means off); any other value refuses with INVALID_CONFIG.
+HIDE_PLAN_ENV = "SEMANTIC_RAILS_MCP_HIDE_PLAN"
+_HIDE_PLAN_ON = ("1", "true", "yes", "on")
+HIDE_PLAN_VALUES = (*_HIDE_PLAN_ON, "0", "false", "no", "off")
+
+# Each piece of text the server sends that names ``plan``, and what it says instead with plan
+# hidden. The default text is built from the first of each pair, so the modes can't drift.
+_PLAN_STEP = (
+    "2. plan(intent) drafts the query call; draft with plan rather than writing one from "
+    'scratch. Run best.query only when status is "ok" and there are no warnings; '
+    "otherwise why and warnings name what the draft misses, so fix the call or ask the "
+    "user. out_of_scope or unrealizable means the package can't answer. When status is ok, a "
+    "question asking several things returns parts; execute each part's best.query.\n",
+    "2. Write the call from those ids (its shape is below). execute(query, mode "
+    '"validate") checks it without reading the warehouse; its errors name what in the call '
+    "is wrong and how to fix it.\n",
+)
+_PLAN_DETAIL = (', plan detail "query"', "")
+_EXECUTE_PLAN_FIRST = ("Answer a call; call plan first.", "Answer a call.")
+# Without plan, the agent writes the call, so validate is a step of the flow, not one to skip.
+_EXECUTE_SKIP_VALIDATE = (
+    "'validate' only checks (skip it: run a call directly);",
+    "'validate' only checks (check a call you wrote before running it);",
+)
+_PROMPT_STEPS = (
+    "discover, inspect, plan (and valid-values)",
+    "discover, inspect (and valid-values)",
+)
+_PROMPT_DRAFT = (
+    "Draft the call with plan, check filter values with valid-values, then run it with execute, "
+    "which validates and compiles first. execute modes 'validate' and 'sql' are optional dry "
+    "runs.",
+    "Write the call from their ids and check filter values with valid-values. Check the call "
+    "with execute mode 'validate', then run it with execute; mode 'sql' also returns its SQL.",
+)
+_PLAN_TEXT = (
+    _PLAN_STEP,
+    _PLAN_DETAIL,
+    _EXECUTE_PLAN_FIRST,
+    _EXECUTE_SKIP_VALIDATE,
+    _PROMPT_STEPS,
+    _PROMPT_DRAFT,
+)
+
+
+def _without_plan(text: str) -> str:
+    """``text`` as the server says it with ``plan`` hidden."""
+    for named, instead in _PLAN_TEXT:
+        text = text.replace(named, instead)
+    return text
+
+
 # Server-level guidance, sent once in ``initialize``: the workflow and the
 # conventions every tool shares. Tool descriptions say what each tool does,
 # when to use it and its one gotcha.
@@ -138,11 +192,7 @@ MCP_SERVER_INSTRUCTIONS = (
     "1. discover(terms) ranks measures, metrics and dimensions for it; empty terms list "
     "ids by model. inspect(object_id) shows one object's card when you need its aggregations, "
     "values or time roles. valid-values(dimension_id) lists a dimension's values.\n"
-    "2. plan(intent) drafts the query call; draft with plan rather than writing one from "
-    'scratch. Run best.query only when status is "ok" and there are no warnings; '
-    "otherwise why and warnings name what the draft misses, so fix the call or ask the "
-    "user. out_of_scope or unrealizable means the package can't answer. When status is ok, a "
-    "question asking several things returns parts; execute each part's best.query.\n"
+    f"{_PLAN_STEP[0]}"
     "3. execute(query) validates, compiles and runs the call and returns at most "
     f"max_rows rows (default {MCP_DEFAULT_MAX_ROWS}); a capped result reports truncated. "
     'mode "validate" only checks the call; mode "sql" also returns its SQL.\n'
@@ -158,8 +208,8 @@ MCP_SERVER_INSTRUCTIONS = (
     "segment(segment_id, action) validates, explains or previews a package-authored "
     "segment.\n"
     "\n"
-    'Every tool returns its smallest response by default (verbosity "minimal", plan detail '
-    '"query"). Responses share one character budget; omitted_fields names trimmed detail. Errors carry '
+    f'Every tool returns its smallest response by default (verbosity "minimal"{_PLAN_DETAIL[0]}'
+    "). Responses share one character budget; omitted_fields names trimmed detail. Errors carry "
     "recovery_hints and closest_matches; follow them before retrying."
 )
 
@@ -527,8 +577,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only "
-            "checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and "
+            f"{_EXECUTE_PLAN_FIRST[0]} Only 'run' reads the warehouse; "
+            f"{_EXECUTE_SKIP_VALIDATE[0]} 'sql' adds rendered_sql. 'ok': valid and "
             "ran, not that it answers the question. Call: select ids or {expression, as}, "
             "group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] "
             "and entity filters, time (time.end is exclusive), order_by (period: time column), "
@@ -631,10 +681,7 @@ RESOURCE_DEFINITIONS: tuple[ResourceDefinition, ...] = (
 PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
     PromptDefinition(
         name="semantic-rails-query-builder",
-        description=(
-            "Guide an agent from a question to rows: discover, inspect, plan (and valid-values), "
-            "then execute."
-        ),
+        description=(f"Guide an agent from a question to rows: {_PROMPT_STEPS[0]}, then execute."),
         arguments=(
             {
                 "name": "intent",
@@ -670,9 +717,7 @@ PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
 _PROMPT_TEXT = {
     "semantic-rails-query-builder": (
         "Use the Semantic Layer MCP tools against package '{package_id}' to answer: {intent}\n"
-        "Start with discover and inspect the best governed objects. Draft the call with plan, "
-        "check filter values with valid-values, then run it with execute, which validates and "
-        "compiles first. execute modes 'validate' and 'sql' are optional dry runs. "
+        f"Start with discover and inspect the best governed objects. {_PROMPT_DRAFT[0]} "
         "The response includes diagnostics and any rendered SQL."
     ),
     "semantic-rails-query-review": (
@@ -691,18 +736,44 @@ MCP_RESOURCE_DEFINITIONS = tuple(definition.to_dict() for definition in RESOURCE
 MCP_PROMPT_DEFINITIONS = tuple(definition.to_dict() for definition in PROMPT_DEFINITIONS)
 
 
-def _offered_tool_names(has_segments: bool) -> set[str]:
-    """The tools a package offers: no segment tool when it defines no segment."""
+def _offered_tool_names(has_segments: bool, *, plan: bool = True) -> set[str]:
+    """The tools a package offers: no segment tool when it defines no segment, and no plan
+    tool when the server hides it."""
     return {
         definition.name
         for definition in TOOL_DEFINITIONS
-        if definition.name != "segment" or has_segments
+        if (definition.name != "segment" or has_segments) and (definition.name != "plan" or plan)
     }
 
 
-def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
-    offered = _offered_tool_names(config is None or bool(config.segments))
-    return [definition.to_dict() for definition in TOOL_DEFINITIONS if definition.name in offered]
+def list_tool_definitions(
+    *, config: PackageConfig | None = None, plan: bool = True
+) -> list[dict[str, Any]]:
+    offered = _offered_tool_names(config is None or bool(config.segments), plan=plan)
+    tools = [definition.to_dict() for definition in TOOL_DEFINITIONS if definition.name in offered]
+    if not plan:
+        for tool in tools:
+            tool["description"] = _without_plan(tool["description"])
+    return tools
+
+
+def _hide_plan_setting(value: bool | None = None) -> bool:
+    """Whether the server hides ``plan``: ``value`` when given, else ``HIDE_PLAN_ENV``."""
+    if value is not None:
+        return bool(value)
+    raw = os.environ.get(HIDE_PLAN_ENV, "")
+    setting = raw.strip().lower()
+    if setting and setting not in HIDE_PLAN_VALUES:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{HIDE_PLAN_ENV} must be one of {', '.join(HIDE_PLAN_VALUES)}, or unset.",
+            details={
+                "setting": HIDE_PLAN_ENV,
+                "value": raw,
+                "valid_values": list(HIDE_PLAN_VALUES),
+            },
+        )
+    return setting in _HIDE_PLAN_ON
 
 
 def list_resource_definitions() -> list[dict[str, Any]]:
@@ -1522,7 +1593,10 @@ class SemanticLayerMCPAdapter:
     applications can call handlers directly without installing an MCP runtime.
     """
 
-    def __init__(self, runtime: Runtime, *, interface: str | None = None):
+    def __init__(
+        self, runtime: Runtime, *, interface: str | None = None, hide_plan: bool | None = None
+    ):
+        """``hide_plan`` serves the tools without ``plan``; ``None`` reads ``HIDE_PLAN_ENV``."""
         raw = interface or ""
         if str(raw).strip().lower() not in {"", _INTERFACE}:
             raise SemanticLayerError(
@@ -1532,6 +1606,7 @@ class SemanticLayerMCPAdapter:
                 details={"interface": str(raw), "valid_values": [_INTERFACE]},
             )
         self.interface = _INTERFACE
+        self.hide_plan = _hide_plan_setting(hide_plan)
         self.runtime = runtime
         self.package_id = runtime.package_id
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -1542,6 +1617,8 @@ class SemanticLayerMCPAdapter:
             "execute": self._handle_execute_mode,
             "segment": self._handle_segment_action,
         }
+        if self.hide_plan:
+            del self._tool_handlers["plan"]
         self._builtin_tool_handlers = self._tool_handlers.copy()
 
     @property
@@ -1553,15 +1630,15 @@ class SemanticLayerMCPAdapter:
                 "segment.\n\n",
                 "",
             )
-        return instructions
+        return _without_plan(instructions) if self.hide_plan else instructions
 
     @classmethod
     def from_package(cls, package_id: str) -> SemanticLayerMCPAdapter:
         return cls(Runtime(package_id))
 
     @classmethod
-    def from_path(cls, path: str) -> SemanticLayerMCPAdapter:
-        return cls(Runtime.from_path(path))
+    def from_path(cls, path: str, *, hide_plan: bool | None = None) -> SemanticLayerMCPAdapter:
+        return cls(Runtime.from_path(path), hide_plan=hide_plan)
 
     @property
     def tool_handlers(self) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
@@ -1584,12 +1661,12 @@ class SemanticLayerMCPAdapter:
         self.runtime.close()
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return list_tool_definitions(config=self.runtime.config)
+        return list_tool_definitions(config=self.runtime.config, plan=not self.hide_plan)
 
     def _package_tool_names(self) -> set[str]:
         """The tools the whole package offers. Every call reads this, so it asks the snapshot:
         ``Runtime.config`` copies the whole package."""
-        return _offered_tool_names(self.runtime.snapshot.has_segments)
+        return _offered_tool_names(self.runtime.snapshot.has_segments, plan=not self.hide_plan)
 
     def _caller_tool_names(self) -> set[str]:
         """The tools a caller's view offers: no segment tool when they see no segment."""
@@ -1597,18 +1674,22 @@ class SemanticLayerMCPAdapter:
             view = self.runtime.view_for(_caller())
         except Exception:  # noqa: BLE001 — the call itself refuses an unresolved view
             return self._package_tool_names()
-        return _offered_tool_names(bool(view.segments))
+        return _offered_tool_names(bool(view.segments), plan=not self.hide_plan)
 
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()
 
     def list_prompts(self) -> list[dict[str, Any]]:
         has_segment = "segment" in self._package_tool_names()
-        return [
+        prompts = [
             prompt
             for prompt in list_prompt_definitions()
             if prompt["name"] != "semantic-rails-segment-workflow" or has_segment
         ]
+        if self.hide_plan:
+            for prompt in prompts:
+                prompt["description"] = _without_plan(prompt["description"])
+        return prompts
 
     def call_tool(
         self,
@@ -1858,7 +1939,8 @@ class SemanticLayerMCPAdapter:
     def get_prompt(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
         args = dict(arguments or {})
         if name in {prompt["name"] for prompt in self.list_prompts()}:
-            text = _PROMPT_TEXT[name].format(
+            template = _PROMPT_TEXT[name]
+            text = (_without_plan(template) if self.hide_plan else template).format(
                 intent=str(args.get("intent", "") or ""),
                 package_id=str(args.get("package_id", self.package_id) or self.package_id),
                 query_json=str(args.get("query_json", "") or ""),
