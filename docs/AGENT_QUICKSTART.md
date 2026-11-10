@@ -220,7 +220,8 @@ Statuses are:
   offer asking again without it; never the "t" of "can't".
   A question asking for a series ("by month") on something no one clock dates is held the same
   way, with `kind="time_grain_unrealized"`: set `query.time.temporal_role` and `grain`, or ask
-  the user which date they mean.
+  the user which date they mean. When its parts are dated by different clocks, the hint names
+  them: a chosen date doesn't re-date the other parts, so ask the user.
 - `needs_clarification`: the question reads more than one way, or asks what this release
   doesn't answer side by side (`PERIOD_COMPARISON`: "revenue month over month"). `why`
   carries the options, each with a ready call; ask the user which one they mean and execute it.

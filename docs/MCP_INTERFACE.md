@@ -821,8 +821,16 @@ what the draft selects (a ratio of two models' counts dated by different clocks)
 read on several and names none, plan holds the draft with `why.code="PLAN_UNMATCHED_TERMS"`,
 `why.details={"terms": ["month"], "kind": "time_grain_unrealized", "temporal_roles": [...]}` and a
 `choose_temporal_role` hint: set `query.time.temporal_role` to the date the user means and the
-grain, then validate, or ask the user. A grain word inside the name of an object the draft
-selects ("Monthly active users") asks for no series.
+grain, then validate, or ask the user. When the parts are dated by different clocks ("orders per
+customer": orders by order date, customers by signup date), the hint names each part's clock
+instead: a chosen role doesn't re-date a part onto a clock it isn't read on, so each period would
+combine numbers dated differently; ask the user, or use a metric declared on one clock. A derived
+metric whose parts share no one clock is held this way too, however many parts it has.
+
+A grain word the draft already spends asks for no series: one inside the name of an object it
+selects or groups by ("Monthly active users", "Revenue per day"), or a filter value it keeps
+("total amount for monthly billing period" is one total of the monthly billing period). Another
+grain word still asks: "revenue per day by month" is monthly.
 
 Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
