@@ -178,7 +178,7 @@ def test_a_call_deeper_than_the_engine_compiles_is_refused_at_its_field(runtime,
 def test_a_joined_part_too_deep_is_refused_in_that_part(runtime):
     joined = {
         "parts": [{"select": [ORDERS], "group_by": [STORE]}, _call(_arithmetic(150))],
-        "join": {"on": [STORE]},
+        "join": {"on": [[STORE, STORE]]},
     }
     error = runtime.validate(joined, now=NOW)["errors"][0]
     assert error["code"] == "INVALID_QUERY"
