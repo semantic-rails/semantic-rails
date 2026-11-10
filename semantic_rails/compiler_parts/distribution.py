@@ -47,6 +47,7 @@ from .bind import (
     _bound_metric_predicates,
     _collect_measure_refs,
     _parse_public_expr,
+    _refuse_unread_parameters,
 )
 from .dependencies import (
     binding_cut,
@@ -193,27 +194,21 @@ def _distribution_select(
     key_aliases = _query_key_aliases(plan)
     value_ref = SqlIdentifier(parts=[source_name, value_alias])
     function = str(expr.function or "").strip().lower()
-    parameters = dict(expr.parameters or {})
-    if function == "percentile":
-        if expr.p is not None:
-            parameters.setdefault("p", expr.p)
-        aggregate_expr = _aggregation_expr(
-            value_ref,
-            "percentile",
-            parameters=parameters,
-            dialect=dialect_for_warehouse(config.package.warehouse),
-        )
-    elif function in {"median", "avg", "sum", "min", "max"}:
-        aggregate_expr = _aggregation_expr(
-            value_ref,
-            function,
-            parameters=parameters,
-            dialect=dialect_for_warehouse(config.package.warehouse),
-        )
-    else:
+    if function not in {"percentile", "median", "avg", "sum", "min", "max"}:
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION", f"Unsupported distribution function '{expr.function}'"
         )
+    parameters = dict(expr.parameters or {})
+    _refuse_unread_parameters(function, parameters)
+    if expr.p is not None:
+        _refuse_unread_parameters(function, {"p": expr.p}, prefix="")
+        parameters.setdefault("p", expr.p)
+    aggregate_expr = _aggregation_expr(
+        value_ref,
+        function,
+        parameters=parameters,
+        dialect=dialect_for_warehouse(config.package.warehouse),
+    )
     return SqlSelect(
         ctes=[
             SqlCte(

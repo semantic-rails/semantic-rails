@@ -1295,7 +1295,12 @@ have no rows (`REWRITE_NOT_SUPPORTED`).
 `allowed_aggregations`); any other is refused with `UNSUPPORTED_AGGREGATION` at
 `...aggregation`, listing the allowed ones and saying to omit `aggregation` for the default. A
 time-ordered statistic (`first_value`, `last_value`) on a measure with no clock is refused by
-the clock rule instead. An override equal to the default changes nothing and is not stated.
+the clock rule instead. `parameters` holds what the statistic reads: `p` (0 to 1) for
+`percentile`, and nothing for any other. A parameter the statistic doesn't read, such as
+`{"expression": "LENGTH(title)"}` on an `avg`, is refused with `UNSUPPORTED_AGGREGATION` naming
+it (`details.unread_parameters`, beside `details.parameters_accepted`), never ignored; the same
+holds for a `distribution`'s `p` and `parameters`. To aggregate a row expression, write an
+`aggregate_if` with a `value` (above). An override equal to the default changes nothing and is not stated.
 Any other override is stated in `assumptions`, with the source rows the returned numbers
 aggregated (counted beside the measure in the same scan; a rollup holds no source rows, so an
 answer a rollup serves states none):
