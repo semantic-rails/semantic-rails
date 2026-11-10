@@ -64,8 +64,15 @@ from ..sql_ast import (
     build_comparison_condition,
     build_filter_condition,
     build_negation,
+    sql_nodes,
 )
-from .dependencies import binding_cut, holding, measure_cut_owners, measure_objects
+from .dependencies import (
+    binding_cut,
+    holding,
+    measure_cut_owners,
+    measure_objects,
+    once_per_binding,
+)
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -613,18 +620,16 @@ _MEASURE_KINDS = frozenset({"measure", "aggregate", "semi_additive", "scoped_agg
 def select_measure_reads(select: Any) -> Iterator[dict[str, Any]]:
     """Each measure node a query's ``select`` reads itself; a metric's reads are its own."""
 
-    def walk(node: Any) -> Iterator[dict[str, Any]]:
+    stack: list[Any] = [[row.get("expression") for row in select or []]]
+    while stack:
+        node = stack.pop()
         if isinstance(node, list):
-            for item in node:
-                yield from walk(item)
+            stack.extend(reversed(node))
         elif isinstance(node, dict):
             if node.get("kind") in _MEASURE_KINDS and node.get("measure"):
                 yield node
-                return
-            for value in node.values():
-                yield from walk(value)
-
-    yield from walk([row.get("expression") for row in select or []])
+                continue
+            stack.extend(reversed(list(node.values())))
 
 
 def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple[str, str]]:
@@ -1313,7 +1318,12 @@ def bind_conditional_aggregate_column(
     whenever the package declares an object policy. An own-entity column with no dimension
     remains allowed, as a measure's value column usually has none.
     """
-    joined = _measure_required_entities(measure, config) - {measure.entity}
+    # Each column the measure reads lands here: walking its whole expression every time would
+    # cost the square of its columns, so the walk runs once and later calls replay its reads.
+    required = once_per_binding(
+        measure, config, lambda: frozenset(_measure_required_entities(measure, config))
+    )
+    joined = required - {measure.entity}
     dimensions = [row.id for row in dimensions_over_column(entity_id, column, config)]
     if (
         not dimensions
@@ -1611,6 +1621,12 @@ def lift_conditional_aggregates(
     plus the synthetic-measure dict to attach to the ``LogicalPlan``.
     """
     synthetic: dict[str, MeasureConfig] = {}
+    expressions = [item.expression for item in query.select]
+    expressions.extend(item.expression for item in query.metric_filters)
+    # sql_nodes walks any dataclass tree. With no aggregate_if the rewrite below would find
+    # nothing and return the query as it is, after copying each window's input once per window.
+    if not any(isinstance(node, ConditionalAggregateExpr) for node in sql_nodes(expressions)):
+        return query, {}
 
     def _maybe_rewrite(expr: SemanticExpr | None) -> SemanticExpr | None:
         if expr is None:

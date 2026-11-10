@@ -785,12 +785,13 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
 
 
 def sql_nodes(node: Any) -> Iterator[Any]:
-    """Every node of a SQL AST, found generically so no node type can hide a read."""
-    stack: list[Any] = [node]
+    """Every node of a SQL AST, parents first, found generically so no node type can hide a
+    read. An explicit stack keeps each node's cost constant however deep it sits."""
+    stack = [node]
     while stack:
-        item = stack.pop()
-        if isinstance(item, list | tuple):
-            stack.extend(reversed(item))
-        elif is_dataclass(item) and not isinstance(item, type):
-            yield item
-            stack.extend(getattr(item, part.name) for part in reversed(fields(item)))
+        node = stack.pop()
+        if isinstance(node, list | tuple):
+            stack.extend(reversed(node))
+        elif is_dataclass(node) and not isinstance(node, type):
+            yield node
+            stack.extend(getattr(node, item.name) for item in reversed(fields(node)))
