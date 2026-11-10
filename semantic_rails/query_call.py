@@ -412,11 +412,11 @@ class CallContext:
 # level more; a boolean's arguments sit as many levels below it as the compiler joins them
 # (``expressions.boolean_chain_depth``). Reading, binding and rendering a call recurse; every
 # walk that only copies, converts or searches a call or its plan keeps its own stack
-# (``flat_copy``). So a call costs at most 3 Python frames a level (2.6 measured, for a prior
-# period inside an arithmetic) above about 30 of the engine's and its transports' own: a call
-# this deep peaks near 780 frames on every dialect and transport, leaving about 200 of the
-# 1,000 Python allows by default to whatever calls the engine, which the tests hold. The bound
-# is the stack's, not the call's cost.
+# (``flat_copy``). So a call costs at most 2.6 Python frames a level (a prior period inside an
+# arithmetic; a plain arithmetic costs 2.1) above about 20 of the engine's and its transports'
+# own: a call this deep peaks near 670 frames on every dialect and transport, leaving 300 of the
+# 1,000 Python allows by default to whatever calls the engine; the tests hold 200 for it. The
+# bound is the stack's, not the call's cost.
 MAX_CALL_DEPTH = 250
 
 
