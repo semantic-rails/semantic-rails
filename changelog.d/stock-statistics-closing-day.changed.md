@@ -7,5 +7,7 @@
   it now reads `925`. A series with no snapshot on that day is left out of every statistic
   (`NULL` when it is the only one filtered to), and a balance keyed by its clock alone reads
   that day's snapshot instead of every snapshot it has; give a window for a statistic over
-  time. Answers with a window, a grain or a grouping by the clock are unchanged. See
-  [Balances](docs/QUERY_CALL.md#balances).
+  time. On DuckDB and Postgres, such a statistic of a balance on a timestamp clock in another
+  zone than the call's is refused with `MIXED_TIME_ROLES` (`closing_day_zone`), as the balance
+  already was; give the call a window on that clock. Answers with a window, a grain or a
+  grouping by the clock are unchanged. See [Balances](docs/QUERY_CALL.md#balances).
