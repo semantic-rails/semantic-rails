@@ -595,12 +595,20 @@ def refuse_closing_day_zone(config: Any, compiled: dict[str, Any]) -> None:
     zone = _time_zone(config, compiled)
     for read in compiled.get("closing_reads") or ():
         if read["zone"] and read["zone"] != zone:
+            # With no window every statistic closes; over a window only last_value and sum do.
+            statistics = ", ".join(read.get("statistics") or ())
+            reading = (
+                f" Over a window, {statistics} reads each series' last snapshot in it, "
+                "not one closing day."
+                if statistics
+                else ""
+            )
             raise SemanticLayerError(
                 "MIXED_TIME_ROLES",
                 f"{read['measure']} is a balance read on its closing day in {read['zone']}, "
                 f"its clock's zone, but this query runs in {zone or 'UTC'}, so its day could "
                 "be another. Give the call a time window on the balance's own clock "
-                "(time.temporal_role) so it runs in that zone.",
+                f"(time.temporal_role) so it runs in that zone.{reading}",
                 details={
                     "reason": "closing_day_zone",
                     "measure": read["measure"],

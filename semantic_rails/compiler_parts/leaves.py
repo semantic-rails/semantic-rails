@@ -131,7 +131,13 @@ from .predicate_sets import (
     _stock_period_split,
 )
 from .row_counts import _row_markers, _rows_fields
-from .snapshot_reads import ClosingDay, SnapshotRead, closing_day, select_snapshots
+from .snapshot_reads import (
+    ClosingDay,
+    SnapshotRead,
+    closing_day,
+    select_snapshots,
+    source_is_windowed,
+)
 
 
 def _aggregate_relation_time_expr(
@@ -281,24 +287,25 @@ def _semi_additive_leaf_select(
     # e.g. a YTD value 31x overstated at month grain). With no row keys:
     # last/first/sum collapse to one snapshot per output bucket, while
     # distributional aggregations (median/avg/min/max/...) keep every
-    # snapshot in the bucket and aggregate across them, unless the read
-    # closes on a day: then they read that day's snapshot, as last_value does.
+    # snapshot in the bucket and aggregate across them.
     key_aliases = [field.alias for field in key_fields]
     periods = [alias for alias in key_aliases if alias in period_aliases]
     # An end-of-period balance on an as-of clock (``day``) closes on the period's closing
     # day (snapshot_reads). With no period (no time window, no grouping by its clock or a
-    # calendar), every statistic of it closes on the last closing day too, as the balance
-    # does: a series whose last snapshot is years old is never read beside the others'.
+    # calendar), every statistic of a balance with series keys closes on the last closing day
+    # too, as the balance does: a series whose last snapshot is years old is never read beside
+    # the others'. An entity filter's or a predicate's source read ``over: "window"`` has the
+    # window as filters, not a period, and reads its statistics as a call's window does. A
+    # balance keyed by its clock alone has one series: a statistic of it is over its snapshots.
     closes = (
         day is not None
         and window_choice == "last_value"
-        and (final_aggregation in {"last_value", "sum"} or not periods)
+        and (
+            final_aggregation in {"last_value", "sum"}
+            or (not periods and bool(row_grain_exprs) and not source_is_windowed())
+        )
     )
-    if (
-        not row_grain_exprs
-        and not closes
-        and final_aggregation not in {"last_value", "first_value", "sum"}
-    ):
+    if not row_grain_exprs and final_aggregation not in {"last_value", "first_value", "sum"}:
         row_grain_exprs = [order_expr]
     row_key_aliases = [f"__snapshot_key_{index + 1}" for index in range(len(row_grain_exprs))]
     fields = [
@@ -337,7 +344,12 @@ def _semi_additive_leaf_select(
         ctes=list(ctes or []),
     )
     chosen, rows = select_snapshots(
-        read, name="snapshot_rows", prefix="snapshot", dialect=dialect, measure_id=measure_id
+        read,
+        name="snapshot_rows",
+        prefix="snapshot",
+        dialect=dialect,
+        measure_id=measure_id,
+        statistic="" if final_aggregation in {"last_value", "sum"} else final_aggregation,
     )
     value: Any = SqlIdentifier(parts=[rows, "__snapshot_value"])
     flag = SqlIdentifier(parts=[rows, "__snapshot_kept"])

@@ -123,7 +123,7 @@ from .predicate import (
     _public_time_spec,
     _require_predicate_over_rows,
 )
-from .snapshot_reads import SnapshotRead, closing_day, select_snapshots
+from .snapshot_reads import SnapshotRead, closing_day, reading_source, select_snapshots
 from .time_series import _window_is_named
 
 
@@ -651,7 +651,8 @@ def _minimal_predicate_set_ctes(
 
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = nested.predicate_source_sql(config, mini_query)
+    with reading_source(windowed=False):
+        predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name = f"{_semantic_set_name(predicate, index)}_source"
     set_name = _semantic_set_name(predicate, index)
     source_cte = SqlCte(

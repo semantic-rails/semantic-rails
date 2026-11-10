@@ -359,11 +359,20 @@ ONE_SERIES = """model:
 """
 
 
-def test_a_one_series_balance_reads_its_closing_day_for_every_statistic(tmp_path: Path) -> None:
-    """A total keyed by its clock alone is one series. With no window every statistic reads
-    December's 330, as last_value does, not the statistic of every month (average 334.17,
-    maximum 350), and nothing is missing. Over a window a statistic still runs across the
-    window's snapshots (the quarters' averages)."""
+ONE_SERIES_STATISTICS = {
+    "avg": "AVG(area)",
+    "median": "MEDIAN(area)",
+    "percentile": "QUANTILE_CONT(area, 0.9)",
+    "min": "MIN(area)",
+    "max": "MAX(area)",
+}
+
+
+def test_a_one_series_balance_takes_a_statistic_over_its_snapshots(tmp_path: Path) -> None:
+    """A total keyed by its clock alone is one series: with no window its balance reads
+    December's 330, on its closing day, while a statistic of it is over every snapshot it has
+    (the average month 334.17, the highest 350), never one day's value, and names no closing
+    day. That is the same number as over a window holding every snapshot."""
     root = _write_package(tmp_path / "inv")
     (root / "models" / "inv_total.yml").write_text(ONE_SERIES)
     with (root / "graph.yml").open("a") as graph:
@@ -372,14 +381,27 @@ def test_a_one_series_balance_reads_its_closing_day_for_every_statistic(tmp_path
         con.execute(
             "CREATE TABLE inv_total AS SELECT snap_date, SUM(area) AS area FROM inv_dense GROUP BY 1"
         )
+        hand = {
+            aggregation: float(con.execute(f"SELECT {sql} FROM inv_total").fetchone()[0])
+            for aggregation, sql in ONE_SERIES_STATISTICS.items()
+        }
+    assert round(hand["avg"], 2) == 334.17 and hand["max"] == 350
     runtime = opened(Runtime.from_path(str(root)))
     try:
-        for aggregation in ("last_value", "avg", "median", "percentile", "min", "max"):
+        latest = runtime.query(_statistic("inv_total", "last_value"))
+        assert _values(latest) == [330]
+        assert _one(latest, "assumptions", CLOSING)["closing_day"] == "2020-12-01"
+        clock = "temporal_role.inv_inv_total_snap_date"
+        for aggregation, expected in hand.items():
             result = runtime.query(_statistic("inv_total", aggregation))
-            assert _values(result) == [330], aggregation
-            assert _one(result, "assumptions", CLOSING)["closing_day"] == "2020-12-01"
+            assert _values(result) == [pytest.approx(expected)], aggregation
+            assert CLOSING not in _codes(result, "assumptions"), aggregation
             assert MISSING not in _codes(result, "warnings"), aggregation
-        quarter = {"temporal_role": "temporal_role.inv_inv_total_snap_date", "grain": "quarter"}
+            window = runtime.query(
+                _statistic("inv_total", aggregation, time={"temporal_role": clock, **YEAR})
+            )
+            assert _values(window) == _values(result), aggregation
+        quarter = {"temporal_role": clock, "grain": "quarter"}
         by_quarter = runtime.query(_statistic("inv_total", "avg", time={**quarter, **YEAR}))
         assert [round(value, 2) for value in _values(by_quarter)] == [350, 326.67, 330, 330]
     finally:

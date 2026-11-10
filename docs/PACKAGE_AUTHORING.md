@@ -1967,7 +1967,8 @@ Which value a series gives depends on the clock the stock is read on:
   period's **closing day**, the period's last day with a snapshot: the day bucket
   `time.grain: day` puts the snapshot in. With no time window or grain, it is the last day
   with a snapshot at all, and every statistic of the stock (`avg`, `median`, `percentile`,
-  `min`, `max`) reads that day too. A series with no snapshot that day is not counted: a series that
+  `min`, `max`) reads that day too, unless its key is the clock alone (one series: a
+  statistic over its snapshots). A series with no snapshot that day is not counted: a series that
   stops is never carried forward from an earlier day. A row whose clock is NULL is never a
   snapshot, and rows of one series tied on its last clock value are all read, as the data
   holds them. Its own column and a read inside an entity filter or a metric predicate all
