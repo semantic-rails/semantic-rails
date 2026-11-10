@@ -12,12 +12,18 @@ its own row, NULL in every other part. ``keep`` keeps a row only where every nam
 its own row there. The counts the answer states (``PARTS_JOINED``) are window aggregates over
 the joined rows before ``keep``, ``order_by`` and ``limit``, so a page states the whole
 result's counts, read from the caller's own rows only.
+
+The statement grows with its parts and keys, not faster: each part's statement once, each key
+read once per part, each count one term over the joined row's own columns. The one term per
+pair of parts is the keys both have (``SHARED``), which the pairwise counts the answer states
+need.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import combinations
 from typing import Any
 
 from ..errors import SemanticLayerError
@@ -47,6 +53,7 @@ from .paths import display_key
 
 # The joined call's own CTEs and hidden columns.
 KEYS_CTE = "joined_keys"
+MATCHED_CTE = "joined_matched"
 JOINED_CTE = "joined_rows"
 KEPT_CTE = "joined_kept"
 # Whether a row is a part's own: true, false (a key only another part has), or NULL (another
@@ -54,7 +61,9 @@ KEPT_CTE = "joined_kept"
 IN = "joined_in_{part}"
 ROWS = "joined_rows_{part}"
 NULL_KEYS = "joined_null_keys_{part}"
-UNMATCHED = "joined_unmatched_{part}_{other}"
+# The keys two parts both have (``part`` before ``other``): a key of one the other lacks is
+# one of its rows with no NULL key that isn't one of these.
+SHARED = "joined_shared_{part}_{other}"
 KEPT_ROWS = "joined_kept_rows"
 
 
@@ -80,6 +89,11 @@ class PartStatement:
     keys: tuple[str, ...]
     outputs: tuple[str, ...]
     hidden: tuple[str, ...]
+
+
+def shared_name(part: int, other: int) -> str:
+    """The column counting the keys two parts both have, in either order."""
+    return SHARED.format(part=min(part, other), other=max(part, other))
 
 
 def hidden_name(part: int, column: str) -> str:
@@ -397,7 +411,7 @@ def joined_statement(
         ctes_after.extend([SqlCte(name=own.name, query=every), *flat.ctes[at + 1 :]])
         roots.append(SqlCte(name=prefix, query=replace(flat, ctes=[])))
     every_key = _union_of_keys([cte.name for cte in sources], [key.name for key in keys])
-    joined = _joined_rows(parts, keys)
+    matched, joined = _joined_rows(parts, keys)
     kept = SqlSelect(
         select=[
             SqlField(SqlIdentifier(parts=["joined", field.alias]), field.alias)
@@ -419,6 +433,7 @@ def joined_statement(
             *every_key,
             *ctes_after,
             *roots,
+            SqlCte(name=MATCHED_CTE, query=matched),
             SqlCte(name=JOINED_CTE, query=joined),
             SqlCte(name=KEPT_CTE, query=kept),
         ],
@@ -488,9 +503,12 @@ def _union_of_keys(sources: Sequence[str], names: Sequence[str]) -> list[SqlCte]
     return out
 
 
-def _joined_rows(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> SqlSelect:
+def _joined_rows(
+    parts: Sequence[PartStatement], keys: Sequence[JoinKey]
+) -> tuple[SqlSelect, SqlSelect]:
     """The parts' rows joined on the keys by plain equality, each part's presence beside them
-    and the whole result's counts."""
+    (``MATCHED_CTE``), then those rows with the whole result's counts (``JOINED_CTE``). Every
+    count reads the matched row's own columns, so each is one term, whatever the parts."""
     aliases = [f"part_{index}" for index in range(len(parts))]
     fields: list[SqlField] = []
     for key in keys:
@@ -506,50 +524,10 @@ def _joined_rows(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> Sql
             SqlField(SqlIdentifier(parts=[alias, name]), hidden_name(index, name))
             for name in part.hidden
         )
-    presence = [SqlIdentifier(parts=[alias, PRESENT]) for alias in aliases]
     fields.extend(
-        SqlField(present, IN.format(part=index)) for index, present in enumerate(presence)
+        SqlField(SqlIdentifier(parts=[alias, PRESENT]), IN.format(part=index))
+        for index, alias in enumerate(aliases)
     )
-    key_values = {field.alias: field.expression for field in fields[: len(keys)]}
-
-    def any_null() -> Any:
-        out: Any = None
-        for key in keys:
-            test = SqlIsNull(key_values[key.name])
-            out = test if out is None else SqlBinary(out, "OR", test)
-        return out
-
-    def no_null() -> Any:
-        out: Any = None
-        for key in keys:
-            test = SqlBinary(key_values[key.name], "IS NOT", SqlLiteral(None))
-            out = test if out is None else SqlBinary(out, "AND", test)
-        return out
-
-    def count(condition: Any) -> SqlWindow:
-        return SqlWindow(
-            function=SqlCall(
-                "SUM", [SqlCase([SqlCaseWhen(condition, SqlLiteral(1))], else_expr=SqlLiteral(0))]
-            )
-        )
-
-    def own(index: int) -> Any:
-        return SqlBinary(presence[index], "=", SqlLiteral(True))
-
-    for index in range(len(parts)):
-        fields.append(SqlField(count(own(index)), ROWS.format(part=index)))
-        fields.append(
-            SqlField(count(SqlBinary(own(index), "AND", any_null())), NULL_KEYS.format(part=index))
-        )
-        for other in range(len(parts)):
-            if other == index:
-                continue
-            # A key of this part's own rows no row of the other part has (NULL keys apart).
-            missing = SqlBinary(
-                SqlCall("COALESCE", [presence[other], SqlLiteral(False)]), "=", SqlLiteral(False)
-            )
-            unmatched = SqlBinary(SqlBinary(own(index), "AND", missing), "AND", no_null())
-            fields.append(SqlField(count(unmatched), UNMATCHED.format(part=index, other=other)))
     joins = []
     for index, alias in enumerate(aliases[1:], start=1):
         on: Any = None
@@ -564,10 +542,44 @@ def _joined_rows(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> Sql
         joins.append(
             SqlJoin("FULL OUTER", SqlTableRef(name=f"joined_part_{index}", alias=alias), on=on)
         )
-    return SqlSelect(
+    matched = SqlSelect(
         select=fields,
         from_table=SqlTableRef(name="joined_part_0", alias=aliases[0]),
         joins=joins,
+    )
+
+    def column(name: str) -> SqlIdentifier:
+        return SqlIdentifier(parts=["matched", name])
+
+    any_null: Any = None
+    for key in keys:
+        test = SqlIsNull(column(key.name))
+        any_null = test if any_null is None else SqlBinary(any_null, "OR", test)
+
+    def own(index: int) -> Any:
+        return SqlBinary(column(IN.format(part=index)), "=", SqlLiteral(True))
+
+    def count(condition: Any) -> SqlWindow:
+        return SqlWindow(
+            function=SqlCall(
+                "SUM", [SqlCase([SqlCaseWhen(condition, SqlLiteral(1))], else_expr=SqlLiteral(0))]
+            )
+        )
+
+    counted = [SqlField(column(field.alias), field.alias) for field in fields]
+    for index in range(len(parts)):
+        counted.append(SqlField(count(own(index)), ROWS.format(part=index)))
+        counted.append(
+            SqlField(count(SqlBinary(own(index), "AND", any_null)), NULL_KEYS.format(part=index))
+        )
+    for index, other in combinations(range(len(parts)), 2):
+        # Two parts' own rows are one row only where they matched on every key, so no key of
+        # it is NULL.
+        counted.append(
+            SqlField(count(SqlBinary(own(index), "AND", own(other))), shared_name(index, other))
+        )
+    return matched, SqlSelect(
+        select=counted, from_table=SqlTableRef(name=MATCHED_CTE, alias="matched")
     )
 
 

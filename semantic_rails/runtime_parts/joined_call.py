@@ -26,13 +26,12 @@ from ..answer import (
     minimal_route,
 )
 from ..ast import PERIOD_PARTIAL, TIME_AXIS
-from ..compiler import _prepare, compile_query
+from ..compiler import _prepare
 from ..compiler_parts.joined_parts import (
     IN,
     KEPT_ROWS,
     NULL_KEYS,
     ROWS,
-    UNMATCHED,
     JoinKey,
     PartStatement,
     hidden_name,
@@ -40,6 +39,7 @@ from ..compiler_parts.joined_parts import (
     joined_statement,
     presence_order,
     refuse_shared_outputs,
+    shared_name,
 )
 from ..compiler_parts.part_domain import PRESENT, reading_part_domain
 from ..db_parts.base import QueryRows
@@ -48,7 +48,7 @@ from ..policies import enforce_query_policies
 from ..query_call import in_part, refusal
 from ..request_context import policy_identity
 from ..top_n import limit_order
-from .assumptions import hidden_columns, refuse_hidden_governors, split_hidden
+from .assumptions import hidden_columns, split_hidden
 from .responses import (
     _ANSWER_KEYS,
     apply_response_verbosity,
@@ -347,11 +347,9 @@ def _compile_part(
     runtime: Any, index: int, payload: dict[str, Any], policy_context: dict[str, Any]
 ) -> _Part:
     """One part, as ``Runtime._enforced_compile`` compiles a call (bound on the caller's view,
-    the policy gate, then the compile), lowered as a part, never from the compile cache: the
-    cache keys on the call alone, and a part's statement is another one."""
-    from .answer_warnings import refuse_closing_day_zone
-
-    config = runtime._config
+    the policy gate, then the compile), lowered as a part. Its compile is cached as a call's is,
+    on the caller's view, identity and package, under a key marked as a part's: a part's
+    statement is another one than the call's."""
     with reading_part_domain() as domain:
         binding = runtime._bind(payload, policy_context)
     policy_effects = enforce_query_policies(
@@ -361,9 +359,9 @@ def _compile_part(
         query=payload,
         binding=binding,
     )
-    refuse_hidden_governors(config, binding.plan.query)
-    compiled = compile_query(config, runtime.registry, payload, binding=binding)
-    refuse_closing_day_zone(config, compiled)
+    compiled = runtime._compile(
+        payload, policy_context=policy_context, binding=binding, joined_part=True
+    )
     if not domain.taken:
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",
@@ -502,17 +500,17 @@ def _counts(joined: _Joined, rows: list[dict[str, Any]]) -> dict[str, Any] | Non
 
     parts = []
     for part in joined.parts:
-        others = [other.index for other in joined.parts if other.index != part.index]
+        rows = read(ROWS.format(part=part.index))
+        null_keys = read(NULL_KEYS.format(part=part.index))
+        # A key of this part another part lacks: one of its rows with no NULL key that isn't a
+        # key both have.
+        unmatched = {
+            str(other.index): rows - null_keys - read(shared_name(part.index, other.index))
+            for other in joined.parts
+            if other.index != part.index
+        }
         parts.append(
-            {
-                "part": part.index,
-                "rows": read(ROWS.format(part=part.index)),
-                "null_keys": read(NULL_KEYS.format(part=part.index)),
-                "unmatched": {
-                    str(other): read(UNMATCHED.format(part=part.index, other=other))
-                    for other in others
-                },
-            }
+            {"part": part.index, "rows": rows, "null_keys": null_keys, "unmatched": unmatched}
         )
     return {"parts": parts, "kept": read(KEPT_ROWS)}
 
