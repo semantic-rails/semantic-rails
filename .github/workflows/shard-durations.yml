@@ -1,0 +1,97 @@
+name: Refresh shard durations
+
+# Weekly: rebuild tests/shard_durations.json from the newest green merge-queue run's JUnit
+# reports, and open one pull request when the table changed. Pull requests never edit the
+# table: the sharder charges a file without an entry (a new test file) the median cost.
+on:
+  schedule:
+    - cron: "37 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh the shard duration table
+    if: github.repository == 'semantic-rails/semantic-rails'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Read the CI run's artifacts and dispatch CI on the refresh branch.
+      actions: write
+      # Push the refresh branch.
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --locked
+      - name: Download the newest green merge-queue run's backend reports
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event merge_group \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "::error::No successful merge-queue CI run to read durations from"
+            exit 1
+          fi
+          reports="$RUNNER_TEMP/backend-reports"
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --pattern 'backend-results-py*' --dir "$reports"
+          # A missing shard would drop its files from the table, so every CI shard must be there.
+          shards=$(uv run --no-sync python -c "import yaml; print(*yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['backend']['strategy']['matrix']['shard'])")
+          for shard in $shards; do
+            if ! compgen -G "$reports/backend-results-py*-$shard/backend-results.xml" > /dev/null; then
+              echo "::error::CI run $run_id has no backend report for shard $shard"
+              exit 1
+            fi
+          done
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+          echo "SHARD_COUNT=$(wc -w <<< "$shards" | tr -d ' ')" >> "$GITHUB_ENV"
+      - name: Rebuild the table
+        run: >-
+          uv run --no-sync python scripts/update_shard_durations.py --shards "$SHARD_COUNT"
+          "$RUNNER_TEMP"/backend-reports/*/backend-results.xml
+      - name: Open the refresh pull request
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- tests/shard_durations.json; then
+            echo "tests/shard_durations.json is unchanged"
+            exit 0
+          fi
+          prefix="automation/shard-durations-"
+          branch="$prefix$(date -u +%Y-%m-%d)-$GITHUB_RUN_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -q -m "Refresh shard durations from CI run $RUN_ID" -- tests/shard_durations.json
+          git push origin "$branch"
+          # One refresh pull request at a time: this one supersedes any still open.
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"$prefix\")) | .number" |
+            while read -r number; do
+              gh pr close "$number" --repo "$GITHUB_REPOSITORY" --delete-branch \
+                --comment "Superseded by the refresh from branch $branch."
+            done
+          if ! gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
+            --title "Refresh shard durations" \
+            --body "Weekly refresh of tests/shard_durations.json from the backend JUnit reports of CI run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID (the newest green merge-queue run). The table only balances test shards; it changes no test."; then
+            echo "::error::Could not open the pull request for $branch. The workflow token needs Settings > Actions > General > 'Allow GitHub Actions to create and approve pull requests'."
+            exit 1
+          fi
+          # A pull request opened with the workflow token starts no pull_request run, so
+          # dispatch CI on the branch to report the required check on its head.
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"

@@ -246,6 +246,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Diff mode compares against the first parent (HEAD^1).
+          fetch-depth: 2
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
@@ -259,7 +263,18 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --locked
       - name: Audit core and individual warehouse connectors
-        run: uv run --no-sync python scripts/audit_dependencies.py
+        # A pull request or merge group fails only on advisories it introduces: its checkout is
+        # a merge commit whose first parent is the base branch head. An advisory published
+        # against an existing dependency fails main and the nightly audit instead
+        # (dependency-audit.yml), which tracks it in an issue.
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; then
+            uv run --no-sync python scripts/audit_dependencies.py --base HEAD^1
+          else
+            uv run --no-sync python scripts/audit_dependencies.py
+          fi
       - name: npm audit (Malloy comparison harness)
         run: |
           npm ci --prefix comparisons/semantic_layers/malloy
