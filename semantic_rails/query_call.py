@@ -411,10 +411,10 @@ class CallContext:
 # The deepest a call nests: the call is level 1, and each object or list inside another is one
 # level more; a boolean's arguments sit as many levels below it as the compiler joins them
 # (``sql_ast.boolean_chain_depth``). Reading, binding, copying, aliasing and rendering a call all
-# recurse, the deepest at most 7 Python frames a level (a prior period inside an arithmetic), and
-# the engine's own frames below the call stay under 60, so a call this deep takes at most about
-# 760 of the 1,000 frames Python allows by default and leaves the rest to whatever calls the
-# engine. Every dialect renders it, and DuckDB, whose binder stops at 1,000 levels, runs it.
+# recurse, at most 7 Python frames a level (a prior period inside an arithmetic) above about 12
+# of the engine's own. So a call this deep peaks near 710 frames on every dialect and transport,
+# leaving close to 300 of the 1,000 Python allows by default to whatever calls the engine; the
+# tests hold 200 for it. The bound is the stack's, not the call's cost.
 MAX_CALL_DEPTH = 100
 
 

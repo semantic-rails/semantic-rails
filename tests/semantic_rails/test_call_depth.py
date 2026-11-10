@@ -20,7 +20,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.query_call import MAX_CALL_DEPTH, call_depth
 from semantic_rails.renderer import render_expr
 from semantic_rails.runtime import Runtime
-from semantic_rails.sql_ast import SqlIdentifier, boolean_chain
+from semantic_rails.sql_ast import SqlIdentifier, boolean_chain, boolean_chain_depth
 
 REVENUE = "measure.jaffle.revenue_usd"
 ORDERS = "measure.jaffle.order_count"
@@ -206,7 +206,8 @@ def test_every_dialect_renders_the_deepest_call_with_the_host_frames_left(wareho
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     runtime = Runtime.from_config(config, source_path=path)
     try:
-        for shape in sorted(SHAPES):
+        # The two that take the most stack a level; every shape peaks alike on every dialect.
+        for shape in ("nullif", "prior_period"):
             try:
                 runtime.compile(_call(SHAPES[shape](2)), now=NOW)
             except SemanticLayerError:
@@ -241,7 +242,12 @@ def test_a_boolean_of_a_thousand_arguments_answers_as_its_in(runtime):
     ]
     assert answers[0]["status"] == answers[1]["status"] == "ok"
     assert answers[0]["rows"] == answers[1]["rows"]
-    assert call_depth(_call(either))[0] < 20
+    # Its arguments count as deep as they are joined: 21 levels, not 999.
+    pair = {**either, "args": either["args"][:2]}
+    assert (
+        call_depth(_call(either))[0] - call_depth(_call(pair))[0] == boolean_chain_depth(1000) - 1
+    )
+    assert boolean_chain_depth(1000) == 21
 
 
 def test_a_long_boolean_joins_its_halves_and_a_short_one_reads_as_written():
