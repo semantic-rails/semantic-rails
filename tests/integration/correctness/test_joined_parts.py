@@ -890,10 +890,15 @@ def test_postgres_answers_the_parts_its_select_reads_and_refuses_one_more(depts,
         1_664,
     )
     fits = details["fits"]
-    out = depts.query(_people(fits))
+    rows = depts.query(_people(fits))["rows"]
+    keyed = [row for row in rows if row[DEPT] is not None]
 
-    assert len(out["rows"]) == len(depts.query(_people(2))["rows"])
-    assert all(row[f"people_{fits - 1}"] == row["people_0"] for row in out["rows"])
+    # Each department's headcount in every part, and each part's own NULL-key row.
+    assert [(row[DEPT], row["people_0"]) for row in keyed] == [
+        (row[DEPT], row["people_0"]) for row in depts.query(_people(2))["rows"] if row[DEPT]
+    ]
+    assert all(row[f"people_{fits - 1}"] == row["people_0"] for row in keyed)
+    assert len(rows) - len(keyed) == fits
     monkeypatch.setattr(PostgresDialect, "max_select_columns", None)
     sql = depts.base.compile(_people(fits + 1), now=NOW)["rendered_sql"]
     with pytest.raises(Exception, match="at most 1664 entries"):
