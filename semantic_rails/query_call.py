@@ -23,8 +23,8 @@ from typing import Any
 from . import operators
 from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
+from .expressions import boolean_chain_depth
 from .schema import OBSERVATION_SCOPES, MeasureConfig, PackageConfig
-from .sql_ast import boolean_chain_depth
 
 SCHEMA_ID = "https://semantic-rails.com/schemas/query.v2.json"
 
@@ -410,11 +410,11 @@ class CallContext:
 
 # The deepest a call nests: the call is level 1, and each object or list inside another is one
 # level more; a boolean's arguments sit as many levels below it as the compiler joins them
-# (``sql_ast.boolean_chain_depth``). Reading, binding, copying, aliasing and rendering a call all
-# recurse, at most 7 Python frames a level (a prior period inside an arithmetic) above about 12
-# of the engine's own. So a call this deep peaks near 710 frames on every dialect and transport,
-# leaving close to 300 of the 1,000 Python allows by default to whatever calls the engine; the
-# tests hold 200 for it. The bound is the stack's, not the call's cost.
+# (``expressions.boolean_chain_depth``). Reading, binding, copying, aliasing and rendering a
+# call all recurse, at most 7 Python frames a level (a prior period inside an arithmetic) above
+# about 12 of the engine's own. So a call this deep peaks near 710 frames on every dialect and
+# transport, leaving close to 300 of the 1,000 Python allows by default to whatever calls the
+# engine; the tests hold 200 for it. The bound is the stack's, not the call's cost.
 MAX_CALL_DEPTH = 100
 
 

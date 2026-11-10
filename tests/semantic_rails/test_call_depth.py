@@ -15,12 +15,13 @@ import pytest
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import boolean_chain_depth
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.query_call import MAX_CALL_DEPTH, call_depth
 from semantic_rails.renderer import render_expr
 from semantic_rails.runtime import Runtime
-from semantic_rails.sql_ast import SqlIdentifier, boolean_chain, boolean_chain_depth
+from semantic_rails.sql_ast import SqlIdentifier, boolean_chain
 
 REVENUE = "measure.jaffle.revenue_usd"
 ORDERS = "measure.jaffle.order_count"

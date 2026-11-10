@@ -18,6 +18,7 @@ from typing import Any
 
 from . import operators
 from .errors import SemanticLayerError
+from .expressions import CHAIN_WIDTH
 from .sql_preparation import ParameterSlot
 
 SQL_BINARY_OPERATORS = frozenset(
@@ -354,15 +355,10 @@ class SqlBinary:
             )
 
 
-# The most arguments a boolean joins one after another, as SQL reads ``a AND b AND c``. A longer
-# one joins its two halves, so the expression the compiler copies, aliases and renders by
-# recursion nests with the logarithm of its width rather than the width.
-CHAIN_WIDTH = 16
-
-
 def boolean_chain(op: str, args: Sequence[SqlExpr]) -> SqlExpr:
-    """``args`` (one or more) joined by ``op`` (``AND`` or ``OR``), nested as deep as
-    :func:`boolean_chain_depth` says."""
+    """``args`` (one or more) joined by ``op`` (``AND`` or ``OR``): one after another, as SQL reads
+    ``a AND b AND c``, up to ``CHAIN_WIDTH`` of them, else its two halves joined, nested as deep
+    as :func:`semantic_rails.expressions.boolean_chain_depth` says."""
     if len(args) > CHAIN_WIDTH:
         middle = (len(args) + 1) // 2
         return SqlBinary(boolean_chain(op, args[:middle]), op, boolean_chain(op, args[middle:]))
@@ -370,13 +366,6 @@ def boolean_chain(op: str, args: Sequence[SqlExpr]) -> SqlExpr:
     for arg in args[1:]:
         current = SqlBinary(current, op, arg)
     return current
-
-
-def boolean_chain_depth(count: int) -> int:
-    """How many ``AND`` or ``OR`` levels :func:`boolean_chain` puts above its deepest argument."""
-    if count > CHAIN_WIDTH:
-        return 1 + boolean_chain_depth((count + 1) // 2)
-    return max(count - 1, 0)
 
 
 @dataclass(frozen=True)

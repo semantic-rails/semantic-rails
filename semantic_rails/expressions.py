@@ -193,6 +193,20 @@ def validate_boolean_argument_count(op: str, count: int) -> None:
         raise SemanticLayerError("INVALID_EXPRESSION_AST", "and/or need at least two arguments")
 
 
+# The most arguments a boolean's SQL joins one after another (``sql_ast.boolean_chain``); a longer
+# one joins its two halves, so the SQL the compiler copies, aliases and renders by recursion
+# nests with the logarithm of a boolean's width rather than the width.
+CHAIN_WIDTH = 16
+
+
+def boolean_chain_depth(count: int) -> int:
+    """How many ``AND`` or ``OR`` levels the SQL of a boolean of ``count`` arguments puts above its
+    deepest argument."""
+    if count > CHAIN_WIDTH:
+        return 1 + boolean_chain_depth((count + 1) // 2)
+    return max(count - 1, 0)
+
+
 @dataclass(frozen=True)
 class CallExpr:
     name: str
