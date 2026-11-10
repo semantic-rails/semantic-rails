@@ -6,3 +6,6 @@
 - A boolean `and` or `or` with hundreds of arguments compiles: from about 250 arguments it
   failed with an internal error, and from about 1,000 with `INVALID_CONFIG`. Up to 16
   arguments its SQL reads as before; a longer one groups its halves in parentheses.
+- A `where` that lists thousands of values for one dimension answers in about a second: the
+  check that warns about a value no row has ran one warehouse query per value, so 10,000
+  values took about 30 seconds. It now reads them in one query, and its warnings are unchanged.
