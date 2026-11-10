@@ -919,13 +919,18 @@ def review_metadata_advisories(config) -> list[dict[str, Any]]:
 
 
 def _package_relative(message: str, source_path: str) -> str:
-    """``message`` with the package directory left out of the paths it names."""
+    """``message`` without the package directory it starts with: ``<package>: text`` becomes
+    ``text`` and ``<package>/models/x.yml: text`` becomes ``models/x.yml: text``. Paths later in
+    the message (a command to run, say) stay as written."""
     root = str(source_path or "").rstrip("/\\")
     if not root:
         return message
     if os.path.isfile(root):
         root = os.path.dirname(root)
-    return message.replace(f"{root}: ", "").replace(f"{root}{os.sep}", "").replace(f"{root}/", "")
+    for prefix in (f"{root}: ", f"{root}{os.sep}", f"{root}/"):
+        if message.startswith(prefix):
+            return message[len(prefix) :]
+    return message
 
 
 def _compiled_package_warnings(
