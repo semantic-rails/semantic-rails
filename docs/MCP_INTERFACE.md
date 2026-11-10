@@ -787,6 +787,16 @@ ready. A ranking of an entity with no single key to rank by (a row-grain model, 
 key: "top 5 scans") is held with `why.code="PLAN_RANKING_NO_KEY"` instead of drafting a single
 total with a limit; its message says to rank by one of the entity's dimensions.
 
+A question that asks for a series ("by month", "weekly", "over time") needs a time grain in the
+draft. A metric that declares no `temporal_role` is read on the clock its measures share, so
+"total amount by month" plans `time: {temporal_role, grain: "month"}`. When no one clock dates
+what the draft selects (a ratio of two models' counts dated by different clocks), or it can be
+read on several and names none, plan holds the draft with `why.code="PLAN_UNMATCHED_TERMS"`,
+`why.details={"terms": ["month"], "kind": "time_grain_unrealized", "temporal_roles": [...]}` and a
+`choose_temporal_role` hint: set `query.time.temporal_role` to the date the user means and the
+grain, then validate, or ask the user. A grain word inside the name of an object the draft
+selects ("Monthly active users") asks for no series.
+
 Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
