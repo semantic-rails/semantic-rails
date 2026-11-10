@@ -1220,7 +1220,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition?, value?}`: no `condition` reads every row |
-| `scoped_aggregate` | `{kind: scoped_aggregate, measure, where?, predicates?, anchor?, window?, ...}`; each predicate carries `over` |
+| `scoped_aggregate` | `{kind: scoped_aggregate, measure, where?, predicates?, anchor?, window?, ...}`; each predicate carries `over`, and a predicate on a measure may state its statistic beside the input (`aggregation`, `parameters`, `temporal_role`), the same as inside `input: {kind: measure, ...}`; beside a metric input, or against the input's own, it is refused |
 | `metric_predicate` | `{kind: metric_predicate, entity, input, op, value, over, window?}` |
 | `entity_value` | `{kind: entity_value, entity, input, where?}` |
 | `distribution` | `{kind: distribution, function, over, p?, parameters?}` |

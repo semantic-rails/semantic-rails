@@ -814,6 +814,24 @@ ready. A ranking of an entity with no single key to rank by (a row-grain model, 
 key: "top 5 scans") is held with `why.code="PLAN_RANKING_NO_KEY"` instead of drafting a single
 total with a limit; its message says to rank by one of the entity's dimensions.
 
+A question that asks for a series ("by month", "weekly", "over time") needs a time grain in the
+draft. A metric that declares no `temporal_role` is read on the clock its measures share, so
+"total amount by month" plans `time: {temporal_role, grain: "month"}`. When no one clock dates
+what the draft selects (a ratio of two models' counts dated by different clocks), or it can be
+read on several and names none, plan holds the draft with `why.code="PLAN_UNMATCHED_TERMS"`,
+`why.details={"terms": ["month"], "kind": "time_grain_unrealized", "temporal_roles": [...]}` and a
+`choose_temporal_role` hint: set `query.time.temporal_role` to the date the user means and the
+grain, then validate, or ask the user. When the parts are dated by different clocks ("orders per
+customer": orders by order date, customers by signup date), the hint names each part's clock
+instead: a chosen role doesn't re-date a part onto a clock it isn't read on, so each period would
+combine numbers dated differently; ask the user, or use a metric declared on one clock. A derived
+metric whose parts share no one clock is held this way too, however many parts it has.
+
+A grain word the draft already spends asks for no series: one inside the name of an object it
+selects or groups by ("Monthly active users", "Revenue per day"), or a filter value it keeps
+("total amount for monthly billing period" is one total of the monthly billing period). Another
+grain word still asks: "revenue per day by month" is monthly.
+
 Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
@@ -1227,7 +1245,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `FILTERED_SERIES_BUCKETS_DROPPED` | `execute` | An unsupported filtered additive series omitted observed buckets. `details.dropped_buckets` lists their time and grouping keys from a separately authorized source query; an average over returned rows omits them |
 | `FILTERED_SERIES_BUCKETS_UNVERIFIED` | `execute` | Missing observed buckets could not be established because the source query was denied, failed or capped, or the answer has a limit or population filter. `details.reason` explains why |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query` instead of a warning) |
-| `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
+| `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context. At `compact` and `full`, `details.so_what` says what to do about it and `details.owner` who to ask, when the package sets them |
 | `ROUTE_PASS_THROUGH` | `execute` (every verbosity) | The package's one route for a pair the query reads passes through another table's rows that the package doesn't declare as a link table, so a start row with none is left out and one with several can count under several targets; the message gives the meaning and the fixes, `details.through` the crossed entities and `details.fixes` the declarations that settle it |
 | `NULL_PRESERVING_HISTORY` | `execute` | A dimension the query groups or filters by is read through a hop into a validity window; grouped, the warning counts the answer's empty group from the returned rows, or is dropped from a complete answer without one |
 
