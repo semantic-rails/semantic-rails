@@ -585,3 +585,85 @@ def test_external_commands_have_timeout(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     assert audit.run(["uv", "export"], audit.ROOT).returncode == 0
+
+
+OLD = "[core] old GHSA-old: unexcepted advisory"
+NEW = "[core] new GHSA-new: unexcepted advisory"
+
+
+@pytest.mark.parametrize(
+    "case, head, base, code",
+    [
+        ("introduced", [OLD, NEW], [OLD], 1),
+        ("pre-existing", [OLD], [OLD], 0),
+        ("fixed-here", [], [OLD], 0),
+        ("identical-inputs", [OLD], None, 0),
+        ("base-unavailable", [OLD], ValueError("cannot read uv.lock"), 1),
+    ],
+)
+def test_diff_mode_fails_only_on_findings_the_base_lacks(
+    monkeypatch, capsys, tmp_path, case, head, base, code
+):
+    tree = tmp_path / "base"
+    audited = []
+
+    def python_audit(root, *args):
+        audited.append(root)
+        return ([], head) if root == audit.ROOT else ([], base)
+
+    def base_inputs(root, revision, scratch):
+        assert (root, revision) == (audit.ROOT, "HEAD^1")
+        if isinstance(base, Exception):
+            raise base
+        return None if base is None else tree
+
+    monkeypatch.setattr(audit, "python_audit", python_audit)
+    monkeypatch.setattr(audit, "base_inputs", base_inputs)
+    assert audit.main(base="HEAD^1") == code
+    output = capsys.readouterr()
+    # The base is audited only when the head has findings and the inputs differ.
+    assert audited == [audit.ROOT] + ([tree] if head and isinstance(base, list) else [])
+    if case == "introduced":
+        assert f"FAIL: {NEW}" in output.err and f"FAIL: {OLD}" not in output.err
+    if case in {"introduced", "pre-existing", "identical-inputs"}:
+        assert f"PRE-EXISTING (also on HEAD^1, not introduced here): {OLD}" in output.out
+        assert audit.FIX_PROCESS in output.out
+    if case == "base-unavailable":
+        assert "every finding counts as new" in output.err and f"FAIL: {OLD}" in output.err
+
+
+def test_full_mode_still_fails_on_every_finding(monkeypatch, capsys):
+    monkeypatch.setattr(audit, "python_audit", lambda *args: ([], [OLD]))
+    monkeypatch.setattr(audit, "base_inputs", lambda *args: pytest.fail("no base in full mode"))
+    assert audit.main() == 1
+    assert f"FAIL: {OLD}" in capsys.readouterr().err
+
+
+def test_base_audit_reads_its_own_inputs(monkeypatch, tmp_path):
+    """The base tree's exceptions and pyproject decide the base findings, not the head's."""
+    seen = []
+    monkeypatch.setattr(audit, "load_exceptions", lambda path, today: seen.append(path) or [])
+    monkeypatch.setattr(audit, "audit_surfaces", lambda root: seen.append(root) or ("core",))
+    monkeypatch.setattr(audit, "audit_surface", lambda root, *args: [dependency()])
+    lines, errors = audit.python_audit(tmp_path, TODAY, tmp_path)
+    assert seen == [tmp_path / audit.EXCEPTIONS, tmp_path]
+    assert errors == ["[core] oauthlib GHSA-example: unexcepted advisory"]
+
+
+def test_base_inputs_reads_the_revision_and_detects_identical_inputs(tmp_path):
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, timeout=60)
+
+    git("init", "-q")
+    for path in audit.INPUTS:
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(f"base {path}\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+    assert audit.base_inputs(tmp_path, "HEAD", tmp_path / "same") is None
+    (tmp_path / "uv.lock").write_text("head\n")
+    tree = audit.base_inputs(tmp_path, "HEAD", tmp_path / "changed")
+    assert (tree / "uv.lock").read_text() == "base uv.lock\n"
+    assert (tree / audit.EXCEPTIONS).is_file()
+    with pytest.raises(ValueError, match="cannot read pyproject.toml at HEAD~5"):
+        audit.base_inputs(tmp_path, "HEAD~5", tmp_path / "missing")
