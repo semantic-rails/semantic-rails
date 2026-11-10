@@ -145,6 +145,17 @@ tool/schema drift cannot be merged silently.
   Listed only when the current package defines segments; its instruction and workflow prompt
   are omitted otherwise. Tool availability follows `Runtime.reload()` on the same adapter.
 
+A host whose agent writes the call itself can serve the tools without `plan`: set
+`SEMANTIC_RAILS_MCP_HIDE_PLAN=1` in the server's environment (for `semantic-rails mcp stdio`,
+the `env` of the client's server entry; for `serve`, the process environment), or pass
+`hide_plan=True` to `SemanticLayerMCPAdapter`, which wins over the environment. `plan` is then
+neither listed nor callable (a call gets `UNKNOWN_MCP_TOOL`), and the instructions, tool
+descriptions, prompts, capabilities and recovery hints describe the flow without it:
+`discover`, `inspect`, then `execute` with `mode="validate"` on the written call, then `execute`.
+The setting takes `1`, `true`, `yes` or `on` to hide `plan` and `0`, `false`, `no`, `off` or
+unset to keep it (any case, surrounding spaces ignored); any other value refuses to start the
+server with `INVALID_CONFIG`. It changes only the query MCP: the HTTP `/api/v1/plan` route stays.
+
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft the call with `plan`, and run it with `execute`, which validates and compiles
 first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the

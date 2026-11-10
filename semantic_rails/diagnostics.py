@@ -1080,15 +1080,20 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "UNKNOWN_MCP_TOOL":
+        available = list(details.get("available_tools", []) or [])
+        # Name only entry points the server offers (a server can hide plan).
+        entry = [
+            name for name in ("discover", "inspect", "plan") if name in available or not available
+        ]
         return [
             {
                 "kind": "use_available_tool",
                 "message": (
                     "Call tools/list first and pick a name from "
-                    "available_tools — common entry points are 'discover', "
-                    "'inspect', 'plan'."
+                    "available_tools — common entry points are "
+                    f"{', '.join(repr(name) for name in entry)}."
                 ),
-                "available_tools": list(details.get("available_tools", []) or []),
+                "available_tools": available,
                 "details": dict(details),
             }
         ]

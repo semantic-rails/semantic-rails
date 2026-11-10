@@ -36,6 +36,8 @@ def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
     if runtime.config.segments:
         required_tools.append("segment")
     adapter = SemanticLayerMCPAdapter(runtime)
+    if adapter.hide_plan:
+        required_tools.remove("plan")
     try:
         tools = adapter.list_tools()
     finally:
