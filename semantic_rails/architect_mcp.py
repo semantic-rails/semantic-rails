@@ -1102,8 +1102,11 @@ _REQUIRED_CONNECTION_OPTION_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
 
 
 # The questions a dbt project answers; the dialog leaves them out when dbt answered them.
-_DBT_FIRST_MODEL = ("first_entity", "relation", "primary_key", "time_column")
+# time_column is asked unless the first model's column types name a time column.
+_DBT_FIRST_MODEL = ("first_entity", "relation", "primary_key")
 _DBT_UNUSED = ("amount_column", "dimension_column")
+# dbt layers upstream of the marts: a mart wins the model id it shares with one of these.
+_DBT_UPSTREAM_PREFIXES = ("stg_", "staging_", "base_", "int_", "raw_")
 
 
 def _dbt_root(workspace_root: Path, project_path: str) -> Path | None:
@@ -1131,6 +1134,63 @@ def _first_dbt_model(models: list[dict[str, Any]]) -> dict[str, Any] | None:
     ]
     keyed.sort(key=lambda row: not row.get("foreign_keys"))
     return keyed[0] if keyed else None
+
+
+def _dbt_time_column(first: dict[str, Any], duckdb_path: str, dbt_root: Path) -> str:
+    """The first model's time column: from dbt's column types, else from the DuckDB file
+    dbt built (read-only, only a file inside the dbt project); "" when neither names one."""
+    times = list(first.get("times") or [])
+    if not times and duckdb_path and _within(Path(duckdb_path).resolve(), dbt_root.resolve()):
+        try:
+            with introspection.open_duckdb(duckdb_path) as warehouse:
+                columns = introspection.describe_table(warehouse, first["relation"])["columns"]
+        except SemanticLayerError:  # not built yet, or busy: ask the question instead
+            columns = []
+        roles, _ = introspection.draft_roles(
+            first["entity"],
+            list(first["primary_key"]["columns"]),
+            list(first.get("foreign_keys") or []),
+            [{"name": row["name"], "type": row["type"]} for row in columns],
+        )
+        times = roles["times"]
+    rank = {"high": 0, "medium": 1, "low": 2}
+    usable = [row for row in times if row.get("class") != "as_of_time"]
+    usable.sort(key=lambda row: rank.get(str(row.get("confidence")), 3))
+    return str(usable[0]["column"]) if usable else ""
+
+
+def _dbt_import_select(
+    models: list[dict[str, Any]], first: dict[str, Any] | None
+) -> tuple[list[str], list[dict[str, str]]]:
+    """The dbt models import_dbt_project can take in one batch: one per drafted model id.
+
+    Where two dbt models draft the same model id (``stg_orders`` and ``orders``), the first
+    model wins, then a model outside dbt's upstream layers; the others are left out.
+    """
+    keyed = [
+        row
+        for row in models
+        if row.get("physical_relation") and row.get("primary_key") and row.get("upsert_model")
+    ]
+    first_id = first["dbt_unique_id"] if first else ""
+
+    def preference(row: dict[str, Any]) -> tuple[bool, bool]:
+        name = str(row["dbt_unique_id"]).rsplit(".", 1)[-1].lower()
+        return row["dbt_unique_id"] != first_id, name.startswith(_DBT_UPSTREAM_PREFIXES)
+
+    chosen: dict[str, dict[str, Any]] = {}
+    for row in keyed:
+        model_id = str(row["upsert_model"]["model_id"])
+        if model_id not in chosen or preference(row) < preference(chosen[model_id]):
+            chosen[model_id] = row
+    kept = {id(row) for row in chosen.values()}
+    select = [row["dbt_unique_id"] for row in keyed if id(row) in kept]
+    left_out = [
+        {"dbt_model": row["dbt_unique_id"], "model_id": str(row["upsert_model"]["model_id"])}
+        for row in keyed
+        if id(row) not in kept
+    ]
+    return select, left_out
 
 
 def _dbt_answers(
@@ -1162,10 +1222,12 @@ def _dbt_answers(
             first_entity=first["entity"],
             relation=first["relation"],
             primary_key=first["primary_key"]["columns"][0],
-            time_column="",
             amount_column="",
             dimension_column="",
         )
+        time_column = _dbt_time_column(first, str(facts["duckdb_path"] or ""), dbt_root)
+        if time_column:
+            answers["time_column"] = time_column
     target = Path(facts["target_dir"])
     target_arg = (
         target.relative_to(workspace_root).as_posix() if _within(target, workspace_root) else ""
@@ -1177,15 +1239,18 @@ def _dbt_answers(
             "exists, then call setup_project_dialog again: dbt then answers the first model."
         )
     else:
-        imported = [
-            row["dbt_unique_id"]
-            for row in facts["models"]
-            if row.get("physical_relation") and row.get("primary_key")
-        ]
+        imported, left_out = _dbt_import_select(facts["models"], first)
         actions.append(
             "After create_project, call import_dbt_project with "
             f"target_dir {target_arg!r} and select {json.dumps(imported)} to bring in "
             "every dbt model with a key, its columns, tests and foreign keys."
+            + (
+                " Left out because another selected dbt model drafts the same model id: "
+                + ", ".join(f"{row['dbt_model']} (as {row['model_id']})" for row in left_out)
+                + "."
+                if left_out
+                else ""
+            )
         )
     if "default_db" not in answers and answers.get("warehouse") != adapter:
         actions.append(
@@ -1235,6 +1300,12 @@ def _setup_dialog(
     if answers.get("warehouse") == "duckdb":
         answered |= {"connection_kind", "connection_name", "connection_options"}
     remaining = [row for row in questions if row["id"] not in answered]
+    if "first_entity" in answers and "time_column" not in answers:
+        # dbt named no time column: ask, and draft none rather than the generic default.
+        answers["time_column"] = ""
+        remaining = [
+            {**row, "default": ""} if row["id"] == "time_column" else row for row in remaining
+        ]
     draft = _draft_arguments(package_slug, answers["project_path"], {**defaults, **answers})
     if answers.get("warehouse") not in (None, "duckdb"):
         draft["default_db"] = ""

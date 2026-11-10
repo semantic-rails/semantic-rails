@@ -142,16 +142,57 @@ def _claude_code_add(claude: str, servers: dict[str, dict[str, Any]]) -> list[li
     ]
 
 
+def _existing_servers(client: str, servers: dict[str, dict[str, Any]]) -> list[str]:
+    """The names in ``servers`` the client's config file already has (they get replaced).
+
+    Claude Code keeps its own file, so it is not read: its preview names every server.
+    """
+    if client in ("claude", "cursor"):
+        path = claude_config_path() if client == "claude" else cursor_config_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}") if path.exists() else {}
+        except (OSError, UnicodeDecodeError, ValueError):  # install reports a broken file
+            return []
+        present = data.get("mcpServers") if isinstance(data, dict) else None
+        return sorted(name for name in servers if isinstance(present, dict) and name in present)
+    if client == "codex":
+        path = codex_config_path()
+        try:
+            content = path.read_text(encoding="utf-8") if path.exists() else ""
+        except (OSError, UnicodeDecodeError):
+            return []
+        return sorted(
+            name
+            for name in servers
+            if re.search(rf"(?m)^\[mcp_servers\.{re.escape(_codex_section_name(name))}\]", content)
+        )
+    return sorted(servers) if client == "claude-code" else []
+
+
 def _client_preview(client: str, servers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     if client in ("claude", "cursor"):
         path = claude_config_path() if client == "claude" else cursor_config_path()
-        return {"path": str(path), "mcpServers": servers}
+        return {
+            "path": str(path),
+            "mcpServers": servers,
+            "replaces": _existing_servers(client, servers),
+        }
     if client == "claude-code":
         commands = [shlex.join(command) for command in _claude_code_add("claude", servers)]
-        return {"path": str(claude_code_config_path()), "commands": commands}
+        return {
+            "path": str(claude_code_config_path()),
+            "commands": commands,
+            # Claude Code's own file is not read; an existing user-scope server of the
+            # same name is replaced.
+            "replaces_any_named": _existing_servers(client, servers),
+        }
     if client == "codex":
         blocks = [_codex_toml_block(name, config) for name, config in servers.items()]
-        return {"path": str(codex_config_path()), "toml": "\n".join(blocks).strip() + "\n"}
+        return {
+            "path": str(codex_config_path()),
+            "toml": "\n".join(blocks).strip() + "\n",
+            "replaces": _existing_servers(client, servers),
+        }
     raise SemanticLayerError("INVALID_CONFIG", f"Unsupported MCP client '{client}'")
 
 
@@ -168,12 +209,18 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
                     details={"path": str(path)},
                 )
         mcp_servers = dict(data.get("mcpServers", {}) or {})
+        replaced = sorted(name for name in servers if name in mcp_servers)
         mcp_servers.update(servers)
         data["mcpServers"] = mcp_servers
         atomic_write_bytes(
             path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"), mode=0o600
         )
-        report: dict[str, Any] = {"ok": True, "path": str(path), "servers": sorted(servers)}
+        report: dict[str, Any] = {
+            "ok": True,
+            "path": str(path),
+            "servers": sorted(servers),
+            "replaced": replaced,
+        }
         if client == "claude":
             report["note"] = (
                 "Claude Desktop: quit it completely (Quit, not closing the window) before "
@@ -183,11 +230,12 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
         return report
     if client == "codex":
         path = codex_config_path()
+        replaced = _existing_servers(client, servers)
         content = path.read_text(encoding="utf-8") if path.exists() else ""
         for name, config in servers.items():
             content = _upsert_codex_server(content, name, config)
         atomic_write_bytes(path, (content).encode("utf-8"), mode=0o600)
-        return {"ok": True, "path": str(path), "servers": sorted(servers)}
+        return {"ok": True, "path": str(path), "servers": sorted(servers), "replaced": replaced}
     if client == "claude-code":
         claude = shutil.which("claude")
         if not claude:
@@ -197,6 +245,7 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
                 "or run the previewed `claude mcp add-json` commands yourself.",
             )
         registered: list[str] = []
+        replaced = []
         for name, add in zip(servers, _claude_code_add(claude, servers), strict=True):
             added = subprocess.run(add, capture_output=True, text=True, check=False)
             if added.returncode and "already exists" in added.stderr + added.stdout:
@@ -204,6 +253,7 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
                 remove = [claude, "mcp", "remove", "--scope", "user", name]
                 subprocess.run(remove, capture_output=True, check=False)
                 added = subprocess.run(add, capture_output=True, text=True, check=False)
+                replaced.append(name)
             if added.returncode:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
@@ -217,7 +267,12 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
                     },
                 )
             registered.append(name)
-        return {"ok": True, "path": str(claude_code_config_path()), "servers": sorted(servers)}
+        return {
+            "ok": True,
+            "path": str(claude_code_config_path()),
+            "servers": sorted(servers),
+            "replaced": sorted(replaced),
+        }
     raise SemanticLayerError("INVALID_CONFIG", f"Unsupported MCP client '{client}'")
 
 

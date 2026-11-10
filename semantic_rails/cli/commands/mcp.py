@@ -237,12 +237,21 @@ def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
     print("Config files:")
     for client, preview in dict(config.get("previews", {}) or {}).items():
         print(f"  {client}: {preview.get('path')}")
+        if preview.get("replaces"):
+            print(f"    Replaces the server already there: {', '.join(preview['replaces'])}")
+        if preview.get("replaces_any_named"):
+            print(
+                "    Replaces any user-scope server already named: "
+                + ", ".join(preview["replaces_any_named"])
+            )
     installed = dict(config.get("installed", {}) or {})
     if installed:
         print()
         print("Installed:")
         for client, report in installed.items():
             print(f"  {client}: {report.get('path')}")
+            if report.get("replaced"):
+                print(f"    Replaced: {', '.join(report['replaced'])}")
             if report.get("ok") and report.get("note"):
                 print(f"  {report['note']}")
     print()
