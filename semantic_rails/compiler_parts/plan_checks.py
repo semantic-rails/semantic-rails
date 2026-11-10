@@ -27,6 +27,11 @@ from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
+    ArithmeticExpr,
+    BooleanExpr,
+    CallExpr,
+    CaseExpr,
+    ComparisonExpr,
     ConversionExpr,
     DistributionExpr,
     EntityValueExpr,
@@ -35,8 +40,10 @@ from ..expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     OffsetWindowExpr,
+    RatioExpr,
     ScopedAggregateExpr,
     ShareExpr,
+    TotalExpr,
     expr_kind,
     expr_to_dict,
 )
@@ -74,6 +81,7 @@ from .indexes import (
     _measure_has_source_row_key,
     _measure_index,
     _recipe_index,
+    _recipe_or_raise,
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
@@ -91,6 +99,7 @@ from .post_aggregation import (
 )
 from .temporal import (
     _expr_compatible_temporal_roles,
+    _recipe_compatible_temporal_roles,
     _time_bound_relationship_ids,
     _window_measure_exprs,
     series_grain,
@@ -149,6 +158,120 @@ def _object_default_query_temporal_role(config: PackageConfig, object_id: str) -
         return recipe.compatible_temporal_roles[0]
     compatible = sorted(_expr_compatible_temporal_roles(recipe.expression, config, query))
     return compatible[0] if compatible else ""
+
+
+def object_time_axis(config: PackageConfig, object_id: str) -> tuple[str, list[str]]:
+    """The one clock a series of ``object_id`` is grouped by, and the clocks it can be read on.
+
+    A measure's is its default clock. A metric's is the clock it declares; else the one clock
+    it can be read on; else the default clock its measures all share, when that is one of
+    them. Otherwise it is "" (no clock, or several the metric doesn't choose between), and
+    the second item lists the clocks to choose from. Read from the package, never a question.
+    """
+
+    measure = _measure_index(config).get(object_id)
+    if measure is not None:
+        return measure.default_temporal_role, list(measure.compatible_temporal_roles)
+    recipe = _recipe_index(config).get(object_id)
+    if recipe is None:
+        return "", []
+    if recipe.temporal_role:
+        return recipe.temporal_role, [recipe.temporal_role]
+    query = normalize_query(
+        {"version": 1, "select": [{"expression": {"metric": object_id}, "as": recipe.label}]}
+    )
+    try:
+        compatible = sorted(
+            recipe.compatible_temporal_roles
+            or _shared_clocks(recipe.expression, config, query)
+            or ()
+        )
+        leaves = list(_window_measure_exprs(recipe.expression, config))
+    except SemanticLayerError:
+        return "", []
+    if len(compatible) == 1:
+        return compatible[0], compatible
+    measures = _measure_index(config)
+    defaults = {
+        leaf.temporal_role or measures[leaf.measure].default_temporal_role
+        for leaf in leaves
+        if leaf.measure in measures
+    }
+    if len(defaults) == 1 and (role := next(iter(defaults))) in compatible:
+        return role, compatible
+    return "", compatible
+
+
+def _shared_clocks(expr: Any, config: PackageConfig, query: NormalizedQuery) -> set[str] | None:
+    """The clocks every dated part of ``expr`` can be read on; None when no part is dated.
+
+    It reads like ``_expr_compatible_temporal_roles``, except that parts with no clock in
+    common give no clock, rather than being left out: in ``(revenue - delivered revenue) -
+    session starts`` no one clock dates the first two, so none dates the whole, where the
+    compiler's reading keeps only the session clock. A metric that declares its clocks is one
+    part on them.
+    """
+
+    if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+        return _expr_compatible_temporal_roles(expr, config, query) or None
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_or_raise(config, expr.metric_recipe)
+        if recipe.compatible_temporal_roles or recipe.temporal_role:
+            return _recipe_compatible_temporal_roles(recipe, config, query)
+        return _shared_clocks(recipe.expression, config, query)
+    dated = [
+        roles
+        for part in _clock_parts(expr)
+        if (roles := _shared_clocks(part, config, query)) is not None
+    ]
+    return set.intersection(*dated) if dated else None
+
+
+def _clock_parts(expr: Any) -> list[Any]:
+    """The parts ``_expr_compatible_temporal_roles`` reads the clocks of ``expr`` from."""
+
+    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
+        return [expr.left, expr.right]
+    if isinstance(expr, RatioExpr):
+        return [expr.numerator, expr.denominator]
+    if isinstance(expr, (BooleanExpr, CallExpr)):
+        return list(expr.args)
+    if isinstance(expr, CaseExpr):
+        whens = [part for item in expr.whens for part in (item.when, item.then)]
+        return [*whens, *([expr.else_expr] if expr.else_expr is not None else [])]
+    if isinstance(expr, DistributionExpr):
+        return [expr.over]
+    if isinstance(expr, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
+        return [expr.input]
+    if isinstance(expr, ConversionExpr):
+        return [expr.base]
+    return []
+
+
+def object_part_clocks(config: PackageConfig, object_id: str) -> list[tuple[str, str]]:
+    """Each dated measure ``object_id`` reads, with the clock it is read on by default.
+
+    A measure is its own part; a metric's parts are its measures, each on the clock it binds,
+    else its measure's default. Read from the package, never a question.
+    """
+
+    measures = _measure_index(config)
+    if object_id in measures:
+        role = measures[object_id].default_temporal_role
+        return [(object_id, role)] if role else []
+    recipe = _recipe_index(config).get(object_id)
+    if recipe is None:
+        return []
+    try:
+        leaves = list(_window_measure_exprs(recipe.expression, config))
+    except SemanticLayerError:
+        return []
+    parts = [
+        (leaf.measure, leaf.temporal_role or measures[leaf.measure].default_temporal_role)
+        for leaf in leaves
+        if leaf.measure in measures
+    ]
+    return list(dict.fromkeys(part for part in parts if part[1]))
 
 
 def _can_project_entity_key_from_source(

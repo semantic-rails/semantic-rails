@@ -220,6 +220,7 @@
   "tests/semantic_rails/test_plan_intent_faithfulness.py": 4.065,
   "tests/semantic_rails/test_plan_listed_groupings.py": 156.572,
   "tests/semantic_rails/test_plan_metric_by_dimension.py": 1.124,
+  "tests/semantic_rails/test_plan_metric_time_grain.py": 3.0,
   "tests/semantic_rails/test_plan_metric_vocabulary.py": 7.556,
   "tests/semantic_rails/test_plan_month_ranges_and_conversion_intent.py": 1.924,
   "tests/semantic_rails/test_plan_name_filters.py": 20.576,

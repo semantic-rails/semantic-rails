@@ -55,6 +55,7 @@ from .intent_holds import (
     _time_assumptions,
     _unconsumed_catalog_why,
     _unconsumed_terms_why,
+    _unplaced_grain_why,
     _unresolved_time_why,
     _with_time_gap,
 )
@@ -487,6 +488,7 @@ def _question_payload(
                 runtime, intent_str, best_draft.query, [*catalog_words, *unknown_words]
             )
             or _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            or _unplaced_grain_why(runtime, intent_str, best_draft.query)
             # A shared grouping needs options even when fallback discovery consumed
             # words the primary parser did not (for example "their districts").
             or (
