@@ -415,9 +415,12 @@ defaults:
 ```
 
 `default_db`, a seed's `source` and its `post_sql` are paths relative to the package directory,
-and stay inside it: an absolute path or a `..` segment fails to load with `INVALID_CONFIG`
-(an operator can allow them with `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`; see
-[Deployment](DEPLOYMENT.md)).
+and stay inside it: an absolute path or a `..` segment fails to load with `INVALID_CONFIG`.
+One exception: the `default_db` of a `seed.kind: external` package inside a dbt project (a
+directory above it holds `dbt_project.yml`) may use `..` to name a file inside that dbt
+project, such as the DuckDB file `dbt build` writes at the dbt root. An operator can allow
+other paths with `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`; see
+[Deployment](DEPLOYMENT.md).
 
 Every package is checked with one set of authoring rules when it loads, in every layout;
 see [Refused legacy forms](#refused-legacy-forms) for the shapes earlier releases accepted.

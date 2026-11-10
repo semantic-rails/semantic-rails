@@ -31,7 +31,47 @@ def external_package_paths_allowed() -> bool:
     return os.environ.get(_EXTERNAL_PATHS_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
-def ensure_contained_package_path(value: str, *, field: str, path: str = "") -> str:
+DBT_PROJECT_FILE = "dbt_project.yml"
+
+
+def enclosing_dbt_project(directory: str) -> str:
+    """The nearest directory at or above ``directory`` holding ``dbt_project.yml``, else ""."""
+    if not directory:
+        return ""
+    current = os.path.realpath(directory)
+    while True:
+        if os.path.isfile(os.path.join(current, DBT_PROJECT_FILE)):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return ""
+        current = parent
+
+
+def _inside(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _in_dbt_project(text: str, package_root: str) -> bool:
+    """True when the relative ``text`` names a file inside the dbt project around the package."""
+    dbt_root = enclosing_dbt_project(package_root)
+    if not dbt_root:
+        return False
+    target = os.path.realpath(os.path.join(os.path.realpath(package_root), text))
+    return _inside(target, dbt_root)
+
+
+def ensure_contained_package_path(
+    value: str,
+    *,
+    field: str,
+    path: str = "",
+    package_root: str = "",
+    read_only: bool = False,
+) -> str:
     """Reject absolute and parent-traversal package asset paths.
 
     Package YAML is untrusted input once packages are shared: an absolute
@@ -40,7 +80,13 @@ def ensure_contained_package_path(value: str, *, field: str, path: str = "") -> 
     (and leaks them into built artifacts). A relative, ``..``-free path
     joined to a root cannot escape that root, so everything else is
     rejected here — the single choke point every loader passes through.
-    Operators who intentionally keep assets outside the package can set
+
+    One exception: a package that sits inside a dbt project (a directory
+    above it holds ``dbt_project.yml``) may point a ``read_only`` path (the
+    ``default_db`` of a ``seed.kind: external`` package, which the runtime
+    never creates or replaces) at a file inside that dbt project with ``..``
+    segments, such as the DuckDB file ``dbt build`` writes at the dbt root.
+    Operators who intentionally keep assets elsewhere can set
     ``SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1``.
     """
     text = str(value or "").strip()
@@ -56,16 +102,19 @@ def ensure_contained_package_path(value: str, *, field: str, path: str = "") -> 
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"{prefix}{field} must be a relative path inside the package "
-            f"(got absolute path {text!r}); set {_EXTERNAL_PATHS_ENV}=1 to "
-            "allow paths outside the package root",
+            f"(got absolute path {text!r}); write it relative to the package directory, "
+            f"or set {_EXTERNAL_PATHS_ENV}=1 to allow paths outside the package root",
         )
     parts = [part for part in re.split(r"[/\\]+", text) if part]
     if ".." in parts:
+        if read_only and package_root and "\\" not in text and _in_dbt_project(text, package_root):
+            return text
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"{prefix}{field} must not contain '..' path segments "
-            f"(got {text!r}); set {_EXTERNAL_PATHS_ENV}=1 to allow paths "
-            "outside the package root",
+            f"(got {text!r}); only the database of a seed.kind: external package may leave "
+            "the package root, and only to a file inside the dbt project that holds the "
+            f"package. Set {_EXTERNAL_PATHS_ENV}=1 to allow other paths outside the package root",
         )
     return text
 
@@ -73,6 +122,15 @@ def ensure_contained_package_path(value: str, *, field: str, path: str = "") -> 
 # A DuckDB database another tool builds (dbt, a loader): the runtime reads it
 # as is and never creates or replaces it, so the seed names no source.
 SEED_KIND_EXTERNAL = "external"
+
+
+def _package_dir(path: str) -> str:
+    """The package directory a loader's source ``path`` names, or "" when it is not on disk."""
+    if not path:
+        return ""
+    if os.path.isdir(path):
+        return path
+    return os.path.dirname(path) if os.path.isfile(path) else ""
 
 
 def _parse_connection_spec(raw: dict[str, Any]) -> ConnectionSpec:
@@ -106,10 +164,14 @@ def _parse_package_meta(
         )
 
     connection = _parse_connection_spec(dict(package.get("connection", {}) or {}))
-    default_db = ensure_contained_package_path(
-        str(package.get("default_db", "")).strip(), field="package.default_db", path=path
-    )
     seed_raw = dict(package.get("seed", {}) or {})
+    default_db = ensure_contained_package_path(
+        str(package.get("default_db", "")).strip(),
+        field="package.default_db",
+        path=path,
+        package_root=_package_dir(path),
+        read_only=str(seed_raw.get("kind", "")).strip() == SEED_KIND_EXTERNAL,
+    )
     seed = SeedSpec(
         kind=str(seed_raw.get("kind", "")).strip(),
         source=ensure_contained_package_path(
