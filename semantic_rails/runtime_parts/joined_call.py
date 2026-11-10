@@ -500,17 +500,17 @@ def _counts(joined: _Joined, rows: list[dict[str, Any]]) -> dict[str, Any] | Non
 
     parts = []
     for part in joined.parts:
-        rows = read(ROWS.format(part=part.index))
+        own = read(ROWS.format(part=part.index))
         null_keys = read(NULL_KEYS.format(part=part.index))
         # A key of this part another part lacks: one of its rows with no NULL key that isn't a
         # key both have.
         unmatched = {
-            str(other.index): rows - null_keys - read(shared_name(part.index, other.index))
+            str(other.index): own - null_keys - read(shared_name(part.index, other.index))
             for other in joined.parts
             if other.index != part.index
         }
         parts.append(
-            {"part": part.index, "rows": rows, "null_keys": null_keys, "unmatched": unmatched}
+            {"part": part.index, "rows": own, "null_keys": null_keys, "unmatched": unmatched}
         )
     return {"parts": parts, "kept": read(KEPT_ROWS)}
 
