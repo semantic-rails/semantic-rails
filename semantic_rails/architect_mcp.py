@@ -672,7 +672,7 @@ def _write_outcome(payload: dict[str, Any]) -> list[str]:
     """Three lines a person reads first: what happened, the package's state, what's next."""
     status = str(payload.get("status") or "")
     files = [str(name) for name in payload.get("changed_files") or []]
-    revision = str(payload.get("revision") or "")[:19]
+    revision = str(payload.get("revision") or "")  # whole: the next call sends it back
     error = payload.get("error") or {}
     parse = payload.get("parse") or {}
     if status == "error":

@@ -919,17 +919,32 @@ def review_metadata_advisories(config) -> list[dict[str, Any]]:
 
 
 def _package_relative(message: str, source_path: str) -> str:
-    """``message`` without the package directory it starts with: ``<package>: text`` becomes
-    ``text`` and ``<package>/models/x.yml: text`` becomes ``models/x.yml: text``. Paths later in
-    the message (a command to run, say) stay as written."""
+    """``message`` with the package directory it starts with written from where the user
+    stands: relative to the current directory when the package lies under it
+    (``semantic_rails/jaffle/models/x.yml: text`` from a dbt root, where ``models/`` is
+    dbt's own folder), else relative to the package (``<package>: text`` becomes ``text`` and
+    ``<package>/models/x.yml: text`` becomes ``models/x.yml: text``). Paths later in the
+    message (a command to run, say) stay as written."""
     root = str(source_path or "").rstrip("/\\")
     if not root:
         return message
     if os.path.isfile(root):
         root = os.path.dirname(root)
-    for prefix in (f"{root}: ", f"{root}{os.sep}", f"{root}/"):
-        if message.startswith(prefix):
-            return message[len(prefix) :]
+    try:
+        cwd = os.path.realpath(os.getcwd())
+        # A client may start a server in the filesystem root: that is no place a user stands.
+        shown = os.path.relpath(os.path.realpath(root), cwd) if os.path.dirname(cwd) != cwd else ""
+    except (OSError, ValueError):  # no current directory, or another drive
+        shown = ""
+    under_cwd = shown not in {"", os.curdir} and shown.split(os.sep)[0] != os.pardir
+    for base in dict.fromkeys((root, os.path.abspath(root), os.path.realpath(root))):
+        if message.startswith(f"{base}: "):
+            rest = message[len(base) + 2 :]
+            return f"{shown}: {rest}" if under_cwd else rest
+        for separator in dict.fromkeys((os.sep, "/")):
+            if message.startswith(f"{base}{separator}"):
+                rest = message[len(base) + 1 :]
+                return f"{shown}{os.sep}{rest}" if under_cwd else rest
     return message
 
 

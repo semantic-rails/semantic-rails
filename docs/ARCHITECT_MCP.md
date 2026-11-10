@@ -182,8 +182,9 @@ looks whole. Every summary and page names the `revision` it read. Every write, s
 starts with `outcome`, three lines a person reads first: what happened ("Wrote
 models/core/orders.yml.", "Dry run: would change …", "Refused (CONFIG_CONFLICT); nothing was
 written."), the package's state after it ("Parses: 2 entities, 9 measures, 4 metrics; 1 warning
-(ROUTES_UNDECIDED 1)."), and what's next. Warning and error messages name files relative to the
-package directory. A write's summary counts what it leaves out in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
+(ROUTES_UNDECIDED 1)."), and what's next, with the whole revision to send. Warning and error
+messages name files relative to the current directory when the package lies under it (a dbt
+project root, say), else relative to the package directory. A write's summary counts what it leaves out in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
 the same `idempotency_key` replays the write).
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
    `promotion_check` with `compare_path` or `base_ref` when an environment gate matters.

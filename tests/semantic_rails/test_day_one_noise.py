@@ -4,8 +4,12 @@ package, and every write answers first with three lines."""
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from semantic_rails.architect_mcp import _first_warnings, create_architect_mcp_server
 from semantic_rails.config_validation import PackageReference, parse_config_report
@@ -90,12 +94,75 @@ def test_messages_name_paths_relative_to_the_package(tmp_path: Path) -> None:
     assert not [row for row in report["errors"] if str(package) in row["message"]]
 
 
+@pytest.mark.parametrize("where", ["above_the_package", "elsewhere"])
+def test_messages_name_paths_from_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    # A dbt project holds the package; from its root, models/ is dbt's own folder.
+    dbt_root = tmp_path / "jaffle"
+    server = create_architect_mcp_server(workspace_root=dbt_root)
+    created = _call(
+        server,
+        "create_project",
+        {
+            "package_id": "growth",
+            "project_path": "semantic_rails/growth",
+            "expected_revision": "absent",
+            "idempotency_key": "create",
+        },
+    )
+    package = dbt_root / "semantic_rails" / "growth"
+    assert Path(created["project_path"]).resolve() == package.resolve()
+    (package / "models" / "core" / "broken.yml").write_text("model: [", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(dbt_root if where == "above_the_package" else elsewhere)
+
+    report, _ = parse_config_report(PackageReference(source_path=str(package)))
+
+    message = report["errors"][0]["message"]
+    shown = (
+        os.path.join("semantic_rails", "growth", "models", "core", "broken.yml")
+        if where == "above_the_package"
+        else os.path.join("models", "core", "broken.yml")
+    )
+    assert message.startswith(f"{shown}: invalid YAML: ")
+
+
+def test_a_dry_run_names_the_revision_to_send(tmp_path: Path) -> None:
+    server, created = _created(tmp_path)
+    call = {
+        "project_path": created["project_path"],
+        "model_id": "events",
+        "entity_key": "event",
+        "relation": "raw_events",
+        "primary_key": ["event_id"],
+        "description": "One row per event.",
+        "expected_revision": created["revision"],
+    }
+    preview = _call(server, "upsert_model", {**call, "dry_run": True, "idempotency_key": "p"})
+    assert preview["ok"] is True, preview
+    found = re.fullmatch(
+        r"Next: send the same call with dry_run: false and expected_revision (\S+)\.",
+        preview["outcome"][2],
+    )
+    assert found, preview["outcome"]
+    # Following the line exactly writes the change (a cut revision was refused as stale).
+    written = _call(
+        server,
+        "upsert_model",
+        {**call, "dry_run": False, "expected_revision": found.group(1), "idempotency_key": "w"},
+    )
+    assert written["ok"] is True, written
+    assert written["outcome"][2].startswith(f"Revision {written['revision']}. Next: ")
+
+
 def test_writes_answer_first_with_three_lines(tmp_path: Path) -> None:
     server, created = _created(tmp_path)
     assert created["outcome"] == [
         "Wrote .gitignore, data/growth_csv/raw_events.csv, examples/core.yml and 5 more.",
         "Parses: 1 entity, 2 measures, 2 metrics; no warnings.",
-        f"Revision {created['revision'][:19]}. Next: validate_project mode=runtime before "
+        f"Revision {created['revision']}. Next: validate_project mode=runtime before "
         "trusting answers.",
     ]
     stale = _call(
