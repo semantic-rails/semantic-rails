@@ -100,9 +100,10 @@ def test_average_of_an_expression_parameter_is_refused_naming_it(mcp):
     }
     [hint] = error["recovery_hints"]
     assert hint["kind"] == "remove_unread_parameters"
-    assert hint["message"].startswith("Remove parameters.expression. To aggregate a row expression")
-    assert (
-        '{"kind": "aggregate_if", "aggregation": "avg", "value": <expression>}' in hint["message"]
+    assert hint["message"] == (
+        "If the avg of measure.jaffle.revenue_usd itself is meant, remove parameters.expression; "
+        "another value is another measure (find it with discover), or an aggregate_if: "
+        '{"kind": "aggregate_if", "aggregation": "avg", "value": <expression>}.'
     )
 
 
@@ -175,8 +176,6 @@ def _distribution(function, **keys):
 @pytest.mark.parametrize(
     ("function", "keys", "unread"),
     [
-        ("avg", {"p": 0.9}, ["p"]),
-        ("median", {"parameters": {"p": 0.9}}, ["parameters.p"]),
         ("sum", {"parameters": LENGTH}, ["parameters.expression"]),
         ("percentile", {"p": 0.9, "parameters": LENGTH}, ["parameters.expression"]),
     ],
@@ -188,8 +187,97 @@ def test_a_distribution_refuses_a_parameter_its_function_doesnt_read(mcp, functi
         unread,
     )
     assert error["message"].endswith(f"{', '.join(unread)} on the distribution would be ignored.")
+    assert "percentile_p" not in error["details"]
     [hint] = error["recovery_hints"]
-    assert hint["message"] == f"Remove {', '.join(unread)}."
+    assert hint["message"] == (
+        f"If the {function} of the distribution's values itself is meant, remove "
+        f"{', '.join(unread)}; another value is another measure (find it with discover)."
+    )
+
+
+@pytest.mark.parametrize(("aggregation", "unread_answer"), [("avg", 12.504074), ("median", 6.36)])
+def test_a_p_on_a_measure_that_allows_percentile_is_offered_the_percentile(
+    mcp, aggregation, unread_answer
+):
+    # "What is our 90th-percentile order value?" written as an avg (or median) with a p:
+    # removing the p alone would answer the plain statistic, not the p90 (26.50).
+    error = _refusal(mcp, _one(_measure(REVENUE, aggregation, {"p": 0.9})))
+    assert error["code"] == "UNSUPPORTED_AGGREGATION"
+    assert error["message"] == (
+        f"{aggregation} takes no parameters: parameters.p on measure.jaffle.revenue_usd would be "
+        "ignored."
+    )
+    assert error["details"]["percentile_p"] == 0.9
+    [hint] = error["recovery_hints"]
+    assert hint["kind"] == "remove_unread_parameters"
+    assert hint["message"] == (
+        'For the p-th percentile, write "aggregation": "percentile" with "parameters": '
+        f'{{"p": 0.9}}; to keep {aggregation}, remove parameters.p.'
+    )
+    # Either way out answers: the percentile asked for, or the stated statistic.
+    assert _value(mcp, _measure(REVENUE, "percentile", {"p": 0.9})) == pytest.approx(26.5)
+    assert _value(mcp, _measure(REVENUE, aggregation)) == pytest.approx(unread_answer, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("function", "keys", "p_key"),
+    [("avg", {"p": 0.9}, "p"), ("median", {"parameters": {"p": 0.9}}, "parameters.p")],
+)
+def test_a_p_on_a_distribution_is_offered_the_percentile(mcp, function, keys, p_key):
+    # "p90 of customer revenue" written as a distribution avg with a p.
+    error = _refusal(mcp, _one(_distribution(function, **keys)))
+    assert (error["code"], error["details"]["unread_parameters"]) == (
+        "UNSUPPORTED_AGGREGATION",
+        [p_key],
+    )
+    assert error["message"] == (
+        f"{function} takes no parameters: {p_key} on the distribution would be ignored."
+    )
+    [hint] = error["recovery_hints"]
+    assert hint["message"] == (
+        'For the p-th percentile, write "function": "percentile" with "p": 0.9; '
+        f"to keep {function}, remove {p_key}."
+    )
+    assert _value(mcp, _distribution("percentile", p=0.9)) == pytest.approx(1548.828)
+
+
+def test_a_percentile_with_an_expression_says_removing_it_reads_the_measure_itself(mcp):
+    # "P90 order value before tax" as a percentile of revenue with an expression: removing it
+    # reads the p90 of revenue; the pre-tax value is another measure.
+    error = _refusal(
+        mcp,
+        _one(_measure(REVENUE, "percentile", {"p": 0.9, "expression": "subtotal_cents / 100.0"})),
+    )
+    assert error["code"] == "UNSUPPORTED_AGGREGATION"
+    assert error["message"] == (
+        "percentile takes only parameters.p: parameters.expression on measure.jaffle.revenue_usd "
+        "would be ignored."
+    )
+    assert "percentile_p" not in error["details"]
+    [hint] = error["recovery_hints"]
+    assert hint["message"] == (
+        "If the percentile of measure.jaffle.revenue_usd itself is meant, remove "
+        "parameters.expression; another value is another measure (find it with discover)."
+    )
+
+
+def test_a_p_on_a_measure_without_percentile_gets_no_percentile_advice(mcp):
+    # order_count allows only count_distinct: no percentile to offer.
+    error = _refusal(mcp, _one(_measure(ORDERS, "count_distinct", {"p": 0.9})))
+    assert error["code"] == "UNSUPPORTED_AGGREGATION"
+    assert error["message"] == (
+        "count_distinct takes no parameters: parameters.p on measure.jaffle.order_count would be "
+        "ignored."
+    )
+    assert "percentile_p" not in error["details"]
+    [hint] = error["recovery_hints"]
+    assert "percentile" not in hint["message"]
+    assert hint["message"] == (
+        "If the count_distinct of measure.jaffle.order_count itself is meant, remove "
+        "parameters.p; another value is another measure (find it with discover), or an "
+        'aggregate_if: {"kind": "aggregate_if", "aggregation": "count_distinct", '
+        '"value": <expression>}.'
+    )
 
 
 def test_a_percentile_threshold_refuses_a_key_it_doesnt_read(mcp):

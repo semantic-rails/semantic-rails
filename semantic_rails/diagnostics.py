@@ -551,20 +551,43 @@ def recovery_hints_for_error(
         aggregation = str(details.get("aggregation", "") or "")
         if "unread_parameters" in details:
             unread = list(details["unread_parameters"])
-            # A measure's statistic of a row value is an aggregate_if (all of these take one).
-            row_value = (
-                " To aggregate a row expression (a column, or a call such as LENGTH), write "
-                f'{{"kind": "aggregate_if", "aggregation": "{aggregation}", "value": '
-                "<expression>}."
-                if details.get("measure")
-                and aggregation in {"count", "count_distinct", "sum", "avg", "min", "max", "median"}
-                else ""
-            )
+            measure = str(details.get("measure", "") or "")
+            parts = []
+            if "percentile_p" in details:
+                # A p asks for a percentile: removing it would answer the plain statistic instead.
+                p_key = next(key for key in unread if key.rsplit(".", 1)[-1] == "p")
+                unread.remove(p_key)
+                p_value = json.dumps(details["percentile_p"])
+                written = (
+                    f'"aggregation": "percentile" with "parameters": {{"p": {p_value}}}'
+                    if measure
+                    else f'"function": "percentile" with "p": {p_value}'
+                )
+                parts.append(
+                    f"For the p-th percentile, write {written}; to keep {aggregation}, "
+                    f"remove {p_key}."
+                )
+            if unread:
+                # A measure's statistic of a row value is an aggregate_if (all of these take one).
+                row_value = (
+                    f', or an aggregate_if: {{"kind": "aggregate_if", "aggregation": '
+                    f'"{aggregation}", "value": <expression>}}'
+                    if measure
+                    and aggregation
+                    in {"count", "count_distinct", "sum", "avg", "min", "max", "median"}
+                    else ""
+                )
+                subject = measure or "the distribution's values"
+                parts.append(
+                    f"If the {aggregation} of {subject} itself is meant, remove "
+                    f"{', '.join(unread)}; another value is another measure (find it with "
+                    f"discover){row_value}."
+                )
             return [
                 {
                     "kind": "remove_unread_parameters",
-                    "message": f"Remove {', '.join(unread)}.{row_value}",
-                    "unread_parameters": unread,
+                    "message": " ".join(parts),
+                    "unread_parameters": list(details["unread_parameters"]),
                 }
             ]
         if "allowed" in details:
