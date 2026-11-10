@@ -40,3 +40,9 @@ CREATE TABLE reservations (reservation_id INTEGER, room_key VARCHAR(8), reserved
 INSERT INTO reservations VALUES
   (1, 'R1', TIMESTAMP '2024-01-10 10:00:00'), (2, 'R2', TIMESTAMP '2024-02-11 10:00:00'),
   (3, 'R1', TIMESTAMP '2024-03-12 10:00:00'), (4, 'R3', TIMESTAMP '2024-03-15 10:00:00');
+
+-- Facilities' own assignments, keyed by building and department code, with no relationship to
+-- the departments model: LAB is a code HR doesn't have, and Marketing and Finance have none.
+CREATE TABLE assignments (building_key INTEGER, dept_code VARCHAR(12), area_sqft INTEGER);
+INSERT INTO assignments VALUES
+  (32, 'ENG', 500), (40, 'ENG', 200), (40, 'OPS', 400), (40, 'LAW', 100), (41, 'LAB', 250);
