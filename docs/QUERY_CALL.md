@@ -1211,6 +1211,12 @@ their rows in one statement:
   or sum of an additive measure does; a distinct count, an average, a ratio, or a column whose
   part's groups overlap, as that part's own `REWRITE_APPLIED` says, is not stated to).
   `validate` and `sql` state the join without counts. The warehouse runs once.
+- **Cost.** The statement holds each part's statement once and reads each key once per part, so
+  it grows with the parts and their keys, plus one count per pair of parts (`unmatched`).
+  Postgres reads at most 1,664 columns in one select, and each part adds its own columns and
+  one count per other part (53 parts of one metric by one key fit): a wider call is refused
+  before it is sent (`parts_over_column_limit`), its `details` naming the `limit`, the
+  `columns` it needs and how many of its parts `fits`.
 
 ## Inline expression kinds
 

@@ -176,6 +176,9 @@ class SqlDialect:
     date_diff_units: ClassVar[tuple[str, ...]] = CONVERSION_WINDOW_UNITS
     # Whether a CAST call can enforce DECIMAL(p,s).
     decimal_cast = True
+    # The most columns one select may list, where the warehouse documents a limit; a joined call
+    # wider than it is refused before it is sent.
+    max_select_columns: ClassVar[int | None] = None
 
     def scalar_call(self, name: str, args: list[Any], *, distinct: bool = False) -> Any:
         """Central lowering guard for every query, package and relation call."""
@@ -603,6 +606,10 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     subquery_in_join_on = True
 
     name: str = "postgres"
+    label = "Postgres"
+    # "Columns in a result set: 1,664" (https://www.postgresql.org/docs/current/limits.html):
+    # every select of a statement, a CTE's too, lists at most that many.
+    max_select_columns = 1_664
     session_zone = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"}
     # LOWER folds by its operand's collation, and a column's own collation can differ from a
