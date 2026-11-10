@@ -45,4 +45,10 @@ def test_an_unsupported_verbosity_is_refused(command: str, allowed: str) -> None
         timeout=60,
     )
     assert proc.returncode == 2
-    assert f"argument --verbosity: invalid choice: 'summary' (choose from {allowed})" in proc.stderr
+    # What a user needs, not argparse's phrasing (it differs between Python versions).
+    assert "--verbosity" in proc.stderr
+    assert "summary" in proc.stderr
+    for choice in allowed.split(", "):
+        assert choice in proc.stderr
+    if "minimal" not in allowed:
+        assert "minimal" not in proc.stderr.split("summary", 1)[1]
