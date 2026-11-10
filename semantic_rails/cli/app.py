@@ -655,8 +655,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_setup.add_argument(
         "--client",
         choices=CLIENTS,
-        default="both",
-        help="Client config to preview or install.",
+        default="auto",
+        help="Client config to preview or install (default: every client installed here).",
     )
     p_mcp_setup.add_argument(
         "--mcp",
@@ -667,7 +667,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_setup.add_argument(
         "--workspace-root",
         default="",
-        help="Workspace root for Architect MCP. Defaults to the package parent.",
+        help=(
+            "Workspace root for Architect MCP. Defaults to the current directory "
+            "(the package's parent when the package lies outside it)."
+        ),
     )
     p_mcp_setup.add_argument(
         "--install",
@@ -686,8 +689,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_client_config.add_argument(
         "--client",
         choices=CLIENTS,
-        default="both",
-        help="Client config to preview or install.",
+        default="auto",
+        help="Client config to preview or install (default: every client installed here).",
     )
     p_mcp_client_config.add_argument(
         "--mcp",
@@ -698,7 +701,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_client_config.add_argument(
         "--workspace-root",
         default="",
-        help="Workspace root for Architect MCP. Defaults to the package parent.",
+        help=(
+            "Workspace root for Architect MCP. Defaults to the current directory "
+            "(the package's parent when the package lies outside it)."
+        ),
     )
     p_mcp_client_config.add_argument(
         "--install",

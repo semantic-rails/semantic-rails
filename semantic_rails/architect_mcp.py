@@ -43,7 +43,7 @@ from .architect_transactions import (
     ABSENT_PROJECT_REVISION,
     project_revision,
 )
-from .config import repo_root
+from .config_parts.loader_chain import DBT_PROJECT_FILE, enclosing_dbt_project
 from .config_validation import PackageReference, parse_config_report, validate_config_report
 from .dialects import (
     connection_option_errors,
@@ -68,7 +68,9 @@ from .upgrade.service import legacy_form_hint
 from .upgrade.service import upgrade_project as upgrade_project_service
 
 DEFAULT_ARCHITECT_PORT = 8010
-DEFAULT_WORKSPACE_ROOT = repo_root()
+# Empty: the working directory the server starts in (an MCP client starts it in the user's
+# project), never the folder this package is installed in.
+DEFAULT_WORKSPACE_ROOT = ""
 ARCHITECT_INTERFACE_VERSION = "v1"
 ArchitectTransport = Literal["stdio", "streamable-http"]
 # The network transports can write files, so they require a bearer token.
@@ -116,7 +118,7 @@ _CUTS = tuple(
     for level in range(4)
 )
 # Refusals, a release's blockers, the next actions and the files a write changed are never cut.
-_NEVER_CUT = frozenset({"error", "errors", "blockers", "next_actions", "changed_files"})
+_NEVER_CUT = frozenset({"error", "errors", "blockers", "next_actions", "changed_files", "outcome"})
 _SUMMARY_NOTE = (
     "summary: the first warnings without details, the route census's counts and first undecided "
     "pairs (whole), failing checks only, the first items of long lists; pages names each list "
@@ -263,7 +265,7 @@ def _within(path: Path, root: Path) -> bool:
 
 
 def _server_workspace_root(workspace_root: str | os.PathLike[str] | None) -> Path:
-    return Path(workspace_root or DEFAULT_WORKSPACE_ROOT).expanduser().resolve()
+    return Path(workspace_root or DEFAULT_WORKSPACE_ROOT or Path.cwd()).expanduser().resolve()
 
 
 def _resolve_project_path(
@@ -377,7 +379,7 @@ def _summary(
         if key in _NEVER_CUT or not isinstance(value, (dict, list)):
             out[key] = value
         elif key == "warnings" and isinstance(value, list):
-            shown = _first_warnings(value, cut.warnings)
+            shown = _first_warnings(value, cut.warnings, cut.list_chars)
             out[key] = [
                 {name: item for name, item in value[index].items() if name != "details"}
                 if isinstance(value[index], dict)
@@ -584,17 +586,33 @@ def _note_page(pages: dict[str, Any], where: str, total: int, shown: Any) -> Non
         pages[where] = {"total_count": total, "next_offset": first_left_out}
 
 
-def _first_warnings(warnings: list[Any], count: int = SUMMARY_WARNINGS) -> list[int]:
-    """The indexes of the first warning of each code, then the next ones, up to ``count``, in
-    report order: a new kind of warning never hides behind many of another."""
+def _first_warnings(
+    warnings: list[Any], count: int = SUMMARY_WARNINGS, chars: int | None = None
+) -> list[int]:
+    """The indexes of the first warning of each code, then the next ones, up to ``count`` and
+    while they fit in ``chars`` characters (without details), in report order: a new kind of
+    warning never hides behind many of another, and long warnings don't crowd out the rest."""
     firsts: dict[str, int] = {}
     for index, row in enumerate(warnings):
         firsts.setdefault(row.get("code", "") if isinstance(row, dict) else "", index)
     shown = set(list(firsts.values())[:count])
+
+    def size(index: int) -> int:
+        row = warnings[index]
+        return _json_size(
+            {k: v for k, v in row.items() if k != "details"} if isinstance(row, dict) else row
+        )
+
+    used = sum(size(index) for index in shown)
     for index in range(len(warnings)):
         if len(shown) >= count:
             break
+        if index in shown:
+            continue
+        if chars is not None and used + size(index) > chars:
+            break
         shown.add(index)
+        used += size(index) + 1
     return sorted(shown)
 
 
@@ -638,12 +656,80 @@ def _full_or_summary(report: dict[str, Any], full_report: bool) -> dict[str, Any
     return _fitted(lambda cut, pages: {**_summary(report, pages, "", cut), "report": _SUMMARY_NOTE})
 
 
+def _count(number: int, one: str, many: str = "") -> str:
+    return f"{number} {one if number == 1 else (many or one + 's')}"
+
+
+def _files_phrase(files: list[str]) -> str:
+    shown = ", ".join(files[:3])
+    return f"{shown} and {len(files) - 3} more" if len(files) > 3 else shown
+
+
+def _first_sentence(text: str) -> str:
+    flat = " ".join(str(text or "").split())
+    return re.split(r"(?<=[.!?])\s", flat, maxsplit=1)[0]
+
+
+def _write_outcome(payload: dict[str, Any]) -> list[str]:
+    """Three lines a person reads first: what happened, the package's state, what's next."""
+    status = str(payload.get("status") or "")
+    files = [str(name) for name in payload.get("changed_files") or []]
+    revision = str(payload.get("revision") or "")  # whole: the next call sends it back
+    error = payload.get("error") or {}
+    parse = payload.get("parse") or {}
+    if status == "error":
+        code = str(error.get("code") or "ERROR")
+        return [
+            f"Refused ({code}); nothing was written.",
+            _first_sentence(error.get("message", "")),
+            "Next: re-read project_status for the current revision, then retry with a new "
+            "idempotency_key."
+            if code == "CONFIG_CONFLICT"
+            else "Next: fix the call as the error says, then retry with a new idempotency_key.",
+        ]
+    if status in {"rolled_back_after_parse_error", "preview_invalid"}:
+        first: dict[str, Any] = next(iter(parse.get("errors") or []), {})
+        verb = "Rolled back" if status.startswith("rolled_back") else "Preview refused"
+        return [
+            f"{verb}: the package would not parse with {_files_phrase(files) or 'this change'}; "
+            "nothing was written.",
+            _first_sentence(first.get("message", "")),
+            "Next: fix the change and retry with a new idempotency_key.",
+        ]
+    if payload.get("dry_run"):
+        happened = f"Dry run: would change {_files_phrase(files) or 'no files'}; nothing written."
+        after = f"Next: send the same call with dry_run: false and expected_revision {revision}."
+    else:
+        verb = "Replayed" if status == "replayed" else "Wrote"
+        happened = f"{verb} {_files_phrase(files)}." if files else "No change: nothing to write."
+        after = f"Revision {revision}. Next: validate_project mode=runtime before trusting answers."
+    counts = parse.get("summary") or {}
+    by_code = parse.get("warning_counts") or dict(
+        Counter(row.get("code", "WARNING") for row in parse.get("warnings") or [])
+    )
+    warned = ", ".join(f"{code} {count}" for code, count in sorted(by_code.items()))
+    state = (
+        f"Parses: {_count(counts.get('entities', 0), 'entity', 'entities')}, "
+        f"{_count(counts.get('measures', 0), 'measure')}, "
+        f"{_count(counts.get('metric_recipes', 0), 'metric')}; "
+        + (
+            f"{_count(counts.get('warnings', 0), 'warning')} ({warned})."
+            if warned
+            else "no warnings."
+        )
+        if parse
+        else "Not parsed."
+    )
+    return [happened, state, after]
+
+
 def _mutation_result(
     payload: dict[str, Any], *, full_report: bool = True
 ) -> ArchitectMutationResult:
     if payload.get("status") in {"rolled_back_after_parse_error", "preview_invalid"}:
         hint = legacy_form_hint(payload["project_path"], _UPGRADE_ACTION)
         payload = {**payload, "next_actions": [*payload.get("next_actions", []), *hint]}
+    payload = {"outcome": _write_outcome(payload), **payload}
     if not full_report:
         changes = list(payload.get("changes") or [])
         rest = {key: value for key, value in payload.items() if key != "changes"}
@@ -858,8 +944,9 @@ def _report_page(
             target = None
             break
     if not isinstance(target, list):
-        listed: dict[str, Any] = {}
-        _summary(report, listed)
+        # The pages the summary of this report lists, at the cut the summary fits in.
+        shown = _full_or_summary({**report, "revision": envelope.get("revision")}, False)
+        listed = dict(shown.get("pages") or {})
         raise SemanticLayerError(
             "INVALID_MCP_ARGUMENTS",
             f"page {page!r} names no list in this report: pass a path from the summary's pages",
@@ -1099,22 +1186,228 @@ _REQUIRED_CONNECTION_OPTION_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 
-def _setup_dialog(package_id: str = "", project_path: str = "", goal: str = "") -> dict[str, Any]:
+# The questions a dbt project answers; the dialog leaves them out when dbt answered them.
+# time_column is asked unless the first model's column types name a time column.
+_DBT_FIRST_MODEL = ("first_entity", "relation", "primary_key")
+_DBT_UNUSED = ("amount_column", "dimension_column")
+# dbt layers upstream of the marts: a mart wins the model id it shares with one of these.
+_DBT_UPSTREAM_PREFIXES = ("stg_", "staging_", "base_", "int_", "raw_")
+
+
+def _dbt_root(workspace_root: Path, project_path: str) -> Path | None:
+    """The dbt project the new package goes into: the one holding ``project_path`` (or the
+    workspace root), else the only one directly inside the workspace root."""
+    start = (workspace_root / project_path).resolve() if project_path else workspace_root
+    while not start.exists() and _within(start.parent, workspace_root):
+        start = start.parent
+    found = enclosing_dbt_project(str(start)) if start.exists() else ""
+    if found and _within(Path(found), workspace_root):
+        return Path(found)
+    if project_path:
+        return None
+    children = sorted(p.parent for p in workspace_root.glob(f"*/{DBT_PROJECT_FILE}"))
+    return children[0] if len(children) == 1 else None
+
+
+def _first_dbt_model(models: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A built model with a one-column key, a fact (one with foreign keys) first."""
+    keyed = [
+        row
+        for row in models
+        if row.get("physical_relation")
+        and len(((row.get("primary_key") or {}).get("columns")) or []) == 1
+    ]
+    keyed.sort(key=lambda row: not row.get("foreign_keys"))
+    return keyed[0] if keyed else None
+
+
+def _dbt_time_column(first: dict[str, Any], duckdb_path: str, dbt_root: Path) -> str:
+    """The first model's time column: from dbt's column types, else from the DuckDB file
+    dbt built (read-only, only a file inside the dbt project); "" when neither names one."""
+    times = list(first.get("times") or [])
+    if not times and duckdb_path and _within(Path(duckdb_path).resolve(), dbt_root.resolve()):
+        try:
+            with introspection.open_duckdb(duckdb_path) as warehouse:
+                columns = introspection.describe_table(warehouse, first["relation"])["columns"]
+        except SemanticLayerError:  # not built yet, or busy: ask the question instead
+            columns = []
+        roles, _ = introspection.draft_roles(
+            first["entity"],
+            list(first["primary_key"]["columns"]),
+            list(first.get("foreign_keys") or []),
+            [{"name": row["name"], "type": row["type"]} for row in columns],
+        )
+        times = roles["times"]
+    rank = {"high": 0, "medium": 1, "low": 2}
+    usable = [row for row in times if row.get("class") != "as_of_time"]
+    usable.sort(key=lambda row: rank.get(str(row.get("confidence")), 3))
+    return str(usable[0]["column"]) if usable else ""
+
+
+def _dbt_import_select(
+    models: list[dict[str, Any]], first: dict[str, Any] | None
+) -> tuple[list[str], list[dict[str, str]]]:
+    """The dbt models import_dbt_project can take in one batch: one per drafted model id.
+
+    Where two dbt models draft the same model id (``stg_orders`` and ``orders``), the first
+    model wins, then a model outside dbt's upstream layers; the others are left out.
+    """
+    keyed = [
+        row
+        for row in models
+        if row.get("physical_relation") and row.get("primary_key") and row.get("upsert_model")
+    ]
+    first_id = first["dbt_unique_id"] if first else ""
+
+    def preference(row: dict[str, Any]) -> tuple[bool, bool]:
+        name = str(row["dbt_unique_id"]).rsplit(".", 1)[-1].lower()
+        return row["dbt_unique_id"] != first_id, name.startswith(_DBT_UPSTREAM_PREFIXES)
+
+    chosen: dict[str, dict[str, Any]] = {}
+    for row in keyed:
+        model_id = str(row["upsert_model"]["model_id"])
+        if model_id not in chosen or preference(row) < preference(chosen[model_id]):
+            chosen[model_id] = row
+    kept = {id(row) for row in chosen.values()}
+    select = [row["dbt_unique_id"] for row in keyed if id(row) in kept]
+    left_out = [
+        {"dbt_model": row["dbt_unique_id"], "model_id": str(row["upsert_model"]["model_id"])}
+        for row in keyed
+        if id(row) not in kept
+    ]
+    return select, left_out
+
+
+def _dbt_answers(
+    workspace_root: Path, project_path: str, package_slug: str
+) -> tuple[dict[str, Any], dict[str, Any], list[str]] | None:
+    """(dbt facts, answers dbt gives, next actions) for a workspace holding a dbt project."""
+    dbt_root = _dbt_root(workspace_root, project_path)
+    if dbt_root is None:
+        return None
+    facts = dbt_artifacts.dbt_setup_facts(dbt_root)
+    package_dir = (
+        (workspace_root / project_path).resolve()
+        if project_path
+        else dbt_root / "semantic_rails" / package_slug
+    )
+    answers: dict[str, Any] = {
+        "project_path": package_dir.relative_to(workspace_root).as_posix(),
+        "data": "external",
+    }
+    adapter = str(facts["adapter_type"] or "")
+    if adapter and adapter != "duckdb" and warehouse_connector(adapter) is not None:
+        answers["warehouse"] = adapter
+    elif facts["duckdb_path"]:
+        answers["warehouse"] = "duckdb"
+        answers["default_db"] = Path(os.path.relpath(facts["duckdb_path"], package_dir)).as_posix()
+    first = _first_dbt_model(facts["models"])
+    if first is not None:
+        answers.update(
+            first_entity=first["entity"],
+            relation=first["relation"],
+            primary_key=first["primary_key"]["columns"][0],
+            amount_column="",
+            dimension_column="",
+        )
+        time_column = _dbt_time_column(first, str(facts["duckdb_path"] or ""), dbt_root)
+        if time_column:
+            answers["time_column"] = time_column
+    target = Path(facts["target_dir"])
+    target_arg = (
+        target.relative_to(workspace_root).as_posix() if _within(target, workspace_root) else ""
+    )
+    actions: list[str] = []
+    if not facts["manifest"]:
+        actions.append(
+            f"Run `dbt parse` (or `dbt build`) in {dbt_root.name}/ so target/manifest.json "
+            "exists, then call setup_project_dialog again: dbt then answers the first model."
+        )
+    else:
+        imported, left_out = _dbt_import_select(facts["models"], first)
+        actions.append(
+            "After create_project, call import_dbt_project with "
+            f"target_dir {target_arg!r} and select {json.dumps(imported)} to bring in "
+            "every dbt model with a key, its columns, tests and foreign keys."
+            + (
+                " Left out because another selected dbt model drafts the same model id: "
+                + ", ".join(f"{row['dbt_model']} (as {row['model_id']})" for row in left_out)
+                + "."
+                if left_out
+                else ""
+            )
+        )
+    if "default_db" not in answers and answers.get("warehouse") != adapter:
+        actions.append(
+            "No DuckDB file was found for this dbt project; answer default_db with the path "
+            "of the file dbt builds, relative to the package directory."
+        )
+    dbt = {
+        "path": dbt_root.relative_to(workspace_root).as_posix() or ".",
+        "name": facts["name"],
+        "adapter_type": adapter,
+        "target_dir": target_arg,
+        "manifest": facts["manifest"],
+        "models": len(facts["models"]),
+    }
+    return dbt, answers, actions
+
+
+def _setup_dialog(
+    package_id: str = "",
+    project_path: str = "",
+    goal: str = "",
+    *,
+    workspace_root: Path | None = None,
+) -> dict[str, Any]:
     package_slug = _slug(package_id, fallback="my_semantic_package")
     questions = project_setup_questions(ProjectSpec(package_id=package_slug))
     defaults = {row["id"]: row["default"] for row in questions}
+    found = _dbt_answers(workspace_root, project_path, package_slug) if workspace_root else None
+    if found is None:
+        return {
+            "goal": goal,
+            "message": (
+                "Collect these answers before creating or reshaping a Semantic Rails package. "
+                "The draft is for DuckDB only; for another warehouse supply its connection "
+                "details and use data=external before calling create_project."
+            ),
+            "draft_warehouse": "duckdb",
+            "questions": questions,
+            "recommended_next_tool": "create_project",
+            "draft_arguments": _draft_arguments(package_slug, project_path, defaults),
+            "next_actions": [NEW_PROJECT_ROUTES_ACTION],
+        }
+    dbt, answers, actions = found
+    answered = set(answers) | ({"warehouse"} if "warehouse" in answers else set())
+    if "first_entity" in answers:
+        answered |= {*_DBT_FIRST_MODEL, *_DBT_UNUSED}
+    if answers.get("warehouse") == "duckdb":
+        answered |= {"connection_kind", "connection_name", "connection_options"}
+    remaining = [row for row in questions if row["id"] not in answered]
+    if "first_entity" in answers and "time_column" not in answers:
+        # dbt named no time column: ask, and draft none rather than the generic default.
+        answers["time_column"] = ""
+        remaining = [
+            {**row, "default": ""} if row["id"] == "time_column" else row for row in remaining
+        ]
+    draft = _draft_arguments(package_slug, answers["project_path"], {**defaults, **answers})
+    if answers.get("warehouse") not in (None, "duckdb"):
+        draft["default_db"] = ""
     return {
         "goal": goal,
         "message": (
-            "Collect these answers before creating or reshaping a Semantic Rails package. "
-            "The draft is for DuckDB only; for another warehouse supply its connection "
-            "details and use data=external before calling create_project."
+            f"Found the dbt project {dbt['name'] or dbt['path']!r}. dbt answers the warehouse, "
+            "the database and the first model; ask only the questions left, then call "
+            "create_project with draft_arguments."
         ),
-        "draft_warehouse": "duckdb",
-        "questions": questions,
+        "dbt_project": dbt,
+        "draft_warehouse": draft["warehouse"],
+        "questions": remaining,
+        "answered_by_dbt": {key: value for key, value in answers.items() if key in answered},
         "recommended_next_tool": "create_project",
-        "draft_arguments": _draft_arguments(package_slug, project_path, defaults),
-        "next_actions": [NEW_PROJECT_ROUTES_ACTION],
+        "draft_arguments": draft,
+        "next_actions": [*actions, NEW_PROJECT_ROUTES_ACTION],
     }
 
 
@@ -1213,6 +1506,22 @@ def _project_spec(arguments: dict[str, Any]) -> ProjectSpec:
             dimension_column=str(arguments.get("dimension_column") or ""),
         ),
     )
+
+
+def _package_relative_db(default_db: str, project: Path, workspace_root: Path) -> str:
+    """An absolute ``default_db`` inside the workspace root, written relative to the package.
+
+    Package YAML keeps relative paths so it works in every checkout; the loader decides
+    whether the relative path may leave the package (a dbt project's own database may).
+    """
+    text = str(default_db or "").strip()
+    raw = Path(text).expanduser() if text else None
+    if raw is None or not raw.is_absolute():
+        return text
+    resolved = raw.resolve()
+    if not _within(resolved, workspace_root):
+        return text
+    return Path(os.path.relpath(resolved, project)).as_posix()
 
 
 def _project_files(project: Path) -> list[dict[str, Any]]:
@@ -1484,7 +1793,9 @@ def create_architect_mcp_server(
         interactive: bool = False,
     ) -> dict[str, Any]:
         """Start a guided project setup dialog, using MCP elicitation when requested and supported."""
-        dialog = _setup_dialog(package_id=package_id, project_path=project_path, goal=goal)
+        dialog = _setup_dialog(
+            package_id=package_id, project_path=project_path, goal=goal, workspace_root=root
+        )
         if not interactive:
             return {"ok": True, "mode": "dialog_schema", **dialog}
         try:
@@ -1503,12 +1814,14 @@ def create_architect_mcp_server(
             }
         if result.action != "accept" or result.data is None:
             return {"ok": False, "status": str(result.action), "mode": "elicitation", **dialog}
-        answers = result.data.model_dump()
+        answers = {**result.data.model_dump(), **dict(dialog.get("answered_by_dbt") or {})}
         package_slug = _slug(
             str(answers.get("package_id") or package_id), fallback="semantic_project"
         )
         try:
-            draft = _draft_arguments(package_slug, project_path, answers)
+            draft = _draft_arguments(
+                package_slug, str(answers.pop("project_path", "") or project_path), answers
+            )
         except SemanticLayerError as exc:
             return {**_report_error(exc), "mode": "elicitation"}
         missing = _missing_setup_answers(draft)
@@ -1561,13 +1874,20 @@ def create_architect_mcp_server(
         full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
+            project = _resolve_project_path(
+                project_path,
+                workspace_root=root,
+                package_id=package_id,
+                require_exists=False,
+                require_package_root=False,
+            )
             spec = _project_spec(
                 {
                     "package_id": package_id,
                     "description": description,
                     "warehouse": warehouse,
                     "data": data,
-                    "default_db": default_db,
+                    "default_db": _package_relative_db(default_db, project, root),
                     "connection_kind": connection_kind,
                     "connection_name": connection_name,
                     "connection_options": connection_options,
@@ -1578,13 +1898,6 @@ def create_architect_mcp_server(
                     "amount_column": amount_column,
                     "dimension_column": dimension_column,
                 }
-            )
-            project = _resolve_project_path(
-                project_path,
-                workspace_root=root,
-                package_id=package_id,
-                require_exists=False,
-                require_package_root=False,
             )
             return _mutation_result(
                 create_project_service(
@@ -2824,7 +3137,11 @@ def main() -> None:
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_ARCHITECT_PORT)
-    parser.add_argument("--workspace-root", default=DEFAULT_WORKSPACE_ROOT)
+    parser.add_argument(
+        "--workspace-root",
+        default=DEFAULT_WORKSPACE_ROOT,
+        help="directory the server may write packages in (default: the current directory)",
+    )
     parser.add_argument(
         "--token-file",
         default="",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from ...config_validation import PackageReference
 from ...errors import SemanticLayerError
 from ...mcp import SemanticLayerMCPAdapter
 from ...mcp_manager import mcp_client_config_report
@@ -25,6 +27,7 @@ from ..common import (
     _runtime_from_ref,
     _source_arg_from_ref,
     _source_arg_from_runtime,
+    chosen_package_ref,
 )
 from ..output import _package_display
 
@@ -97,7 +100,7 @@ def cmd_mcp_doctor(args: argparse.Namespace) -> None:
         prefer_path=bool(str(getattr(args, "path", "") or "").strip()),
     )
     next_commands = [
-        f"semantic-rails mcp setup {source_arg} --client both --mcp query --install --yes",
+        f"semantic-rails mcp setup {source_arg} --mcp query --install --yes",
         f"semantic-rails serve {source_arg} --host 127.0.0.1 --port 8091",
         "curl -s http://127.0.0.1:8091/health",
     ]
@@ -116,8 +119,15 @@ def cmd_mcp_doctor(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _setup_ref(args: argparse.Namespace) -> PackageReference | None:
+    """The package to set up; the Architect alone needs none (it creates packages)."""
+    if args.mcp != "architect" or getattr(args, "package", "") or getattr(args, "path", ""):
+        return _ref_from_args(args)
+    return chosen_package_ref()
+
+
 def cmd_mcp_setup(args: argparse.Namespace) -> None:
-    ref = _ref_from_args(args)
+    ref = _setup_ref(args)
     install = bool(getattr(args, "install", False))
     if install and not getattr(args, "yes", False):
         if getattr(args, "json", False) or not sys.stdin.isatty():
@@ -127,6 +137,9 @@ def cmd_mcp_setup(args: argparse.Namespace) -> None:
             )
         install = _confirm("Write Claude/Codex MCP config files?", default=False)
 
+    if ref is None:
+        _mcp_setup_architect_only(args, install=install)
+        return
     runtime = _runtime_from_ref(ref)
     mcp = _mcp_tool_check(runtime)
     config = mcp_client_config_report(
@@ -174,26 +187,71 @@ def cmd_mcp_setup(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _mcp_setup_architect_only(args: argparse.Namespace, *, install: bool) -> None:
+    config = mcp_client_config_report(
+        None,
+        client=args.client,
+        mcp="architect",
+        workspace_root=args.workspace_root,
+        install=install,
+    )
+    workspace = config["workspace_root"]
+    payload = {
+        "ok": True,
+        "mode": "install" if install else "preview",
+        "package": None,
+        "client_config": {
+            key: config[key]
+            for key in ("client", "mcp", "workspace_root", "servers", "previews", "installed")
+        },
+        "next_commands": [
+            "Restart the selected MCP client so it reloads its config."
+            if install
+            else f"semantic-rails mcp setup --mcp architect --client {args.client} "
+            f"--workspace-root {shlex.quote(workspace)} --install --yes",
+            "Then ask your agent to start a package: the Architect's setup_project_dialog "
+            "reads a dbt project in the workspace.",
+        ],
+    }
+    if getattr(args, "json", False):
+        _print(payload)
+    else:
+        _print_mcp_setup_report(payload)
+
+
 def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
     package = dict(payload.get("package", {}) or {})
     mcp = dict(payload.get("mcp", {}) or {})
     config = dict(payload.get("client_config", {}) or {})
     print("Semantic Rails MCP setup")
-    print(f"Package: {_package_display(package)}")
-    print(
-        f"MCP check: {'ok' if payload.get('ok') else 'failed'} ({mcp.get('tool_count', 0)} tools)"
-    )
+    if package:
+        print(f"Package: {_package_display(package)}")
+        print(
+            f"MCP check: {'ok' if payload.get('ok') else 'failed'} "
+            f"({mcp.get('tool_count', 0)} tools)"
+        )
+    else:
+        print(f"Architect workspace: {config.get('workspace_root')}")
     print(f"Mode: {payload.get('mode')}")
     print()
     print("Config files:")
     for client, preview in dict(config.get("previews", {}) or {}).items():
         print(f"  {client}: {preview.get('path')}")
+        if preview.get("replaces"):
+            print(f"    Replaces the server already there: {', '.join(preview['replaces'])}")
+        if preview.get("replaces_any_named"):
+            print(
+                "    Replaces any user-scope server already named: "
+                + ", ".join(preview["replaces_any_named"])
+            )
     installed = dict(config.get("installed", {}) or {})
     if installed:
         print()
         print("Installed:")
         for client, report in installed.items():
             print(f"  {client}: {report.get('path')}")
+            if report.get("replaced"):
+                print(f"    Replaced: {', '.join(report['replaced'])}")
             if report.get("ok") and report.get("note"):
                 print(f"  {report['note']}")
     print()
@@ -203,7 +261,7 @@ def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
 
 
 def cmd_mcp_client_config(args: argparse.Namespace) -> None:
-    ref = _ref_from_args(args)
+    ref = _setup_ref(args)
     if args.install and not args.yes:
         raise SemanticLayerError(
             "INVALID_CONFIG",

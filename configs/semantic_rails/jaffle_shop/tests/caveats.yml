@@ -1,0 +1,32 @@
+tests:
+  # caveat_applies: assert that a call states a caveat (or, with
+  # applies: false, that it does not). These pin where the Brooklyn
+  # soft-launch caveat reaches: a March 2017 store comparison gets it;
+  # the same month filtered to another store does not.
+  brooklyn_caveat_on_march_store_comparison:
+    kind: caveat_applies
+    caveat: caveat.jaffle.brooklyn_soft_launch_mar_2017
+    query:
+      select: [measure.jaffle.revenue_usd]
+      group_by: [dimension.jaffle_store_name]
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2017-03-01"
+        end: "2017-04-01"
+
+  brooklyn_caveat_not_on_philadelphia:
+    kind: caveat_applies
+    caveat: caveat.jaffle.brooklyn_soft_launch_mar_2017
+    applies: false
+    query:
+      select: [measure.jaffle.revenue_usd]
+      where:
+        - field: dimension.jaffle_store_name
+          op: is
+          value: Philadelphia
+      time:
+        temporal_role: temporal_role.jaffle_order_time
+        grain: month
+        start: "2017-03-01"
+        end: "2017-04-01"

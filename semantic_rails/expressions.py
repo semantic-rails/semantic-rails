@@ -2051,6 +2051,26 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             if value_kind == "percentile":
                 # Validate p ∈ [0, 1] at parse time so the error fires
                 # at validate, not at compile/execute.
+                unread = sorted(
+                    str(key) for key in raw_value if key not in {"kind", "p", "measure"}
+                )
+                if unread:
+                    # A key it doesn't read would leave the plain percentile as the threshold.
+                    raise SemanticLayerError(
+                        "INVALID_EXPRESSION_AST",
+                        "metric_predicate inline percentile threshold takes only 'p' and "
+                        f"'measure': {unread} would be ignored",
+                        details={
+                            "received_value": dict(raw_value),
+                            "unknown_keys": unread,
+                            "recovery_hints": [
+                                {
+                                    "kind": "remove_unread_parameters",
+                                    "message": f"Remove {unread} from the threshold.",
+                                }
+                            ],
+                        },
+                    )
                 if "p" not in raw_value:
                     raise SemanticLayerError(
                         "INVALID_EXPRESSION_AST",

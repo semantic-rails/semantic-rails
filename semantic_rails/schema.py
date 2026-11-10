@@ -412,6 +412,8 @@ class SemanticCaveatConfig:
     severity: str = "warning"
     owner: str = ""
     references: list[dict[str, Any]] = field(default_factory=list)
+    # What the reader should do about the fact the message states; "" when not authored.
+    so_what: str = ""
 
 
 @dataclass(frozen=True)

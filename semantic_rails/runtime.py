@@ -1233,12 +1233,22 @@ class Runtime:
             raise TypeError(f"set_aggregate_routing takes True or False, not {enabled!r}")
         self._aggregate_routing = enabled
 
+    def _reads_external_database(self) -> bool:
+        config = getattr(self, "_config", None)  # unset on a Runtime built by hand
+        return config is not None and config.package.seed.kind == SEED_KIND_EXTERNAL
+
     def _resolve_asset_path(self, value: str, *, kind: str) -> str:
         if not value:
             return value
         # Re-checked here (not only at YAML parse time) so configs built
         # programmatically via Runtime.from_config get the same containment.
-        ensure_contained_package_path(value, field=f"package.{kind}")
+        ensure_contained_package_path(
+            value,
+            field=f"package.{kind}",
+            package_root=self.package_root,
+            # The runtime only reads an external database, so it may sit in the dbt project.
+            read_only=kind == "default_db" and self._reads_external_database(),
+        )
         if os.path.isabs(value):
             return value
         package_candidate = os.path.abspath(os.path.join(self.package_root, value))

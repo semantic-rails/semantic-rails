@@ -1289,7 +1289,9 @@ The response `warnings` array can carry these non-error signals:
   can mislead. Agents should mention caveats only when explaining
   affected results.
   Every matching caveat is stated at every verbosity; verbosity trims only
-  each caveat's details.
+  each caveat's details. At `compact` (the default) and `full`, `details.so_what`
+  says what to do about the caveat and `details.owner` who to ask, when the
+  package sets them; `minimal` leaves both out.
 - `ROUTE_PASS_THROUGH` — severity `warning`, at every verbosity: the package's
   one route for a pair the query reads goes down into another table's rows and
   back up to another parent ("the Team of any of the Member's Member events"),

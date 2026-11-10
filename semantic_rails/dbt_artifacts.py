@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .architect_introspection import (
     draft_roles,
     entity_name,
@@ -29,6 +31,7 @@ from .architect_introspection import (
     upsert_model_draft,
 )
 from .errors import SemanticLayerError
+from .yaml_loader import load_yaml_file
 
 _RELATION_RESOURCES = ("model", "seed", "snapshot", "source")
 _REF = re.compile(r"""ref\(\s*['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?\s*(?:,[^)]*)?\)""")
@@ -585,3 +588,76 @@ def dbt_import_models(
             else:
                 draft["references"].append(reference)
     return list(drafts.values()), skipped_models, skipped_references
+
+
+def _profile_duckdb_path(dbt_root: Path, profile: str) -> str:
+    """The ``path`` of the dbt-duckdb target in the dbt project's own ``profiles.yml``.
+
+    Only the project's ``profiles.yml`` is read (never ``~/.dbt``, which may hold other
+    credentials); a templated or in-memory path gives "".
+    """
+    profiles_file = dbt_root / "profiles.yml"
+    if not profile or not profiles_file.is_file():
+        return ""
+    try:
+        profiles = load_yaml_file(str(profiles_file)) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):  # only loses this hint
+        return ""
+    entry = profiles.get(profile) if isinstance(profiles, dict) else None
+    if not isinstance(entry, dict):
+        return ""
+    outputs = entry.get("outputs")
+    if not isinstance(outputs, dict):
+        return ""
+    output = outputs.get(str(entry.get("target") or "dev"))
+    if not isinstance(output, dict) or str(output.get("type") or "") != "duckdb":
+        return ""
+    path = str(output.get("path") or "").strip()
+    if not path or "{{" in path or path.startswith(":memory:") or "://" in path:
+        return ""
+    return str((dbt_root / Path(path).expanduser()).resolve())
+
+
+def dbt_setup_facts(dbt_root: str | os.PathLike[str]) -> dict[str, Any]:
+    """What a dbt project already answers for a new package, read from its files.
+
+    ``dbt_project.yml`` names the project, profile and target directory; ``manifest.json``
+    there (when dbt has run) gives the adapter and models; the DuckDB file is the
+    project ``profiles.yml`` target's ``path``, else ``<database>.duckdb`` at the dbt root,
+    the name dbt-duckdb gives the file. dbt never runs.
+    """
+    root = Path(dbt_root).resolve()
+    try:
+        project = load_yaml_file(str(root / "dbt_project.yml")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):  # report the folder only
+        project = {}
+    project = project if isinstance(project, dict) else {}
+    target_dir = root / str(project.get("target-path") or "target")
+    facts: dict[str, Any] = {
+        "path": str(root),
+        "name": str(project.get("name") or ""),
+        "profile": str(project.get("profile") or ""),
+        "target_dir": str(target_dir),
+        "manifest": (target_dir / "manifest.json").is_file(),
+        "adapter_type": "",
+        "duckdb_path": "",
+        "models": [],
+    }
+    database = ""
+    if facts["manifest"]:
+        try:
+            loaded = load_dbt_artifacts(target_dir)
+        except SemanticLayerError:
+            loaded = None
+        if loaded is not None:
+            facts["adapter_type"] = loaded.adapter_type
+            facts["models"] = suggest_models_from_dbt(loaded)
+            built = [
+                row.database for row in loaded.relations.values() if row.resource_type != "source"
+            ]
+            database = Counter(built).most_common(1)[0][0] if built else ""
+    duckdb_path = _profile_duckdb_path(root, facts["profile"])
+    if not duckdb_path and database and (root / f"{database}.duckdb").is_file():
+        duckdb_path = str(root / f"{database}.duckdb")
+    facts["duckdb_path"] = duckdb_path
+    return facts

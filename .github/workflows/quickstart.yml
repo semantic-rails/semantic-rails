@@ -70,9 +70,6 @@ jobs:
     if: github.event.schedule == '41 5 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -97,16 +94,16 @@ jobs:
           tests/semantic_rails/test_duckdb_materialized_fetch.py
           tests/semantic_rails/test_duckdb_builtin_resolution.py
           -k "not postgres"
-      - name: Open or update the tracking issue
-        if: failure() && github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          title="Nightly check on the newest dependency releases failed"
-          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
-          if [ -n "$number" ]; then
-            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "Failed again: $RUN_URL"
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "The README quickstart or the DuckDB correctness suite failed on the newest release of every dependency (uv.lock ignored). A new upstream release may break fresh installs. Run: $RUN_URL"
-          fi
+
+  track:
+    # A failed scheduled run opens or updates one issue per schedule; the next green run of
+    # that schedule closes it.
+    needs: [linux, macos, latest-dependencies]
+    if: ${{ always() && github.event_name == 'schedule' }}
+    permissions:
+      actions: read
+      issues: write
+    uses: ./.github/workflows/scheduled-run-issue.yml
+    with:
+      title: ${{ github.event.schedule == '41 5 * * *' && 'Nightly check on the newest dependency releases failed' || 'Weekly README quickstart check failed' }}
+      failed: ${{ contains(needs.*.result, 'failure') }}

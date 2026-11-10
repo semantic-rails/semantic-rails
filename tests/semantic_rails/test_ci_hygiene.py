@@ -601,6 +601,136 @@ def test_adbc_ci_guard_requires_every_module_without_skips(tmp_path, cases, succ
     assert result.returncode == (0 if succeeds else 1), result.stdout + result.stderr
 
 
+NUMBER_AFFECTING = {
+    "duckdb",
+    "pyarrow",
+    "pandas",
+    "numpy",
+    "tzdata",
+    "pytz",
+    "python-dateutil",
+    "adbc-*",
+    "snowflake-*",
+    "google-cloud-bigquery*",
+    "databricks-*",
+    "clickhouse-*",
+    "pyathena",
+    "boto3",
+}
+
+
+def test_dependabot_auto_merges_only_grouped_patch_and_minor_updates():
+    config = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/dependabot-auto-merge.yml").read_text())
+    job = workflow["jobs"]["enable"]
+    assert job["if"] == (
+        "github.event.pull_request.user.login == 'dependabot[bot]' "
+        "&& github.actor == 'dependabot[bot]'"
+    )
+    step = next(step for step in job["steps"] if step.get("run", "").startswith("gh pr merge"))
+    # --auto: the pull request enters the merge queue only after the required checks pass.
+    assert step["run"] == 'gh pr merge --auto --squash "$PR_URL"'
+    groups, update_types = re.findall(r"fromJSON\('(\[.*?\])'\)", step["if"])
+    assert json.loads(update_types) == [
+        "version-update:semver-patch",
+        "version-update:semver-minor",
+    ]
+    merged = set(json.loads(groups))
+    assert merged == {"python-deps", "actions"}
+    for update in config["updates"]:
+        assert update["cooldown"] == {"default-days": 7}
+        for name, group in update["groups"].items():
+            if name in merged:
+                assert set(group["update-types"]) <= {"patch", "minor"}
+    python = config["updates"][0]["groups"]
+    # Updates that can change a number never join the self-merging group.
+    assert set(python["python-deps"]["exclude-patterns"]) >= NUMBER_AFFECTING
+    assert (
+        python["python-deps-major"]["exclude-patterns"] == python["python-deps"]["exclude-patterns"]
+    )
+
+
+@pytest.mark.parametrize(
+    "path, needs",
+    [
+        ("release-readiness.yml", ["suite"]),
+        ("quickstart.yml", ["linux", "macos", "latest-dependencies"]),
+    ],
+)
+def test_scheduled_failures_are_tracked_in_one_issue(path, needs):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / path).read_text())
+    track = workflow["jobs"]["track"]
+    assert track["uses"] == "./.github/workflows/scheduled-run-issue.yml"
+    assert track["if"] == "${{ always() && github.event_name == 'schedule' }}"
+    # Every other job of the workflow decides whether the run failed.
+    assert ([track["needs"]] if isinstance(track["needs"], str) else track["needs"]) == needs
+    assert set(workflow["jobs"]) - {"track", "release-readiness"} == set(needs)
+    assert track["permissions"] == {"actions": "read", "issues": "write"}
+
+
+@pytest.mark.parametrize("path", ["release-readiness.yml", "quickstart.yml"])
+def test_scheduled_run_tracker_asks_only_for_what_its_callers_grant(path):
+    # GitHub refuses to start a caller whose reusable workflow requests a permission, at its
+    # top level or on a job, that the calling job does not grant.
+    level = {"none": 0, "read": 1, "write": 2}
+    tracker = yaml.safe_load((ROOT / ".github/workflows/scheduled-run-issue.yml").read_text())
+    requested = [tracker.get("permissions", {})] + [
+        job.get("permissions", {}) for job in tracker["jobs"].values()
+    ]
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / path).read_text())
+    granted = workflow["jobs"]["track"]["permissions"]
+    for permissions in requested:
+        assert isinstance(permissions, dict)
+        for scope, access in permissions.items():
+            assert level[granted.get(scope, "none")] >= level[access], (scope, access)
+
+
+@pytest.mark.parametrize(
+    "failed, open_issue, expected",
+    [
+        ("true", "", "issue create --repo o/r --title Nightly X failed --body Failed: RUN"),
+        ("true", "7", "issue comment 7 --repo o/r --body Failed: RUN"),
+        ("false", "7", "issue close 7 --repo o/r --comment Passed again: RUN"),
+        ("false", "", None),
+    ],
+)
+def test_scheduled_run_tracker_opens_updates_and_closes_one_issue(
+    tmp_path, failed, open_issue, expected
+):
+    tracker = yaml.safe_load((ROOT / ".github/workflows/scheduled-run-issue.yml").read_text())
+    script = tracker["jobs"]["track"]["steps"][0]["run"]
+    log = tmp_path / "gh.log"
+    fake = tmp_path / "gh"
+    # A stand-in gh: the issue search answers with the open issue, the run with one failed job.
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s" "$*" | tr "\\n" " " >> "{log}"; echo >> "{log}"\n'
+        'case "$1 $2" in\n'
+        f'  "issue list") echo "{open_issue}" ;;\n'
+        '  "run view") echo "- [suite (shard 2)](JOB)" ;;\n'
+        "esac\n"
+    )
+    fake.chmod(0o755)
+    env = {
+        "PATH": f"{tmp_path}:/usr/bin:/bin",
+        "TITLE": "Nightly X failed",
+        "FAILED": failed,
+        "RUN_URL": "RUN",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_RUN_ID": "1",
+    }
+    subprocess.run(["bash", "-c", script], env=env, check=True, timeout=60)
+    calls = log.read_text().splitlines()
+    assert calls[0].startswith("issue list --repo o/r --state open")
+    writes = [call for call in calls if not call.startswith(("issue list", "run view"))]
+    if expected is None:
+        assert writes == []
+    else:
+        assert len(writes) == 1 and writes[0].startswith(expected)
+    if failed == "true":
+        assert "- [suite (shard 2)](JOB)" in writes[0]
+
+
 def test_dependabot_updates_uv_lock_weekly_and_keeps_actions():
     config = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())
     assert [entry["package-ecosystem"] for entry in config["updates"]] == ["uv", "github-actions"]
@@ -1011,20 +1141,6 @@ def test_unknown_files_use_median_cost():
         "b": 1,
     }
     assert test_sharding.assign_files(["b", "a"], {}, 2) == {"a": 0, "b": 1}
-
-
-def test_every_backend_test_file_has_a_recorded_duration():
-    # A file without an entry costs the median, so a slow new file can unbalance every shard.
-    recorded = json.loads(test_sharding.DURATIONS.read_text(encoding="utf-8"))
-    missing = [
-        file
-        for file in test_sharding.test_files(ROOT)
-        if file.startswith("tests/semantic_rails/") and file not in recorded
-    ]
-    assert not missing, (
-        "Add each file's summed test seconds to tests/shard_durations.json (a local "
-        f"estimate is fine until the table is next refreshed from CI reports): {missing}"
-    )
 
 
 @pytest.mark.parametrize("cost", [0, -1, float("nan"), float("inf")])

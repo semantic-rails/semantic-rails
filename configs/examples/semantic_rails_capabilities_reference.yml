@@ -57,11 +57,14 @@ package_authoring:
       - kinds are business_event, definition_change, and data_quality
       - severity info = definitional framing; warning (default) = matched window or slice is affected
       - entity_values match only the declared dimension; declare one row per commonly-filtered dimension
+      - so_what (optional) says what the reader should do; it and owner reach the warning at compact verbosity
+      - a caveat_applies package test pins whether a call states a caveat (applies false = must not)
     example:
       semantic_caveats:
         - id: caveat.jaffle.brooklyn_soft_launch_mar_2017
           kind: business_event
           message: Brooklyn opened during March 2017; store comparisons for that month include a partial operating period.
+          so_what: Compare Brooklyn from April 2017 on, or say that its March figure covers part of the month.
           object_ids:
             - dimension.jaffle_store_name
           entity_values:

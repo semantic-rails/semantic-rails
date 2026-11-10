@@ -88,8 +88,10 @@ package with one model, its count and amount metrics, an example, a package test
   components that need it. The name must not contain a path separator or control character.
   The model gets only the columns you name (no starter dimension or amount). The database may
   already sit in the project directory: a directory with no authored files still has revision
-  `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
-  `<package>/data/<package_id>.duckdb`); a path outside it needs
+  `absent`. A package inside a dbt project (a directory above it holds `dbt_project.yml`) may
+  name the file `dbt build` writes anywhere in that dbt project, for example
+  `default_db: ../../jaffle_shop.duckdb`; an absolute path inside the workspace root is written
+  relative to the package. Any other path outside the package needs
   `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
 - Other warehouses take `connection_kind` and their adapter's required connection inputs.
   Named connections apply only to Snowflake; other adapters use `connection_options` or their
@@ -153,9 +155,9 @@ package with one model, its count and amount metrics, an example, a package test
 
 Writes, `validate_project`, `project_status`, `promotion_check`, `diff_project` and
 `impact_project` answer with a summary that fits one page (16,000 characters of compact JSON),
-whatever the package's size: each `warnings` list as `warning_counts` by code and 10 of its
-warnings without their `details`, the first of each code before any repeat, in report order
-(`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
+whatever the package's size: each `warnings` list as `warning_counts` by code and up to 10 of
+its warnings without their `details`, the first of each code before any repeat, in report order,
+and the repeats only while they fit 2,000 characters (`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
 pairs, up to 3, that fit whole in 8,000 characters (`undecided_omitted` counts the rest; a first
 pair larger than that shows its groups and the options they list, as many groups as fit, with
 an `options_note` such as "the 11 options its groups list, of 212 for A to B: every option is
@@ -179,8 +181,13 @@ On the read-only report tools, `page` (a path from `pages`) answers with that li
 a page shows the options that fit, marked as in the summary; the pages of its options carry the
 `pair` and an `options_note` ("options 12-33 of 212 for A to B, continued on the next page of
 …", and on the last page "…: the last of them"), so a route is never chosen from a list that
-looks whole. Every summary and page names the `revision` it read. A write's summary counts what it leaves out
-in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
+looks whole. Every summary and page names the `revision` it read. Every write, summary or full,
+starts with `outcome`, three lines a person reads first: what happened ("Wrote
+models/core/orders.yml.", "Dry run: would change …", "Refused (CONFIG_CONFLICT); nothing was
+written."), the package's state after it ("Parses: 2 entities, 9 measures, 4 metrics; 1 warning
+(ROUTES_UNDECIDED 1)."), and what's next, with the whole revision to send. Warning and error
+messages name files relative to the current directory when the package lies under it (a dbt
+project root, say), else relative to the package directory. A write's summary counts what it leaves out in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
 the same `idempotency_key` replays the write).
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
    `promotion_check` with `compare_path` or `base_ref` when an environment gate matters.
@@ -527,7 +534,9 @@ Which route between two entities a question means is a business definition (see
   a question asks about one. `create_project` and `setup_project_dialog` say to decide the ones
   the examples need once entities are related.
 - `promotion_check` lists the needed ones under `advisories` (`ROUTES_UNDECIDED`), never as a
-  blocker.
+  blocker. Its `advisories` also name each public measure or curated metric missing review
+  metadata (`REVIEW_METADATA_MISSING`: `meta.owner_team`, `meta.review_priority`,
+  `meta.change_risk`), which parse and validate no longer report.
 - Before writing, the transaction compares the package with the change applied. A change that
   would refuse an answered pair whose route still exists, or answer it by another route, refuses
   with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use
@@ -663,8 +672,9 @@ tool list's size.
 ## Safety Model
 
 All file writes are scoped to the configured workspace root. The default workspace root is the
-repository root; pass `--workspace-root` when an MCP client should operate in a separate project
-workspace.
+directory the server starts in (an MCP client starts it in your project); pass `--workspace-root`
+to choose another. `semantic-rails mcp setup --mcp architect` needs no package: it writes the
+client config with the current directory as the workspace root.
 
 Comparison paths for `diff_project`, `impact_project`, and release checks must also resolve to
 package directories inside the configured workspace root. A `base_ref` (for example `main` or
