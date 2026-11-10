@@ -91,26 +91,26 @@ def reading_window_rows(rows: Mapping[str, str]) -> Iterator[None]:
 
 
 def holds_summing_window(payload: Any, config: PackageConfig) -> bool:
-    """Whether a call's expression holds a summing window anywhere, through its metrics."""
+    """Whether a call's expression holds a summing window anywhere, through its metrics. One
+    walk with its own stack, so a deep call takes no more of Python's than a shallow one."""
     seen: set[str] = set()
-
-    def walk(node: Any) -> bool:
+    stack: list[Any] = [payload]
+    while stack:
+        node = stack.pop()
         if isinstance(node, Mapping):
             kind = node.get("kind")
             if kind in SUMMING_WINDOWS:
                 return True
             if kind == "metric":
                 recipe = _recipe_index(config).get(str(node.get("metric")))
-                if recipe is None or recipe.id in seen:
-                    return False
-                seen.add(recipe.id)
-                return walk(expr_to_dict(recipe.expression))
-            return any(walk(value) for value in node.values())
-        if isinstance(node, list | tuple):
-            return any(walk(value) for value in node)
-        return False
-
-    return walk(payload)
+                if recipe is not None and recipe.id not in seen:
+                    seen.add(recipe.id)
+                    stack.append(expr_to_dict(recipe.expression))
+                continue
+            stack.extend(node.values())
+        elif isinstance(node, list | tuple):
+            stack.extend(node)
+    return False
 
 
 def _base_alias_ref(alias: str, table_alias: str = "base") -> SqlIdentifier:

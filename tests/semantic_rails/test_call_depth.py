@@ -84,6 +84,41 @@ def _nullif(levels: int) -> Any:
     return node
 
 
+def _divide_right(levels: int) -> Any:
+    """A rate of a rate, and so on, each nested on the right: a NULLIF guards each divisor."""
+    node: Any = REVENUE
+    for _ in range(levels):
+        node = {"kind": "arithmetic", "op": "divide", "left": ORDERS, "right": node}
+    return node
+
+
+def _ratio_denominator(levels: int) -> Any:
+    node: Any = REVENUE
+    for _ in range(levels):
+        node = {"kind": "ratio", "numerator": ORDERS, "denominator": node}
+    return node
+
+
+def _case_then(levels: int) -> Any:
+    node: Any = REVENUE
+    for level in range(levels):
+        node = {"kind": "case", "whens": [{"when": _compared(level), "then": node}], "else": ORDERS}
+    return node
+
+
+def _sum(terms: int) -> Any:
+    """A sum of ``terms`` measures as a reduce writes it: each term added to the sum before it."""
+    node: Any = REVENUE
+    for term in range(1, terms):
+        node = {
+            "kind": "arithmetic",
+            "op": "add",
+            "left": node,
+            "right": (REVENUE, ORDERS)[term % 2],
+        }
+    return node
+
+
 def _row_filter(levels: int) -> Any:
     node = _compared(0, NUMBER)
     for level in range(levels):
@@ -95,9 +130,16 @@ SHAPES: dict[str, Callable[[int], Any]] = {
     "arithmetic": _arithmetic,
     "prior_period": _prior_period,
     "case": _case,
+    "case_then": _case_then,
+    "divide_right": _divide_right,
     "nullif": _nullif,
+    "ratio_denominator": _ratio_denominator,
     "row_filter": _row_filter,
 }
+# DuckDB binds a nested NULLIF (each guarded divisor is one) in time exponential in its depth,
+# and no warehouse nests one window function in another, as a prior period of a prior period
+# would: these compile at the bound, and are run only shallow.
+NOT_RUN_DEEP = {"divide_right", "nullif", "prior_period", "ratio_denominator"}
 
 
 def _call(expression: Any) -> dict[str, Any]:
@@ -116,7 +158,7 @@ def _deepest(shape: str) -> dict[str, Any]:
     while call_depth(_call(SHAPES[shape](levels + 1)))[0] <= MAX_CALL_DEPTH:
         levels += 1
     call = _call(SHAPES[shape](levels))
-    assert call_depth(call)[0] >= MAX_CALL_DEPTH - 1
+    assert call_depth(call)[0] >= MAX_CALL_DEPTH - 2  # a case nested in a case is 3 levels
     return call
 
 
@@ -161,15 +203,15 @@ def _refused(runtime: Runtime, surface: str, call: dict[str, Any]) -> dict[str, 
 
 @pytest.mark.parametrize("surface", ["runtime", "http", "mcp"])
 def test_a_call_deeper_than_the_engine_compiles_is_refused_at_its_field(runtime, surface):
-    error = _refused(runtime, surface, _call(_arithmetic(200)))
+    error = _refused(runtime, surface, _call(_arithmetic(300)))
     assert error["code"] == "INVALID_QUERY"
     assert error["message"] == (
-        "select[0].expression: is 203 levels deep in the call; "
-        "the engine compiles a call at most 100 levels deep"
+        "select[0].expression: is 303 levels deep in the call; "
+        "the engine compiles a call at most 250 levels deep"
     )
     assert {key: error["details"][key] for key in ("path", "depth", "max_depth")} == {
         "path": "select[0].expression",
-        "depth": 203,
+        "depth": 303,
         "max_depth": MAX_CALL_DEPTH,
     }
     assert error["recovery_hints"][0]["code"] == "FIX_QUERY_CALL"
@@ -177,14 +219,32 @@ def test_a_call_deeper_than_the_engine_compiles_is_refused_at_its_field(runtime,
 
 def test_a_joined_part_too_deep_is_refused_in_that_part(runtime):
     joined = {
-        "parts": [{"select": [ORDERS], "group_by": [STORE]}, _call(_arithmetic(150))],
+        "parts": [{"select": [ORDERS], "group_by": [STORE]}, _call(_arithmetic(300))],
         "join": {"on": [[STORE, STORE]]},
     }
     error = runtime.validate(joined, now=NOW)["errors"][0]
     assert error["code"] == "INVALID_QUERY"
     assert error["message"] == (
-        "parts[1]: select[0].expression: is 153 levels deep in the call; "
-        "the engine compiles a call at most 100 levels deep"
+        "parts[1]: select[0].expression: is 303 levels deep in the call; "
+        "the engine compiles a call at most 250 levels deep"
+    )
+    assert error["details"]["path"] == "parts[1].select[0].expression"
+    assert error["details"]["part"] == 1
+
+
+@pytest.mark.parametrize("surface", ["runtime", "http", "mcp"])
+def test_a_timed_joined_part_too_deep_is_refused_before_it_is_read(runtime, surface):
+    # A timed joined call checks each part's fields for its time before it reads the part.
+    joined = {
+        "parts": [{"select": [ORDERS], "group_by": [STORE]}, _call(_arithmetic(5000))],
+        "join": {"on": [[STORE, STORE]]},
+        "time": {"grain": "month", "last": {"unit": "month", "value": 3}},
+    }
+    error = _refused(runtime, surface, joined)
+    assert error["code"] == "INVALID_QUERY"
+    assert error["message"] == (
+        "parts[1]: select[0].expression: is 5003 levels deep in the call; "
+        "the engine compiles a call at most 250 levels deep"
     )
     assert error["details"]["path"] == "parts[1].select[0].expression"
     assert error["details"]["part"] == 1
@@ -194,9 +254,7 @@ def test_a_joined_part_too_deep_is_refused_in_that_part(runtime):
 def test_the_deepest_call_answers_with_the_host_frames_left(runtime, shape):
     call = _deepest(shape)
     assert _with_host_frames(lambda: runtime.validate(call, now=NOW))["status"] == "ok"
-    # DuckDB binds a nested NULLIF in time exponential in its depth, and no warehouse nests one
-    # window function in another, as a prior period of a prior period would.
-    if shape not in {"nullif", "prior_period"}:
+    if shape not in NOT_RUN_DEEP:
         assert _with_host_frames(lambda: runtime.query(call, now=NOW))["status"] == "ok"
 
 
@@ -208,7 +266,7 @@ def test_every_dialect_renders_the_deepest_call_with_the_host_frames_left(wareho
     runtime = Runtime.from_config(config, source_path=path)
     try:
         # The two that take the most stack a level; every shape peaks alike on every dialect.
-        for shape in ("nullif", "prior_period"):
+        for shape in ("divide_right", "prior_period"):
             try:
                 runtime.compile(_call(SHAPES[shape](2)), now=NOW)
             except SemanticLayerError:
@@ -217,6 +275,31 @@ def test_every_dialect_renders_the_deepest_call_with_the_host_frames_left(wareho
             assert _with_host_frames(partial(runtime.compile, call, now=NOW))["ok"], shape
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("surface", ["runtime", "mcp"])
+def test_a_sum_of_two_hundred_measures_written_as_a_chain_answers(runtime, surface):
+    call = _call(_sum(200))
+    assert call_depth(call)[0] == 202
+    if surface == "runtime":
+        answer = _with_host_frames(lambda: runtime.query(call, now=NOW))
+        assert answer["status"] == "ok"
+    else:
+        adapter = SemanticLayerMCPAdapter(runtime)
+        answer = _with_host_frames(
+            lambda: adapter.call_tool("execute", {"query": call, "now": NOW})
+        )
+        assert answer["ok"] is True
+    rows = {row[STORE]: row["value"] for row in answer["rows"]}
+    each = runtime.query(
+        {
+            "select": [{"expression": REVENUE, "as": "r"}, {"expression": ORDERS, "as": "o"}],
+            "group_by": [STORE],
+        },
+        now=NOW,
+    )["rows"]
+    # 100 revenues and 100 order counts.
+    assert rows == pytest.approx({row[STORE]: 100 * row["r"] + 100 * row["o"] for row in each})
 
 
 def test_a_boolean_of_a_thousand_arguments_answers_as_its_in(runtime):

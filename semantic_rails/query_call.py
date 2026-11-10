@@ -410,12 +410,14 @@ class CallContext:
 
 # The deepest a call nests: the call is level 1, and each object or list inside another is one
 # level more; a boolean's arguments sit as many levels below it as the compiler joins them
-# (``expressions.boolean_chain_depth``). Reading, binding, copying, aliasing and rendering a
-# call all recurse, at most 7 Python frames a level (a prior period inside an arithmetic) above
-# about 12 of the engine's own. So a call this deep peaks near 710 frames on every dialect and
-# transport, leaving close to 300 of the 1,000 Python allows by default to whatever calls the
-# engine; the tests hold 200 for it. The bound is the stack's, not the call's cost.
-MAX_CALL_DEPTH = 100
+# (``expressions.boolean_chain_depth``). Reading, binding and rendering a call recurse; every
+# walk that only copies, converts or searches a call or its plan keeps its own stack
+# (``flat_copy``). So a call costs at most 3 Python frames a level (2.6 measured, for a prior
+# period inside an arithmetic) above about 30 of the engine's and its transports' own: a call
+# this deep peaks near 780 frames on every dialect and transport, leaving about 200 of the
+# 1,000 Python allows by default to whatever calls the engine, which the tests hold. The bound
+# is the stack's, not the call's cost.
+MAX_CALL_DEPTH = 250
 
 
 def call_depth(payload: Mapping[str, Any]) -> tuple[int, str]:
@@ -568,6 +570,10 @@ def read_joined_call(
         path = f"parts[{index}]"
         if not isinstance(raw, Mapping):
             raise refusal(path, "is a call: an object", fix='Write {"select": [...], ...}.')
+        try:
+            _check_depth(raw)  # before any walk of the part that recurses
+        except SemanticLayerError as exc:
+            raise in_part(exc, index) from None
         _check_part_keys(raw, path)
         if time is not None:
             _refuse_untimed_part(raw, path, default_clock)

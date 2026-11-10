@@ -114,6 +114,7 @@ from .diagnostics import (
 )
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
+from .flat_copy import as_dict
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .path_gap import (
@@ -804,26 +805,45 @@ _NAMED_MISSES = 5
 _LISTED_MISSES = 10
 
 
+# A read of a dimension's stored values: the values, and whether the caller's row cap clipped
+# them; None when its rows can't be read.
+_ValueRead = tuple[list[str], bool] | None
+
+
 def _matched(
-    values: Callable[[str, list[dict[str, Any]], int], list[str] | None],
+    values: Callable[[str, list[dict[str, Any]], int], _ValueRead],
     field: str,
     literals: list[str],
 ) -> dict[str, bool | None]:
     """Whether some row's ``field`` equals each of ``literals`` under the warehouse's equality, or
     None for one whose rows can't be read. One probe reads the stored values equal to any of them,
-    so a literal no stored value spells is a miss. When that probe also reads a value no literal
-    spells (a collation or a cast Python doesn't share), each literal not yet matched is probed
-    alone."""
-    stored = values(field, [{"field": field, "op": "is", "value": literals}], len(literals))
-    if stored is None:
-        return dict.fromkeys(literals)
-    spelled = set(stored)
-    found: dict[str, bool | None] = {literal: literal in spelled for literal in literals}
-    if spelled - set(literals):
-        for literal in literals:
-            if not found[literal]:
-                rows = values(field, [{"field": field, "op": "is", "value": literal}], 1)
-                found[literal] = None if rows is None else bool(rows)
+    so a literal no stored value spells is a miss. A probe says nothing of the literals it didn't
+    return when the caller's row cap clipped it, or when it also read a value no literal spells
+    (a collation or a cast Python doesn't share): those are probed again, as many at a time as
+    it returned rows."""
+    found: dict[str, bool | None] = dict.fromkeys(literals, False)
+    pending = [literals]
+    while pending:
+        chunk = pending.pop()
+        value: Any = chunk if len(chunk) > 1 else chunk[0]
+        read = values(field, [{"field": field, "op": "is", "value": value}], len(chunk))
+        if read is None:
+            found.update(dict.fromkeys(chunk))
+            continue
+        stored, clipped = read
+        spelled = set(stored)
+        if len(chunk) == 1:
+            found[chunk[0]] = bool(stored)
+            continue
+        rest = []
+        for literal in chunk:
+            if literal in spelled:
+                found[literal] = True
+            else:
+                rest.append(literal)
+        if rest and (clipped or spelled - set(chunk)):
+            size = 1 if not clipped else max(1, min(len(stored), len(chunk) - 1))
+            pending.extend(rest[start : start + size] for start in range(0, len(rest), size))
     return found
 
 
@@ -856,7 +876,7 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
 
     held: set[str] = set()
 
-    def values(field: str, where: list[dict[str, Any]], limit: int) -> list[str] | None:
+    def values(field: str, where: list[dict[str, Any]], limit: int) -> _ValueRead:
         try:
             result = runtime.query_internal(
                 {**probe, "group_by": [field], "where": where, "limit": limit}
@@ -869,7 +889,8 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
                 # query says nothing about the value rather than call it unverified.
                 held.add(field)
             return None
-        return [str(row[field]) for row in result["rows"] if row.get(field) is not None]
+        stored = [str(row[field]) for row in result["rows"] if row.get(field) is not None]
+        return stored, bool(result.get("truncated"))
 
     misses: list[dict[str, Any]] = []
     unverified: list[dict[str, Any]] = []
@@ -897,9 +918,9 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
     known: dict[str, list[str]] = {}
     for miss in misses:
         if miss["dimension"] not in known:
-            # A full page may hide the value meant, so it suggests nothing.
-            page = values(miss["dimension"], [], limit) or []
-            known[miss["dimension"]] = page if len(page) < limit else []
+            # A full or clipped page may hide the value meant, so it suggests nothing.
+            page, clipped = values(miss["dimension"], [], limit) or ([], False)
+            known[miss["dimension"]] = page if len(page) < limit and not clipped else []
         message, suggestion = filter_value_miss(
             "This query",
             miss["dimension"],
@@ -1891,10 +1912,10 @@ class Runtime:
                 ok=True,
                 warnings=[],
                 disabled_options=list(compiled["logical_plan"].disabled_options),
-                logical_plan=asdict(compiled["logical_plan"]),
-                explain=asdict(compiled["explain"]),
+                logical_plan=as_dict(compiled["logical_plan"]),
+                explain=as_dict(compiled["explain"]),
             )
-            out = asdict(report)
+            out = as_dict(report)
             out["status"] = "ok"
             out["warnings"] = _compiled_warnings(self._config, compiled, payload)
             out["errors"] = []
@@ -1918,7 +1939,7 @@ class Runtime:
             _withhold_values(out, policy_effects, self.package_config)
             if verbosity == "full":
                 out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
-                out["performance_plan"] = asdict(compiled["performance_plan"])
+                out["performance_plan"] = as_dict(compiled["performance_plan"])
             out["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return apply_response_verbosity(
                 finish(out, payload=payload, compiled=compiled),
@@ -1937,7 +1958,7 @@ class Runtime:
                 errors=[issue],
                 disabled_options=list(exc.details.get("disabled_options", [])),
             )
-            out = asdict(report)
+            out = as_dict(report)
             out["status"] = "error"
             out["recovery_hints"] = list(issue.get("recovery_hints", []))
             out["authoring_hints"] = list(exc.details.get("authoring_hints", []) or [])
@@ -1991,9 +2012,9 @@ class Runtime:
             **self._answer_block(compiled, payload, policy_effects, policy_context),
             "hop_profile": _hop_profile(self._config, compiled),
             "normalized_query": compiled["explain"].normalized_query,
-            "logical_plan": asdict(compiled["logical_plan"]),
-            "sql_plan": asdict(compiled["sql_ast"]),
-            "explain": asdict(compiled["explain"]),
+            "logical_plan": as_dict(compiled["logical_plan"]),
+            "sql_plan": as_dict(compiled["sql_ast"]),
+            "explain": as_dict(compiled["explain"]),
             **compile_response_metadata(self, payload, compiled),
         }
         _withhold_values(out, policy_effects, self.package_config)
@@ -2236,9 +2257,9 @@ class Runtime:
             "row_count": len(rows),
             "truncated": bool(getattr(rows, "truncated", False)),
             "rendered_sql": compiled["sql"],
-            "logical_plan": asdict(compiled["logical_plan"]),
-            "sql_plan": asdict(compiled["sql_ast"]),
-            "explain": asdict(compiled["explain"]),
+            "logical_plan": as_dict(compiled["logical_plan"]),
+            "sql_plan": as_dict(compiled["sql_ast"]),
+            "explain": as_dict(compiled["explain"]),
             "status": "ok",
             "errors": [],
             "warnings": [
@@ -2399,8 +2420,8 @@ class Runtime:
             self._config, compiled, visible_rows, out["warnings"], truncated=out["truncated"]
         )
         if verbosity == "full":
-            out["physical_plan"] = asdict(compiled["physical_plan"])
-            out["performance_plan"] = asdict(compiled["performance_plan"])
+            out["physical_plan"] = as_dict(compiled["physical_plan"])
+            out["performance_plan"] = as_dict(compiled["performance_plan"])
             out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
         # First, where an agent reads it before the rows: which model each value comes from.
         # A metric grant's response never carries it (``resource_access`` keeps its own keys).
@@ -2601,7 +2622,7 @@ class Runtime:
                 ok=False,
                 errors=[issue],
             )
-            out = asdict(report)
+            out = as_dict(report)
             out["segment"] = {"id": segment_id}
             out["request_context"] = request_context_payload(context)
             out["recovery_hints"] = list(issue.get("recovery_hints", []) or [])
@@ -2755,9 +2776,9 @@ class Runtime:
             "count_sql": count_prepared.sql,
             "semantic_fingerprint": self.snapshot.semantic_fingerprint,
             "source_fingerprint": self.snapshot.source_fingerprint,
-            "logical_plan": asdict(preview_compiled["logical_plan"]),
-            "sql_plan": asdict(preview_compiled["sql_ast"]),
-            "explain": asdict(preview_compiled["explain"]),
+            "logical_plan": as_dict(preview_compiled["logical_plan"]),
+            "sql_plan": as_dict(preview_compiled["sql_ast"]),
+            "explain": as_dict(preview_compiled["explain"]),
             "query": without_trusted_attributes(preview_query),
             "normalized_query": preview_compiled["explain"].normalized_query,
         }

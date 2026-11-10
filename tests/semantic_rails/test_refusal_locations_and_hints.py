@@ -329,6 +329,33 @@ def test_a_filter_value_list_is_probed_in_the_same_queries_however_long(runtime,
     assert counts[0] == counts[1]
 
 
+CUSTOMER = "dimension.jaffle_customer_name"
+
+
+def _missing_counts(runtime: Runtime, values: list[str], **arguments: Any) -> list[int]:
+    """The FILTER_VALUE_NOT_FOUND counts of an MCP execute of orders for ``values``."""
+    call = {"select": [ORDERS], "where": [{"field": CUSTOMER, "op": "is", "value": values}]}
+    answer = SemanticLayerMCPAdapter(runtime).call_tool(
+        "execute", {"query": call, "verbosity": "full", **arguments}
+    )
+    assert answer["ok"] is True
+    return [
+        warning["details"]["missing_count"]
+        for warning in answer.get("warnings", [])
+        if warning["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
+
+
+def test_a_listed_value_is_found_however_few_rows_the_answer_returns(runtime):
+    listed = runtime.query({"select": [], "group_by": [CUSTOMER], "limit": 400})["rows"]
+    names = [row[CUSTOMER] for row in listed]
+    assert len(names) == 400
+    # MCP returns at most 200 rows by default; the probe of 300 names is not clipped to them.
+    assert _missing_counts(runtime, names[:300]) == []
+    assert _missing_counts(runtime, [*names[:300], *(f"Nobody {i}" for i in range(5))]) == [5]
+    assert _missing_counts(runtime, names[:2], max_rows=1) == []
+
+
 FIRST_ORDER_AT = "dimension.jaffle_customer_first_order_at"
 # Stored as 2016-09-01T07:00:00; the warehouse reads the space form as the same time.
 SPACED, NEVER = "2016-09-01 07:00:00", "1999-01-01 00:00:00"
