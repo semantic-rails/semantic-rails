@@ -26,11 +26,11 @@ from tests.semantic_rails.conftest import copy_package_config, write_single_file
 # Semantic fingerprints of the bundled packages, which refusing the retired spellings leaves
 # unchanged (re-pinned only when the snapshot gains or loses a field, such as an entity's
 # `display`, its model's description or its `prefer_over`, a package gains objects, an authored
-# relationship alias becomes its id, or a rollup stops reading the measures its `columns:`
-# doesn't name, as the shop's monthly did).
+# relationship alias becomes its id, a rollup stops reading the measures its `columns:`
+# doesn't name, as the shop's monthly did, or jaffle_shop's caveat gains a `so_what`).
 FINGERPRINTS = {
     "configs/semantic_rails/jaffle_shop": (
-        "sha256:6906c94bd1610d27f77353af383512c32db3efc0721ccdc1abc959c3bb829198"
+        "sha256:1faade9bac3b9d01fc37ab5c9ed716bef8ea32af916114216d11f509c774d192"
     ),
     "configs/semantic_rails/tpch_sf1_showcase": (
         "sha256:7ce41d79e65af19b1993d8f143480aba024dc8f94aa991f7955ef114805b3c27"
