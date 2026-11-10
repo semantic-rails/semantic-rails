@@ -104,9 +104,21 @@ def _parse_caveats(rows: Any, *, path: str) -> list[SemanticCaveatConfig]:
                 severity=severity,
                 owner=str(row_dict.get("owner", "") or ""),
                 references=_ensure_dict_list(row_dict.get("references")),
+                so_what=_caveat_text(row_dict.get("so_what"), path=f"{caveat_path} so_what"),
             )
         )
     return caveats
+
+
+def _caveat_text(value: Any, *, path: str) -> str:
+    """An optional authored sentence: absent or a string, stripped."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SemanticLayerError(
+            "INVALID_CONFIG", f"{path} must be a string (what the reader should do)"
+        )
+    return value.strip()
 
 
 def _parse_path_policy(raw: dict[str, Any], *, path: str) -> PathPolicyConfig:
