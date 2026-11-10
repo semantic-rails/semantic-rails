@@ -39,10 +39,12 @@ from ..compiler_parts.joined_parts import (
     joined_statement,
     presence_order,
     refuse_shared_outputs,
+    select_width,
     shared_name,
 )
 from ..compiler_parts.part_domain import PRESENT, reading_part_domain
 from ..db_parts.base import QueryRows
+from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..policies import enforce_query_policies
 from ..query_call import in_part, refusal
@@ -308,6 +310,7 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         time_key,
     )
     refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
+    _refuse_over_select_limit(config, [part.statement for part in parts], keys)
     _check_order(payload.get("order_by") or [], keys, parts)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
@@ -341,6 +344,43 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     }
     zone = next(iter(zones), "") or _time_zone(config, parts[0].compiled)
     return _Joined(parts=parts, keys=keys, keep=keep, compiled=compiled, zone=zone)
+
+
+def _refuse_over_select_limit(
+    config: Any, statements: list[PartStatement], keys: list[JoinKey]
+) -> None:
+    """Refuse, before it is sent, a statement wider than its warehouse reads in one select,
+    stating how many columns it needs and how many of these parts fit: each part adds its own
+    columns and one count per other part, so the parts that fit are a number, not a cap."""
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    limit = dialect.max_select_columns
+    if limit is None:
+        return
+    width = select_width(statements, keys)
+    if width <= limit:
+        return
+    # The most leading parts within the limit (the width grows with every part added).
+    fits, over = 0, len(statements)
+    while over - fits > 1:
+        middle = (fits + over) // 2
+        if select_width(statements[:middle], keys) <= limit:
+            fits = middle
+        else:
+            over = middle
+    raise refusal(
+        "parts",
+        f"{dialect.label} reads at most {limit:,} columns in one select, and this joined call "
+        f"needs {width:,}: each part adds its own columns and one count per other part",
+        fix=(
+            f"Ask for at most {fits} of these parts in one call."
+            if fits > 1
+            else "Ask for each part in a call of its own."
+        ),
+        reason="parts_over_column_limit",
+        limit=limit,
+        columns=width,
+        fits=fits,
+    )
 
 
 def _compile_part(

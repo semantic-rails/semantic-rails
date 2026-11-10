@@ -30,6 +30,7 @@ import pytest
 import yaml
 
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import PostgresDialect
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -863,6 +864,40 @@ def test_a_package_snapshot_test_reads_a_joined_call(depts):
     wrong = [{**expected[0], "reservations": 99}, *expected[1:]]
     failed = _run_test(depts.base, "joined", {**spec, "expected_rows": wrong}, NOW)
     assert failed["error"]["code"] == "SNAPSHOT_MISMATCH"
+
+
+def _people(parts: int) -> dict[str, Any]:
+    """``parts`` headcounts by department, side by side."""
+    part = {**HEADCOUNT, "select": [{"expression": "measure.depts.headcount", "as": "people"}]}
+    return {
+        "parts": [
+            {**part, "select": [{**part["select"][0], "as": f"people_{index}"}]}
+            for index in range(parts)
+        ],
+        "join": {"on": [[DEPT] * parts]},
+    }
+
+
+def test_postgres_answers_the_parts_its_select_reads_and_refuses_one_more(depts, monkeypatch):
+    """Postgres's own limit, on Postgres: the most parts the refusal says fit are answered, and
+    one more, sent past the check, is what Postgres itself refuses."""
+    if depts.backend != "postgres":
+        pytest.skip("Postgres's limit on the columns of one select")
+    code, _, details = _refusal(lambda: depts.query(_people(80)))
+    assert (code, details["reason"], details["limit"]) == (
+        "INVALID_QUERY",
+        "parts_over_column_limit",
+        1_664,
+    )
+    fits = details["fits"]
+    out = depts.query(_people(fits))
+
+    assert len(out["rows"]) == len(depts.query(_people(2))["rows"])
+    assert all(row[f"people_{fits - 1}"] == row["people_0"] for row in out["rows"])
+    monkeypatch.setattr(PostgresDialect, "max_select_columns", None)
+    sql = depts.base.compile(_people(fits + 1), now=NOW)["rendered_sql"]
+    with pytest.raises(Exception, match="at most 1664 entries"):
+        _rows(depts.base, sql)
 
 
 def test_parts_on_clocks_in_two_zones_are_refused(tmp_path):

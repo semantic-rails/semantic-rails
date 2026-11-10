@@ -6,14 +6,17 @@ which the pairwise counts of ``PARTS_JOINED`` need; nothing else grows with the 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from semantic_rails import compiler
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import PackageConfig
+from semantic_rails.runtime_parts import joined_call
+from semantic_rails.schema import ConnectionSpec, PackageConfig, SeedSpec
 
 STORE = "dimension.jaffle_store_name"
 NOW = "2026-10-05T06:00:00Z"
@@ -80,3 +83,74 @@ def test_each_part_renders_once_and_the_joined_statement_once(runtime, monkeypat
     rendered.clear()
     assert runtime.query(_call(8), now=NOW)["rows"]
     assert len(rendered) == 8 + 1
+
+
+@pytest.fixture()
+def on_postgres(package: tuple[PackageConfig, Path]) -> Iterator[Runtime]:
+    """The package on Postgres, never connected: ``validate`` and ``compile`` only render."""
+    config, path = package
+    on = replace(
+        config.package,
+        warehouse="postgres",
+        default_db="",
+        seed=SeedSpec(),
+        connection=ConnectionSpec(kind="postgres_native"),
+    )
+    made = Runtime.from_config(replace(config, package=on), source_path=str(path))
+    yield made
+    made.close()
+
+
+def _widest(statement: Any) -> int:
+    """The most columns any one select of a statement lists: its own or a CTE's."""
+    return max(
+        len(query.select)
+        for query in [statement, *(cte.query for cte in statement.ctes)]
+        if hasattr(query, "select")
+    )
+
+
+# Postgres's own words for the limit and what the 54 parts below need.
+OVER = (
+    "parts: Postgres reads at most 1,664 columns in one select, and this joined call needs "
+    "1,703: each part adds its own columns and one count per other part"
+)
+
+
+def test_a_joined_call_wider_than_postgres_reads_is_refused_before_it_is_sent(
+    runtime, on_postgres, monkeypatch
+):
+    """Postgres lists at most 1,664 columns in one select, and each part of one column adds its
+    columns and one count per other part: 53 parts fit and are answered, 54 are refused before
+    anything is sent, naming the limit, what the call needs and how many parts fit. Elsewhere
+    the same 54 parts compile: the parts that fit are Postgres's limit, not a cap on parts."""
+    widest: list[int] = []
+    prepare = joined_call._prepare
+
+    def measured(select: Any, *args: Any, **kwargs: Any) -> Any:
+        widest.append(_widest(select))
+        return prepare(select, *args, **kwargs)
+
+    monkeypatch.setattr(joined_call, "_prepare", measured)
+    assert runtime.validate(_call(54), now=NOW)["ok"]
+    assert runtime.validate(_call(53), now=NOW)["ok"]
+    assert on_postgres.validate(_call(53), now=NOW)["ok"]
+    assert widest == [1_703, 1_645, 1_645]  # the statements' own widest selects
+
+    out = on_postgres.validate(_call(54), now=NOW)
+    (error,) = out["errors"]
+    assert (out["ok"], error["code"], error["message"]) == (False, "INVALID_QUERY", OVER)
+    assert error["details"] == {
+        "path": "parts",
+        "reason": "parts_over_column_limit",
+        "limit": 1_664,
+        "columns": 1_703,
+        "fits": 53,
+    }
+    assert error["recovery_hints"] == [
+        {"code": "FIX_QUERY_CALL", "message": "Ask for at most 53 of these parts in one call."}
+    ]
+    # This runtime reaches no warehouse: the refusal comes before the statement would be sent.
+    with pytest.raises(SemanticLayerError) as refused:
+        on_postgres.query(_call(54), now=NOW)
+    assert (refused.value.code, str(refused.value)) == ("INVALID_QUERY", OVER)

@@ -583,6 +583,13 @@ def _joined_rows(
     )
 
 
+def select_width(parts: Sequence[PartStatement], keys: Sequence[JoinKey]) -> int:
+    """The most columns one select of the joined statement lists: the kept rows', which are each
+    joined row's columns and counts, and the count of kept rows."""
+    _, joined = _joined_rows(parts, keys)
+    return len(joined.select) + 1
+
+
 def presence_order(count: int) -> list[SqlOrder]:
     """The last terms of every joined call's order: rows tied on every other term (two parts'
     NULL-key rows) in the order of their parts."""
