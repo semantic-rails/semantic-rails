@@ -1389,6 +1389,12 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
     """``raw`` parsed; a malformed-shape error names the innermost kind that holds it and,
     from the top call, the ``path`` the expression came from."""
     operators.check_strings(raw, path or "expression")
+    return _parse_named(raw, context=context, path=path)
+
+
+def _parse_named(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
+    """``raw`` parsed, its strings already checked once by the top call (checking them again at
+    every level would read a deep expression's leaves once per level above them)."""
     try:
         return _parse_semantic_expression(raw, context=context, path=path)
     except SemanticLayerError as exc:
@@ -1450,7 +1456,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         condition = (
             None
             if raw_condition is None
-            else parse_semantic_expression(raw_condition, context=context)
+            else _parse_named(raw_condition, context=context)
         )
         raw_value = expr.get("value")
         if raw_value is None:
@@ -1465,7 +1471,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 )
             value = None
         else:
-            value = parse_semantic_expression(raw_value, context=context)
+            value = _parse_named(raw_value, context=context)
         return ConditionalAggregateExpr(aggregation=aggregation, condition=condition, value=value)
     # ``prior_period`` (and other window kinds) accept ``measure`` as part
     # of a shorthand shape — falling into the MeasureRefExpr arm here
@@ -1564,14 +1570,14 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             raise _unsupported_arithmetic_op(str(expr.get("op", "")).strip(), context)
         return ArithmeticExpr(
             op=op,
-            left=parse_semantic_expression(expr.get("left"), context=context),
-            right=parse_semantic_expression(expr.get("right"), context=context),
+            left=_parse_named(expr.get("left"), context=context),
+            right=_parse_named(expr.get("right"), context=context),
         )
     if kind == "comparison":
         return _comparison(
             str(expr.get("op", "")).strip(),
-            parse_semantic_expression(expr.get("left"), context=context),
-            parse_semantic_expression(expr.get("right"), context=context),
+            _parse_named(expr.get("left"), context=context),
+            _parse_named(expr.get("right"), context=context),
             path or "expression",
         )
     if kind == "boolean":
@@ -1602,7 +1608,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         raw_args = list(expr.get("args", []) or [])
         validate_boolean_argument_count(op, len(raw_args))
-        args = [parse_semantic_expression(arg, context=context) for arg in raw_args]
+        args = [_parse_named(arg, context=context) for arg in raw_args]
         if not args:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
         if op == "not" and len(args) != 1:
@@ -1634,7 +1640,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         return CallExpr(
             name=name,
             args=[
-                parse_semantic_expression(arg, context=context)
+                _parse_named(arg, context=context)
                 for arg in list(expr.get("args", []) or [])
             ],
             distinct=bool(expr.get("distinct", False)),
@@ -1651,8 +1657,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         return DateAddExpr(
             unit=unit,
-            value=parse_semantic_expression(expr.get("value"), context=context),
-            date=parse_semantic_expression(expr.get("date"), context=context),
+            value=_parse_named(expr.get("value"), context=context),
+            date=_parse_named(expr.get("date"), context=context),
         )
     if kind in {"in", "not_in"}:
         raw_values = list(expr.get("values", []) or [])
@@ -1661,13 +1667,13 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", "in expressions require non-empty 'values'"
             )
         values = [
-            parse_semantic_expression(value, context=context)
+            _parse_named(value, context=context)
             if isinstance(value, dict)
             else LiteralExpr(value)
             for value in raw_values
         ]
         return InExpr(
-            expr=parse_semantic_expression(expr.get("expr"), context=context),
+            expr=_parse_named(expr.get("expr"), context=context),
             values=values,
             negated=bool(expr.get("negated", False)) or kind == "not_in",
         )
@@ -1683,9 +1689,9 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", f"{kind} expressions require 'low' and 'high'"
             )
-        target = parse_semantic_expression(expr.get("expr"), context=context)
-        low = parse_semantic_expression(expr.get("low"), context=context)
-        high = parse_semantic_expression(expr.get("high"), context=context)
+        target = _parse_named(expr.get("expr"), context=context)
+        low = _parse_named(expr.get("low"), context=context)
+        high = _parse_named(expr.get("high"), context=context)
         negated = bool(expr.get("negated", False)) or kind == "not_between"
         if negated:
             return BooleanExpr(
@@ -1706,8 +1712,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         return CallExpr(
             name="NULLIF",
             args=[
-                parse_semantic_expression(expr.get("value"), context=context),
-                parse_semantic_expression(expr.get("null_value"), context=context),
+                _parse_named(expr.get("value"), context=context),
+                _parse_named(expr.get("null_value"), context=context),
             ],
         )
     if kind == "case":
@@ -1720,8 +1726,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         for row in rows:
             whens.append(
                 CaseWhenExpr(
-                    when=parse_semantic_expression(row.get("when"), context=context),
-                    then=parse_semantic_expression(row.get("then"), context=context),
+                    when=_parse_named(row.get("when"), context=context),
+                    then=_parse_named(row.get("then"), context=context),
                 )
             )
         if not whens:
@@ -1729,13 +1735,13 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         else_expr = expr.get("else")
         return CaseExpr(
             whens=whens,
-            else_expr=parse_semantic_expression(else_expr, context=context)
+            else_expr=_parse_named(else_expr, context=context)
             if else_expr is not None
             else None,
         )
     if kind == "cumulative":
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="cumulative",
             aggregate="sum",
             frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
@@ -1783,7 +1789,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "Rolling expressions require a positive window.unit and window.value",
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="rolling",
             aggregate="sum",
             frame="rows",
@@ -1934,7 +1940,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 },
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="prior_period",
             aggregate="lag",
             unit=unit,
@@ -1947,7 +1953,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", "Period-to-date expressions require 'period'"
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="period_to_date",
             aggregate="sum",
             frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
@@ -2121,7 +2127,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                     },
                 )
         return MetricPredicateExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             entity=entity,
             op=op,
             value=validated_value,
@@ -2255,8 +2261,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", "ratio expressions require numerator and denominator"
             )
         return RatioExpr(
-            numerator=parse_semantic_expression(expr.get("numerator"), context=context),
-            denominator=parse_semantic_expression(expr.get("denominator"), context=context),
+            numerator=_parse_named(expr.get("numerator"), context=context),
+            denominator=_parse_named(expr.get("denominator"), context=context),
         )
     if kind in {"share", "total"}:
         over = expr.get("over")
@@ -2270,7 +2276,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", f"{kind} expressions require input and a list over"
             )
         return (ShareExpr if kind == "share" else TotalExpr)(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             over=[str(item) for item in over],
         )
     if kind == "entity_value":
@@ -2281,11 +2287,11 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         return EntityValueExpr(
             entity=entity,
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             where=_entity_value_where(expr.get("where")),
         )
     if kind == "distribution":
-        over = parse_semantic_expression(expr.get("over"), context=context)
+        over = _parse_named(expr.get("over"), context=context)
         if not isinstance(over, EntityValueExpr):
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "distribution expressions require entity_value in 'over'"
@@ -2414,8 +2420,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                     details={"dimension": dim_id, "binding": binding},
                 )
         return ConversionExpr(
-            base=parse_semantic_expression(expr.get("base"), context=context),
-            converted=parse_semantic_expression(expr.get("converted"), context=context),
+            base=_parse_named(expr.get("base"), context=context),
+            converted=_parse_named(expr.get("converted"), context=context),
             entity=entity,
             window_unit=unit,
             window_value=window_value,

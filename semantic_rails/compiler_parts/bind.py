@@ -615,18 +615,16 @@ _MEASURE_KINDS = frozenset({"measure", "aggregate", "semi_additive", "scoped_agg
 def select_measure_reads(select: Any) -> Iterator[dict[str, Any]]:
     """Each measure node a query's ``select`` reads itself; a metric's reads are its own."""
 
-    def walk(node: Any) -> Iterator[dict[str, Any]]:
+    stack: list[Any] = [[row.get("expression") for row in select or []]]
+    while stack:
+        node = stack.pop()
         if isinstance(node, list):
-            for item in node:
-                yield from walk(item)
+            stack.extend(reversed(node))
         elif isinstance(node, dict):
             if node.get("kind") in _MEASURE_KINDS and node.get("measure"):
                 yield node
-                return
-            for value in node.values():
-                yield from walk(value)
-
-    yield from walk([row.get("expression") for row in select or []])
+                continue
+            stack.extend(reversed(list(node.values())))
 
 
 def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple[str, str]]:
