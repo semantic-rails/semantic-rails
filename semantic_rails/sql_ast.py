@@ -12,7 +12,7 @@ dialect-portable and inspectable.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
@@ -352,6 +352,31 @@ class SqlBinary:
                 "INVALID_EXPRESSION_AST",
                 "Comparisons with a null literal must use build_comparison_condition",
             )
+
+
+# The most arguments a boolean joins one after another, as SQL reads ``a AND b AND c``. A longer
+# one joins its two halves, so the expression the compiler copies, aliases and renders by
+# recursion nests with the logarithm of its width rather than the width.
+CHAIN_WIDTH = 16
+
+
+def boolean_chain(op: str, args: Sequence[SqlExpr]) -> SqlExpr:
+    """``args`` (one or more) joined by ``op`` (``AND`` or ``OR``), nested as deep as
+    :func:`boolean_chain_depth` says."""
+    if len(args) > CHAIN_WIDTH:
+        middle = (len(args) + 1) // 2
+        return SqlBinary(boolean_chain(op, args[:middle]), op, boolean_chain(op, args[middle:]))
+    current = args[0]
+    for arg in args[1:]:
+        current = SqlBinary(current, op, arg)
+    return current
+
+
+def boolean_chain_depth(count: int) -> int:
+    """How many ``AND`` or ``OR`` levels :func:`boolean_chain` puts above its deepest argument."""
+    if count > CHAIN_WIDTH:
+        return 1 + boolean_chain_depth((count + 1) // 2)
+    return max(count - 1, 0)
 
 
 @dataclass(frozen=True)

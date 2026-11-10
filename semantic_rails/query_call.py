@@ -24,6 +24,7 @@ from . import operators
 from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
 from .schema import OBSERVATION_SCOPES, MeasureConfig, PackageConfig
+from .sql_ast import boolean_chain_depth
 
 SCHEMA_ID = "https://semantic-rails.com/schemas/query.v2.json"
 
@@ -407,6 +408,68 @@ class CallContext:
     timed: bool = False
 
 
+# The deepest a call nests: the call is level 1, and each object or list inside another is one
+# level more; a boolean's arguments sit as many levels below it as the compiler joins them
+# (``sql_ast.boolean_chain_depth``). Reading, binding, copying, aliasing and rendering a call all
+# recurse, the deepest at most 7 Python frames a level (a prior period inside an arithmetic), and
+# the engine's own frames below the call stay under 60, so a call this deep takes at most about
+# 760 of the 1,000 frames Python allows by default and leaves the rest to whatever calls the
+# engine. Every dialect renders it, and DuckDB, whose binder stops at 1,000 levels, runs it.
+MAX_CALL_DEPTH = 100
+
+
+def call_depth(payload: Mapping[str, Any]) -> tuple[int, str]:
+    """How deep ``payload`` nests, as :data:`MAX_CALL_DEPTH` counts, and the field (its first
+    three keys) where it is deepest. One walk with its own stack: measuring a call of any depth
+    recurses nowhere."""
+    deepest, deepest_at = 1, -1
+    # Each container's (parent's index here, key in the parent), to spell the deepest one's path.
+    steps: list[tuple[int, Any]] = []
+    stack: list[tuple[Any, int, int]] = [(payload, 1, -1)]
+    while stack:
+        value, depth, at = stack.pop()
+        if depth > deepest:
+            deepest, deepest_at = depth, at
+        items: Any = value.items() if isinstance(value, Mapping) else enumerate(value)
+        joined = (
+            isinstance(value, Mapping)
+            and str(value.get("kind", "")).strip() == "boolean"
+            and isinstance(value.get("args"), list)
+        )
+        for key, item in items:
+            if isinstance(item, Mapping | list | tuple):
+                step = 1
+                if joined and key == "args":
+                    step = max(1, boolean_chain_depth(len(item)))
+                steps.append((at, key))
+                stack.append((item, depth + step, len(steps) - 1))
+    keys: list[Any] = []
+    while deepest_at >= 0:
+        deepest_at, key = steps[deepest_at]
+        keys.append(key)
+    path = ""
+    for key in reversed(keys[-3:]):
+        path += f"[{key}]" if isinstance(key, int) else f".{key}" if path else str(key)
+    return deepest, path
+
+
+def _check_depth(payload: Mapping[str, Any]) -> None:
+    depth, path = call_depth(payload)
+    if depth > MAX_CALL_DEPTH:
+        raise refusal(
+            path,
+            f"is {depth} levels deep in the call; the engine compiles a call at most "
+            f"{MAX_CALL_DEPTH} levels deep",
+            fix=(
+                f"Nest it at most {MAX_CALL_DEPTH} levels deep: group a long run of one "
+                "arithmetic op in balanced pairs, as (a + b) + (c + d), and give a list of "
+                "values as one in."
+            ),
+            depth=depth,
+            max_depth=MAX_CALL_DEPTH,
+        )
+
+
 def read_call(
     payload: Any,
     *,
@@ -425,6 +488,7 @@ def read_call(
             fix=V2_POINTER,
             received=type(payload).__name__,
         )
+    _check_depth(payload)
     operators.check_strings(payload, "")
     _check_top_level(payload)
     group_by = _group_by(payload.get("group_by"))

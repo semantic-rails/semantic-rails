@@ -46,6 +46,7 @@ from ..sql_ast import (
     SqlLiteral,
     SqlOrderTerm,
     SqlWindow,
+    boolean_chain,
     build_comparison_condition,
     build_negation,
 )
@@ -484,10 +485,7 @@ def _compile_post_expr(
                     },
                 )
             return build_negation(rendered[0])
-        current = rendered[0]
-        for item in rendered[1:]:
-            current = SqlBinary(current, op.upper(), item)
-        return current
+        return boolean_chain(op.upper(), rendered)
     if isinstance(expr, CallExpr):
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name, [sub(arg) for arg in expr.args], distinct=expr.distinct

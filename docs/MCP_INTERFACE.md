@@ -414,8 +414,8 @@ has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `
 `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused with the
 word form (a `LIKE` with the text word for its pattern). Each `"dimension.<id>"` string in `select` moves to `group_by`
 (one `QUERY_SHORTHAND_NORMALIZED` warning, whose `details.canonical` lists them all); beside
-another grouping it is refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
-structured tool error. Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
+another grouping it is refused with the corrected call. A call nested more than 100 levels deep
+returns `INVALID_QUERY` at the field where it is deepest ([refusals](QUERY_CALL.md#refusals)). Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
 closest visible matches.
 
 `execute` takes the call in `query` only; call fields sent as its own arguments, with no

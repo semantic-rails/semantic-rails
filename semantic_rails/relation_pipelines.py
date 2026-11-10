@@ -60,6 +60,7 @@ from .sql_ast import (
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
+    boolean_chain,
     build_comparison_condition,
     build_filter_condition,
     build_negation,
@@ -175,10 +176,7 @@ def _semantic_expr_to_sql(
                     f"Boolean 'not' expressions require exactly one arg, got {len(args)}",
                 )
             return build_negation(args[0])
-        current = args[0]
-        for arg in args[1:]:
-            current = SqlBinary(current, expr.op.upper(), arg)
-        return current
+        return boolean_chain(expr.op.upper(), args)
     if isinstance(expr, CallExpr):
         return dialect_for_warehouse(warehouse).scalar_call(
             expr.name,
