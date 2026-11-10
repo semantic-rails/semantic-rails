@@ -1416,7 +1416,9 @@ def _scoped_predicate(item: Any, path: str, context: CallContext) -> Any:
     node = dict(item)
     for key in ("metric", "measure"):
         if "input" not in node and isinstance(node.get(key), str):
-            node["input"] = _reference(node.pop(key), f"{path}.{key}")
+            # An id, read below as the input's id is.
+            ref = _reference(node.pop(key), f"{path}.{key}")
+            node["input"] = ref.get("measure") or ref["metric"]
     if "input" in node:
         node["input"] = _operand(predicate_input(node, path), f"{path}.input", context)
     return _predicate(node, path)
