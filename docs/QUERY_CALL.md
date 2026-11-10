@@ -1516,8 +1516,8 @@ corrected shape to send:
 ```
 
 A call nests at most 250 levels deep. The call is level 1, each object or list inside another
-is one more, and a boolean's `and` or `or` arguments sit as many levels down as the engine joins
-them: one per argument after the first, up to 16 arguments; a longer boolean joins its halves,
+is one more, and a boolean's arguments sit as many levels down as the engine joins
+them, and one at least: one per argument after the first, up to 16 arguments; a longer boolean joins its halves,
 so a thousand arguments sit 21 levels down. A deeper call is refused at the field where it is
 deepest, with `details.depth` and `details.max_depth`. The bound is what the compiler, which
 reads a call by recursion, fits in Python's default stack with room left for the program
