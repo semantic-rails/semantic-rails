@@ -43,7 +43,7 @@ from .architect_transactions import (
     ABSENT_PROJECT_REVISION,
     project_revision,
 )
-from .config import repo_root
+from .config_parts.loader_chain import DBT_PROJECT_FILE, enclosing_dbt_project
 from .config_validation import PackageReference, parse_config_report, validate_config_report
 from .dialects import (
     connection_option_errors,
@@ -68,7 +68,9 @@ from .upgrade.service import legacy_form_hint
 from .upgrade.service import upgrade_project as upgrade_project_service
 
 DEFAULT_ARCHITECT_PORT = 8010
-DEFAULT_WORKSPACE_ROOT = repo_root()
+# Empty: the working directory the server starts in (an MCP client starts it in the user's
+# project), never the folder this package is installed in.
+DEFAULT_WORKSPACE_ROOT = ""
 ARCHITECT_INTERFACE_VERSION = "v1"
 ArchitectTransport = Literal["stdio", "streamable-http"]
 # The network transports can write files, so they require a bearer token.
@@ -263,7 +265,7 @@ def _within(path: Path, root: Path) -> bool:
 
 
 def _server_workspace_root(workspace_root: str | os.PathLike[str] | None) -> Path:
-    return Path(workspace_root or DEFAULT_WORKSPACE_ROOT).expanduser().resolve()
+    return Path(workspace_root or DEFAULT_WORKSPACE_ROOT or Path.cwd()).expanduser().resolve()
 
 
 def _resolve_project_path(
@@ -1099,22 +1101,157 @@ _REQUIRED_CONNECTION_OPTION_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 
-def _setup_dialog(package_id: str = "", project_path: str = "", goal: str = "") -> dict[str, Any]:
+# The questions a dbt project answers; the dialog leaves them out when dbt answered them.
+_DBT_FIRST_MODEL = ("first_entity", "relation", "primary_key", "time_column")
+_DBT_UNUSED = ("amount_column", "dimension_column")
+
+
+def _dbt_root(workspace_root: Path, project_path: str) -> Path | None:
+    """The dbt project the new package goes into: the one holding ``project_path`` (or the
+    workspace root), else the only one directly inside the workspace root."""
+    start = (workspace_root / project_path).resolve() if project_path else workspace_root
+    while not start.exists() and _within(start.parent, workspace_root):
+        start = start.parent
+    found = enclosing_dbt_project(str(start)) if start.exists() else ""
+    if found and _within(Path(found), workspace_root):
+        return Path(found)
+    if project_path:
+        return None
+    children = sorted(p.parent for p in workspace_root.glob(f"*/{DBT_PROJECT_FILE}"))
+    return children[0] if len(children) == 1 else None
+
+
+def _first_dbt_model(models: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A built model with a one-column key, a fact (one with foreign keys) first."""
+    keyed = [
+        row
+        for row in models
+        if row.get("physical_relation")
+        and len(((row.get("primary_key") or {}).get("columns")) or []) == 1
+    ]
+    keyed.sort(key=lambda row: not row.get("foreign_keys"))
+    return keyed[0] if keyed else None
+
+
+def _dbt_answers(
+    workspace_root: Path, project_path: str, package_slug: str
+) -> tuple[dict[str, Any], dict[str, Any], list[str]] | None:
+    """(dbt facts, answers dbt gives, next actions) for a workspace holding a dbt project."""
+    dbt_root = _dbt_root(workspace_root, project_path)
+    if dbt_root is None:
+        return None
+    facts = dbt_artifacts.dbt_setup_facts(dbt_root)
+    package_dir = (
+        (workspace_root / project_path).resolve()
+        if project_path
+        else dbt_root / "semantic_rails" / package_slug
+    )
+    answers: dict[str, Any] = {
+        "project_path": package_dir.relative_to(workspace_root).as_posix(),
+        "data": "external",
+    }
+    adapter = str(facts["adapter_type"] or "")
+    if adapter and adapter != "duckdb" and warehouse_connector(adapter) is not None:
+        answers["warehouse"] = adapter
+    elif facts["duckdb_path"]:
+        answers["warehouse"] = "duckdb"
+        answers["default_db"] = Path(os.path.relpath(facts["duckdb_path"], package_dir)).as_posix()
+    first = _first_dbt_model(facts["models"])
+    if first is not None:
+        answers.update(
+            first_entity=first["entity"],
+            relation=first["relation"],
+            primary_key=first["primary_key"]["columns"][0],
+            time_column="",
+            amount_column="",
+            dimension_column="",
+        )
+    target = Path(facts["target_dir"])
+    target_arg = (
+        target.relative_to(workspace_root).as_posix() if _within(target, workspace_root) else ""
+    )
+    actions: list[str] = []
+    if not facts["manifest"]:
+        actions.append(
+            f"Run `dbt parse` (or `dbt build`) in {dbt_root.name}/ so target/manifest.json "
+            "exists, then call setup_project_dialog again: dbt then answers the first model."
+        )
+    else:
+        imported = [
+            row["dbt_unique_id"]
+            for row in facts["models"]
+            if row.get("physical_relation") and row.get("primary_key")
+        ]
+        actions.append(
+            "After create_project, call import_dbt_project with "
+            f"target_dir {target_arg!r} and select {json.dumps(imported)} to bring in "
+            "every dbt model with a key, its columns, tests and foreign keys."
+        )
+    if "default_db" not in answers and answers.get("warehouse") != adapter:
+        actions.append(
+            "No DuckDB file was found for this dbt project; answer default_db with the path "
+            "of the file dbt builds, relative to the package directory."
+        )
+    dbt = {
+        "path": dbt_root.relative_to(workspace_root).as_posix() or ".",
+        "name": facts["name"],
+        "adapter_type": adapter,
+        "target_dir": target_arg,
+        "manifest": facts["manifest"],
+        "models": len(facts["models"]),
+    }
+    return dbt, answers, actions
+
+
+def _setup_dialog(
+    package_id: str = "",
+    project_path: str = "",
+    goal: str = "",
+    *,
+    workspace_root: Path | None = None,
+) -> dict[str, Any]:
     package_slug = _slug(package_id, fallback="my_semantic_package")
     questions = project_setup_questions(ProjectSpec(package_id=package_slug))
     defaults = {row["id"]: row["default"] for row in questions}
+    found = _dbt_answers(workspace_root, project_path, package_slug) if workspace_root else None
+    if found is None:
+        return {
+            "goal": goal,
+            "message": (
+                "Collect these answers before creating or reshaping a Semantic Rails package. "
+                "The draft is for DuckDB only; for another warehouse supply its connection "
+                "details and use data=external before calling create_project."
+            ),
+            "draft_warehouse": "duckdb",
+            "questions": questions,
+            "recommended_next_tool": "create_project",
+            "draft_arguments": _draft_arguments(package_slug, project_path, defaults),
+            "next_actions": [NEW_PROJECT_ROUTES_ACTION],
+        }
+    dbt, answers, actions = found
+    answered = set(answers) | ({"warehouse"} if "warehouse" in answers else set())
+    if "first_entity" in answers:
+        answered |= {*_DBT_FIRST_MODEL, *_DBT_UNUSED}
+    if answers.get("warehouse") == "duckdb":
+        answered |= {"connection_kind", "connection_name", "connection_options"}
+    remaining = [row for row in questions if row["id"] not in answered]
+    draft = _draft_arguments(package_slug, answers["project_path"], {**defaults, **answers})
+    if answers.get("warehouse") not in (None, "duckdb"):
+        draft["default_db"] = ""
     return {
         "goal": goal,
         "message": (
-            "Collect these answers before creating or reshaping a Semantic Rails package. "
-            "The draft is for DuckDB only; for another warehouse supply its connection "
-            "details and use data=external before calling create_project."
+            f"Found the dbt project {dbt['name'] or dbt['path']!r}. dbt answers the warehouse, "
+            "the database and the first model; ask only the questions left, then call "
+            "create_project with draft_arguments."
         ),
-        "draft_warehouse": "duckdb",
-        "questions": questions,
+        "dbt_project": dbt,
+        "draft_warehouse": draft["warehouse"],
+        "questions": remaining,
+        "answered_by_dbt": {key: value for key, value in answers.items() if key in answered},
         "recommended_next_tool": "create_project",
-        "draft_arguments": _draft_arguments(package_slug, project_path, defaults),
-        "next_actions": [NEW_PROJECT_ROUTES_ACTION],
+        "draft_arguments": draft,
+        "next_actions": [*actions, NEW_PROJECT_ROUTES_ACTION],
     }
 
 
@@ -1213,6 +1350,22 @@ def _project_spec(arguments: dict[str, Any]) -> ProjectSpec:
             dimension_column=str(arguments.get("dimension_column") or ""),
         ),
     )
+
+
+def _package_relative_db(default_db: str, project: Path, workspace_root: Path) -> str:
+    """An absolute ``default_db`` inside the workspace root, written relative to the package.
+
+    Package YAML keeps relative paths so it works in every checkout; the loader decides
+    whether the relative path may leave the package (a dbt project's own database may).
+    """
+    text = str(default_db or "").strip()
+    raw = Path(text).expanduser() if text else None
+    if raw is None or not raw.is_absolute():
+        return text
+    resolved = raw.resolve()
+    if not _within(resolved, workspace_root):
+        return text
+    return Path(os.path.relpath(resolved, project)).as_posix()
 
 
 def _project_files(project: Path) -> list[dict[str, Any]]:
@@ -1484,7 +1637,9 @@ def create_architect_mcp_server(
         interactive: bool = False,
     ) -> dict[str, Any]:
         """Start a guided project setup dialog, using MCP elicitation when requested and supported."""
-        dialog = _setup_dialog(package_id=package_id, project_path=project_path, goal=goal)
+        dialog = _setup_dialog(
+            package_id=package_id, project_path=project_path, goal=goal, workspace_root=root
+        )
         if not interactive:
             return {"ok": True, "mode": "dialog_schema", **dialog}
         try:
@@ -1503,12 +1658,14 @@ def create_architect_mcp_server(
             }
         if result.action != "accept" or result.data is None:
             return {"ok": False, "status": str(result.action), "mode": "elicitation", **dialog}
-        answers = result.data.model_dump()
+        answers = {**result.data.model_dump(), **dict(dialog.get("answered_by_dbt") or {})}
         package_slug = _slug(
             str(answers.get("package_id") or package_id), fallback="semantic_project"
         )
         try:
-            draft = _draft_arguments(package_slug, project_path, answers)
+            draft = _draft_arguments(
+                package_slug, str(answers.pop("project_path", "") or project_path), answers
+            )
         except SemanticLayerError as exc:
             return {**_report_error(exc), "mode": "elicitation"}
         missing = _missing_setup_answers(draft)
@@ -1561,13 +1718,20 @@ def create_architect_mcp_server(
         full_report: FullReport = False,
     ) -> ArchitectMutationResult:
         try:
+            project = _resolve_project_path(
+                project_path,
+                workspace_root=root,
+                package_id=package_id,
+                require_exists=False,
+                require_package_root=False,
+            )
             spec = _project_spec(
                 {
                     "package_id": package_id,
                     "description": description,
                     "warehouse": warehouse,
                     "data": data,
-                    "default_db": default_db,
+                    "default_db": _package_relative_db(default_db, project, root),
                     "connection_kind": connection_kind,
                     "connection_name": connection_name,
                     "connection_options": connection_options,
@@ -1578,13 +1742,6 @@ def create_architect_mcp_server(
                     "amount_column": amount_column,
                     "dimension_column": dimension_column,
                 }
-            )
-            project = _resolve_project_path(
-                project_path,
-                workspace_root=root,
-                package_id=package_id,
-                require_exists=False,
-                require_package_root=False,
             )
             return _mutation_result(
                 create_project_service(
@@ -2824,7 +2981,11 @@ def main() -> None:
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_ARCHITECT_PORT)
-    parser.add_argument("--workspace-root", default=DEFAULT_WORKSPACE_ROOT)
+    parser.add_argument(
+        "--workspace-root",
+        default=DEFAULT_WORKSPACE_ROOT,
+        help="directory the server may write packages in (default: the current directory)",
+    )
     parser.add_argument(
         "--token-file",
         default="",

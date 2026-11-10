@@ -1092,7 +1092,11 @@ class Runtime:
         self._replace_base(config)
         self.warehouse = str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
         self.db_path = (
-            self._resolve_asset_path(self._config.package.default_db, kind="default_db")
+            self._resolve_asset_path(
+                self._config.package.default_db,
+                kind="default_db",
+                external=self._config.package.seed.kind == SEED_KIND_EXTERNAL,
+            )
             if self.warehouse == "duckdb"
             else ""
         )
@@ -1233,12 +1237,17 @@ class Runtime:
             raise TypeError(f"set_aggregate_routing takes True or False, not {enabled!r}")
         self._aggregate_routing = enabled
 
-    def _resolve_asset_path(self, value: str, *, kind: str) -> str:
+    def _resolve_asset_path(self, value: str, *, kind: str, external: bool = False) -> str:
         if not value:
             return value
         # Re-checked here (not only at YAML parse time) so configs built
         # programmatically via Runtime.from_config get the same containment.
-        ensure_contained_package_path(value, field=f"package.{kind}")
+        ensure_contained_package_path(
+            value,
+            field=f"package.{kind}",
+            package_root=self.package_root,
+            read_only=kind == "default_db" and external,
+        )
         if os.path.isabs(value):
             return value
         package_candidate = os.path.abspath(os.path.join(self.package_root, value))
@@ -1479,7 +1488,11 @@ class Runtime:
                 str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
             )
             self.db_path = (
-                self._resolve_asset_path(self._config.package.default_db, kind="default_db")
+                self._resolve_asset_path(
+                    self._config.package.default_db,
+                    kind="default_db",
+                    external=self._config.package.seed.kind == SEED_KIND_EXTERNAL,
+                )
                 if self.warehouse == "duckdb"
                 else ""
             )

@@ -18,25 +18,37 @@ from pathlib import Path
 from typing import Any
 
 from .atomic_files import atomic_write_bytes
-from .config import package_root_for_source
+from .config import package_root_for_source, project_managed_source
 from .config_validation import PackageReference
 from .errors import SemanticLayerError
 
-# "both" stays Claude Desktop and Codex (the first two), as for MCP_KINDS.
-CLIENTS = ("claude", "codex", "claude-code", "cursor", "both")
+# "both" stays Claude Desktop and Codex (the first two), as for MCP_KINDS; "auto" is every
+# client installed on this machine.
+CLIENTS = ("claude", "codex", "claude-code", "cursor", "both", "auto")
 MCP_KINDS = ("query", "architect", "both")
 
 
 def mcp_client_config_report(
-    ref: PackageReference,
+    ref: PackageReference | None,
     *,
     client: str = "both",
     mcp: str = "both",
     workspace_root: str = "",
     install: bool = False,
 ) -> dict[str, Any]:
-    selected_clients = _selected(client, CLIENTS, field="client")
+    """Client configs for the query and/or Architect MCP; ``ref`` may be None for the
+    Architect alone, which needs only a workspace root."""
     selected_mcp = _selected(mcp, MCP_KINDS, field="mcp")
+    if ref is None and "query" in selected_mcp:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "The query MCP answers from one package: pass --package or --path, "
+            "or use --mcp architect to set up only the Architect.",
+            details={"mcp": mcp},
+        )
+    selected_clients = (
+        detected_clients() if str(client or "").strip().lower() == "auto" else None
+    ) or _selected(client, CLIENTS, field="client")
     workspace = Path(workspace_root or _workspace_root_for_ref(ref)).expanduser().resolve()
     servers = _client_servers(ref, selected_mcp=selected_mcp, workspace_root=workspace)
     previews = {
@@ -51,12 +63,35 @@ def mcp_client_config_report(
         "ok": True,
         "client": client,
         "mcp": mcp,
-        "package": {"id": ref.package_id, "source_path": ref.source_path},
+        "package": {"id": ref.package_id, "source_path": ref.source_path} if ref else None,
         "workspace_root": str(workspace),
         "servers": servers,
         "previews": previews,
         "installed": installed,
     }
+
+
+def detected_clients() -> list[str]:
+    """The MCP clients installed here: Claude Code by its ``claude`` command, the others by
+    their config directory (or ``codex`` command). Refuses when none is found."""
+    found = []
+    if claude_config_path().parent.is_dir():
+        found.append("claude")
+    if codex_config_path().parent.is_dir() or shutil.which("codex"):
+        found.append("codex")
+    if shutil.which("claude"):
+        found.append("claude-code")
+    if cursor_config_path().parent.is_dir():
+        found.append("cursor")
+    if not found:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "No MCP client found on this machine (looked for Claude Code's `claude` command "
+            "and the Claude Desktop, Codex and Cursor config folders). Pass --client "
+            "claude-code, claude, codex or cursor.",
+            details={"client": "auto", "allowed": [c for c in CLIENTS if c != "auto"]},
+        )
+    return found
 
 
 def claude_config_path() -> Path:
@@ -187,10 +222,10 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
 
 
 def _client_servers(
-    ref: PackageReference, *, selected_mcp: list[str], workspace_root: Path
+    ref: PackageReference | None, *, selected_mcp: list[str], workspace_root: Path
 ) -> dict[str, dict[str, Any]]:
     servers: dict[str, dict[str, Any]] = {}
-    if "query" in selected_mcp:
+    if "query" in selected_mcp and ref is not None:
         command, *args = _launcher("semantic-rails", "semantic_rails.cli")
         servers["semantic-rails"] = {
             "command": command,
@@ -267,10 +302,17 @@ def _selected(value: str, allowed: tuple[str, ...], *, field: str) -> list[str]:
     return [normalized]
 
 
-def _workspace_root_for_ref(ref: PackageReference) -> str:
-    if ref.source_path:
-        return str(Path(package_root_for_source(ref.source_path)).resolve().parent)
-    return str(Path.cwd().resolve())
+def _workspace_root_for_ref(ref: PackageReference | None) -> str:
+    """The current directory when it holds the package (a dbt project, say), else the
+    package's parent, so the Architect can reach the package and its neighbours.
+
+    Never the installed engine's folder: a bundled package keeps the current directory.
+    """
+    cwd = Path.cwd().resolve()
+    if ref is None or not ref.source_path or project_managed_source(ref.source_path):
+        return str(cwd)
+    package = Path(package_root_for_source(ref.source_path)).resolve()
+    return str(cwd if cwd in package.parents else package.parent)
 
 
 def _codex_section_name(name: str) -> str:

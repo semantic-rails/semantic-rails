@@ -88,8 +88,10 @@ package with one model, its count and amount metrics, an example, a package test
   components that need it. The name must not contain a path separator or control character.
   The model gets only the columns you name (no starter dimension or amount). The database may
   already sit in the project directory: a directory with no authored files still has revision
-  `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
-  `<package>/data/<package_id>.duckdb`); a path outside it needs
+  `absent`. A package inside a dbt project (a directory above it holds `dbt_project.yml`) may
+  name the file `dbt build` writes anywhere in that dbt project, for example
+  `default_db: ../../jaffle_shop.duckdb`; an absolute path inside the workspace root is written
+  relative to the package. Any other path outside the package needs
   `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
 - Other warehouses take `connection_kind` and their adapter's required connection inputs.
   Named connections apply only to Snowflake; other adapters use `connection_options` or their
@@ -656,8 +658,9 @@ tool list's size.
 ## Safety Model
 
 All file writes are scoped to the configured workspace root. The default workspace root is the
-repository root; pass `--workspace-root` when an MCP client should operate in a separate project
-workspace.
+directory the server starts in (an MCP client starts it in your project); pass `--workspace-root`
+to choose another. `semantic-rails mcp setup --mcp architect` needs no package: it writes the
+client config with the current directory as the workspace root.
 
 Comparison paths for `diff_project`, `impact_project`, and release checks must also resolve to
 package directories inside the configured workspace root. A `base_ref` (for example `main` or
