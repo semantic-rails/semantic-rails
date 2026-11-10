@@ -68,11 +68,11 @@ snowflake = [
 ]
 # Opt-in connection kind; install its native driver separately with dbc.
 snowflake-adbc = [
-  "adbc-driver-manager==1.12.0",
+  "adbc-driver-manager==1.13.0",
   "pyarrow>=25.0.1",
 ]
 postgres = [
-  "adbc-driver-manager==1.12.0",
+  "adbc-driver-manager==1.13.0",
   "adbc-driver-postgresql==1.12.0",
   "pyarrow>=25.0.1",
 ]
@@ -98,7 +98,7 @@ repl = [
 all = [
   "uvicorn>=0.49.0",
   "snowflake-connector-python>=4.6.0,<5",
-  "adbc-driver-manager==1.12.0",
+  "adbc-driver-manager==1.13.0",
   "adbc-driver-postgresql==1.12.0",
   "pyarrow>=25.0.1",
   "google-cloud-bigquery>=3.41.0",
