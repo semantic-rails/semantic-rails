@@ -345,7 +345,7 @@ def once_per_binding(owner: Any, config: PackageConfig, compute: Callable[[], T]
     held = dependencies.once.get(key)
     if held is not None and held[0] is owner and held[1] is config:
         record_ids(set(held[3]))
-        return held[2]  # type: ignore[no-any-return]
+        return held[2]
     recorded: set[str] = set()
     with capture_objects(recorded):
         value = compute()

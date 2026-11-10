@@ -1623,7 +1623,8 @@ def lift_conditional_aggregates(
     plus the synthetic-measure dict to attach to the ``LogicalPlan``.
     """
     synthetic: dict[str, MeasureConfig] = {}
-    expressions = [item.expression for item in (*query.select, *query.metric_filters)]
+    expressions = [item.expression for item in query.select]
+    expressions.extend(item.expression for item in query.metric_filters)
     # sql_nodes walks any dataclass tree. With no aggregate_if the rewrite below would find
     # nothing and return the query as it is, after copying each window's input once per window.
     if not any(isinstance(node, ConditionalAggregateExpr) for node in sql_nodes(expressions)):
