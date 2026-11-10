@@ -1398,14 +1398,98 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
     return {**item, "op": word, "value": value}
 
 
+# The keys that state a measure's statistic, which a predicate may write beside its input.
+PREDICATE_STATISTIC_KEYS = ("aggregation", "parameters", "temporal_role")
+
+
 def _scoped_predicate(item: Any, path: str, context: CallContext) -> Any:
     """A scoped aggregate's predicate: its input is read like any operand, then its ``over``."""
     if not isinstance(item, Mapping):
         return item
+    # A metric predicate's keys, its input shorthands, and a measure input's statistic.
+    # (A retired key is refused with its replacement by _predicate.)
+    keys = {*call_kinds()["metric_predicate"], "metric", "measure", *PREDICATE_STATISTIC_KEYS}
+    current = {key: value for key, value in item.items() if key not in _PREDICATE_RETIRED}
+    _check_keys(current, tuple(sorted(keys)), path)
+    if item.get("kind", "metric_predicate") != "metric_predicate":
+        raise refusal(f"{path}.kind", "a predicate is a metric_predicate", fix='Remove "kind".')
     node = dict(item)
+    for key in ("metric", "measure"):
+        if "input" not in node and isinstance(node.get(key), str):
+            # An id, read below as the input's id is.
+            ref = _reference(node.pop(key), f"{path}.{key}")
+            node["input"] = ref.get("measure") or ref["metric"]
     if "input" in node:
-        node["input"] = _operand(node["input"], f"{path}.input", context)
+        node["input"] = _operand(predicate_input(node, path), f"{path}.input", context)
     return _predicate(node, path)
+
+
+def _statistic_beside_non_measure_fix(name: Any, stated: dict[str, Any]) -> str:
+    """The hint for a statistic written beside an input that is not a measure: lead with the
+    measure input that compares it (the statistic as the call states it), then what removing
+    it keeps. The metric's measure is not named: the caller may not see it."""
+    aggregation = stated.get("aggregation")
+    statistic = aggregation if isinstance(aggregation, str) else "statistic"
+    example = {
+        "kind": "measure",
+        "measure": "measure.<id>",
+        "aggregation": "<statistic>",
+        **stated,
+    }
+    metric = isinstance(name, str) and name.strip().startswith("metric.")
+    inspect = f" (inspect {name.strip()} for the measure it reads)" if metric else ""
+    *rest, last = stated
+    keys = f"{', '.join(rest)} and {last}" if rest else last
+    return (
+        f'To compare each entity\'s {statistic} of a measure, write "input": '
+        f"{json.dumps(example, default=str)}{inspect}. To compare the "
+        f"{'metric' if metric else 'input'}'s own value, remove {keys}."
+    )
+
+
+def predicate_input(predicate: dict[str, Any], path: str) -> Any:
+    """A predicate's input with the statistic written beside it (``aggregation``,
+    ``parameters``, ``temporal_role``) moved into it, so the predicate compares the statistic
+    the call states. The keys are taken out of ``predicate``. A statistic the input cannot
+    take (a metric, or an input that states another one) is refused, never dropped."""
+    stated = {key: predicate.pop(key) for key in PREDICATE_STATISTIC_KEYS if key in predicate}
+    raw = predicate.get("input")
+    if not stated:
+        return raw
+    target = raw
+    if isinstance(raw, str) and raw.strip().startswith("measure."):
+        target = {"kind": "measure", "measure": raw.strip()}
+    kind = str(target.get("kind") or "measure") if isinstance(target, Mapping) else ""
+    if not isinstance(target, Mapping) or not isinstance(target.get("measure"), str):
+        name = (
+            (target.get("metric") or target.get("kind")) if isinstance(target, Mapping) else target
+        )
+        key = next(iter(stated))
+        raise refusal(
+            f"{path}.{key}",
+            f"{key} states a measure's statistic, and the predicate's input "
+            f"{json.dumps(name, default=str)} is not a measure, so it would be ignored",
+            fix=_statistic_beside_non_measure_fix(name, stated),
+            code="INVALID_METRIC_PREDICATE",
+            **{key: stated[key]},
+        )
+    taken = set(call_kinds().get(kind, ()))
+    for key, value in stated.items():
+        if key not in taken or key in target and target[key] != value:
+            raise refusal(
+                f"{path}.{key}",
+                f"the predicate's input {json.dumps(dict(target), default=str)} "
+                + (
+                    f"states {key} {json.dumps(target[key], default=str)}"
+                    if key in target
+                    else f"takes no {key}"
+                )
+                + f", so {key} {json.dumps(value, default=str)} beside it would be ignored",
+                fix=f"Write {key} once, inside input.",
+                code="INVALID_METRIC_PREDICATE",
+                **{key: value},
+            )
+    return {**target, **stated}
 
 
 def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:

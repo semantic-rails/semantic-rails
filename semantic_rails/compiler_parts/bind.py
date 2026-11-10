@@ -50,6 +50,7 @@ from ..expressions import (
     validate_boolean_argument_count,
 )
 from ..ir import BoundMeasure
+from ..query_call import predicate_input
 from ..schema import MeasureConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
@@ -770,6 +771,9 @@ def _scoped_predicate_expr_payload(predicate: dict[str, Any]) -> dict[str, Any]:
             "PREDICATE_INPUT_REQUIRED",
             "scoped_aggregate predicates require 'metric', 'measure', or 'input'",
         )
+    # A statistic written beside the input (a package's `measure:` shorthand) is the input's.
+    raw["input"] = input_expr
+    input_expr = predicate_input(raw, "scoped_aggregate.predicates")
     payload = {
         "kind": "metric_predicate",
         "input": input_expr,
