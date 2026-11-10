@@ -2,7 +2,7 @@
 
 Run it in an environment that holds the release and not this checkout, for example:
 
-    uv run --isolated --no-project --with semantic-rails==0.3.2 --with pyyaml \\
+    uv run --isolated --no-project --with semantic-rails==0.3.4 --with pyyaml \\
       python -I comparisons/semantic_layers/semantic_rails/scripts/check_release.py
 
 It copies this repo's comparison package and queries to a temporary directory, checks the copy
