@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.package_snapshot import semantic_payload
 from semantic_rails.package_tools import run_package_tests_report
 from semantic_rails.runtime import Runtime
+from semantic_rails.visible_view import build_view
 from tests.semantic_rails.conftest import copy_package_config, opened
 
 REVENUE = "measure.jaffle.revenue_usd"
@@ -214,3 +216,17 @@ def test_a_refused_query_fails_even_the_negative_form(results: dict[str, dict]) 
     assert error["code"] == "OBJECT_NOT_FOUND"
     assert "measure.jaffle.nope" in error["message"]
     assert error["details"]["caveat"] == SAID
+
+
+def test_a_so_what_naming_a_hidden_object_hides_its_caveat(package_dir: Path) -> None:
+    hidden = "measure.jaffle.order_count"
+    config = load_package_config(str(package_dir))
+    named = [
+        replace(row, so_what=f"Read {hidden} instead.") if row.id == SAID else row
+        for row in config.semantic_caveats
+    ]
+    view = build_view(replace(config, semantic_caveats=named), frozenset({hidden}))
+    assert [row.id for row in view.semantic_caveats] == [UNSAID]
+    # The same caveat is shown while nothing it says is hidden.
+    shown = build_view(config, frozenset({hidden}))
+    assert {row.id for row in shown.semantic_caveats} == {SAID, UNSAID}
