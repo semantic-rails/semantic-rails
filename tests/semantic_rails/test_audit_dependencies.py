@@ -652,7 +652,7 @@ def test_base_audit_reads_its_own_inputs(monkeypatch, tmp_path):
 
 def test_base_inputs_reads_the_revision_and_detects_identical_inputs(tmp_path):
     def git(*args):
-        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, timeout=60)
 
     git("init", "-q")
     for path in audit.INPUTS:
