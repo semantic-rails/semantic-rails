@@ -294,6 +294,7 @@
   "tests/semantic_rails/test_runtime_and_metadata.py": 17.71,
   "tests/semantic_rails/test_runtime_bootstrap.py": 0.62,
   "tests/semantic_rails/test_runtime_validators.py": 0.376,
+  "tests/semantic_rails/test_scoped_predicate_statistic.py": 3.5,
   "tests/semantic_rails/test_security_hardening.py": 2.451,
   "tests/semantic_rails/test_segments.py": 1.045,
   "tests/semantic_rails/test_select_shorthand.py": 1.355,
