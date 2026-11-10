@@ -702,7 +702,7 @@ def test_scheduled_run_tracker_opens_updates_and_closes_one_issue(
         "GITHUB_REPOSITORY": "o/r",
         "GITHUB_RUN_ID": "1",
     }
-    subprocess.run(["bash", "-c", script], env=env, check=True)
+    subprocess.run(["bash", "-c", script], env=env, check=True, timeout=60)
     calls = log.read_text().splitlines()
     assert calls[0].startswith("issue list --repo o/r --state open")
     writes = [call for call in calls if not call.startswith(("issue list", "run view"))]
