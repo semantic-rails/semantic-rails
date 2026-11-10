@@ -903,6 +903,18 @@ April together), never the sum of its days; with no `time` at all, it reads the 
 a snapshot. A period after the last snapshot reads `NULL` with `NO_DATA_YET`, as any measure's
 does.
 
+With no `time` block, every statistic of a balance reads that last closing day: `avg`,
+`median`, `percentile`, `min` and `max` are taken over the snapshots of the last day with a
+snapshot, as the balance itself and a `distribution` over its series are, never over each
+series' own last snapshot, which can be years older. The average inventory per store reads
+`925`, the one store with a snapshot on 2019-04-01; each store's own last count, one of them
+from 2016, would give `967.2`. Grouped by an attribute such as the store, a series with no
+snapshot that day has no row; filtered to such series alone, the balance reads `0` and any
+other statistic `NULL`. A balance keyed by its clock alone reads that day's snapshot as well;
+for a statistic of its snapshots over time, give the call a window. With a window, a grain or
+a grouping by the clock, a statistic other than `last_value` and `sum` reads each series' last
+snapshot in each period, as before (a balance keyed by its clock alone: every snapshot in it).
+
 The closing day is the day bucket `time.grain: day` puts a snapshot in. A row whose clock is
 NULL is never a snapshot, and rows of a series tied on its last clock value are all read. A
 balance read inside an entity filter or a metric predicate reads the same way. Two shapes are

@@ -514,9 +514,9 @@ def test_a_statistic_of_a_balance_inside_a_predicate_or_a_ratio_reads_the_closin
                             "over": "all_time"}]}  # fmt: skip
     result = runtime.query({"select": [{"expression": flow, "as": "v"}]})
     assert _values(result) == [200.0]
-    assert [(row["nested"], row["closing_day"]) for row in _by_code(result, "assumptions", CLOSING)] == [
-        (True, "2020-01-20")
-    ]
+    assert [
+        (row["nested"], row["closing_day"]) for row in _by_code(result, "assumptions", CLOSING)
+    ] == [(True, "2020-01-20")]
     assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]
     ratio = {"kind": "ratio", "numerator": _statistic("max"), "denominator": _statistic("min")}
     scoped = {"kind": "scoped_aggregate", "measure": BALANCE, "aggregation": "avg"}
@@ -524,3 +524,38 @@ def test_a_statistic_of_a_balance_inside_a_predicate_or_a_ratio_reads_the_closin
         result = runtime.query({"select": [{"expression": expression, "as": "v"}]})
         assert _values(result) == [expected]
         assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]
+
+
+@pytest.mark.parametrize(("aggregation", "own_window"), [("avg", 150.0), ("max", 200.0)])
+def test_a_statistic_of_a_balance_closing_in_another_zone_is_refused_as_the_balance_is(
+    tmp_path: Path, aggregation: str, own_window: float
+) -> None:
+    """With no window, a statistic of a Los Angeles balance on a timestamp clock closes on
+    that clock's day, as the balance does, so a call that runs in UTC refuses it the same way
+    and names the zone. Read over a window on its own clock it answers, as before: each
+    account's last snapshot in the window."""
+    runtime = _runtime(_package(tmp_path / "x", clock=LA))
+    try:
+        call = {"select": [{"expression": _statistic(aggregation), "as": "v"}]}
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(call)
+        assert caught.value.code == "MIXED_TIME_ROLES"
+        assert caught.value.details == {
+            "reason": "closing_day_zone",
+            "measure": BALANCE,
+            "clock_zone": "America/Los_Angeles",
+            "time_zone": "UTC",
+        }
+        assert str(caught.value) == (
+            f"{BALANCE} is a balance read on its closing day in America/Los_Angeles, its clock's "
+            "zone, but this query runs in UTC, so its day could be another. Give the call a time "
+            "window on the balance's own clock (time.temporal_role) so it runs in that zone."
+        )
+        own = {
+            "temporal_role": "temporal_role.x_snap_ts",
+            "start": "2020-01-01",
+            "end": "2020-02-01",
+        }
+        assert _values(runtime.query({**call, "time": own})) == [own_window]
+    finally:
+        runtime.close()

@@ -338,7 +338,9 @@ def test_a_statistic_over_a_window_or_by_period_reads_each_series_latest_as_befo
     )
     assert _values(by_quarter) == [value for _, value in hand]
     assert _values(by_quarter)[1] == 95  # (100 + 200 + 50 + 30) / 4
-    by_day = stocks.query(_statistic("inv_changes", "max", group_by=["dimension.inv_inv_changes_snap_date"]))
+    by_day = stocks.query(
+        _statistic("inv_changes", "max", group_by=["dimension.inv_inv_changes_snap_date"])
+    )
     assert _values(by_day) == [150, 35, 100, 200, 40]
     for result in (window, by_quarter, by_day):
         assert CLOSING not in _codes(result, "assumptions")
@@ -367,7 +369,9 @@ def test_a_one_series_balance_reads_its_closing_day_for_every_statistic(tmp_path
     with (root / "graph.yml").open("a") as graph:
         graph.write("    inv_total: {key: [snap_date], model: inv_total}\n")
     with duckdb.connect(str(root / "data" / "inv.duckdb")) as con:
-        con.execute("CREATE TABLE inv_total AS SELECT snap_date, SUM(area) AS area FROM inv_dense GROUP BY 1")
+        con.execute(
+            "CREATE TABLE inv_total AS SELECT snap_date, SUM(area) AS area FROM inv_dense GROUP BY 1"
+        )
     runtime = opened(Runtime.from_path(str(root)))
     try:
         for aggregation in ("last_value", "avg", "median", "percentile", "min", "max"):
