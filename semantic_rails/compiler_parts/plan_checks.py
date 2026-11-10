@@ -91,6 +91,7 @@ from .post_aggregation import (
 )
 from .temporal import (
     _expr_compatible_temporal_roles,
+    _recipe_compatible_temporal_roles,
     _time_bound_relationship_ids,
     _window_measure_exprs,
     series_grain,
@@ -149,6 +150,44 @@ def _object_default_query_temporal_role(config: PackageConfig, object_id: str) -
         return recipe.compatible_temporal_roles[0]
     compatible = sorted(_expr_compatible_temporal_roles(recipe.expression, config, query))
     return compatible[0] if compatible else ""
+
+
+def object_time_axis(config: PackageConfig, object_id: str) -> tuple[str, list[str]]:
+    """The one clock a series of ``object_id`` is grouped by, and the clocks it can be read on.
+
+    A measure's is its default clock. A metric's is the clock it declares; else the one clock
+    it can be read on; else the default clock its measures all share, when that is one of
+    them. Otherwise it is "" (no clock, or several the metric doesn't choose between), and
+    the second item lists the clocks to choose from. Read from the package, never a question.
+    """
+
+    measure = _measure_index(config).get(object_id)
+    if measure is not None:
+        return measure.default_temporal_role, list(measure.compatible_temporal_roles)
+    recipe = _recipe_index(config).get(object_id)
+    if recipe is None:
+        return "", []
+    if recipe.temporal_role:
+        return recipe.temporal_role, [recipe.temporal_role]
+    query = normalize_query(
+        {"version": 1, "select": [{"expression": {"metric": object_id}, "as": recipe.label}]}
+    )
+    try:
+        compatible = sorted(_recipe_compatible_temporal_roles(recipe, config, query))
+        leaves = list(_window_measure_exprs(recipe.expression, config))
+    except SemanticLayerError:
+        return "", []
+    if len(compatible) == 1:
+        return compatible[0], compatible
+    measures = _measure_index(config)
+    defaults = {
+        leaf.temporal_role or measures[leaf.measure].default_temporal_role
+        for leaf in leaves
+        if leaf.measure in measures
+    }
+    if len(defaults) == 1 and (role := next(iter(defaults))) in compatible:
+        return role, compatible
+    return "", compatible
 
 
 def _can_project_entity_key_from_source(

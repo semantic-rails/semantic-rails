@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...compiler_parts.plan_checks import object_time_axis
 from ...query_call import TIME_AXIS
 from .._base import (
     _NAME_CONNECTORS,
@@ -320,9 +321,8 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # measures.
     is_top, top_n = _top_n_intent(text)
     time_spec: Time | None = None
-    temporal_role = str(getattr(target, "default_temporal_role", "") or "") or str(
-        getattr(target, "temporal_role", "") or ""
-    )
+    # A metric that declares no clock is read on the one its measures share (``object_time_axis``).
+    temporal_role, _clocks = object_time_axis(config, str(getattr(target, "id", "")))
     if temporal_role:
         # A grouping that names this clock ("by order date") is the time axis, not a dimension.
         # The grouping above, without the clock, only picked measure or metric.

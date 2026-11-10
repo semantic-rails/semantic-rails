@@ -7,12 +7,14 @@ from typing import Any
 
 import yaml
 
+from ..compiler_parts.plan_checks import object_time_axis
 from ..errors import SemanticLayerError
 from ..naming import last_token
 from ..period_completeness import incomplete_period_why
-from ._base import _object_by_id, _runtime_composition_terms
+from ._base import _name_matches, _object_by_id, _runtime_composition_terms
 from .call import Call, QueryBuilder
-from .groupings import _requested_grouping_terms
+from .coverage import _catalog_rows, _dict_nodes, _referenced_ids
+from .groupings import _requested_grouping_terms, _time_spec
 from .intent_ir import IntentIR
 from .time_reference import time_policy_context
 from .time_windows import _time_window
@@ -107,6 +109,69 @@ def _unconsumed_terms_why(terms: list[str]) -> dict[str, Any] | None:
                     "coarser windows only) state an hour range as query.time start and end "
                     "ISO timestamps, then validate. Asking again without those words changes "
                     "the question."
+                ),
+            }
+        ],
+    }
+
+
+def _unplaced_grain_why(runtime: Any, question: str, query: Call) -> dict[str, Any] | None:
+    """Explain a draft with no time grain for a question that asks for a series ("by month").
+
+    The grain is the one ``_time_spec`` reads for the question, apart from the names of the
+    objects the draft uses ("Monthly active users" asks for no series). A draft that carries a
+    grain anywhere, in its time block or an expression, places it. Otherwise plan names the grain
+    as a word the draft doesn't use, and why: what the draft selects has no clock in common, or
+    several it doesn't choose between (``object_time_axis``).
+    """
+
+    if any(
+        node.get(key) for node in _dict_nodes(query.to_call()) for key in ("grain", "time_grain")
+    ):
+        return None
+    text = str(question or "")
+    referenced = set(_referenced_ids(query))
+    for row in _catalog_rows(runtime._config):
+        if str(getattr(row, "id", "")) in referenced:
+            for _size, start, end in _name_matches(row, text.lower()):
+                text = f"{text[:start]}{' ' * (end - start)}{text[end:]}"
+    asked = _time_spec("unplaced", text)
+    if asked is None or not asked.grain:
+        return None
+    config = runtime._config
+    clocks = sorted(
+        {role for item in query.select for role in object_time_axis(config, item.ref)[1]}
+    )
+    labels = [
+        str(getattr(_object_by_id(config.temporal_roles, role), "label", "") or role)
+        for role in clocks
+    ]
+    reason = (
+        f"what it selects can be read on several clocks ({', '.join(labels)}) and names none"
+        if len(clocks) > 1
+        else f"it isn't grouped by {labels[0]}"
+        if clocks
+        else "no one clock dates all of what it selects"
+    )
+    return {
+        "code": "PLAN_UNMATCHED_TERMS",
+        "message": (
+            f"The question asks for a series by {asked.grain}, but the draft has no time grain: "
+            f"{reason}. So plan doesn't call it ready."
+        ),
+        "details": {
+            "terms": [asked.grain],
+            "kind": "time_grain_unrealized",
+            "temporal_roles": clocks,
+        },
+        "recovery_hints": [
+            {
+                "kind": "choose_temporal_role",
+                "message": (
+                    "Set query.time.temporal_role to the date the user means (details."
+                    "temporal_roles, or a time role inspect lists for what the draft selects) "
+                    f"and query.time.grain to {asked.grain}, then validate; or ask the user "
+                    "which date they mean, or whether one total answers the question."
                 ),
             }
         ],
