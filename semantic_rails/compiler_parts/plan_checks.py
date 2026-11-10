@@ -100,6 +100,7 @@ from .post_aggregation import (
 from .temporal import (
     _expr_compatible_temporal_roles,
     _recipe_compatible_temporal_roles,
+    _requires_query_time,
     _time_bound_relationship_ids,
     _window_measure_exprs,
     series_grain,
@@ -246,6 +247,19 @@ def _clock_parts(expr: Any) -> list[Any]:
     if isinstance(expr, ConversionExpr):
         return [expr.base]
     return []
+
+
+def object_reads_periods(config: PackageConfig, object_id: str) -> bool:
+    """Whether ``object_id`` is a metric with no one-total reading: it compares or rolls periods
+    ("Month-over-month revenue growth"), so a call to it needs a time block."""
+
+    recipe = _recipe_index(config).get(object_id)
+    if recipe is None:
+        return False
+    try:
+        return _requires_query_time(recipe.expression, config)
+    except SemanticLayerError:
+        return False
 
 
 def object_part_clocks(config: PackageConfig, object_id: str) -> list[tuple[str, str]]:

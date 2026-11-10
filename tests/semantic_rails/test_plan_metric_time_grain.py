@@ -586,3 +586,15 @@ def test_the_clocks_own_name_still_asks_for_its_series(
     assert payload["status"] == "ok", payload
     time = {"temporal_role": "temporal_role.tpch_order_date", "grain": "day", **window}
     assert payload["best"]["query"]["time"] == time, payload["best"]["query"]
+
+
+def test_a_metric_that_reads_periods_keeps_the_grain_its_name_gives(
+    jaffle_clocks: Runtime,
+) -> None:
+    """Month-over-month growth has no one total, so its name's "month" is still its grain."""
+    payload = plan_payload(jaffle_clocks, intent="month-over-month revenue growth", now=NOW)
+    assert_plan_held(payload, "PERIOD_COMPARISON_INCOMPLETE")
+    assert payload["best"]["query"]["time"] == {
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "grain": "month",
+    }

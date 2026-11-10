@@ -101,19 +101,27 @@ def _grain_text(
     """The question as its time grain is read: without the words ``query`` already spends.
 
     Those are the names of the objects it names ("Monthly active users", "Revenue per day"),
-    apart from its clock, and the filter values it keeps (``value_rows``, or those ``_matched_value_rows`` finds):
+    apart from its clock and a metric that reads periods, and the filter values it keeps (``value_rows``, or those ``_matched_value_rows`` finds):
     "monthly" in "total amount for monthly billing period" is a billing period, not a grain.
     Each is blanked in place, so the other words still ask: "for monthly billing period by
     month" asks by month. The words read are ``_time_spec``'s own, never more.
     """
 
+    from ..compiler_parts.plan_checks import object_reads_periods  # noqa: WPS433
     from .coverage import _catalog_rows, _referenced_ids  # noqa: WPS433
     from .generators import _matched_value_rows  # noqa: WPS433
 
+    config = runtime._config
     text = str(question or "")
-    # A clock's own name stays: "by order date" is how a question asks for its series.
-    referenced = set(_referenced_ids(query)) - {row.id for row in runtime._config.temporal_roles}
-    for row in _catalog_rows(runtime._config):
+    # A clock's own name stays: "by order date" is how a question asks for its series. So does
+    # the name of a metric that reads periods: "Month-over-month revenue growth" has no total.
+    clocks = {row.id for row in config.temporal_roles}
+    referenced = {
+        object_id
+        for object_id in _referenced_ids(query)
+        if object_id not in clocks and not object_reads_periods(config, object_id)
+    }
+    for row in _catalog_rows(config):
         if str(getattr(row, "id", "")) in referenced:
             for _size, start, end in _name_matches(row, text.lower()):
                 text = _blanked(text, start, end)
