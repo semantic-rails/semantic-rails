@@ -1092,11 +1092,7 @@ class Runtime:
         self._replace_base(config)
         self.warehouse = str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
         self.db_path = (
-            self._resolve_asset_path(
-                self._config.package.default_db,
-                kind="default_db",
-                external=self._config.package.seed.kind == SEED_KIND_EXTERNAL,
-            )
+            self._resolve_asset_path(self._config.package.default_db, kind="default_db")
             if self.warehouse == "duckdb"
             else ""
         )
@@ -1237,7 +1233,11 @@ class Runtime:
             raise TypeError(f"set_aggregate_routing takes True or False, not {enabled!r}")
         self._aggregate_routing = enabled
 
-    def _resolve_asset_path(self, value: str, *, kind: str, external: bool = False) -> str:
+    def _reads_external_database(self) -> bool:
+        config = getattr(self, "_config", None)  # unset on a Runtime built by hand
+        return config is not None and config.package.seed.kind == SEED_KIND_EXTERNAL
+
+    def _resolve_asset_path(self, value: str, *, kind: str) -> str:
         if not value:
             return value
         # Re-checked here (not only at YAML parse time) so configs built
@@ -1246,7 +1246,8 @@ class Runtime:
             value,
             field=f"package.{kind}",
             package_root=self.package_root,
-            read_only=kind == "default_db" and external,
+            # The runtime only reads an external database, so it may sit in the dbt project.
+            read_only=kind == "default_db" and self._reads_external_database(),
         )
         if os.path.isabs(value):
             return value
@@ -1488,11 +1489,7 @@ class Runtime:
                 str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
             )
             self.db_path = (
-                self._resolve_asset_path(
-                    self._config.package.default_db,
-                    kind="default_db",
-                    external=self._config.package.seed.kind == SEED_KIND_EXTERNAL,
-                )
+                self._resolve_asset_path(self._config.package.default_db, kind="default_db")
                 if self.warehouse == "duckdb"
                 else ""
             )
