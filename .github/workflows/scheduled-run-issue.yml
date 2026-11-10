@@ -15,8 +15,10 @@ on:
         required: true
         type: boolean
 
-permissions:
-  contents: read
+# A caller must grant every permission requested here, at the top level too, or GitHub rejects
+# the caller's whole workflow file before any job starts. The job reads nothing from the
+# repository, so the top level requests nothing.
+permissions: {}
 
 jobs:
   track:

@@ -668,6 +668,23 @@ def test_scheduled_failures_are_tracked_in_one_issue(path, needs):
     assert track["permissions"] == {"actions": "read", "issues": "write"}
 
 
+@pytest.mark.parametrize("path", ["release-readiness.yml", "quickstart.yml"])
+def test_scheduled_run_tracker_asks_only_for_what_its_callers_grant(path):
+    # GitHub refuses to start a caller whose reusable workflow requests a permission, at its
+    # top level or on a job, that the calling job does not grant.
+    level = {"none": 0, "read": 1, "write": 2}
+    tracker = yaml.safe_load((ROOT / ".github/workflows/scheduled-run-issue.yml").read_text())
+    requested = [tracker.get("permissions", {})] + [
+        job.get("permissions", {}) for job in tracker["jobs"].values()
+    ]
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / path).read_text())
+    granted = workflow["jobs"]["track"]["permissions"]
+    for permissions in requested:
+        assert isinstance(permissions, dict)
+        for scope, access in permissions.items():
+            assert level[granted.get(scope, "none")] >= level[access], (scope, access)
+
+
 @pytest.mark.parametrize(
     "failed, open_issue, expected",
     [
