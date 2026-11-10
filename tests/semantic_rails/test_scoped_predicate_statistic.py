@@ -133,19 +133,56 @@ def test_a_statistic_the_measure_does_not_allow_is_refused(runtime: Runtime, spe
     )
 
 
-def test_a_statistic_beside_a_metric_input_is_refused(runtime: Runtime) -> None:
+METRIC_HINTS = {
+    "aggregation": (
+        {"aggregation": "avg"},
+        'To compare each entity\'s avg of a measure, write "input": {"kind": "measure", '
+        '"measure": "measure.<id>", "aggregation": "avg"} (inspect metric.sales.aov_usd for the '
+        "measure it reads). To compare the metric's own value, remove aggregation.",
+    ),
+    "parameters": (
+        {"parameters": {"p": 0.9}},
+        'To compare each entity\'s statistic of a measure, write "input": {"kind": '
+        '"measure", "measure": "measure.<id>", "aggregation": "<statistic>", "parameters": '
+        '{"p": 0.9}} (inspect metric.sales.aov_usd for the measure it reads). To compare the '
+        "metric's own value, remove parameters.",
+    ),
+    "aggregation and parameters": (
+        {"aggregation": "percentile", "parameters": {"p": 0.9}},
+        'To compare each entity\'s percentile of a measure, write "input": {"kind": '
+        '"measure", "measure": "measure.<id>", "aggregation": "percentile", "parameters": '
+        '{"p": 0.9}} (inspect metric.sales.aov_usd for the measure it reads). To compare the '
+        "metric's own value, remove aggregation and parameters.",
+    ),
+}
+
+
+@pytest.mark.parametrize("stated", list(METRIC_HINTS))
+def test_a_statistic_beside_a_metric_input_is_refused(runtime: Runtime, stated: str) -> None:
+    """The hint leads with the measure input that compares the stated statistic: removing
+    it compares the metric's own value (a revenue metric's total), not the statistic asked."""
+    statistic, expected_hint = METRIC_HINTS[stated]
     error = _refusal(
         runtime,
-        {"input": "metric.sales.aov_usd", "aggregation": "avg", "op": "gte", "value": 30},
+        {"input": "metric.sales.aov_usd", **statistic, "op": "gte", "value": 30},
     )
+    key = next(iter(statistic))
     assert error.code == "INVALID_METRIC_PREDICATE"
     assert str(error) == (
-        f"{PATH}.aggregation: aggregation states a measure's statistic, and the predicate's "
+        f"{PATH}.{key}: {key} states a measure's statistic, and the predicate's "
         'input "metric.sales.aov_usd" is not a measure, so it would be ignored'
     )
-    assert error.details["aggregation"] == "avg"
+    assert error.details[key] == statistic[key]
     [hint] = error.details["recovery_hints"]
-    assert hint["message"].startswith("Remove aggregation: the input carries its own statistic.")
+    assert hint["message"] == expected_hint
+
+
+def test_a_predicate_of_another_kind_is_refused(runtime: Runtime) -> None:
+    error = _refusal(runtime, {"kind": "aggregate", "input": REVENUE, "op": "gte", "value": 30})
+    assert error.code == "INVALID_QUERY"
+    assert str(error) == f"{PATH}.kind: a predicate is a metric_predicate"
+    [hint] = error.details["recovery_hints"]
+    assert hint["message"] == 'Remove "kind".'
 
 
 def test_a_statistic_that_contradicts_the_inputs_own_is_refused(runtime: Runtime) -> None:

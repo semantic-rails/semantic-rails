@@ -1424,6 +1424,29 @@ def _scoped_predicate(item: Any, path: str, context: CallContext) -> Any:
     return _predicate(node, path)
 
 
+def _statistic_beside_non_measure_fix(name: Any, stated: dict[str, Any]) -> str:
+    """The hint for a statistic written beside an input that is not a measure: lead with the
+    measure input that compares it (the statistic as the call states it), then what removing
+    it keeps. The metric's measure is not named: the caller may not see it."""
+    aggregation = stated.get("aggregation")
+    statistic = aggregation if isinstance(aggregation, str) else "statistic"
+    example = {
+        "kind": "measure",
+        "measure": "measure.<id>",
+        "aggregation": "<statistic>",
+        **stated,
+    }
+    metric = isinstance(name, str) and name.strip().startswith("metric.")
+    inspect = f" (inspect {name.strip()} for the measure it reads)" if metric else ""
+    *rest, last = stated
+    keys = f"{', '.join(rest)} and {last}" if rest else last
+    return (
+        f'To compare each entity\'s {statistic} of a measure, write "input": '
+        f"{json.dumps(example, default=str)}{inspect}. To compare the "
+        f"{'metric' if metric else 'input'}'s own value, remove {keys}."
+    )
+
+
 def predicate_input(predicate: dict[str, Any], path: str) -> Any:
     """A predicate's input with the statistic written beside it (``aggregation``,
     ``parameters``, ``temporal_role``) moved into it, so the predicate compares the statistic
@@ -1446,11 +1469,7 @@ def predicate_input(predicate: dict[str, Any], path: str) -> Any:
             f"{path}.{key}",
             f"{key} states a measure's statistic, and the predicate's input "
             f"{json.dumps(name, default=str)} is not a measure, so it would be ignored",
-            fix=(
-                f"Remove {key}: the input carries its own statistic. To compare a measure's "
-                f'statistic, write "input": {{"kind": "measure", "measure": "measure.<id>", '
-                f'"{key}": ...}}.'
-            ),
+            fix=_statistic_beside_non_measure_fix(name, stated),
             code="INVALID_METRIC_PREDICATE",
             **{key: stated[key]},
         )
