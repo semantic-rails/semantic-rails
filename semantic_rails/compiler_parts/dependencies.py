@@ -7,7 +7,7 @@ ContextVar keeps concurrent and recursively lowered queries isolated.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -39,6 +39,8 @@ class BindingDependencies:
     cuts: list[Cut] = field(default_factory=list)
     temporal_roles: dict[str, set[str]] = field(default_factory=dict)
     unresolved: set[str] = field(default_factory=set)
+    # once_per_binding's results: (owner, config, value, the object ids it recorded).
+    once: dict[tuple[int, int], tuple[Any, Any, Any, frozenset[str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -219,7 +221,11 @@ def project_is_cut() -> bool:
 def measure_objects(measure_id: str) -> Iterator[None]:
     plan = _plan.get()
     targets = plan.measures.get(measure_id, []) if plan is not None else []
-    with holding(_targets, (*_targets.get(), *targets)):
+    current = _targets.get()
+    # Lowering a measure's expression enters here at every node: a target already held stays
+    # once, or every read would update it once per level of nesting.
+    added = [target for target in targets if not any(target is held for held in current)]
+    with holding(_targets, (*current, *added)):
         yield
 
 
@@ -327,6 +333,24 @@ def record_bound_object(row: Any, config: PackageConfig) -> None:
 
 
 T = TypeVar("T")
+
+
+def once_per_binding(owner: Any, config: PackageConfig, compute: Callable[[], T]) -> T:
+    """``compute()`` for ``owner`` once per binding: a later call returns the first result and
+    records again the objects the first one recorded, so it reads as the walk it skips."""
+    dependencies = _active.get()
+    if dependencies is None:
+        return compute()
+    key = (id(owner), id(config))
+    held = dependencies.once.get(key)
+    if held is not None and held[0] is owner and held[1] is config:
+        record_ids(set(held[3]))
+        return held[2]
+    recorded: set[str] = set()
+    with capture_objects(recorded):
+        value = compute()
+    dependencies.once[key] = (owner, config, value, frozenset(recorded))
+    return value
 
 
 class _BindingIndex(dict[str, T]):

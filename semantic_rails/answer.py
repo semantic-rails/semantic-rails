@@ -766,7 +766,13 @@ def _freshness_as_of(freshness_rows: list[dict[str, Any]]) -> str:
 
 def _walk_expr_payload(expr: dict[str, Any]) -> list[dict[str, Any]]:
     """``expr`` and every node under it, parents first."""
-    return [expr, *(row for child in _expr_children(expr) for row in _walk_expr_payload(child))]
+    rows: list[dict[str, Any]] = []
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        rows.append(node)
+        stack.extend(reversed(_expr_children(node)))
+    return rows
 
 
 def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[str, Any]]:
