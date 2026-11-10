@@ -14,6 +14,7 @@ from ..period_completeness import incomplete_period_why
 from ._base import _object_by_id, _runtime_composition_terms
 from .call import Call, QueryBuilder
 from .coverage import _dict_nodes
+from .generators import _matched_value_rows
 from .groupings import _asked_grain, _grain_text, _requested_grouping_terms, _time_spec
 from .intent_ir import IntentIR
 from .time_reference import time_policy_context
@@ -132,7 +133,8 @@ def _unplaced_grain_why(runtime: Any, question: str, query: Call) -> dict[str, A
         return None
     if not _asked_grain(question):  # blanking words can only take a grain away
         return None
-    asked = _time_spec("unplaced", _grain_text(runtime, question, query))
+    rows = _matched_value_rows(runtime, query, question) if query.where else []
+    asked = _time_spec("unplaced", _grain_text(runtime, question, query, rows))
     if asked is None or not asked.grain:
         return None
     config = runtime._config

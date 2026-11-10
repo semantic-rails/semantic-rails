@@ -95,20 +95,18 @@ def _blanked(text: str, start: int, end: int) -> str:
     return f"{text[:start]}{' ' * (end - start)}{text[end:]}"
 
 
-def _grain_text(
-    runtime: Any, question: str, query: Call, value_rows: list[dict[str, Any]] | None = None
-) -> str:
+def _grain_text(runtime: Any, question: str, query: Call, value_rows: list[dict[str, Any]]) -> str:
     """The question as its time grain is read: without the words ``query`` already spends.
 
     Those are the names of the objects it names ("Monthly active users", "Revenue per day"),
-    apart from its clock, and the filter values it keeps (``value_rows``, or those ``_matched_value_rows`` finds):
-    "monthly" in "total amount for monthly billing period" is a billing period, not a grain.
-    Each is blanked in place, so the other words still ask: "for monthly billing period by
-    month" asks by month. The words read are ``_time_spec``'s own, never more.
+    apart from its clock, and the filter values it keeps (``value_rows``, the rows
+    ``_matched_value_rows`` matched): "monthly" in "total amount for monthly billing period" is
+    a billing period, not a grain. Each is blanked in place, so the other words still ask: "for
+    monthly billing period by month" asks by month. The words read are ``_time_spec``'s own,
+    never more.
     """
 
     from .coverage import _catalog_rows, _referenced_ids  # noqa: WPS433
-    from .generators import _matched_value_rows  # noqa: WPS433
 
     text = str(question or "")
     # A clock's own name stays: "by order date" is how a question asks for its series.
@@ -123,11 +121,7 @@ def _grain_text(
         for condition in (item.conditions if isinstance(item, EntityFilter) else [item])
         for value in condition.values
     ]
-    if not kept:
-        return text
-    if value_rows is None:
-        value_rows = _matched_value_rows(runtime, query, question)
-    for row in value_rows:
+    for row in value_rows if kept else []:
         span = row.get("matched_span")
         if span is not None and (str(row["dimension_id"]).strip(), row["value"]) in kept:
             text = _blanked(text, *span)
