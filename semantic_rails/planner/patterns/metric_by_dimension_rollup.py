@@ -44,6 +44,7 @@ from ..groupings import (
     _entity_grouping,
     _entity_stand_ins,
     _explicit_grain,
+    _grain_text,
     _maybe_group_by,
     _named_run,
     _names_whole_entity,
@@ -244,6 +245,31 @@ def _whose_rows_why(word: str, query: Call, entities: list[Any]) -> dict[str, An
     return _clarify_why([gap], {"question": f"Whose rows: {labels}?", "options": options})
 
 
+def _asked_time(role: str, text: str, clock: str, grain_text: str | None = None) -> Time | None:
+    """The time block the question asks for on ``role``, the clock read for the draft's target.
+
+    ``grain_text`` (``_grain_text``) is where the grain is read; the window and the cues are
+    read from ``text``.
+    """
+
+    lowered = str(text or "").lower()
+    if (
+        not _explicit_grain(text, clock)
+        and not _time_window(lowered).relative_unit  # e.g. "last 7 days", "today"
+        and not _time_bounds_from_text(text)
+        and not any(phrase in lowered for phrase in _TIME_SERIES_PHRASES)
+        and not _unresolved_time_phrases(text)
+    ):
+        # A default temporal role is a valid execution anchor, not
+        # evidence that the user requested a series. "total orders",
+        # "revenue", and "AOV" are all-time scalars; "orders by store"
+        # is one row per store. A synthetic month bucket changes every
+        # one of those semantic shapes, so time only stays when the
+        # intent carries a real time cue.
+        return None
+    return _time_spec(role, text, clock, grain_text=grain_text)
+
+
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
     config = runtime._config
     question = text
@@ -251,7 +277,6 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if named is not None:
         text = named[1]
         terms = set(_tokens(text))
-    lowered = str(text or "").lower()
     target_focus = _target_focus_text(text)
     target_focus_terms = set(_tokens(target_focus))
     target_terms = (
@@ -321,6 +346,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # measures.
     is_top, top_n = _top_n_intent(text)
     time_spec: Time | None = None
+    clock = ""
     # A metric that declares no clock is read on the one its measures share (``object_time_axis``).
     temporal_role, _clocks = object_time_axis(config, str(getattr(target, "id", "")))
     if temporal_role:
@@ -329,21 +355,8 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         role = _object_by_id(config.temporal_roles, temporal_role)
         clock = str(getattr(role, "label", "") or "")
         group_by = _maybe_group_by(config, text, target_terms=target_terms, clock=clock, each=True)
-        time_spec = _time_spec(temporal_role, text, clock)
-        if (
-            not _explicit_grain(text, clock)
-            and not _time_window(lowered).relative_unit  # e.g. "last 7 days", "today"
-            and not _time_bounds_from_text(text)
-            and not any(phrase in lowered for phrase in _TIME_SERIES_PHRASES)
-            and not _unresolved_time_phrases(text)
-        ):
-            # A default temporal role is a valid execution anchor, not
-            # evidence that the user requested a series. "total orders",
-            # "revenue", and "AOV" are all-time scalars; "orders by store"
-            # is one row per store. A synthetic month bucket changes every
-            # one of those semantic shapes, so time only stays when the
-            # intent carries a real time cue.
-            time_spec = None
+        # Provisional: the grain is read again once the draft's filter values are known.
+        time_spec = _asked_time(temporal_role, text, clock)
 
     target_id = str(getattr(target, "id", ""))
     is_measure = target_id.startswith("measure.")
@@ -374,15 +387,14 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     builder.groups(group_by)
     listed, ask = ([], {}) if is_top else _listed(runtime, question, builder.build(), target)
     drafted = builder.build()
-    builder = QueryBuilder(
-        config,
-        _normalize_value_filters(
-            drafted,
-            _matched_value_rows(runtime, drafted, question),
-            text=question,
-            config=config,
-        ),
-    )
+    value_rows = _matched_value_rows(runtime, drafted, question)
+    filtered = _normalize_value_filters(drafted, value_rows, text=question, config=config)
+    if temporal_role:
+        # The grain is read without the words the draft spends: the names it selects and
+        # groups by, and the filter values it keeps ("for monthly billing period").
+        grain_text = _grain_text(runtime, question, filtered, value_rows)
+        time_spec = _asked_time(temporal_role, text, clock, grain_text)
+    builder = QueryBuilder(config, filtered).time(time_spec)
     if is_top:
         builder.order(drafted.select[0].alias, direction).limit(top_n)
     elif not listed:

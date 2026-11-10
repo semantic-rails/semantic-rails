@@ -11,6 +11,7 @@ from ._base import (
     _dimension,
     _grouped_dimensions,
     _last_token,
+    _name_matches,
     _object_by_id,
     _requested_grouping_spans,
     _runtime_composition_terms,
@@ -19,7 +20,7 @@ from ._base import (
     _strip_leading_rank_count,
     _tokens,
 )
-from .call import Call, Time
+from .call import Call, EntityFilter, Time
 from .time_phrases import _TIME_UNITS, _names_time_axis
 from .time_windows import _time_window
 from .visibility import discovery_query, visible_dimensions, visible_value_domains
@@ -59,21 +60,77 @@ def _explicit_grain(text: str, clock: str = "") -> str:
     return ""
 
 
-def _time_spec(role: str, text: str, clock: str = "") -> Time | None:
-    """The time block a question asks for on ``role``: the grain it names (a series it asks
-    for "over time" is monthly) and its window. A window without a grain is one total; a
-    question with neither has no time block."""
+def _asked_grain(text: str, clock: str = "", reading: Any = None) -> str:
+    """The grain ``text`` names (a series it asks for "over time" is monthly), "" when none."""
 
-    reading = _time_window(text)
+    reading = _time_window(text) if reading is None else reading
     # A unit a window names ("last week") asks for no buckets of it.
     lowered = str(text or "").lower()
     for start, end in sorted(reading.spans, reverse=True):
-        lowered = f"{lowered[:start]}{' ' * (end - start)}{lowered[end:]}"
-    grain = _explicit_grain(lowered, clock) or ("month" if _TREND_CUE_RE.search(lowered) else "")
+        lowered = _blanked(lowered, start, end)
+    return _explicit_grain(lowered, clock) or ("month" if _TREND_CUE_RE.search(lowered) else "")
+
+
+def _time_spec(
+    role: str, text: str, clock: str = "", *, grain_text: str | None = None
+) -> Time | None:
+    """The time block a question asks for on ``role``: the grain it names (a series it asks
+    for "over time" is monthly) and its window. A window without a grain is one total; a
+    question with neither has no time block. With ``grain_text`` (``_grain_text``), the grain
+    is read from it and the window from ``text``."""
+
+    reading = _time_window(text)
+    grain = (
+        _asked_grain(text, clock, reading)
+        if grain_text is None
+        else _asked_grain(grain_text, clock)
+    )
     window = reading.bounds
     if not role or not (grain or window):
         return None
     return Time(temporal_role=role, grain=grain).with_window(window)
+
+
+def _blanked(text: str, start: int, end: int) -> str:
+    return f"{text[:start]}{' ' * (end - start)}{text[end:]}"
+
+
+def _grain_text(
+    runtime: Any, question: str, query: Call, value_rows: list[dict[str, Any]] | None = None
+) -> str:
+    """The question as its time grain is read: without the words ``query`` already spends.
+
+    Those are the names of the objects it names ("Monthly active users", "Revenue per day")
+    and the filter values it keeps (``value_rows``, or those ``_matched_value_rows`` finds):
+    "monthly" in "total amount for monthly billing period" is a billing period, not a grain.
+    Each is blanked in place, so the other words still ask: "for monthly billing period by
+    month" asks by month. The words read are ``_time_spec``'s own, never more.
+    """
+
+    from .coverage import _catalog_rows, _referenced_ids  # noqa: WPS433
+    from .generators import _matched_value_rows  # noqa: WPS433
+
+    text = str(question or "")
+    referenced = set(_referenced_ids(query))
+    for row in _catalog_rows(runtime._config):
+        if str(getattr(row, "id", "")) in referenced:
+            for _size, start, end in _name_matches(row, text.lower()):
+                text = _blanked(text, start, end)
+    kept = [
+        (condition.field, value)
+        for item in query.where
+        for condition in (item.conditions if isinstance(item, EntityFilter) else [item])
+        for value in condition.values
+    ]
+    if not kept:
+        return text
+    if value_rows is None:
+        value_rows = _matched_value_rows(runtime, query, question)
+    for row in value_rows:
+        span = row.get("matched_span")
+        if span is not None and (str(row["dimension_id"]).strip(), row["value"]) in kept:
+            text = _blanked(text, *span)
+    return text
 
 
 # Cues that ask for a series over time even without a named grain.
