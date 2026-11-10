@@ -162,11 +162,9 @@ and fails unless the two records are byte-identical with no compile crashes. Fil
 assigned longest first
 to the lightest shard, with paths and shard indices breaking ties.
 `tests/shard_durations.json` records summed
-per-test seconds for each file, and `test_ci_hygiene` fails when a file under
-`tests/semantic_rails/` has no entry: a new file needs an estimate (its summed local test
-seconds) until the next refresh. Files without an entry, such as `tests/integration`, use
-the median cost. Within a shard, xdist's `worksteal` scheduler lets idle workers take
-queued tests, so long parametrized cases do not leave the last worker running alone.
+per-test seconds for each file. Don't edit it in a pull request: a file without an entry,
+such as a new test file, costs the median until the weekly refresh records it.
+Within a shard, xdist's `worksteal` scheduler lets idle workers take queued tests, so long parametrized cases do not leave the last worker running alone.
 Ownership uses the full on-disk test-file inventory so targeted runs and the flake
 guard retain the full suite's assignment. Set `SR_SHARD_COUNT`
 and zero-based `SR_SHARD_INDEX` to reproduce a shard locally; unset both to run
@@ -179,9 +177,10 @@ the suite before merging, while pushes retain lint, security, documentation and
 Postgres checks. Direct pushes therefore rely on branch protection to require
 pull requests and the merge queue.
 
-Refresh the table when a backend shard exceeds about 15 minutes or test costs
-change substantially. Download the `backend-results-py*` artifacts from a complete
-CI run with `gh run download <run-id> --pattern 'backend-results-py*' --dir /tmp/backend-reports`,
+A weekly workflow (`.github/workflows/shard-durations.yml`) rebuilds the table from the
+newest green merge-queue run's JUnit reports and opens one pull request when it changed.
+To refresh by hand (a backend shard over about 15 minutes, say), download the
+`backend-results-py*` artifacts from a complete CI run with `gh run download <run-id> --pattern 'backend-results-py*' --dir /tmp/backend-reports`,
 then run `uv run python scripts/update_shard_durations.py /tmp/backend-reports/*/backend-results.xml`.
 Supply reports from all Python versions (or multiple representative runs): the
 script retains the slowest observed total for each file and prints shard estimates
