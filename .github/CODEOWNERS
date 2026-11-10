@@ -19,6 +19,7 @@
 /pyproject.toml @wtremml18
 /semantic_rails/__init__.py @wtremml18
 /.github/workflows/ci.yml @wtremml18
+/.github/workflows/dependency-audit.yml @wtremml18
 /.github/workflows/publish.yml @wtremml18
 /.github/workflows/release-readiness.yml @wtremml18
 /scripts/changelog_fragments.py @wtremml18

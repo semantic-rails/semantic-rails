@@ -228,6 +228,14 @@ audits every extra declared in `pyproject.toml` separately, except the aggregate
 `clickhouse` can receive exceptions; `server`, `repl`, and core-reachable packages
 can never receive an exception.
 
+On a pull request or merge group the audit runs in diff mode (`--base HEAD^1`): it
+fails only on findings the base branch doesn't already have, and prints the others
+as `PRE-EXISTING`. So an advisory published against a dependency that is already
+locked doesn't fail unrelated pull requests. It fails the full audit instead, which
+runs nightly and on main (`.github/workflows/dependency-audit.yml`) and opens a
+"Dependency audit fails on main" issue until a fix or an exception merges. Fix it
+in its own pull request, usually the Dependabot security update.
+
 When an upstream connector caps a dependency below its patched version, add one
 `[[exceptions]]` entry per advisory to `security/audit-exceptions.toml`, with `id`,
 `package`, the affected connector `extras`, `blocked_by` (`capping-package: specifier`),
