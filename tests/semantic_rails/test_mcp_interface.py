@@ -240,7 +240,8 @@ def test_mcp_adapter_metadata_tools_match_public_v1_payloads(runtime_factory):
         assert catalog["request_id"] == "mcp-catalog"
         assert catalog["api_version"] == "v2"
         assert catalog["package_id"] == "jaffle_shop"
-        assert "dimension.jaffle_store_name" in catalog["catalog"]["dimension_ids"]
+        store = catalog["catalog"]["models"]["entity.jaffle_store"]
+        assert "dimension.jaffle_store_name" in store["dimensions"]
         assert discovered["ok"] is True
         assert "stage" not in discovered  # an echo of the call
         assert discovered["measures"]
