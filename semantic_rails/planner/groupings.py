@@ -100,8 +100,8 @@ def _grain_text(
 ) -> str:
     """The question as its time grain is read: without the words ``query`` already spends.
 
-    Those are the names of the objects it names ("Monthly active users", "Revenue per day")
-    and the filter values it keeps (``value_rows``, or those ``_matched_value_rows`` finds):
+    Those are the names of the objects it names ("Monthly active users", "Revenue per day"),
+    apart from its clock, and the filter values it keeps (``value_rows``, or those ``_matched_value_rows`` finds):
     "monthly" in "total amount for monthly billing period" is a billing period, not a grain.
     Each is blanked in place, so the other words still ask: "for monthly billing period by
     month" asks by month. The words read are ``_time_spec``'s own, never more.
@@ -111,7 +111,8 @@ def _grain_text(
     from .generators import _matched_value_rows  # noqa: WPS433
 
     text = str(question or "")
-    referenced = set(_referenced_ids(query))
+    # A clock's own name stays: "by order date" is how a question asks for its series.
+    referenced = set(_referenced_ids(query)) - {row.id for row in runtime._config.temporal_roles}
     for row in _catalog_rows(runtime._config):
         if str(getattr(row, "id", "")) in referenced:
             for _size, start, end in _name_matches(row, text.lower()):

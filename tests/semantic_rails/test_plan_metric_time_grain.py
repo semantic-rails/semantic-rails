@@ -565,3 +565,24 @@ def test_each_hold_names_why_no_clock_answers_the_series(
         "temporal_roles": clocks,
     }
     assert why["recovery_hints"] == [{"kind": "choose_temporal_role", "message": hint}]
+
+
+@pytest.mark.parametrize(
+    ("question", "window"),
+    [
+        ("revenue by order date", {}),
+        ("revenue by order date in March 2017", {"start": "2017-03-01", "end": "2017-04-01"}),
+    ],
+)
+def test_the_clocks_own_name_still_asks_for_its_series(
+    runtime_factory: Any, question: str, window: dict[str, str]
+) -> None:
+    """The words the draft spends never include its clock's: "by order date" is a daily series."""
+    runtime = runtime_factory("tpch_sf1_showcase")
+    try:
+        payload = plan_payload(runtime, intent=question, now=NOW)
+    finally:
+        runtime.close()
+    assert payload["status"] == "ok", payload
+    time = {"temporal_role": "temporal_role.tpch_order_date", "grain": "day", **window}
+    assert payload["best"]["query"]["time"] == time, payload["best"]["query"]
