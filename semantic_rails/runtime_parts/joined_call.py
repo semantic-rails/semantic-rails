@@ -26,7 +26,7 @@ from ..answer import (
     minimal_route,
 )
 from ..ast import PERIOD_PARTIAL, TIME_AXIS
-from ..compiler import _prepare
+from ..compiler import _prepare, compile_query
 from ..compiler_parts.joined_parts import (
     IN,
     KEPT_ROWS,
@@ -48,7 +48,7 @@ from ..policies import enforce_query_policies
 from ..query_call import in_part, refusal
 from ..request_context import policy_identity
 from ..top_n import limit_order
-from .assumptions import hidden_columns, split_hidden
+from .assumptions import hidden_columns, refuse_hidden_governors, split_hidden
 from .responses import (
     _ANSWER_KEYS,
     apply_response_verbosity,
@@ -347,9 +347,13 @@ def _compile_part(
     runtime: Any, index: int, payload: dict[str, Any], policy_context: dict[str, Any]
 ) -> _Part:
     """One part, as ``Runtime._enforced_compile`` compiles a call (bound on the caller's view,
-    the policy gate, then the compile), lowered as a part. Its compile is cached as a call's is,
-    on the caller's view, identity and package, under a key marked as a part's: a part's
-    statement is another one than the call's."""
+    the policy gate, then the compile), lowered as a part, never from the compile cache: the
+    cache keys on the call alone, and a part's statement is another one. (Each part compiles
+    once per call; reading a cached compile copies it, which costs more than compiling a part.)
+    """
+    from .answer_warnings import refuse_closing_day_zone
+
+    config = runtime._config
     with reading_part_domain() as domain:
         binding = runtime._bind(payload, policy_context)
     policy_effects = enforce_query_policies(
@@ -359,9 +363,9 @@ def _compile_part(
         query=payload,
         binding=binding,
     )
-    compiled = runtime._compile(
-        payload, policy_context=policy_context, binding=binding, joined_part=True
-    )
+    refuse_hidden_governors(config, binding.plan.query)
+    compiled = compile_query(config, runtime.registry, payload, binding=binding)
+    refuse_closing_day_zone(config, compiled)
     if not domain.taken:
         raise SemanticLayerError(
             "REWRITE_NOT_SUPPORTED",

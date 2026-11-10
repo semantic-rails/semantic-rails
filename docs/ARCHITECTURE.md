@@ -655,11 +655,9 @@ query path and includes the loaded semantic identity in its provenance.
 
 The runtime memoizes compiled plans behind a cache keyed on a sha256 of the
 normalized query, package fingerprint, warehouse, render profile, policy
-context, trusted attribute values, aggregate-routing switch, the caller's hidden
-objects, and whether the call is lowered as a part of a joined call
+context, trusted attribute values, and aggregate-routing switch
 (`semantic_rails.cache.compilation_cache_key`). Requests whose attribute values
-or views differ never share a cached plan, and a part's plan (whose statement
-reads every key of its joined call) is never a call's.
+differ never share a cached plan.
 The default backend is
 `LruCompiledSqlCache` — an in-process LRU sized via the
 `SEMANTIC_RAILS_COMPILE_CACHE_SIZE` env var (default 512). For the OSS

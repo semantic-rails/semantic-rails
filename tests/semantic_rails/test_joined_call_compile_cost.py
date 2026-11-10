@@ -1,24 +1,19 @@
 """A joined call's compile grows with its parts, not faster: each part is compiled and rendered
-once (a repeat of the call reads its parts from the compile cache), the joined statement is
-rendered once, each key is read once per part, and each count the answer states is one term.
-The one term per pair of parts is the count of the keys both have, which the pairwise counts
-of ``PARTS_JOINED`` need; nothing else grows with the pairs."""
+once, the joined statement is rendered once, each key is read once per part, and each count the
+answer states is one term. The one term per pair of parts is the count of the keys both have,
+which the pairwise counts of ``PARTS_JOINED`` need; nothing else grows with the pairs."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from semantic_rails import compiler
-from semantic_rails.cache import CachedCompilation, compilation_cache_key
-from semantic_rails.embedding import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PackageConfig
-from tests.semantic_rails.hidden_absent import visibility_policy
 
 STORE = "dimension.jaffle_store_name"
 NOW = "2026-10-05T06:00:00Z"
@@ -33,21 +28,6 @@ def _part(index: int) -> dict[str, Any]:
 
 def _call(parts: int) -> dict[str, Any]:
     return {"parts": [_part(index) for index in range(parts)], "join": {"on": [[STORE] * parts]}}
-
-
-class _Recording:
-    """A compile cache that keeps every entry and records the keys put."""
-
-    def __init__(self) -> None:
-        self.store: dict[str, CachedCompilation] = {}
-        self.puts: list[str] = []
-
-    def get(self, key: str) -> CachedCompilation | None:
-        return self.store.get(key)
-
-    def put(self, key: str, value: CachedCompilation) -> None:
-        self.puts.append(key)
-        self.store[key] = value
 
 
 @pytest.fixture()
@@ -84,7 +64,7 @@ def test_the_statement_grows_with_the_parts_and_one_count_per_pair(runtime):
     assert sql[6].count("COALESCE(part_0.") == 1
 
 
-def test_each_part_renders_once_and_a_repeat_reads_the_parts_from_the_cache(runtime, monkeypatch):
+def test_each_part_renders_once_and_the_joined_statement_once(runtime, monkeypatch):
     rendered: list[int] = []
     render = compiler.render_select_for_profile
 
@@ -93,62 +73,10 @@ def test_each_part_renders_once_and_a_repeat_reads_the_parts_from_the_cache(runt
         return render(*args, **kwargs)
 
     monkeypatch.setattr(compiler, "render_select_for_profile", counted)
-    call = _call(4)
-    first = runtime.validate(call, now=NOW)
-    renders_first = len(rendered)
-    second = runtime.validate(call, now=NOW)
-
-    assert first["ok"] and second["ok"]
-    assert renders_first == 4 + 1  # each part's statement, then the joined one
-    assert len(rendered) - renders_first == 1  # the joined statement; the parts are cached
-    assert runtime.query(call, now=NOW)["rows"]
-    assert len(rendered) - renders_first == 2
-
-
-def test_a_parts_compile_is_never_the_calls_and_never_another_callers(package):
-    """A part is cached under the call's own key fields (package, call, warehouse, profile,
-    identity, roles, attribute values, the caller's hidden set) and a mark that it is a part:
-    the call alone never reads a part's statement, a part never reads the call's, and a caller
-    with another view never reads either."""
-    config, path = package
-    governed = replace(
-        config,
-        semantic_policies=[
-            *config.semantic_policies,
-            visibility_policy("hidden", "measure.jaffle.revenue_usd"),
-        ],
-    )
-    runtime = Runtime.from_config(governed, source_path=str(path))
-    cache = _Recording()
-    runtime.set_compile_cache(cache)
-    try:
-        alone = runtime.compile(_part(0), now=NOW)["rendered_sql"]
-        joined = runtime.compile(_call(2), now=NOW)["rendered_sql"]
-        assert runtime.compile(_part(0), now=NOW)["rendered_sql"] == alone
-        assert len(cache.puts) == 3  # the call alone, then each part as a part
-
-        support = RequestContext(roles=("support",))
-        seen = set(cache.puts)
-        assert runtime.compile(_call(2), now=NOW, context=support)["rendered_sql"] == joined
-        assert len(cache.puts) == 5 and not seen & set(cache.puts[3:])
-
-        runtime.set_compile_cache(_Recording())
-        assert runtime.compile(_call(2), now=NOW)["rendered_sql"] == joined
-        assert runtime.compile(_part(0), now=NOW)["rendered_sql"] == alone
-    finally:
-        runtime.close()
-
-
-def test_the_cache_key_marks_a_part():
-    def key(**marked: bool) -> str:
-        return compilation_cache_key(
-            package_hash="package",
-            normalized_query={"select": ["measure.m"], "group_by": ["dimension.d"]},
-            warehouse="duckdb",
-            relation_profile="default",
-            policy_context={},
-            aggregate_routing=False,
-            **marked,
-        )
-
-    assert key() == key(joined_part=False) != key(joined_part=True)
+    for parts in (2, 4, 8):
+        rendered.clear()
+        assert runtime.validate(_call(parts), now=NOW)["ok"]
+        assert len(rendered) == parts + 1  # each part's own statement, then the joined one
+    rendered.clear()
+    assert runtime.query(_call(8), now=NOW)["rows"]
+    assert len(rendered) == 8 + 1

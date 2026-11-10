@@ -112,13 +112,11 @@ def compilation_cache_key(
     policy_context: Mapping[str, Any],
     aggregate_routing: bool,
     visibility: Iterable[str] = (),
-    joined_part: bool = False,
 ) -> str:
     # Trusted attribute values partition the key explicitly (the object's repr
     # names keys only), so no compiled plan is reused across attribute values.
     # JSON keeps 1, true, "1" and ["1"] distinct. ``visibility`` is the caller's hidden set:
-    # a plan compiled on one caller's view is never reused for another's. ``joined_part``: the
-    # call lowered as a part of a joined call, whose statement is another one than the call's.
+    # a plan compiled on one caller's view is never reused for another's.
     attributes = context_from_policy_context(policy_context).attributes
     return stable_json_hash(
         {
@@ -137,6 +135,5 @@ def compilation_cache_key(
             "trusted_roles": list(attributes.roles),
             "aggregate_routing": aggregate_routing,
             "visibility": stable_json_hash(sorted(visibility)),
-            "joined_part": joined_part,
         }
     )

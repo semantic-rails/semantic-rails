@@ -1198,9 +1198,7 @@ their rows in one statement:
   part's groups overlap, as that part's own `REWRITE_APPLIED` says, is not stated to).
   `validate` and `sql` state the join without counts. The warehouse runs once.
 - **Cost.** The statement holds each part's statement once and reads each key once per part, so
-  it grows with the parts and their keys, plus one count per pair of parts (`unmatched`). Each
-  part's compile is cached as a call's is, on the caller's view and identity, so a repeat of the
-  call renders only the joined statement.
+  it grows with the parts and their keys, plus one count per pair of parts (`unmatched`).
 
 ## Inline expression kinds
 

@@ -1645,10 +1645,7 @@ class Runtime:
         *,
         policy_context: dict[str, str],
         binding: BoundQuery | None = None,
-        joined_part: bool = False,
     ) -> dict[str, Any]:
-        """The compiled call, from the compile cache when it holds it. ``joined_part``:
-        ``binding`` lowered the call as a part of a joined call, cached under a key of its own."""
         started = time.perf_counter()
         if binding is not None:
             # After the policy gate, so a policy that refuses the call outright speaks first.
@@ -1669,7 +1666,6 @@ class Runtime:
             policy_context=dict(policy_context),
             aggregate_routing=aggregate_routing_enabled(),
             visibility=self._view().hidden,
-            joined_part=joined_part,
         )
         # Lock policy: hold the cache lock only across the in-memory get/put
         # operations. The compile itself (compile_query) runs unlocked so that
