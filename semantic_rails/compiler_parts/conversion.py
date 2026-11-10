@@ -102,8 +102,10 @@ from .predicate import (
     _predicate_set_fields,
     _predicate_source_query,
     _predicate_where_condition,
+    _reads_window_as_filters,
     _require_predicate_over_rows,
 )
+from .snapshot_reads import reading_source
 
 
 def _conversion_operand_filters(
@@ -664,7 +666,8 @@ def _conversion_predicate_set_ctes(
     with cut_owners():
         with binding_cut():
             _entity_index(config)[predicate.entity]
-        predicate_sql = nested.predicate_source_sql(config, mini_query)
+        with reading_source(windowed=_reads_window_as_filters(scope)):
+            predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")

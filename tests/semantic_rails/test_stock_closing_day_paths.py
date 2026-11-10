@@ -429,3 +429,230 @@ def test_an_untimed_call_without_a_balance_keeps_running_in_utc(tmp_path: Path) 
         ) == [100.0]
     finally:
         runtime.close()
+
+
+# Every statistic of a balance with no time window reads the closing day, as last_value does.
+# Y's January 20 snapshot is the only one that day; W, Z and X last reported earlier.
+SPREAD = (
+    "('W', TIMESTAMP '2020-01-02', 350), ('Z', TIMESTAMP '2020-01-03', 300), "
+    "('X', TIMESTAMP '2020-01-05', 100), ('Y', TIMESTAMP '2020-01-20', 200)"
+)
+STATISTICS = {
+    "avg": "AVG(value)",
+    "median": "MEDIAN(value)",
+    "percentile": "QUANTILE_CONT(value, 0.9)",
+    "min": "MIN(value)",
+    "max": "MAX(value)",
+    "sum": "SUM(value)",
+    "last_value": "SUM(value)",
+}
+
+
+def _statistic(aggregation: str) -> dict:
+    expression: dict = {"kind": "measure", "measure": BALANCE, "aggregation": aggregation}
+    if aggregation == "percentile":
+        expression["parameters"] = {"p": 0.9}
+    return expression
+
+
+@pytest.fixture
+def spread(lowering, tmp_path: Path) -> Iterator[tuple[Runtime, Any]]:
+    """The runtime, and hand SQL on its own copy of the rows."""
+    runtime = _runtime(_package(tmp_path / "x", SPREAD))
+    hand = duckdb.connect()
+    hand.execute(f"CREATE TABLE snap (id VARCHAR, ts TIMESTAMP, value INTEGER); "
+                 f"INSERT INTO snap VALUES {SPREAD}")  # fmt: skip
+    yield runtime, hand
+    runtime.close()
+    hand.close()
+
+
+@pytest.mark.parametrize("aggregation", list(STATISTICS))
+def test_every_statistic_of_an_untimed_balance_reads_the_closing_day(
+    spread: tuple[Runtime, Any], aggregation: str
+) -> None:
+    """With no time window, avg, median, percentile, min and max read the closing day's
+    snapshots, as last_value and sum do: Y's 200. Each account's own last snapshot (W's from
+    January 2 beside Y's) is never read; it gave 237.5, 250, 335, 100 and 350. The answer
+    names the day and the three accounts it left out."""
+    runtime, hand = spread
+    statistic = STATISTICS[aggregation]
+    ((closing, latest),) = hand.execute(
+        f"SELECT (SELECT {statistic} FROM snap WHERE CAST(ts AS DATE) = "
+        "(SELECT CAST(MAX(ts) AS DATE) FROM snap)), "
+        f"(SELECT {statistic} FROM snap WHERE (id, ts) IN (SELECT id, MAX(ts) FROM snap GROUP BY id))"
+    ).fetchall()
+    assert closing != latest
+    result = runtime.query({"select": [{"expression": _statistic(aggregation), "as": "v"}]})
+    assert _values(result) == [float(closing)] == [200.0]
+    assert _by_code(result, "assumptions", CLOSING) == [
+        {
+            "code": CLOSING,
+            "message": f"{BALANCE} is read on its closing day, 2020-01-20, the last day with a "
+            "snapshot: a series with no snapshot that day is not counted, never carried forward "
+            "from an earlier day.",
+            "measure": BALANCE,
+            "outputs": ["v"],
+            "nested": False,
+            "closing_day": "2020-01-20",
+            "periods": 1,
+        }
+    ]
+    assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]
+
+
+def test_a_statistic_of_a_balance_inside_a_predicate_or_a_ratio_reads_the_closing_day(
+    spread: tuple[Runtime, Any],
+) -> None:
+    """Accounts whose average balance is over 150: only Y has a closing-day snapshot, so only
+    Y's flow counts (200; on each account's last snapshot W and Z counted too: 850), and the
+    answer says the read was nested. A ratio and a scoped aggregate of its statistics read
+    that day too."""
+    runtime, _ = spread
+    flow = {"kind": "scoped_aggregate", "measure": "measure.x.flow", "aggregation": "sum",
+            "predicates": [{**OVER_50, "input": _statistic("avg"), "value": 150,
+                            "over": "all_time"}]}  # fmt: skip
+    result = runtime.query({"select": [{"expression": flow, "as": "v"}]})
+    assert _values(result) == [200.0]
+    assert [
+        (row["nested"], row["closing_day"]) for row in _by_code(result, "assumptions", CLOSING)
+    ] == [(True, "2020-01-20")]
+    assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]
+    ratio = {"kind": "ratio", "numerator": _statistic("max"), "denominator": _statistic("min")}
+    scoped = {"kind": "scoped_aggregate", "measure": BALANCE, "aggregation": "avg"}
+    for expression, expected in ((ratio, 1.0), (scoped, 200.0)):
+        result = runtime.query({"select": [{"expression": expression, "as": "v"}]})
+        assert _values(result) == [expected]
+        assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]
+
+
+# Y reports again on February 10, the window's closing day; W, Z and X last reported in January.
+WINDOWED = f"{SPREAD}, ('Y', TIMESTAMP '2020-02-10', 220)"
+JAN_FEB = {"temporal_role": "temporal_role.x_snap_ts", "start": "2020-01-01", "end": "2020-03-01"}
+
+
+@pytest.fixture
+def windowed(lowering, tmp_path: Path) -> Iterator[tuple[Runtime, Any]]:
+    """The runtime, with a governed average balance, and hand SQL on its own copy of the rows."""
+    root = _package(tmp_path / "x", WINDOWED)
+    with (root / "metrics" / "metrics.yml").open("a") as metrics:
+        metrics.write("  avg_report: {kind: aggregate, measure: balance, aggregation: avg, "
+                      "value_type: number}\n")  # fmt: skip
+    runtime = _runtime(root)
+    hand = duckdb.connect()
+    hand.execute(f"CREATE TABLE snap (id VARCHAR, ts TIMESTAMP, value INTEGER); "
+                 f"INSERT INTO snap VALUES {WINDOWED}")  # fmt: skip
+    yield runtime, hand
+    runtime.close()
+    hand.close()
+
+
+def _flow_of_accounts_over(hand: Any, statistic: str, threshold: int) -> list[float]:
+    """Hand SQL: each month's flow of the accounts whose statistic of their last snapshot in
+    January and February is over ``threshold``."""
+    rows = hand.execute(
+        "WITH latest AS (SELECT id, value FROM snap WHERE (id, ts) IN "
+        "(SELECT id, MAX(ts) FROM snap WHERE ts >= '2020-01-01' AND ts < '2020-03-01' "
+        f"GROUP BY id)), kept AS (SELECT id FROM latest GROUP BY id HAVING {statistic} > "
+        f"{threshold}) SELECT DATE_TRUNC('month', ts), SUM(value) FROM snap "
+        "WHERE id IN (SELECT id FROM kept) GROUP BY 1 ORDER BY 1"
+    ).fetchall()
+    return [float(value) for _, value in rows]
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "statistic"), [("avg", "AVG(value)"), ("max", "MAX(value)")]
+)
+def test_a_statistic_of_a_balance_in_a_windowed_predicate_reads_the_window(
+    windowed: tuple[Runtime, Any], aggregation: str, statistic: str
+) -> None:
+    """Flow from accounts whose average (or highest) balance over January and February is over
+    150: a predicate read ``over: "window"`` reads each account's last snapshot in the window,
+    as the same statistic with that window in the call does, so W, Z and Y count (850 in
+    January, 220 in February), not only Y, the one account with a snapshot on February 10. The
+    balance itself in the same predicate still closes on that day and says so."""
+    runtime, hand = windowed
+    flow = {"kind": "scoped_aggregate", "measure": "measure.x.flow", "aggregation": "sum",
+            "predicates": [{**OVER_50, "input": _statistic(aggregation), "value": 150,
+                            "over": "window"}]}  # fmt: skip
+    call = {"select": [{"expression": flow, "as": "v"}], "time": JAN_FEB}
+    total = runtime.query(call)
+    by_month = runtime.query({**call, "time": {**JAN_FEB, "grain": "month"}})
+    expected = _flow_of_accounts_over(hand, statistic, 150)
+    assert _values(by_month) == expected == [850.0, 220.0]
+    assert _values(total) == [sum(expected)]
+    for result in (total, by_month):
+        assert _by_code(result, "assumptions", CLOSING) == []
+    # The call's own window reads the same snapshots: W, Z, X and Y's February 220.
+    own = runtime.query({"select": [{"expression": _statistic(aggregation), "as": "v"}],
+                         "time": JAN_FEB})  # fmt: skip
+    ((same,),) = hand.execute(
+        f"SELECT {statistic} FROM snap WHERE (id, ts) IN (SELECT id, MAX(ts) FROM snap GROUP BY id)"
+    ).fetchall()
+    assert _values(own) == [float(same)]
+    balance = {**flow, "predicates": [{**OVER_50, "value": 150, "over": "window"}]}
+    closed = runtime.query({"select": [{"expression": balance, "as": "v"}], "time": JAN_FEB})
+    assert _values(closed) == [420.0]  # Y alone: 200 + 220
+    assert [
+        (row["nested"], row["closing_day"]) for row in _by_code(closed, "assumptions", CLOSING)
+    ] == [(True, "2020-02-10")]
+
+
+def test_a_governed_statistic_in_a_windowed_entity_filter_reads_the_window(
+    windowed: tuple[Runtime, Any],
+) -> None:
+    """The same filter as an entity filter on a governed average balance, by month: W, Z and Y
+    count, as hand SQL over each account's last snapshot in the window gives, and no closing
+    day is read."""
+    runtime, hand = windowed
+    having = [{"field": "metric.x.avg_report", "op": "gt", "value": 150}]
+    result = runtime.query(
+        {
+            "select": [{"expression": "measure.x.flow", "as": "v"}],
+            "where": [{"entity": "entity.x_account", "having": having, "over": "window"}],
+            "time": {**JAN_FEB, "grain": "month"},
+        }
+    )
+    assert _values(result) == _flow_of_accounts_over(hand, "AVG(value)", 150) == [850.0, 220.0]
+    assert _by_code(result, "assumptions", CLOSING) == []
+
+
+@pytest.mark.parametrize(("aggregation", "own_window"), [("avg", 150.0), ("max", 200.0)])
+def test_a_statistic_of_a_balance_closing_in_another_zone_is_refused_as_the_balance_is(
+    tmp_path: Path, aggregation: str, own_window: float
+) -> None:
+    """With no window, a statistic of a Los Angeles balance on a timestamp clock closes on
+    that clock's day, as the balance does, so a call that runs in UTC refuses it the same way
+    and names the zone. Read over a window on its own clock it answers, as before: each
+    account's last snapshot in the window."""
+    runtime = _runtime(_package(tmp_path / "x", clock=LA))
+    try:
+        call = {"select": [{"expression": _statistic(aggregation), "as": "v"}]}
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(call)
+        assert caught.value.code == "MIXED_TIME_ROLES"
+        assert caught.value.details == {
+            "reason": "closing_day_zone",
+            "measure": BALANCE,
+            "clock_zone": "America/Los_Angeles",
+            "time_zone": "UTC",
+        }
+        assert str(caught.value) == (
+            f"{BALANCE} is a balance read on its closing day in America/Los_Angeles, its clock's "
+            "zone, but this query runs in UTC, so its day could be another. Give the call a time "
+            "window on the balance's own clock (time.temporal_role) so it runs in that zone. "
+            f"Over a window, {aggregation} reads each series' last snapshot in it, not one "
+            "closing day."
+        )
+        balance = {"select": [{"expression": _statistic("last_value"), "as": "v"}]}
+        with pytest.raises(SemanticLayerError) as closing:
+            runtime.query(balance)
+        assert str(closing.value).endswith("(time.temporal_role) so it runs in that zone.")
+        own = {
+            "temporal_role": "temporal_role.x_snap_ts",
+            "start": "2020-01-01",
+            "end": "2020-02-01",
+        }
+        assert _values(runtime.query({**call, "time": own})) == [own_window]
+    finally:
+        runtime.close()

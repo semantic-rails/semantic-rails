@@ -92,6 +92,7 @@ from .paths import (
     unknown_as_null,
 )
 from .plan_checks import _LOOKUP_TIME_EXPRS, _predicate_metric_label, _predicate_sql_names
+from .snapshot_reads import reading_source
 from .temporal import (
     _add_grain,
     _expr_compatible_temporal_roles,
@@ -939,6 +940,12 @@ def _predicate_source_query(
     return query
 
 
+def _reads_window_as_filters(scope: dict[str, Any]) -> bool:
+    """Whether a predicate's source reads ``over: "window"``, the window as filters on the
+    input's clock (_predicate_source_query) rather than a time block."""
+    return bool(scope["time_spec"] is not None and scope["time_spec"].get("entity_only_window"))
+
+
 def _predicate_set_fields(scope: dict[str, Any]) -> tuple[list[SqlField], list[str]]:
     """A predicate set's columns, read from its source, and the keys it projects."""
     keys = list(scope["group_by_dims"])
@@ -1006,7 +1013,7 @@ def _predicate_ctes_and_join(
     # source keeps the earlier settlement, which reads an operand's unknown amounts as 0
     # where its measure has data in scope.
     several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
-    with earlier_settlement(several):
+    with earlier_settlement(several), reading_source(windowed=_reads_window_as_filters(scope)):
         earlier = earlier_settlement_applies()
         predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)

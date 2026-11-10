@@ -91,7 +91,13 @@ def closing_day(measure: Any, role: Any, config: PackageConfig) -> ClosingDay | 
 
 
 def select_snapshots(
-    read: SnapshotRead, *, name: str, prefix: str, dialect: Any, measure_id: str
+    read: SnapshotRead,
+    *,
+    name: str,
+    prefix: str,
+    dialect: Any,
+    measure_id: str,
+    statistic: str = "",
 ) -> tuple[list[SqlCte], str]:
     """The CTEs choosing the snapshots, and the one of them holding the chosen rows with
     ``read.fields``. Their names (``name``, ``{prefix}_base``, ...) are taken unless a
@@ -115,7 +121,7 @@ def select_snapshots(
     where = [*read.where, SqlBinary(read.order, "IS NOT", SqlLiteral(None))]
     if read.day is not None:
         probe = _closing_day_probe(read, exprs, where, free("closing_rows"))
-        record_closing_read(measure_id, probe, read.day.zone)
+        record_closing_read(measure_id, probe, read.day.zone, statistic)
     name = free(name)
     if dialect.capabilities().get("qualify"):
         # RANK, not ROW_NUMBER: rows tied on a series' last clock value are all read, as the
@@ -264,6 +270,22 @@ def _closing_day_probe(
 
 
 _closing_reads: ContextVar[dict[str, Any] | None] = ContextVar("closing_reads", default=None)
+# Whether the source being compiled is an entity filter's or a predicate's read
+# ``over: "window"``: it applies the window as filters on the input's clock, with no time block.
+_windowed_source: ContextVar[bool] = ContextVar("windowed_source", default=False)
+
+
+@contextmanager
+def reading_source(*, windowed: bool) -> Iterator[None]:
+    """Compile an entity filter's or a predicate's source in this block; ``windowed`` when it
+    reads ``over: "window"``, so a statistic of a balance in it reads the window as a call's
+    window would, not one closing day."""
+    with holding(_windowed_source, windowed):
+        yield
+
+
+def source_is_windowed() -> bool:
+    return _windowed_source.get()
 
 
 @contextmanager
@@ -275,11 +297,13 @@ def recording_closing_reads() -> Iterator[dict[str, Any]]:
         yield recorded
 
 
-def record_closing_read(measure_id: str, probe: SqlSelect, zone: str) -> None:
+def record_closing_read(measure_id: str, probe: SqlSelect, zone: str, statistic: str = "") -> None:
     """One read per measure and probe: each stock keeps its own disclosure. ``owners`` are
     the root leaves or outputs it answers for (``dependencies.owning``: an empty set is the
     whole answer, None an owner nobody declared); ``nested`` says it is inside another read;
-    ``zone`` is the zone its day buckets are in."""
+    ``zone`` is the zone its day buckets are in; ``statistics`` the aggregations other than
+    ``last_value`` and ``sum`` read on that day."""
+    statistics = (statistic,) if statistic else ()
     recorded = _closing_reads.get()
     if recorded is None:
         return
@@ -295,9 +319,17 @@ def record_closing_read(measure_id: str, probe: SqlSelect, zone: str) -> None:
                 else mine | owners
             )
             read["nested"] = read["nested"] and nested
+            read["statistics"] = tuple(sorted({*read["statistics"], *statistics}))
             return
     recorded["reads"].append(
-        {"measure": measure_id, "probe": probe, "owners": owners, "nested": nested, "zone": zone}
+        {
+            "measure": measure_id,
+            "probe": probe,
+            "owners": owners,
+            "nested": nested,
+            "zone": zone,
+            "statistics": statistics,
+        }
     )
 
 
@@ -322,7 +354,7 @@ def closing_reads_by_output(recorded: dict[str, Any]) -> tuple[dict[str, Any], .
         )
         reads.append(
             {
-                **{key: read[key] for key in ("measure", "probe", "nested", "zone")},
+                **{key: read[key] for key in ("measure", "probe", "nested", "zone", "statistics")},
                 "outputs": None if owners is None or (owners and not names) else names,
             }
         )
