@@ -198,28 +198,35 @@ def _expr_compatible_temporal_roles(
 def _window_measure_exprs(
     expr: Any, config: PackageConfig, *, window_inputs: bool = False
 ) -> Iterator[MeasureRefExpr | AggregateExpr | ScopedAggregateExpr]:
-    """Leaves filtered by an expression's period; conversions filter only base events."""
-    if (
-        window_inputs
-        and isinstance(expr, OffsetWindowExpr)
-        and (expr.kind != "cumulative" or expr.window_scope != "query_period")
-    ):
-        yield from _window_measure_exprs(expr.input, config)
-        return
-    if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
-        if not window_inputs:
-            yield expr
-    elif isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_or_raise(config, expr.metric_recipe)
-        yield from _window_measure_exprs(recipe.expression, config, window_inputs=window_inputs)
-    elif isinstance(expr, ConversionExpr) and not window_inputs:
-        yield from _window_measure_exprs(expr.base, config)
-    elif is_dataclass(expr):
-        for item in fields(expr):
-            value = getattr(expr, item.name)
-            for child in value if isinstance(value, list) else [value]:
-                if is_dataclass(child):
-                    yield from _window_measure_exprs(child, config, window_inputs=window_inputs)
+    """Leaves filtered by an expression's period; conversions filter only base events.
+
+    ``window_inputs``: only the leaves inside a window, which its own periods filter. An explicit
+    stack keeps each node's cost constant however deep it sits."""
+    stack: list[tuple[Any, bool]] = [(expr, window_inputs)]
+    while stack:
+        expr, window_inputs = stack.pop()
+        if (
+            window_inputs
+            and isinstance(expr, OffsetWindowExpr)
+            and (expr.kind != "cumulative" or expr.window_scope != "query_period")
+        ):
+            stack.append((expr.input, False))
+        elif isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            if not window_inputs:
+                yield expr
+        elif isinstance(expr, MetricRecipeRefExpr):
+            recipe = _recipe_or_raise(config, expr.metric_recipe)
+            stack.append((recipe.expression, window_inputs))
+        elif isinstance(expr, ConversionExpr) and not window_inputs:
+            stack.append((expr.base, False))
+        elif is_dataclass(expr):
+            children: list[tuple[Any, bool]] = []
+            for item in fields(expr):
+                value = getattr(expr, item.name)
+                for child in value if isinstance(value, list) else [value]:
+                    if is_dataclass(child):
+                        children.append((child, window_inputs))
+            stack.extend(reversed(children))
 
 
 def _validate_leaf_window_clock(

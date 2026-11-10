@@ -1453,11 +1453,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         # No condition reads every row.
         raw_condition = expr.get("condition")
-        condition = (
-            None
-            if raw_condition is None
-            else _parse_named(raw_condition, context=context)
-        )
+        condition = None if raw_condition is None else _parse_named(raw_condition, context=context)
         raw_value = expr.get("value")
         if raw_value is None:
             if aggregation.lower() != "count":
@@ -1639,10 +1635,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Call expressions require 'name'")
         return CallExpr(
             name=name,
-            args=[
-                _parse_named(arg, context=context)
-                for arg in list(expr.get("args", []) or [])
-            ],
+            args=[_parse_named(arg, context=context) for arg in list(expr.get("args", []) or [])],
             distinct=bool(expr.get("distinct", False)),
         )
     if kind == "date_add":
@@ -1667,9 +1660,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", "in expressions require non-empty 'values'"
             )
         values = [
-            _parse_named(value, context=context)
-            if isinstance(value, dict)
-            else LiteralExpr(value)
+            _parse_named(value, context=context) if isinstance(value, dict) else LiteralExpr(value)
             for value in raw_values
         ]
         return InExpr(
@@ -1735,9 +1726,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         else_expr = expr.get("else")
         return CaseExpr(
             whens=whens,
-            else_expr=_parse_named(else_expr, context=context)
-            if else_expr is not None
-            else None,
+            else_expr=_parse_named(else_expr, context=context) if else_expr is not None else None,
         )
     if kind == "cumulative":
         return OffsetWindowExpr(
