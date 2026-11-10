@@ -125,8 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_catalog.add_argument(
         "--verbosity",
+        choices=["compact", "full"],
         default="compact",
-        help="Output verbosity: 'compact' (default) or 'detailed'.",
+        help="Output detail: 'compact' (default) or 'full' (adds each object's payload).",
     )
     p_catalog.add_argument(
         "--kind",
@@ -177,8 +178,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_discover.add_argument(
         "--verbosity",
+        choices=["minimal", "compact", "full"],
         default="compact",
-        help="Output verbosity: 'compact' (default) or 'detailed'.",
+        help="Output detail: 'minimal', 'compact' (default) or 'full'.",
     )
     p_discover.add_argument(
         "--limit",
@@ -206,8 +208,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_inspect.add_argument(
         "--verbosity",
+        choices=["minimal", "compact", "full"],
         default="compact",
-        help="Output verbosity: 'compact' (default) or 'detailed'.",
+        help="Output detail: 'minimal', 'compact' (default) or 'full'.",
     )
     _add_policy_context_args(p_inspect)
     p_inspect.set_defaults(func=cmd_inspect)
@@ -570,8 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_build.add_argument(
         "--verbosity",
+        choices=["compact", "full"],
         default="compact",
-        help="Output verbosity: 'compact' (default) or 'detailed'.",
+        help="Output detail: 'compact' (default) or 'full'.",
     )
     p_build.add_argument(
         "--include-blocked",

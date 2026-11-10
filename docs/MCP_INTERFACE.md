@@ -510,7 +510,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   with plurals as singulars, or when the measure is a [building
   block](PACKAGE_AUTHORING.md#building-block-measures). A measure authored
   `publish: false` that no metric aggregates whole is not offered to agents:
-  `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query.select`
+  `discover` doesn't list it, and `plan` doesn't answer with it unless `query.select`
   names it by id; no other part of the request names it. When a metric reads the measure
   through a filter, it is a building block: `plan` answers with the metric when it is the only
   one that filters the measure or the question names it, and otherwise holds the draft. That
@@ -543,7 +543,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   `temporal_role`, the subject phrase names no other such
   metric as fully nor the measure more fully, and the draft neither filters nor groups by what
   the metric's filter reads ("demo stores" keeps the measure, held). A measure or metric the
-  caller's `partial_query.select` names is never held for this;
+  caller's `query.select` names is never held for this;
 - has no filter on a dimension that a "where <dimension> is <value>" clause names, even
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one
@@ -571,7 +571,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue". The ranked value must be
   named: by one measure's or metric's whole name, label or alias in the question, or by the
-  caller's `partial_query.select`. A value the draft picked any other way ("which store had
+  caller's `query.select`. A value the draft picked any other way ("which store had
   the most customers", where no measure is named "customers") is `ranked_measure_uncertain`;
 - excludes a value requested positively, or cannot prove that its filter keeps or drops
   each named value with the requested polarity (`filter_values_unrealized`). `is` and `not`,
@@ -595,7 +595,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   period as exact dates; without a calendar named fiscal the hint names the package's
   calendars;
 - picked its subject from several that match the question equally well, when neither the
-  question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
+  question nor a `query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
   Gross Revenue and Net Revenue it names neither. The words of a grouping the question asks
@@ -660,7 +660,7 @@ An exclusion ("excluding", "except", "without", "not", "but not", "other than", 
 executable form is a top-level `where` filter `{"field": ..., "op": "not", "value": ...}`:
 "signups excluding web" counts the signups with no channel
 ([Unknown values](QUERY_CALL.md#unknown-values)). `plan` answers an exclusion when its draft,
-the caller's `partial_query` included, leaves out exactly the values the clause names with
+the caller's `query` included, leaves out exactly the values the clause names with
 `not` filters and no `is` filter narrows that dimension ("revenue excluding Brooklyn" is `ok`).
 Every other exclusion holds: each clause the draft doesn't answer that way is one gap,
 `negation_reversed` when a top-level `is` filter keeps a value the clause names, otherwise
@@ -783,7 +783,7 @@ words name it: its label, its aliases and the last part of its name, not the pre
 A grouping that dimensions of two or more entities match, none of them the measure's own
 ("name" for an order count: Customer name or Store name), is ambiguous and never a pick: the
 plan is not ready, and `why.details.ambiguous_groupings` lists it. Naming the entity ("customer
-name") settles it, as does a dimension in the caller's `partial_query` group_by when the draft
+name") settles it, as does a dimension in the caller's `query` group_by when the draft
 adds no other that matches.
 
 The reverse also holds: every grouping the draft adds traces to the question, or the plan is
@@ -793,11 +793,11 @@ naming each one (a dimension's label, or the grain's unit), `details.dimensions`
 above: one it lists ("by store"), the noun a ranking ranks ("which 5 stores had the most
 orders"), the words after "per", "each" or "every" ("revenue per store"), or what a clause
 opening with "which" or "who" lists (the entity it names, or the one "who" lists). It also traces to
-the caller's `partial_query` group_by, or to the draft's own `is` filter, which keeps only
+the caller's `query` group_by, or to the draft's own `is` filter, which keeps only
 values the question names. The time block's grain traces to the question's words outside its
 windows: its unit or "-ly" form ("by month", "monthly", "at month level", "daily"), a series
 ("over time", "trend", "trending", "time series"), or for days a grouping that names the
-query's clock ("by order date"). It also traces to the caller's `partial_query` time grain, or
+query's clock ("by order date"). It also traces to the caller's `query` time grain, or
 it can't split the rows because the window fits in one bucket of the grain ("in Q1 2017", "last
 month", "yesterday"). Packages declare no default grain, so the month plan picks for a
 comparison ("food revenue vs drink revenue by store"), a year-over-year shift ("revenue vs last
@@ -810,7 +810,7 @@ A ranking (a draft with a `group_by`, a `limit` and a first `order_by` on a sele
 also keep the top N of the entity the question ranks. It ranks the entity when the ranked noun
 ("top 3 stores", "which 3 stores") is not a time unit and reads every `group_by` dimension, as
 above (an entity's key and its label). When the question ranks nothing, a ranking the caller's
-`partial_query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
+`query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
 its rows. A ranking of the entity whose rows a traced grain splits ("top 3 stores by revenue at
 month level", "top 3 stores by monthly revenue") would keep the top 3 store-months, so it is
 held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"`; its message asks which ranking the
@@ -878,7 +878,7 @@ answer. A row whose display holds the name as whole words side by side, in any c
   call to run: plan again with the full name. With another name or another hold beside it
   ("Acme and Globex", "… at 9am"), the hold stands instead;
 - none, a full read with one match, a failed lookup, or names giving two rows of one entity
-  ("Acme and Globex"): the hold above. A caller's `partial_query` with a `where` or `group_by`
+  ("Acme and Globex"): the hold above. A caller's `query` with a `where` or `group_by`
   turns the lookup off.
 Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
