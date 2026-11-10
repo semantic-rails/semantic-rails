@@ -60,6 +60,7 @@ from ..sql_ast import (
     SqlIdentifier,
     SqlIn,
     SqlLiteral,
+    boolean_chain,
     build_comparison_condition,
     build_filter_condition,
     build_negation,
@@ -524,10 +525,7 @@ def _config_expr_to_sql_inner(
                     f"Boolean 'not' expressions require exactly one arg, got {len(rendered)}",
                 )
             return build_negation(rendered[0])
-        current = rendered[0]
-        for item in rendered[1:]:
-            current = SqlBinary(current, op.upper(), item)
-        return current
+        return boolean_chain(op.upper(), rendered)
     if isinstance(expr, CallExpr):
         _refuse_fallible_call(expr)
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
