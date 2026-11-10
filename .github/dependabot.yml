@@ -9,6 +9,10 @@ updates:
       timezone: "America/New_York"
     # Room for the per-dependency PRs below next to the two group PRs.
     open-pull-requests-limit: 10
+    # Propose a release only once it is a week old, so one dependency isn't bumped twice in a
+    # week and a release yanked in its first days never lands. Security updates are exempt.
+    cooldown:
+      default-days: 7
     ignore:
       # A new mcp major breaks the SDK integration; the migration that adopts it sets the bound itself.
       - dependency-name: "mcp"
@@ -18,7 +22,8 @@ updates:
         versions: [">=5"]
     # Number-affecting dependencies get their own PR, never a weekly group: DuckDB, Arrow and
     # pandas (Databricks results go through pandas), time-zone and date parsing, and every
-    # warehouse driver. Keep both lists in sync.
+    # warehouse driver. Keep both lists in sync. The python-deps group's PR merges itself
+    # once green (dependabot-auto-merge.yml); the excluded and major PRs need a review.
     groups:
       python-deps:
         patterns: ["*"]
@@ -53,6 +58,9 @@ updates:
       time: "07:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    # The actions group's PR merges itself once green (dependabot-auto-merge.yml).
     groups:
       actions:
         patterns: ["*"]

@@ -1,0 +1,53 @@
+name: Track a scheduled run
+
+# Called as the last job of a scheduled workflow. A failed run opens one issue with the given
+# title, listing the failing jobs, or comments on it when it is already open; the next run
+# without a failure closes it.
+on:
+  workflow_call:
+    inputs:
+      title:
+        description: Title of the tracking issue, one per scheduled check.
+        required: true
+        type: string
+      failed:
+        description: Whether a job the caller needs failed.
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  track:
+    name: Open, update or close the tracking issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ inputs.title }}
+          FAILED: ${{ inputs.failed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq 'map(select(.title == env.TITLE))[0].number // empty')
+          if [ "$FAILED" != true ]; then
+            if [ -n "$number" ]; then
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Passed again: $RUN_URL"
+            fi
+            exit 0
+          fi
+          jobs=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json jobs \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "- [\(.name)](\(.url))"')
+          body=$(printf 'Failed: %s\n\nFailing jobs:\n%s\n' "$RUN_URL" "${jobs:-(none reported; see the run)}")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
+              --body "$body"$'\n\nThis issue closes itself on the next scheduled run without a failure.'
+          fi

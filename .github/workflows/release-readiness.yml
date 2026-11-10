@@ -43,6 +43,18 @@ jobs:
       - run: uv sync --group dev --locked
       - run: uv run pytest -q tests/semantic_rails -n auto --dist worksteal
 
+  track:
+    # A failed nightly opens or updates one issue; the next green nightly closes it.
+    needs: suite
+    if: ${{ always() && github.event_name == 'schedule' }}
+    permissions:
+      actions: read
+      issues: write
+    uses: ./.github/workflows/scheduled-run-issue.yml
+    with:
+      title: Nightly release-readiness suite failed
+      failed: ${{ needs.suite.result == 'failure' }}
+
   release-readiness:
     name: Release readiness
     needs: suite
