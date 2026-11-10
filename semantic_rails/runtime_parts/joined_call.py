@@ -32,7 +32,6 @@ from ..compiler_parts.joined_parts import (
     KEPT_ROWS,
     NULL_KEYS,
     ROWS,
-    UNMATCHED,
     JoinKey,
     PartStatement,
     hidden_name,
@@ -40,9 +39,12 @@ from ..compiler_parts.joined_parts import (
     joined_statement,
     presence_order,
     refuse_shared_outputs,
+    select_width,
+    shared_name,
 )
 from ..compiler_parts.part_domain import PRESENT, reading_part_domain
 from ..db_parts.base import QueryRows
+from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..policies import enforce_query_policies
 from ..query_call import in_part, refusal
@@ -308,6 +310,7 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         time_key,
     )
     refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
+    _refuse_over_select_limit(config, [part.statement for part in parts], keys)
     _check_order(payload.get("order_by") or [], keys, parts)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
@@ -343,12 +346,51 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     return _Joined(parts=parts, keys=keys, keep=keep, compiled=compiled, zone=zone)
 
 
+def _refuse_over_select_limit(
+    config: Any, statements: list[PartStatement], keys: list[JoinKey]
+) -> None:
+    """Refuse, before it is sent, a statement wider than its warehouse reads in one select,
+    stating how many columns it needs and how many of these parts fit: each part adds its own
+    columns and one count per other part, so the parts that fit are a number, not a cap."""
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    limit = dialect.max_select_columns
+    if limit is None:
+        return
+    width = select_width(statements, keys)
+    if width <= limit:
+        return
+    # The most leading parts within the limit (the width grows with every part added).
+    fits, over = 0, len(statements)
+    while over - fits > 1:
+        middle = (fits + over) // 2
+        if select_width(statements[:middle], keys) <= limit:
+            fits = middle
+        else:
+            over = middle
+    raise refusal(
+        "parts",
+        f"{dialect.label} reads at most {limit:,} columns in one select, and this joined call "
+        f"needs {width:,}: each part adds its own columns and one count per other part",
+        fix=(
+            f"Ask for at most {fits} of these parts in one call."
+            if fits > 1
+            else "Ask for each part in a call of its own."
+        ),
+        reason="parts_over_column_limit",
+        limit=limit,
+        columns=width,
+        fits=fits,
+    )
+
+
 def _compile_part(
     runtime: Any, index: int, payload: dict[str, Any], policy_context: dict[str, Any]
 ) -> _Part:
     """One part, as ``Runtime._enforced_compile`` compiles a call (bound on the caller's view,
     the policy gate, then the compile), lowered as a part, never from the compile cache: the
-    cache keys on the call alone, and a part's statement is another one."""
+    cache keys on the call alone, and a part's statement is another one. (Each part compiles
+    once per call; reading a cached compile copies it, which costs more than compiling a part.)
+    """
     from .answer_warnings import refuse_closing_day_zone
 
     config = runtime._config
@@ -502,17 +544,17 @@ def _counts(joined: _Joined, rows: list[dict[str, Any]]) -> dict[str, Any] | Non
 
     parts = []
     for part in joined.parts:
-        others = [other.index for other in joined.parts if other.index != part.index]
+        own = read(ROWS.format(part=part.index))
+        null_keys = read(NULL_KEYS.format(part=part.index))
+        # A key of this part another part lacks: one of its rows with no NULL key that isn't a
+        # key both have.
+        unmatched = {
+            str(other.index): own - null_keys - read(shared_name(part.index, other.index))
+            for other in joined.parts
+            if other.index != part.index
+        }
         parts.append(
-            {
-                "part": part.index,
-                "rows": read(ROWS.format(part=part.index)),
-                "null_keys": read(NULL_KEYS.format(part=part.index)),
-                "unmatched": {
-                    str(other): read(UNMATCHED.format(part=part.index, other=other))
-                    for other in others
-                },
-            }
+            {"part": part.index, "rows": own, "null_keys": null_keys, "unmatched": unmatched}
         )
     return {"parts": parts, "kept": read(KEPT_ROWS)}
 
