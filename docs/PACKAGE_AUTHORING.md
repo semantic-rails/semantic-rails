@@ -110,7 +110,7 @@ asks before continuing.
 packages are loaded by pointing `--path` at the directory:
 
 ```bash
-semantic-rails catalog --path ./my_pkg --verbosity summary
+semantic-rails catalog --path ./my_pkg --view summary
 semantic-rails plan --path ./my_pkg --intent "monthly revenue"
 semantic-rails mcp setup --path ./my_pkg
 semantic-rails serve --path ./my_pkg --host 127.0.0.1 --port 8091
@@ -2296,7 +2296,7 @@ measures:
 ```
 
 A measure authored `publish: false` is not offered to agents: `discover` doesn't list it,
-and `plan` doesn't answer with it unless `partial_query.select` names it by id. When a metric
+and `plan` doesn't answer with it unless `query.select` names it by id. When a metric
 reads it through a filter, it is a building block. `plan` answers with the metric when it is
 the only one that filters the measure or the question names it, and otherwise holds the
 draft. `inspect` and a query call still take the measure by id. A measure never publishes a
@@ -2336,7 +2336,7 @@ metrics:
 Any other wrapper, filler or argument is not a governed form, so `plan` keeps the measure
 and holds the draft. The swap applies to every single-subject `plan` draft, from any pattern
 or the catalog fallback, before validation and readiness, and only when the caller's
-`partial_query` has no `select`, the draft doesn't filter or group by a dimension the metric's
+`query` has no `select`, the draft doesn't filter or group by a dimension the metric's
 filter reads, and the draft has no time block (the metric is then read over all time) or one
 on the metric's own clock. Readiness then decides the swapped draft like any other. A part of
 a compound question ("calls and callers") and a semi-additive measure swap only to the bare

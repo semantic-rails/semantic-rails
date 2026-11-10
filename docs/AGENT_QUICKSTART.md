@@ -55,8 +55,8 @@ curl http://127.0.0.1:8091/mcp \
   | python -c 'import json, sys; tools=json.load(sys.stdin)["result"]["tools"]; print(f"{len(tools)} tools"); print("\n".join("- " + tool["name"] for tool in tools))'
 ```
 
-The response should list six tools: `discover`, `inspect`, `valid-values`, `plan`, `execute` and
-`segment`.
+The response should list five tools: `discover`, `inspect`, `valid-values`, `plan` and `execute`.
+A package that defines segments adds a sixth, `segment`.
 
 `mcp setup` is the quick local workflow path before wiring a client: it loads the
 package, checks that the MCP tools are available, and previews the Claude/Codex
@@ -96,7 +96,7 @@ locally or customer-side; the runtime validates and compiles every query before 
 Start the active package:
 
 ```bash
-uv run semantic-rails serve --package jaffle_shop --port 8081
+uv run semantic-rails serve --package jaffle_shop --port 8091
 ```
 
 Routes are available under stable `/api/v1/*` paths.
@@ -193,10 +193,10 @@ Statuses are:
   The subjects must share a declared or compatible clock, a supported window, grouping,
   and filters. Equivalent measure/metric names with the same aggregation resolve to the
   authored metric; different shared-name candidates ask for clarification. Each ambiguous
-  subject must have its own candidate selected in `partial_query.select`; selecting one
+  subject must have its own candidate selected in `query.select`; selecting one
   subject leaves any other ambiguous subject unresolved. A plain aggregate metric without its own
   clock uses its measure's clock. Window support and validation use the final
-  query after merging the caller's `partial_query`. Structurally incompatible subjects remain
+  query after merging the caller's `query`. Structurally incompatible subjects remain
   held as `multiple_subjects_unrealized`, with visible subject ids and their declared clocks
   in `why.details.parts`. Disabling `conjoined_metrics` in `package.planner.disabled_patterns`
   keeps the coverage guard: a draft that omits a requested subject is never ready.
@@ -255,7 +255,7 @@ troubleshooting composition hints.
 Discover:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8081/api/v1/discover \
+curl -s -X POST http://127.0.0.1:8091/api/v1/discover \
   -H 'Content-Type: application/json' \
   -d '{"terms":"orders","limit":5}'
 ```
@@ -263,7 +263,7 @@ curl -s -X POST http://127.0.0.1:8081/api/v1/discover \
 Inspect:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8081/api/v1/inspect \
+curl -s -X POST http://127.0.0.1:8091/api/v1/inspect \
   -H 'Content-Type: application/json' \
   -d '{"object_id":"measure.jaffle.order_count"}'
 ```
@@ -271,7 +271,7 @@ curl -s -X POST http://127.0.0.1:8081/api/v1/inspect \
 Plan:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8081/api/v1/plan \
+curl -s -X POST http://127.0.0.1:8091/api/v1/plan \
   -H 'Content-Type: application/json' \
   -d '{"intent":"new customer orders over time","detail":"best"}'
 ```
@@ -279,7 +279,7 @@ curl -s -X POST http://127.0.0.1:8081/api/v1/plan \
 Compile without execution:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8081/api/v1/compile \
+curl -s -X POST http://127.0.0.1:8091/api/v1/compile \
   -H 'Content-Type: application/json' \
   -d '{
     "query": {
@@ -296,7 +296,7 @@ nested `explain.chosen_paths` map — one `{selected, candidates, contracts}` en
 target entity):
 
 ```bash
-curl -s -X POST http://127.0.0.1:8081/api/v1/compile \
+curl -s -X POST http://127.0.0.1:8091/api/v1/compile \
   -H 'Content-Type: application/json' \
   -d '{
     "query": {
@@ -413,8 +413,8 @@ The agent never picks one; it asks:
    and `replaced` (how the package resolves the pair without it: `undecided` when it
    refuses).
 4. To make it the default for everyone, a maintainer calls Architect
-   [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
-   change; from then on the question answers without asking. An option with `conflicts_with`
+   [`record_route_decision`](ARCHITECT_MCP.md) with `decisions: [<that decision>]`. That is a
+   reviewed package change; from then on the question answers without asking. An option with `conflicts_with`
    names the package rows to change first; its `decision` still answers per query.
 
 One row also decides every route that walks its pair. The answer's `routes` names each route
