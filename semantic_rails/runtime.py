@@ -804,6 +804,29 @@ _NAMED_MISSES = 5
 _LISTED_MISSES = 10
 
 
+def _matched(
+    values: Callable[[str, list[dict[str, Any]], int], list[str] | None],
+    field: str,
+    literals: list[str],
+) -> dict[str, bool | None]:
+    """Whether some row's ``field`` equals each of ``literals`` under the warehouse's equality, or
+    None for one whose rows can't be read. One probe reads the stored values equal to any of them,
+    so a literal no stored value spells is a miss. When that probe also reads a value no literal
+    spells (a collation or a cast Python doesn't share), each literal not yet matched is probed
+    alone."""
+    stored = values(field, [{"field": field, "op": "is", "value": literals}], len(literals))
+    if stored is None:
+        return dict.fromkeys(literals)
+    spelled = set(stored)
+    found: dict[str, bool | None] = {literal: literal in spelled for literal in literals}
+    if spelled - set(literals):
+        for literal in literals:
+            if not found[literal]:
+                rows = values(field, [{"field": field, "op": "is", "value": literal}], 1)
+                found[literal] = None if rows is None else bool(rows)
+    return found
+
+
 def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
     """Probe string filter literals that can otherwise read a confident zero.
 
@@ -857,19 +880,18 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
         op = operators.word_of(item.get("op", "is"))
         if not literals or field not in dimensions or op not in {"is", "not"}:
             continue
-        for literal in literals:
-            if (field, literal) in checked:
-                continue
-            checked.add((field, literal))
-            found = (
-                values(field, [{"field": field, "op": "is", "value": literal}], 1)
-                if dimensions[field].groupable
-                else None
-            )
-            if found is None:
+        fresh = [literal for literal in dict.fromkeys(literals) if (field, literal) not in checked]
+        if not fresh:
+            continue
+        checked.update((field, literal) for literal in fresh)
+        found = (
+            _matched(values, field, fresh) if dimensions[field].groupable else dict.fromkeys(fresh)
+        )
+        for literal in fresh:
+            if found[literal] is None:
                 if field not in held:
                     unverified.append({"dimension": field, "value": literal})
-            elif not found:
+            elif not found[literal]:
                 misses.append({"dimension": field, "value": literal})
     limit = max_valid_values_limit()
     known: dict[str, list[str]] = {}
