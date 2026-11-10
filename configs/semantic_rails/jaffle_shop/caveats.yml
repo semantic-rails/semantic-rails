@@ -2,6 +2,7 @@ semantic_caveats:
   - id: caveat.jaffle.brooklyn_soft_launch_mar_2017
     kind: business_event
     message: Brooklyn opened during March 2017; store comparisons for that month include a partial operating period.
+    so_what: Compare Brooklyn from April 2017 on, or say that its March figure covers part of the month.
     object_ids:
       - dimension.jaffle_store_name
     entity_values:

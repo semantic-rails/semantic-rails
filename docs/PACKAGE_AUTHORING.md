@@ -1165,6 +1165,8 @@ semantic_caveats:
   - id: caveat.shop.store_a_closed_feb_2016
     kind: business_event
     message: Store A was closed in Feb 2016; store comparisons need context.
+    so_what: Leave Store A out of February 2016 comparisons, or say it was closed.
+    owner: store_operations
     object_ids: [dimension.shop_store_name]
     entity_values:
       - entity: entity.shop_store
@@ -1175,6 +1177,15 @@ semantic_caveats:
       to: "2016-03-01"
     severity: warning
 ```
+
+`message` states the fact; `so_what` (optional) says what the reader should do about it:
+compare from another period, leave a slice out, or name the caveat beside the number.
+`owner` (optional) names who to ask. At the default `compact` verbosity (and at `full`) the
+warning's `details` carry `so_what` and `owner` whenever the caveat sets them; `minimal`
+keeps only the caveat's id, kind and match reasons beside its message. `so_what` must be a
+string; any other value is refused with `INVALID_CONFIG` (`caveat '<id>' so_what must be a
+string`). A package test of kind `caveat_applies` pins where a caveat reaches (see
+[package tests](#examples-and-tests)).
 
 The only caveat kinds are `business_event`, `definition_change`, and
 `data_quality`; use `time.at`, `time.from`/`time.to`, `entity_values`, and
@@ -3374,7 +3385,7 @@ Package-local review assets:
 - `examples/` — runnable example queries surfaced through discovery and inspect.
 - `tests/` — package-local semantic assertions (`query_returns_columns`,
   `query_row_count_bounds`, `validate_fails_with_code`, `explain_contains`,
-  `query_matches_snapshot`, `metric_equals_query`). The test runner walks
+  `query_matches_snapshot`, `metric_equals_query`, `caveat_applies`). The test runner walks
   `<package>/tests/*.yml` directly.
 
 Both are loaded from **directories only** — the package root's `examples/` and
@@ -3468,7 +3479,40 @@ tests:
         - {expression: measure.shop.order_count, as: value}
         - {expression: measure.shop.revenue_usd, as: value}
     code: DUPLICATE_OUTPUT_ALIAS
+
+  store_a_caveat_on_february:
+    kind: caveat_applies
+    caveat: caveat.shop.store_a_closed_feb_2016
+    query:
+      select: [measure.shop.revenue_usd]
+      group_by: [dimension.shop_store_name]
+      time: {start: "2016-02-01", end: "2016-03-01", grain: month}
+
+  store_a_caveat_not_on_march:
+    kind: caveat_applies
+    caveat: caveat.shop.store_a_closed_feb_2016
+    applies: false           # the caveat must not be stated
+    query:
+      select: [measure.shop.revenue_usd]
+      group_by: [dimension.shop_store_name]
+      time: {start: "2016-03-01", end: "2016-04-01", grain: month}
 ```
+
+A `caveat_applies` test validates its call (nothing runs on the warehouse) and checks
+whether the response states the named caveat as a `SEMANTIC_CAVEAT_APPLIED` warning;
+`applies: false` asserts that it does not. Each failure names what the author should fix:
+
+| Code | Message | When |
+|---|---|---|
+| `CAVEAT_APPLIES_MISMATCH` | `caveat '<id>' did not apply to the query` | `applies` is true (the default) and the call does not state the caveat; `details.applied_caveats` lists the caveats it does state |
+| `CAVEAT_APPLIES_MISMATCH` | `caveat '<id>' applied to the query, which the test says it must not` | `applies: false` and the call states it |
+| `INVALID_CONFIG` | `a caveat_applies test must name the caveat it checks in caveat` | no `caveat:` |
+| `INVALID_CONFIG` | `caveat_applies names caveat '<id>', which the package does not declare` | the id is not in `caveats.yml`; `details.known_caveats` lists those that are |
+| `INVALID_CONFIG` | `a caveat_applies test's applies must be true or false` | `applies` is not a boolean |
+| the refusal's own code | the refusal's own message | the call is refused, in either form: a refused call never passes as "not applied" |
+
+The test runs as its `context:` (audience, environment), so a caveat scoped to an audience
+or environment is checked as that caller sees it.
 
 See `configs/semantic_rails/jaffle_shop/examples/core.yml` and
 `configs/semantic_rails/jaffle_shop/tests/core.yml` for the full worked set,

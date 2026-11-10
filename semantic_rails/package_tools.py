@@ -1180,8 +1180,77 @@ def _run_test(
             "metric query and expected query returned different results",
             {"metric_rows": metric_rows, "expected_rows": expected_rows},
         )
+    if kind == "caveat_applies":
+        return _caveat_applies_test(runtime, test_id, spec, query, call)
     return _test_result(
         test_id, False, "INVALID_CONFIG", "unknown package test kind", {"kind": kind}
+    )
+
+
+def _caveat_applies_test(
+    runtime: Runtime,
+    test_id: str,
+    spec: dict[str, Any],
+    query: dict[str, Any],
+    call: dict[str, Any],
+) -> dict[str, Any]:
+    """Whether validating ``query`` states caveat ``spec['caveat']`` (``applies: false``: it
+    must not). A refused query fails the test with its own error, whichever form it takes."""
+    caveat_id = spec.get("caveat")
+    expected = spec.get("applies", True)
+    if not isinstance(caveat_id, str) or not caveat_id.strip():
+        return _test_result(
+            test_id,
+            False,
+            "INVALID_CONFIG",
+            "a caveat_applies test must name the caveat it checks in caveat",
+            {"kind": "caveat_applies", "field": "caveat"},
+        )
+    caveat_id = caveat_id.strip()
+    known = sorted(row.id for row in runtime.package_config.semantic_caveats)
+    if caveat_id not in known:
+        return _test_result(
+            test_id,
+            False,
+            "INVALID_CONFIG",
+            f"caveat_applies names caveat {caveat_id!r}, which the package does not declare",
+            {"caveat": caveat_id, "known_caveats": known},
+        )
+    if not isinstance(expected, bool):
+        return _test_result(
+            test_id,
+            False,
+            "INVALID_CONFIG",
+            "a caveat_applies test's applies must be true or false",
+            {"kind": "caveat_applies", "field": "applies", "value": expected},
+        )
+    result = runtime.validate(query, verbosity="compact", **call)
+    if not result["ok"]:
+        error = dict((result.get("errors") or [{}])[0])
+        return _test_result(
+            test_id,
+            False,
+            str(error.get("code", "") or "INVALID_QUERY"),
+            str(error.get("message", "") or "the test's query was refused"),
+            {"caveat": caveat_id, **dict(error.get("details", {}) or {})},
+        )
+    applied = [
+        str(row.get("details", {}).get("caveat_id", ""))
+        for row in result.get("warnings") or []
+        if row.get("code") == "SEMANTIC_CAVEAT_APPLIED"
+    ]
+    applies = caveat_id in applied
+    message = (
+        f"caveat {caveat_id!r} did not apply to the query"
+        if expected
+        else f"caveat {caveat_id!r} applied to the query, which the test says it must not"
+    )
+    return _test_result(
+        test_id,
+        applies == expected,
+        "CAVEAT_APPLIES_MISMATCH",
+        message,
+        {"caveat": caveat_id, "expected_applies": expected, "applied_caveats": applied},
     )
 
 
