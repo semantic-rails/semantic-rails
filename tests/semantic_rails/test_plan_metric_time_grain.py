@@ -586,3 +586,19 @@ def test_the_clocks_own_name_still_asks_for_its_series(
     assert payload["status"] == "ok", payload
     time = {"temporal_role": "temporal_role.tpch_order_date", "grain": "day", **window}
     assert payload["best"]["query"]["time"] == time, payload["best"]["query"]
+
+
+def test_a_period_comparison_named_by_its_grain_still_needs_one(jaffle_clocks: Runtime) -> None:
+    """ "Month-over-month revenue growth" names the metric, not a series: the draft has no time
+    block, so plan holds it, and the validator's fix names the grain. "by month" asks for it."""
+    named = plan_payload(jaffle_clocks, intent="month-over-month revenue growth", now=NOW)
+    assert named["status"] == "low_confidence", named
+    assert "time" not in named["best"]["query"], named["best"]["query"]
+    (error,) = named["why"]["details"]["primary_errors"]
+    assert error["message"].startswith("time: 'metric' reads periods"), error
+    asked = plan_payload(jaffle_clocks, intent="month-over-month revenue growth by month", now=NOW)
+    assert_plan_held(asked, "PERIOD_COMPARISON_INCOMPLETE")
+    assert asked["best"]["query"]["time"] == {
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "grain": "month",
+    }
