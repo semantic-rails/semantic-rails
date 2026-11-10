@@ -294,8 +294,9 @@ def test_every_entry_point_refuses_the_same_package(tmp_path):
     assert {error["code"] for error in report["errors"]} == {"INVALID_CONFIG"}
     messages.append([error["message"] for error in report["errors"]])
 
-    # The same one error, whichever path the package directory was spelled with.
-    ((error,),) = {tuple(row.split(": ", 1)[1] for row in errors) for errors in messages}
+    # The same one error, whichever path the package directory was spelled with (the
+    # Architect's report names paths relative to the package, so it has no prefix).
+    ((error,),) = {tuple(re.sub(r"^\S+: ", "", row) for row in errors) for errors in messages}
     assert re.match(r"graph relationship 'orders_customer' has unknown key 'cardinalty'", error)
     assert error.endswith("did you mean 'cardinality'?")
 

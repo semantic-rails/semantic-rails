@@ -880,6 +880,74 @@ def _expression_nodes(node: Any) -> Iterator[Any]:
             yield from _expression_nodes(item)
 
 
+REVIEW_METADATA_FIELDS = ("owner_team", "review_priority", "change_risk")
+
+
+def review_metadata_advisories(config) -> list[dict[str, Any]]:
+    """One ``REVIEW_METADATA_MISSING`` advisory per public measure or curated metric that
+    lacks review metadata (``meta.owner_team``, ``meta.review_priority``, ``meta.change_risk``).
+
+    Review metadata matters when a package is promoted, so only the promotion check reports
+    it; parse and validate leave it out so day-one warnings name what changes answers.
+    """
+    advisories: list[dict[str, Any]] = []
+    measure_metric_ids = {
+        f"metric.{(measure.name or measure.id.split('measure.', 1)[-1])}"
+        for measure in config.measures
+    }
+    objects = [("public measure", measure) for measure in config.measures] + [
+        ("curated metric", recipe)
+        for recipe in config.metric_recipes
+        if not (recipe.id in measure_metric_ids and recipe.kind in {"aggregate", "semi_additive"})
+    ]
+    for kind, obj in objects:
+        meta = dict(getattr(obj, "meta", {}) or {})
+        missing = [
+            f"meta.{name}"
+            for name in REVIEW_METADATA_FIELDS
+            if not str(meta.get(name, "") or "").strip()
+        ]
+        if missing:
+            advisories.append(
+                _error_payload(
+                    "REVIEW_METADATA_MISSING",
+                    f"{kind} {obj.id} should declare {', '.join(missing)}",
+                    details={"object_id": obj.id, "missing": missing},
+                )
+            )
+    return advisories
+
+
+def _package_relative(message: str, source_path: str) -> str:
+    """``message`` with the package directory it starts with written from where the user
+    stands: relative to the current directory when the package lies under it
+    (``semantic_rails/jaffle/models/x.yml: text`` from a dbt root, where ``models/`` is
+    dbt's own folder), else relative to the package (``<package>: text`` becomes ``text`` and
+    ``<package>/models/x.yml: text`` becomes ``models/x.yml: text``). Paths later in the
+    message (a command to run, say) stay as written."""
+    root = str(source_path or "").rstrip("/\\")
+    if not root:
+        return message
+    if os.path.isfile(root):
+        root = os.path.dirname(root)
+    try:
+        cwd = os.path.realpath(os.getcwd())
+        # A client may start a server in the filesystem root: that is no place a user stands.
+        shown = os.path.relpath(os.path.realpath(root), cwd) if os.path.dirname(cwd) != cwd else ""
+    except (OSError, ValueError):  # no current directory, or another drive
+        shown = ""
+    under_cwd = shown not in {"", os.curdir} and shown.split(os.sep)[0] != os.pardir
+    for base in dict.fromkeys((root, os.path.abspath(root), os.path.realpath(root))):
+        if message.startswith(f"{base}: "):
+            rest = message[len(base) + 2 :]
+            return f"{shown}: {rest}" if under_cwd else rest
+        for separator in dict.fromkeys((os.sep, "/")):
+            if message.startswith(f"{base}{separator}"):
+                rest = message[len(base) + 1 :]
+                return f"{shown}{os.sep}{rest}" if under_cwd else rest
+    return message
+
+
 def _compiled_package_warnings(
     config, source_path: Path, *, census: dict[str, list[dict[str, Any]]]
 ) -> list[str | dict[str, Any]]:
@@ -888,7 +956,6 @@ def _compiled_package_warnings(
         warnings.append(f"{source_path}: package does not declare package.environments")
     first_by_definition: dict[str, str] = {}
     for measure in config.measures:
-        meta = dict(getattr(measure, "meta", {}) or {})
         prefix = f"{source_path}: public measure {measure.id}"
         # Same rows and value on the same default clock; other clocks may differ.
         definition = json.dumps(
@@ -918,31 +985,10 @@ def _compiled_package_warnings(
             warnings.append(f"{prefix}: {warning}")
         if stock_warning := _stock_key_warning(prefix, measure, config):
             warnings.append(stock_warning)
-        if not str(meta.get("owner_team", "") or "").strip():
-            warnings.append(f"{prefix} should declare meta.owner_team")
-        if not str(meta.get("review_priority", "") or "").strip():
-            warnings.append(f"{prefix} should declare meta.review_priority")
-        if not str(meta.get("change_risk", "") or "").strip():
-            warnings.append(f"{prefix} should declare meta.change_risk")
         if not str(getattr(measure, "default_temporal_role", "") or "").strip() and list(
             measure.compatible_temporal_roles or []
         ):
             warnings.append(f"{prefix} should declare default_temporal_role explicitly")
-    measure_metric_ids = {
-        f"metric.{(measure.name or measure.id.split('measure.', 1)[-1])}"
-        for measure in config.measures
-    }
-    for recipe in config.metric_recipes:
-        if recipe.id in measure_metric_ids and recipe.kind in {"aggregate", "semi_additive"}:
-            continue
-        meta = dict(getattr(recipe, "meta", {}) or {})
-        prefix = f"{source_path}: curated metric {recipe.id}"
-        if not str(meta.get("owner_team", "") or "").strip():
-            warnings.append(f"{prefix} should declare meta.owner_team")
-        if not str(meta.get("review_priority", "") or "").strip():
-            warnings.append(f"{prefix} should declare meta.review_priority")
-        if not str(meta.get("change_risk", "") or "").strip():
-            warnings.append(f"{prefix} should declare meta.change_risk")
     contract = getattr(config, "meta_contract", {}) or {}
     if contract:
         for measure in config.measures:
@@ -1165,6 +1211,9 @@ def parse_snapshot_report(
                 warnings.append(dict(warning))
             else:
                 warnings.append(_error_payload("AUTHORING_PROFILE_WARNING", warning))
+    for row in [*warnings, *errors]:
+        if isinstance(row.get("message"), str):
+            row["message"] = _package_relative(row["message"], ref.source_path)
     report = {
         "ok": not errors,
         "package": _package_payload(ref, config),
