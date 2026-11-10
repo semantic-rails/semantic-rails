@@ -504,7 +504,7 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     for row in status["route_census"]["undecided"]:
         clarification = row["details"]["clarification"]
         start, target = row["source_entity"], row["target_entity"]
-        grouped = route_groups(config, start, target, clarification["options"])
+        grouped = route_groups(config, start, target, clarification["options"], parts=True)
         assert {key: clarification[key] for key in grouped} == grouped
     # No metric, example or test walks an undecided pair: nothing to decide now.
     assert not any(action.startswith("Decide") for action in status["next_actions"])

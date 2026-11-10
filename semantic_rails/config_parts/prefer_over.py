@@ -1,9 +1,13 @@
-"""``prefer_over:`` on a model: the look-alike models whose questions it answers instead.
+"""``prefer_over:`` and ``distinct_from:`` on a model: the author's answer to a group of
+look-alike models (``LOOKALIKE_MODELS``).
 
-A model lists other models by id (``prefer_over: [rooms_hist]``), which makes it the canonical
-one of them, so validation stops asking which one is (``LOOKALIKE_MODELS``). The loader stores the listed models' entities on the model's
-entity (``EntityConfig.prefer_over``). Each id names another model of the package, and the
-declarations never run in a circle, since one model of a group is the canonical one.
+A model lists other models by id. ``prefer_over: [rooms_hist]`` makes it the canonical one of
+them, so validation stops asking which one is. ``distinct_from: [store_inventory_snapshots]``
+says the two hold different things, so they are no look-alikes at all, whichever of them lists
+the other. The loader stores the listed models' entities on the model's entity
+(``EntityConfig.prefer_over`` and ``EntityConfig.distinct_from``). Each id names another model
+of the package; the ``prefer_over`` lists never run in a circle, since one model of a group is
+the canonical one; and no pair is in both, since a model answers only for its look-alikes.
 """
 
 from __future__ import annotations
@@ -48,20 +52,22 @@ def _circle(prefer: dict[str, list[str]]) -> list[str]:
     return []
 
 
-def with_prefer_over(
-    entities: list[EntityConfig],
+def _lists(
     model_rows: dict[str, dict[str, Any]],
     model_to_entity: dict[str, str],
+    key: str,
+    itself: str,
     *,
     path: str,
-) -> list[EntityConfig]:
-    """``entities``, each with the entities of the models its model lists in ``prefer_over``."""
-    prefer: dict[str, list[str]] = {}
+) -> dict[str, list[str]]:
+    """Each model's ``key`` list of other model ids, checked: a list of ids, each naming another
+    model of the package (``itself`` says what to list instead of the model itself)."""
+    lists: dict[str, list[str]] = {}
     for model_id, model in model_rows.items():
-        if "prefer_over" not in model:
+        if key not in model:
             continue
-        names = model["prefer_over"]
-        label = f"{path}: model '{model_id}' prefer_over"
+        names = model[key]
+        label = f"{path}: model '{model_id}' {key}"
         if not isinstance(names, list) or not all(
             isinstance(name, str) and name.strip() for name in names
         ):
@@ -69,11 +75,7 @@ def with_prefer_over(
         listed: list[str] = []
         for name in (name.strip() for name in names):
             if name == model_id:
-                raise _invalid(
-                    f"{label} names the model itself: list the other models whose questions it "
-                    "answers instead",
-                    model=model_id,
-                )
+                raise _invalid(f"{label} names the model itself: {itself}", model=model_id)
             if name not in model_to_entity:
                 others = sorted(set(model_to_entity) - {model_id})
                 close = difflib.get_close_matches(name, others, n=3)
@@ -89,18 +91,62 @@ def with_prefer_over(
             if name not in listed:
                 listed.append(name)
         if model_id in model_to_entity:
-            prefer[model_id] = listed
+            lists[model_id] = listed
+    return lists
+
+
+def with_lookalike_lists(
+    entities: list[EntityConfig],
+    model_rows: dict[str, dict[str, Any]],
+    model_to_entity: dict[str, str],
+    *,
+    path: str,
+) -> list[EntityConfig]:
+    """``entities``, each with the entities of the models its model lists in ``prefer_over`` and
+    in ``distinct_from``."""
+    prefer = _lists(
+        model_rows,
+        model_to_entity,
+        "prefer_over",
+        "list the other models whose questions it answers instead",
+        path=path,
+    )
     if circle := _circle(prefer):
         raise _invalid(
             f"{path}: prefer_over runs in a circle ({' -> '.join(circle)}): one model of a group "
             "is the canonical one, so drop one of these from the other's prefer_over",
             models=circle,
         )
-    by_entity = {
-        model_to_entity[model_id]: [model_to_entity[name] for name in names]
-        for model_id, names in prefer.items()
-    }
+    distinct = _lists(
+        model_rows,
+        model_to_entity,
+        "distinct_from",
+        "list the other models whose rows are different things",
+        path=path,
+    )
+    for model_id, names in sorted(prefer.items()):
+        for name in names:
+            if name in distinct.get(model_id, []):
+                clash = f"model {model_id!r} names {name!r} in both prefer_over and distinct_from"
+            elif model_id in distinct.get(name, []):
+                clash = (
+                    f"model {model_id!r} prefer_over names {name!r}, and model {name!r} "
+                    f"distinct_from names {model_id!r}"
+                )
+            else:
+                continue
+            raise _invalid(
+                f"{path}: {clash}: a model answers only for its look-alikes, so drop one of them",
+                models=[model_id, name],
+            )
+    model_of = {entity: model_id for model_id, entity in model_to_entity.items()}
+
+    def listed(lists: dict[str, list[str]], entity: str) -> list[str]:
+        return [model_to_entity[name] for name in lists.get(model_of.get(entity, ""), [])]
+
     return [
-        replace(row, prefer_over=by_entity[row.id]) if row.id in by_entity else row
+        replace(row, prefer_over=listed(prefer, row.id), distinct_from=listed(distinct, row.id))
+        if model_of.get(row.id) in {*prefer, *distinct}
+        else row
         for row in entities
     ]
