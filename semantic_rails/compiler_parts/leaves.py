@@ -309,11 +309,17 @@ def _semi_additive_leaf_select(
     # fields that split time), and the other grouping dimensions are read from that
     # row. Choosing it per group too would count a series whose attribute changes
     # within the period once under each value it held. An end-of-period balance on an
-    # as-of clock (``day``) closes on the period's closing day (snapshot_reads).
-    closes = window_choice == "last_value" and final_aggregation in {"last_value", "sum"}
+    # as-of clock (``day``) closes on the period's closing day (snapshot_reads). With no
+    # period (no time window, no grouping by its clock or a calendar), every statistic of
+    # it closes on the last closing day too, as the balance does: a series whose last
+    # snapshot is years old is never read beside the others' latest.
+    periods = [alias for alias in key_aliases if alias in period_aliases]
+    closes = window_choice == "last_value" and (
+        final_aggregation in {"last_value", "sum"} or not periods
+    )
     read = SnapshotRead(
         fields=fields,
-        periods=[alias for alias in key_aliases if alias in period_aliases],
+        periods=periods,
         series=row_key_aliases,
         order=order_expr,
         day=day if closes else None,
