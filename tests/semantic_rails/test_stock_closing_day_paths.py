@@ -429,3 +429,98 @@ def test_an_untimed_call_without_a_balance_keeps_running_in_utc(tmp_path: Path) 
         ) == [100.0]
     finally:
         runtime.close()
+
+
+# Every statistic of a balance with no time window reads the closing day, as last_value does.
+# Y's January 20 snapshot is the only one that day; W, Z and X last reported earlier.
+SPREAD = (
+    "('W', TIMESTAMP '2020-01-02', 350), ('Z', TIMESTAMP '2020-01-03', 300), "
+    "('X', TIMESTAMP '2020-01-05', 100), ('Y', TIMESTAMP '2020-01-20', 200)"
+)
+STATISTICS = {
+    "avg": "AVG(value)",
+    "median": "MEDIAN(value)",
+    "percentile": "QUANTILE_CONT(value, 0.9)",
+    "min": "MIN(value)",
+    "max": "MAX(value)",
+    "sum": "SUM(value)",
+    "last_value": "SUM(value)",
+}
+
+
+def _statistic(aggregation: str) -> dict:
+    expression: dict = {"kind": "measure", "measure": BALANCE, "aggregation": aggregation}
+    if aggregation == "percentile":
+        expression["parameters"] = {"p": 0.9}
+    return expression
+
+
+@pytest.fixture
+def spread(lowering, tmp_path: Path) -> Iterator[tuple[Runtime, Any]]:
+    """The runtime, and hand SQL on its own copy of the rows."""
+    runtime = _runtime(_package(tmp_path / "x", SPREAD))
+    hand = duckdb.connect()
+    hand.execute(f"CREATE TABLE snap (id VARCHAR, ts TIMESTAMP, value INTEGER); "
+                 f"INSERT INTO snap VALUES {SPREAD}")  # fmt: skip
+    yield runtime, hand
+    runtime.close()
+    hand.close()
+
+
+@pytest.mark.parametrize("aggregation", list(STATISTICS))
+def test_every_statistic_of_an_untimed_balance_reads_the_closing_day(
+    spread: tuple[Runtime, Any], aggregation: str
+) -> None:
+    """With no time window, avg, median, percentile, min and max read the closing day's
+    snapshots, as last_value and sum do: Y's 200. Each account's own last snapshot (W's from
+    January 2 beside Y's) is never read; it gave 237.5, 250, 335, 100 and 350. The answer
+    names the day and the three accounts it left out."""
+    runtime, hand = spread
+    statistic = STATISTICS[aggregation]
+    ((closing, latest),) = hand.execute(
+        f"SELECT (SELECT {statistic} FROM snap WHERE CAST(ts AS DATE) = "
+        "(SELECT CAST(MAX(ts) AS DATE) FROM snap)), "
+        f"(SELECT {statistic} FROM snap WHERE (id, ts) IN (SELECT id, MAX(ts) FROM snap GROUP BY id))"
+    ).fetchall()
+    assert closing != latest
+    result = runtime.query({"select": [{"expression": _statistic(aggregation), "as": "v"}]})
+    assert _values(result) == [float(closing)] == [200.0]
+    assert _by_code(result, "assumptions", CLOSING) == [
+        {
+            "code": CLOSING,
+            "message": f"{BALANCE} is read on its closing day, 2020-01-20, the last day with a "
+            "snapshot: a series with no snapshot that day is not counted, never carried forward "
+            "from an earlier day.",
+            "measure": BALANCE,
+            "outputs": ["v"],
+            "nested": False,
+            "closing_day": "2020-01-20",
+            "periods": 1,
+        }
+    ]
+    assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]
+
+
+def test_a_statistic_of_a_balance_inside_a_predicate_or_a_ratio_reads_the_closing_day(
+    spread: tuple[Runtime, Any],
+) -> None:
+    """Accounts whose average balance is over 150: only Y has a closing-day snapshot, so only
+    Y's flow counts (200; on each account's last snapshot W and Z counted too: 850), and the
+    answer says the read was nested. A ratio and a scoped aggregate of its statistics read
+    that day too."""
+    runtime, _ = spread
+    flow = {"kind": "scoped_aggregate", "measure": "measure.x.flow", "aggregation": "sum",
+            "predicates": [{**OVER_50, "input": _statistic("avg"), "value": 150,
+                            "over": "all_time"}]}  # fmt: skip
+    result = runtime.query({"select": [{"expression": flow, "as": "v"}]})
+    assert _values(result) == [200.0]
+    assert [(row["nested"], row["closing_day"]) for row in _by_code(result, "assumptions", CLOSING)] == [
+        (True, "2020-01-20")
+    ]
+    assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]
+    ratio = {"kind": "ratio", "numerator": _statistic("max"), "denominator": _statistic("min")}
+    scoped = {"kind": "scoped_aggregate", "measure": BALANCE, "aggregation": "avg"}
+    for expression, expected in ((ratio, 1.0), (scoped, 200.0)):
+        result = runtime.query({"select": [{"expression": expression, "as": "v"}]})
+        assert _values(result) == [expected]
+        assert _disclosed(result) == [(BALANCE, "2020-01-20", 3)]

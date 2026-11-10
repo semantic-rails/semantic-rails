@@ -281,11 +281,26 @@ def _semi_additive_leaf_select(
     # e.g. a YTD value 31x overstated at month grain). With no row keys:
     # last/first/sum collapse to one snapshot per output bucket, while
     # distributional aggregations (median/avg/min/max/...) keep every
-    # snapshot in the bucket and aggregate across them.
-    if not row_grain_exprs and final_aggregation not in {"last_value", "first_value", "sum"}:
+    # snapshot in the bucket and aggregate across them, unless the read
+    # closes on a day: then they read that day's snapshot, as last_value does.
+    key_aliases = [field.alias for field in key_fields]
+    periods = [alias for alias in key_aliases if alias in period_aliases]
+    # An end-of-period balance on an as-of clock (``day``) closes on the period's closing
+    # day (snapshot_reads). With no period (no time window, no grouping by its clock or a
+    # calendar), every statistic of it closes on the last closing day too, as the balance
+    # does: a series whose last snapshot is years old is never read beside the others'.
+    closes = (
+        day is not None
+        and window_choice == "last_value"
+        and (final_aggregation in {"last_value", "sum"} or not periods)
+    )
+    if (
+        not row_grain_exprs
+        and not closes
+        and final_aggregation not in {"last_value", "first_value", "sum"}
+    ):
         row_grain_exprs = [order_expr]
     row_key_aliases = [f"__snapshot_key_{index + 1}" for index in range(len(row_grain_exprs))]
-    key_aliases = [field.alias for field in key_fields]
     fields = [
         *key_fields,
         *[
@@ -308,15 +323,7 @@ def _semi_additive_leaf_select(
     # Each series' snapshot is chosen per period first (`period_aliases` name the key
     # fields that split time), and the other grouping dimensions are read from that
     # row. Choosing it per group too would count a series whose attribute changes
-    # within the period once under each value it held. An end-of-period balance on an
-    # as-of clock (``day``) closes on the period's closing day (snapshot_reads). With no
-    # period (no time window, no grouping by its clock or a calendar), every statistic of
-    # it closes on the last closing day too, as the balance does: a series whose last
-    # snapshot is years old is never read beside the others' latest.
-    periods = [alias for alias in key_aliases if alias in period_aliases]
-    closes = window_choice == "last_value" and (
-        final_aggregation in {"last_value", "sum"} or not periods
-    )
+    # within the period once under each value it held.
     read = SnapshotRead(
         fields=fields,
         periods=periods,
