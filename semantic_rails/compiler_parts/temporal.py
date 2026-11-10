@@ -198,10 +198,8 @@ def _expr_compatible_temporal_roles(
 def _window_measure_exprs(
     expr: Any, config: PackageConfig, *, window_inputs: bool = False
 ) -> Iterator[MeasureRefExpr | AggregateExpr | ScopedAggregateExpr]:
-    """Leaves filtered by an expression's period; conversions filter only base events.
-
-    ``window_inputs``: only the leaves inside a window, which its own periods filter. An explicit
-    stack keeps each node's cost constant however deep it sits."""
+    """Leaves filtered by an expression's period; conversions filter only base events. An
+    explicit stack keeps each node's cost constant however deep it sits."""
     stack: list[tuple[Any, bool]] = [(expr, window_inputs)]
     while stack:
         expr, window_inputs = stack.pop()
