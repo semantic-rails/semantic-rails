@@ -8,6 +8,423 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.4 — 2026-11-01 — Joined calls, look-alike models and empty-group fixes
+
+**Upgrading from 0.3.3:** 0.3.4 answers several calls 0.3.3 refused, refuses a few it answered
+wrongly, and moves some answers toward the stated semantics ("All NULL reads NULL"; a loaded
+period with nothing in it reads 0). Run `semantic-rails check` on each package with 0.3.4 before
+you deploy: an example or test that uses a newly refused shape fails there.
+
+- **Check the answers that change.**
+  - A group, a summing window or a distribution whose rows all have a NULL amount reads `NULL`,
+    where it read `0`.
+  - Over a table that declares how far it is loaded (`zero_through`), a filtered count or sum,
+    and a ratio over a filtered sum, read `0` in a loaded period with no matching row, where they
+    read `NULL`. A measure dated by another model's clock, and an `aggregate_if` with no time
+    window, read only the rows inside that edge.
+  - A ratio over a `prior_period` or `rolling` window reads `NULL` in the period after an empty
+    one, where it reused the last period that had rows.
+  - A distribution over several measures counts an entity with no row of the other measure as
+    `0` (a median net order value after refunds), and one grouped by a lookup keeps its `NULL`
+    group.
+  - A sum grouped two hops away reads its empty weeks as the same sum grouped one hop away does.
+- **Newly refused, where 0.3.3 answered wrongly:** a share over a grouping across a one-to-many
+  hop (`MIXED_GRAIN_INVALID`; select a `total` beside the groups instead), a list after `=`,
+  `<>` or `!=` in a `comparison`, a live `valid-values` `search` on a dimension that isn't text
+  (`INVALID_QUERY`), and, under the `dataset` scope, a distribution that needs settling with a
+  `where` beside an entity filter (`EMPTY_GROUPS_UNSETTLED`). On ClickHouse, a ratio over a
+  `prior_period` or `rolling` window and an `aggregate_if` with no time window are refused.
+- **Newly answered,** each with a note saying how: a sum, count or average grouped across a
+  one-to-many hop, a child's values after a lookup, a parent's measure on its children's rows, a
+  listing of dimensions through a one-to-many route, the text words on an id, and a Postgres
+  `uuid` column in the results.
+- **Grants.** A caller limited to some metrics gets the same answer for an id outside its grant
+  as for an id the package doesn't have.
+- **Clients that read responses.** `execute` answers in mode `run` start with `read_from`. Over
+  MCP, rows too wide as records that fit as columns come back in the columnar form with
+  `ROW_FORMAT_COLUMNS` instead of `RESULT_TOO_LARGE`, so read `row_format` before `rows`.
+  `discover` takes `terms` as a list too, adds `has_more` when a list was cut, and its minimal
+  and compact responses leave out empty buckets and `stage`. `AMBIGUOUS_PATH` groups its route
+  options (`details.clarification.groups`). `plan`'s `PLAN_SUBJECT_UNMATCHED` is
+  `low_confidence`, not `unrealizable`, when other kinds of objects match the words. The
+  Architect MCP pages its long answers: pass `offset` and `limit`, and a page's `revision` as
+  `expected_revision` on the next page.
+- **Packages.** Validation warns with `LOOKALIKE_MODELS` for each group of models an agent can
+  read for one another; settle a group with `prefer_over:` or `distinct_from:`. Every package's
+  semantic fingerprint changes once, because the parsed semantics record each model's
+  `prefer_over:`; no answer changes because of it.
+- **Install.** No dependency range changes.
+
+### Added
+
+- `execute` answers in mode `run` now start with `read_from`: under each model's entity, the
+  ids the answer read from it (each selected measure or metric, and each `group_by` and `where`
+  dimension), and the relationship ids the SQL took to reach a dimension's model when nothing
+  else in the response states that route. A model `routes` already names is left out, and so is
+  an empty `read_from`. Two models can hold the same kind of value (a staging copy, a history,
+  another system's table), so the answer now says which one it read. It never changes an answer,
+  names only what the caller sees, and a metric grant's response leaves it out. See
+  [The answer](docs/QUERY_CALL.md#the-answer).
+- A call grouped by a child's column reached by lookups, then one one-to-many hop (rooms by the
+  cities of their building's addresses, sessions by the product types of their order's items)
+  now answers where the route is decided, instead of being refused with `MIXED_GRAIN_INVALID`.
+  Each stored row counts once, with its whole value, in every group of values its parent's child
+  rows hold (two child rows with the same values count once), a row whose parent has no child
+  row, or that names no parent, is the NULL group, and a total is the call without the grouping.
+  `REWRITE_APPLIED` (`child_values`) says the groups overlap and don't add up to the total. A
+  median, a non-additive measure, a conditional aggregate, a distribution over entity values, a
+  share, another entity's measure in the call, a filter on the child, a call with `time` or
+  `having`, and any such call on ClickHouse (which joins lookups inner) keep their refusal. See
+  [Groups by a child's values after a lookup](docs/QUERY_CALL.md#groups-by-a-childs-values-after-a-lookup).
+- A count measure's `inspect` card says what it counts, from the measure's definition:
+  `count_unit` is `"rows of <entity>"` for a sum of `1`, or `"distinct <column> across rows of
+  <entity>"` for a distinct count, with `" where its condition holds"` for a conditional count;
+  a stock, which reads one snapshot per series, has none.
+  A count of distinct customers and a count of their orders no longer look alike. See
+  [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- `discover` lists a canonical model's first row ahead of the rows of the look-alike models its
+  `prefer_over:` lists, and otherwise keeps its match order, so a weak match from the canonical
+  model never moves ahead of a better match from another model. It marks each look-alike's card
+  with `look_alike`: `history copy of <entity>` when its key is the canonical model's plus time
+  columns of its own, else `prefer <entity>`. Slim cards mark a look-alike's measures, metrics,
+  segments and entity; full cards mark every one. A package without `prefer_over:` gets the
+  same response; a caller who can't see either model gets neither; `plan` and `execute` are
+  unchanged. See [MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+- `discover` says when a list was cut: when a bucket had more matches than `limit`, `has_more`
+  names it with how many more it has (`"has_more": {"dimensions": 5}`), at every verbosity, over
+  MCP and REST. It counts only objects the caller may see, so a hidden or ungranted object never
+  counts. To keep the default MCP response within its budget, the minimal and compact responses
+  now leave out empty buckets and the ranking `stage`. See
+  [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- `discover` takes `terms` as a list (`["revenue", "region"]`) over MCP and REST: each term is
+  ranked on its own, exactly as a call with that term alone, and the results come back keyed by
+  term under `by_term`, with the call's own fields once beside them. The agent splits its
+  question into terms; a list's terms are never ranked together, and a string is one search as
+  before. When the terms' results don't fit the response budget, the leading terms that fit are
+  returned and a `DISCOVER_TERMS_TRUNCATED` warning names the rest to send in another call. See [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- A query call can now be several calls answered side by side, each with its own `where`:
+  `{"parts": [call, ...], "join": {"on": [[dimension of each part], ...], "keep": ...}}`, with
+  one `time` block, `order_by` and `limit` for the whole. Each part is answered as the call it
+  is (the caller's view, policies, row filters, routes, display keys and every disclosure,
+  tagged with its part), and the parts are joined on their keys in one statement: a key only
+  another part has reads 0 or NULL as an empty group does, a NULL key stays its own row, and
+  `join.keep` keeps only the keys of the parts it names. Parts join on the same dimension or on
+  the two columns a declared relationship joins. `PARTS_JOINED` names the keys and counts each
+  part's rows, NULL-key rows and unmatched keys over the whole result, and says which columns
+  add up down the rows. A part with `having`, an entity filter in a part `join.keep` doesn't
+  name, a part grouped finer than the join keys and a part with no clock beside a timed call
+  are refused. See [Calls side by side](docs/QUERY_CALL.md#calls-side-by-side-parts-and-join).
+- A call of dimensions alone whose entities connect only through a one-to-many hop (a
+  department's buildings through its rooms, a store's supplies through its orders' items)
+  answers with the distinct rows along that route instead of `PATH_NOT_FOUND` or
+  `MIXED_GRAIN_INVALID`. It starts at the first entity the call reads, chooses each route by
+  the usual route rules (two routes ask with `AMBIGUOUS_PATH`, when the question fits the
+  response), lists a start row that reaches nothing once with NULL and one that reaches rows
+  with those rows only, and names its route in `assumptions` (`LISTED_THROUGH`). Hidden objects,
+  row filters and denied objects on the route hold as for any call, and a call with a measure
+  or metric keeps every fan-out guard. See
+  [Listings through one-to-many routes](docs/QUERY_CALL.md#listings-through-one-to-many-routes).
+- A model's `distinct_from:` lists, by model id, models whose rows are different things though
+  validation groups them as look-alikes, such as stores and their daily inventory snapshots.
+  Either model listing the other takes the pair out of its same-rows `LOOKALIKE_MODELS` group;
+  a count group stays until each count is labelled for its rows. `discover` marks neither as the
+  other's look-alike, and a `PATH_NOT_FOUND` refusal or a measure's card never names a measure
+  of one as the other's look-alike. An unknown model id, and a pair in both a `prefer_over:` and
+  a `distinct_from:`, are `INVALID_CONFIG`. A package that declares none keeps its semantic
+  fingerprint. See
+  [PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md#distinct_from--models-that-only-look-alike).
+- Validation names each group of models an agent can read for one another, with a
+  `LOOKALIKE_MODELS` warning asking which one is canonical: models whose rows are the same things
+  (the same key, that key plus time columns of its own, such as a history, or keyless with one
+  reading every column of the other), and models whose rows aren't, each with a published count
+  of the same label over the same column (relabelling one for the rows it counts takes it out).
+  `parse-config`, `validate-config`, `check`, `validate_project` and `project_status` report it,
+  and `project_status` adds a next action counting the groups. A table and the one that holds
+  its key, a calendar, and two tables' row counts are never a group. See
+  [look-alike models](docs/PACKAGE_AUTHORING.md#look-alike-models).
+- A model's `prefer_over:` lists the look-alike models, by model id, whose questions it answers
+  instead. A group of look-alike models is decided once one model lists every other, directly or
+  through another model's list, and its `LOOKALIKE_MODELS` warning clears. An unknown id, the
+  model itself, or lists that run in a circle are `INVALID_CONFIG`. The Architect's
+  `upsert_model` writes it (`prefer_over`; `[]` removes it, and `replace` keeps it). The warning
+  now names models by model id, with their entities in `details.entities`. See
+  [`prefer_over:`](docs/PACKAGE_AUTHORING.md#prefer_over--the-canonical-model-of-look-alikes).
+- A metric's `inspect` card names the unit of the counts it reads, as a count measure's card
+  does: `count_unit` for a metric that is one count (with `" where its filter holds"` when its
+  filter keeps only some rows), and `count_units` with the `numerator` and `denominator` of a
+  ratio that are counts. "Average order value" says its denominator is distinct orders, not
+  order rows. A stock names no unit. See
+  [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- A call grouped by a child's columns can select a measure of the parent each child row names
+  (each order with its customer's lifetime order count, each room with its building's area)
+  instead of being refused with `PATH_NOT_FOUND` or asked `AMBIGUOUS_PATH` from the parent's
+  side. It is read on the children's rows by the route the call or package records from them,
+  else their own key: each parent counts once, with its whole value, in every group that holds
+  one of its child rows, a group whose rows name no parent reads NULL, and a total is the call
+  without the grouping. `REWRITE_APPLIED` (`parent_value`) says the column doesn't add up across
+  groups. A route recorded from the parent's side stands, and a median, a non-additive measure,
+  a ratio against the child's measure, a call with `time`, `having` or no `group_by`, and any
+  such call on ClickHouse (which joins lookups inner) keep their refusal. See
+  [A parent's value on its children's rows](docs/QUERY_CALL.md#a-parents-value-on-its-childrens-rows).
+- A call refused with `PATH_NOT_FOUND` because its measure's model can't reach a grouped or
+  filtered dimension now names the same measure on another model that answers the call as it
+  stands, when one does: `details.lookalike_measures` (each once, with the first sentence of its
+  model's description and the result columns to rename) and a `use_lookalike_measure` hint. A
+  look-alike has the same name and the same column expression, on a model whose rows are the
+  same things: keyed by the same key (a copy), or by that key and its own time columns (a
+  history), or, with no declared key on either, reading every column the other's dimensions
+  read (a keyless copy or history). A table's row count never has one, and invoices and their
+  payments are not alike. Each is checked by compiling the call with it, under
+  the caller's own visibility and policies; a measure the caller can't see or read is never
+  named, and none is chosen for the caller. See the `PATH_NOT_FOUND` row in
+  [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+- A measure's `inspect` card names its look-alikes on other models, when it has any:
+  `lookalike_measures`, each by id with the first sentence of its model's description and
+  which of the seed call's dimensions it reaches, with the card's own `grouping_entities`,
+  `model_description` and a fixed `lookalike_notice`. Only models the caller sees and may read
+  are named; cards without look-alikes are unchanged.
+- A call refused with `PATH_NOT_FOUND` because no relationship chain joins its start to its
+  target now names the key columns the two share (`details.shared_key_columns`) and whether
+  they hold the target's whole key (`shared_key_unique_on_target`). The message says when they
+  share no key column, or when one start row can match many target rows on the columns they
+  share, and the split hint says so too: a total across rows matched on a key that isn't
+  unique on the far side counts a start row once per match. A load or snapshot date on both
+  tables is not a shared key, unless it is one side's whole key (a calendar's date). The
+  author hint gives the relationship row on the shared columns with both cardinalities it can
+  declare: many-to-one when no two far-side rows hold the same values, otherwise many-to-many,
+  which a call can't group or filter through; with no shared key, it says where a
+  relationship goes in a `graph.yml` package. See the `PATH_NOT_FOUND` row in
+  [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+- **Postgres pinned address:** `postgres_native` connections accept `hostaddr`, one IP address
+  of the server `host` names. The connection dials it on every connect without looking `host`
+  up, while TLS still sends `host` as the server name and `sslmode: verify-full` checks the
+  certificate against it ([ADBC profiles](docs/ADDING_A_DIALECT.md#adbc-profiles)).
+- Architect's route census lists the routes of a group with too many to ask among
+  (`decide_first.parts`): each from the entity the group passes through, read from there, with
+  the pair's own row for that whole route to pass to `record_route_decision`. Recording it
+  decides the pair that was asked and leaves the shorter pair undecided; the summary pages a
+  group's parts on their own.
+- An `AMBIGUOUS_PATH` refusal groups its route options by the entity each route reaches first
+  (`details.clarification.groups`), so a pair with many routes asks among a few meanings: an
+  account that reaches a brand by 212 routes is asked among 14 groups, 11 with an option to
+  send and 3 counted for a package author to decide (`decide_first`). Two roles one hop down,
+  such as a work order's billing building and its serviced room's building, stay two options.
+  The message, `plan`'s route question, an entity's `inspect` card (`routes` and `groups`) and
+  Architect's route census read the same groups. Every option and every answer stays as it was:
+  grouping only changes how the question is shown.
+- A route question over the answer's budget is shortened step by step (the options its groups
+  list, then one call and a route per option, then the first groups, then the question and its
+  counts), with a `note` saying which, instead of being replaced by `RESULT_TOO_LARGE`.
+- A `row_filter` on a UUID column (an account or owner key) takes `type: uuid`, and filters
+  rows on Postgres, where a row filter on a `uuid` column refused every call before. The
+  trusted attribute may hold the UUID in any case, with or without hyphens or braces, and
+  binds as its lower-case text; a value that isn't a UUID is denied before any SQL runs. See
+  [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
+- `execute` adds the note `ZERO_FILLED_GROUPS` when a count or sum reads `0` in groups its own
+  rows never reach while another selected measure's rows hold them ("signups and orders by
+  customer": a customer who never ordered reads 0 orders). It counts those groups among the
+  returned rows ("at least" for a truncated answer), names the entity with no rows, and gives
+  the `having` condition that leaves them out when one leaves out exactly those groups. The
+  answer's own statement marks the groups, so
+  no other query runs; a group that reads `NULL` (no data) or read rows that sum to 0 is never
+  counted, and a series' empty periods are not groups. See
+  [Empty groups](docs/QUERY_CALL.md#empty-groups-null-or-0).
+
+### Changed
+
+- The Architect MCP pages its long answers: on a warehouse of about 100 tables, answers that ran
+  from 20,000 to 1.9 million characters now come in pages of about 16,000. `list_tables`,
+  `describe_table`, `profile_columns`, `suggest_model`, `suggest_links`,
+  `suggest_models_from_dbt` and `list_project_files` take `offset` and `limit` and return
+  `total_count`, `has_more` and `next_offset`, as `valid-values` does; `list_tables` no longer
+  stops at 200 tables, nor `suggest_models_from_dbt` at 20 models. Summaries (writes,
+  `validate_project`, `project_status`, `promotion_check`, and now `diff_project` and
+  `impact_project`) fit one page and name each list they cut short in `pages`; `page` reads that
+  list. Every item stays reachable, and `full_report: true` still returns everything. A
+  release's blockers and the next actions are never cut, and a route pair's options are cut only
+  with a note saying which of how many they are and where the rest are. Pass a page's `revision` as
+  `expected_revision` on the next page: a package that changed in between refuses with
+  `CONFIG_CONFLICT` instead of skipping items. See [Paging](docs/ARCHITECT_MCP.md#paging).
+- A write without `expected_revision` says which values it takes, and `suggest_links` names the
+  entity whose model reads a relation the warehouse lacks, with `list_tables` as the next step.
+- Deterministic notes now say exactly what they checked. `REWRITE_APPLIED` for measures of
+  different models reads "Each model's measures were aggregated to the call's groups before the
+  join, so the join counts no row twice. It does not check that these models answer the
+  question." (`details.rewrite_classification`: `independent_leaf_alignment`). A
+  row-grain model's `key_note` on `inspect` says no model can join to one of its rows by key,
+  and what its measures still group and filter by. `TOTAL_OVER` names what a total rolls up
+  and the grain it keeps ("with period rolled up: one value per store, repeated on each of its
+  rows"), and the call schema describes a total's `over` the same way. The `execute` tool
+  description and the HTTP docs say `ok` means the call is valid and ran, not that it answers
+  the question.
+- A sum, count or average of an entity's own measure grouped by a dimension across a
+  one-to-many hop is answered instead of refused with `MIXED_GRAIN_INVALID`: each row counts
+  once, with its whole value, in every group it has a child row in (departments by course
+  level; the revenue of the orders that included each product type), as a distinct count
+  already did. The groups can overlap; `REWRITE_APPLIED` names the hop and says so
+  (`details.overlapping_groups`), and `plan` repeats it for a sum or average of a value. A
+  median or other statistic, a non-additive measure and an item that sets the measure against
+  one of another entity stay refused, with the same message as before. See
+  [Groups across a one-to-many hop](docs/QUERY_CALL.md#groups-across-a-one-to-many-hop).
+- The text words `contains`, `starts_with` and `ends_with` (and their `not_` forms) read an id as
+  its text on every warehouse, whatever type it is stored as, so a product or order code is
+  found by a fragment (`JAF-` in `JAF-003`), a UUID by its first characters and a numeric id by
+  its digits (`ends_with` `"03"` matches 103 and 203). They used to refuse an id. `valid-values`
+  `search` reads an id the same way, with the same paging and counts as text, over the values
+  the caller's row filters leave. `is` and `not` still compare an id as it is stored.
+- MCP `execute` returns rows that exceed the response budget as records but fit as columns in
+  the columnar form, with the note `ROW_FORMAT_COLUMNS`, from its one warehouse run. It used to
+  refuse them with `RESULT_TOO_LARGE` and a hint to run the call again with
+  `row_format: "columns"`. This applies only when the call sends no `row_format`; a response
+  that fits as records is unchanged. Read `row_format` before reading `rows`.
+
+### Fixed
+
+- A group whose rows all have a NULL amount reads `NULL` in two more shapes, as it already did
+  elsewhere ("All NULL reads NULL"), in single periods and windows alike. Beside a
+  `distribution`, "revenue and median order by store by month" read `0` for a store's month whose
+  only order has no amount, and "trailing three-month revenue beside the median order" did so
+  for the windows that hold only that order. A sum measure with a `CASE` that has an `ELSE`
+  below its root, such as a tax multiplier (`amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2
+  END`), read `0` there too. A group with no rows still reads `0`.
+- Beside a distribution, each output answers as it does alone: a conditional `CASE` measure
+  there reads its base table, not a rollup, as it does without the distribution.
+- A `comparison` takes the filter words as `where` reads them: `gt`, `gte`, `lt`, `lte` and
+  `is` as `>`, `>=`, `<`, `<=` and `=`, `not` keeping rows with no value, and `missing` with a
+  literal `true` or `false`. They were refused as an unsafe SQL token. On a column against a
+  literal the word is the `where` filter on its dimension: `is` / `not` with a list is
+  membership, and the dimension's `unknown_values` are no value. A list after `=`, `<>` or `!=`,
+  which compared the column with the list's text, is refused.
+- `aggregate_if`'s `condition` is optional: without one it aggregates every row, so a sum or
+  average of a column or a row expression (a `case`, `LENGTH`) needs no `1 = 1` condition.
+- A raw `column` in `select` is refused with the `aggregate_if` call that aggregates it,
+  instead of saying a query reads only measures and metrics. The hint offers no such call to
+  a caller that a `deny` or `withhold_values` policy keeps a measure over that column from.
+- A `PATH_NOT_FOUND` for measures on several entities names each measure's own entity in its
+  `anchor`; it named the first measure's entity for all of them.
+- A measure's `verbosity: "full"` discover card lists its `allowed_aggregations`, as `inspect`
+  does.
+- `discover` accepts every kind its tool schema lists. `temporal_role` and `value_domain` (or
+  their plurals) with `terms` used to be refused with "valid kinds: …" although the schema
+  offered them; they are now ranked when named, in `temporal_roles` cards (the `dimension` each
+  role times and its `supported_grains`) and `value_domains` cards (the `dimensions` each
+  describes). With empty `terms`, `dimension_value` lists `dimension_value_ids`.
+- `plan` with a one-item seed, such as `{"select": ["metric.<id>"]}` over a measure of the same
+  name, no longer fails with `DUPLICATE_OUTPUT_ALIAS` "('' is taken)": the seed stands for that
+  measure, and a question whose pieces don't connect gets `PLAN_UNCONNECTED` naming them, as it
+  does without the seed.
+- Several `dimension.` ids in a call's `select` move to `group_by` the way one does, with one
+  `QUERY_SHORTHAND_NORMALIZED` notice listing them all. The second one used to be refused with
+  "a dimension splits the answer; it belongs in group_by".
+- A distribution grouped by a lookup reads every group the call does. "Median net order value
+  and orders by store name" read `NULL` for the order with no store, beside its count of 1,
+  where its net value is `6`, and alone it left that group out. By customer channel, the
+  customers with no signup were left out of the `NULL` group, so "median customer revenue by
+  channel" read `NULL` there instead of `2`. Per store, an order with no store is no store of
+  its own: "median revenue per store" reads `34` (Elm `43`, Oak `25`), where it read `25`,
+  counting that order as a third store.
+- A `distribution` over several measures settles each entity's operands before it aggregates,
+  as a sum grouped by that entity does. "Median net order value after refunds" (revenue less
+  goods refunds per order) left out every order with no refund row, so November read `-1`
+  where it is `4.5`, and a month with no refund at all read `NULL`. An order with no refund now
+  refunded nothing (`0`) wherever refunds have data in scope, under a `where` and a bounded
+  window too; percentiles, `min` and `max` read the same values. An order whose amount is
+  unknown still reads `NULL` and is left out, and a distribution over one measure is unchanged.
+  A sum whose CASE has no ELSE settles beside another measure too: "median revenue excluding
+  store b" per repeat customer reads `20`, where a customer with no store b order dropped out
+  and it read `12`. Under the `dataset` scope, a distribution that needs settling (revenue less
+  refunds) with a `where` beside an entity filter is now refused with `EMPTY_GROUPS_UNSETTLED`,
+  naming it, as the call grouped by order is; it read `NULL` in every month. Measures that read
+  the same rows, every one of them (the declared average order value), still answer.
+- A share over a grouping across a one-to-many hop is refused with `MIXED_GRAIN_INVALID`. A
+  share of a distinct count there (orders by item product type) divided by the sum of the
+  overlapping groups, so it read below each group's true fraction. Select a `total` beside the
+  groups instead: it counts each row once.
+- An `aggregate_if` with no time window reads its table's rows only through the table's
+  declared edge (`zero_through`), as the table's measures do. "The value of orders over 50 we
+  have ever had, by region" counted an order after the load log: east read `1179` where
+  revenue beside it read `180`, and the count read `3` for `2`. Under an empty load log it now
+  reads no row, where it read every row. On ClickHouse, which reads no loaded coverage, such a
+  call is refused (`INVALID_CONFIG`), as the table's measures are.
+- `plan`'s `PLAN_SUBJECT_UNMATCHED` no longer says "Nothing in the catalog mentions them, so the
+  package may not hold this" after checking only measures and metrics. It now checks every kind
+  the caller can see: words that dimensions, time roles, segments or entities mention are named
+  in `why.details.other_matches` with their `kind` ("These words match dimension Customer type
+  (dimension.customer_type), which can group or filter but isn't a measure"), and the status is
+  `low_confidence` instead of `unrealizable`. The message says nothing in the catalog mentions
+  the words only when no visible object of any kind does, and no longer adds that the package
+  may not hold them. An object hidden from the caller is never matched. The recovery hint points
+  to `discover`.
+- On Postgres, a native `uuid` column can now be grouped by, listed and searched. Its values read
+  back as their lower-case hyphenated text, with `column_types` `{"type": "uuid"}`, as on DuckDB.
+  Before, any call that returned a uuid column (a `group_by`, a `valid-values` listing or
+  `search`) was refused with `RESULT_TYPE_UNSUPPORTED`. Filters and counts on it already worked.
+- QUERY_CALL now says how an id stored as a float reads as text: `203.0` on DuckDB, Databricks
+  and Athena, and `203` elsewhere. Store ids as integers or text.
+- A `ratio` over a `prior_period` or `rolling` window, inline or in a metric's `expression:`,
+  now reads every period, as `arithmetic` division already did. The month after a month with no
+  rows read the ratio over the last month that had any ("revenue vs the previous month" by store
+  gave 1.6 for a store's March over its November); it now reads `NULL` there, and the answer
+  returns the empty months. Such a ratio is refused on ClickHouse and as a distribution's
+  input, as an arithmetic division over a prior period already was.
+- When two models' keys spell the column they share with different capitals (`instructor_key`
+  on one, `INSTRUCTOR_KEY` on the other), the `PATH_NOT_FOUND` author hint now spells `via:` as
+  the start's key does and `target:` as the target's does, so the relationship row it suggests
+  loads as written. Before, it used the target's spelling for both, and the row failed to load.
+  `details.shared_key_columns_on_start` gives the start's spelling when it differs.
+- A `rolling`, `cumulative` or `period_to_date` window whose rows all have a NULL amount now
+  reads `NULL`, as one sum over those rows does ("All NULL reads NULL"). It read `0`, the sum of
+  its empty periods: "each store's trailing three-month revenue" (or average order value) read
+  `0` for a store whose only order in those months has no amount. A window with no rows still
+  reads `0` inside the data, and a window with any amount reads the sum of the amounts it has.
+- A sum grouped two hops away reads its empty weeks as the same sum grouped one hop away.
+  "Weekly revenue by customer region" (orders, then customers, then regions) read `0` before
+  the first order and past the orders' load log, where revenue by customer tier reads `NULL`,
+  and refunds and the refund rate by region read `NULL` in every week, all time too, before the
+  first refund, where by tier they read `0` under the orders' log. Only the measure's own
+  table's edge covers its weeks: a load log declared only on the customers table covers
+  signups, so the orders read with no declared edge. An order whose customer the customers
+  table doesn't hold yet still reads under no region.
+- `valid-values` with `allow_live_query` searches, pages and counts every value of the
+  dimension. It used to read only the first `max(limit + offset, 100)` values, so a `search`
+  for a value sorting past them answered `total_count: 0`, and a longer list ended with
+  `has_more: false` as if complete. `search` now runs in the warehouse as the `contains` filter
+  word's match (literal, ignoring case; `_` and `%` are text), over the values the caller's
+  row filters leave, and `offset` and `limit` page there. `has_more` is exact, and
+  `total_count` is the number of matching values once a page holds the last of them, or `null`
+  before that; it is also `null` on a `needs_live_query` answer, which reads no values.
+- A declared value domain matches `search` the same way: literal, ignoring case, in a value, its
+  label or an alias. A search made only of punctuation, such as `_`, used to match every value.
+- A live `search` on a dimension that isn't text (a number or a date) is refused with
+  `INVALID_QUERY` at `search` before any read: list its values without `search`.
+- A filtered count or sum asked with no time window, over a table that declares how far it is
+  loaded (`zero_through`), reads `0` when its filter has never matched a loaded row, such as
+  "how many enterprise accounts have we ever had?" before the first one. It read `NULL` with
+  `NO_DATA_IN_SCOPE`, although the same table's loaded weeks already read `0`. An empty load
+  log still reads `NULL`, and so does a model whose edge is `data`.
+- A filtered metric over a table that declares how far it is loaded (`zero_through`) reads `0`
+  in every loaded period even when its filter has never matched a row, such as a count of
+  enterprise accounts before the first one signs up; it read `NULL` with `NO_DATA_IN_SCOPE`.
+  Periods after the edge still read `NULL` with `NO_DATA_YET`, so no `COALESCE(..., 0)` is
+  needed. See [Empty periods](docs/PACKAGE_AUTHORING.md#empty-periods).
+- A ratio over a filtered sum of a table that declares how far it is loaded (`zero_through`)
+  reads `0.0` in each loaded period with no matching row, even before the summed column holds
+  any value. "Each week's refund rate", refunds over revenue, read `NULL` in every week before
+  the first refund, because no row had a refund amount yet. A refunded row whose amount is NULL
+  still reads `NULL`, and periods after the edge still read `NULL` with `NO_DATA_YET`.
+- A measure dated by another model's clock (refunds dated by their order's time) is now capped
+  by its table's declared edge (`zero_through`) on that clock when asked with no time window.
+  "How many goods refunds have we ever issued?" read `0` under an empty load log, which
+  certifies nothing; it now reads `NULL` with `NO_DATA_IN_SCOPE`, as every refund count does
+  there. A refund on an order after the load log, or whose order is missing, is no longer read.
+
+### Security
+
+- A caller limited to some metrics now gets the same answer for an id outside its grant as
+  for an id the package does not have. This covers a metric or measure with a grain or a
+  window, a dimension written where a measure goes or compared with a text word, an
+  aggregation override, and the seed and plan routes that read the same call.
+
 ## 0.3.3 — 2026-10-28 — Totals, lookup routes and stricter refusals
 
 **Upgrading from 0.3.2:** 0.3.3 refuses some packages and calls that 0.3.2 accepted, where 0.3.2
