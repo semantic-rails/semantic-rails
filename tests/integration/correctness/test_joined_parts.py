@@ -880,9 +880,11 @@ def _people(parts: int) -> dict[str, Any]:
 
 def test_postgres_answers_the_parts_its_select_reads_and_refuses_one_more(depts, monkeypatch):
     """Postgres's own limit, on Postgres: the most parts the refusal says fit are answered, and
-    one more, sent past the check, is what Postgres itself refuses."""
+    one more, sent past the check, is what Postgres itself refuses. DuckDB states no such
+    limit, so there the same call is not refused."""
     if depts.backend != "postgres":
-        pytest.skip("Postgres's limit on the columns of one select")
+        assert depts.base.validate(_people(80), now=NOW)["ok"]
+        return
     code, _, details = _refusal(lambda: depts.query(_people(80)))
     assert (code, details["reason"], details["limit"]) == (
         "INVALID_QUERY",
