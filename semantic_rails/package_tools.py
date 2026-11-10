@@ -33,6 +33,7 @@ from .config_validation import (
     PackageReference,
     parse_config_report,
     parse_snapshot_report,
+    review_metadata_advisories,
     validate_config_report,
 )
 from .errors import SemanticLayerError
@@ -990,11 +991,15 @@ def promote_package_report(
         "release_labels": package_release_labels(config),
         "promotion_checks": checks,
         "blockers": blockers,
-        # Never a blocker: an undecided route refuses only the queries that need it.
+        # Never a blocker: an undecided route refuses only the queries that need it, and
+        # review metadata (owner, priority, risk) informs the reviewer of a promotion.
         "advisories": [
-            dict(warning)
-            for warning in parse_report["warnings"]
-            if warning.get("code") == "ROUTES_UNDECIDED"
+            *(
+                dict(warning)
+                for warning in parse_report["warnings"]
+                if warning.get("code") == "ROUTES_UNDECIDED"
+            ),
+            *review_metadata_advisories(config),
         ],
         "artifacts": {
             "parse": parse_report,

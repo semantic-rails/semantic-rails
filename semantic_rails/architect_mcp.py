@@ -116,7 +116,7 @@ _CUTS = tuple(
     for level in range(4)
 )
 # Refusals, a release's blockers, the next actions and the files a write changed are never cut.
-_NEVER_CUT = frozenset({"error", "errors", "blockers", "next_actions", "changed_files"})
+_NEVER_CUT = frozenset({"error", "errors", "blockers", "next_actions", "changed_files", "outcome"})
 _SUMMARY_NOTE = (
     "summary: the first warnings without details, the route census's counts and first undecided "
     "pairs (whole), failing checks only, the first items of long lists; pages names each list "
@@ -377,7 +377,7 @@ def _summary(
         if key in _NEVER_CUT or not isinstance(value, (dict, list)):
             out[key] = value
         elif key == "warnings" and isinstance(value, list):
-            shown = _first_warnings(value, cut.warnings)
+            shown = _first_warnings(value, cut.warnings, cut.list_chars)
             out[key] = [
                 {name: item for name, item in value[index].items() if name != "details"}
                 if isinstance(value[index], dict)
@@ -584,17 +584,33 @@ def _note_page(pages: dict[str, Any], where: str, total: int, shown: Any) -> Non
         pages[where] = {"total_count": total, "next_offset": first_left_out}
 
 
-def _first_warnings(warnings: list[Any], count: int = SUMMARY_WARNINGS) -> list[int]:
-    """The indexes of the first warning of each code, then the next ones, up to ``count``, in
-    report order: a new kind of warning never hides behind many of another."""
+def _first_warnings(
+    warnings: list[Any], count: int = SUMMARY_WARNINGS, chars: int | None = None
+) -> list[int]:
+    """The indexes of the first warning of each code, then the next ones, up to ``count`` and
+    while they fit in ``chars`` characters (without details), in report order: a new kind of
+    warning never hides behind many of another, and long warnings don't crowd out the rest."""
     firsts: dict[str, int] = {}
     for index, row in enumerate(warnings):
         firsts.setdefault(row.get("code", "") if isinstance(row, dict) else "", index)
     shown = set(list(firsts.values())[:count])
+
+    def size(index: int) -> int:
+        row = warnings[index]
+        return _json_size(
+            {k: v for k, v in row.items() if k != "details"} if isinstance(row, dict) else row
+        )
+
+    used = sum(size(index) for index in shown)
     for index in range(len(warnings)):
         if len(shown) >= count:
             break
+        if index in shown:
+            continue
+        if chars is not None and used + size(index) > chars:
+            break
         shown.add(index)
+        used += size(index) + 1
     return sorted(shown)
 
 
@@ -638,12 +654,80 @@ def _full_or_summary(report: dict[str, Any], full_report: bool) -> dict[str, Any
     return _fitted(lambda cut, pages: {**_summary(report, pages, "", cut), "report": _SUMMARY_NOTE})
 
 
+def _count(number: int, one: str, many: str = "") -> str:
+    return f"{number} {one if number == 1 else (many or one + 's')}"
+
+
+def _files_phrase(files: list[str]) -> str:
+    shown = ", ".join(files[:3])
+    return f"{shown} and {len(files) - 3} more" if len(files) > 3 else shown
+
+
+def _first_sentence(text: str) -> str:
+    flat = " ".join(str(text or "").split())
+    return re.split(r"(?<=[.!?])\s", flat, maxsplit=1)[0]
+
+
+def _write_outcome(payload: dict[str, Any]) -> list[str]:
+    """Three lines a person reads first: what happened, the package's state, what's next."""
+    status = str(payload.get("status") or "")
+    files = [str(name) for name in payload.get("changed_files") or []]
+    revision = str(payload.get("revision") or "")[:19]
+    error = payload.get("error") or {}
+    parse = payload.get("parse") or {}
+    if status == "error":
+        code = str(error.get("code") or "ERROR")
+        return [
+            f"Refused ({code}); nothing was written.",
+            _first_sentence(error.get("message", "")),
+            "Next: re-read project_status for the current revision, then retry with a new "
+            "idempotency_key."
+            if code == "CONFIG_CONFLICT"
+            else "Next: fix the call as the error says, then retry with a new idempotency_key.",
+        ]
+    if status in {"rolled_back_after_parse_error", "preview_invalid"}:
+        first: dict[str, Any] = next(iter(parse.get("errors") or []), {})
+        verb = "Rolled back" if status.startswith("rolled_back") else "Preview refused"
+        return [
+            f"{verb}: the package would not parse with {_files_phrase(files) or 'this change'}; "
+            "nothing was written.",
+            _first_sentence(first.get("message", "")),
+            "Next: fix the change and retry with a new idempotency_key.",
+        ]
+    if payload.get("dry_run"):
+        happened = f"Dry run: would change {_files_phrase(files) or 'no files'}; nothing written."
+        after = f"Next: send the same call with dry_run: false and expected_revision {revision}."
+    else:
+        verb = "Replayed" if status == "replayed" else "Wrote"
+        happened = f"{verb} {_files_phrase(files)}." if files else "No change: nothing to write."
+        after = f"Revision {revision}. Next: validate_project mode=runtime before trusting answers."
+    counts = parse.get("summary") or {}
+    by_code = parse.get("warning_counts") or dict(
+        Counter(row.get("code", "WARNING") for row in parse.get("warnings") or [])
+    )
+    warned = ", ".join(f"{code} {count}" for code, count in sorted(by_code.items()))
+    state = (
+        f"Parses: {_count(counts.get('entities', 0), 'entity', 'entities')}, "
+        f"{_count(counts.get('measures', 0), 'measure')}, "
+        f"{_count(counts.get('metric_recipes', 0), 'metric')}; "
+        + (
+            f"{_count(counts.get('warnings', 0), 'warning')} ({warned})."
+            if warned
+            else "no warnings."
+        )
+        if parse
+        else "Not parsed."
+    )
+    return [happened, state, after]
+
+
 def _mutation_result(
     payload: dict[str, Any], *, full_report: bool = True
 ) -> ArchitectMutationResult:
     if payload.get("status") in {"rolled_back_after_parse_error", "preview_invalid"}:
         hint = legacy_form_hint(payload["project_path"], _UPGRADE_ACTION)
         payload = {**payload, "next_actions": [*payload.get("next_actions", []), *hint]}
+    payload = {"outcome": _write_outcome(payload), **payload}
     if not full_report:
         changes = list(payload.get("changes") or [])
         rest = {key: value for key, value in payload.items() if key != "changes"}
@@ -858,8 +942,9 @@ def _report_page(
             target = None
             break
     if not isinstance(target, list):
-        listed: dict[str, Any] = {}
-        _summary(report, listed)
+        # The pages the summary of this report lists, at the cut the summary fits in.
+        shown = _full_or_summary({**report, "revision": envelope.get("revision")}, False)
+        listed = dict(shown.get("pages") or {})
         raise SemanticLayerError(
             "INVALID_MCP_ARGUMENTS",
             f"page {page!r} names no list in this report: pass a path from the summary's pages",

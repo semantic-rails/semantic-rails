@@ -522,9 +522,10 @@ meta:
   change_risk: medium
 ```
 
-`validate-config` warns when a public measure or curated metric omits
-`meta.owner_team`, `meta.review_priority`, or `meta.change_risk`. The warnings
-are advisory — they never block loading — but a warning-free package gives
+The promotion check (`promote-package`, Architect `promotion_check`) lists each public measure or
+curated metric that omits `meta.owner_team`, `meta.review_priority`, or `meta.change_risk` as a
+`REVIEW_METADATA_MISSING` advisory. It never blocks, and parse and validate don't report it, so
+a new package's first warnings are the ones that change answers. Filling them in gives
 reviewers an owner and a blast-radius signal for every governed object.
 
 To give every measure the same three fields once, write them under `defaults.measure.meta`;
@@ -2457,9 +2458,6 @@ Warnings (advisory only):
 - `as:` used where the resulting ID matches the auto-computed one (use is
   unnecessary).
 - Package omits `package.environments`.
-- A public measure or curated metric omits `meta.owner_team`,
-  `meta.review_priority`, or `meta.change_risk` (see
-  [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
 - Entity pairs the package's own metrics, examples or tests walk have two or more

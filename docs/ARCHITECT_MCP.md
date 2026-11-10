@@ -152,9 +152,9 @@ package with one model, its count and amount metrics, an example, a package test
 
 Writes, `validate_project`, `project_status`, `promotion_check`, `diff_project` and
 `impact_project` answer with a summary that fits one page (16,000 characters of compact JSON),
-whatever the package's size: each `warnings` list as `warning_counts` by code and 10 of its
-warnings without their `details`, the first of each code before any repeat, in report order
-(`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
+whatever the package's size: each `warnings` list as `warning_counts` by code and up to 10 of
+its warnings without their `details`, the first of each code before any repeat, in report order,
+and the repeats only while they fit 2,000 characters (`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
 pairs, up to 3, that fit whole in 8,000 characters (`undecided_omitted` counts the rest; a first
 pair larger than that shows its groups and the options they list, as many groups as fit, with
 an `options_note` such as "the 11 options its groups list, of 212 for A to B: every option is
@@ -178,8 +178,12 @@ On the read-only report tools, `page` (a path from `pages`) answers with that li
 a page shows the options that fit, marked as in the summary; the pages of its options carry the
 `pair` and an `options_note` ("options 12-33 of 212 for A to B, continued on the next page of
 …", and on the last page "…: the last of them"), so a route is never chosen from a list that
-looks whole. Every summary and page names the `revision` it read. A write's summary counts what it leaves out
-in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
+looks whole. Every summary and page names the `revision` it read. Every write, summary or full,
+starts with `outcome`, three lines a person reads first: what happened ("Wrote
+models/core/orders.yml.", "Dry run: would change …", "Refused (CONFIG_CONFLICT); nothing was
+written."), the package's state after it ("Parses: 2 entities, 9 measures, 4 metrics; 1 warning
+(ROUTES_UNDECIDED 1)."), and what's next. Warning and error messages name files relative to the
+package directory. A write's summary counts what it leaves out in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
 the same `idempotency_key` replays the write).
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
    `promotion_check` with `compare_path` or `base_ref` when an environment gate matters.
@@ -526,7 +530,9 @@ Which route between two entities a question means is a business definition (see
   a question asks about one. `create_project` and `setup_project_dialog` say to decide the ones
   the examples need once entities are related.
 - `promotion_check` lists the needed ones under `advisories` (`ROUTES_UNDECIDED`), never as a
-  blocker.
+  blocker. Its `advisories` also name each public measure or curated metric missing review
+  metadata (`REVIEW_METADATA_MISSING`: `meta.owner_team`, `meta.review_priority`,
+  `meta.change_risk`), which parse and validate no longer report.
 - Before writing, the transaction compares the package with the change applied. A change that
   would refuse an answered pair whose route still exists, or answer it by another route, refuses
   with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use

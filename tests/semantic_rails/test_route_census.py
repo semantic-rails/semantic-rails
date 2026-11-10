@@ -522,7 +522,8 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     ):
         assert any("route_census.undecided" in action for action in result["next_actions"])
     promotion = promote_package_report(PackageReference(source_path=str(pkg)), environment="dev")
-    assert promotion["advisories"] == []
+    # Review metadata advisories aside (this package declares none), no route advisory.
+    assert _route_advisories(promotion) == []
 
     copy = _with_examples(pkg, tmp_path / "walked", regions_with_checking=REGIONS_WITH_CHECKING)
     server = create_architect_mcp_server(workspace_root=tmp_path / "walked")
@@ -533,9 +534,13 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
     assert status["route_census"]["counts"]["undecided_needed"] == 1
     assert status["route_census"]["undecided"][0]["needed_by"] == ["example.regions_with_checking"]
     promotion = promote_package_report(PackageReference(source_path=str(copy)), environment="dev")
-    (advisory,) = promotion["advisories"]
+    (advisory,) = _route_advisories(promotion)
     assert (advisory["code"], advisory["details"]["count"]) == ("ROUTES_UNDECIDED", 1)
     assert "ROUTES_UNDECIDED" not in json.dumps(promotion["blockers"])
+
+
+def _route_advisories(promotion: dict[str, Any]) -> list[dict[str, Any]]:
+    return [row for row in promotion["advisories"] if row["code"] != "REVIEW_METADATA_MISSING"]
 
 
 # ---------------------------------------------------------------------------
