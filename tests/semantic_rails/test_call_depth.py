@@ -119,6 +119,21 @@ def _sum(terms: int) -> Any:
     return node
 
 
+def _boolean(levels: int) -> Any:
+    """An and of a condition and an and, and so on, as a binary generator writes a filter."""
+    node = _compared(0)
+    for level in range(levels):
+        node = {"kind": "boolean", "op": "and", "args": [_compared(level + 1), node]}
+    return node
+
+
+def _not(levels: int) -> Any:
+    node = _compared(0)
+    for _ in range(levels):
+        node = {"kind": "boolean", "op": "not", "args": [node]}
+    return node
+
+
 def _row_filter(levels: int) -> Any:
     node = _compared(0, NUMBER)
     for level in range(levels):
@@ -128,6 +143,8 @@ def _row_filter(levels: int) -> Any:
 
 SHAPES: dict[str, Callable[[int], Any]] = {
     "arithmetic": _arithmetic,
+    "boolean": _boolean,
+    "not": _not,
     "prior_period": _prior_period,
     "case": _case,
     "case_then": _case_then,

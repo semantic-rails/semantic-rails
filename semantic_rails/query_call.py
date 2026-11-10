@@ -410,7 +410,8 @@ class CallContext:
 
 # The deepest a call nests: the call is level 1, and each object or list inside another is one
 # level more; a boolean's arguments sit as many levels below it as the compiler joins them
-# (``expressions.boolean_chain_depth``). Reading, binding and rendering a call recurse; every
+# (``expressions.boolean_chain_depth``), so a boolean nested in a binary one is one level
+# deeper, as an arithmetic in an arithmetic is. Reading, binding and rendering a call recurse; every
 # walk that only copies, converts or searches a call or its plan keeps its own stack
 # (``flat_copy``). So a call costs at most 2.6 Python frames a level (a prior period inside an
 # arithmetic; a plain arithmetic costs 2.1) above about 20 of the engine's and its transports'
@@ -442,7 +443,9 @@ def call_depth(payload: Mapping[str, Any]) -> tuple[int, str]:
             if isinstance(item, Mapping | list | tuple):
                 step = 1
                 if joined and key == "args":
-                    step = max(1, boolean_chain_depth(len(item)))
+                    # The list is the boolean's own: its arguments sit as many levels below the
+                    # boolean as the compiler joins them, and one at least.
+                    step = max(0, boolean_chain_depth(len(item)) - 1)
                 steps.append((at, key))
                 stack.append((item, depth + step, len(steps) - 1))
     keys: list[Any] = []
