@@ -1211,6 +1211,8 @@ def _inner_call_violations(
         for spec in _normalize_where_specs(policy_config.get("required_where"))
         if not escaped and any(_where_spec_matches(row, spec) for row in own_where)
     ]
+    # A caller's aggregate over columns is named by the measures whose columns it reads.
+    named = {} if object_id in binding.plan.synthetic_measures else {"object": object_id}
     found: list[dict[str, Any]] = []
     for call in binding.inner_calls:
         if object_id not in call.objects:
@@ -1227,7 +1229,7 @@ def _inner_call_violations(
                     "disallowed": disallowed,
                     "allowed": sorted(allowed),
                     "inside": inside,
-                    "object": object_id,
+                    **named,
                 }
             )
         missing = [
@@ -1242,7 +1244,7 @@ def _inner_call_violations(
                     "missing": missing,
                     "present_group_by": list(call.group_by),
                     "inside": inside,
-                    "object": object_id,
+                    **named,
                 }
             )
         inner_where = [
@@ -1261,7 +1263,7 @@ def _inner_call_violations(
                     "missing": missing_where,
                     "present_where": inner_where,
                     "inside": inside,
-                    "object": object_id,
+                    **named,
                 }
             )
     return found

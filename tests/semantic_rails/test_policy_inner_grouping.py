@@ -224,6 +224,45 @@ def test_an_aggregate_filter_predicate_on_the_measure_is_refused(engine):
     assert f"as the entity filter on {CUSTOMER} groups it" in message
 
 
+def test_an_aggregate_over_the_measure_columns_as_a_predicate_input_is_refused(engine):
+    # An inline aggregate over the order totals revenue reads, as an entity filter's input.
+    total = {"kind": "column", "entity": "entity.jaffle_order", "column": "order_total_cents"}
+    columns = {
+        "kind": "aggregate_if",
+        "aggregation": "sum",
+        "condition": {
+            "kind": "comparison",
+            "op": ">",
+            "left": total,
+            "right": {"kind": "literal", "value": 0},
+        },
+        "value": total,
+    }
+    predicate = {"kind": "metric_predicate", "entity": CUSTOMER, "input": columns}
+    call = {
+        "select": [{"expression": {"measure": ORDERS}, "as": "orders"}],
+        "metric_filters": [
+            {"expression": {**predicate, "op": ">", "value": 0}, "op": "=", "value": True}
+        ],
+    }
+    runtime = engine(BY_STORE)
+    errors = runtime.validate_internal(call)["errors"]
+    assert errors[0]["code"] == "POLICY_DENIED"
+    assert errors[0]["message"] == (
+        f"{REVENUE} can't be grouped by {CUSTOMER_ID}, as the entity filter on {CUSTOMER} "
+        f"groups it; it can be grouped only by {STORE}."
+    )
+
+
+def test_a_joined_call_part_is_held_to_its_own_inner_groupings(engine):
+    call = {
+        "parts": [{"select": [ORDERS], "group_by": [STORE]}, _distribution(group_by=[STORE])],
+        "join": {"on": [[STORE, STORE]]},
+    }
+    message, _ = _refused(engine(BY_STORE), call)
+    assert f"can't be grouped by {CUSTOMER_ID}, as the distribution over {CUSTOMER}" in message
+
+
 def test_a_package_metric_whose_filter_reads_the_measure_per_customer_is_refused(engine):
     # Orders of customers whose lifetime spend is at least 100: the package's own entity filter.
     call = {"select": ["metric.sales.high_value_customer_orders"]}
