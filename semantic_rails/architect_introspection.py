@@ -971,7 +971,9 @@ def _date_keys(
 ) -> list[dict[str, Any]]:
     """The columns of a relation that hold a calendar's key: named like the key, of a
     compatible type, and confirmed by their values (at least ``DEFAULT_LINK_COVERAGE`` of the
-    distinct values found, on a key that names one row). A clock that is no calendar dates
+    distinct values found, on a key that names one row; a column under that, or named like a
+    snapshot's as-of day, is ``doubtful``: it dates nothing, but beside another key it makes the
+    choice the author's). A clock that is no calendar dates
     nothing here: one is unless its entity is ``kind: time``, or named for a day, date, week,
     month or calendar with rows that read as one (``_one_row_per_day``). A customer's home store
     has an opening date, and a daily exchange rate a date per row: neither dates the rows that
@@ -1010,11 +1012,22 @@ def _date_keys(
             evidence = _link_evidence(
                 warehouse, source, [name], qualified, [clock["key"]], deadline
             )
-            if evidence["target_key_unique"] and evidence["coverage"] >= DEFAULT_LINK_COVERAGE:
-                words = _link_words(
-                    [name], {"relation": clock["relation"], "key": clock["key"]}, evidence
-                )
-                found.append({**clock, "column": name, "reason": words})
+            if not evidence["target_key_unique"]:
+                continue
+            words = _link_words(
+                [name], {"relation": clock["relation"], "key": clock["key"]}, evidence
+            )
+            # A key mostly missing from the calendar, or a snapshot's as-of day, dates nothing
+            # by itself; beside another key it still makes the choice the author's.
+            doubtful = evidence["coverage"] < DEFAULT_LINK_COVERAGE or _snapshot_clock_like(name)
+            found.append(
+                {
+                    **clock,
+                    "column": name,
+                    "reason": words,
+                    **({"doubtful": True} if doubtful else {}),
+                }
+            )
     return found
 
 
@@ -1071,7 +1084,7 @@ def _time_roles(
 ) -> dict[str, Any] | None:
     """What dates a drafted model's measures once a calendar key is among the candidates: the
     ``time_roles`` block, or None when there is none (the relation's own dates, as before)."""
-    if not keyed:
+    if all(row.get("doubtful") for row in keyed):
         return None
     columns = [str(row["column"]) for row in keyed]
     listed, clocks = ", ".join(columns), ", ".join(sorted({str(row["entity"]) for row in keyed}))
@@ -1097,7 +1110,11 @@ def _time_roles(
             ),
             "options": options,
         }
-    chosen = [row for row in keyed if linked.get(row["entity"]) == row["column"]]
+    chosen = [
+        row
+        for row in keyed
+        if linked.get(row["entity"]) == row["column"] and not row.get("doubtful")
+    ]
     if not chosen and len(keyed) == 1:
         chosen = keyed
     if len(chosen) != 1:

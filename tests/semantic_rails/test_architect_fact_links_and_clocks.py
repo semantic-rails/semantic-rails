@@ -1131,6 +1131,43 @@ def test_a_daily_exchange_rate_is_no_calendar(tmp_path):
     assert all("times" not in spec for spec in rated["upsert_model"]["measures"].values())
 
 
+def test_a_key_the_calendar_lacks_or_a_snapshot_day_dates_nothing_alone(tmp_path):
+    """A due day key that the calendar mostly lacks, or a stock snapshot's day key, dates no
+    measure by itself: beside another key, the choice is stated; alone, the draft is as on
+    main, with no time."""
+    path = tmp_path / "doubt.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 60) t(i);
+            CREATE TABLE invoices AS SELECT i AS invoice_id, 15 AS invoice_day_key,
+              CASE WHEN i = 20 THEN 66 ELSE 59 END AS due_day_key, 10.0 AS amount
+              FROM range(1, 21) t(i);
+            CREATE TABLE inventory_snapshots AS SELECT i AS snapshot_id, 1 + i % 3 AS product_key,
+              1 + i % 59 AS snapshot_day_key, 10.0 + i % 7 AS quantity FROM range(1, 60) t(i);
+            CREATE TABLE stock_counts AS SELECT snapshot_id AS count_id, snapshot_day_key,
+              1 + snapshot_day_key % 50 AS counted_day_key, quantity FROM inventory_snapshots;
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        drafted = {
+            relation: suggest_model(warehouse, relation, clocks=CLOCK)
+            for relation in ("invoices", "inventory_snapshots", "stock_counts")
+        }
+    for relation, candidates in (
+        ("invoices", ["invoice_day_key", "due_day_key"]),
+        ("stock_counts", ["snapshot_day_key", "counted_day_key"]),
+    ):
+        roles = drafted[relation]["time_roles"]
+        assert (roles["status"], roles["candidates"]) == ("choose", candidates)
+    assert "time_roles" not in drafted["inventory_snapshots"]
+    for relation in drafted:
+        draft = drafted[relation]["upsert_model"]
+        assert "entities" not in draft
+        assert all("times" not in spec for spec in draft["measures"].values())
+
+
 def test_a_date_that_is_also_a_calendar_key_is_one_candidate(tmp_path):
     """A calendar keyed by its date: an order's order_date is its own date and that key at once,
     so it stays the one default, with no choice to state."""
