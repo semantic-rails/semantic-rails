@@ -6,11 +6,12 @@ entity filter's per-entity values (a threshold on each one decides which entitie
 lookup measure's per-parent values. Each such grouping is held to the measure's
 ``allowed_group_by`` and ``required_group_by`` like the call's own ``group_by``, and to its
 ``required_where`` like the call's own ``where``, and refused the same way, naming the measure,
-the inner grouping and the cuts the policy allows. So is the key the answer carries beside a
-name that labels an entity's rows, a conversion's operand events (read under only the filters
-routed to their side) and a share's total beside an entity filter. Groupings that only
+the inner grouping and the cuts the policy allows. So are a conversion's operand events (read
+under only the filters routed to their side), a share's total beside an entity filter and a
+statistic the caller asks in place of the measure's own that returns single rows' values (a
+min, max, median or percentile: a grouping by the measure's row key). Groupings that only
 aggregate the call's own groups (a total, a share, a conversion's event matching) read nothing
-finer and still answer.
+finer and still answer, and a listed name that labels an entity's rows allows its key.
 """
 
 from __future__ import annotations
@@ -312,6 +313,129 @@ def test_a_required_group_is_kept_by_an_entity_filter_or_refused(engine):
     _answers(runtime, _distribution(group_by=[STORE]))
 
 
+# A statistic that returns single rows' values ------------------------------------------------
+
+LIFETIME_ORDERS = "measure.jaffle.lifetime_order_count"
+CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+ORDER_ID = "dimension.jaffle_order_id"
+BY_TYPE = {"allowed_group_by": [CUSTOMER_TYPE]}
+
+
+def _statistic(
+    aggregation: str, measure: str = LIFETIME_ORDERS, kind: str = "measure", **extra: Any
+) -> dict[str, Any]:
+    expression: dict[str, Any] = {"kind": kind, "measure": measure, "aggregation": aggregation}
+    if aggregation == "percentile":
+        expression["parameters"] = {"p": 0.9}
+    return {"select": [{"expression": expression, "as": "v"}], "group_by": [CUSTOMER_TYPE], **extra}
+
+
+@pytest.mark.parametrize("kind", ["measure", "aggregate", "scoped_aggregate"])
+@pytest.mark.parametrize("aggregation", ["min", "max", "median", "percentile"])
+def test_a_statistic_of_single_rows_is_refused_like_a_cut_by_their_key(engine, aggregation, kind):
+    # The largest customer's order count in each customer type is one customer's own count.
+    runtime = engine(BY_TYPE, governed=LIFETIME_ORDERS)
+    message, violations = _refused(runtime, _statistic(aggregation, kind=kind))
+    inside = f"the {aggregation} over {CUSTOMER}'s rows"
+    assert message == (
+        f"{LIFETIME_ORDERS} can't be grouped by {CUSTOMER_ID}, as {inside} groups it; it can be "
+        f"grouped only by {CUSTOMER_TYPE}."
+    )
+    assert violations == [
+        {
+            "kind": "disallowed_group_by",
+            "disallowed": [CUSTOMER_ID],
+            "allowed": [CUSTOMER_TYPE],
+            "inside": inside,
+            "aggregation": aggregation,
+            "default_aggregation": "sum",
+            "object": LIFETIME_ORDERS,
+        }
+    ]
+    hints = runtime.validate(_statistic(aggregation, kind=kind))["errors"][0]["recovery_hints"]
+    assert hints[0]["message"] == (
+        f"Read {LIFETIME_ORDERS} with its default aggregation (sum) in place of {aggregation}."
+    )
+
+
+def test_a_statistic_of_single_orders_or_snapshots_is_refused(engine):
+    # One order's revenue, by store; one customer's last lifetime spend snapshot, by type.
+    message, _ = _refused(
+        engine(BY_STORE), {**_statistic("max", measure=REVENUE), "group_by": [STORE]}
+    )
+    assert message.startswith(f"{REVENUE} can't be grouped by {ORDER_ID}, as the max over ")
+    message, _ = _refused(
+        engine(BY_TYPE, governed=LIFETIME_SPEND), _statistic("max", measure=LIFETIME_SPEND)
+    )
+    assert message.startswith(f"{LIFETIME_SPEND} can't be grouped by {CUSTOMER_ID}, as the max")
+
+
+def test_a_conditional_statistic_over_the_measure_columns_is_refused(engine):
+    total = {"kind": "column", "entity": "entity.jaffle_order", "column": "order_total_cents"}
+    call = {
+        "select": [
+            {
+                "expression": {"kind": "aggregate_if", "aggregation": "max", "value": total},
+                "as": "v",
+            }
+        ],
+        "group_by": [STORE],
+    }
+    errors = engine(BY_STORE).validate_internal(call)["errors"]
+    assert errors[0]["code"] == "POLICY_DENIED"
+    assert errors[0]["message"].endswith(
+        f"can't be grouped by {ORDER_ID}, as the max over entity.jaffle_order's rows groups it; "
+        f"it can be grouped only by {STORE}."
+    )
+    assert errors[0]["recovery_hints"][0]["message"] == "Use sum, avg or count in place of max."
+    summed = {"kind": "aggregate_if", "aggregation": "sum", "value": total}
+    answered = engine(BY_STORE).validate_internal(
+        {**call, "select": [{"expression": summed, "as": "v"}]}
+    )
+    assert not answered.get("errors"), answered
+
+
+def test_a_statistic_of_rows_no_dimension_keys_names_their_entity(engine, config):
+    # No dimension over the customer key: no listed cut can allow one customer's rows.
+    keyless = replace(
+        config,
+        dimensions=[
+            row
+            for row in config.dimensions
+            if not (row.entity == CUSTOMER and row.column == "customer_id")
+        ],
+    )
+    runtime = engine(BY_TYPE, governed=LIFETIME_ORDERS, package=(keyless, PACKAGE))
+    message, _ = _refused(runtime, _statistic("max"))
+    assert message == (
+        f"{LIFETIME_ORDERS} can't be grouped by {CUSTOMER}, as the max over {CUSTOMER}'s rows "
+        f"groups it; it can be grouped only by {CUSTOMER_TYPE}."
+    )
+
+
+def test_a_statistic_that_returns_no_single_row_or_an_allowed_one_answers(engine, config):
+    runtime = engine(BY_TYPE, governed=LIFETIME_ORDERS)
+    _answers(runtime, {"select": [LIFETIME_ORDERS], "group_by": [CUSTOMER_TYPE]})
+    _answers(runtime, _statistic("avg"))
+    _answers(runtime, _statistic("sum"))
+    by_key = {"allowed_group_by": [CUSTOMER_TYPE, CUSTOMER_ID]}
+    _answers(engine(by_key, governed=LIFETIME_ORDERS), _statistic("max"))
+    # Another measure's statistic reads nothing of this one.
+    _answers(runtime, _statistic("max", measure=REVENUE))
+    # The package's own aggregation is its author's definition.
+    authored = replace(
+        config,
+        measures=[
+            replace(row, default_aggregation="max") if row.id == LIFETIME_ORDERS else row
+            for row in config.measures
+        ],
+    )
+    _answers(
+        engine(BY_TYPE, governed=LIFETIME_ORDERS, package=(authored, PACKAGE)),
+        {"select": [LIFETIME_ORDERS], "group_by": [CUSTOMER_TYPE]},
+    )
+
+
 def test_a_policy_on_a_package_metric_covers_its_own_entity_filter(engine):
     call = {"select": ["metric.sales.high_value_customer_orders"]}
     message, _ = _refused(
@@ -326,7 +450,7 @@ def test_a_policy_on_a_package_metric_covers_its_own_entity_filter(engine):
 # Groupings beside the call's own --------------------------------------------------------------
 
 
-def test_the_key_a_name_brings_is_held_to_the_allowed_cuts(engine, config):
+def test_a_name_that_labels_an_entity_s_rows_allows_its_key(engine, config):
     # A store's name labels its rows, so a call by name groups by the store's key beside it.
     named = replace(
         config,
@@ -335,20 +459,26 @@ def test_the_key_a_name_brings_is_held_to_the_allowed_cuts(engine, config):
             for row in config.entities
         ],
     )
+    # Allowing the name allows that grouping: one row per store, labelled by its name.
     runtime = engine(BY_STORE, package=(named, PACKAGE))
-    message, violations = _refused(runtime, {"select": [REVENUE], "group_by": [STORE]})
-    assert message == (
-        f"{REVENUE} can't be grouped by {STORE_ID}, which the answer carries beside {STORE} so "
-        f"that rows of the same name stay apart; it can be grouped only by {STORE}."
+    _answers(runtime, {"select": [REVENUE], "group_by": [STORE]})
+    _answers(runtime, _distribution(entity=STORE_ENTITY))
+    # The key itself is still not a listed cut, and customers are another entity.
+    _, violations = _refused(runtime, {"select": [REVENUE], "group_by": [STORE_ID]})
+    assert [row["kind"] for row in violations] == ["disallowed_group_by"]
+    _refused(runtime, _distribution(group_by=[STORE]))
+    # Without the display, two stores may share a name: the key is a finer cut.
+    _refused(engine(BY_STORE), _distribution(entity=STORE_ENTITY))
+
+
+def test_a_policy_that_allows_a_display_name_answers_the_plain_call_by_it(engine):
+    shop = "tests/integration/correctness/shop"
+    package = (replace(load_package_config(shop), semantic_policies=[]), shop)
+    store_name = "dimension.shop_store_name"
+    runtime = engine(
+        {"allowed_group_by": [store_name]}, governed="measure.shop.revenue", package=package
     )
-    assert violations[0]["beside"] == [STORE]
-    _answers(
-        engine({"allowed_group_by": [STORE, STORE_ID]}, package=(named, PACKAGE)),
-        {
-            "select": [REVENUE],
-            "group_by": [STORE],
-        },
-    )
+    _answers(runtime, {"select": ["measure.shop.revenue"], "group_by": [store_name]})
 
 
 def test_a_conversion_reads_its_converted_events_without_the_call_filter(engine):

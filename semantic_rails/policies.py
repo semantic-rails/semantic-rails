@@ -32,6 +32,7 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     measure_column_ref,
 )
+from .compiler_parts.lowering_common import _stock_row_key
 from .compiler_parts.paths import dimensions_over_column, display_key
 from .compiler_parts.post_aggregation import share_over
 from .compiler_parts.totals import coarser_calls
@@ -362,7 +363,7 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
     kind = violation.get("kind")
     disallowed = _listed(violation.get("disallowed") or [])
     allowed = list(violation.get("allowed") or [])
-    if violation.get("inside") or violation.get("beside"):
+    if violation.get("inside"):
         return _inner_cut(violation)
     if kind == "missing_required_group_by" and violation.get("total") == "totals":
         missing = _listed(violation.get("missing") or [])
@@ -491,14 +492,14 @@ def _inner_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
             else "it can't be grouped"
         )
         disallowed = _listed(violation.get("disallowed") or [])
-        if not inside:
-            # A key the engine groups by beside a name that labels its entity's rows.
-            names = _listed([name for name in violation.get("beside") or [] if name])
-            line = f"can't be grouped by {disallowed}, which the answer carries beside {names}"
-            return (
-                f"{line} so that rows of the same name stay apart; {can}",
-                f"Group by another dimension than {names}.",
-                {},
+        if aggregation := violation.get("aggregation"):
+            # A statistic that returns single rows' values, in place of the measure's own.
+            default = violation.get("default_aggregation")
+            action = (
+                f"Read {violation.get('object')} with its default aggregation ({default}) in "
+                f"place of {aggregation}."
+                if default
+                else f"Use sum, avg or count in place of {aggregation}."
             )
         return f"can't be grouped by {disallowed}, as {inside} groups it; {can}", action, {}
     if violation.get("kind") == "missing_required_group_by":
@@ -1207,6 +1208,80 @@ def _cuts(field: str, config: PackageConfig) -> set[str]:
     return out
 
 
+# The statistics that return single rows' values (one row's, or one between two rows').
+ROW_STATISTICS = frozenset({"min", "max", "median", "percentile"})
+_MEASURE_NODE_KINDS = frozenset({"", "measure", "aggregate", "semi_additive", "scoped_aggregate"})
+
+
+def _row_statistics(
+    binding: BoundQuery, object_id: str
+) -> list[tuple[str, str, list[tuple[str, list[str]]]]]:
+    """Each statistic the call reads ``object_id`` with that returns single rows' values in
+    place of the measure's own aggregation, as ``(aggregation, entity, grain)``: read so, the
+    measure is grouped by its row key, one row's value per group. ``grain`` names each key
+    column with the dimensions over it (the entity itself when there are none); a stock's rows
+    are its series' snapshots, so its key is the series key. A caller's aggregate over columns
+    has no aggregation of its own; a package metric's are its author's definition."""
+    config = binding.config
+    synthetic = binding.plan.synthetic_measures.get(object_id)
+    measure = synthetic or next((row for row in config.measures if row.id == object_id), None)
+    if measure is None:
+        return []
+    if synthetic is not None:
+        aggregations = [synthetic.default_aggregation]
+    else:
+        aggregations = [
+            str(node.get("aggregation") or "")
+            for node in _measure_nodes(binding.plan.query)
+            if node.get("measure") == object_id
+        ]
+    picked = [
+        aggregation
+        for aggregation in dict.fromkeys(aggregations)
+        if aggregation in ROW_STATISTICS
+        and (synthetic is not None or aggregation != measure.default_aggregation)
+    ]
+    if not picked:
+        return []
+    columns = _stock_row_key(measure, config)
+    stock = measure.measure_class == "semi_additive"
+    if stock:
+        dimensions = {row.id: row for row in config.dimensions}
+        clocks = {
+            dimensions[role.dimension].column
+            for role in config.temporal_roles
+            if role.dimension in dimensions and dimensions[role.dimension].entity == measure.entity
+        }
+        columns = [column for column in columns if column not in clocks]
+    grain: list[tuple[str, list[str]]] = []
+    for column in columns:
+        over = sorted(
+            dimensions_over_column(measure.entity, column, config),
+            key=lambda row: row.semantic_kind != "id",
+        )
+        ids = [row.id for row in over]
+        grain.append((ids[0] if ids else measure.entity, ids))
+    if not columns and not stock:
+        # Rows no key tells apart: no listed cut groups by them.
+        grain.append((measure.entity, []))
+    return [(aggregation, measure.entity, grain) for aggregation in picked]
+
+
+def _measure_nodes(node: Any) -> Iterator[Mapping[str, Any]]:
+    """Every measure read a call writes, at any depth (a distribution's input, ``having``,
+    an entity filter's input included)."""
+    if isinstance(node, Mapping):
+        if isinstance(node.get("measure"), str) and str(node.get("kind") or "") in (
+            _MEASURE_NODE_KINDS
+        ):
+            yield node
+        for value in node.values():
+            yield from _measure_nodes(value)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _measure_nodes(item)
+
+
 def _share_violations(
     policy_config: Mapping[str, Any],
     payload: Mapping[str, Any],
@@ -1329,20 +1404,30 @@ def _inner_call_violations(
     # A caller's aggregate over columns is named by the measures whose columns it reads.
     named = {} if object_id in binding.plan.synthetic_measures else {"object": object_id}
     found: list[dict[str, Any]] = []
-    keys = [field for field in binding.plan.group_by if field not in set(query.group_by)]
-    if "allowed_group_by" in policy_config and (
-        disallowed := [key for key in keys if not _cuts(key, config) & allowed]
-    ):
-        beside = {display_key(config, field): field for field in query.group_by}
-        found.append(
-            {
-                "kind": "disallowed_group_by",
-                "disallowed": disallowed,
-                "allowed": sorted(allowed),
-                "beside": [beside.get(key, "") for key in disallowed],
-                **named,
-            }
-        )
+    # A listed name that labels an entity's rows allows grouping one row per entity: its key.
+    cuts = allowed | {key for field in allowed if (key := display_key(config, field))}
+    if "allowed_group_by" in policy_config:
+        for aggregation, entity, grain in _row_statistics(binding, object_id):
+            disallowed = [
+                label
+                for label, over in grain
+                if not any(_cuts(field, config) & (cuts | own_group_by) for field in over)
+            ]
+            if disallowed:
+                # A caller's aggregate over columns has no default to read it with.
+                measure = next((row for row in config.measures if row.id == object_id), None)
+                default = measure.default_aggregation if measure and named else ""
+                found.append(
+                    {
+                        "kind": "disallowed_group_by",
+                        "disallowed": disallowed,
+                        "allowed": sorted(allowed),
+                        "inside": f"the {aggregation} over {entity}'s rows",
+                        "aggregation": aggregation,
+                        **({"default_aggregation": default} if default else {}),
+                        **named,
+                    }
+                )
     for call in binding.inner_calls:
         # A package metric reads every inner call lowered for the root leaves computing it.
         computes = object_id in recipes and any(
@@ -1353,7 +1438,7 @@ def _inner_call_violations(
         inside = call.inside or "a query inside the call"
         inner = normalize_query(call.query, config=config)
         disallowed = [
-            field for field in call.group_by if not _cuts(field, config) & (allowed | own_group_by)
+            field for field in call.group_by if not _cuts(field, config) & (cuts | own_group_by)
         ]
         if "allowed_group_by" in policy_config and disallowed:
             found.append(
