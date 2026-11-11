@@ -1,1 +1,0 @@
-- The `postgres`, `snowflake-adbc` and `all` extras now pin `adbc-driver-manager` 1.13.0.

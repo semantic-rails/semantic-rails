@@ -8,6 +8,222 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.5 — 2026-11-11 — Statistic fixes, deep and joined calls, and discover by model
+
+**Upgrading from 0.3.4:** 0.3.5 fixes four kinds of wrong answer, so some numbers move toward
+what the call states, and it refuses a few calls 0.3.4 answered as if part of the call were not
+there. Run `semantic-rails check` on each package with 0.3.5 before you deploy: an example, a
+test or a package metric that uses a newly refused shape fails there. No contract field is
+removed or changes type.
+
+- **Check the answers that change.**
+  - A statistic of a balance asked with no time window reads the last closing day, like the
+    balance itself, and says so with `BALANCE_CLOSING_DAY`: the average inventory per store
+    reads `925` (the closing day), where it read `967.2` by counting a store whose last snapshot
+    is from 2016. A series with no snapshot on that day is left out.
+  - A scoped aggregate's predicate compares the statistic it states: revenue from customers
+    whose *average* order is at least $30 reads `74,055.23`, where it read `745,646.63` by
+    comparing each customer's total.
+  - `plan` keeps the time grain on a metric that declares no clock: "total amount by month" on a
+    new package drafts a monthly series, where it drafted one total. A metric no one clock dates
+    (a ratio of two models' counts) is held with `PLAN_UNMATCHED_TERMS` instead of drafted as
+    one total, and "total amount for monthly billing period" stays one total, not a monthly
+    series.
+- **Newly refused, where 0.3.4 answered without part of the call:**
+  - an aggregation parameter the aggregation doesn't read (`UNSUPPORTED_AGGREGATION`, naming
+    it in `details.unread_parameters`): an `avg` of revenue with `"parameters": {"p": 0.9}`, or
+    an `avg` of a row count with `"parameters": {"expression": "LENGTH(title)"}` (which answered
+    `1.0`). Only `percentile` reads a parameter (`p`); the same holds beside a predicate's input,
+    in a `distribution`, and in a package metric;
+  - in a scoped aggregate's predicate, a statistic beside a metric input or one that contradicts
+    the input's own (`INVALID_METRIC_PREDICATE`), and a key the predicate doesn't read
+    (`INVALID_QUERY`): `{"input": "metric.sales.aov_usd", "aggregation": "avg", ...}` used to
+    compare the metric and ignore `avg`;
+  - on DuckDB and Postgres, a no-window statistic of a balance dated in another time zone than
+    the call's (`MIXED_TIME_ROLES`, `closing_day_zone`): give the call a window on that clock;
+  - the CLI's `catalog`, `discover`, `inspect` and `build-options` refuse a `--verbosity` they
+    don't support, where they ignored it.
+- **Refused by name, where 0.3.4 failed with an internal error:**
+  - a call nested more than 250 levels deep (`INVALID_QUERY`, with `details.depth` and
+    `details.max_depth`): a sum of 300 measures, each added to the sum before it, is refused
+    at its deepest field;
+  - on Postgres, a joined call wider than 1,664 columns (`INVALID_QUERY`, `details.reason`
+    `parts_over_column_limit`), saying how many of its parts fit: 53 parts of one metric by one
+    key fit.
+- **Newly answered:**
+  - a joined call whose parts group by identifier columns of one name that one of the models
+    keys, with no relationship between them: headcount beside assigned area per department code
+    answers, and `PARTS_JOINED` says the join is the caller's choice (0.3.4 refused it with
+    `join_key_not_shared`);
+  - a division nested in its divisor 100 times, and an `and` or `or` with hundreds of
+    arguments, which failed with an internal error. An `and` or `or` of more than 16 arguments
+    groups its halves in parentheses in the SQL (`mode: "sql"`); the answer is the same.
+- **Same answers, sooner:** a joined call of 200 parts compiles in about a second (about 13 s
+  before), a deeply nested `select` validates in 2 s (44 s before), and a `where` listing 10,000
+  values of one dimension answers in about a second (about 30 s before).
+- **Clients that read responses.**
+  - `discover` with empty `terms` lists ids by model (each model's measures, metrics, segments
+    and dimensions, with `counts` and the package `description`), where it listed them by kind,
+    so the default call on a large package fits instead of failing with `RESULT_TOO_LARGE`. It
+    no longer repeats the package's settings and capability flags (read them from the
+    `semantic-rails://catalog/index` resource), and lists relationship, temporal role and value
+    domain ids only when `kinds` names them. Over 100 dimensions, each model gives
+    `dimension_count` with `DISCOVER_DIMENSIONS_COUNTED`; page their ids with
+    `kinds: ["dimension"]`. With `kinds`, or under a resource grant, the listing is by kind as
+    before.
+  - `discover` answers a call with the same bytes in every process: a score's last digit, and so
+    the order of two tied rows, no longer varies between server processes.
+  - `SEMANTIC_CAVEAT_APPLIED` carries the caveat's `so_what` and `owner` at the default
+    `compact` verbosity when the caveat sets them.
+- **Package authors.** `REVIEW_METADATA_MISSING` comes only from the promotion check, so
+  parse and validate report fewer warnings; their messages name files by relative paths; and
+  every Architect MCP write starts with a three-line `outcome`. A `seed.kind: external`
+  `default_db` may name a file inside the dbt project around the package with `..`.
+- **Install.** The `postgres`, `snowflake-adbc` and `all` extras pin `adbc-driver-manager`
+  1.13.0 (from 1.12.0). No other dependency range changes.
+
+### Added
+
+- Caveats take an optional `so_what`: what the reader should do about the fact the
+  `message` states. The `SEMANTIC_CAVEAT_APPLIED` warning carries `so_what` and `owner` at
+  the default `compact` verbosity (and at `full`) when the caveat sets them. A non-string
+  `so_what` is refused with `INVALID_CONFIG`. See
+  [`caveats.yml`](docs/PACKAGE_AUTHORING.md#caveatsyml).
+- A package test kind, `caveat_applies`, pins whether a call states a caveat: `caveat:`
+  names it, and `applies: false` asserts that it is not stated. A failure reports
+  `CAVEAT_APPLIES_MISMATCH` with the caveats the call did state; a refused call fails the
+  test in either form. See [Examples and tests](docs/PACKAGE_AUTHORING.md#examples-and-tests).
+- Parts of a joined call also join on identifier columns of one name and type that one of the
+  models declares in its key, when no relationship links them. The answer states the join as
+  the caller's choice (no relationship says the codes name the same things). See
+  [Calls side by side](docs/QUERY_CALL.md#calls-side-by-side-parts-and-join).
+- The query MCP can be served without `plan`: set `SEMANTIC_RAILS_MCP_HIDE_PLAN=1` (or pass
+  `hide_plan=True` to `SemanticLayerMCPAdapter`). `plan` is then neither listed nor callable, and
+  the instructions, tool descriptions, prompts and hints describe discover, inspect, execute in
+  `validate` mode, then execute. Unset, the server is unchanged.
+
+### Changed
+
+- The `postgres`, `snowflake-adbc` and `all` extras now pin `adbc-driver-manager` 1.13.0.
+- Missing review metadata (`meta.owner_team`, `meta.review_priority`, `meta.change_risk`) is
+  reported only by the promotion check, as one `REVIEW_METADATA_MISSING` advisory per measure or
+  metric; parse and validate leave it out, so a new package's first warnings are the ones that
+  change answers.
+- Parse and validate messages name files relative to the current directory when the package
+  lies under it (`semantic_rails/jaffle/models/customers.yml` from a dbt project root), else
+  relative to the package directory, instead of repeating its absolute path.
+- Every Architect MCP write starts with `outcome`: three lines saying what happened, the
+  package's state after it, and what to do next, with the whole revision to send. A summary shows repeated warnings only while
+  they fit 2,000 characters, after the first warning of each code.
+- A package inside a dbt project reads the DuckDB file `dbt build` writes: the `default_db` of
+  a `seed.kind: external` package may use `..` to name a file inside that dbt project, with no
+  environment variable. Other paths outside the package still fail to load.
+- The Architect MCP's workspace root defaults to the directory it starts in, not the installed
+  package's folder. `semantic-rails mcp setup --mcp architect` needs no package, and without
+  `--client` it sets up every MCP client installed here (Claude Code included). The preview
+  and the install report name each existing server entry of the same name that it replaces.
+- `setup_project_dialog` reads a dbt project in the workspace: dbt answers the warehouse, the
+  database path, the first model and, when column types name one, its time column; the dialog
+  asks only what is left, and it names the `import_dbt_project` call that brings in the rest
+  (one dbt model per model id: a mart wins over the staging model that drafts the same id).
+  `create_project` writes an absolute `default_db` inside the workspace root relative to the
+  package.
+- `discover` with empty `terms` lists the ids to start from by model: each model the caller sees,
+  with its measure, metric, segment and dimension ids, under `counts` and the package
+  `description`. When the caller sees more than 100 dimensions, each model gives its
+  `dimension_count` (the note `DISCOVER_DIMENSIONS_COUNTED`) and `kinds: ["dimension"]` pages
+  their ids. `limit` and `offset` page the models, and a page ends at the models that fit the
+  response budget, so the default call on a large package no longer fails with
+  `RESULT_TOO_LARGE`. With `kinds`, or under a resource grant, the listing is by kind as before.
+  The listing no longer repeats the package's settings and capability flags (read them from the
+  `semantic-rails://catalog/index` resource), and leaves out relationship, temporal role and
+  value domain ids unless `kinds` names them. The jaffle_shop default listing is 6,475
+  characters, from 9,393.
+- The `discover` tool's `limit` argument says that `has_more` counts what a list left out.
+- Every statistic of a balance asked with no time window reads the last closing day, as the
+  balance itself (`last_value`, `sum`) and a `distribution` over its series already did, and
+  the answer names that day with `BALANCE_CLOSING_DAY`. `avg`, `median`, `percentile`, `min`
+  and `max` of a stock on an `as_of_time` clock used to read each series' own last snapshot,
+  however old, so one stock gave two numbers: the average inventory per store read `967.2`,
+  counting a store whose last snapshot is from 2016, beside a closing-day inventory of `925`;
+  it now reads `925`. A series with no snapshot on that day is left out of every statistic
+  (`NULL` when it is the only one filtered to). On DuckDB and Postgres, such a statistic of a
+  balance on a timestamp clock in another zone than the call's is refused with
+  `MIXED_TIME_ROLES` (`closing_day_zone`), as the balance already was; give the call a window
+  on that clock, over which the statistic reads each series' last snapshot in it, as the
+  message says. Answers with a window, a grain or a grouping by the clock are unchanged, as
+  are an entity filter or a metric predicate read `over: "window"` and a statistic of a
+  balance keyed by its clock alone (one series: over its snapshots). See
+  [Balances](docs/QUERY_CALL.md#balances).
+
+### Fixed
+
+- An aggregation given a parameter it doesn't read is refused with `UNSUPPORTED_AGGREGATION`
+  naming it, instead of answering without it. "Average title length" written as an `avg` of a
+  row count with `"parameters": {"expression": "LENGTH(title)"}` answered `1.0`, the average of
+  the count itself; an `avg` with a `p`, or a `percentile` with a second key, likewise answered
+  as if the key were absent. Only `percentile` reads a parameter (`p`). The same holds for a
+  `distribution`'s `p` and `parameters`, and for a metric that names a measure. To aggregate a
+  row expression, write `{"kind": "aggregate_if", "aggregation": "avg", "value": <expression>}`.
+  See [The aggregation override](docs/QUERY_CALL.md#the-aggregation-override).
+- A call nested more than 250 levels deep is refused at the field where it is deepest
+  (`INVALID_QUERY`, with `details.depth` and `details.max_depth`) before any work, instead of
+  failing with an internal error. 250 levels is what the compiler fits in Python's default
+  stack with room for the program calling it: copying a compiled plan, and turning it into the
+  answer's fields, no longer take a frame of the stack for each level, and neither do the
+  checks of a timed call's clocks, so a monthly call that deep answers on Python 3.11 as well.
+  A division nested in its
+  divisor 100 times, which failed with an internal error, now compiles. See
+  [Refusals](docs/QUERY_CALL.md#refusals).
+- A boolean `and` or `or` with hundreds of arguments compiles: from about 250 arguments it
+  failed with an internal error, and from about 1,000 with `INVALID_CONFIG`. Up to 16
+  arguments its SQL reads as before; a longer one groups its halves in parentheses.
+- A `where` that lists thousands of values for one dimension answers in about a second: the
+  check that warns about a value no row has ran one warehouse query per value, so 10,000
+  values took about 30 seconds. It now reads them in one query, and its warnings are unchanged,
+  however few rows the answer itself may return.
+- `discover` answers a call with the same bytes in every process. The reasons a row matched a
+  plural term and its singular, and the order their amounts add to its score, no longer follow
+  Python's per-process hash seed, so a score can't move in its last digit and break a tie
+  between two rows the other way. `plan` ranks with the same scores.
+- The docs name `plan`'s argument `query` (not `partial_query`), use one local port (8091),
+  count five query tools (six with segments), and show `record_route_decision` taking
+  `decisions`. The Architect tool table in [Architect MCP](docs/ARCHITECT_MCP.md#tool-surface) is
+  generated from the server's own tool list, and CI fails when they differ.
+- `catalog`, `discover`, `inspect` and `build-options` refuse a `--verbosity` they don't
+  support instead of ignoring it.
+- A joined call compiles in time and SQL that grow with its parts and their keys, plus one
+  count per pair of parts (the `unmatched` counts of `PARTS_JOINED`), and answers as before.
+  Each count read every part's key columns, so 200 parts of one metric by one key compiled
+  385 MB of SQL in about 13 s; they now compile 5.6 MB in about a second. See
+  [Calls side by side](docs/QUERY_CALL.md#calls-side-by-side-parts-and-join).
+- On Postgres, which reads at most 1,664 columns in one select, a joined call wider than that
+  is refused before it is sent (`INVALID_QUERY`, `details.reason`: `parts_over_column_limit`),
+  saying how many columns it needs and how many of its parts fit, instead of failing in the
+  warehouse with a generic execution error. 53 parts of one metric by one key fit.
+- `plan` keeps the time grain a question asks for on a metric that declares no
+  `temporal_role`, reading it on the clock its measures share: "total amount by month" on a
+  new package (`semantic-rails init`, or an Architect scaffold over a dbt warehouse) is a monthly
+  series, not one total. A metric that no one clock dates, such as a ratio of two models' counts,
+  is held with `PLAN_UNMATCHED_TERMS` naming the grain instead of answering one total as ready.
+- `plan` reads a series' grain without the words the draft already spends: a filter value it
+  keeps ("total amount for monthly billing period" is one total, not a monthly series) or the
+  name of what it selects ("revenue per day by month" is monthly, not daily). This also fixes
+  measures and metrics that declare a clock. A derived metric whose parts share no one clock is
+  held instead of drafted on one part's clock, and the hold's hint says each part keeps its own.
+- A call whose `select` nests expressions deeply (a long arithmetic chain, nested `case`,
+  `boolean` or `prior_period`, or an `aggregate_if` condition with many terms) now validates,
+  compiles and runs in time proportional to its size. Seventeen 200-level arithmetic chains
+  took 44 seconds to validate and now take 2; the compiled SQL is unchanged.
+- A `scoped_aggregate` predicate compares the statistic it states. A predicate written
+  `{"input": "measure.<id>", "aggregation": "avg", ...}` (or with the `measure` shorthand)
+  compared each entity's default statistic, usually its total, and so answered a different
+  question: revenue from customers whose average order is at least $30 returned about ten times
+  too much on jaffle_shop. Its `aggregation`, `parameters` and `temporal_role` now apply to the
+  measure, in calls and in package metrics. A statistic beside a metric input, or one that
+  contradicts the input's own, is refused `INVALID_METRIC_PREDICATE`, and a key a predicate does
+  not read is refused `INVALID_QUERY`.
+
 ## 0.3.4 — 2026-11-01 — Joined calls, look-alike models and empty-group fixes
 
 **Upgrading from 0.3.3:** 0.3.4 answers several calls 0.3.3 refused, refuses a few it answered
