@@ -19,17 +19,20 @@ PreparedQuery().column_mapping
 PreparedQuery().sql
 PreparedQuery(_)
 PreparedQuery(_, _)
+PreparedQuery(_, column_mapping=, parameters=)
 RequestContext()
 RequestContext(actor=, attributes=, audience=, dimension_allowlist=, environment=, metric_allowlist=, project=, request_id=, roles=, tenant=)
 RequestContext(actor=, environment=, project=, request_id=, roles=, tenant=)
 RequestContext(tenant=)
 Runtime().adapter
 Runtime().close()
+Runtime().compile(_, **)
 Runtime().config
 Runtime().package_config
 Runtime().package_id
 Runtime().query(_)
 Runtime().set_adapter(_)
+Runtime().validate(_, **)
 Runtime.from_path(_)
 Runtime.from_snapshot
 Runtime.set_adapter
