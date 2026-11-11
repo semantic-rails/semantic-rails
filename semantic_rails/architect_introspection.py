@@ -40,6 +40,7 @@ from .db_parts.duckdb_setup import connect_duckdb
 from .errors import SemanticLayerError
 from .naming import slug
 from .sql_identifiers import quote_identifier, relation_parts
+from .untimed_measures import calendar_like
 
 MAX_SAMPLE_VALUES = 20
 MAX_SAMPLE_CHARS = 200
@@ -893,7 +894,8 @@ def suggest_model(
     like it and confirmed by its values, dates them through that link when it is the only such
     column and the relation has no date of its own, or when the package's model over
     ``relation`` already links it (``clock_links``: clock entity to column). A clock is a
-    calendar only where its rows say so (``_one_row_per_day``) or its entity is ``kind: time``.
+    calendar only where its entity is ``kind: time``, or is named for a day, date, week, month
+    or calendar and its rows say so (``_one_row_per_day``).
     Several such columns, or one beside a date of the relation's own, date nothing:
     ``time_roles`` states the choice, the author's.
     """
@@ -969,9 +971,11 @@ def _date_keys(
 ) -> list[dict[str, Any]]:
     """The columns of a relation that hold a calendar's key: named like the key, of a
     compatible type, and confirmed by their values (at least ``DEFAULT_LINK_COVERAGE`` of the
-    distinct values found, on a key that names one row). A clock whose rows are no calendar
-    (``_one_row_per_day``) dates nothing here: a customer's home store has an opening date, which
-    dates no customer."""
+    distinct values found, on a key that names one row). A clock that is no calendar dates
+    nothing here: one is unless its entity is ``kind: time``, or named for a day, date, week,
+    month or calendar with rows that read as one (``_one_row_per_day``). A customer's home store
+    has an opening date, and a daily exchange rate a date per row: neither dates the rows that
+    name it."""
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
     found: list[dict[str, Any]] = []
     for clock in clocks:
@@ -985,13 +989,16 @@ def _date_keys(
         if clock["key"] not in key_types:
             continue
         qualified = _qualified(warehouse, *_split_relation(clock["relation"]))
-        if not clock.get("calendar") and not _one_row_per_day(
-            warehouse,
-            qualified,
-            clock["key"],
-            str(clock.get("date_column") or ""),
-            _scalar_family(key_types[clock["key"]]) == "numeric",
-            deadline,
+        if not clock.get("calendar") and not (
+            calendar_like("", [clock["entity"], clock["key"]])
+            and _one_row_per_day(
+                warehouse,
+                qualified,
+                clock["key"],
+                str(clock.get("date_column") or ""),
+                _scalar_family(key_types[clock["key"]]) == "numeric",
+                deadline,
+            )
         ):
             continue
         for column in described["columns"]:
@@ -1529,14 +1536,17 @@ def _composite_candidates(
     the tuples named like it (``_named_tuples``), or, when the author names the ``columns`` to
     try, one of those per key column, each of a compatible type; at most
     ``MAX_COMPOSITE_CANDIDATES``. Unless named, a tuple never mixes columns of the relation's
-    ``own_key`` with others: a return line's own line number beside the sale's order would find
-    a sale line on every return line."""
+    ``own_key`` with others, and the key's bare names count only on a relation with no other
+    key: a return line keyed by its own id may number its own lines, and its ``line_no`` beside
+    the order it names would find a sale line on every return line."""
     if not columns:
         key_of = set(own_key or [])
+        bare = [key.lower() for key in keys]
         return [
             named
             for named in _named_tuples(types, keys, key_types)
-            if not (key_of & set(named)) or set(named) <= key_of
+            if set(named) <= key_of
+            or not (key_of and (key_of & set(named) or [c.lower() for c in named] == bare))
         ]
     parts = [
         [column for column in columns if _fk_types_compatible(types[column], key_types[key])]
@@ -1676,9 +1686,10 @@ def suggest_links(
     (``{relation, key, entity}``; by default every declared primary key) that the column is
     named like (``columns`` tries those columns against every target of a compatible type,
     whatever their names). A composite key (``key`` a list) pairs with a tuple of columns, one
-    per key column in key order, named exactly as the key columns or all with one common prefix
-    or suffix around those names (``sale_order_id`` and ``sale_line_no`` for ``order_id,
-    line_no``; ``_named_tuples``); its row says ``columns``. Each pair's
+    per key column in key order, named exactly as the key columns on a relation with no other
+    key, or all with one common prefix or suffix around those names (``sale_order_id`` and
+    ``sale_line_no`` for ``order_id, line_no``; ``_composite_candidates``); its row says
+    ``columns``. Each pair's
     ``evidence`` counts the values found among the target's keys, by distinct value
     (``coverage``) and by row, with a few values not found.
     A pair whose target key names one row, and whose coverage reaches ``min_coverage`` (the

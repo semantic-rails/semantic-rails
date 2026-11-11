@@ -298,10 +298,12 @@ never create, seed or change it.
   **What dates the measures.** A table's own date and time columns are drafted as they always
   were, the first of them the `default: true` time. With `project_path`, a column holding a key
   of one of the package's calendars counts too: an entity with a one-column key whose model has
-  a `default: true` time, whose rows name one row per key and per date on consecutive days (or
-  whose entity is `kind: time`). Rows of an unknown member (a NULL date, a date before 1901, or
-  a number key that is not positive, such as `-1`) are left out of that test. Another entity's
-  own date (a store's opening day, a version's `valid_from`) dates no row linked to it. The
+  a `default: true` time, that is `kind: time`, or that is named for a day, date, week, month or
+  calendar (by its name or key) and whose rows name one row per key and per date on consecutive
+  days. Rows of an unknown member (a NULL date, a date before 1901, or a number key that is not
+  positive, such as `-1`) are left out of that test. Another entity's own date (a store's
+  opening day, a version's `valid_from`, a daily exchange rate's date) dates no row linked to
+  it. The
   column is named like the key, of a compatible type, and confirmed by its values (at least 95%
   of its distinct values found, on a key that names one row). On a table with no date column of
   its own, one such column dates the measures, or of several the one the package's model over
@@ -362,12 +364,13 @@ never create, seed or change it.
     still pairs with the table it names. `columns` tries those columns against every key of a compatible type, whatever their
     names. Columns are compared only with keys of their type. A key of two or more columns (a
     sale line's `order_id, line_no`) pairs with a tuple of columns, one per key column in key
-    order: each named exactly as its key column, or all of them its key column's name with one
-    common prefix or suffix (`sale_order_id` and `sale_line_no`; `order_id_noted` and
-    `line_no_noted`). A tuple that mixes a prefixed column with a bare one (a return line's own
-    `line_no` beside `sale_order_id`), or that mixes columns of the table's own key with others,
-    is never proposed, nor is a column that only starts like its key column (`line_qty`); name
-    the `columns` to try others. Its row has `columns`, and its
+    order: each named exactly as its key column, on a table with no other key (or whose key they
+    are), or all of them its key column's name with one common prefix or suffix (`sale_order_id`
+    and `sale_line_no`; `order_id_noted` and `line_no_noted`). A tuple that mixes a prefixed
+    column with a bare one (a return line's own `line_no` beside `sale_order_id`), or that mixes
+    columns of the table's own key with others, is never proposed, nor are the key's bare names
+    on a table keyed by its own id (a return line's `order_id` and its own `line_no`), nor a
+    column that only starts like its key column (`line_qty`); name the `columns` to try others. Its row has `columns`, and its
     `reason` says the target key is never null and never repeated, the columns matched and the
     coverage. A target whose columns repeat together is in `not_proposed`, never drafted: a
     many-to-one link there would count each row once per match. At most 12 tuples are tried per

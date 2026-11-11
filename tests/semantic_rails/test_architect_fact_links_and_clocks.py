@@ -884,10 +884,11 @@ def test_a_composite_reference_unique_today_is_many_to_one_unless_it_is_the_row_
 
 
 def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
-    """A tuple is proposed only when its columns are named as the key's columns, or all with
-    one prefix or suffix around them. A return's line quantity (1 or 2) finds line 1 or 2 of
-    every order, a return line's own line number finds a line of the order it names, and a sale
-    id of 1 to 3 finds lines 1 to 3: none is proposed as the sale line."""
+    """A tuple is proposed only when its columns are named as the key's columns (on a table
+    with no other key), or all with one prefix or suffix around them. A return's line quantity
+    (1 or 2) finds line 1 or 2 of every order, a return line's own line number finds a line of
+    the order it names, whether beside sale_order_id or order_id, and a sale id of 1 to 3 finds
+    lines 1 to 3: none is proposed as the sale line."""
     path = _warehouse(tmp_path)
     with duckdb.connect(str(path)) as conn:
         conn.execute(
@@ -914,6 +915,10 @@ def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
             CREATE TABLE id_returns AS
             SELECT return_id, sale_order_id, sale_line_no AS sale_id, refund_amount
             FROM returns WHERE return_id < 1000;
+            CREATE TABLE bare_lines AS
+            SELECT return_line_id, return_id, sale_order_id AS order_id, line_no, sku,
+                   refund_amount FROM surrogate_lines;
+            ALTER TABLE bare_lines ADD PRIMARY KEY (return_line_id);
             CREATE TABLE line_discounts AS
             SELECT order_id, line_no, 1.0::DOUBLE AS discount FROM sales WHERE order_id % 3 = 0;
             CREATE TABLE line_notes AS
@@ -929,13 +934,15 @@ def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
                 "quantity_returns",
                 "return_lines",
                 "surrogate_lines",
+                "bare_lines",
                 "id_returns",
                 "line_discounts",
                 "line_notes",
             )
         }
-    # A prefixed order beside a bare line number, under a surrogate key or a key of its own.
-    for relation in ("quantity_returns", "surrogate_lines", "id_returns"):
+    # A prefixed order beside a bare line number, under a surrogate key or a key of its own;
+    # and the key's bare names on a table keyed by its own id, whose line number may be its own.
+    for relation in ("quantity_returns", "surrogate_lines", "bare_lines", "id_returns"):
         assert found[relation]["proposals"] == found[relation]["below_threshold"] == []
     columns = {
         relation: [row["columns"] for row in found[relation]["proposals"]]
@@ -1087,9 +1094,9 @@ def test_a_calendar_with_an_unknown_member_row_still_dates_by_its_key(tmp_path, 
     assert all(spec["times"] == [ROLE] for spec in returns["upsert_model"]["measures"].values())
 
 
-def test_a_second_table_of_one_row_per_day_makes_the_date_a_choice(tmp_path):
-    """Invoices hold a day key and the key of a daily exchange rate, whose table also reads one
-    row per day: no name settles which dates an invoice, so the draft dates none."""
+def test_a_daily_exchange_rate_is_no_calendar(tmp_path):
+    """A daily exchange rate reads one row per day, but it is no calendar: an invoice that names
+    the rate it was booked at is dated by its day key, and one with no day key by nothing."""
     path = tmp_path / "fx.duckdb"
     with duckdb.connect(str(path)) as conn:
         conn.execute(
@@ -1102,6 +1109,8 @@ def test_a_second_table_of_one_row_per_day_makes_the_date_a_choice(tmp_path):
             CREATE TABLE invoices AS SELECT i AS invoice_id,
               (30 + i)::INTEGER AS invoice_day_key, i::INTEGER AS fx_rate_key,
               10.0 * i AS amount FROM range(1, 40) t(i);
+            CREATE TABLE rated_invoices AS SELECT invoice_id, fx_rate_key, 'March' AS invoice_month,
+              amount FROM invoices;
             """
         )
     fx = {
@@ -1113,9 +1122,13 @@ def test_a_second_table_of_one_row_per_day_makes_the_date_a_choice(tmp_path):
     }
     with open_duckdb(path) as warehouse:
         invoices = suggest_model(warehouse, "invoices", clocks=[*CLOCK, fx])
+        rated = suggest_model(warehouse, "rated_invoices", clocks=[*CLOCK, fx])
     roles = invoices["time_roles"]
-    assert (roles["status"], roles["candidates"]) == ("choose", ["invoice_day_key", "fx_rate_key"])
-    assert all("times" not in spec for spec in invoices["upsert_model"]["measures"].values())
+    assert (roles["status"], roles["candidates"]) == ("default", ["invoice_day_key"])
+    assert all(spec["times"] == [ROLE] for spec in invoices["upsert_model"]["measures"].values())
+    assert "time_roles" not in rated
+    assert "entities" not in rated["upsert_model"]
+    assert all("times" not in spec for spec in rated["upsert_model"]["measures"].values())
 
 
 def test_a_date_that_is_also_a_calendar_key_is_one_candidate(tmp_path):
