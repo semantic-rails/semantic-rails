@@ -1811,7 +1811,9 @@ and gives the line: for a role of its own model, mark it `default: true` or list
 model's clock its rows reach by to-one links (a fact's day key into a calendar), `times:
 [<that role>]` on the measure in its model (`details.declare` holds `model`, `measure` and
 `times`); with no such route, link the model first. Validation warns `MEASURE_WITHOUT_TIME_ROLE`
-for each measure with no time role whose rows reach a clock, naming the clocks, and
+for each measure with no time role whose rows reach a clock of its own model or a calendar (an
+entity of `kind: time`, or named for a day, date, week, month or calendar, by its name or key),
+naming the clocks, and
 `promotion_check` lists it under `advisories`. When the refusal is for a
 role a measure's `times:` doesn't list, its message and `details.measures` name the measure
 (and the metric that reads it): list each role it can be read by there, as the model's time

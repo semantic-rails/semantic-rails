@@ -1623,18 +1623,6 @@ class ArchitectProject:
             updates: list[ProjectFileUpdate], source_id: str, target_id: str
         ) -> tuple[list[ProjectFileUpdate], None]:
             """``updates``, plus a row for each pair whose route they move, when asked to keep."""
-            if not (keep_existing_routes or prefer_this_link):
-                transaction = ProjectTransaction(
-                    self.project_path, workspace_root=self.workspace_root
-                )
-                try:
-                    changed = self._proposed_config(transaction, updates)
-                except SemanticLayerError:
-                    return updates, None  # validation reports what is wrong with the write
-                link = _written_link(changed, source_id, target_id, foreign_key, role)
-                held = _held_off_link(changed, link) if link else []
-                if held:
-                    raise _held_off_link_refusal(held, source, target)
             if keep_existing_routes or prefer_this_link:
                 transaction = ProjectTransaction(
                     self.project_path, workspace_root=self.workspace_root
@@ -3188,44 +3176,6 @@ def _link_ends(config: Any, link: str) -> tuple[str, str]:
     """The source and target entity of relationship ``link``."""
     rel = next(row for row in config.relationships if row.id == link)
     return rel.source_entity, rel.target_entity
-
-
-def _held_off_link(config: Any, link: str) -> list[dict[str, Any]]:
-    """The recorded routes that keep ``link``'s two entities off it, where the route from the
-    link's source reads no one row of its target (a sale's customer through the sale's
-    returns) while the link reads one: both ways, as recorded; else none."""
-    ends = _link_ends(config, link)
-    pinned = {(row.source_entity, row.target_entity) for row in config.path_preferences}
-    held = resolve_pairs(config, [ends, ends[::-1]])
-    path = list(held[ends].shape().get("relationship_path") or [])
-    walked = _hops(config, ends[0], path) if ends in pinned and path != [link] else None
-    if not path or walked is None or all(walked[1]):
-        return []
-    return [
-        {
-            "source_entity": pair[0],
-            "target_entity": pair[1],
-            "relationship_path": list(held[pair].shape().get("relationship_path") or []),
-        }
-        for pair in (ends, ends[::-1])
-        if pair in pinned
-    ]
-
-
-def _held_off_link_refusal(
-    held: list[dict[str, Any]], source: str, target: str
-) -> SemanticLayerError:
-    """A link a recorded route keeps its own two entities off: refused, with the way out."""
-    route = ", ".join(held[0]["relationship_path"])
-    return SemanticLayerError(
-        "ROUTE_DECISION_NOT_RECORDED",
-        f"A recorded route takes {source} to {target} through other entities' rows ({route}), "
-        f"reading no one {target} for each {source}, and it would keep this link from changing "
-        f"any answer between them; nothing was written. Retry with prefer_this_link=true to "
-        f"make the link the route between {source} and {target}, or with "
-        "keep_existing_routes=true to keep the recorded route.",
-        details={"held_routes": held},
-    )
 
 
 def _moves_answered_routes(changes: list[dict[str, Any]]) -> SemanticLayerError:
