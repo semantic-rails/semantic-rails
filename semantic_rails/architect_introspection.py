@@ -1485,6 +1485,7 @@ def _composite_candidates(
     key_types: Mapping[str, str],
     entity: str,
     columns: list[str] | None,
+    deadline: float | None = None,
 ) -> list[list[str]]:
     """The column tuples of a relation that could hold a composite key ``keys``, in key order:
     one column per key column, each of a compatible type and, unless the author names the
@@ -1498,8 +1499,25 @@ def _composite_candidates(
         ]
         for key in keys
     ]
-    tuples = (list(combo) for combo in itertools.product(*parts) if len(set(combo)) == len(combo))
-    return list(itertools.islice(tuples, MAX_COMPOSITE_CANDIDATES))
+    found: list[list[str]] = []
+
+    def extend(prefix: list[str]) -> None:
+        # Depth first, never reusing a column, so a wide key with no fitting tuple costs no
+        # more than its columns allow; stops at the cap and at the deadline.
+        if len(found) >= MAX_COMPOSITE_CANDIDATES:
+            return
+        if deadline is not None:
+            _in_time(deadline)
+        if len(prefix) == len(parts):
+            found.append(list(prefix))
+            return
+        for column in parts[len(prefix)]:
+            if column not in prefix:
+                extend([*prefix, column])
+
+    if len(set().union(*parts)) >= len(parts):  # else no tuple uses a column once
+        extend([])
+    return found
 
 
 def _link_evidence(
@@ -1685,7 +1703,7 @@ def suggest_links(
                     and (columns or _names_link(column, keys[0], entity))
                 ]
             else:
-                tuples = _composite_candidates(types, keys, target_types, entity, columns)
+                tuples = _composite_candidates(types, keys, target_types, entity, columns, deadline)
             target_schema, target_name = _split_relation(str(target["relation"]))
             for tuple_ in tuples:
                 evidence = _link_evidence(
@@ -1743,8 +1761,11 @@ def _name_shared_targets(answer: dict[str, Any], from_entity: str) -> None:
         if len(rows) < 2:
             continue
         spelled = ", ".join(_spelled(_link_columns(row)) for row in rows)
-        for row in rows:
-            row["upsert_relationship"]["name"] = _role_name(from_entity, _link_columns(row))
+        names = [_role_name(from_entity, _link_columns(row)) for row in rows]
+        if len(set(names)) < len(names):  # day_id and day_key both read "day": spell the columns
+            names = [f"{from_entity}_{'_'.join(_link_columns(row))}" for row in rows]
+        for row, name in zip(rows, names, strict=True):
+            row["upsert_relationship"]["name"] = name
             row["choice"] = (
                 f"{len(rows)} column sets of {answer['relation']} each hold a {entity} key "
                 f"({spelled}). Each draft writes a named role, so neither replaces the other; "

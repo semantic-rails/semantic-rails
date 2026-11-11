@@ -30,13 +30,14 @@ def _role_entities(config: PackageConfig) -> dict[str, str]:
 
 
 def _to_one_reach(config: PackageConfig, start: str) -> set[str]:
-    """The entities ``start``'s rows each reach one row of, by to-one hops (``N:1`` forward,
-    ``1:1`` either way), ``start`` included."""
+    """The entities ``start``'s rows each reach one row of, by to-one hops a query may walk
+    (``N:1`` forward, ``1:1`` either way, each where ``allowed_directions`` lets it), ``start``
+    included."""
     steps: dict[str, set[str]] = {}
     for rel in config.relationships:
-        if rel.cardinality in {"N:1", "1:1"}:
+        if rel.cardinality in {"N:1", "1:1"} and "forward" in rel.allowed_directions:
             steps.setdefault(rel.source_entity, set()).add(rel.target_entity)
-        if rel.cardinality == "1:1":
+        if rel.cardinality == "1:1" and "reverse" in rel.allowed_directions:
             steps.setdefault(rel.target_entity, set()).add(rel.source_entity)
     reached, pending = {start}, deque([start])
     while pending:
@@ -47,9 +48,10 @@ def _to_one_reach(config: PackageConfig, start: str) -> set[str]:
 
 
 def _where(config: PackageConfig, measure: Any) -> tuple[str, str]:
-    """The measure's key and its model's id, as the package files spell them."""
+    """The measure's id and its model's id. The id, not a guessed key: a measure authored with
+    ``as:`` has a key in its model's ``measures:`` that its id doesn't spell."""
     model = next((row.model_id for row in config.entities if row.id == measure.entity), "")
-    return str(measure.id).rsplit(".", 1)[-1], str(model or "")
+    return str(measure.id), str(model or "")
 
 
 def reachable_clocks(config: PackageConfig, measure: Any) -> list[str]:
@@ -73,7 +75,7 @@ def untimed_fix(config: PackageConfig, measure: Any, role: str) -> tuple[str, di
     key, model = _where(config, measure)
     entity = _role_entities(config).get(role, "")
     declare = {"model": model, "measure": key, "times": [role]}
-    where = f"measure {key} in model {model}" if model else f"measure {key}"
+    where = f"{key} in model {model}" if model else key
     if entity and entity == measure.entity:
         return (
             f"Its model declares that time: mark it `default: true` there, or add `times: "
@@ -107,7 +109,7 @@ def untimed_warnings(config: PackageConfig, source_path: Path | str) -> list[dic
         if not clocks:
             continue
         key, model = _where(config, measure)
-        where = f"measure {key} in model {model}" if model else f"measure {key}"
+        where = f"{key} in model {model}" if model else key
         listed = ", ".join(clocks)
         warnings.append(
             {

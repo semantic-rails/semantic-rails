@@ -1442,10 +1442,10 @@ class ArchitectProject:
         records each moved pair's previous path in the same transaction and refuses
         if any previous route outcome (including a refusal) would still change. With it,
         ``prefer_this_link=True`` records the new link as the route between its two entities
-        instead, both ways, where they met before through other entities' rows (a return and
-        its sale through their shared day), and every other moved pair keeps its route,
-        walking the link wherever that route went between the two.
-        """
+        instead, both ways (a return and its sale, which met through their shared day), and a
+        moved route whose leg between the two crossed a shared entity's rows walks the link
+        there. Every other route keeps its path; one beyond the pair that answers today and
+        would move anyway is refused, naming it."""
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
         foreign_key = [column.strip() for column in _as_list(columns)]
@@ -1558,7 +1558,11 @@ class ArchitectProject:
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
                 if graph_path != model_row.source_path:
                     documents.pop(model_row.source_path)
-                return keep_routes(self._file_updates(documents), target_row.object_id)
+                return keep_routes(
+                    self._file_updates(documents),
+                    getattr(source_row, "object_id", ""),
+                    target_row.object_id,
+                )
             # Keep the source first for readability; the loader resolves its primary identity.
             # A row-grain model lists only its parents.
             own = {} if src in row_grain else {src: entities.get(src) or {}}
@@ -1609,10 +1613,14 @@ class ArchitectProject:
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
             elif graph_path != model_row.source_path:
                 documents.pop(graph_path)
-            return keep_routes(self._file_updates(documents), target_row.object_id)
+            return keep_routes(
+                self._file_updates(documents),
+                getattr(source_row, "object_id", ""),
+                target_row.object_id,
+            )
 
         def keep_routes(
-            updates: list[ProjectFileUpdate], target_id: str
+            updates: list[ProjectFileUpdate], source_id: str, target_id: str
         ) -> tuple[list[ProjectFileUpdate], None]:
             """``updates``, plus a row for each pair whose route they move, when asked to keep."""
             if keep_existing_routes or prefer_this_link:
@@ -1628,13 +1636,40 @@ class ArchitectProject:
                 ]
                 # With prefer_this_link, the link is the route between its two entities, both
                 # ways; a kept route that went between them another way walks the link instead.
-                link = _written_link(changed, target_id, foreign_key, role)
+                link = _written_link(changed, source_id, target_id, foreign_key, role)
                 replaced = {
                     (change["source_entity"], change["target_entity"]): path
                     for change in (moved if prefer_this_link and link else [])
                     if (path := _through_link(changed, change, link))
                     != change["base"]["relationship_path"]
                 }
+                answered = [
+                    change
+                    for change in (moved if prefer_this_link and link else [])
+                    if _meets_link_ends(changed, change, link)
+                    and _through_link(changed, change, link) == change["base"]["relationship_path"]
+                ]
+                if answered:
+                    raise _moves_answered_routes(answered)
+                if prefer_this_link and link:
+                    # The pair itself takes the link both ways, also where an earlier route
+                    # decision kept its route from moving.
+                    ends = _link_ends(changed, link)
+                    held = resolve_pairs(changed, [ends, ends[::-1]])
+                    for pair in (ends, ends[::-1]):
+                        if held[pair].shape().get("relationship_path") != [link]:
+                            replaced[pair] = [link]
+                            if pair not in {
+                                (change["source_entity"], change["target_entity"])
+                                for change in moved
+                            }:
+                                moved.append(
+                                    {
+                                        "source_entity": pair[0],
+                                        "target_entity": pair[1],
+                                        "base": {"relationship_path": [link]},
+                                    }
+                                )
                 rows = [
                     {
                         "source_entity": change["source_entity"],
@@ -1683,6 +1718,8 @@ class ArchitectProject:
                         outcome := base_outcomes[(row["source_entity"], row["target_entity"])]
                     ).refused
                 )
+                if remaining and prefer_this_link:
+                    raise _moves_answered_routes(remaining)
                 if remaining:
                     raise SemanticLayerError(
                         "ROUTE_DECISION_NOT_RECORDED",
@@ -3092,34 +3129,81 @@ class ArchitectProject:
         return path.relative_to(self.project_path).as_posix()
 
 
-def _written_link(config: Any, target: str, columns: list[str], name: str) -> str:
+def _written_link(config: Any, source: str, target: str, columns: list[str], name: str) -> str:
     """The id of the relationship an ``upsert_relationship`` wrote into ``config``: the one
-    to ``target`` on ``columns`` (named ``name``, when it has one)."""
+    from ``source`` (when known) to ``target`` on ``columns`` (named ``name``, when it has one)."""
     found = [
         rel.id
         for rel in config.relationships
         if rel.target_entity == target
+        and (not source or rel.source_entity == source)
         and list(rel.source_columns) == list(columns)
         and (not name or rel.id.endswith(f".{name}"))
     ]
     return found[0] if len(found) == 1 else ""
 
 
-def _through_link(config: Any, change: dict[str, Any], link: str) -> list[str]:
-    """A moved pair's earlier route, walking ``link`` wherever it went between the link's two
-    entities another way: the link alone for the pair it relates, either way round."""
+def _link_ends(config: Any, link: str) -> tuple[str, str]:
+    """The source and target entity of relationship ``link``."""
+    rel = next(row for row in config.relationships if row.id == link)
+    return rel.source_entity, rel.target_entity
+
+
+def _moves_answered_routes(changes: list[dict[str, Any]]) -> SemanticLayerError:
+    """``prefer_this_link`` refused: the link would move routes outside its pair that answer
+    today (their leg between the two entities crosses no shared entity)."""
+    names = "; ".join(
+        f"{change['source_entity']} -> {change['target_entity']} "
+        f"({', '.join(change['base'].get('relationship_path') or ['refused'])})"
+        for change in changes
+    )
+    return SemanticLayerError(
+        "ROUTE_DECISION_NOT_RECORDED",
+        f"prefer_this_link would also move routes beyond the two entities that answer today: "
+        f"{names}; nothing was written. Record the routes you want with record_route_decision, "
+        "or retry with keep_existing_routes=true to keep every route as it is.",
+        details={"route_changes": changes},
+    )
+
+
+def _meets_link_ends(config: Any, change: dict[str, Any], link: str) -> bool:
+    """Whether a moved pair's earlier route passes both of ``link``'s entities, though it is not
+    the pair the link relates."""
+    ends = set(_link_ends(config, link))
+    if {change["source_entity"], change["target_entity"]} == ends:
+        return False
     relationships = {row.id: row for row in config.relationships}
-    ends = {relationships[link].source_entity, relationships[link].target_entity}
+    stops = {change["source_entity"]}
+    for rel_id in change["base"]["relationship_path"]:
+        rel = relationships.get(rel_id)
+        if rel is not None:
+            stops |= {rel.source_entity, rel.target_entity}
+    return ends <= stops
+
+
+def _through_link(config: Any, change: dict[str, Any], link: str) -> list[str]:
+    """A moved pair's earlier route, with ``link`` in place of the leg that went between the
+    link's two entities through a shared entity's rows (up to one row of it, then down to its
+    rows): the link alone for the pair it relates. A route that met the two only by to-one or
+    only by to-many hops keeps its path: the link changes no answer it gave."""
+    relationships = {row.id: row for row in config.relationships}
+    ends = set(_link_ends(config, link))
     path = list(change["base"]["relationship_path"])
-    stops = [change["source_entity"]]
+    if {change["source_entity"], change["target_entity"]} == ends:
+        return [link]
+    stops, to_one = [change["source_entity"]], []
     for rel_id in path:
         rel = relationships.get(rel_id)
         if rel is None:
             return path
-        stops.append(rel.target_entity if rel.source_entity == stops[-1] else rel.source_entity)
+        forward = rel.source_entity == stops[-1]
+        to_one.append(rel.cardinality == "1:1" or (forward and rel.cardinality == "N:1"))
+        stops.append(rel.target_entity if forward else rel.source_entity)
     for i, first in enumerate(stops):
         for j in range(len(stops) - 1, i, -1):
-            if {first, stops[j]} == ends and path[i:j] != [link]:
+            leg = to_one[i:j]
+            crosses = any(up and not down for k, up in enumerate(leg) for down in leg[k + 1 :])
+            if {first, stops[j]} == ends and crosses:
                 return [*path[:i], link, *path[j:]]
     return path
 

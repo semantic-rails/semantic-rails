@@ -671,7 +671,7 @@ def recovery_hints_for_error(
         if not compatible and details.get("measure") and details.get("requested"):
             declare = dict(details.get("declare") or {})
             line = (
-                f"Add `times: [{details['requested']}]` to measure {declare['measure']} in "
+                f"Add `times: [{details['requested']}]` to {declare['measure']} in "
                 f"model {declare['model']}"
                 if declare.get("model")
                 else "Mark one of its model's `times:` entries `default: true`, or list "

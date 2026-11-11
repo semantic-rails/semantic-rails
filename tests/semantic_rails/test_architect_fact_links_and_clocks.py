@@ -14,7 +14,9 @@ Every answer is checked against hand-written SQL over the same DuckDB file.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import duckdb
@@ -22,13 +24,22 @@ import pytest
 import yaml
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from semantic_rails.architect_introspection import open_duckdb, suggest_links, suggest_model
+from semantic_rails.architect_introspection import (
+    _composite_candidates,
+    open_duckdb,
+    suggest_links,
+    suggest_model,
+)
 from semantic_rails.architect_mcp import create_architect_mcp_server
+from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.package_tools import promote_package_report
+from semantic_rails.route_census import resolve_pairs
 from semantic_rails.runtime import Runtime
+from semantic_rails.untimed_measures import _to_one_reach
 
 # 60 orders of 1 to 3 lines; a line number restarts on every order, so an order alone names
 # several lines. Returns name the line they return by (sale_order_id, sale_line_no); one line is
@@ -471,10 +482,10 @@ def test_an_undated_measure_is_refused_with_the_line_that_dates_it(tmp_path):
     assert str(error) == (
         "'measure.shop.amount' has no time role declared, so it can't be placed on "
         "'temporal_role.shop_day_day'. Its rows reach that clock by to-one links: if it dates "
-        "them, add `times: [temporal_role.shop_day_day]` to measure amount in model sales "
+        "them, add `times: [temporal_role.shop_day_day]` to measure.shop.amount in model sales "
         "(Architect suggest_model with project_path drafts it); or drop `time` from the query."
     )
-    declare = {"model": "sales", "measure": "amount", "times": [ROLE]}
+    declare = {"model": "sales", "measure": "measure.shop.amount", "times": [ROLE]}
     assert error.details == {
         "measure": "measure.shop.amount",
         "requested": ROLE,
@@ -485,7 +496,7 @@ def test_an_undated_measure_is_refused_with_the_line_that_dates_it(tmp_path):
     assert hint["declare"] == declare
     assert hint["message"].startswith(
         "'measure.shop.amount' has no time role. Add `times: [temporal_role.shop_day_day]` to "
-        "measure amount in model sales, then query it by that role."
+        "measure.shop.amount in model sales, then query it by that role."
     )
 
 
@@ -497,7 +508,7 @@ def test_validation_and_the_promotion_check_name_the_undated_measure(tmp_path):
     assert warning["message"].endswith(
         "measure.shop.amount has no time role, so it cannot be asked by month or in a window, "
         "although its rows reach temporal_role.shop_day_day. If it dates its rows, add `times: "
-        "[temporal_role.shop_day_day]` to measure amount in model sales."
+        "[temporal_role.shop_day_day]` to measure.shop.amount in model sales."
     )
     assert warning["details"]["reachable_temporal_roles"] == [ROLE]
     promotion = promote_package_report(ref, environment="development")
@@ -510,3 +521,110 @@ def test_validation_and_the_promotion_check_name_the_undated_measure(tmp_path):
     dated, _ = _build(tmp_path / "dated")
     clean, _ = parse_config_report(PackageReference(source_path=str(dated)))
     assert not [row for row in clean["warnings"] if row["code"] == "MEASURE_WITHOUT_TIME_ROLE"]
+
+
+def test_two_keys_whose_names_read_alike_get_names_of_their_own(tmp_path):
+    """day_id and day_key both read as the day: named after their columns instead, neither
+    draft replaces the other."""
+    path = tmp_path / "events.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            "CREATE TABLE calendar AS SELECT * FROM (VALUES (1), (2)) t(id);"
+            "CREATE TABLE events AS SELECT * FROM (VALUES (1, 1, 2, 10), (2, 2, 1, 20)) "
+            "t(event_id, day_id, day_key, amount);"
+        )
+    with open_duckdb(path) as warehouse:
+        links = suggest_links(
+            warehouse,
+            "events",
+            targets=[{"relation": "calendar", "key": "id", "entity": "day"}],
+            from_entity="event",
+        )
+    names = {row["column"]: row["upsert_relationship"]["name"] for row in links["proposals"]}
+    assert names == {"day_id": "event_day_id", "day_key": "event_day_key"}
+
+
+def test_a_wide_key_no_columns_can_fill_is_given_up_at_once():
+    """Ten columns can't fill an eleven-column key with each used once: no candidates, and no
+    walk through every combination to find that out."""
+    columns = [f"c{i}" for i in range(10)]
+    keys = [f"k{i}" for i in range(11)]
+    types = dict.fromkeys(columns, "INTEGER")
+    found = _composite_candidates(
+        types, keys, dict.fromkeys(keys, "INTEGER"), "thing", columns, time.monotonic() + 1
+    )
+    assert found == []
+
+
+def test_a_clock_reached_only_against_a_links_direction_is_no_reach():
+    """A link a query may walk only in reverse takes a sale's rows to no day."""
+    rel = SimpleNamespace(
+        source_entity="entity.sale",
+        target_entity="entity.day",
+        cardinality="N:1",
+        allowed_directions=["reverse"],
+    )
+    config = SimpleNamespace(relationships=[rel])
+    assert _to_one_reach(config, "entity.sale") == {"entity.sale"}
+    rel.allowed_directions = ["forward", "reverse"]
+    assert _to_one_reach(config, "entity.sale") == {"entity.sale", "entity.day"}
+
+
+def _chain(tmp_path: Path, *, with_d: bool) -> ArchitectProject:
+    """Entities (d ->) a -> x -> b, each by a many-to-one link."""
+    report = create_project_report(package_id="p", workspace_root=str(tmp_path), run_checks=False)
+    project = ArchitectProject(report["project_path"], workspace_root=tmp_path)
+    for name in ("d", "a", "x", "b") if with_d else ("a", "x", "b"):
+        project.upsert_model(
+            model_id=f"{name}s", entity_key=name, relation=f"raw_{name}", primary_key=[f"{name}_id"]
+        )
+    if with_d:
+        project.upsert_relationship(from_entity="d", to_entity="a", columns=["a_id"])
+    project.upsert_relationship(from_entity="a", to_entity="x", columns=["x_id"])
+    project.upsert_relationship(from_entity="x", to_entity="b", columns=["b_id"])
+    return project
+
+
+def _route(project: ArchitectProject, source: str, target: str) -> list[str]:
+    _, config = parse_config_report(PackageReference(source_path=str(project.project_path)))
+    pair = (f"entity.p_{source}", f"entity.p_{target}")
+    return list(resolve_pairs(config, [pair])[pair].shape()["relationship_path"])
+
+
+@pytest.mark.parametrize("column", ["direct_b_id", "b_id"])
+def test_preferring_a_link_never_moves_a_route_that_answers_beyond_its_pair(tmp_path, column):
+    """d reaches b through a and x by to-one links and answers today. Preferring a new a -> b
+    link (on its own column, or on one the x -> b link also names) would move that route too:
+    refused, naming it, and nothing written."""
+    project = _chain(tmp_path, with_d=True)
+    with pytest.raises(SemanticLayerError) as refused:
+        project.upsert_relationship(
+            from_entity="a", to_entity="b", columns=[column], prefer_this_link=True
+        )
+    assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert str(refused.value).startswith(
+        "prefer_this_link would also move routes beyond the two entities that answer today: "
+        "entity.p_b -> entity.p_d (relationship.xs_b, relationship.as_x, relationship.ds_a); "
+        "entity.p_d -> entity.p_b (relationship.ds_a, relationship.as_x, relationship.xs_b); "
+        "nothing was written."
+    )
+    assert _route(project, "d", "b") == [
+        "relationship.ds_a",
+        "relationship.as_x",
+        "relationship.xs_b",
+    ]
+    assert _route(project, "a", "b") == ["relationship.as_x", "relationship.xs_b"]
+
+
+def test_a_preferred_link_replaces_a_recorded_route_for_its_pair(tmp_path):
+    """An a -> b route recorded through x gives way to the preferred direct link."""
+    project = _chain(tmp_path, with_d=False)
+    project.record_route_decision(
+        source_entity="a",
+        target_entity="b",
+        relationship_path=["relationship.as_x", "relationship.xs_b"],
+    )
+    project.upsert_relationship(
+        from_entity="a", to_entity="b", columns=["direct_b_id"], prefer_this_link=True
+    )
+    assert _route(project, "a", "b") == ["relationship.as_b"]

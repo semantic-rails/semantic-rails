@@ -138,10 +138,12 @@ package with one model, its count and amount metrics, an example, a package test
    answered pair still changes, or if generated decisions change a previously refused pair's
    outcome compared with the relationship alone. The relationship's own new answers are allowed.
    `prefer_this_link: true` keeps every route the same way, except between the link's own two
-   entities: it records the link as their route, both ways, and a kept route that went between
-   them another way walks the link instead (a return reached its sale through their shared day,
-   and its sale's customer through that day's sales; both now go through the link). Its
-   `routes_by_this_link` lists those pairs. A link refused for moving a route between its own
+   entities: it records the link as their route, both ways, also over a recorded decision, and a
+   kept route that went between them through a shared entity's rows walks the link instead (a
+   return reached its sale through their shared day, and its sale's customer through that day's
+   sales; both now go through the link). Its `routes_by_this_link` lists those pairs. It refuses,
+   naming them and writing nothing, if the link would also move a route beyond the pair that
+   answers today (one that met the two by to-one or to-many hops only). A link refused for moving a route between its own
    two entities, where they met before through other entities' rows, says to retry with it.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
