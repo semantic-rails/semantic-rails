@@ -108,7 +108,7 @@ def untimed_fix(config: PackageConfig, measure: Any, role: str) -> tuple[str, di
     if entity and entity in _to_one_reach(config, measure.entity):
         return (
             f"Its rows reach that clock by to-one links: if it dates them, add `times: "
-            f"[{role}]` to {where} (Architect suggest_model with project_path drafts it)",
+            f"[{role}]` to {where}",
             declare,
         )
     label = next((row.label or row.id for row in config.entities if row.id == entity), entity)

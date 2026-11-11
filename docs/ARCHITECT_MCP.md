@@ -138,16 +138,18 @@ package with one model, its count and amount metrics, an example, a package test
    answered pair still changes, or if generated decisions change a previously refused pair's
    outcome compared with the relationship alone. The relationship's own new answers are allowed.
    `prefer_this_link: true` keeps every route the same way, except between the link's own two
-   entities: it records the link as their route, both ways, also over a recorded decision, and a
-   kept route that went between them through a shared entity's rows walks the link instead (a
-   return reached its sale through their shared day, and its sale's customer through that day's
-   sales; both now go through the link). So does a kept route whose leg between them was the
-   pair's own earlier route, where that route read no one row of what the link reads one of (a
-   day's customers through its sales' returns, once the sale's own customer link is preferred).
-   Its `routes_by_this_link` lists those pairs. It refuses,
-   naming them and writing nothing, if the link would also move a route beyond the pair that
-   answers today (one that met the two by to-one or to-many hops only). A link refused for moving a route between its own
-   two entities, where they met before through other entities' rows, says to retry with it.
+   entities: it records the link as their route, both ways, also over a recorded decision (a
+   return reached its sale through their shared day; now it goes through the link). Its
+   `routes_by_this_link` lists that pair. It moves no other route: if the link would also move
+   a route beyond the pair that answers today (a day's customers through its sales' returns,
+   once a sale's own customer link is added), it refuses, naming those routes and writing
+   nothing. Then pass `keep_existing_routes: true` instead, and record with
+   `record_route_decision` each route you want through the link. A link refused for moving a
+   route between its own two entities, where they met before through other entities' rows, says
+   to retry with `prefer_this_link`. So does a link whose own pair a recorded route holds on a
+   path that reads several rows on its way (a sale's customer through its returns, kept by an
+   earlier `keep_existing_routes`): written as it is, it would change no answer, so it is
+   refused and nothing is written.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `graph.path_preferences` list, replacing every row for exactly the pair however its
@@ -293,24 +295,23 @@ never create, seed or change it.
   A time column named like a snapshot's as-of time (`snapshot`, `as_of` or `asof` in its name)
   is drafted `class: as_of_time`, so a stock on it whose key lacks the column is refused rather
   than summing snapshots; other times are drafted `event_time`.
-  **What dates the measures.** One date column is the draft's `default: true` time. Of several,
-  the one named after the row's own entity is: it starts with the entity's whole name, or its
-  first word is the entity's last (`order_date` or `ordered_at` on orders, `payment_date` on
-  order payments; never `order_created_at` there, the order's date). The others stay times of
-  the model; when none or more than one is, the draft marks none `default`, and `time_roles`
-  (`status: choose`) says the choice is yours. With `project_path`, a column holding a key of
-  one of the package's calendars counts too: an entity with a one-column key whose model has a
-  `default: true` time, whose rows name one row per key and per date on consecutive days (or
-  whose entity is `kind: time`). Another entity's own date (a store's opening day, a version's
-  `valid_from`) dates no row linked to it. The column is named like the key, of a compatible
-  type, and confirmed by its values (at least 95% of its distinct values found, on a key that
-  names one row). With no date column of its own, one such column, the one the package's model
-  already links, or of several the one named after the row dates the measures; beside date
-  columns of its own, the one named after the row of all of them does. Dated by a key, the draft
-  links it in `entities` and lists the clock's role in each measure's `times:`, and `time_roles`
-  says so, with `other_keys` holding the `upsert_relationship` that adds each other date key as a
-  named role and keeps that one the default route. Otherwise the draft dates no measure and
-  `time_roles.options` holds each key column's `entities` and `times` for you to choose.
+  **What dates the measures.** A table's own date and time columns are drafted as they always
+  were, the first of them the `default: true` time. With `project_path`, a column holding a key
+  of one of the package's calendars counts too: an entity with a one-column key whose model has
+  a `default: true` time, whose rows name one row per key and per date on consecutive days (or
+  whose entity is `kind: time`). Rows of an unknown member (a NULL date, a date before 1901, or
+  a number key that is not positive, such as `-1`) are left out of that test. Another entity's
+  own date (a store's opening day, a version's `valid_from`) dates no row linked to it. The
+  column is named like the key, of a compatible type, and confirmed by its values (at least 95%
+  of its distinct values found, on a key that names one row). On a table with no date column of
+  its own, one such column dates the measures, or of several the one the package's model over
+  the table already links: the draft links it in `entities` and lists the clock's role in each
+  measure's `times:`, and `time_roles` says so, with `other_keys` holding the
+  `upsert_relationship` that adds each other date key as a named role and keeps that one the
+  default route. Several such columns that the package doesn't settle, or one beside a date
+  column of the table's own, are a choice no name settles: the draft dates no measure and marks
+  no time `default: true`, and `time_roles` (`status: choose`) holds each key column's
+  `entities` and `times` in `options` for you to choose.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
@@ -361,10 +362,12 @@ never create, seed or change it.
     still pairs with the table it names. `columns` tries those columns against every key of a compatible type, whatever their
     names. Columns are compared only with keys of their type. A key of two or more columns (a
     sale line's `order_id, line_no`) pairs with a tuple of columns, one per key column in key
-    order, each named like its key column or ending in what it names (`sale_order_id` and
-    `sale_line_no`; `claim_waybill` for `waybill_no`; never `line_qty` for `line_no`). A tuple
-    that mixes columns of the table's own key with others is not tried (a return line's own
-    `line_no` beside the sale's order id), unless you name the `columns`. Its row has `columns`, and its
+    order: each named exactly as its key column, or all of them its key column's name with one
+    common prefix or suffix (`sale_order_id` and `sale_line_no`; `order_id_noted` and
+    `line_no_noted`). A tuple that mixes a prefixed column with a bare one (a return line's own
+    `line_no` beside `sale_order_id`), or that mixes columns of the table's own key with others,
+    is never proposed, nor is a column that only starts like its key column (`line_qty`); name
+    the `columns` to try others. Its row has `columns`, and its
     `reason` says the target key is never null and never repeated, the columns matched and the
     coverage. A target whose columns repeat together is in `not_proposed`, never drafted: a
     many-to-one link there would count each row once per match. At most 12 tuples are tried per

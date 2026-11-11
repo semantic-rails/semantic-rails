@@ -887,16 +887,15 @@ def suggest_model(
     search went); without one the draft is a row-grain model that counts its rows. Nothing is
     written: ``upsert_model`` holds draft arguments to review.
 
-    What dates the measures: the relation's one date column, or of several the one named after
-    the row's own entity (``ordered_at`` on orders, ``payment_date`` on order payments). A column
-    holding a key of one of the package's ``clocks`` (``{entity, relation, key, date_column,
-    temporal_role}``: a calendar entity and its model's default date; ``clock_links`` maps a
-    clock entity the package's model over ``relation`` already links to its column), named like
-    the key and confirmed by its values, is weighed with them: alone it dates the measures
-    through that link, and beside other candidates it does when named after the row. A clock is
-    a calendar only where its rows say so: one row per key and per date, the dates consecutive
-    days (or its entity is ``kind: time``). Where no one choice is defensible, the draft dates
-    none and ``time_roles`` says the choice is the author's.
+    What dates the measures: the relation's own date columns, as before, when it holds no key
+    of one of the package's ``clocks`` (``{entity, relation, key, date_column, temporal_role,
+    calendar}``: an entity and its model's default date). A column holding such a key, named
+    like it and confirmed by its values, dates them through that link when it is the only such
+    column and the relation has no date of its own, or when the package's model over
+    ``relation`` already links it (``clock_links``: clock entity to column). A clock is a
+    calendar only where its rows say so (``_one_row_per_day``) or its entity is ``kind: time``.
+    Several such columns, or one beside a date of the relation's own, date nothing:
+    ``time_roles`` states the choice, the author's.
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
@@ -936,18 +935,14 @@ def suggest_model(
             keyed = _date_keys(warehouse, described, source, clocks)
         # A date column that is also a calendar's key is one candidate: its own date.
         keyed = [row for row in keyed if row["column"] not in {item["column"] for item in own}]
-    time_roles, default_time = _time_roles(
-        described["relation"], entity, own, keyed, dict(clock_links or {})
-    )
-    if default_time:  # the draft marks its first time the default
-        roles["times"].sort(key=lambda item: item["column"] != default_time)
+    time_roles = _time_roles(described["relation"], entity, own, keyed, dict(clock_links or {}))
     draft = upsert_model_draft(
         entity=entity, relation=described["relation"], key_columns=key_columns, **roles
     )
-    if time_roles and own and (time_roles["status"] == "choose" or "temporal_role" in time_roles):
+    if time_roles and time_roles["status"] == "choose":
         for spec in draft["times"].values():
             spec.pop("default", None)
-    if time_roles and time_roles["status"] == "default" and "temporal_role" in time_roles:
+    if time_roles and time_roles["status"] == "default":
         draft["entities"] = dict(time_roles["entities"])
         for spec in draft["measures"].values():
             spec["times"] = [time_roles["temporal_role"]]
@@ -991,7 +986,12 @@ def _date_keys(
             continue
         qualified = _qualified(warehouse, *_split_relation(clock["relation"]))
         if not clock.get("calendar") and not _one_row_per_day(
-            warehouse, qualified, clock["key"], str(clock.get("date_column") or ""), deadline
+            warehouse,
+            qualified,
+            clock["key"],
+            str(clock.get("date_column") or ""),
+            _scalar_family(key_types[clock["key"]]) == "numeric",
+            deadline,
         ):
             continue
         for column in described["columns"]:
@@ -1012,25 +1012,34 @@ def _date_keys(
 
 
 def _one_row_per_day(
-    warehouse: DuckDBWarehouse, relation: str, key: str, column: str, deadline: float
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    key: str,
+    column: str,
+    numeric_key: bool,
+    deadline: float,
 ) -> bool:
-    """Whether ``relation`` reads as a calendar: ``key`` and the date in ``column`` are never
-    null and each names one row, and the dates are consecutive days (two rows at least)."""
+    """Whether ``relation`` reads as a calendar: on its rows of known days, ``key`` and the date
+    in ``column`` each name one row, on consecutive days, two rows at least. A row of an unknown
+    member (a NULL date, a date before 1901, a NULL key, or a number key that is not positive,
+    such as ``-1``) is left out of that test."""
     if not column:
         return False
     _in_time(deadline)
     ref, day = quote_identifier(key), f"CAST({quote_identifier(column)} AS DATE)"
+    known = f"{day} >= DATE '1901-01-01' AND {ref} IS NOT NULL" + (
+        f" AND {ref} > 0" if numeric_key else ""
+    )
     try:
-        rows, keys, days, valued, span = warehouse.execute(
+        rows, keys, days, span = warehouse.execute(
             f"SELECT system.main.count(*), system.main.count(DISTINCT {ref}), "
             f"system.main.count(DISTINCT {day}), "
-            f"system.main.count(*) FILTER (WHERE {ref} IS NOT NULL AND {day} IS NOT NULL), "
             f"system.main.date_diff('day', system.main.min({day}), system.main.max({day})) + 1 "
-            f"FROM {relation}"
+            f"FROM {relation} WHERE {known}"
         )[1][0]
     except (duckdb.Error, SemanticLayerError):
         return False  # a time that is no date column (an expression, a number) is no calendar
-    return int(rows) >= 2 and int(rows) == int(keys) == int(days) == int(valued) == int(span or 0)
+    return int(rows) >= 2 and int(rows) == int(keys) == int(days) == int(span or 0)
 
 
 def _role_name(entity: str, columns: list[str]) -> str:
@@ -1042,20 +1051,8 @@ def _role_name(entity: str, columns: list[str]) -> str:
     return slug(f"{entity}_{stem}", fallback="role")
 
 
-def _own_event(column: str, entity: str) -> bool:
-    """Whether a date column is named after the row's own entity: it starts with the whole
-    entity name, or its first word is the entity's last, the row's own noun (``order_date``,
-    ``ordered_at`` and ``order_day_key`` on an order; ``payment_date`` on an order payment, never
-    ``order_created_at``, the order's date)."""
-    words = [word for word in re.split(r"[^a-z0-9]+", entity.lower()) if word]
-    if not words:
-        return False
-    lowered = column.lower()
-    whole = "_".join(words)
-    if lowered.startswith(f"{whole}_"):
-        return True
-    noun, first = words[-1], re.split(r"[^a-z0-9]+", lowered)[0]
-    return first in {noun, f"{noun}ed", f"{noun}d"}
+def _plural(count: int, one: str, many: str) -> str:
+    return one if count == 1 else many
 
 
 def _time_roles(
@@ -1064,76 +1061,50 @@ def _time_roles(
     own: list[dict[str, Any]],
     keyed: list[dict[str, Any]],
     linked: dict[str, str],
-) -> tuple[dict[str, Any] | None, str]:
-    """What dates a drafted model's measures, said once there is a choice to state: the
-    ``time_roles`` block (or None) and the date column the draft marks its default ("")."""
-    if own and keyed:
-        return _mixed_time_roles(relation, entity, own, keyed)
+) -> dict[str, Any] | None:
+    """What dates a drafted model's measures once a calendar key is among the candidates: the
+    ``time_roles`` block, or None when there is none (the relation's own dates, as before)."""
+    if not keyed:
+        return None
+    columns = [str(row["column"]) for row in keyed]
+    listed, clocks = ", ".join(columns), ", ".join(sorted({str(row["entity"]) for row in keyed}))
+    holding = (
+        f"{_plural(len(columns), 'a column', f'{len(columns)} columns')} holding keys of "
+        f"{clocks} ({listed})"
+    )
+    options = [
+        {"column": row["column"], "entities": _clock_link(row), "times": [row["temporal_role"]]}
+        for row in keyed
+    ]
     if own:
-        if len(own) == 1:
-            return None, ""
-        columns = [str(item["column"]) for item in own]
-        named = [column for column in columns if _own_event(column, entity)]
-        listed = ", ".join(columns)
-        if len(named) == 1:
-            return {
-                "status": "default",
-                "candidates": columns,
-                "default": named[0],
-                "message": (
-                    f"{relation} has {len(columns)} date columns ({listed}). The draft dates "
-                    f"its measures by {named[0]}, named after the {entity} itself; the others "
-                    "stay times of the model, to group by their dates or to list in a "
-                    "measure's `times:`. If the business reads these rows by another, mark "
-                    "that one `default: true` instead."
-                ),
-            }, named[0]
+        dates = [str(item["column"]) for item in own]
         return {
             "status": "choose",
-            "candidates": columns,
+            "candidates": dates + columns,
             "message": (
-                f"{relation} has {len(columns)} date columns ({listed}) and "
-                + ("none" if not named else "more than one")
-                + f" is named after the {entity} itself, so which one dates its rows is a "
-                "business choice: the draft marks none `default: true`, and its measures "
-                "can't be asked by month until one is. Mark the one the business reads them "
-                "by `default: true` in the draft's times."
+                f"{relation} has {_plural(len(dates), 'a date column', 'date columns')} of its "
+                f"own ({', '.join(dates)}) and {holding}, so which one dates its rows is a "
+                "business choice, and the draft dates no measure. Mark the date the business "
+                "reads them by `default: true` in the draft's times, or choose one of "
+                "`options`: add its `entities` to the draft and its `times` to each measure."
             ),
-        }, ""
-    if not keyed:
-        return None, ""
-    columns = [str(row["column"]) for row in keyed]
-    listed = ", ".join(columns)
+            "options": options,
+        }
     chosen = [row for row in keyed if linked.get(row["entity"]) == row["column"]]
-    why = "the package's model already links it"
     if not chosen and len(keyed) == 1:
-        chosen, why = keyed, ""
-    if not chosen:
-        chosen = [row for row in keyed if _own_event(str(row["column"]), entity)]
-        why = f"named after the {entity} itself"
-    clocks = sorted({str(row["entity"]) for row in keyed})
+        chosen = keyed
     if len(chosen) != 1:
         return {
             "status": "choose",
             "candidates": columns,
             "message": (
-                f"{relation} has no date column of its own and {len(columns)} columns holding "
-                f"keys of {', '.join(clocks)} ({listed}); "
-                + ("none" if not chosen else "more than one")
-                + f" is named after the {entity} itself, so which one dates its rows is a "
-                "business choice, and the draft dates no measure. Choose one of `options`: "
-                "add its `entities` to the draft and its `times` to each measure; then add "
-                "each other one as a named role (upsert_relationship with a name)."
+                f"{relation} has no date column of its own and {holding}, so which one dates "
+                "its rows is a business choice, and the draft dates no measure. Choose one of "
+                "`options`: add its `entities` to the draft and its `times` to each measure; "
+                "then add each other one as a named role (upsert_relationship with a name)."
             ),
-            "options": [
-                {
-                    "column": row["column"],
-                    "entities": _clock_link(row),
-                    "times": [row["temporal_role"]],
-                }
-                for row in keyed
-            ],
-        }, ""
+            "options": options,
+        }
     (row,) = chosen
     others = [other for other in keyed if other is not row]
     block: dict[str, Any] = {
@@ -1144,24 +1115,27 @@ def _time_roles(
         "entities": _clock_link(row),
     }
     if not others:
-        lead = f"{relation} has no date column of its own; {row['column']} holds keys of "
-        lead += f"{row['entity']}" + (f" and {why}" if why else "")
-        block["message"] = (
-            f"{lead}, so the draft links it (entities.{row['entity']}) and dates each measure "
-            f"by {row['temporal_role']}. {row['reason']}"
+        why = (
+            " and the package's model already links it"
+            if linked.get(row["entity"]) == row["column"]
+            else ""
         )
-        return block, ""
+        block["message"] = (
+            f"{relation} has no date column of its own; {row['column']} holds keys of "
+            f"{row['entity']}{why}, so the draft links it (entities.{row['entity']}) and dates "
+            f"each measure by {row['temporal_role']}. {row['reason']}"
+        )
+        return block
     block["message"] = (
-        f"{relation} has no date column of its own and {len(columns)} columns holding keys of "
-        f"{', '.join(clocks)} ({listed}). The draft dates each measure by {row['column']}, "
-        f"{why}: it links {row['column']} (entities.{row['entity']}) and lists "
-        f"{row['temporal_role']} in each measure's `times:`. "
-        f"{', '.join(str(other['column']) for other in others)} "
-        f"{'stays' if len(others) == 1 else 'stay'} unlinked here: each of `other_keys` adds "
-        f"one as a named role and keeps {row['column']} the default route."
+        f"{relation} has no date column of its own and {holding}. The draft dates each "
+        f"measure by {row['column']}, which the package's model already links: it links "
+        f"{row['column']} (entities.{row['entity']}) and lists {row['temporal_role']} in each "
+        f"measure's `times:`. {', '.join(str(other['column']) for other in others)} "
+        f"{_plural(len(others), 'stays', 'stay')} unlinked here: each of `other_keys` adds one "
+        f"as a named role and keeps {row['column']} the default route."
     )
     block["other_keys"] = _other_keys(entity, others)
-    return block, ""
+    return block
 
 
 def _clock_link(row: dict[str, Any]) -> dict[str, Any]:
@@ -1185,84 +1159,6 @@ def _other_keys(entity: str, others: list[dict[str, Any]]) -> list[dict[str, Any
         }
         for other in others
     ]
-
-
-def _mixed_time_roles(
-    relation: str, entity: str, own: list[dict[str, Any]], keyed: list[dict[str, Any]]
-) -> tuple[dict[str, Any], str]:
-    """``_time_roles`` for a relation with date columns of its own and calendar keys too
-    (``order_day_key`` beside ``shipped_at``): of all of them, the one named after the row's own
-    entity dates the measures; with none or several so named, the choice is the author's."""
-    dates = [str(item["column"]) for item in own]
-    keys = [str(row["column"]) for row in keyed]
-    clocks = sorted({str(row["entity"]) for row in keyed})
-    named = [column for column in dates + keys if _own_event(column, entity)]
-    lead = (
-        f"{relation} has date columns of its own ({', '.join(dates)}) and columns holding keys "
-        f"of {', '.join(clocks)} ({', '.join(keys)})"
-    )
-    if len(named) != 1:
-        return {
-            "status": "choose",
-            "candidates": dates + keys,
-            "message": (
-                f"{lead}, and "
-                + ("none" if not named else "more than one")
-                + f" is named after the {entity} itself, so which one dates its rows is a "
-                "business choice, and the draft dates no measure. Mark the date the business "
-                "reads them by `default: true` in the draft's times, or choose one of "
-                "`options`: add its `entities` to the draft and its `times` to each measure."
-            ),
-            "options": [
-                {
-                    "column": row["column"],
-                    "entities": _clock_link(row),
-                    "times": [row["temporal_role"]],
-                }
-                for row in keyed
-            ],
-        }, ""
-    (chosen,) = named
-    if chosen in dates:
-        return {
-            "status": "default",
-            "candidates": dates + keys,
-            "default": chosen,
-            "message": (
-                f"{lead}. The draft dates its measures by {chosen}, named after the {entity} "
-                f"itself; the other dates stay times of the model, and {', '.join(keys)} "
-                f"{'stays' if len(keys) == 1 else 'stay'} unlinked here. If the business reads "
-                "these rows by another, mark that date `default: true` instead, or link that "
-                "key and list its clock in each measure's `times:`."
-            ),
-        }, chosen
-    (row,) = [row for row in keyed if row["column"] == chosen]
-    others = [other for other in keyed if other is not row]
-    block: dict[str, Any] = {
-        "status": "default",
-        "candidates": dates + keys,
-        "default": chosen,
-        "temporal_role": row["temporal_role"],
-        "entities": _clock_link(row),
-        "message": (
-            f"{lead}. The draft dates each measure by {chosen}, named after the {entity} "
-            f"itself: it links {chosen} (entities.{row['entity']}) and lists "
-            f"{row['temporal_role']} in each measure's `times:`; {', '.join(dates)} "
-            f"{'stays a time' if len(dates) == 1 else 'stay times'} of the model, none marked "
-            "`default: true`."
-            + (
-                f" {', '.join(str(other['column']) for other in others)} "
-                f"{'stays' if len(others) == 1 else 'stay'} unlinked here: each of "
-                f"`other_keys` adds one as a named role and keeps {chosen} the default route."
-                if others
-                else ""
-            )
-            + f" {row['reason']}"
-        ),
-    }
-    if others:
-        block["other_keys"] = _other_keys(entity, others)
-    return block, ""
 
 
 # Candidate keys a one-per-key search tries, singles first; the first this many by naming order.
@@ -1592,59 +1488,61 @@ def _names_link(column: str, key: str, entity: str = "") -> bool:
 
 # The most column tuples one composite key is compared with: each is a few scans of the relation.
 MAX_COMPOSITE_CANDIDATES = 12
-# What a key column's name may end in beyond a key suffix: the number it holds (``line_no``).
-_PART_SUFFIXES = (*_KEY_SUFFIXES, "_no", "_nr", "_num", "_number")
 
 
-def _part_stem(name: str) -> str:
-    """A key column's name without a key or number suffix (``waybill`` for ``waybill_no``)."""
-    stem = name.lower()
-    for suffix in _PART_SUFFIXES:
-        if stem.endswith(suffix) and len(stem) > len(suffix):
-            return stem[: -len(suffix)]
-    return stem
-
-
-def _names_key_part(column: str, key: str, entity: str) -> bool:
-    """Whether ``column`` is named like one column of a composite key: named like ``key``
-    (``_names_link``), or ending, without a key or number suffix of its own, in what the key
-    column names (``claim_waybill`` for ``waybill_no``, ``sale_line_number`` for ``line_no``;
-    never ``line_qty``, a quantity that only starts like it). The entity's own name with a key
-    suffix (``sale_id``) names its single key, never one part of a composite one."""
-    if _names_link(column, key):
-        return True
-    stem, own = _part_stem(key), _part_stem(column)
-    return stem not in _GENERIC_KEYS and (own == stem or own.endswith(f"_{stem}"))
+def _named_tuples(
+    types: Mapping[str, str], keys: list[str], key_types: Mapping[str, str]
+) -> list[list[str]]:
+    """The column tuples of a relation named like a composite key ``keys``, in key order: each
+    column named exactly as its key column, or all of them with one common prefix or suffix
+    around those names (``sale_order_id`` and ``sale_line_no`` for ``order_id`` and
+    ``line_no``), each of a compatible type. A tuple that mixes such a column with a bare one
+    (``sale_order_id`` beside ``line_no``, a return line's own number) is never one."""
+    by_name = {column.lower(): column for column in types}
+    first = keys[0].lower()
+    affixes: set[tuple[str, str]] = set()
+    for name in by_name:
+        if name == first or (name.endswith(first) and name[: -len(first)].endswith("_")):
+            affixes.add((name[: -len(first)], ""))
+        if name.startswith(f"{first}_"):
+            affixes.add(("", name[len(first) :]))
+    found = []
+    for prefix, suffix in sorted(affixes):
+        named = [by_name.get(f"{prefix}{key.lower()}{suffix}", "") for key in keys]
+        if all(
+            column and _fk_types_compatible(types[column], key_types[key])
+            for column, key in zip(named, keys, strict=True)
+        ):
+            found.append(named)
+    return found[:MAX_COMPOSITE_CANDIDATES]
 
 
 def _composite_candidates(
     types: Mapping[str, str],
     keys: list[str],
     key_types: Mapping[str, str],
-    entity: str,
     columns: list[str] | None,
     deadline: float | None = None,
     own_key: list[str] | None = None,
 ) -> list[list[str]]:
     """The column tuples of a relation that could hold a composite key ``keys``, in key order:
-    one column per key column, each of a compatible type and, unless the author names the
-    ``columns`` to try, named like that key column; at most ``MAX_COMPOSITE_CANDIDATES``. Unless
-    named, a tuple never mixes columns of the relation's ``own_key`` with others: a return line's
-    own line number beside the sale's order id would find a sale line on every return line."""
-    parts = [
-        [
-            column
-            for column in columns or list(types)
-            if _fk_types_compatible(types[column], key_types[key])
-            and (columns or _names_key_part(column, key, entity))
+    the tuples named like it (``_named_tuples``), or, when the author names the ``columns`` to
+    try, one of those per key column, each of a compatible type; at most
+    ``MAX_COMPOSITE_CANDIDATES``. Unless named, a tuple never mixes columns of the relation's
+    ``own_key`` with others: a return line's own line number beside the sale's order would find
+    a sale line on every return line."""
+    if not columns:
+        key_of = set(own_key or [])
+        return [
+            named
+            for named in _named_tuples(types, keys, key_types)
+            if not (key_of & set(named)) or set(named) <= key_of
         ]
+    parts = [
+        [column for column in columns if _fk_types_compatible(types[column], key_types[key])]
         for key in keys
     ]
     found: list[list[str]] = []
-    key_of = set(own_key or [])
-
-    def mixed(tuple_: list[str]) -> bool:
-        return bool(key_of & set(tuple_)) and not set(tuple_) <= key_of
 
     def extend(prefix: list[str]) -> None:
         # Depth first, never reusing a column, so a wide key with no fitting tuple costs no
@@ -1654,8 +1552,7 @@ def _composite_candidates(
         if deadline is not None:
             _in_time(deadline)
         if len(prefix) == len(parts):
-            if columns or not mixed(prefix):
-                found.append(list(prefix))
+            found.append(list(prefix))
             return
         for column in parts[len(prefix)]:
             if column not in prefix:
@@ -1779,8 +1676,9 @@ def suggest_links(
     (``{relation, key, entity}``; by default every declared primary key) that the column is
     named like (``columns`` tries those columns against every target of a compatible type,
     whatever their names). A composite key (``key`` a list) pairs with a tuple of columns, one
-    per key column in key order, each named like its key column (``claim_waybill`` and
-    ``claim_kind_key`` for ``waybill_no, kind_key``); its row says ``columns``. Each pair's
+    per key column in key order, named exactly as the key columns or all with one common prefix
+    or suffix around those names (``sale_order_id`` and ``sale_line_no`` for ``order_id,
+    line_no``; ``_named_tuples``); its row says ``columns``. Each pair's
     ``evidence`` counts the values found among the target's keys, by distinct value
     (``coverage``) and by row, with a few values not found.
     A pair whose target key names one row, and whose coverage reaches ``min_coverage`` (the
@@ -1857,7 +1755,7 @@ def suggest_links(
                 ]
             else:
                 tuples = _composite_candidates(
-                    types, keys, target_types, entity, columns, deadline, own_key
+                    types, keys, target_types, columns, deadline, own_key
                 )
             target_schema, target_name = _split_relation(str(target["relation"]))
             for tuple_ in tuples:

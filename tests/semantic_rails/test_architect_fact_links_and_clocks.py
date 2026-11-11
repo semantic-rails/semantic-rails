@@ -3,10 +3,11 @@
 Two facts that share a business key of two columns (a return names the sale line it returns by
 order and line number) are linked by ``suggest_links``, with what makes the link safe said in
 numbers: the key is unique on the sale side, how many returns find their sale, and on which
-columns. A fact that keeps its dates only as keys into a calendar gets its measures dated by
-``suggest_model``: one date key, or of several the one named after the row itself; where none is
-defensible the draft dates none and says the choice is the author's. A measure left without a
-time role is refused by month with the package line that fixes it, and validation names it.
+columns. A fact that keeps its date only as one key into a calendar gets its measures dated by
+``suggest_model``; with several such keys, or one beside a date of its own, the draft dates none
+and says the choice is the author's, and a table's own dates are drafted as before. A measure
+left without a time role is refused by month with the package line that fixes it, and validation
+names it.
 
 Every answer is checked against hand-written SQL over the same DuckDB file.
 """
@@ -14,6 +15,7 @@ Every answer is checked against hand-written SQL over the same DuckDB file.
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,7 +33,7 @@ from semantic_rails.architect_introspection import (
     suggest_model,
 )
 from semantic_rails.architect_mcp import create_architect_mcp_server
-from semantic_rails.architect_service import ArchitectProject, _hops
+from semantic_rails.architect_service import ArchitectProject, _reads_one_row
 from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.diagnostics import recovery_hints_for_error
@@ -149,6 +151,41 @@ class _Session:
         )
 
 
+def _through_the_link(
+    refused: dict[str, Any], beyond: list[dict[str, Any]], relation: str, link: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """What the author records once ``prefer_this_link`` was refused for routes beyond its pair
+    and every route was kept: the pair both ways by the link, and each of those routes with the
+    pair's earlier route on its way replaced by the link."""
+    rel = f"relationship.{relation}_{link['to_entity']}"
+    ends = (f"entity.shop_{link['from_entity']}", f"entity.shop_{link['to_entity']}")
+    earlier = {
+        (row["source_entity"], row["target_entity"]): row["base"].get("relationship_path")
+        for row in refused["details"]["route_changes"]
+    }
+    legs = [earlier[pair] for pair in (ends, ends[::-1]) if earlier.get(pair)]
+
+    def through(path: list[str]) -> list[str]:
+        for leg in legs:
+            for at in range(len(path) - len(leg) + 1):
+                if path[at : at + len(leg)] == leg:
+                    return [*path[:at], rel, *path[at + len(leg) :]]
+        return path
+
+    pair = [
+        {"source_entity": source, "target_entity": target, "relationship_path": [rel]}
+        for source, target in (ends, ends[::-1])
+    ]
+    return pair + [
+        {
+            "source_entity": row["source_entity"],
+            "target_entity": row["target_entity"],
+            "relationship_path": through(row["base"]["relationship_path"]),
+        }
+        for row in beyond
+    ]
+
+
 def _build(
     tmp_path: Path,
     *,
@@ -156,11 +193,17 @@ def _build(
     seed: str = SEED,
     models: tuple[str, ...] = ("customers", "returns", "sales"),
     links: tuple[str, ...] = ("returns", "sales"),
+    dates: dict[str, str] | None = None,
 ) -> tuple[Path, list[dict[str, Any]]]:
-    """A blind Architect build: create, explore, suggest, write what was suggested (a refused
-    link retried as its refusal says first), validate. Returns the package and the log."""
+    """A blind Architect build: create, explore, suggest, write what was suggested, validate.
+    Where ``suggest_model`` states a choice of date, the author picks ``dates[relation]`` (a sale
+    is dated by its sale day). A refused link is retried as its refusal says first; where
+    ``prefer_this_link`` is refused for routes beyond the pair, the author keeps every route and
+    records the pair and those routes through the link, as that refusal says. Returns the
+    package and the log."""
     pkg = tmp_path / "shop"
     log: list[dict[str, Any]] = []
+    picks = {"sales": "sale_day_key"} if dates is None else dates
 
     async def steps(s: _Session, session: Any) -> None:
         created = await s.call(
@@ -190,7 +233,14 @@ def _build(
                 full_report=True,
             )
             log.append({"suggest_model": relation, **suggestion})
-            written = await s.write(session, "upsert_model", **suggestion["upsert_model"])
+            draft = copy.deepcopy(suggestion["upsert_model"])
+            roles = suggestion.get("time_roles") or {}
+            if roles.get("status") == "choose" and relation in picks:
+                (option,) = [row for row in roles["options"] if row["column"] == picks[relation]]
+                draft = {**draft, "entities": {**draft.get("entities", {}), **option["entities"]}}
+                for spec in draft["measures"].values():
+                    spec["times"] = option["times"]
+            written = await s.write(session, "upsert_model", **draft)
             assert written["ok"], written
         for relation in links:
             proposed = await s.call(
@@ -198,9 +248,8 @@ def _build(
             )
             log.append({"suggest_links": relation, **proposed})
             for row in proposed["proposals"]:
-                written = await s.write(
-                    session, "upsert_relationship", **row["upsert_relationship"]
-                )
+                link = row["upsert_relationship"]
+                written = first = await s.write(session, "upsert_relationship", **link)
                 if not written["ok"]:
                     log.append({"refused": written["error"]})
                     message = written["error"]["message"]
@@ -209,12 +258,20 @@ def _build(
                         if prefer and "prefer_this_link=true" in message
                         else "keep_existing_routes"
                     )
+                    written = await s.write(session, "upsert_relationship", **link, **{retry: True})
+                if not written["ok"]:
+                    log.append({"refused": written["error"]})
+                    beyond = written["error"]["details"]["route_changes"]
+                    written = await s.write(
+                        session, "upsert_relationship", **link, keep_existing_routes=True
+                    )
+                    assert written["ok"], written
                     written = await s.write(
                         session,
-                        "upsert_relationship",
-                        **row["upsert_relationship"],
-                        **{retry: True},
+                        "record_route_decision",
+                        decisions=_through_the_link(first["error"], beyond, relation, link),
                     )
+                    log.append({"recorded": written})
                 assert written["ok"], written
         if "sales" in models:
             written = await s.write(
@@ -246,15 +303,15 @@ def _ask(pkg: Path, call: dict[str, Any]) -> list[tuple[Any, ...]]:
 
 
 def test_a_blind_build_answers_by_month_and_across_the_two_facts(tmp_path):
-    """The sale is dated by its own day key and the return linked to its sale line: sales by
-    month and refunds by the customer of the returned sale equal the SQL, the return no sale
-    holds in the NULL group."""
+    """The sale's two day keys are a choice its draft states; dated by its sale day as the
+    author picks, and the return linked to its sale line, sales by month and refunds by the
+    customer of the returned sale equal the SQL, the return no sale holds in the NULL group."""
     pkg, log = _build(tmp_path)
     sales = next(row for row in log if row.get("suggest_model") == "sales")
-    assert sales["upsert_model"]["entities"] == {"day": {"expr": "sale_day_key"}}
-    assert {key: spec["times"] for key, spec in sales["upsert_model"]["measures"].items()} == {
-        "amount": [ROLE]
-    }
+    roles = sales["time_roles"]
+    assert (roles["status"], roles["candidates"]) == ("choose", ["sale_day_key", "ship_day_key"])
+    assert "entities" not in sales["upsert_model"]
+    assert all("times" not in spec for spec in sales["upsert_model"]["measures"].values())
     (refused,) = [row["refused"] for row in log if "refused" in row]
     assert refused["code"] == "ROUTE_DECISION_NOT_RECORDED"
     assert refused["message"].startswith(
@@ -388,23 +445,39 @@ CLOCK = [
 ]
 
 
-def test_a_sale_is_dated_by_its_own_day_key_and_the_ship_day_is_a_named_role(tmp_path):
+def test_two_day_keys_are_a_choice_unless_the_package_links_one(tmp_path):
+    """No name settles which of a sale's day keys dates it: the draft dates no measure and lists
+    both. Where the package's model already links the sale day, that one dates the measures and
+    the ship day is a named role to add."""
     with open_duckdb(_warehouse(tmp_path)) as warehouse:
         sales = suggest_model(warehouse, "sales", clocks=CLOCK)
+        linked = suggest_model(
+            warehouse, "sales", clocks=CLOCK, clock_links={"day": "sale_day_key"}
+        )
     roles = sales["time_roles"]
-    assert (roles["status"], roles["default"], roles["candidates"]) == (
-        "default",
-        "sale_day_key",
-        ["sale_day_key", "ship_day_key"],
-    )
+    assert (roles["status"], roles["candidates"]) == ("choose", ["sale_day_key", "ship_day_key"])
     assert roles["message"] == (
         "sales has no date column of its own and 2 columns holding keys of day (sale_day_key, "
-        "ship_day_key). The draft dates each measure by sale_day_key, named after the sale "
-        "itself: it links sale_day_key (entities.day) and lists temporal_role.shop_day_day in "
-        "each measure's `times:`. ship_day_key stays unlinked here: each of `other_keys` adds "
+        "ship_day_key), so which one dates its rows is a business choice, and the draft dates no "
+        "measure. Choose one of `options`: add its `entities` to the draft and its `times` to "
+        "each measure; then add each other one as a named role (upsert_relationship with a name)."
+    )
+    assert roles["options"] == [
+        {"column": "sale_day_key", "entities": {"day": {"expr": "sale_day_key"}}, "times": [ROLE]},
+        {"column": "ship_day_key", "entities": {"day": {"expr": "ship_day_key"}}, "times": [ROLE]},
+    ]
+    assert "entities" not in sales["upsert_model"]
+    assert all("times" not in spec for spec in sales["upsert_model"]["measures"].values())
+    chosen = linked["time_roles"]
+    assert (chosen["status"], chosen["default"]) == ("default", "sale_day_key")
+    assert chosen["message"] == (
+        "sales has no date column of its own and 2 columns holding keys of day (sale_day_key, "
+        "ship_day_key). The draft dates each measure by sale_day_key, which the package's model "
+        "already links: it links sale_day_key (entities.day) and lists temporal_role.shop_day_day "
+        "in each measure's `times:`. ship_day_key stays unlinked here: each of `other_keys` adds "
         "one as a named role and keeps sale_day_key the default route."
     )
-    (other,) = roles["other_keys"]
+    (other,) = chosen["other_keys"]
     assert other["upsert_relationship"] == {
         "from_entity": "sale",
         "to_entity": "day",
@@ -413,7 +486,7 @@ def test_a_sale_is_dated_by_its_own_day_key_and_the_ship_day_is_a_named_role(tmp
         "name": "sale_ship_day",
         "keep_existing_routes": True,
     }
-    draft = sales["upsert_model"]
+    draft = linked["upsert_model"]
     assert draft["entities"] == {"day": {"expr": "sale_day_key"}}
     assert all(spec["times"] == [ROLE] for spec in draft["measures"].values())
 
@@ -433,10 +506,10 @@ def test_a_single_day_key_dates_the_measures_and_two_unnamed_ones_are_a_choice(t
     assert roles["status"] == "choose"
     assert roles["message"] == (
         "shipments has no date column of its own and 2 columns holding keys of day "
-        "(booked_day_key, dispatched_day_key); none is named after the shipment itself, so "
-        "which one dates its rows is a business choice, and the draft dates no measure. Choose "
-        "one of `options`: add its `entities` to the draft and its `times` to each measure; "
-        "then add each other one as a named role (upsert_relationship with a name)."
+        "(booked_day_key, dispatched_day_key), so which one dates its rows is a business choice, "
+        "and the draft dates no measure. Choose one of `options`: add its `entities` to the "
+        "draft and its `times` to each measure; then add each other one as a named role "
+        "(upsert_relationship with a name)."
     )
     assert [option["entities"] for option in roles["options"]] == [
         {"day": {"expr": "booked_day_key"}},
@@ -449,27 +522,44 @@ def test_a_single_day_key_dates_the_measures_and_two_unnamed_ones_are_a_choice(t
     assert "time_roles" not in bare and bare["upsert_model"] == draft
 
 
-def test_of_several_own_dates_the_one_named_after_the_row_is_the_default(tmp_path):
-    with open_duckdb(_warehouse(tmp_path)) as warehouse:
-        orders = suggest_model(warehouse, "orders")
-        parcels = suggest_model(warehouse, "parcels")
-    assert orders["time_roles"]["default"] == "order_date"
-    assert orders["upsert_model"]["times"]["order_date"]["default"] is True
-    assert "default" not in orders["upsert_model"]["times"]["shipped_date"]
-    assert orders["time_roles"]["message"] == (
-        "orders has 2 date columns (order_date, shipped_date). The draft dates its measures by "
-        "order_date, named after the order itself; the others stay times of the model, to "
-        "group by their dates or to list in a measure's `times:`. If the business reads these "
-        "rows by another, mark that one `default: true` instead."
-    )
-    assert parcels["time_roles"]["status"] == "choose"
-    assert parcels["time_roles"]["message"] == (
-        "parcels has 2 date columns (booked_on, dispatched_on) and none is named after the "
-        "parcel itself, so which one dates its rows is a business choice: the draft marks none "
-        "`default: true`, and its measures can't be asked by month until one is. Mark the one "
-        "the business reads them by `default: true` in the draft's times."
-    )
-    assert all("default" not in spec for spec in parcels["upsert_model"]["times"].values())
+def test_own_dates_are_drafted_as_before(tmp_path):
+    """Of several own dates the first is the default, as it always was, whatever the names say:
+    no rule of names picks a booking's cancellation, a shipment's delivery or a payment's due
+    date over the event the row records, and there is no time_roles block."""
+    path = _warehouse(tmp_path)
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE bookings AS SELECT i AS booking_id,
+              TIMESTAMP '2025-01-01 10:00:00' + to_days(i::INTEGER) AS booked_at,
+              TIMESTAMP '2025-02-01 10:00:00' + to_days(i::INTEGER) AS booking_cancelled_at,
+              10.0 * i AS amount FROM range(1, 30) t(i);
+            CREATE TABLE order_payments AS SELECT i AS payment_id,
+              TIMESTAMP '2025-01-05 10:00:00' + to_days(i::INTEGER) AS paid_at,
+              TIMESTAMP '2025-01-02 10:00:00' + to_days(i::INTEGER) AS payment_due_at,
+              10.0 * i AS amount FROM range(1, 30) t(i);
+            CREATE TABLE deliveries AS SELECT i AS shipment_id,
+              TIMESTAMP '2025-01-03 10:00:00' + to_days(i::INTEGER) AS shipped_at,
+              TIMESTAMP '2025-01-06 10:00:00' + to_days(i::INTEGER) AS shipment_delivered_at,
+              10.0 * i AS charge FROM range(1, 30) t(i);
+            ALTER TABLE bookings ADD PRIMARY KEY (booking_id);
+            ALTER TABLE order_payments ADD PRIMARY KEY (payment_id);
+            ALTER TABLE deliveries ADD PRIMARY KEY (shipment_id);
+            """
+        )
+    defaults = {
+        "orders": "order_date",
+        "parcels": "booked_on",
+        "bookings": "booked_at",
+        "order_payments": "paid_at",
+        "deliveries": "shipped_at",
+    }
+    with open_duckdb(path) as warehouse:
+        drafted = {relation: suggest_model(warehouse, relation) for relation in defaults}
+    for relation, column in defaults.items():
+        assert "time_roles" not in drafted[relation]
+        times = drafted[relation]["upsert_model"]["times"]
+        assert [name for name, spec in times.items() if spec.get("default")] == [column]
 
 
 def _untimed(tmp_path: Path) -> Path:
@@ -501,8 +591,8 @@ def test_an_undated_measure_is_refused_with_the_line_that_dates_it(tmp_path):
     assert str(error) == (
         "'measure.shop.amount' has no time role declared, so it can't be placed on "
         "'temporal_role.shop_day_day'. Its rows reach that clock by to-one links: if it dates "
-        "them, add `times: [temporal_role.shop_day_day]` to measure.shop.amount in model sales "
-        "(Architect suggest_model with project_path drafts it); or drop `time` from the query."
+        "them, add `times: [temporal_role.shop_day_day]` to measure.shop.amount in model sales; "
+        "or drop `time` from the query."
     )
     declare = {"model": "sales", "measure": "measure.shop.amount", "times": [ROLE]}
     assert error.details == {
@@ -570,7 +660,7 @@ def test_a_wide_key_no_columns_can_fill_is_given_up_at_once():
     keys = [f"k{i}" for i in range(11)]
     types = dict.fromkeys(columns, "INTEGER")
     found = _composite_candidates(
-        types, keys, dict.fromkeys(keys, "INTEGER"), "thing", columns, time.monotonic() + 1
+        types, keys, dict.fromkeys(keys, "INTEGER"), columns, time.monotonic() + 1
     )
     assert found == []
 
@@ -670,45 +760,102 @@ LEFT JOIN customers c ON c.customer_key = s.customer_key GROUP BY 1
 """
 
 
-@pytest.mark.parametrize("twice", [False, True], ids=["once", "twice"])
 @pytest.mark.parametrize(
-    "day",
-    [
-        pytest.param(
-            True,
-            id="shared-day",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="Preferring the return-to-sale link over their shared day records the "
-                "sale's route to its customer through its returns, and that recorded route holds "
-                "the sale's own customer link off the pair (a follow-up).",
-            ),
-        ),
-        pytest.param(False, id="undated-returns"),
-    ],
+    "order", [("returns", "sales"), ("sales", "returns")], ids=["returns-first", "sales-first"]
 )
-def test_a_build_in_table_order_reads_a_sale_s_customer_from_the_sale(tmp_path, twice, day):
-    """Linked in table order, the return reaches its customer and its sale line first. That
-    link is many to one even where no line is returned twice yet, so a sale never reads its
-    return's customer as its own. The sale's own customer link is then refused until preferred;
-    preferred, it also carries the routes that went from a sale to its customer through its
-    returns (a day's customers through its sales' returns). Sales by customer equal the SQL."""
+@pytest.mark.parametrize("twice", [False, True], ids=["once", "twice"])
+@pytest.mark.parametrize("day", [True, False], ids=["shared-day", "undated-returns"])
+def test_a_build_in_either_table_order_reads_a_sale_s_customer_from_the_sale(
+    tmp_path, order, twice, day
+):
+    """Linked in either table order, the return reaches its customer and its sale line, many to
+    one even where no line is returned twice yet, and the sale its own customer. Where a link
+    is refused, its retries move no route beyond its pair unless the author records it. Sales
+    by customer and refunds by the customer of the returned sale equal the SQL, as on main,
+    which links no return to its sale line."""
     seed = RETURN_CUSTOMERS + (RETURNED_TWICE if twice else "")
     if not day:
         seed += "ALTER TABLE returns DROP COLUMN return_day_key;"
-    pkg, log = _build(tmp_path, seed=seed)
+    pkg, log = _build(tmp_path, seed=seed, links=order)
     returns = next(row for row in log if row.get("suggest_links") == "returns")
     (to_sale,) = [row for row in returns["proposals"] if row["target"]["entity"] == "sale"]
     assert to_sale["cardinality"] == "many_to_one"
-    refused = [row["refused"]["message"] for row in log if "refused" in row]
-    assert refused[-1].startswith(
-        "sale and customer reach each other today through other entities' rows"
-    )
     by_customer = {
         "select": ["measure.shop.amount"],
         "group_by": ["dimension.shop_customer_customer_name"],
     }
     assert _ask(pkg, by_customer) == _gold(pkg, SALES_BY_CUSTOMER)
+    refunds = {**by_customer, "select": ["measure.shop.refund_amount"]}
+    assert _ask(pkg, refunds) == _gold(pkg, REFUNDS_BY_CUSTOMER)
+
+
+def test_a_link_beyond_its_pair_is_refused_and_named_until_the_author_records_it(tmp_path):
+    """Returns with no day linked first: a sale reaches its customer and its day's customers
+    through its returns. Preferring the sale's own customer link would move those routes too,
+    so it is refused, naming them, and nothing is written; kept, and recorded through the link
+    by the author, sales by customer equal the SQL."""
+    seed = RETURN_CUSTOMERS + "ALTER TABLE returns DROP COLUMN return_day_key;"
+    pkg, log = _build(tmp_path, seed=seed)
+    refused = [row["refused"] for row in log if "refused" in row]
+    assert [row["code"] for row in refused] == ["ROUTE_DECISION_NOT_RECORDED"] * 2
+    assert refused[0]["message"].startswith(
+        "sale and customer reach each other today through other entities' rows"
+    )
+    assert refused[1]["message"] == (
+        "prefer_this_link would also move routes beyond the two entities that answer today: "
+        "entity.shop_customer -> entity.shop_day (relationship.returns_customer, "
+        "relationship.returns_sale, relationship.sales_day); entity.shop_day -> "
+        "entity.shop_customer (relationship.sales_day, relationship.returns_sale, "
+        "relationship.returns_customer); nothing was written. Retry with "
+        "keep_existing_routes=true to keep every route as it is; then record_route_decision can "
+        "take the routes you want through the link."
+    )
+    (recorded,) = [row["recorded"] for row in log if "recorded" in row]
+    assert recorded["ok"]
+    by_customer = {
+        "select": ["measure.shop.amount"],
+        "group_by": ["dimension.shop_customer_customer_name"],
+    }
+    assert _ask(pkg, by_customer) == _gold(pkg, SALES_BY_CUSTOMER)
+
+
+def test_a_link_a_recorded_route_holds_off_its_pair_is_refused(tmp_path):
+    """a and b each name one x; a route from a to b through x reads every b of an a's x. Kept
+    on that route, a plain a -> b link would change no answer: refused with what to do, nothing
+    written; preferred, it is the route."""
+    report = create_project_report(package_id="p", workspace_root=str(tmp_path), run_checks=False)
+    project = ArchitectProject(report["project_path"], workspace_root=tmp_path)
+    for name in ("a", "x", "b"):
+        project.upsert_model(
+            model_id=f"{name}s", entity_key=name, relation=f"raw_{name}", primary_key=[f"{name}_id"]
+        )
+    project.upsert_relationship(from_entity="a", to_entity="x", columns=["x_id"])
+    project.upsert_relationship(from_entity="b", to_entity="x", columns=["x_id"])
+    project.record_route_decision(
+        source_entity="a",
+        target_entity="b",
+        relationship_path=["relationship.as_x", "relationship.bs_x"],
+    )
+    with pytest.raises(SemanticLayerError) as refused:
+        project.upsert_relationship(from_entity="a", to_entity="b", columns=["b_id"])
+    assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert str(refused.value) == (
+        "A recorded route holds entity.p_a -> entity.p_b on relationship.as_x, "
+        "relationship.bs_x, which reads several rows on its way, so this link would change no "
+        "answer between a and b; nothing was written. Retry with prefer_this_link=true to make "
+        "the link the route between a and b and keep every other route, or with "
+        "keep_existing_routes=true to keep the recorded route."
+    )
+    assert refused.value.details["recorded_route"] == {
+        "source_entity": "entity.p_a",
+        "target_entity": "entity.p_b",
+        "relationship_path": ["relationship.as_x", "relationship.bs_x"],
+    }
+    assert _route(project, "a", "b") == ["relationship.as_x", "relationship.bs_x"]
+    project.upsert_relationship(
+        from_entity="a", to_entity="b", columns=["b_id"], prefer_this_link=True
+    )
+    assert _route(project, "a", "b") == ["relationship.as_b"]
 
 
 def test_a_composite_reference_unique_today_is_many_to_one_unless_it_is_the_row_s_key(tmp_path):
@@ -737,9 +884,10 @@ def test_a_composite_reference_unique_today_is_many_to_one_unless_it_is_the_row_
 
 
 def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
-    """A return's line quantity (1 or 2) finds line 1 or 2 of every order, a return line's own
-    line number finds a line of the order it names, and a sale id of 1 to 3 finds lines 1 to 3:
-    none is proposed as the sale line."""
+    """A tuple is proposed only when its columns are named as the key's columns, or all with
+    one prefix or suffix around them. A return's line quantity (1 or 2) finds line 1 or 2 of
+    every order, a return line's own line number finds a line of the order it names, and a sale
+    id of 1 to 3 finds lines 1 to 3: none is proposed as the sale line."""
     path = _warehouse(tmp_path)
     with duckdb.connect(str(path)) as conn:
         conn.execute(
@@ -755,23 +903,50 @@ def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
                    sale_order_id, sale_line_no, refund_amount
             FROM returns WHERE return_id < 1000;
             ALTER TABLE return_lines ADD PRIMARY KEY (return_no, line_no);
+            CREATE TABLE surrogate_lines AS
+            SELECT return_id AS return_line_id, return_id, line_no, sale_order_id, sku,
+                   refund_amount FROM (
+              SELECT return_id, sale_order_id, 'SKU' || sale_line_no AS sku, refund_amount,
+                     (row_number() OVER (PARTITION BY sale_order_id ORDER BY return_id))::INTEGER
+                         AS line_no
+              FROM returns WHERE return_id < 1000);
+            ALTER TABLE surrogate_lines ADD PRIMARY KEY (return_line_id);
             CREATE TABLE id_returns AS
             SELECT return_id, sale_order_id, sale_line_no AS sale_id, refund_amount
             FROM returns WHERE return_id < 1000;
+            CREATE TABLE line_discounts AS
+            SELECT order_id, line_no, 1.0::DOUBLE AS discount FROM sales WHERE order_id % 3 = 0;
+            CREATE TABLE line_notes AS
+            SELECT order_id AS order_id_noted, line_no AS line_no_noted, 'n' AS note
+            FROM sales WHERE order_id % 4 = 0;
             """
         )
     target = [{"relation": "sales", "key": ["order_id", "line_no"], "entity": "sale"}]
     with open_duckdb(path) as warehouse:
-        quantities = suggest_links(
-            warehouse, "quantity_returns", targets=target, from_entity="return"
-        )
-        lines = suggest_links(warehouse, "return_lines", targets=target, from_entity="return_line")
-        ids = suggest_links(warehouse, "id_returns", targets=target, from_entity="return")
-    assert quantities["proposals"] == quantities["below_threshold"] == []
-    # sale_id names a sale's single key, never its line number.
-    assert ids["proposals"] == ids["below_threshold"] == []
-    (proposal,) = lines["proposals"]
-    assert proposal["columns"] == ["sale_order_id", "sale_line_no"]
+        found = {
+            relation: suggest_links(warehouse, relation, targets=target, from_entity="row")
+            for relation in (
+                "quantity_returns",
+                "return_lines",
+                "surrogate_lines",
+                "id_returns",
+                "line_discounts",
+                "line_notes",
+            )
+        }
+    # A prefixed order beside a bare line number, under a surrogate key or a key of its own.
+    for relation in ("quantity_returns", "surrogate_lines", "id_returns"):
+        assert found[relation]["proposals"] == found[relation]["below_threshold"] == []
+    columns = {
+        relation: [row["columns"] for row in found[relation]["proposals"]]
+        for relation in ("return_lines", "line_discounts", "line_notes")
+    }
+    assert columns == {
+        "return_lines": [["sale_order_id", "sale_line_no"]],
+        "line_discounts": [["order_id", "line_no"]],
+        "line_notes": [["order_id_noted", "line_no_noted"]],
+    }
+    (proposal,) = found["return_lines"]["proposals"]
     assert "choice" not in proposal and "name" not in proposal["upsert_relationship"]
 
 
@@ -846,35 +1021,10 @@ def test_a_versioned_lookup_s_date_is_no_calendar_beside_the_linked_day(tmp_path
     assert all(spec["times"] == [ROLE] for spec in drafted["upsert_model"]["measures"].values())
 
 
-def test_a_compound_entity_is_named_by_its_own_noun_never_its_parent_s(tmp_path):
-    """An order payment's order_created_at is the order's date, not the payment's: with paid_at
-    beside it neither is named after the payment, so the choice is stated; payment_date is."""
-    path = tmp_path / "pay.duckdb"
-    with duckdb.connect(str(path)) as conn:
-        conn.execute(
-            """
-            CREATE TABLE order_payments AS SELECT i AS payment_id, i AS order_id,
-              DATE '2025-02-01' + i::INTEGER AS paid_at,
-              DATE '2025-01-01' + i::INTEGER AS order_created_at, 10.0 * i AS amount
-            FROM range(1, 30) t(i);
-            CREATE TABLE order_refunds AS SELECT payment_id AS refund_id, order_id,
-              paid_at AS refund_date, order_created_at, amount FROM order_payments;
-            ALTER TABLE order_payments ADD PRIMARY KEY (payment_id);
-            ALTER TABLE order_refunds ADD PRIMARY KEY (refund_id);
-            """
-        )
-    with open_duckdb(path) as warehouse:
-        payments = suggest_model(warehouse, "order_payments")
-        refunds = suggest_model(warehouse, "order_refunds")
-    assert payments["time_roles"]["status"] == "choose"
-    assert all("default" not in spec for spec in payments["upsert_model"]["times"].values())
-    assert refunds["time_roles"]["default"] == "refund_date"
-    assert refunds["upsert_model"]["times"]["refund_date"]["default"] is True
-
-
-def test_a_calendar_key_is_weighed_beside_an_own_timestamp(tmp_path):
-    """An order's own order_day_key dates it over its shipped_at, linked to the calendar; an
-    order whose own date is a column of its own keeps it, the ship day key left unlinked."""
+def test_a_calendar_key_beside_an_own_date_is_a_choice(tmp_path):
+    """No name settles whether an order is dated by its order day key or its shipped_at, nor a
+    booking by its booking_date or its ship day key: each draft marks no date `default: true`,
+    dates no measure and lists the options."""
     path = tmp_path / "orders.duckdb"
     with duckdb.connect(str(path)) as conn:
         conn.execute(
@@ -893,30 +1043,79 @@ def test_a_calendar_key_is_weighed_beside_an_own_timestamp(tmp_path):
         orders = suggest_model(warehouse, "fct_orders", clocks=CLOCK)
         bookings = suggest_model(warehouse, "bookings", clocks=CLOCK)
     roles = orders["time_roles"]
-    assert (roles["status"], roles["default"]) == ("default", "order_day_key")
+    assert (roles["status"], roles["candidates"]) == ("choose", ["shipped_at", "order_day_key"])
     assert roles["message"] == (
-        "fct_orders has date columns of its own (shipped_at) and columns holding keys of day "
-        "(order_day_key). The draft dates each measure by order_day_key, named after the order "
-        "itself: it links order_day_key (entities.day) and lists temporal_role.shop_day_day in "
-        "each measure's `times:`; shipped_at stays a time of the model, none marked `default: "
-        "true`. 29 of 29 distinct order_day_key values (100.0%) are calendar.day_key keys, on 29 "
-        "of 29 rows with a value."
+        "fct_orders has a date column of its own (shipped_at) and a column holding keys of day "
+        "(order_day_key), so which one dates its rows is a business choice, and the draft dates "
+        "no measure. Mark the date the business reads them by `default: true` in the draft's "
+        "times, or choose one of `options`: add its `entities` to the draft and its `times` to "
+        "each measure."
     )
-    draft = orders["upsert_model"]
-    assert draft["entities"] == {"day": {"expr": "order_day_key"}}
-    assert "default" not in draft["times"]["shipped_at"]
-    assert all(spec["times"] == [ROLE] for spec in draft["measures"].values())
-    booked = bookings["time_roles"]
-    assert (booked["status"], booked["default"]) == ("default", "booking_date")
-    assert booked["message"] == (
-        "bookings has date columns of its own (booking_date) and columns holding keys of day "
-        "(ship_day_key). The draft dates its measures by booking_date, named after the booking "
-        "itself; the other dates stay times of the model, and ship_day_key stays unlinked here. "
-        "If the business reads these rows by another, mark that date `default: true` instead, "
-        "or link that key and list its clock in each measure's `times:`."
+    assert roles["options"] == [
+        {"column": "order_day_key", "entities": {"day": {"expr": "order_day_key"}}, "times": [ROLE]}
+    ]
+    for drafted in (orders, bookings):
+        draft = drafted["upsert_model"]
+        assert drafted["time_roles"]["status"] == "choose"
+        assert "entities" not in draft
+        assert all("default" not in spec for spec in draft["times"].values())
+        assert all("times" not in spec for spec in draft["measures"].values())
+
+
+def _calendar_with(tmp_path: Path, unknown: str) -> Path:
+    path = tmp_path / "dim.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(SEED)
+        conn.execute(f"INSERT INTO calendar VALUES {unknown}")
+    return path
+
+
+@pytest.mark.parametrize(
+    "unknown",
+    ["(-1, NULL)", "(-1, DATE '1900-01-01')", "(0, DATE '2024-06-30')"],
+    ids=["null-date", "date-1900", "key-zero"],
+)
+def test_a_calendar_with_an_unknown_member_row_still_dates_by_its_key(tmp_path, unknown):
+    """A date dimension's unknown member (-1 with no date, or 1900-01-01) is no day: the
+    calendar still reads one row per day, and a return is dated by its day key."""
+    with open_duckdb(_calendar_with(tmp_path, unknown)) as warehouse:
+        returns = suggest_model(warehouse, "returns", clocks=CLOCK)
+    assert (returns["time_roles"]["status"], returns["time_roles"]["default"]) == (
+        "default",
+        "return_day_key",
     )
-    assert bookings["upsert_model"]["times"]["booking_date"]["default"] is True
-    assert "entities" not in bookings["upsert_model"]
+    assert all(spec["times"] == [ROLE] for spec in returns["upsert_model"]["measures"].values())
+
+
+def test_a_second_table_of_one_row_per_day_makes_the_date_a_choice(tmp_path):
+    """Invoices hold a day key and the key of a daily exchange rate, whose table also reads one
+    row per day: no name settles which dates an invoice, so the draft dates none."""
+    path = tmp_path / "fx.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE fx_rates AS SELECT i::INTEGER AS fx_rate_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS rate_date, 1.1::DOUBLE AS rate
+              FROM range(1, 91) t(i);
+            CREATE TABLE invoices AS SELECT i AS invoice_id,
+              (30 + i)::INTEGER AS invoice_day_key, i::INTEGER AS fx_rate_key,
+              10.0 * i AS amount FROM range(1, 40) t(i);
+            """
+        )
+    fx = {
+        "entity": "fx_rate",
+        "relation": "fx_rates",
+        "key": "fx_rate_key",
+        "date_column": "rate_date",
+        "temporal_role": "temporal_role.shop_fx_rate_rate_date",
+    }
+    with open_duckdb(path) as warehouse:
+        invoices = suggest_model(warehouse, "invoices", clocks=[*CLOCK, fx])
+    roles = invoices["time_roles"]
+    assert (roles["status"], roles["candidates"]) == ("choose", ["invoice_day_key", "fx_rate_key"])
+    assert all("times" not in spec for spec in invoices["upsert_model"]["measures"].values())
 
 
 def test_a_date_that_is_also_a_calendar_key_is_one_candidate(tmp_path):
@@ -947,7 +1146,8 @@ def test_a_date_that_is_also_a_calendar_key_is_one_candidate(tmp_path):
 
 
 def test_the_reverse_of_a_one_to_many_link_reads_one_row():
-    """An invoice reads its one order through the order's one-to-many link to its invoices."""
+    """An invoice reads its one order through the order's one-to-many link to its invoices; an
+    order reads several invoices."""
     rel = SimpleNamespace(
         id="relationship.orders_invoices",
         source_entity="entity.order",
@@ -955,5 +1155,5 @@ def test_the_reverse_of_a_one_to_many_link_reads_one_row():
         cardinality="1:N",
     )
     config = SimpleNamespace(relationships=[rel])
-    assert _hops(config, "entity.invoice", [rel.id]) == (["entity.invoice", "entity.order"], [True])
-    assert _hops(config, "entity.order", [rel.id]) == (["entity.order", "entity.invoice"], [False])
+    assert _reads_one_row(config, "entity.invoice", [rel.id])
+    assert not _reads_one_row(config, "entity.order", [rel.id])
