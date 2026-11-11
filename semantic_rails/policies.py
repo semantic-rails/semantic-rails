@@ -1216,20 +1216,24 @@ def _share_violations(
                 return True
         return any(reads(child, seen) for child in _child_exprs(expr))
 
-    def shares(expr: Any, via: bool, seen: frozenset[str]) -> Iterator[tuple[ShareExpr, bool]]:
+    def shares(expr: Any, seen: frozenset[str]) -> Iterator[tuple[ShareExpr, frozenset[str]]]:
+        """Each share with the package metrics it is part of (``seen``)."""
         if isinstance(expr, ShareExpr):
-            yield expr, via
+            yield expr, seen
         if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
             recipe = recipes.get(expr.metric_recipe)
             if recipe is not None:
-                yield from shares(recipe.expression, True, seen | {expr.metric_recipe})
+                yield from shares(recipe.expression, seen | {expr.metric_recipe})
         for child in _child_exprs(expr):
-            yield from shares(child, via, seen)
+            yield from shares(child, seen)
 
     found: list[dict[str, Any]] = []
     for row in query.select:
-        for share, via_recipe in shares(row.expression, False, frozenset()):
-            if (row.as_ in checked and not via_recipe) or not reads(share.input):
+        for share, within in shares(row.expression, frozenset()):
+            if row.as_ in checked and not within:
+                continue
+            # A package metric reads every share in its definition.
+            if object_id not in within and not reads(share.input):
                 continue
             across = share_over(share.over, config)
             missing = [

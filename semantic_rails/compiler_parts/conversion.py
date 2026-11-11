@@ -955,8 +955,13 @@ def _conversion_leaf_cte(
             dimension_filter(dim_expr, str(item.field), item.op, item.value, config)
         )
     # Each operand's events are read at the call's grain under only the filters routed to it:
-    # the converted events skip the call's where on the base side's dimensions.
-    for side, source in (("base", base_source), ("converted", converted_source)):
+    # the converted events skip the call's where on the base side's dimensions. Each side reads
+    # its own operand (a package metric's included), never the other's.
+    for side, source, operand in (
+        ("base", base_source, expr.base),
+        ("converted", converted_source, expr.converted),
+    ):
+        recipe = {operand.metric_recipe} if isinstance(operand, MetricRecipeRefExpr) else set()
         record_inner_call(
             f"the conversion over {match_entity}",
             plan.group_by,
@@ -965,7 +970,8 @@ def _conversion_leaf_cte(
                 "where": side_where[side],
                 **({"time": dict(plan.time)} if plan.time else {}),
             },
-            {source["measure"].id},
+            {source["measure"].id, *recipe},
+            owned=False,
         )
 
     base_cte_name = f"conversion_base_{index + 1}"

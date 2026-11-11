@@ -26,8 +26,9 @@ import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.schema import MetricConfig, SemanticPolicyConfig
 from tests.semantic_rails import test_lookup_measures as lookups
 
 PACKAGE = "configs/semantic_rails/jaffle_shop"
@@ -352,6 +353,46 @@ def test_a_share_under_an_entity_filter_keeps_a_required_group(engine):
         "across them."
     )
     assert violations[0]["share"] == "share"
+
+
+def _with_metric(config: Any, metric_id: str, expression: dict[str, Any]) -> tuple[Any, str]:
+    """The package with one more package metric (in the package's own form)."""
+    parsed = parse_semantic_expression(expression, context="query")
+    metric = MetricConfig(id=metric_id, kind="derived", expression=parsed)
+    return replace(config, metric_recipes=[*config.metric_recipes, metric]), PACKAGE
+
+
+def test_a_policy_on_a_package_metric_covers_its_own_share(engine, config):
+    metric = "metric.test.store_revenue_share"
+    share = {"kind": "share", "input": {"kind": "measure", "measure": REVENUE}, "over": [STORE]}
+    package = _with_metric(config, metric, share)
+    runtime = engine({"required_group_by": [STORE]}, governed=metric, package=package)
+    message, _ = _refused(runtime, {"select": [metric], "group_by": [STORE]})
+    assert message == (
+        f"{metric} can only be read grouped by {STORE}, and the share in 'store_revenue_share' reads it "
+        "across them."
+    )
+
+
+def test_a_policy_on_a_conversion_operand_reads_only_its_own_side(engine, config):
+    brooklyn = {"field": STORE, "op": "is", "value": "Brooklyn"}
+    sessions = "metric.test.sessions"
+    package = _with_metric(config, sessions, {"kind": "measure", "measure": SESSIONS})
+    conversion = {
+        "kind": "conversion",
+        "entity": CUSTOMER,
+        "base": sessions,
+        "converted": ORDERS,
+        "window": {"unit": "day", "value": 7},
+        "matching_mode": "first_converted_after_base",
+    }
+    call = {"select": [{"expression": conversion, "as": "rate"}], "where": [brooklyn]}
+    # The base sessions are read where the store is Brooklyn; the converted orders are not.
+    _answers(engine({"required_where": [brooklyn]}, governed=sessions, package=package), call)
+    message, _ = _refused(
+        engine({"required_where": [brooklyn]}, governed=ORDERS, package=package), call
+    )
+    assert message.endswith(f"the conversion over {CUSTOMER} reads it without that filter.")
 
 
 # A lookup measure's per-parent values ---------------------------------------------------------

@@ -348,10 +348,16 @@ def recording_inner_call(group_by: Sequence[str], query: dict[str, Any]) -> Iter
 
 
 def record_inner_call(
-    inside: str, group_by: Sequence[str], query: dict[str, Any], objects: set[str]
+    inside: str,
+    group_by: Sequence[str],
+    query: dict[str, Any],
+    objects: set[str],
+    *,
+    owned: bool = True,
 ) -> None:
     """Record an inner call (see :class:`InnerCall`) reading ``objects`` and the package
-    metrics being lowered now."""
+    metrics being lowered now; ``owned`` False reads for no root leaf, so no package metric a
+    root leaf computes reads it unless it is in ``objects``."""
     dependencies = _active.get()
     if dependencies is not None:
         dependencies.inner_calls.append(
@@ -360,7 +366,7 @@ def record_inner_call(
                 tuple(group_by),
                 dict(query),
                 frozenset({*objects, *_recipes.get()}),
-                _cut_owners.get(),
+                _cut_owners.get() if owned else frozenset(),
             )
         )
 
