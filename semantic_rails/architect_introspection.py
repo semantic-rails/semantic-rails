@@ -934,6 +934,8 @@ def suggest_model(
     if clocks:
         with contextlib.suppress(_OutOfTime):  # out of time: no date key, as before
             keyed = _date_keys(warehouse, described, source, clocks)
+        # A date column that is also a calendar's key is one candidate: its own date.
+        keyed = [row for row in keyed if row["column"] not in {item["column"] for item in own}]
     time_roles, default_time = _time_roles(
         described["relation"], entity, own, keyed, dict(clock_links or {})
     )
@@ -1607,8 +1609,9 @@ def _names_key_part(column: str, key: str, entity: str) -> bool:
     """Whether ``column`` is named like one column of a composite key: named like ``key``
     (``_names_link``), or ending, without a key or number suffix of its own, in what the key
     column names (``claim_waybill`` for ``waybill_no``, ``sale_line_number`` for ``line_no``;
-    never ``line_qty``, a quantity that only starts like it)."""
-    if _names_link(column, key, entity):
+    never ``line_qty``, a quantity that only starts like it). The entity's own name with a key
+    suffix (``sale_id``) names its single key, never one part of a composite one."""
+    if _names_link(column, key):
         return True
     stem, own = _part_stem(key), _part_stem(column)
     return stem not in _GENERIC_KEYS and (own == stem or own.endswith(f"_{stem}"))

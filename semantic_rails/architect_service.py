@@ -3220,7 +3220,7 @@ def _hops(config: Any, start: str, path: list[str]) -> tuple[list[str], list[boo
         if rel is None:
             return None
         forward = rel.source_entity == stops[-1]
-        to_one.append(rel.cardinality == "1:1" or (forward and rel.cardinality == "N:1"))
+        to_one.append(rel.cardinality == ("N:1" if forward else "1:N") or rel.cardinality == "1:1")
         stops.append(rel.target_entity if forward else rel.source_entity)
     return stops, to_one
 

@@ -31,7 +31,7 @@ from semantic_rails.architect_introspection import (
     suggest_model,
 )
 from semantic_rails.architect_mcp import create_architect_mcp_server
-from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.architect_service import ArchitectProject, _hops
 from semantic_rails.cli.scaffold import create_project_report
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.diagnostics import recovery_hints_for_error
@@ -737,8 +737,9 @@ def test_a_composite_reference_unique_today_is_many_to_one_unless_it_is_the_row_
 
 
 def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
-    """A return's line quantity (1 or 2) finds line 1 or 2 of every order, and a return line's
-    own line number finds a line of the order it names: neither is proposed as the sale line."""
+    """A return's line quantity (1 or 2) finds line 1 or 2 of every order, a return line's own
+    line number finds a line of the order it names, and a sale id of 1 to 3 finds lines 1 to 3:
+    none is proposed as the sale line."""
     path = _warehouse(tmp_path)
     with duckdb.connect(str(path)) as conn:
         conn.execute(
@@ -754,6 +755,9 @@ def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
                    sale_order_id, sale_line_no, refund_amount
             FROM returns WHERE return_id < 1000;
             ALTER TABLE return_lines ADD PRIMARY KEY (return_no, line_no);
+            CREATE TABLE id_returns AS
+            SELECT return_id, sale_order_id, sale_line_no AS sale_id, refund_amount
+            FROM returns WHERE return_id < 1000;
             """
         )
     target = [{"relation": "sales", "key": ["order_id", "line_no"], "entity": "sale"}]
@@ -762,7 +766,10 @@ def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
             warehouse, "quantity_returns", targets=target, from_entity="return"
         )
         lines = suggest_links(warehouse, "return_lines", targets=target, from_entity="return_line")
+        ids = suggest_links(warehouse, "id_returns", targets=target, from_entity="return")
     assert quantities["proposals"] == quantities["below_threshold"] == []
+    # sale_id names a sale's single key, never its line number.
+    assert ids["proposals"] == ids["below_threshold"] == []
     (proposal,) = lines["proposals"]
     assert proposal["columns"] == ["sale_order_id", "sale_line_no"]
     assert "choice" not in proposal and "name" not in proposal["upsert_relationship"]
@@ -910,3 +917,43 @@ def test_a_calendar_key_is_weighed_beside_an_own_timestamp(tmp_path):
     )
     assert bookings["upsert_model"]["times"]["booking_date"]["default"] is True
     assert "entities" not in bookings["upsert_model"]
+
+
+def test_a_date_that_is_also_a_calendar_key_is_one_candidate(tmp_path):
+    """A calendar keyed by its date: an order's order_date is its own date and that key at once,
+    so it stays the one default, with no choice to state."""
+    path = tmp_path / "dates.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar_dates AS SELECT DATE '2025-01-01' + i::INTEGER AS date
+            FROM range(0, 90) t(i);
+            CREATE TABLE orders AS SELECT i AS order_id, DATE '2025-01-01' + i::INTEGER
+              AS order_date, 1.0 * i AS amount FROM range(1, 40) t(i);
+            ALTER TABLE orders ADD PRIMARY KEY (order_id);
+            """
+        )
+    clock = {
+        "entity": "day",
+        "relation": "calendar_dates",
+        "key": "date",
+        "date_column": "date",
+        "temporal_role": ROLE,
+    }
+    with open_duckdb(path) as warehouse:
+        orders = suggest_model(warehouse, "orders", clocks=[clock])
+    assert "time_roles" not in orders
+    assert orders["upsert_model"]["times"]["order_date"]["default"] is True
+
+
+def test_the_reverse_of_a_one_to_many_link_reads_one_row():
+    """An invoice reads its one order through the order's one-to-many link to its invoices."""
+    rel = SimpleNamespace(
+        id="relationship.orders_invoices",
+        source_entity="entity.order",
+        target_entity="entity.invoice",
+        cardinality="1:N",
+    )
+    config = SimpleNamespace(relationships=[rel])
+    assert _hops(config, "entity.invoice", [rel.id]) == (["entity.invoice", "entity.order"], [True])
+    assert _hops(config, "entity.order", [rel.id]) == (["entity.order", "entity.invoice"], [False])
