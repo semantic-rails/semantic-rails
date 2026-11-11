@@ -64,19 +64,19 @@ wheels = [
 
 [[package]]
 name = "adbc-driver-postgresql"
-version = "1.12.0"
+version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "adbc-driver-manager" },
-    { name = "importlib-resources" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/9e/cc757dfc1bb5472e35bf066ee4044f6b101bef61036512e8dfb4e97e7e08/adbc_driver_postgresql-1.12.0.tar.gz", hash = "sha256:766a002531bb99b691d2b92e7d928dea21c24ea567c03a6ee1edb61fe95b9187", size = 17793, upload-time = "2026-07-28T00:43:04.481Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/8c/34d8bb83444f7ee193ed8d90a59f263ffa1dffa65e4b49c64ebc556b0455/adbc_driver_postgresql-1.13.0.tar.gz", hash = "sha256:ecebbf32e4841d4874229614c98f7dcf60ec657882641d6cb20cd54b2a7423bf", size = 18532, upload-time = "2026-10-26T06:33:37.032Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7d/ba/152bbe1d4a1cc13e2da72e76a5045ee25338bc75294f1ebf04c90b787287/adbc_driver_postgresql-1.12.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:28548d9e16497d2cb4750bc8e9e1abad3d0f981c7c0ff7afe70323f4b71c70aa", size = 3068434, upload-time = "2026-07-28T00:42:43.495Z" },
-    { url = "https://files.pythonhosted.org/packages/2f/d3/f17e69423ed7217b70155d8e531c5cf6fb74f3b598a583e6cfe541dc3e7e/adbc_driver_postgresql-1.12.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:03c617aee8796f38a0a2f1af50ceae92d40f0974f3abbe7eefbaf009fecdc5ce", size = 3337707, upload-time = "2026-07-28T00:42:45.568Z" },
-    { url = "https://files.pythonhosted.org/packages/93/60/3b018e75661ac14a7aab7bb5cc1a95d72ddb9684abaee1e88a685406df81/adbc_driver_postgresql-1.12.0-py3-none-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b523f15051b27eef18c3a822296c2d94b894be552a0dbe49fe14059e2c706155", size = 3822540, upload-time = "2026-07-28T00:42:47.619Z" },
-    { url = "https://files.pythonhosted.org/packages/00/bb/ee19e7d56824c05892f82a3a2abca94fd2345b7de3dc22baac9e65a46acc/adbc_driver_postgresql-1.12.0-py3-none-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2c2dc9c29db07ba3e0caf293c57a7ab1259dd772d3725ff1f1aeedb7a1895dd4", size = 3512701, upload-time = "2026-07-28T00:42:49.519Z" },
-    { url = "https://files.pythonhosted.org/packages/9d/02/7aa782cbb0134b09d1e67757c81332e0cd5e5697beecc8852468482193b0/adbc_driver_postgresql-1.12.0-py3-none-win_amd64.whl", hash = "sha256:5a3b5262eed6f28fb4c782b532e6a65caed1f2268fab7be736335ead49eed9dc", size = 3207946, upload-time = "2026-07-28T00:42:51.543Z" },
+    { url = "https://files.pythonhosted.org/packages/25/3c/9f62b28e0a61e0af885e5e7271a78fc899dac3e9641c42aab01f7fe716bb/adbc_driver_postgresql-1.13.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:12fd64bf6ec16705d30d26c38ac2cc47fe8c7006ac2902c43234d61cb6ae8a43", size = 3076900, upload-time = "2026-10-26T06:33:10.567Z" },
+    { url = "https://files.pythonhosted.org/packages/04/2f/79e0e9b471293320a79805a6dd77199ceaf8d73789dce35af5959b2db778/adbc_driver_postgresql-1.13.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:7981ae7c5ecd7ba4c649cd00a96e81cf0e39475d3fa472901c5fd19b4e9de4a8", size = 3348673, upload-time = "2026-10-26T06:33:12.998Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/07/3c6c59a60fb423df8e5912f6442c1c2a0a966d5a0b8dc82de0807b8256d2/adbc_driver_postgresql-1.13.0-py3-none-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f2f3c51076fc27ba768bad2dc4cc3888655ac719473aa7d933b2813860491014", size = 3871372, upload-time = "2026-10-26T06:33:16.163Z" },
+    { url = "https://files.pythonhosted.org/packages/37/6b/dd22c016305e84b8b9959784e77bbd20c454bd82463dc8de5a839abde206/adbc_driver_postgresql-1.13.0-py3-none-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a86819ba7c79b1d067c4a5344358b4d346bab58e888d7879ed2b25d97cc59ba1", size = 3560463, upload-time = "2026-10-26T06:33:18.309Z" },
+    { url = "https://files.pythonhosted.org/packages/82/8f/519def2e78e435139de9de645933cfcfe38ca997193d5d23365406d228b8/adbc_driver_postgresql-1.13.0-py3-none-win_amd64.whl", hash = "sha256:c97a0b71e7205b7aac7f8bcd85a41280ef56e2d788110d2572c52ac3d447e25d", size = 3111598, upload-time = "2026-10-26T06:33:20.149Z" },
+    { url = "https://files.pythonhosted.org/packages/21/d6/7e0176a984252e22f1428b8e9d5cce9b201ad521f424be40f2ac048fb37c/adbc_driver_postgresql-1.13.0-py3-none-win_arm64.whl", hash = "sha256:ed770fddf8b5fedf98e36b728224f1a5df3c0e1daaea1abc6feb41a765c7aa79", size = 3414650, upload-time = "2026-10-26T06:33:22.199Z" },
 ]
 
 [[package]]
@@ -1097,15 +1097,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/82/77/7b3966d0b9d1d31a36ddf1746926a11dface89a83409bf1483f0237aa758/idna-3.15.tar.gz", hash = "sha256:ca962446ea538f7092a95e057da437618e886f4d349216d2b1e294abfdb65fdc", size = 199245, upload-time = "2026-05-12T22:45:57.011Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/23/408243171aa9aaba178d3e2559159c24c1171a641aa83b67bdd3394ead8e/idna-3.15-py3-none-any.whl", hash = "sha256:048adeaf8c2d788c40fee287673ccaa74c24ffd8dcf09ffa555a2fbb59f10ac8", size = 72340, upload-time = "2026-05-12T22:45:55.733Z" },
-]
-
-[[package]]
-name = "importlib-resources"
-version = "7.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e4/06/b56dfa750b44e86157093bc8fca0ab81dccbf5260510de4eaf1cb69b5b99/importlib_resources-7.1.0.tar.gz", hash = "sha256:0722d4c6212489c530f2a145a34c0a7a3b4721bc96a15fada5930e2a0b760708", size = 44985, upload-time = "2026-04-12T16:36:09.232Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl", hash = "sha256:1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1", size = 37232, upload-time = "2026-04-12T16:36:08.219Z" },
 ]
 
 [[package]]
@@ -2660,8 +2651,8 @@ requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'all'", specifier = "==1.13.0" },
     { name = "adbc-driver-manager", marker = "extra == 'postgres'", specifier = "==1.13.0" },
     { name = "adbc-driver-manager", marker = "extra == 'snowflake-adbc'", specifier = "==1.13.0" },
-    { name = "adbc-driver-postgresql", marker = "extra == 'all'", specifier = "==1.12.0" },
-    { name = "adbc-driver-postgresql", marker = "extra == 'postgres'", specifier = "==1.12.0" },
+    { name = "adbc-driver-postgresql", marker = "extra == 'all'", specifier = "==1.13.0" },
+    { name = "adbc-driver-postgresql", marker = "extra == 'postgres'", specifier = "==1.13.0" },
     { name = "clickhouse-connect", marker = "extra == 'all'", specifier = ">=1.3.0" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=1.3.0" },
     { name = "databricks-sql-connector", marker = "extra == 'all'", specifier = ">=4.3.0" },
