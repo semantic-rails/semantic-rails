@@ -792,15 +792,14 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
         ).report
         assert report["ok"] is True, report
         assert report["route_decisions_added"] == []
-        select = "a.airport_code, SUM(l.seats)" if grouped else "SUM(l.seats)"
-        tail = "GROUP BY a.airport_code" if grouped else "WHERE a.airport_code = 'SFO'"
-        gold = set(
-            connection.execute(
-                f"SELECT {select} FROM legs l LEFT JOIN airports a "
-                f"ON a.airport_code = l.{role}_code {tail}"
-            ).fetchall()
-        )
+        # The key reads the leg's column of the recorded role, as a single role reads it: kept,
+        # the destination role moves no answer; switched, the origin's codes answer.
+        select = f"l.{role}_code, SUM(l.seats)" if grouped else "SUM(l.seats)"
+        tail = f"GROUP BY l.{role}_code" if grouped else f"WHERE l.{role}_code = 'SFO'"
+        gold = set(connection.execute(f"SELECT {select} FROM legs l {tail}").fetchall())
         assert answer() == gold
+        if role == "destination":
+            assert gold == base_gold
 
 
 def test_a_change_that_moves_no_answer_records_nothing(tmp_path):
