@@ -370,6 +370,59 @@ def test_a_statistic_of_single_orders_or_snapshots_is_refused(engine):
     assert message.startswith(f"{LIFETIME_SPEND} can't be grouped by {CUSTOMER_ID}, as the max")
 
 
+@pytest.mark.parametrize(("measure", "aggregation"), [(REVENUE, "max"), (f" {REVENUE} ", " max ")])
+def test_a_statistic_inside_an_entity_filter_is_refused_however_it_is_spelled(
+    engine, measure, aggregation
+):
+    # Each customer's largest order, as a threshold: one order's revenue.
+    statistic = {"kind": "measure", "measure": measure, "aggregation": aggregation}
+    predicate = {"entity": CUSTOMER, "input": statistic, "op": "gte", "value": 100}
+    scoped = {
+        "kind": "scoped_aggregate",
+        "measure": ORDERS,
+        "predicates": [{**predicate, "over": "all_time"}],
+    }
+    call = {"select": [{"expression": scoped, "as": "v"}], "group_by": [CUSTOMER_ID]}
+    message, _ = _refused(engine({"allowed_group_by": [CUSTOMER_ID]}), call)
+    assert message.startswith(
+        f"{REVENUE} can't be grouped by {ORDER_ID}, as the max over entity.jaffle_order's rows"
+    )
+
+
+INVENTORY = "measure.jaffle.inventory_on_hand_eop"
+SNAPSHOT = "entity.jaffle_store_inventory_snapshot"
+SNAPSHOT_STORE = "dimension.jaffle_store_inventory_snapshot_store_id"
+
+
+def test_a_stock_statistic_keeps_every_series_column_but_its_own_clock(engine, config):
+    # A cohort day with a clock of its own splits each store's series: it is not this clock.
+    day = next(row for row in config.dimensions if row.id == "dimension.jaffle_inventory_date_day")
+    clock = next(row for row in config.temporal_roles if row.dimension == day.id)
+    cohort = replace(day, id="dimension.jaffle_inventory_cohort_day", column="cohort_day")
+    cohorts = replace(
+        config,
+        dimensions=[*config.dimensions, cohort],
+        temporal_roles=[
+            *config.temporal_roles,
+            replace(clock, id="temporal_role.jaffle_inventory_cohort", dimension=cohort.id),
+        ],
+        measures=[
+            replace(row, row_grain=["store_id", "cohort_day", "date_day"])
+            if row.id == INVENTORY
+            else row
+            for row in config.measures
+        ],
+    )
+    call = {**_statistic("max", measure=INVENTORY), "group_by": [SNAPSHOT_STORE]}
+    by_store = {"allowed_group_by": [SNAPSHOT_STORE]}
+    message, _ = _refused(engine(by_store, governed=INVENTORY, package=(cohorts, PACKAGE)), call)
+    assert message.startswith(
+        f"{INVENTORY} can't be grouped by {cohort.id}, as the max over {SNAPSHOT}'s rows"
+    )
+    # Its own clock orders the snapshots of one series: the store is the whole series key.
+    _answers(engine(by_store, governed=INVENTORY), call)
+
+
 def test_a_conditional_statistic_over_the_measure_columns_is_refused(engine):
     total = {"kind": "column", "entity": "entity.jaffle_order", "column": "order_total_cents"}
     call = {
@@ -391,6 +444,22 @@ def test_a_conditional_statistic_over_the_measure_columns_is_refused(engine):
     summed = {"kind": "aggregate_if", "aggregation": "sum", "value": total}
     answered = engine(BY_STORE).validate_internal(
         {**call, "select": [{"expression": summed, "as": "v"}]}
+    )
+    assert not answered.get("errors"), answered
+    # The largest of a literal says only whether an order matched, as a count would.
+    flag = {
+        "kind": "aggregate_if",
+        "aggregation": "max",
+        "condition": {
+            "kind": "comparison",
+            "op": ">",
+            "left": total,
+            "right": {"kind": "literal", "value": 0},
+        },
+        "value": {"kind": "literal", "value": 1},
+    }
+    answered = engine(BY_STORE).validate_internal(
+        {**call, "select": [{"expression": flag, "as": "v"}]}
     )
     assert not answered.get("errors"), answered
 
@@ -420,8 +489,16 @@ def test_a_statistic_that_returns_no_single_row_or_an_allowed_one_answers(engine
     _answers(runtime, _statistic("sum"))
     by_key = {"allowed_group_by": [CUSTOMER_TYPE, CUSTOMER_ID]}
     _answers(engine(by_key, governed=LIFETIME_ORDERS), _statistic("max"))
-    # Another measure's statistic reads nothing of this one.
+    # Another measure's statistic reads nothing of this one, and a literal's value is data.
     _answers(runtime, _statistic("max", measure=REVENUE))
+    spec = {"kind": "literal", "value": {"measure": LIFETIME_ORDERS, "aggregation": "max"}}
+    _answers(
+        runtime,
+        {
+            "select": [LIFETIME_ORDERS, {"expression": spec, "as": "spec"}],
+            "group_by": [CUSTOMER_TYPE],
+        },
+    )
     # The package's own aggregation is its author's definition.
     authored = replace(
         config,

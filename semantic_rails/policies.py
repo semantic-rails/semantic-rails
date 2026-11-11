@@ -1221,19 +1221,29 @@ def _row_statistics(
     measure is grouped by its row key, one row's value per group. ``grain`` names each key
     column with the dimensions over it (the entity itself when there are none); a stock's rows
     are its series' snapshots, so its key is the series key. A caller's aggregate over columns
-    has no aggregation of its own; a package metric's are its author's definition."""
+    has no aggregation of its own (it returns rows' values when its value reads a column); a
+    package metric's are its author's definition."""
     config = binding.config
     synthetic = binding.plan.synthetic_measures.get(object_id)
     measure = synthetic or next((row for row in config.measures if row.id == object_id), None)
     if measure is None:
         return []
     if synthetic is not None:
-        aggregations = [synthetic.default_aggregation]
+        body = synthetic.expr
+        values = (
+            [*(when.then for when in body.whens), body.else_expr]
+            if isinstance(body, CaseExpr)
+            else [body]
+        )
+        # A literal under a condition (``max`` of 1) says only whether a row matched.
+        reads = any(collect_column_refs(value) for value in values if value is not None)
+        aggregations = [synthetic.default_aggregation] if reads else []
     else:
+        # Stripped as the parser strips them, which reads a nested predicate's input later.
         aggregations = [
-            str(node.get("aggregation") or "")
+            str(node.get("aggregation") or "").strip().lower()
             for node in _measure_nodes(binding.plan.query)
-            if node.get("measure") == object_id
+            if str(node["measure"]).strip() == object_id
         ]
     picked = [
         aggregation
@@ -1246,13 +1256,18 @@ def _row_statistics(
     columns = _stock_row_key(measure, config)
     stock = measure.measure_class == "semi_additive"
     if stock:
+        # Each clock the call reads it on orders its snapshots: the series key is the row key
+        # without that clock's column (``_snapshot_series_columns``), across every such clock.
         dimensions = {row.id: row for row in config.dimensions}
-        clocks = {
-            dimensions[role.dimension].column
-            for role in config.temporal_roles
-            if role.dimension in dimensions and dimensions[role.dimension].entity == measure.entity
-        }
-        columns = [column for column in columns if column not in clocks]
+        roles = {row.id: row for row in config.temporal_roles}
+        series: list[str] = []
+        for role_id in sorted(binding.temporal_roles.get(object_id) or ()) or [
+            measure.default_temporal_role
+        ]:
+            role = roles.get(role_id)
+            clock = dimensions.get(role.dimension) if role is not None else None
+            series.extend(column for column in columns if clock is None or column != clock.column)
+        columns = list(dict.fromkeys(series))
     grain: list[tuple[str, list[str]]] = []
     for column in columns:
         over = sorted(
@@ -1269,11 +1284,12 @@ def _row_statistics(
 
 def _measure_nodes(node: Any) -> Iterator[Mapping[str, Any]]:
     """Every measure read a call writes, at any depth (a distribution's input, ``having``,
-    an entity filter's input included)."""
+    an entity filter's input included); a literal's value is data."""
     if isinstance(node, Mapping):
-        if isinstance(node.get("measure"), str) and str(node.get("kind") or "") in (
-            _MEASURE_NODE_KINDS
-        ):
+        kind = str(node.get("kind") or "").strip()
+        if kind == "literal":
+            return
+        if isinstance(node.get("measure"), str) and kind in _MEASURE_NODE_KINDS:
             yield node
         for value in node.values():
             yield from _measure_nodes(value)
