@@ -15,7 +15,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -1614,14 +1614,33 @@ class ArchitectProject:
                 )
                 base = load_package_snapshot(str(self.project_path)).config
                 changed = self._proposed_config(transaction, updates)
+                # A route through a lookup's other rows (a return to its sale through their
+                # shared day) reads no one row of its target: it is no answer to keep. Where
+                # the change answers that pair by another route, that route is recorded.
+                moved = [
+                    change
+                    for change in route_changes(base, changed)
+                    if "relationship_path" in change["base"]
+                ]
+                replaced = {
+                    (change["source_entity"], change["target_entity"]): path
+                    for change in moved
+                    if _crosses_a_lookup(
+                        base, change["source_entity"], change["base"]["relationship_path"]
+                    )
+                    and (path := _route_past_lookups(changed, change))
+                }
+                released = set(replaced)
                 rows = [
                     {
                         "source_entity": change["source_entity"],
                         "target_entity": change["target_entity"],
-                        "relationship_path": change["base"]["relationship_path"],
+                        "relationship_path": replaced.get(
+                            (change["source_entity"], change["target_entity"]),
+                            change["base"]["relationship_path"],
+                        ),
                     }
-                    for change in route_changes(base, changed)
-                    if "relationship_path" in change["base"]
+                    for change in moved
                 ]
                 assumed = {
                     (row["source_entity"], row["target_entity"])
@@ -1647,6 +1666,7 @@ class ArchitectProject:
                     change
                     for change in route_changes(base, final)
                     if "refused" not in change["base"]
+                    and (change["source_entity"], change["target_entity"]) not in released
                 ]
                 pin_changes = route_changes(changed, final)
                 base_outcomes = resolve_pairs(
@@ -1667,6 +1687,15 @@ class ArchitectProject:
                         details={"route_changes": remaining},
                     )
                 metadata["kept_route_decisions"] = rows
+                if replaced:
+                    metadata["replaced_lookup_routes"] = [
+                        {
+                            "source_entity": pair[0],
+                            "target_entity": pair[1],
+                            "relationship_path": path,
+                        }
+                        for pair, path in replaced.items()
+                    ]
             return updates, None
 
         metadata: dict[str, Any] = {
@@ -2558,6 +2587,13 @@ class ArchitectProject:
         package = dict(package_doc.get("package", {}) or {})
         return str(package.get("namespace") or package.get("id") or self.project_path.name)
 
+    def _raw_graph(self) -> dict[str, Any]:
+        """The package's ``graph`` block, from ``graph.yml`` or else ``package.yml``."""
+        graph_path = self._target_path("graph.yml")
+        if graph_path.exists():
+            return dict(_yaml_load(graph_path).get("graph", {}) or {})
+        return dict(_yaml_load(self._target_path("package.yml")).get("graph", {}) or {})
+
     def _raw_inventory(self) -> dict[str, list[_RawObject]]:
         package_path = self._target_path("package.yml")
         package_doc = _yaml_load(package_path)
@@ -2809,11 +2845,53 @@ class ArchitectProject:
         taken = {row.key for row in raw["entities"]} | {row.key for row in raw["models"]}
         return {"taken": frozenset(taken), "link_model": link, "parents": parents}
 
+    def clock_context(self, relation: str) -> dict[str, Any]:
+        """What ``suggest_model`` reads from the package for ``relation``: each entity with a
+        one-column key whose model has a default time that is no as-of clock, with that
+        model's relation and the time's role (``clocks``); and the clock entities the model
+        over ``relation`` already links, by the column it links each with (``clock_links``)."""
+        raw = self._raw_inventory()
+        models = {row.key: row for row in raw["models"]}
+        clocks: list[dict[str, str]] = []
+        for time_row in raw["times"]:
+            model = models.get(str(time_row.model_key))
+            if (
+                model is None
+                or time_row.spec.get("default") is not True
+                or time_row.spec.get("class") == "as_of_time"
+            ):
+                continue
+            entity = self._find_raw(
+                raw["entities"], self._primary_entity_for_model(model, raw["entities"])
+            )
+            keys = _as_list(entity.spec.get("key")) if entity is not None else []
+            if entity is not None and len(keys) == 1:
+                clocks.append(
+                    {
+                        "entity": entity.key,
+                        "relation": str(model.spec.get("relation")),
+                        "key": str(keys[0]),
+                        "temporal_role": time_row.object_id,
+                    }
+                )
+        place = _relation_place(relation)
+        clock_links: dict[str, str] = {}
+        for model in raw["models"]:
+            if _relation_place(model.spec.get("relation")) != place:
+                continue
+            for name, spec in dict(model.spec.get("entities") or {}).items():
+                clock = next((row for row in clocks if row["entity"] == name), None)
+                if clock is not None:
+                    columns = _as_list(dict(spec or {}).get("expr")) or [clock["key"]]
+                    clock_links[str(name)] = str(columns[0])
+        return {"clocks": clocks, "clock_links": clock_links}
+
     def link_context(self, relation: str) -> dict[str, Any]:
         """What ``suggest_links`` reads from the package for ``relation``: each entity with a
-        one-column key, with its model's relation (``targets``); the entity homed on a model over
-        ``relation``, else the row-grain model over it, that a link starts from
-        (``from_entity``); and the entities that model already links to (``linked``)."""
+        key, with its model's relation (``targets``; a composite key as a list); the entity homed
+        on a model over ``relation``, else the row-grain model over it, that a link starts from
+        (``from_entity``); and the entities it already links to (``linked``), in its model's
+        ``entities`` or by a ``graph.relationships`` entry from it."""
         raw = self._raw_inventory()
 
         models = {row.key: row for row in raw["models"]}
@@ -2825,11 +2903,11 @@ class ArchitectProject:
             if model is None:
                 continue
             homed.setdefault(_relation_place(model.spec.get("relation")), (row.key, model))
-            if len(keys) == 1:
+            if keys:
                 targets.append(
                     {
                         "relation": str(model.spec.get("relation")),
-                        "key": str(keys[0]),
+                        "key": str(keys[0]) if len(keys) == 1 else [str(key) for key in keys],
                         "entity": row.key,
                     }
                 )
@@ -2846,6 +2924,14 @@ class ArchitectProject:
             )
         from_entity, model = start if start is not None else ("", None)
         linked = set(dict(model.spec.get("entities") or {})) if model is not None else set()
+        if from_entity:
+            linked |= {
+                str(pair[1])
+                for entry in dict(self._raw_graph().get("relationships") or {}).values()
+                if isinstance(entry, dict)
+                and len(pair := _as_list(entry.get("entities"))) == 2
+                and pair[0] == from_entity
+            }
         return {"targets": targets, "from_entity": from_entity, "linked": frozenset(linked)}
 
     def _entity_names(
@@ -2961,6 +3047,44 @@ class ArchitectProject:
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.project_path).as_posix()
+
+
+def _route_past_lookups(config: Any, change: dict[str, Any]) -> list[str]:
+    """The one route ``config`` has for a moved pair that crosses no lookup's other rows: its
+    resolved route, or the one such option its route question offers; else none."""
+    start = change["source_entity"]
+    if "relationship_path" in change["head"]:
+        path = list(change["head"]["relationship_path"])
+        return [] if _crosses_a_lookup(config, start, path) else path
+    pair = (start, change["target_entity"])
+    outcome = resolve_pairs(config, [pair])[pair]
+    clarification = dict(dict(outcome.details or {}).get("clarification") or {})
+    options = [
+        list(option.get("relationship_path") or [])
+        for option in clarification.get("options") or []
+        if isinstance(option, dict)
+    ]
+    clear = [path for path in options if path and not _crosses_a_lookup(config, start, path)]
+    return clear[0] if len(clear) == 1 else []
+
+
+def _crosses_a_lookup(config: Any, start: str, path: Iterable[str]) -> bool:
+    """Whether ``path`` from ``start`` reaches its target through a lookup's other rows: a
+    to-one hop and, after it, a hop to many (a return to the sales of its day). Such a route is
+    many-to-many, so it names no one row of the target."""
+    relationships = {row.id: row for row in config.relationships}
+    current, looked_up = start, False
+    for rel_id in path:
+        rel = relationships.get(rel_id)
+        if rel is None:
+            return False
+        forward = rel.source_entity == current
+        to_one = rel.cardinality == "1:1" or (forward and rel.cardinality == "N:1")
+        if not to_one and looked_up:
+            return True
+        looked_up = looked_up or to_one
+        current = rel.target_entity if forward else rel.source_entity
+    return False
 
 
 def _taken_role(
