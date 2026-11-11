@@ -2197,7 +2197,9 @@ def create_architect_mcp_server(
             "columns as its via: a second role on the pair (a buyer and a seller), or that role "
             "again; a pair with two roles needs it."
             " Set keep_existing_routes=true to record every moved pair's previous route "
-            "in this transaction; otherwise unrecorded route changes refuse the write."
+            "in this transaction; otherwise unrecorded route changes refuse the write. With it, "
+            "prefer_this_link=true makes the new link the route between its two entities where "
+            "they met before through other entities' rows (two facts through a shared day)."
         ),
     )
     def upsert_relationship(
@@ -2210,6 +2212,7 @@ def create_architect_mcp_server(
         cardinality: str = "many_to_one",
         name: str = "",
         keep_existing_routes: bool = False,
+        prefer_this_link: bool = False,
         dry_run: bool = False,
         full_report: FullReport = False,
     ) -> ArchitectMutationResult:
@@ -2223,6 +2226,7 @@ def create_architect_mcp_server(
                     cardinality=cardinality,
                     name=name,
                     keep_existing_routes=keep_existing_routes,
+                    prefer_this_link=prefer_this_link,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

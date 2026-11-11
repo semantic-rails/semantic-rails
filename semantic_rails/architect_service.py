@@ -1420,6 +1420,7 @@ class ArchitectProject:
         cardinality: str = "many_to_one",
         name: str = "",
         keep_existing_routes: bool = False,
+        prefer_this_link: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -1439,7 +1440,11 @@ class ArchitectProject:
         again. The project is checked under the transaction lock,
         after receipt replay and the revision check. ``keep_existing_routes=True``
         records each moved pair's previous path in the same transaction and refuses
-        if any previous route outcome (including a refusal) would still change.
+        if any previous route outcome (including a refusal) would still change. With it,
+        ``prefer_this_link=True`` records the new link as the route between its two entities
+        instead, both ways, where they met before through other entities' rows (a return and
+        its sale through their shared day), and every other moved pair keeps its route,
+        walking the link wherever that route went between the two.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
@@ -1553,7 +1558,7 @@ class ArchitectProject:
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
                 if graph_path != model_row.source_path:
                     documents.pop(model_row.source_path)
-                return keep_routes(self._file_updates(documents))
+                return keep_routes(self._file_updates(documents), target_row.object_id)
             # Keep the source first for readability; the loader resolves its primary identity.
             # A row-grain model lists only its parents.
             own = {} if src in row_grain else {src: entities.get(src) or {}}
@@ -1604,33 +1609,32 @@ class ArchitectProject:
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
             elif graph_path != model_row.source_path:
                 documents.pop(graph_path)
-            return keep_routes(self._file_updates(documents))
+            return keep_routes(self._file_updates(documents), target_row.object_id)
 
-        def keep_routes(updates: list[ProjectFileUpdate]) -> tuple[list[ProjectFileUpdate], None]:
+        def keep_routes(
+            updates: list[ProjectFileUpdate], target_id: str
+        ) -> tuple[list[ProjectFileUpdate], None]:
             """``updates``, plus a row for each pair whose route they move, when asked to keep."""
-            if keep_existing_routes:
+            if keep_existing_routes or prefer_this_link:
                 transaction = ProjectTransaction(
                     self.project_path, workspace_root=self.workspace_root
                 )
                 base = load_package_snapshot(str(self.project_path)).config
                 changed = self._proposed_config(transaction, updates)
-                # A route through a lookup's other rows (a return to its sale through their
-                # shared day) reads no one row of its target: it is no answer to keep. Where
-                # the change answers that pair by another route, that route is recorded.
                 moved = [
                     change
                     for change in route_changes(base, changed)
                     if "relationship_path" in change["base"]
                 ]
+                # With prefer_this_link, the link is the route between its two entities, both
+                # ways; a kept route that went between them another way walks the link instead.
+                link = _written_link(changed, target_id, foreign_key, role)
                 replaced = {
                     (change["source_entity"], change["target_entity"]): path
-                    for change in moved
-                    if _crosses_a_lookup(
-                        base, change["source_entity"], change["base"]["relationship_path"]
-                    )
-                    and (path := _route_past_lookups(changed, change))
+                    for change in (moved if prefer_this_link and link else [])
+                    if (path := _through_link(changed, change, link))
+                    != change["base"]["relationship_path"]
                 }
-                released = set(replaced)
                 rows = [
                     {
                         "source_entity": change["source_entity"],
@@ -1666,7 +1670,7 @@ class ArchitectProject:
                     change
                     for change in route_changes(base, final)
                     if "refused" not in change["base"]
-                    and (change["source_entity"], change["target_entity"]) not in released
+                    and (change["source_entity"], change["target_entity"]) not in replaced
                 ]
                 pin_changes = route_changes(changed, final)
                 base_outcomes = resolve_pairs(
@@ -1688,13 +1692,8 @@ class ArchitectProject:
                     )
                 metadata["kept_route_decisions"] = rows
                 if replaced:
-                    metadata["replaced_lookup_routes"] = [
-                        {
-                            "source_entity": pair[0],
-                            "target_entity": pair[1],
-                            "relationship_path": path,
-                        }
-                        for pair, path in replaced.items()
+                    metadata["routes_by_this_link"] = [
+                        {"source_entity": pair[0], "target_entity": pair[1]} for pair in replaced
                     ]
             return updates, None
 
@@ -1707,31 +1706,71 @@ class ArchitectProject:
                 **({"name": role} if role else {}),
             }
         }
-        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
-            (),
-            expected_revision=expected,
-            idempotency_key=key,
-            intent={
-                "operation": "upsert_relationship",
-                "expected_revision": expected,
-                "from_entity": source,
-                "to_entity": target,
-                "columns": foreign_key,
-                "cardinality": kind,
-                **({"name": role} if role else {}),
-                **({"keep_existing_routes": True} if keep_existing_routes else {}),
-            },
-            dry_run=dry_run,
-            validate_after=validate_after,
-            success_status="upserted",
-            metadata=metadata,
-            prepare_updates=prepare,
-        )
+        try:
+            outcome = ProjectTransaction(
+                self.project_path, workspace_root=self.workspace_root
+            ).apply(
+                (),
+                expected_revision=expected,
+                idempotency_key=key,
+                intent={
+                    "operation": "upsert_relationship",
+                    "expected_revision": expected,
+                    "from_entity": source,
+                    "to_entity": target,
+                    "columns": foreign_key,
+                    "cardinality": kind,
+                    **({"name": role} if role else {}),
+                    **({"keep_existing_routes": True} if keep_existing_routes else {}),
+                    **({"prefer_this_link": True} if prefer_this_link else {}),
+                },
+                dry_run=dry_run,
+                validate_after=validate_after,
+                success_status="upserted",
+                metadata=metadata,
+                prepare_updates=prepare,
+            )
+        except SemanticLayerError as exc:
+            if exc.code != "ROUTE_DECISION_NOT_RECORDED" or keep_existing_routes or prefer_this_link:
+                raise
+            raise self._link_route_refusal(exc, source, target) from None
         return ArchitectMutation(
             report=outcome.report,
             project_path=self.project_path,
             _snapshots=outcome.snapshots,
             _active=bool(outcome.snapshots),
+        )
+
+    def _link_route_refusal(
+        self, exc: SemanticLayerError, source: str, target: str
+    ) -> SemanticLayerError:
+        """``exc``, a link's unrecorded route changes, leading with ``prefer_this_link`` when
+        the two entities it relates met before through other entities' rows."""
+        raw = self._raw_inventory()
+        row_grain = self._row_grain_models(raw)
+        names = self._entity_names(raw, row_grain)
+        ids = {row.key: row.object_id for row in raw["entities"]}
+        namespace = self._namespace()
+        src, dst = names.get(source, source), names.get(target, target)
+        ends = {
+            ids.get(name) or _canonical_id("entity", name, {}, namespace=namespace)
+            for name in (src, dst)
+        }
+        met = any(
+            {row["source_entity"], row["target_entity"]} == ends
+            and len(dict(row.get("base") or {}).get("relationship_path") or []) > 1
+            for row in dict(exc.details or {}).get("route_changes") or []
+        )
+        if not met:
+            return exc
+        return SemanticLayerError(
+            exc.code,
+            f"{src} and {dst} reach each other today through other entities' rows, so this "
+            f"link moves their route; nothing was written. Retry with prefer_this_link=true to "
+            f"make the link the route between {src} and {dst} and keep every other route, or "
+            f"with keep_existing_routes=true to keep every route as it is (the link then "
+            f"changes no answer between them). {exc}",
+            details=exc.details,
         )
 
     def _proposed_config(
@@ -3049,42 +3088,36 @@ class ArchitectProject:
         return path.relative_to(self.project_path).as_posix()
 
 
-def _route_past_lookups(config: Any, change: dict[str, Any]) -> list[str]:
-    """The one route ``config`` has for a moved pair that crosses no lookup's other rows: its
-    resolved route, or the one such option its route question offers; else none."""
-    start = change["source_entity"]
-    if "relationship_path" in change["head"]:
-        path = list(change["head"]["relationship_path"])
-        return [] if _crosses_a_lookup(config, start, path) else path
-    pair = (start, change["target_entity"])
-    outcome = resolve_pairs(config, [pair])[pair]
-    clarification = dict(dict(outcome.details or {}).get("clarification") or {})
-    options = [
-        list(option.get("relationship_path") or [])
-        for option in clarification.get("options") or []
-        if isinstance(option, dict)
+def _written_link(config: Any, target: str, columns: list[str], name: str) -> str:
+    """The id of the relationship an ``upsert_relationship`` wrote into ``config``: the one
+    to ``target`` on ``columns`` (named ``name``, when it has one)."""
+    found = [
+        rel.id
+        for rel in config.relationships
+        if rel.target_entity == target
+        and list(rel.source_columns) == list(columns)
+        and (not name or rel.id.endswith(f".{name}"))
     ]
-    clear = [path for path in options if path and not _crosses_a_lookup(config, start, path)]
-    return clear[0] if len(clear) == 1 else []
+    return found[0] if len(found) == 1 else ""
 
 
-def _crosses_a_lookup(config: Any, start: str, path: Iterable[str]) -> bool:
-    """Whether ``path`` from ``start`` reaches its target through a lookup's other rows: a
-    to-one hop and, after it, a hop to many (a return to the sales of its day). Such a route is
-    many-to-many, so it names no one row of the target."""
+def _through_link(config: Any, change: dict[str, Any], link: str) -> list[str]:
+    """A moved pair's earlier route, walking ``link`` wherever it went between the link's two
+    entities another way: the link alone for the pair it relates, either way round."""
     relationships = {row.id: row for row in config.relationships}
-    current, looked_up = start, False
+    ends = {relationships[link].source_entity, relationships[link].target_entity}
+    path = list(change["base"]["relationship_path"])
+    stops = [change["source_entity"]]
     for rel_id in path:
         rel = relationships.get(rel_id)
         if rel is None:
-            return False
-        forward = rel.source_entity == current
-        to_one = rel.cardinality == "1:1" or (forward and rel.cardinality == "N:1")
-        if not to_one and looked_up:
-            return True
-        looked_up = looked_up or to_one
-        current = rel.target_entity if forward else rel.source_entity
-    return False
+            return path
+        stops.append(rel.target_entity if rel.source_entity == stops[-1] else rel.source_entity)
+    for i, first in enumerate(stops):
+        for j in range(len(stops) - 1, i, -1):
+            if {first, stops[j]} == ends and path[i:j] != [link]:
+                return [*path[:i], link, *path[j:]]
+    return path
 
 
 def _taken_role(

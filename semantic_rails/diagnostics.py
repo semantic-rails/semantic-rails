@@ -669,16 +669,24 @@ def recovery_hints_for_error(
         if not compatible and details.get("source") == "aggregate_if":
             return []  # The message says what to do; there is no measure to point a hint at.
         if not compatible and details.get("measure") and details.get("requested"):
+            declare = dict(details.get("declare") or {})
+            line = (
+                f"Add `times: [{details['requested']}]` to measure {declare['measure']} in "
+                f"model {declare['model']}"
+                if declare.get("model")
+                else "Mark one of its model's `times:` entries `default: true`, or list "
+                "`times:` on the measure"
+            )
             return [
                 {
                     "kind": "declare_measure_time_role",
                     "message": (
-                        f"'{details['measure']}' has no time role. Mark one of its model's "
-                        "`times:` entries `default: true`, or list `times:` on the measure, "
-                        "then query it by that role. Or drop `time` from the query."
+                        f"'{details['measure']}' has no time role. {line}, then query it by "
+                        "that role. Or drop `time` from the query."
                     ),
                     "measure": details["measure"],
                     "requested_temporal_role": details["requested"],
+                    **({"declare": declare} if declare else {}),
                 }
             ]
         return [

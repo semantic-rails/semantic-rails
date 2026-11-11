@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any
+from typing import Any, NoReturn
 
 from .. import operators
 from ..ast import MetricFilter, NormalizedQuery, QuerySelect, normalize_query
@@ -52,6 +52,7 @@ from ..expressions import (
 from ..ir import BoundMeasure
 from ..query_call import predicate_input
 from ..schema import MeasureConfig, PackageConfig
+from ..untimed_measures import untimed_fix
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -650,6 +651,23 @@ def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple
     return found
 
 
+def _raise_untimed(config: PackageConfig, measure: Any, role: str) -> NoReturn:
+    """Refuse placing a measure that has no time role on ``role``, with the package line that
+    would give it that clock."""
+    fix, declare = untimed_fix(config, measure, role)
+    raise SemanticLayerError(
+        "INCOMPATIBLE_TEMPORAL_ROLE",
+        f"'{measure.id}' has no time role declared, so it can't be placed on '{role}'. {fix}; "
+        "or drop `time` from the query.",
+        details={
+            "measure": measure.id,
+            "requested": role,
+            "compatible": [],
+            **({"declare": declare} if declare else {}),
+        },
+    )
+
+
 def _bind_measure(
     expr: MeasureRefExpr,
     config: PackageConfig,
@@ -694,15 +712,14 @@ def _bind_measure(
             "compatible": list(measure.compatible_temporal_roles),
         }
         if not measure.compatible_temporal_roles:
-            # No clock at all: name the role asked for, so the hint says to declare one.
-            details["requested"] = temporal_role
+            # No clock at all: name the role asked for, and the line that declares it.
+            _raise_untimed(config, measure, temporal_role)
         roles = ", ".join(measure.compatible_temporal_roles)
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
             f"Measure '{measure_id}' is not timed by temporal role '{temporal_role}' "
-            + (f"(its roles: {roles})" if roles else "(it has no time role)")
-            + "; add the role to the measure's `times:` in its model"
-            + (", or use one of its roles." if roles else "."),
+            f"(its roles: {roles}); add the role to the measure's `times:` in its model, or "
+            "use one of its roles.",
             details=details,
         )
     query_role = query.time.temporal_role if query.time else ""
@@ -717,13 +734,7 @@ def _bind_measure(
             )
         # No clock to bucket by: the plan has no role to read, so refuse here, in the one
         # place every measure is bound, instead of failing later on a missing role.
-        raise SemanticLayerError(
-            "INCOMPATIBLE_TEMPORAL_ROLE",
-            f"'{measure_id}' has no time role, so it can't be placed on '{query_role}'. Mark "
-            f"a time on its model `default: true`, or list `times:` on the measure; or drop "
-            f"`time` from the query.",
-            details={"measure": measure_id, "requested": query_role, "compatible": []},
-        )
+        _raise_untimed(config, measure, query_role)
     compatible = list(measure.compatible_temporal_roles)
     # Conversion operands keep their own rules (_validate_conversion_temporal_bindings).
     named = (

@@ -46,6 +46,7 @@ from .route_census import route_change_lines, route_changes
 from .runtime import Runtime, _time_zone
 from .runtime_parts.joined_call import joined_output_columns
 from .runtime_parts.responses import output_columns
+from .untimed_measures import MEASURE_WITHOUT_TIME_ROLE
 from .yaml_loader import load_named_entries
 
 ARTIFACT_MANIFEST_NAME = "semantic-rails-manifest.json"
@@ -997,7 +998,7 @@ def promote_package_report(
             *(
                 dict(warning)
                 for warning in parse_report["warnings"]
-                if warning.get("code") == "ROUTES_UNDECIDED"
+                if warning.get("code") in {"ROUTES_UNDECIDED", MEASURE_WITHOUT_TIME_ROLE}
             ),
             *review_metadata_advisories(config),
         ],
