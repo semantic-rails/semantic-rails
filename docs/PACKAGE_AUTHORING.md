@@ -2800,9 +2800,12 @@ with `dry_run` and read `route_changes` before writing: a row holds wherever a r
 pair, so other pairs whose routes walk the asked pair by another route move too. Such a pair
 that answered is refused when the route that follows the row is longer than `max_hops`
 (`PATH_NOT_FOUND`, `excluded_by_decision`), and an undecided pair whose other routes are all
-excluded is answered by the one left (`inherited`), which nobody chose. A part longer than the
-pair's shortest route is the usual cause; if a listed change isn't what the business means,
-choose another part. The pair
+excluded is answered by the one left (`inherited`), which nobody chose. `route_changes` marks
+each of these pairs with a `note`: "answered by its only remaining route, not by the recorded
+one", or "refused: every route walks a recorded pair by another route
+(excluded_by_decision)" (see "Route changes" below). A part longer than the pair's shortest
+route is the usual cause; if a marked change isn't what the business means, choose another
+part. The pair
 `via` to the target stays undecided; a row recorded for it later must agree with this one
 (see "Rows must agree" below), so the asked pair keeps the route that was chosen. Don't record a row
 for the `decide_first` pair (`via` to the target) on its own: a route for that pair can
@@ -2983,10 +2986,17 @@ resolves differently under `route_changes`:
 ```
 
 `base` and `head` hold the pair's route or the code it is refused with.
+A `note` marks two kinds of change. When rows the change records excluded a pair's other
+routes and the route left walks none of those rows, the note is "answered by its only
+remaining route, not by the recorded one" ("answered by its lookup default among its
+remaining routes, not by the recorded one" when a lookup default picks among several). A pair
+refused because every route walks a recorded pair by another route has the note "refused:
+every route walks a recorded pair by another route (excluded_by_decision)". A pair on a
+recorded row's way, or one whose route passes through the row's pair, has no note.
 No recovery rows are suggested. Any entry makes the
 risk `high` and counts in `changed_behavior_count`, and the Markdown summary
 lists each one in entity labels ("Invoice to Region: was Invoice → Account →
-Region, now refused (AMBIGUOUS_PATH)").
+Region, now refused (AMBIGUOUS_PATH)"), with its note in parentheses.
 
 **Architect requires explicit route decisions.** Every Architect write goes
 through one transaction, which compares the package before and after the
@@ -2995,7 +3005,7 @@ or answer it by another route, is refused with `ROUTE_DECISION_NOT_RECORDED`
 until the author records a decision. Previews use the same guard; nothing is
 written and no route rows are generated without an explicit keep choice. The
 refusal lists affected pairs in
-`details.route_changes`. Its message names the explicit `graph.path_preferences`
+`details.route_changes`, each with its `note` as "Route changes" above describes. Its message names the explicit `graph.path_preferences`
 fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting
 rows. Architect `upsert_relationship(..., keep_existing_routes=True)` records each
 moved pair's previous path in the same transaction and confirms newly ambiguous

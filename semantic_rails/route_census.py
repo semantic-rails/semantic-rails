@@ -13,7 +13,8 @@ on the child itself).
   pass-through pair names the package's own queries that walk it (:func:`walked_pairs`): only
   those pairs need anything now, and every other one is asked when a question needs it.
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
-  package.
+  package, each marked when the rows the change records answer it by a route that walks none
+  of them, or when every route of it walks a recorded pair by another route.
 * :func:`unkept_route_changes` lists answered pairs a change moves without an explicit
   decision. Architect refuses these changes rather than recording a decision for the author.
 """
@@ -35,6 +36,7 @@ from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import dimensions_over_column, text_dimension
 from .compiler_parts.plan_checks import _object_default_query_temporal_role
 from .config import package_root_for_source
+from .config_parts.route_rows import walk_entities
 from .errors import SemanticLayerError
 from .fanout import (
     entity_label,
@@ -50,6 +52,17 @@ from .schema import PackageConfig
 from .yaml_loader import load_named_entries
 
 Pair = tuple[str, str]
+# Product wording, in one place: a ``route_changes`` entry's ``note``. The rows a change records
+# excluded the pair's other routes, and the route left (``inherited``) or the lookup default
+# among those left (``default``) walks none of the recorded rows; or every route of the pair
+# walks a recorded pair by another route, so it is refused.
+OFF_ROW_NOTES = {
+    "inherited": "answered by its only remaining route, not by the recorded one",
+    "default": (
+        "answered by its lookup default among its remaining routes, not by the recorded one"
+    ),
+}
+EXCLUDED_NOTE = "refused: every route walks a recorded pair by another route (excluded_by_decision)"
 # A query the package asks: the id of what asks it, its calls (the first one that binds past
 # every refusal but a route's is walked) and its ``now``.
 PackageQuery = tuple[str, list[dict[str, Any]], Any]
@@ -73,6 +86,8 @@ class RouteOutcome:
     refused: str = ""
     by: str = ""
     details: dict[str, Any] = field(default_factory=dict, compare=False)
+    # The recorded rows that excluded a considered route (``inherited`` and ``default``).
+    rows: tuple[Pair, ...] = field(default=(), compare=False)
 
     def shape(self) -> dict[str, Any]:
         """The outcome as a ``route_changes`` side: its route or its refusal code."""
@@ -110,6 +125,7 @@ def resolve_pairs(config: PackageConfig, pairs: Iterable[Pair]) -> dict[Pair, Ro
                 routes=resolution.routes,
                 basis=resolution.basis,
                 by=resolution.by,
+                rows=resolution.rows,
             )
     return outcomes
 
@@ -329,8 +345,59 @@ def _changes(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
 def route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
     """Every census pair of either package, between entities both declare, that ``head``
     resolves differently from ``base``: ``base`` and ``head`` hold its ``relationship_path``
-    or the code it is ``refused`` with. No recovery rows are suggested."""
-    return [change.payload() for change in _changes(base, head)]
+    or the code it is ``refused`` with. No recovery rows are suggested. A ``note``
+    (:func:`_note`) marks a pair the rows ``head`` records answer by a route off them, and a
+    pair refused because every route walks a recorded pair by another route."""
+    return _payloads(base, head, _changes(base, head))
+
+
+def _payloads(
+    base: PackageConfig, head: PackageConfig, changes: list[RouteChange]
+) -> list[dict[str, Any]]:
+    """``changes`` as ``route_changes`` entries, each with its ``note`` when it has one."""
+    before = get_package_analysis(base).path_preferences
+    analysis = get_package_analysis(head)
+    recorded = {
+        pair: path for pair, path in analysis.path_preferences.items() if before.get(pair) != path
+    }
+    payloads = []
+    for change in changes:
+        payload = change.payload()
+        if note := _note(change.pair[0], change.head, recorded, analysis.relationships):
+            payload["note"] = note
+        payloads.append(payload)
+    return payloads
+
+
+def _note(
+    start: str,
+    head: RouteOutcome,
+    recorded: dict[Pair, list[str]],
+    relationships: dict[str, Any],
+) -> str:
+    """``EXCLUDED_NOTE`` for a pair refused because every route walks a recorded pair by
+    another route; an ``OFF_ROW_NOTES`` entry for a pair answered after a row this change
+    records (``recorded``) excluded its other routes, by a route that walks none of those
+    rows; else empty. A route walks a row when it passes through the row's pair, or when it
+    is a stretch of the row's route (a pair on the row's way)."""
+    if head.refused:
+        return EXCLUDED_NOTE if head.details.get("reason") == "excluded_by_decision" else ""
+    if head.basis not in OFF_ROW_NOTES or not set(head.rows) & recorded.keys():
+        return ""
+    entities = walk_entities(relationships, start, head.path)
+    for (source, target), path in recorded.items():
+        if source in entities and target in entities:
+            return ""
+        walk = walk_entities(relationships, source, path)
+        size = len(head.path)
+        for index in range(len(path) - size + 1):
+            stretch = tuple(path[index : index + size])
+            if (stretch, walk[index]) == (head.path, start) or (
+                stretch[::-1],
+                walk[index + size],
+            ) == (head.path, start):
+                return ""
+    return OFF_ROW_NOTES[head.basis]
 
 
 def _unkept(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
@@ -358,9 +425,10 @@ def _unkept(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
 
 
 def unkept_route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
-    """Answered pairs still moved without their own row, including an unkeepable route swap.
-    A deliberate cut may refuse a pair whose earlier route cannot be kept."""
-    return [change.payload() for change in _unkept(base, head)]
+    """Answered pairs still moved without their own row, including an unkeepable route swap,
+    noted as ``route_changes`` notes them. A deliberate cut may refuse a pair whose earlier
+    route cannot be kept."""
+    return _payloads(base, head, _unkept(base, head))
 
 
 def route_change_lines(
@@ -376,8 +444,10 @@ def route_change_lines(
     lines = []
     for change in changes:
         start, target = change["source_entity"], change["target_entity"]
+        note = f" ({change['note']})" if change.get("note") else ""
         lines.append(
             f"- {entity_label(head, start)} to {entity_label(head, target)}: was "
             f"{reads(base, start, change['base'])}, now {reads(head, start, change['head'])}"
+            f"{note}"
         )
     return lines

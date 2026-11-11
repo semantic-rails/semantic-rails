@@ -525,7 +525,7 @@ Which route between two entities a question means is a business definition (see
   meanings, as an answer asks them; a group with `decide_first` lists its `parts`, each of its
   routes from `via` on with `decision`, the pair's own row for that route: record that row, not
   one for `via` to the target alone; preview with `dry_run`: `route_changes` lists every pair
-  it moves, and some may be off the part's route), and `needed_by`, the package's own
+  it moves, and a `note` marks each one off the part's route), and `needed_by`, the package's own
   metrics, examples and tests that walk it (those pairs come first; the summary's
   `counts.undecided_needed` counts them); `assumed` lists the multi-route pairs
   answered by the start entity's own key, to confirm; `defaults` lists the multi-route pairs
