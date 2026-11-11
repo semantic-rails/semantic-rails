@@ -162,6 +162,31 @@ def test_a_distribution_answers_when_the_entity_key_is_an_allowed_cut(engine):
     _answers(engine({"allowed_group_by": [STORE, CUSTOMER_ID]}), _distribution())
 
 
+ORDER_STORE_ID = "dimension.jaffle_order_store_id"
+
+
+def test_an_order_store_id_and_the_store_key_are_the_same_cut(engine):
+    # The order's store id joins to the store's one key column: both hold the same values.
+    _answers(engine({"allowed_group_by": [ORDER_STORE_ID]}), _distribution(entity=STORE_ENTITY))
+    by_store = {
+        "select": [ORDERS],
+        "group_by": [ORDER_STORE_ID],
+        "where": [
+            {
+                "entity": STORE_ENTITY,
+                "having": [{"field": REVENUE, "op": "gte", "value": 100}],
+                "over": "all_time",
+            }
+        ],
+    }
+    _answers(engine({"required_group_by": [ORDER_STORE_ID]}), by_store)
+    # A customer's store is another cut: an entity filter on customers reads across it.
+    _refused(
+        engine({"required_group_by": [ORDER_STORE_ID]}),
+        {**_entity_filter("all_time"), "group_by": [ORDER_STORE_ID]},
+    )
+
+
 def test_a_distribution_of_another_measure_answers(engine):
     _answers(engine(BY_STORE), _distribution(measure=ORDERS))
 

@@ -1185,6 +1185,28 @@ def _metric_constraint_violations(
     return violations
 
 
+def _cuts(field: str, config: PackageConfig) -> set[str]:
+    """``field`` and the dimensions that cut a measure the same way: an entity's one key
+    column and each column a one-column relationship joins to it (an order's store id and
+    the store's own id), which hold the same values."""
+    dimension = next((row for row in config.dimensions if row.id == field), None)
+    if dimension is None:
+        return {field}
+    keys = {row.id: list(row.key_columns) for row in config.entities}
+    here = (dimension.entity, dimension.column)
+    out = {field}
+    for row in config.relationships:
+        source = list(row.source_columns or [row.source_column])
+        target = list(row.target_columns or [row.target_column])
+        if len(source) != 1 or target != keys.get(row.target_entity):
+            continue
+        ends = [(row.source_entity, source[0]), (row.target_entity, target[0])]
+        if here in ends:
+            entity, column = ends[1 - ends.index(here)]
+            out.update(item.id for item in dimensions_over_column(entity, column, config))
+    return out
+
+
 def _share_violations(
     policy_config: Mapping[str, Any],
     payload: Mapping[str, Any],
@@ -1239,7 +1261,8 @@ def _share_violations(
             missing = [
                 field
                 for field in required
-                if field in across or ("period" in across and _period_is(field, binding))
+                if _cuts(field, config) & set(across)
+                or ("period" in across and _period_is(field, binding))
             ]
             if missing:
                 found.append(
@@ -1275,6 +1298,15 @@ def _inner_call_violations(
     once, for the call."""
     binding = bound()
     config = binding.config
+    # Only a measure's or a package metric's values are read per entity; a package-wide
+    # policy reaches the call's dimensions and entities too, which an inner call only groups.
+    recipes = {row.id for row in config.metric_recipes}
+    if not (
+        object_id in recipes
+        or object_id in binding.plan.synthetic_measures
+        or any(row.id == object_id for row in config.measures)
+    ):
+        return []
     # The call as the engine groups it: a name that labels an entity's rows brings its key.
     own_group_by = set(binding.plan.group_by) | set(query.group_by)
     own_where = [
@@ -1299,7 +1331,7 @@ def _inner_call_violations(
     found: list[dict[str, Any]] = []
     keys = [field for field in binding.plan.group_by if field not in set(query.group_by)]
     if "allowed_group_by" in policy_config and (
-        disallowed := [k for k in keys if k not in allowed]
+        disallowed := [key for key in keys if not _cuts(key, config) & allowed]
     ):
         beside = {display_key(config, field): field for field in query.group_by}
         found.append(
@@ -1311,7 +1343,6 @@ def _inner_call_violations(
                 **named,
             }
         )
-    recipes = {row.id for row in config.metric_recipes}
     for call in binding.inner_calls:
         # A package metric reads every inner call lowered for the root leaves computing it.
         computes = object_id in recipes and any(
@@ -1322,7 +1353,7 @@ def _inner_call_violations(
         inside = call.inside or "a query inside the call"
         inner = normalize_query(call.query, config=config)
         disallowed = [
-            field for field in call.group_by if field not in allowed and field not in own_group_by
+            field for field in call.group_by if not _cuts(field, config) & (allowed | own_group_by)
         ]
         if "allowed_group_by" in policy_config and disallowed:
             found.append(
@@ -1337,7 +1368,8 @@ def _inner_call_violations(
         missing = [
             field
             for field in required
-            if field not in call.group_by and not _period_in(field, inner.time, config)
+            if not _cuts(field, config) & set(call.group_by)
+            and not _period_in(field, inner.time, config)
         ]
         if missing:
             found.append(
