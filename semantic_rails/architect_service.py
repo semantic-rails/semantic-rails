@@ -1621,9 +1621,10 @@ class ArchitectProject:
         def refuse_held_pair(
             updates: list[ProjectFileUpdate], source_id: str, target_id: str
         ) -> None:
-            """Refuse a plain link whose own pair a recorded route holds on a path that reads
-            several rows on its way (a sale's customer through its day's returns, kept by an
-            earlier keep_existing_routes): the link would silently change no answer there."""
+            """Refuse a plain link that reads one row where a recorded route holds its pair on a
+            path that reads several rows on its way (a sale's customer through its day's
+            returns, kept by an earlier keep_existing_routes): the link would silently change no
+            answer there."""
             if not self._raw_graph().get("path_preferences"):
                 return
             transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
@@ -1638,7 +1639,12 @@ class ArchitectProject:
             }
             for pair in (ends, ends[::-1]):
                 path = recorded.get(pair)
-                if not path or path == [link] or _reads_one_row(changed, pair[0], path):
+                if (
+                    not path
+                    or path == [link]
+                    or _reads_one_row(changed, pair[0], path)
+                    or not _reads_one_row(changed, pair[0], [link])
+                ):
                     continue
                 raise SemanticLayerError(
                     "ROUTE_DECISION_NOT_RECORDED",
