@@ -2197,9 +2197,8 @@ def create_architect_mcp_server(
             "columns as its via: a second role on the pair (a buyer and a seller), or that role "
             "again; a pair with two roles needs it."
             " Set keep_existing_routes=true to record every moved pair's previous route "
-            "in this transaction; otherwise unrecorded route changes refuse the write. With it, "
-            "prefer_this_link=true makes the new link the route between its two entities where "
-            "they met before through other entities' rows (two facts through a shared day)."
+            "in this transaction; otherwise unrecorded route changes refuse the write. "
+            "prefer_this_link=true also makes the link the route between its two entities."
         ),
     )
     def upsert_relationship(
@@ -2653,10 +2652,9 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Suggest a model"),
         description=(
             "Propose a key, times, dimensions, measures and foreign keys for a relation, with "
-            "confidences, reasons and draft upsert_model arguments. With project_path, a table "
-            "with no date column of its own is dated through a column holding a key of the "
-            "package's calendar (an entity whose model has a default time). time_roles says "
-            "which date the draft picked, or that the choice is yours. Pages hold times, then "
+            "confidences, reasons and draft upsert_model arguments. With project_path, a "
+            "calendar key can date the measures; time_roles says which date the draft picked "
+            "or that the choice is yours. Pages hold times, then "
             "dimensions, then measures, and a draft of those; drafts merge, and full_report: true "
             "gives one. Read-only."
         ),

@@ -52,7 +52,6 @@ from ..expressions import (
 from ..ir import BoundMeasure
 from ..query_call import predicate_input
 from ..schema import MeasureConfig, PackageConfig
-from ..untimed_measures import untimed_fix
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -68,6 +67,7 @@ from ..sql_ast import (
     build_negation,
     sql_nodes,
 )
+from ..untimed_measures import untimed_fix
 from .dependencies import (
     binding_cut,
     holding,

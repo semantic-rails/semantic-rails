@@ -1806,7 +1806,13 @@ A measure is timed by the roles in its own `times:` list, or, when it lists none
 model's `default: true` time. A measure with neither has no clock: it answers without `time`
 or grouped by a plain date dimension, but a query that puts it on a time grain (for example
 `time: {temporal_role: ..., grain: month}`) is refused with `INCOMPATIBLE_TEMPORAL_ROLE`. Mark
-the role `default: true` or list it under the measure's `times:`. When the refusal is for a
+the role `default: true` or list it under the measure's `times:`. The refusal names the measure
+and gives the line: for a role of its own model, mark it `default: true` or list it; for another
+model's clock its rows reach by to-one links (a fact's day key into a calendar), `times:
+[<that role>]` on the measure in its model (`details.declare` holds `model`, `measure` and
+`times`); with no such route, link the model first. Validation warns `MEASURE_WITHOUT_TIME_ROLE`
+for each measure with no time role whose rows reach a clock, naming the clocks, and
+`promotion_check` lists it under `advisories`. When the refusal is for a
 role a measure's `times:` doesn't list, its message and `details.measures` name the measure
 (and the metric that reads it): list each role it can be read by there, as the model's time
 keys or role ids (`times: [ordered_at, shipped_at]`).

@@ -137,6 +137,12 @@ package with one model, its count and amount metrics, an example, a package test
    own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if a previously
    answered pair still changes, or if generated decisions change a previously refused pair's
    outcome compared with the relationship alone. The relationship's own new answers are allowed.
+   `prefer_this_link: true` keeps every route the same way, except between the link's own two
+   entities: it records the link as their route, both ways, and a kept route that went between
+   them another way walks the link instead (a return reached its sale through their shared day,
+   and its sale's customer through that day's sales; both now go through the link). Its
+   `routes_by_this_link` lists those pairs. A link refused for moving a route between its own
+   two entities, where they met before through other entities' rows, says to retry with it.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `graph.path_preferences` list, replacing every row for exactly the pair however its
@@ -282,6 +288,19 @@ never create, seed or change it.
   A time column named like a snapshot's as-of time (`snapshot`, `as_of` or `asof` in its name)
   is drafted `class: as_of_time`, so a stock on it whose key lacks the column is refused rather
   than summing snapshots; other times are drafted `event_time`.
+  **What dates the measures.** One date column is the draft's `default: true` time. Of several,
+  the one named after the row's own entity is (`order_date` or `ordered_at` on orders), and the
+  others stay times of the model; when none or more than one is, the draft marks none `default`,
+  and `time_roles` (`status: choose`) says the choice is yours. With `project_path`, a table with
+  no date column of its own is dated through a column holding a key of one of the package's
+  clocks (an entity with a one-column key whose model has a `default: true` time, such as a
+  calendar): named like the key, of a compatible type, and confirmed by its values (at least 95%
+  of its distinct values found, on a key that names one row). One such column, the one the
+  package's model already links, or of several the one named after the row: the draft links it
+  in `entities` and lists the clock's role in each measure's `times:`, and `time_roles` says so,
+  with `other_keys` holding the `upsert_relationship` that adds each other date key as a named
+  role and keeps that one the default route. Otherwise the draft dates no measure and
+  `time_roles.options` holds each column's `entities` and `times` for you to choose.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
@@ -323,14 +342,21 @@ never create, seed or change it.
     checks the data at query time: a column with two values within a key reads NULL on the
     one-per-key model, which is why the draft leaves such columns off.
 - `suggest_links`: the relationships from a table to other tables' keys, from their values.
-  - **Candidates.** Each column paired with another table's key: the package's entities with a
-    one-column key (with `project_path`), else every declared single-column primary key. A column
+  - **Candidates.** Each column paired with another table's key: the package's entities (with
+    `project_path`), else every declared primary key. A column
     is paired when it is named like the key (the same name, one ending in the other, or the
     target entity's name with a key suffix). A generic key (`id`, `key`, `code`) is paired only
     by that last form (`customer_id` with `customers.id`), so a table's own `id` pairs with no
     other table's; a key named for its table (`order_id` on an `order_lifecycle` extension table)
     still pairs with the table it names. `columns` tries those columns against every key of a compatible type, whatever their
-    names. Columns are compared only with keys of their type.
+    names. Columns are compared only with keys of their type. A key of two or more columns (a
+    sale line's `order_id, line_no`) pairs with a tuple of columns, one per key column in key
+    order, each named like its key column or holding what it names as words (`sale_order_id`
+    and `sale_line_no`; `claim_waybill` for `waybill_no`); its row has `columns`, and its
+    `reason` says the target key is never null and never repeated, the columns matched and the
+    coverage. A target whose columns repeat together is in `not_proposed`, never drafted: a
+    many-to-one link there would count each row once per match. At most 12 tuples are tried per
+    key.
   - **Evidence.** `rows`, `rows_with_value`, `distinct_values`, `distinct_found` and `rows_found`
     (the column's values that are target keys), `coverage` (by distinct value) and `row_coverage`,
     up to five `missing_samples`, and whether the target key names one row (`target_key_unique`)
@@ -343,7 +369,10 @@ never create, seed or change it.
     `not_proposed` (`suggest_one_per_key` says whether that table reads one row per key).
   - **Drafts.** With `project_path`, each pair carries `upsert_relationship` arguments from the
     entity (or row-grain model) over the table: `one_to_one` when the column is unique and never
-    null, else `many_to_one`. Targets the model already links to are skipped.
+    null, else `many_to_one`. Targets the entity already links to (in its model's `entities`,
+    or by a `graph.relationships` entry from it) are skipped. Two or more drafts to one entity
+    (a sale's day key and its ship-day key) each carry a `name`, so applying one never replaces
+    another, and a `choice` saying which one a question means is yours to record.
   - **Nothing is written.** Apply a draft with `dry_run`, then `expected_revision`. One 60-second
     deadline covers the comparisons; `timed_out` says it ended early.
 
@@ -534,7 +563,8 @@ Which route between two entities a question means is a business definition (see
   a question asks about one. `create_project` and `setup_project_dialog` say to decide the ones
   the examples need once entities are related.
 - `promotion_check` lists the needed ones under `advisories` (`ROUTES_UNDECIDED`), never as a
-  blocker. Its `advisories` also name each public measure or curated metric missing review
+  blocker, with each measure that can't be asked by month although its rows reach a clock
+  (`MEASURE_WITHOUT_TIME_ROLE`). Its `advisories` also name each public measure or curated metric missing review
   metadata (`REVIEW_METADATA_MISSING`: `meta.owner_team`, `meta.review_priority`,
   `meta.change_risk`), which parse and validate no longer report.
 - Before writing, the transaction compares the package with the change applied. A change that

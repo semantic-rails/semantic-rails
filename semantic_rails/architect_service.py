@@ -15,7 +15,7 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -1731,7 +1731,11 @@ class ArchitectProject:
                 prepare_updates=prepare,
             )
         except SemanticLayerError as exc:
-            if exc.code != "ROUTE_DECISION_NOT_RECORDED" or keep_existing_routes or prefer_this_link:
+            if (
+                exc.code != "ROUTE_DECISION_NOT_RECORDED"
+                or keep_existing_routes
+                or prefer_this_link
+            ):
                 raise
             raise self._link_route_refusal(exc, source, target) from None
         return ArchitectMutation(
@@ -2934,7 +2938,7 @@ class ArchitectProject:
         raw = self._raw_inventory()
 
         models = {row.key: row for row in raw["models"]}
-        targets: list[dict[str, str]] = []
+        targets: list[dict[str, Any]] = []
         homed: dict[tuple[str, str], tuple[str, _RawObject]] = {}
         for row in raw["entities"]:
             model = models.get(str(row.spec.get("model") or row.key))

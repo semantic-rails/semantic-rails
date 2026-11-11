@@ -74,6 +74,12 @@ def untimed_fix(config: PackageConfig, measure: Any, role: str) -> tuple[str, di
     entity = _role_entities(config).get(role, "")
     declare = {"model": model, "measure": key, "times": [role]}
     where = f"measure {key} in model {model}" if model else f"measure {key}"
+    if entity and entity == measure.entity:
+        return (
+            f"Its model declares that time: mark it `default: true` there, or add `times: "
+            f"[{role}]` to {where}",
+            declare,
+        )
     if entity and entity in _to_one_reach(config, measure.entity):
         return (
             f"Its rows reach that clock by to-one links: if it dates them, add `times: "

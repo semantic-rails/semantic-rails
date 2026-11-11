@@ -1000,6 +1000,15 @@ def _date_keys(
     return found
 
 
+def _role_name(entity: str, columns: list[str]) -> str:
+    """A named role's name: the entity and its columns without a key suffix
+    (``sale_ship_day`` for ``ship_day_key`` on a sale)."""
+    stem = "_".join(columns).lower()
+    for suffix in _KEY_SUFFIXES:
+        stem = stem.removesuffix(suffix)
+    return slug(f"{entity}_{stem}", fallback="role")
+
+
 def _own_event(column: str, entity: str) -> bool:
     """Whether a date column is named after the row's own entity: its first word is the
     entity's (``order_date``, ``ordered_at`` and ``order_day_key`` on an order)."""
@@ -1116,10 +1125,7 @@ def _time_roles(
                 "to_entity": other["entity"],
                 "columns": [other["column"]],
                 "cardinality": "many_to_one",
-                "name": slug(
-                    f"{entity}_{str(other['column']).lower().removesuffix('_key')}",
-                    fallback="role",
-                ),
+                "name": _role_name(entity, [str(other["column"])]),
                 "keep_existing_routes": True,
             },
         }
@@ -1738,10 +1744,7 @@ def _name_shared_targets(answer: dict[str, Any], from_entity: str) -> None:
             continue
         spelled = ", ".join(_spelled(_link_columns(row)) for row in rows)
         for row in rows:
-            stem = "_".join(_link_columns(row)).lower()
-            for suffix in _KEY_SUFFIXES:
-                stem = stem.removesuffix(suffix)
-            row["upsert_relationship"]["name"] = slug(f"{from_entity}_{stem}", fallback="role")
+            row["upsert_relationship"]["name"] = _role_name(from_entity, _link_columns(row))
             row["choice"] = (
                 f"{len(rows)} column sets of {answer['relation']} each hold a {entity} key "
                 f"({spelled}). Each draft writes a named role, so neither replaces the other; "
