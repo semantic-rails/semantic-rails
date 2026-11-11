@@ -66,6 +66,7 @@ from .dependencies import (
     leaf_objects,
     recipe_objects,
     record_bound_object,
+    record_inner_call,
     record_temporal_role,
 )
 from .indexes import (
@@ -938,6 +939,7 @@ def _conversion_leaf_cte(
         base_group_where.extend(_source_time_window(raw_expr, plan.time, config))
 
     base_where_dims: list[str] = []
+    side_where: dict[str, list[dict[str, Any]]] = {"base": [], "converted": []}
     for item in refuse_child_groups(query.where, "in a conversion metric"):
         where_target = (
             converted_group_where
@@ -946,9 +948,24 @@ def _conversion_leaf_cte(
         )
         if where_target is base_group_where:
             base_where_dims.append(str(item.field))
+        side = "base" if where_target is base_group_where else "converted"
+        side_where[side].append({"field": item.field, "op": item.op, "value": item.value})
         dim_expr, _ = _resolve_dimension_expr(str(item.field), config)
         where_target.append(
             dimension_filter(dim_expr, str(item.field), item.op, item.value, config)
+        )
+    # Each operand's events are read at the call's grain under only the filters routed to it:
+    # the converted events skip the call's where on the base side's dimensions.
+    for side, source in (("base", base_source), ("converted", converted_source)):
+        record_inner_call(
+            f"the conversion over {match_entity}",
+            plan.group_by,
+            {
+                "select": [{"expression": {"measure": source["measure"].id}, "as": "__events"}],
+                "where": side_where[side],
+                **({"time": dict(plan.time)} if plan.time else {}),
+            },
+            {source["measure"].id},
         )
 
     base_cte_name = f"conversion_base_{index + 1}"

@@ -283,6 +283,74 @@ def test_a_required_group_is_kept_by_an_entity_filter_or_refused(engine):
     _answers(runtime, _distribution(group_by=[STORE]))
 
 
+def test_a_policy_on_a_package_metric_covers_its_own_entity_filter(engine):
+    call = {"select": ["metric.sales.high_value_customer_orders"]}
+    message, _ = _refused(
+        engine(BY_STORE, governed="metric.sales.high_value_customer_orders"), call
+    )
+    assert message == (
+        f"metric.sales.high_value_customer_orders can't be grouped by {CUSTOMER_ID}, as the "
+        f"entity filter on {CUSTOMER} groups it; it can be grouped only by {STORE}."
+    )
+
+
+# Groupings beside the call's own --------------------------------------------------------------
+
+
+def test_the_key_a_name_brings_is_held_to_the_allowed_cuts(engine, config):
+    # A store's name labels its rows, so a call by name groups by the store's key beside it.
+    named = replace(
+        config,
+        entities=[
+            replace(row, display=STORE) if row.id == STORE_ENTITY else row
+            for row in config.entities
+        ],
+    )
+    runtime = engine(BY_STORE, package=(named, PACKAGE))
+    message, violations = _refused(runtime, {"select": [REVENUE], "group_by": [STORE]})
+    assert message == (
+        f"{REVENUE} can't be grouped by {STORE_ID}, which the answer carries beside {STORE} so "
+        f"that rows of the same name stay apart; it can be grouped only by {STORE}."
+    )
+    assert violations[0]["beside"] == [STORE]
+    _answers(
+        engine({"allowed_group_by": [STORE, STORE_ID]}, package=(named, PACKAGE)),
+        {
+            "select": [REVENUE],
+            "group_by": [STORE],
+        },
+    )
+
+
+def test_a_conversion_reads_its_converted_events_without_the_call_filter(engine):
+    brooklyn = {"field": STORE, "op": "is", "value": "Brooklyn"}
+    runtime = engine({"required_where": [brooklyn]}, governed=ORDERS)
+    call = {"select": ["metric.sales.session_to_order_conversion_rate_7d"], "where": [brooklyn]}
+    message, violations = _refused(runtime, call)
+    assert message == (
+        f"{ORDERS} can only be read where {STORE} is Brooklyn, and the conversion over "
+        f"{CUSTOMER} reads it without that filter."
+    )
+    assert violations[0]["kind"] == "missing_required_where"
+    # The base events are read under it.
+    _answers(engine({"required_where": [brooklyn]}, governed=SESSIONS), call)
+
+
+def test_a_share_under_an_entity_filter_keeps_a_required_group(engine):
+    share = {"kind": "share", "input": REVENUE, "over": [STORE]}
+    call = {
+        **_entity_filter("all_time", measure=ORDERS, select=REVENUE),
+        "select": [REVENUE, {"expression": share, "as": "share"}],
+        "group_by": [STORE],
+    }
+    message, violations = _refused(engine({"required_group_by": [STORE]}), call)
+    assert message == (
+        f"{REVENUE} can only be read grouped by {STORE}, and the share in 'share' reads it "
+        "across them."
+    )
+    assert violations[0]["share"] == "share"
+
+
 # A lookup measure's per-parent values ---------------------------------------------------------
 
 

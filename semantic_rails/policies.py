@@ -32,7 +32,8 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     measure_column_ref,
 )
-from .compiler_parts.paths import dimensions_over_column
+from .compiler_parts.paths import dimensions_over_column, display_key
+from .compiler_parts.post_aggregation import share_over
 from .compiler_parts.totals import coarser_calls
 from .errors import SemanticLayerError
 from .expressions import (
@@ -45,6 +46,7 @@ from .expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    ShareExpr,
     collect_column_refs,
     parse_semantic_expression,
     resolve_filter_dimension,
@@ -360,7 +362,7 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
     kind = violation.get("kind")
     disallowed = _listed(violation.get("disallowed") or [])
     allowed = list(violation.get("allowed") or [])
-    if violation.get("inside"):
+    if violation.get("inside") or violation.get("beside"):
         return _inner_cut(violation)
     if kind == "missing_required_group_by" and violation.get("total") == "totals":
         missing = _listed(violation.get("missing") or [])
@@ -479,7 +481,7 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
 def _inner_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
     """What a violation of an inner call (``inside``) says: the grouping or filter it reads
     the object with, what the policy allows, and the fix (the call without it)."""
-    inside = str(violation["inside"])
+    inside = str(violation.get("inside") or "")
     action = f"Remove {inside} from the call."
     if violation.get("kind") == "disallowed_group_by":
         allowed = list(violation.get("allowed") or [])
@@ -488,8 +490,17 @@ def _inner_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
             if allowed
             else "it can't be grouped"
         )
-        line = f"can't be grouped by {_listed(violation.get('disallowed') or [])}, as {inside}"
-        return f"{line} groups it; {can}", action, {}
+        disallowed = _listed(violation.get("disallowed") or [])
+        if not inside:
+            # A key the engine groups by beside a name that labels its entity's rows.
+            names = _listed([name for name in violation.get("beside") or [] if name])
+            line = f"can't be grouped by {disallowed}, which the answer carries beside {names}"
+            return (
+                f"{line} so that rows of the same name stay apart; {can}",
+                f"Group by another dimension than {names}.",
+                {},
+            )
+        return f"can't be grouped by {disallowed}, as {inside} groups it; {can}", action, {}
     if violation.get("kind") == "missing_required_group_by":
         missing = _listed(violation.get("missing") or [])
         return (
@@ -1169,7 +1180,74 @@ def _metric_constraint_violations(
         ):
             if violation not in violations:
                 violations.append(violation)
+    if "required_group_by" in policy_config:
+        violations.extend(_share_violations(policy_config, query_payload, query, bound, object_id))
     return violations
+
+
+def _share_violations(
+    policy_config: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    query: NormalizedQuery,
+    bound: Callable[[], BoundQuery],
+    object_id: str,
+) -> list[dict[str, Any]]:
+    """A share's total reads its input across its ``over`` columns, so a required column in
+    them is dropped there. The share's denominator is held as a call of its own where it can be
+    (``coarser_calls``); every other share, one under an entity filter or route decision or in
+    a package metric, is held here: by the share's own columns."""
+    binding = bound()
+    config = binding.config
+    recipes = {row.id: row for row in config.metric_recipes}
+    checked = {alias for kind, alias, _ in coarser_calls(config, payload) if kind == "share"}
+    synthetic = object_id in binding.plan.synthetic_measures
+    required = _config_str_list(policy_config, "required_group_by")
+
+    def reads(expr: Any, seen: frozenset[str] = frozenset()) -> bool:
+        if isinstance(expr, ConditionalAggregateExpr) and synthetic:
+            return True
+        if getattr(expr, "measure", None) == object_id:
+            return True
+        if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
+            recipe = recipes.get(expr.metric_recipe)
+            if expr.metric_recipe == object_id or (
+                recipe is not None and reads(recipe.expression, seen | {expr.metric_recipe})
+            ):
+                return True
+        return any(reads(child, seen) for child in _child_exprs(expr))
+
+    def shares(expr: Any, via: bool, seen: frozenset[str]) -> Iterator[tuple[ShareExpr, bool]]:
+        if isinstance(expr, ShareExpr):
+            yield expr, via
+        if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
+            recipe = recipes.get(expr.metric_recipe)
+            if recipe is not None:
+                yield from shares(recipe.expression, True, seen | {expr.metric_recipe})
+        for child in _child_exprs(expr):
+            yield from shares(child, via, seen)
+
+    found: list[dict[str, Any]] = []
+    for row in query.select:
+        for share, via_recipe in shares(row.expression, False, frozenset()):
+            if (row.as_ in checked and not via_recipe) or not reads(share.input):
+                continue
+            across = share_over(share.over, config)
+            missing = [
+                field
+                for field in required
+                if field in across or ("period" in across and _period_is(field, binding))
+            ]
+            if missing:
+                found.append(
+                    {
+                        "kind": "missing_required_group_by",
+                        "missing": missing,
+                        "present_group_by": list(query.group_by),
+                        "share": row.as_,
+                        **({} if synthetic else {"object": object_id}),
+                    }
+                )
+    return found
 
 
 # The constraints an inner call's grouping and filters are held to, beside the call's own.
@@ -1193,7 +1271,8 @@ def _inner_call_violations(
     once, for the call."""
     binding = bound()
     config = binding.config
-    own_group_by = set(query.group_by)
+    # The call as the engine groups it: a name that labels an entity's rows brings its key.
+    own_group_by = set(binding.plan.group_by) | set(query.group_by)
     own_where = [
         {"field": item.field, "op": item.op, "value": item.value}
         for item in plain_filters(query.where)
@@ -1214,8 +1293,27 @@ def _inner_call_violations(
     # A caller's aggregate over columns is named by the measures whose columns it reads.
     named = {} if object_id in binding.plan.synthetic_measures else {"object": object_id}
     found: list[dict[str, Any]] = []
+    keys = [field for field in binding.plan.group_by if field not in set(query.group_by)]
+    if "allowed_group_by" in policy_config and (
+        disallowed := [k for k in keys if k not in allowed]
+    ):
+        beside = {display_key(config, field): field for field in query.group_by}
+        found.append(
+            {
+                "kind": "disallowed_group_by",
+                "disallowed": disallowed,
+                "allowed": sorted(allowed),
+                "beside": [beside.get(key, "") for key in disallowed],
+                **named,
+            }
+        )
+    recipes = {row.id for row in config.metric_recipes}
     for call in binding.inner_calls:
-        if object_id not in call.objects:
+        # A package metric reads every inner call lowered for the root leaves computing it.
+        computes = object_id in recipes and any(
+            object_id in binding.leaf_objects.get(alias, ()) for alias in call.owners or ()
+        )
+        if object_id not in call.objects and not computes:
             continue
         inside = call.inside or "a query inside the call"
         inner = normalize_query(call.query, config=config)
