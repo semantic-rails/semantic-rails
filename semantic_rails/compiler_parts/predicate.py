@@ -62,6 +62,7 @@ from .bind import (
 )
 from .dependencies import (
     binding_cut,
+    inner_call,
 )
 from .empty_groups import (
     ZERO_MEASURE_CLASSES,
@@ -1013,7 +1014,11 @@ def _predicate_ctes_and_join(
     # source keeps the earlier settlement, which reads an operand's unknown amounts as 0
     # where its measure has data in scope.
     several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
-    with earlier_settlement(several), reading_source(windowed=_reads_window_as_filters(scope)):
+    with (
+        earlier_settlement(several),
+        reading_source(windowed=_reads_window_as_filters(scope)),
+        inner_call(f"the entity filter on {predicate.entity}"),
+    ):
         earlier = earlier_settlement_applies()
         predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)

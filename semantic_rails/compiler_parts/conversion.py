@@ -62,6 +62,7 @@ from .bind import (
 from .dependencies import (
     binding_cut,
     cut_owners,
+    inner_call,
     leaf_objects,
     recipe_objects,
     record_bound_object,
@@ -666,7 +667,10 @@ def _conversion_predicate_set_ctes(
     with cut_owners():
         with binding_cut():
             _entity_index(config)[predicate.entity]
-        with reading_source(windowed=_reads_window_as_filters(scope)):
+        with (
+            reading_source(windowed=_reads_window_as_filters(scope)),
+            inner_call(f"the entity filter on {predicate.entity}"),
+        ):
             predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(

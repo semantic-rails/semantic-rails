@@ -359,6 +359,8 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
     kind = violation.get("kind")
     disallowed = _listed(violation.get("disallowed") or [])
     allowed = list(violation.get("allowed") or [])
+    if violation.get("inside"):
+        return _inner_cut(violation)
     if kind == "missing_required_group_by" and violation.get("total") == "totals":
         missing = _listed(violation.get("missing") or [])
         return (
@@ -471,6 +473,38 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
         "Remove the having, entity filter or inline filter that reads it.",
         {},
     )
+
+
+def _inner_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """What a violation of an inner call (``inside``) says: the grouping or filter it reads
+    the object with, what the policy allows, and the fix (the call without it)."""
+    inside = str(violation["inside"])
+    action = f"Remove {inside} from the call."
+    if violation.get("kind") == "disallowed_group_by":
+        allowed = list(violation.get("allowed") or [])
+        can = (
+            f"it can be grouped only by {_listed(allowed, 'or')}"
+            if allowed
+            else "it can't be grouped"
+        )
+        line = f"can't be grouped by {_listed(violation.get('disallowed') or [])}, as {inside}"
+        return f"{line} groups it; {can}", action, {}
+    if violation.get("kind") == "missing_required_group_by":
+        missing = _listed(violation.get("missing") or [])
+        return (
+            f"can only be read grouped by {missing}, and {inside} reads it across them",
+            (action),
+            {},
+        )
+    said = " and ".join(
+        operators.describe(
+            spec["field"],
+            operators.operator_word(spec.get("op", "is"), path="required_where.op"),
+            spec.get("value", "<value>"),
+        )
+        for spec in violation.get("missing") or []
+    )
+    return f"can only be read where {said}, and {inside} reads it without that filter", action, {}
 
 
 def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> None:
@@ -930,9 +964,15 @@ def _metric_constraint_effect(
 def _period_is(dimension_id: str, bound: BoundQuery) -> bool:
     """Whether the bound query's period is ``dimension_id``: the clock's own date dimension,
     under a grain at or below that dimension's own (its finest supported grain)."""
-    time = normalize_query(bound.plan.query, config=bound.config).time
+    return _period_in(
+        dimension_id, normalize_query(bound.plan.query, config=bound.config).time, bound.config
+    )
+
+
+def _period_in(dimension_id: str, time: Any, config: PackageConfig) -> bool:
+    """Whether the period of a query's ``time`` block is ``dimension_id`` (see ``_period_is``)."""
     role = next(
-        (r for r in bound.config.temporal_roles if r.id == getattr(time, "temporal_role", "")), None
+        (r for r in config.temporal_roles if r.id == getattr(time, "temporal_role", "")), None
     )
     if time is None or not time.grain or role is None or role.dimension != dimension_id:
         return False
@@ -1122,7 +1162,104 @@ def _metric_constraint_violations(
                 }
             )
 
+    if INNER_CONSTRAINTS.intersection(policy_config):
+        for violation in _inner_call_violations(
+            policy_config, query, bound, object_id, outer=violations
+        ):
+            if violation not in violations:
+                violations.append(violation)
     return violations
+
+
+# The constraints an inner call's grouping and filters are held to, beside the call's own.
+INNER_CONSTRAINTS = frozenset({"allowed_group_by", "required_group_by", "required_where"})
+
+
+def _inner_call_violations(
+    policy_config: Mapping[str, Any],
+    query: NormalizedQuery,
+    bound: Callable[[], BoundQuery],
+    object_id: str,
+    *,
+    outer: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The cuts an inner call makes of ``object_id`` that the call itself doesn't: a
+    distribution's per-entity values, an entity filter's per-entity values or a lookup
+    measure's per-parent values read it grouped by the entity's keys, which a constraint
+    allows or requires the same way as the call's own ``group_by``; an inner call that reads
+    it without a required filter the call has escapes that filter. Each violation names the
+    inner call (``inside``); what the call itself misses is named once, for the call."""
+    binding = bound()
+    config = binding.config
+    own_group_by = set(query.group_by)
+    own_where = [
+        {"field": item.field, "op": item.op, "value": item.value}
+        for item in plain_filters(query.where)
+    ]
+    allowed = set(_config_str_list(policy_config, "allowed_group_by"))
+    required = [
+        field
+        for field in _config_str_list(policy_config, "required_group_by")
+        if field in own_group_by or _period_is(field, binding)
+    ]
+    # An entity filter's required filter is already refused for the call's own predicates.
+    escaped = any(row["kind"] == "required_where_outside_entity_filter" for row in outer)
+    required_where = [
+        spec
+        for spec in _normalize_where_specs(policy_config.get("required_where"))
+        if not escaped and any(_where_spec_matches(row, spec) for row in own_where)
+    ]
+    found: list[dict[str, Any]] = []
+    for call in binding.inner_calls:
+        if object_id not in call.objects:
+            continue
+        inside = call.inside or "a query inside the call"
+        inner = normalize_query(call.query, config=config)
+        disallowed = [
+            field for field in call.group_by if field not in allowed and field not in own_group_by
+        ]
+        if "allowed_group_by" in policy_config and disallowed:
+            found.append(
+                {
+                    "kind": "disallowed_group_by",
+                    "disallowed": disallowed,
+                    "allowed": sorted(allowed),
+                    "inside": inside,
+                }
+            )
+        missing = [
+            field
+            for field in required
+            if field not in call.group_by and not _period_in(field, inner.time, config)
+        ]
+        if missing:
+            found.append(
+                {
+                    "kind": "missing_required_group_by",
+                    "missing": missing,
+                    "present_group_by": list(call.group_by),
+                    "inside": inside,
+                }
+            )
+        inner_where = [
+            {"field": item.field, "op": item.op, "value": item.value}
+            for item in plain_filters(inner.where)
+        ]
+        missing_where = [
+            spec
+            for spec in required_where
+            if not any(_where_spec_matches(row, spec) for row in inner_where)
+        ]
+        if missing_where:
+            found.append(
+                {
+                    "kind": "missing_required_where",
+                    "missing": missing_where,
+                    "present_where": inner_where,
+                    "inside": inside,
+                }
+            )
+    return found
 
 
 def _normalize_where_specs(value: Any) -> list[dict[str, Any]]:

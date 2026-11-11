@@ -67,6 +67,7 @@ from .bind import (
     refusing_fallible_calls,
 )
 from .dependencies import (
+    InnerCall,
     binding_dependencies,
     capture_objects,
     plan_bindings,
@@ -181,6 +182,9 @@ class BoundQuery:
     closing_reads: tuple[dict[str, Any], ...] = ()
     # Root leaves only package metrics' own definitions compute (:func:`_authored_leaves`).
     authored_leaves: frozenset[str] = frozenset()
+    # Every query compiled inside this one, with how it groups what it reads (the policy
+    # check holds each grouping to the constraints on what it reads).
+    inner_calls: tuple[InnerCall, ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """The cuts the caller added that count for ``object_id``: whole-query cuts plus the
@@ -719,4 +723,5 @@ def _bind_query(
         balance_coverage=tuple(balance_edges["ctes"].values()),
         closing_reads=closing_reads_by_output(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
+        inner_calls=tuple(dependencies.inner_calls),
     )

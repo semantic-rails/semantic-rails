@@ -7,7 +7,7 @@ ContextVar keeps concurrent and recursively lowered queries isolated.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -32,9 +32,24 @@ class Cut:
     leaves: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class InnerCall:
+    """A query the compiler runs inside the call to read a value it doesn't return as it reads
+    it: a distribution's per-entity values, an entity filter's per-entity values, a lookup
+    measure's per-parent values, a branch of a combined answer. ``group_by`` is how it groups
+    the objects it reads (``objects``, nested reads included) and ``query`` its normalized call;
+    ``inside`` names it in the caller's words ("" when it groups as the call does)."""
+
+    inside: str
+    group_by: tuple[str, ...]
+    query: dict[str, Any]
+    objects: frozenset[str]
+
+
 @dataclass
 class BindingDependencies:
     object_ids: set[str] = field(default_factory=set)
+    inner_calls: list[InnerCall] = field(default_factory=list)
     indexes: dict[tuple[int, int], Any] = field(default_factory=dict)
     cuts: list[Cut] = field(default_factory=list)
     temporal_roles: dict[str, set[str]] = field(default_factory=dict)
@@ -305,6 +320,32 @@ def binding_dependencies() -> Iterator[BindingDependencies]:
     dependencies = BindingDependencies()
     with holding(_active, dependencies):
         yield dependencies
+
+
+_inside: ContextVar[str] = ContextVar("inner_call_inside", default="")
+
+
+@contextmanager
+def inner_call(inside: str) -> Iterator[None]:
+    """Name the inner calls compiled in this block (see :class:`InnerCall`) in the caller's
+    words, e.g. "the distribution over entity.customer"."""
+    with holding(_inside, inside):
+        yield
+
+
+@contextmanager
+def recording_inner_call(group_by: Sequence[str], query: dict[str, Any]) -> Iterator[None]:
+    """Record the inner call compiled in this block, with every object it reads."""
+    objects: set[str] = set()
+    inside = _inside.get()
+    # The calls it compiles in turn are named by their own call sites.
+    with holding(_inside, ""), capture_objects(objects):
+        yield
+    dependencies = _active.get()
+    if dependencies is not None:
+        dependencies.inner_calls.append(
+            InnerCall(inside, tuple(group_by), dict(query), frozenset(objects))
+        )
 
 
 @contextmanager

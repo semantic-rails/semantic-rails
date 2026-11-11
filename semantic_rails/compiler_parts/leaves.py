@@ -63,6 +63,7 @@ from .bind import (
 from .child_values import CHILD_VALUES, child_value_dimension, child_values_cte, keep_rows
 from .dependencies import (
     cut_owners,
+    inner_call,
     leaf_predicate_roles,
     measure_objects,
     project_is_cut,
@@ -608,7 +609,11 @@ def _parent_lookup_leaf_select(
         "group_by": list(via_dims.values()),
     }
     # The inner query's settled values are internal: no NO_DATA_IN_SCOPE output of their own.
-    with measure_objects(measure.id), recording_zero_outputs():
+    with (
+        measure_objects(measure.id),
+        recording_zero_outputs(),
+        inner_call(f"the lookup measure {measure.id}"),
+    ):
         record_bound_object(child_link, config)
         source_sql = nested.query_sql(config, payload, project_cut=project_is_cut())
     table = _entity_index(config)[measure.entity].table
