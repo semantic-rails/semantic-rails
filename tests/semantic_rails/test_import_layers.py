@@ -42,7 +42,7 @@ LAYERS = [
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
     "ast expressions schema errors issues request_payload catalog_format catalog_search scope"
     " temporal_support"
-    " result_values policy_rules naming atomic_files operators clock query_call",
+    " result_values policy_rules naming atomic_files operators clock query_call flat_copy",
 ]
 LAYER_OF = {key: rank for rank, keys in enumerate(LAYERS) for key in keys.split()}
 LAYER_OF[""] = len(LAYERS) - 1  # the package root only reads its version
