@@ -2197,7 +2197,8 @@ def create_architect_mcp_server(
             "columns as its via: a second role on the pair (a buyer and a seller), or that role "
             "again; a pair with two roles needs it."
             " Set keep_existing_routes=true to record every moved pair's previous route "
-            "in this transaction; otherwise unrecorded route changes refuse the write."
+            "in this transaction; otherwise unrecorded route changes refuse the write. "
+            "prefer_this_link=true also makes the link the route between its two entities."
         ),
     )
     def upsert_relationship(
@@ -2210,6 +2211,7 @@ def create_architect_mcp_server(
         cardinality: str = "many_to_one",
         name: str = "",
         keep_existing_routes: bool = False,
+        prefer_this_link: bool = False,
         dry_run: bool = False,
         full_report: FullReport = False,
     ) -> ArchitectMutationResult:
@@ -2223,6 +2225,7 @@ def create_architect_mcp_server(
                     cardinality=cardinality,
                     name=name,
                     keep_existing_routes=keep_existing_routes,
+                    prefer_this_link=prefer_this_link,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -2649,7 +2652,9 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Suggest a model"),
         description=(
             "Propose a key, times, dimensions, measures and foreign keys for a relation, with "
-            "confidences, reasons and draft upsert_model arguments. Pages hold times, then "
+            "confidences, reasons and draft upsert_model arguments. With project_path, a "
+            "calendar key can date the measures; time_roles says which date the draft picked "
+            "or that the choice is yours. Pages hold times, then "
             "dimensions, then measures, and a draft of those; drafts merge, and full_report: true "
             "gives one. Read-only."
         ),
@@ -2664,8 +2669,16 @@ def create_architect_mcp_server(
     ) -> dict[str, Any]:
         try:
             _check_list_paging(offset, full_report, "suggestion")
+            context = (
+                ArchitectProject(project_path, workspace_root=root).clock_context(relation)
+                if project_path
+                else {}
+            )
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
-                suggestion = {"ok": True, **introspection.suggest_model(warehouse, relation)}
+                suggestion = {
+                    "ok": True,
+                    **introspection.suggest_model(warehouse, relation, **context),
+                }
             return _paged_suggestion(suggestion, offset, limit, full_report)
         except Exception as exc:
             return _report_error(exc)

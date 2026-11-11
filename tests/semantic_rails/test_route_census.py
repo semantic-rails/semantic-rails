@@ -540,7 +540,11 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
 
 
 def _route_advisories(promotion: dict[str, Any]) -> list[dict[str, Any]]:
-    return [row for row in promotion["advisories"] if row["code"] != "REVIEW_METADATA_MISSING"]
+    return [
+        row
+        for row in promotion["advisories"]
+        if row["code"] not in {"REVIEW_METADATA_MISSING", "MEASURE_WITHOUT_TIME_ROLE"}
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -705,8 +709,18 @@ def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
     for row in _base_decisions(raised.value.details["route_changes"]):
         assert project.record_route_decision(**row).report["ok"]
+    if from_entity == "owner":
+        # The owner's region is now recorded through their accounts' rows, where the new link
+        # reads one row: written plainly it would change no answer, and the refusal says so.
+        with pytest.raises(SemanticLayerError, match="A recorded route holds entity.bank_owner"):
+            project.upsert_relationship(
+                from_entity=from_entity, to_entity="region", columns=columns
+            )
     report = project.upsert_relationship(
-        from_entity=from_entity, to_entity="region", columns=columns
+        from_entity=from_entity,
+        to_entity="region",
+        columns=columns,
+        keep_existing_routes=from_entity == "owner",
     ).report
     assert report["ok"] is True, report
     assert report["route_decisions_added"] == []

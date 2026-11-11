@@ -40,6 +40,7 @@ from .db_parts.duckdb_setup import connect_duckdb
 from .errors import SemanticLayerError
 from .naming import slug
 from .sql_identifiers import quote_identifier, relation_parts
+from .untimed_measures import calendar_like
 
 MAX_SAMPLE_VALUES = 20
 MAX_SAMPLE_CHARS = 200
@@ -874,12 +875,29 @@ def _foreign_keys(
     return links
 
 
-def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
+def suggest_model(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    *,
+    clocks: list[dict[str, str]] | None = None,
+    clock_links: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Propose a model over ``relation``, each choice with a confidence and a reason.
 
     The key is a declared one, or one the whole relation confirms (``key_search`` says how the
     search went); without one the draft is a row-grain model that counts its rows. Nothing is
     written: ``upsert_model`` holds draft arguments to review.
+
+    What dates the measures: the relation's own date columns, as before, when it holds no key
+    of one of the package's ``clocks`` (``{entity, relation, key, date_column, temporal_role,
+    calendar}``: an entity and its model's default date). A column holding such a key, named
+    like it and confirmed by its values, dates them through that link when it is the only such
+    column and the relation has no date of its own, or when the package's model over
+    ``relation`` already links it (``clock_links``: clock entity to column). A clock is a
+    calendar only where its entity is ``kind: time``, or is named for a day, date, week, month
+    or calendar and its rows say so (``_one_row_per_day``).
+    Several such columns, or one beside a date of the relation's own, date nothing:
+    ``time_roles`` states the choice, the author's.
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
@@ -912,6 +930,24 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         for column in unmodeled
         if _is_container_type(str(column["type"]))
     ]
+    own = [item for item in roles["times"] if item["confidence"] != "low"]
+    keyed = []
+    if clocks:
+        with contextlib.suppress(_OutOfTime):  # out of time: no date key, as before
+            keyed = _date_keys(warehouse, described, source, clocks)
+        # A date column that is also a calendar's key is one candidate: its own date.
+        keyed = [row for row in keyed if row["column"] not in {item["column"] for item in own}]
+    time_roles = _time_roles(described["relation"], entity, own, keyed, dict(clock_links or {}))
+    draft = upsert_model_draft(
+        entity=entity, relation=described["relation"], key_columns=key_columns, **roles
+    )
+    if time_roles and time_roles["status"] == "choose":
+        for spec in draft["times"].values():
+            spec.pop("default", None)
+    if time_roles and time_roles["status"] == "default":
+        draft["entities"] = dict(time_roles["entities"])
+        for spec in draft["measures"].values():
+            spec["times"] = [time_roles["temporal_role"]]
     return {
         "relation": described["relation"],
         "entity": entity,
@@ -922,10 +958,231 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         **roles,
         "foreign_keys": links,
         **({"unsupported_columns": unsupported_columns} if unsupported_columns else {}),
-        "upsert_model": upsert_model_draft(
-            entity=entity, relation=described["relation"], key_columns=key_columns, **roles
-        ),
+        **({"time_roles": time_roles} if time_roles else {}),
+        "upsert_model": draft,
     }
+
+
+def _date_keys(
+    warehouse: DuckDBWarehouse,
+    described: dict[str, Any],
+    source: str,
+    clocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The columns of a relation that hold a calendar's key: named like the key, of a
+    compatible type, and confirmed by their values (at least ``DEFAULT_LINK_COVERAGE`` of the
+    distinct values found, on a key that names one row; a column under that, or named like a
+    snapshot's as-of day, is ``doubtful``: it dates nothing, but beside another key it makes the
+    choice the author's). A clock that is no calendar dates
+    nothing here: one is unless its entity is ``kind: time``, or named for a day, date, week,
+    month or calendar with rows that read as one (``_one_row_per_day``). A customer's home store
+    has an opening date, and a daily exchange rate a date per row: neither dates the rows that
+    name it."""
+    deadline = time.monotonic() + KEY_SEARCH_SECONDS
+    found: list[dict[str, Any]] = []
+    for clock in clocks:
+        if _split_relation(clock["relation"]) == _split_relation(described["relation"]):
+            continue
+        try:
+            target = describe_table(warehouse, clock["relation"])
+        except SemanticLayerError:
+            continue  # a clock over a missing relation dates nothing here
+        key_types = {str(column["name"]): str(column["type"]) for column in target["columns"]}
+        if clock["key"] not in key_types:
+            continue
+        qualified = _qualified(warehouse, *_split_relation(clock["relation"]))
+        if not clock.get("calendar") and not (
+            calendar_like("", [clock["entity"], clock["key"]])
+            and _one_row_per_day(
+                warehouse,
+                qualified,
+                clock["key"],
+                str(clock.get("date_column") or ""),
+                _scalar_family(key_types[clock["key"]]) == "numeric",
+                deadline,
+            )
+        ):
+            continue
+        for column in described["columns"]:
+            name = str(column["name"])
+            if not _fk_types_compatible(str(column["type"]), key_types[clock["key"]]):
+                continue
+            if not _names_link(name, clock["key"], clock["entity"]):
+                continue
+            evidence = _link_evidence(
+                warehouse, source, [name], qualified, [clock["key"]], deadline
+            )
+            if not evidence["target_key_unique"]:
+                continue
+            words = _link_words(
+                [name], {"relation": clock["relation"], "key": clock["key"]}, evidence
+            )
+            # A key mostly missing from the calendar, or a snapshot's as-of day, dates nothing
+            # by itself; beside another key it still makes the choice the author's.
+            doubtful = evidence["coverage"] < DEFAULT_LINK_COVERAGE or _snapshot_clock_like(name)
+            found.append(
+                {
+                    **clock,
+                    "column": name,
+                    "reason": words,
+                    **({"doubtful": True} if doubtful else {}),
+                }
+            )
+    return found
+
+
+def _one_row_per_day(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    key: str,
+    column: str,
+    numeric_key: bool,
+    deadline: float,
+) -> bool:
+    """Whether ``relation`` reads as a calendar: on its rows of known days, ``key`` and the date
+    in ``column`` each name one row, on consecutive days, two rows at least. A row of an unknown
+    member (a NULL date, a date before 1901, a NULL key, or a number key that is not positive,
+    such as ``-1``) is left out of that test."""
+    if not column:
+        return False
+    _in_time(deadline)
+    ref, day = quote_identifier(key), f"CAST({quote_identifier(column)} AS DATE)"
+    known = f"{day} >= DATE '1901-01-01' AND {ref} IS NOT NULL" + (
+        f" AND {ref} > 0" if numeric_key else ""
+    )
+    try:
+        rows, keys, days, span = warehouse.execute(
+            f"SELECT system.main.count(*), system.main.count(DISTINCT {ref}), "
+            f"system.main.count(DISTINCT {day}), "
+            f"system.main.date_diff('day', system.main.min({day}), system.main.max({day})) + 1 "
+            f"FROM {relation} WHERE {known}"
+        )[1][0]
+    except (duckdb.Error, SemanticLayerError):
+        return False  # a time that is no date column (an expression, a number) is no calendar
+    return int(rows) >= 2 and int(rows) == int(keys) == int(days) == int(span or 0)
+
+
+def _role_name(entity: str, columns: list[str]) -> str:
+    """A named role's name: the entity and its columns without a key suffix
+    (``sale_ship_day`` for ``ship_day_key`` on a sale)."""
+    stem = "_".join(columns).lower()
+    for suffix in _KEY_SUFFIXES:
+        stem = stem.removesuffix(suffix)
+    return slug(f"{entity}_{stem}", fallback="role")
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    return one if count == 1 else many
+
+
+def _time_roles(
+    relation: str,
+    entity: str,
+    own: list[dict[str, Any]],
+    keyed: list[dict[str, Any]],
+    linked: dict[str, str],
+) -> dict[str, Any] | None:
+    """What dates a drafted model's measures once a calendar key is among the candidates: the
+    ``time_roles`` block, or None when there is none (the relation's own dates, as before)."""
+    if all(row.get("doubtful") for row in keyed):
+        return None
+    columns = [str(row["column"]) for row in keyed]
+    listed, clocks = ", ".join(columns), ", ".join(sorted({str(row["entity"]) for row in keyed}))
+    holding = (
+        f"{_plural(len(columns), 'a column', f'{len(columns)} columns')} holding keys of "
+        f"{clocks} ({listed})"
+    )
+    options = [
+        {"column": row["column"], "entities": _clock_link(row), "times": [row["temporal_role"]]}
+        for row in keyed
+    ]
+    if own:
+        dates = [str(item["column"]) for item in own]
+        return {
+            "status": "choose",
+            "candidates": dates + columns,
+            "message": (
+                f"{relation} has {_plural(len(dates), 'a date column', 'date columns')} of its "
+                f"own ({', '.join(dates)}) and {holding}, so which one dates its rows is a "
+                "business choice, and the draft dates no measure. Mark the date the business "
+                "reads them by `default: true` in the draft's times, or choose one of "
+                "`options`: add its `entities` to the draft and its `times` to each measure."
+            ),
+            "options": options,
+        }
+    chosen = [
+        row
+        for row in keyed
+        if linked.get(row["entity"]) == row["column"] and not row.get("doubtful")
+    ]
+    if not chosen and len(keyed) == 1:
+        chosen = keyed
+    if len(chosen) != 1:
+        return {
+            "status": "choose",
+            "candidates": columns,
+            "message": (
+                f"{relation} has no date column of its own and {holding}, so which one dates "
+                "its rows is a business choice, and the draft dates no measure. Choose one of "
+                "`options`: add its `entities` to the draft and its `times` to each measure; "
+                "then add each other one as a named role (upsert_relationship with a name)."
+            ),
+            "options": options,
+        }
+    (row,) = chosen
+    others = [other for other in keyed if other is not row]
+    block: dict[str, Any] = {
+        "status": "default",
+        "candidates": columns,
+        "default": row["column"],
+        "temporal_role": row["temporal_role"],
+        "entities": _clock_link(row),
+    }
+    if not others:
+        why = (
+            " and the package's model already links it"
+            if linked.get(row["entity"]) == row["column"]
+            else ""
+        )
+        block["message"] = (
+            f"{relation} has no date column of its own; {row['column']} holds keys of "
+            f"{row['entity']}{why}, so the draft links it (entities.{row['entity']}) and dates "
+            f"each measure by {row['temporal_role']}. {row['reason']}"
+        )
+        return block
+    block["message"] = (
+        f"{relation} has no date column of its own and {holding}. The draft dates each "
+        f"measure by {row['column']}, which the package's model already links: it links "
+        f"{row['column']} (entities.{row['entity']}) and lists {row['temporal_role']} in each "
+        f"measure's `times:`. {', '.join(str(other['column']) for other in others)} "
+        f"{_plural(len(others), 'stays', 'stay')} unlinked here: each of `other_keys` adds one "
+        f"as a named role and keeps {row['column']} the default route."
+    )
+    block["other_keys"] = _other_keys(entity, others)
+    return block
+
+
+def _clock_link(row: dict[str, Any]) -> dict[str, Any]:
+    """The draft's ``entities`` entry that links a date key column to its calendar."""
+    return {row["entity"]: {} if row["column"] == row["key"] else {"expr": row["column"]}}
+
+
+def _other_keys(entity: str, others: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Draft named roles for the date key columns the draft leaves unlinked."""
+    return [
+        {
+            "column": other["column"],
+            "upsert_relationship": {
+                "from_entity": entity,
+                "to_entity": other["entity"],
+                "columns": [other["column"]],
+                "cardinality": "many_to_one",
+                "name": _role_name(entity, [str(other["column"])]),
+                "keep_existing_routes": True,
+            },
+        }
+        for other in others
+    ]
 
 
 # Candidate keys a one-per-key search tries, singles first; the first this many by naming order.
@@ -1253,64 +1510,179 @@ def _names_link(column: str, key: str, entity: str = "") -> bool:
     )
 
 
+# The most column tuples one composite key is compared with: each is a few scans of the relation.
+MAX_COMPOSITE_CANDIDATES = 12
+
+
+def _named_tuples(
+    types: Mapping[str, str], keys: list[str], key_types: Mapping[str, str]
+) -> list[list[str]]:
+    """The column tuples of a relation named like a composite key ``keys``, in key order: each
+    column named exactly as its key column, or all of them with one common prefix or suffix
+    around those names (``sale_order_id`` and ``sale_line_no`` for ``order_id`` and
+    ``line_no``), each of a compatible type. A tuple that mixes such a column with a bare one
+    (``sale_order_id`` beside ``line_no``, a return line's own number) is never one."""
+    by_name = {column.lower(): column for column in types}
+    first = keys[0].lower()
+    affixes: set[tuple[str, str]] = set()
+    for name in by_name:
+        if name == first or (name.endswith(first) and name[: -len(first)].endswith("_")):
+            affixes.add((name[: -len(first)], ""))
+        if name.startswith(f"{first}_"):
+            affixes.add(("", name[len(first) :]))
+    found = []
+    for prefix, suffix in sorted(affixes):
+        named = [by_name.get(f"{prefix}{key.lower()}{suffix}", "") for key in keys]
+        if all(
+            column and _fk_types_compatible(types[column], key_types[key])
+            for column, key in zip(named, keys, strict=True)
+        ):
+            found.append(named)
+    return found[:MAX_COMPOSITE_CANDIDATES]
+
+
+def _composite_candidates(
+    types: Mapping[str, str],
+    keys: list[str],
+    key_types: Mapping[str, str],
+    columns: list[str] | None,
+    deadline: float | None = None,
+    own_key: list[str] | None = None,
+) -> list[list[str]]:
+    """The column tuples of a relation that could hold a composite key ``keys``, in key order:
+    the tuples named like it (``_named_tuples``), or, when the author names the ``columns`` to
+    try, one of those per key column, each of a compatible type; at most
+    ``MAX_COMPOSITE_CANDIDATES``. Unless named, a tuple never mixes columns of the relation's
+    ``own_key`` with others, and the key's bare names count only on a relation with no other
+    key: a return line keyed by its own id may number its own lines, and its ``line_no`` beside
+    the order it names would find a sale line on every return line."""
+    if not columns:
+        key_of = set(own_key or [])
+        bare = [key.lower() for key in keys]
+        return [
+            named
+            for named in _named_tuples(types, keys, key_types)
+            if set(named) <= key_of
+            or not (key_of and (key_of & set(named) or [c.lower() for c in named] == bare))
+        ]
+    parts = [
+        [column for column in columns if _fk_types_compatible(types[column], key_types[key])]
+        for key in keys
+    ]
+    found: list[list[str]] = []
+
+    def extend(prefix: list[str]) -> None:
+        # Depth first, never reusing a column, so a wide key with no fitting tuple costs no
+        # more than its columns allow; stops at the cap and at the deadline.
+        if len(found) >= MAX_COMPOSITE_CANDIDATES:
+            return
+        if deadline is not None:
+            _in_time(deadline)
+        if len(prefix) == len(parts):
+            found.append(list(prefix))
+            return
+        for column in parts[len(prefix)]:
+            if column not in prefix:
+                extend([*prefix, column])
+
+    if len(set().union(*parts)) >= len(parts):  # else no tuple uses a column once
+        extend([])
+    return found
+
+
 def _link_evidence(
-    warehouse: DuckDBWarehouse, source: str, column: str, target: str, key: str, deadline: float
+    warehouse: DuckDBWarehouse,
+    source: str,
+    columns: list[str],
+    target: str,
+    keys: list[str],
+    deadline: float,
 ) -> dict[str, Any]:
-    """How the values of ``column`` in ``source`` meet ``key`` in ``target``: rows, rows with a
-    value, distinct values, how many of them (and of the rows) are ``target`` keys, a few that
-    aren't, and whether ``key`` names one ``target`` row (never null, never repeated)."""
+    """How the values of ``columns`` in ``source`` meet ``keys`` in ``target`` (one column per key
+    column, in key order): rows, rows with a value in every column, distinct values, how many of
+    them (and of the rows) are ``target`` keys, a few that aren't, and whether ``keys`` name one
+    ``target`` row (never null, never repeated) and ``columns`` one ``source`` row."""
     _in_time(deadline)
-    col, ref = quote_identifier(column), quote_identifier(key)
-    found = f"{col} IN (SELECT {ref} FROM {target} WHERE {ref} IS NOT NULL)"
-    rows, valued, distinct, rows_found = warehouse.execute(
-        f"SELECT system.main.count(*), system.main.count({col}), "
-        f"system.main.count(DISTINCT {col}), system.main.count(*) FILTER (WHERE {found}) "
-        f"FROM {source}"
+    cols, refs = [quote_identifier(c) for c in columns], [quote_identifier(k) for k in keys]
+    valued = " AND ".join(f"s.{col} IS NOT NULL" for col in cols)
+    match = " AND ".join(f"t.{ref} = s.{col}" for col, ref in zip(cols, refs, strict=True))
+    found = f"EXISTS (SELECT 1 FROM {target} AS t WHERE {match})"
+    listed = ", ".join(f"s.{col}" for col in cols)
+    rows, rows_valued, rows_found = warehouse.execute(
+        f"SELECT system.main.count(*), system.main.count(*) FILTER (WHERE {valued}), "
+        f"system.main.count(*) FILTER (WHERE {found}) FROM {source} AS s"
     )[1][0]
     _in_time(deadline)
-    (distinct_found,) = warehouse.execute(
-        f"SELECT system.main.count(*) FROM (SELECT DISTINCT {col} FROM {source} "
-        f"WHERE {col} IS NOT NULL) AS v WHERE {found}"
+    distinct, distinct_found = warehouse.execute(
+        f"SELECT system.main.count(*), system.main.count(*) FILTER (WHERE {found}) FROM "
+        f"(SELECT DISTINCT {listed} FROM {source} AS s WHERE {valued}) AS s"
     )[1][0]
     _in_time(deadline)
-    target_rows, target_keys, target_valued = warehouse.execute(
-        f"SELECT system.main.count(*), system.main.count(DISTINCT {ref}), "
-        f"system.main.count({ref}) FROM {target}"
+    target_valued = " AND ".join(f"{ref} IS NOT NULL" for ref in refs)
+    target_rows, target_with_key, target_keys = warehouse.execute(
+        f"SELECT system.main.count(*), system.main.count(*) FILTER (WHERE {target_valued}), "
+        f"(SELECT system.main.count(*) FROM (SELECT DISTINCT {', '.join(refs)} FROM {target} "
+        f"WHERE {target_valued}) AS k) FROM {target}"
     )[1][0]
     _in_time(deadline)
     missing = [
-        _sample_text(row[0])
+        _sample_text(row[0]) if len(row) == 1 else [_sample_text(value) for value in row]
         for row in warehouse.execute(
-            f"SELECT DISTINCT {col} FROM {source} WHERE {col} IS NOT NULL AND NOT {found} "
-            f"ORDER BY 1 LIMIT {MAX_MISSING_SAMPLES}"
+            f"SELECT DISTINCT {listed} FROM {source} AS s WHERE {valued} AND NOT {found} "
+            f"ORDER BY {', '.join(str(i + 1) for i in range(len(cols)))} "
+            f"LIMIT {MAX_MISSING_SAMPLES}"
         )[1]
     ]
     return {
         "rows": int(rows),
-        "rows_with_value": int(valued),
+        "rows_with_value": int(rows_valued),
         "distinct_values": int(distinct),
         "distinct_found": int(distinct_found),
         "rows_found": int(rows_found),
         "coverage": round(int(distinct_found) / int(distinct), 4) if distinct else 0.0,
-        "row_coverage": round(int(rows_found) / int(valued), 4) if valued else 0.0,
+        "row_coverage": round(int(rows_found) / int(rows_valued), 4) if rows_valued else 0.0,
         "missing_samples": missing,
         "target_rows": int(target_rows),
-        "target_key_unique": int(target_keys) == int(target_valued) == int(target_rows),
-        "column_unique": int(distinct) == int(valued) == int(rows),
+        "target_key_unique": int(target_keys) == int(target_with_key) == int(target_rows),
+        "column_unique": int(distinct) == int(rows_valued) == int(rows),
     }
 
 
-def _link_words(column: str, target: dict[str, Any], evidence: dict[str, Any]) -> str:
-    """The evidence in words."""
-    words = (
-        f"{evidence['distinct_found']} of {evidence['distinct_values']} distinct {column} values "
-        f"({evidence['coverage']:.1%}) are {target['relation']}.{target['key']} keys, on "
-        f"{evidence['rows_found']} of {evidence['rows_with_value']} rows with a value"
-    )
+def _spelled(columns: list[str]) -> str:
+    return columns[0] if len(columns) == 1 else f"({', '.join(columns)})"
+
+
+def _link_words(
+    columns: list[str], target: dict[str, Any], evidence: dict[str, Any], source: str = ""
+) -> str:
+    """The evidence in words; ``source`` names the relation the columns are on."""
+    keys = list(target["key"]) if isinstance(target["key"], list) else [target["key"]]
+    if len(columns) == 1:
+        words = (
+            f"{evidence['distinct_found']} of {evidence['distinct_values']} distinct "
+            f"{columns[0]} values ({evidence['coverage']:.1%}) are "
+            f"{target['relation']}.{keys[0]} keys, on {evidence['rows_found']} of "
+            f"{evidence['rows_with_value']} rows with a value"
+        )
+    else:
+        pairs = " and ".join(f"{c} = {k}" for c, k in zip(columns, keys, strict=True))
+        words = (
+            f"{target['relation']} is keyed by {_spelled(keys)}, never null and never repeated "
+            f"on its {evidence['target_rows']} rows, so each {source or 'source'} row matches "
+            f"at most one {target['relation']} row; "
+            f"matched on {pairs}, {evidence['distinct_found']} of "
+            f"{evidence['distinct_values']} distinct {_spelled(columns)} values "
+            f"({evidence['coverage']:.1%}) are its keys, on {evidence['rows_found']} of "
+            f"{evidence['rows_with_value']} rows with a value in every column"
+        )
     if evidence["rows"] > evidence["rows_with_value"]:
         words += f"; {evidence['rows'] - evidence['rows_with_value']} rows have none"
     if evidence["missing_samples"]:
-        words += f"; not found: {', '.join(map(str, evidence['missing_samples']))}"
+        shown = [
+            f"({', '.join(map(str, value))})" if isinstance(value, list) else str(value)
+            for value in evidence["missing_samples"]
+        ]
+        words += f"; not found: {', '.join(shown)}"
     return words + "."
 
 
@@ -1323,22 +1695,32 @@ def suggest_links(
     targets: list[dict[str, Any]] | None = None,
     from_entity: str = "",
     linked: frozenset[str] = frozenset(),
+    source_key: list[str] | None = None,
 ) -> dict[str, Any]:
     """Propose the relationships from ``relation`` to other tables' keys, from their values.
 
     A candidate pairs a column of ``relation`` with a key of another table: each of ``targets``
-    (``{relation, key, entity}``; by default every declared single-column primary key) that the
-    column is named like (``columns`` tries those columns against every target of a compatible
-    type, whatever their names). Each pair's ``evidence`` counts the column's values found among
-    the target's keys, by distinct value (``coverage``) and by row, with a few values not found.
+    (``{relation, key, entity}``; by default every declared primary key) that the column is
+    named like (``columns`` tries those columns against every target of a compatible type,
+    whatever their names). A composite key (``key`` a list) pairs with a tuple of columns, one
+    per key column in key order, named exactly as the key columns on a relation with no other
+    key, or all with one common prefix or suffix around those names (``sale_order_id`` and
+    ``sale_line_no`` for ``order_id, line_no``; ``_composite_candidates``); its row says
+    ``columns``. Each pair's
+    ``evidence`` counts the values found among the target's keys, by distinct value
+    (``coverage``) and by row, with a few values not found.
     A pair whose target key names one row, and whose coverage reaches ``min_coverage`` (the
     stated ``threshold``), is in ``proposals``; one under it is in ``below_threshold`` with the
     same evidence and drafts, for the author to decide (a row whose value isn't found keeps its
     rows, and reads NULL through the link). Each carries draft ``upsert_relationship`` arguments
     when ``from_entity`` (the package's entity or row-grain model over ``relation``) and the
-    target's entity are known: ``one_to_one`` when the column is unique and never null too,
-    else ``many_to_one``. Targets already linked (``linked``) are skipped. Nothing is written,
-    and nothing checks data at query time.
+    target's entity are known: ``one_to_one`` when the column is unique and never null too (a
+    composite reference only when its columns are the relation's own key, ``source_key`` or else
+    its declared primary key: a sale line returned once today may be returned again),
+    else ``many_to_one``. Targets already linked (``linked``) are skipped. Two or more drafts to
+    one entity (a sale's day and its ship day) each carry a ``name``, so neither replaces the
+    other, and a ``choice`` saying which a question means is the author's to record. Nothing is
+    written, and nothing checks data at query time.
     """
     if not 0 < min_coverage <= 1:
         raise SemanticLayerError(
@@ -1362,7 +1744,7 @@ def suggest_links(
             {"relation": row["relation"], "key": row["column"], "entity": "", "type": row["type"]}
             for rows in _declared_keys(warehouse).values()
             for row in rows
-        ]
+        ] + _declared_composite_keys(warehouse)
     answer: dict[str, Any] = {
         "relation": described["relation"],
         "threshold": {"coverage": min_coverage},
@@ -1371,6 +1753,7 @@ def suggest_links(
         "not_proposed": [],
     }
     described_targets: dict[str, dict[str, str]] = {}
+    own_key = [str(column) for column in source_key or described["primary_key"]]
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
     try:
         for target in targets:
@@ -1385,32 +1768,91 @@ def suggest_links(
                     for column in _describe_target(warehouse, target)["columns"]
                 }
                 described_targets[str(target["relation"])] = target_types
-            key = str(target["key"])
-            if key not in target_types:
+            keys = [str(k) for k in _as_keys(target["key"])]
+            if any(key not in target_types for key in keys):
                 continue
             entity = str(
                 target.get("entity") or entity_name(_split_relation(target["relation"])[1])
             )
-            for column in columns or list(types):
-                if not _fk_types_compatible(types[column], target_types[key]):
-                    continue
-                if not columns and not _names_link(column, key, entity):
-                    continue
-                target_schema, target_name = _split_relation(str(target["relation"]))
+            if len(keys) == 1:
+                tuples = [
+                    [column]
+                    for column in columns or list(types)
+                    if _fk_types_compatible(types[column], target_types[keys[0]])
+                    and (columns or _names_link(column, keys[0], entity))
+                ]
+            else:
+                tuples = _composite_candidates(
+                    types, keys, target_types, columns, deadline, own_key
+                )
+            target_schema, target_name = _split_relation(str(target["relation"]))
+            for tuple_ in tuples:
                 evidence = _link_evidence(
                     warehouse,
                     source,
-                    column,
+                    tuple_,
                     _qualified(warehouse, target_schema, target_name),
-                    key,
+                    keys,
                     deadline,
                 )
-                _place_link(answer, column, target, evidence, min_coverage, from_entity)
+                _place_link(answer, tuple_, target, evidence, min_coverage, from_entity, own_key)
     except _OutOfTime:
         answer["timed_out"] = True
     for bucket in ("proposals", "below_threshold", "not_proposed"):
-        answer[bucket].sort(key=lambda row: (-row["evidence"]["coverage"], row["column"]))
+        answer[bucket].sort(key=lambda row: (-row["evidence"]["coverage"], _link_columns(row)))
+    _name_shared_targets(answer, from_entity)
     return answer
+
+
+def _as_keys(key: Any) -> list[Any]:
+    return list(key) if isinstance(key, (list, tuple)) else [key]
+
+
+def _link_columns(row: dict[str, Any]) -> list[str]:
+    return list(row.get("columns") or [row["column"]])
+
+
+def _declared_composite_keys(warehouse: DuckDBWarehouse) -> list[dict[str, Any]]:
+    """Declared primary keys of two or more columns, as link targets."""
+    return [
+        {
+            "relation": _relation_name(str(row["schema_name"]), str(row["table_name"])),
+            "key": [str(column) for column in row["constraint_column_names"]],
+            "entity": "",
+        }
+        for row in warehouse.rows(
+            "SELECT schema_name, table_name, constraint_column_names "
+            "FROM system.main.duckdb_constraints() WHERE database_name = "
+            "system.main.current_database() AND constraint_type = 'PRIMARY KEY' "
+            "AND system.main.len(constraint_column_names) > 1 ORDER BY 1, 2"
+        )
+        if not _dotted(str(row["schema_name"]), str(row["table_name"]))
+    ]
+
+
+def _name_shared_targets(answer: dict[str, Any], from_entity: str) -> None:
+    """Drafts to one entity from different columns (a sale's day and its ship day) would each
+    replace the other's link: give each a ``name`` of its own, and say the choice is open."""
+    drafted: dict[str, list[dict[str, Any]]] = {}
+    for bucket in ("proposals", "below_threshold"):
+        for row in answer[bucket]:
+            if "upsert_relationship" in row:
+                drafted.setdefault(row["upsert_relationship"]["to_entity"], []).append(row)
+    for entity, rows in drafted.items():
+        if len(rows) < 2:
+            continue
+        spelled = ", ".join(_spelled(_link_columns(row)) for row in rows)
+        names = [_role_name(from_entity, _link_columns(row)) for row in rows]
+        if len(set(names)) < len(names):  # day_id and day_key both read "day": spell the columns
+            names = [f"{from_entity}_{'_'.join(_link_columns(row))}" for row in rows]
+        for row, name in zip(rows, names, strict=True):
+            row["upsert_relationship"]["name"] = name
+            row["choice"] = (
+                f"{len(rows)} column sets of {answer['relation']} each hold a {entity} key "
+                f"({spelled}). Each draft writes a named role, so neither replaces the other; "
+                f"which one a question by {entity} means is a business choice: record it with "
+                f"record_route_decision, or such a question is refused until you do."
+            )
 
 
 def _describe_target(warehouse: DuckDBWarehouse, target: dict[str, Any]) -> dict[str, Any]:
@@ -1431,35 +1873,40 @@ def _describe_target(warehouse: DuckDBWarehouse, target: dict[str, Any]) -> dict
 
 def _place_link(
     answer: dict[str, Any],
-    column: str,
+    columns: list[str],
     target: dict[str, Any],
     evidence: dict[str, Any],
     min_coverage: float,
     from_entity: str,
+    own_key: list[str],
 ) -> None:
     row: dict[str, Any] = {
-        "column": column,
+        **({"column": columns[0]} if len(columns) == 1 else {"columns": list(columns)}),
         "target": {key: target[key] for key in ("relation", "key", "entity") if target.get(key)},
         "evidence": evidence,
     }
     if not evidence["distinct_found"]:
         return  # a column named like a key whose values are none of its keys: no candidate
     if not evidence["target_key_unique"]:
+        key = _spelled([str(k) for k in _as_keys(target["key"])])
         row["reason"] = (
-            f"{target['relation']}.{target['key']} repeats or is missing on some rows, so it "
+            f"{target['relation']}.{key} repeats or is missing on some rows, so it "
             "names no one row: no lookup can read it (suggest_one_per_key says whether that "
             "table can be read one row per key)"
         )
         answer["not_proposed"].append(row)
         return
-    cardinality = "one_to_one" if evidence["column_unique"] else "many_to_one"
+    # A composite reference unique in today's rows is one to one only when it is the row's own
+    # key: else a sale line returned once reads that return's columns (its customer) as its own.
+    own = len(columns) == 1 or set(columns) == set(own_key)
+    cardinality = "one_to_one" if evidence["column_unique"] and own else "many_to_one"
     row["cardinality"] = cardinality
-    row["reason"] = _link_words(column, target, evidence)
+    row["reason"] = _link_words(columns, target, evidence, answer["relation"])
     if from_entity and target.get("entity"):
         row["upsert_relationship"] = {
             "from_entity": from_entity,
             "to_entity": target["entity"],
-            "columns": [column],
+            "columns": list(columns),
             "cardinality": cardinality,
         }
     answer["proposals" if evidence["coverage"] >= min_coverage else "below_threshold"].append(row)

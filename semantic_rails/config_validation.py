@@ -71,6 +71,7 @@ from .route_census import package_queries, route_census
 from .runtime import Runtime, runtime_request_scope
 from .segments import build_segment_query, normalize_segment
 from .semantic_collisions import semantic_collision_warnings
+from .untimed_measures import untimed_warnings
 from .yaml_loader import safe_load as yaml_safe_load
 
 ProgressFn = Callable[[str], None]
@@ -1020,6 +1021,7 @@ def _compiled_package_warnings(
             )
     warnings.extend(semantic_collision_warnings(config, source_path))
     warnings.extend(lookalike_warnings(config, source_path))
+    warnings.extend(untimed_warnings(config, source_path))
     warnings.extend(
         _error_payload(
             "ROW_FILTER_SCOPED_BY_ROLE",

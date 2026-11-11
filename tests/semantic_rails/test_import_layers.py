@@ -41,7 +41,7 @@ LAYERS = [
     " config_parts.row_values config_parts.temporal_rows",
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
     "ast expressions schema errors issues request_payload catalog_format catalog_search scope"
-    " temporal_support"
+    " temporal_support untimed_measures"
     " result_values policy_rules naming atomic_files operators clock query_call flat_copy",
 ]
 LAYER_OF = {key: rank for rank, keys in enumerate(LAYERS) for key in keys.split()}
