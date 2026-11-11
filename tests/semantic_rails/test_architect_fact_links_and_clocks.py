@@ -671,17 +671,30 @@ LEFT JOIN customers c ON c.customer_key = s.customer_key GROUP BY 1
 
 
 @pytest.mark.parametrize("twice", [False, True], ids=["once", "twice"])
-def test_a_build_in_table_order_reads_a_sale_s_customer_from_the_sale(tmp_path, twice):
+@pytest.mark.parametrize("day", [True, False], ids=["shared-day", "undated-returns"])
+def test_a_build_in_table_order_reads_a_sale_s_customer_from_the_sale(tmp_path, twice, day):
     """Linked in table order, the return reaches its customer and its sale line first. That
     link is many to one even where no line is returned twice yet, so a sale never reads its
-    return's customer as its own; the sale's own customer link, preferred, then also carries
-    the routes that went from a sale to its customer through its returns. Sales by customer
-    equal the SQL."""
+    return's customer as its own. The sale's own customer link is then refused until preferred,
+    whether the route it would replace went through the sale's returns as it was (recorded
+    when the return-to-sale link was preferred over their shared day) or not; preferred, it
+    also carries the routes that went from a sale to its customer through its returns. Sales by
+    customer equal the SQL."""
     seed = RETURN_CUSTOMERS + (RETURNED_TWICE if twice else "")
+    if not day:
+        seed += "ALTER TABLE returns DROP COLUMN return_day_key;"
     pkg, log = _build(tmp_path, seed=seed)
     returns = next(row for row in log if row.get("suggest_links") == "returns")
     (to_sale,) = [row for row in returns["proposals"] if row["target"]["entity"] == "sale"]
     assert to_sale["cardinality"] == "many_to_one"
+    refused = [row["refused"]["message"] for row in log if "refused" in row]
+    assert refused[-1].startswith(
+        "A recorded route takes sale to customer through other entities' rows "
+        "(relationship.returns_sale, relationship.returns_customer), reading no one customer "
+        "for each sale"
+        if day
+        else "sale and customer reach each other today through other entities' rows"
+    )
     by_customer = {
         "select": ["measure.shop.amount"],
         "group_by": ["dimension.shop_customer_customer_name"],

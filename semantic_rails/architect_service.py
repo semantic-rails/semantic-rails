@@ -56,7 +56,6 @@ from .package_tools import impact_report
 from .route_census import resolve_pairs, route_census, route_changes
 from .schema import PackageConfig, PathPreferenceConfig
 from .sql_identifiers import relation_parts
-from .untimed_measures import calendar_like
 from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
@@ -2955,12 +2954,12 @@ class ArchitectProject:
         return {"taken": frozenset(taken), "link_model": link, "parents": parents}
 
     def clock_context(self, relation: str) -> dict[str, Any]:
-        """What ``suggest_model`` reads from the package for ``relation``: each calendar-like
-        entity (``calendar_like``) with a one-column key whose model has a default time that is
-        no as-of clock, with that model's relation, the time's column (``date_column``) and role,
-        and whether it
-        is ``kind: time`` (``clocks``); and the clock entities the model over ``relation``
-        already links, by the column it links each with (``clock_links``)."""
+        """What ``suggest_model`` reads from the package for ``relation``: each entity with a
+        one-column key whose model has a default time that is no as-of clock, with that
+        model's relation, the time's column (``date_column``) and role, and whether the entity
+        is ``kind: time`` (``clocks``; suggest_model reads the others' rows to tell a calendar);
+        and the clock entities the model over ``relation`` already links, by the column it
+        links each with (``clock_links``)."""
         raw = self._raw_inventory()
         models = {row.key: row for row in raw["models"]}
         clocks: list[dict[str, Any]] = []
@@ -2978,18 +2977,16 @@ class ArchitectProject:
             keys = _as_list(entity.spec.get("key")) if entity is not None else []
             if entity is None or len(keys) != 1:
                 continue
-            kind = str(entity.spec.get("kind") or "")
-            if calendar_like(kind, [str(entity.spec.get("name") or entity.key), str(keys[0])]):
-                clocks.append(
-                    {
-                        "entity": entity.key,
-                        "relation": str(model.spec.get("relation")),
-                        "key": str(keys[0]),
-                        "date_column": str(time_row.spec.get("column") or time_row.key),
-                        "temporal_role": time_row.object_id,
-                        "calendar": kind == "time",
-                    }
-                )
+            clocks.append(
+                {
+                    "entity": entity.key,
+                    "relation": str(model.spec.get("relation")),
+                    "key": str(keys[0]),
+                    "date_column": str(time_row.spec.get("column") or time_row.key),
+                    "temporal_role": time_row.object_id,
+                    "calendar": entity.spec.get("kind") == "time",
+                }
+            )
         place = _relation_place(relation)
         clock_links: dict[str, str] = {}
         for model in raw["models"]:
