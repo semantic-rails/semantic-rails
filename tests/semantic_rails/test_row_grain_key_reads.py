@@ -71,6 +71,8 @@ SWITCHED = {
     ("metadata.py", "discover_payload"),
     ("package_tools.py", "check_warehouse_column_reachability_report"),
     ("planner/groupings.py", "_entity_stand_ins"),
+    # A model with no key has no key column for a relationship to join, so no column cuts as it.
+    ("policies.py", "_cuts"),
     ("planner/unmatched_words.py", "_grouped_entities"),
     ("runtime.py", "_named_key_refusal"),
     ("runtime.py", "_unknown_rows_kept_warnings"),
