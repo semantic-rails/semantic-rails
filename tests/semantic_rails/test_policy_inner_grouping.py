@@ -6,8 +6,11 @@ entity filter's per-entity values (a threshold on each one decides which entitie
 lookup measure's per-parent values. Each such grouping is held to the measure's
 ``allowed_group_by`` and ``required_group_by`` like the call's own ``group_by``, and to its
 ``required_where`` like the call's own ``where``, and refused the same way, naming the measure,
-the inner grouping and the cuts the policy allows. Groupings that only aggregate the call's
-own groups (a total, a share, a conversion's event matching) read nothing finer and still answer.
+the inner grouping and the cuts the policy allows. So is the key the answer carries beside a
+name that labels an entity's rows, a conversion's operand events (read under only the filters
+routed to their side) and a share's total beside an entity filter. Groupings that only
+aggregate the call's own groups (a total, a share, a conversion's event matching) read nothing
+finer and still answer.
 """
 
 from __future__ import annotations

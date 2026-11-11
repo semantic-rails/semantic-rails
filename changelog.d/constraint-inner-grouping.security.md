@@ -8,7 +8,10 @@
   the cuts the policy allows. With revenue limited to store cuts, the median of revenue per
   customer is refused: "measure.jaffle.revenue_usd can't be grouped by
   dimension.jaffle_customer_id, as the distribution over entity.jaffle_customer groups it; it
-  can be grouped only by dimension.jaffle_store_name." A package metric with such an entity
-  filter is refused the same way for a caller the constraint applies to; add the entity's key
-  to `allowed_group_by` where a per-entity statistic is meant to be read. Callers no constraint
-  applies to get the same SQL as before.
+  can be grouped only by dimension.jaffle_store_name." The same holds for the key the answer
+  carries beside a name that labels an entity's rows, for a conversion's converted events (read
+  without the call's filter on the base side), for a share beside an entity filter or inside a
+  package metric, and for a policy on a package metric's id. A package metric with such an
+  entity filter is refused the same way for a caller the constraint applies to; add the
+  entity's key to `allowed_group_by` where a per-entity statistic is meant to be read. Callers
+  no constraint applies to get the same SQL as before.
