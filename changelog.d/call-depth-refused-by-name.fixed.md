@@ -2,7 +2,9 @@
   (`INVALID_QUERY`, with `details.depth` and `details.max_depth`) before any work, instead of
   failing with an internal error. 250 levels is what the compiler fits in Python's default
   stack with room for the program calling it: copying a compiled plan, and turning it into the
-  answer's fields, no longer take a frame of the stack for each level. A division nested in its
+  answer's fields, no longer take a frame of the stack for each level, and neither do the
+  checks of a timed call's clocks, so a monthly call that deep answers on Python 3.11 as well.
+  A division nested in its
   divisor 100 times, which failed with an internal error, now compiles. See
   [Refusals](docs/QUERY_CALL.md#refusals).
 - A boolean `and` or `or` with hundreds of arguments compiles: from about 250 arguments it

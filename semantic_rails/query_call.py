@@ -413,12 +413,14 @@ class CallContext:
 # (``expressions.boolean_chain_depth``), so a boolean nested in a binary one is one level
 # deeper, as an arithmetic in an arithmetic is. Reading, binding and rendering a call recurse;
 # every walk that only copies, converts or searches a call or its plan keeps its own stack
-# (``flat_copy``). Measured at this depth, cold, on every shape the tests hold: on Python 3.12
-# and later a call costs at most 2.6 frames a level (a prior period inside an arithmetic) and
-# peaks near 650 frames; Python 3.11, which also counts some calls made from C, peaks near 780
-# (a division nested in its divisor, a nested boolean). That leaves at least 220 of the 1,000
-# frames Python allows by default to whatever calls the engine; the tests hold 200 for it on
-# every version and dialect. The bound is the stack's, not the call's cost.
+# (``flat_copy``), as do the checks of a timed call's clocks. Measured at this depth, cold, on
+# every shape the tests hold, with a time block and without and in a timed joined part: on
+# Python 3.12 and later a call costs at most 2.6 frames a level (a prior period inside an
+# arithmetic) and peaks near 650 frames; Python 3.11, which also counts some calls made from C,
+# peaks near 780 (a division nested in its divisor, a nested boolean, a timed nested NULLIF).
+# That leaves at least 220 of the 1,000 frames Python allows by default to whatever calls the
+# engine; the tests hold 200 for it on every version and dialect. The bound is the stack's, not
+# the call's cost.
 MAX_CALL_DEPTH = 250
 
 
@@ -725,14 +727,20 @@ def _refuse_untimed_part(
 
 def _named_ids(value: Any) -> list[str]:
     """Every measure and metric id a part's raw ``select`` names, at any depth of an item
-    (an id, an ``expression`` and the kinds nested in it); an alias (``as``) names none."""
-    if isinstance(value, str):
-        return [value] if value.startswith(REFERENCE_PREFIXES) else []
-    if isinstance(value, Mapping):
-        return [ref for key, item in value.items() if key != "as" for ref in _named_ids(item)]
-    if isinstance(value, list):
-        return [ref for item in value for ref in _named_ids(item)]
-    return []
+    (an id, an ``expression`` and the kinds nested in it); an alias (``as``) names none. An
+    explicit stack, in the order written, keeps a deep item off Python's."""
+    found: list[str] = []
+    stack: list[Any] = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if item.startswith(REFERENCE_PREFIXES):
+                found.append(item)
+        elif isinstance(item, Mapping):
+            stack.extend(reversed([child for key, child in item.items() if key != "as"]))
+        elif isinstance(item, list):
+            stack.extend(reversed(item))
+    return found
 
 
 def _refuse_shared_aliases(parts: list[dict[str, Any]]) -> None:

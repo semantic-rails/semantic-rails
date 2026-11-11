@@ -157,6 +157,9 @@ SHAPES: dict[str, Callable[[int], Any]] = {
 # and no warehouse nests one window function in another, as a prior period of a prior period
 # would: these compile at the bound, and are run only shallow.
 NOT_RUN_DEEP = {"divide_right", "nullif", "prior_period", "ratio_denominator"}
+# A call with a time block also walks its fields for the clocks that time them; a row-level
+# count has no clock, so no call times it.
+TIMED = sorted(set(SHAPES) - {"row_filter"})
 
 
 def _call(expression: Any, *, monthly: bool = False) -> dict[str, Any]:
@@ -169,10 +172,10 @@ def _call(expression: Any, *, monthly: bool = False) -> dict[str, Any]:
     return call
 
 
-def _deepest(shape: str) -> dict[str, Any]:
+def _deepest(shape: str, *, monthly: bool = False) -> dict[str, Any]:
     """The deepest call of ``shape`` the engine compiles."""
     levels = 1
-    monthly = shape == "prior_period"
+    monthly = monthly or shape == "prior_period"
     while call_depth(_call(SHAPES[shape](levels + 1), monthly=monthly))[0] <= MAX_CALL_DEPTH:
         levels += 1
     call = _call(SHAPES[shape](levels), monthly=monthly)
@@ -268,12 +271,26 @@ def test_a_timed_joined_part_too_deep_is_refused_before_it_is_read(runtime, surf
     assert error["details"]["part"] == 1
 
 
-@pytest.mark.parametrize("shape", sorted(SHAPES))
-def test_the_deepest_call_answers_with_the_host_frames_left(runtime, shape):
-    call = _deepest(shape)
+@pytest.mark.parametrize(
+    ("shape", "monthly"),
+    [(shape, False) for shape in sorted(SHAPES)] + [(shape, True) for shape in TIMED],
+)
+def test_the_deepest_call_answers_with_the_host_frames_left(runtime, shape, monthly):
+    call = _deepest(shape, monthly=monthly)
     assert _with_host_frames(lambda: runtime.validate(call, now=NOW))["status"] == "ok"
     if shape not in NOT_RUN_DEEP:
         assert _with_host_frames(lambda: runtime.query(call, now=NOW))["status"] == "ok"
+
+
+@pytest.mark.parametrize("shape", TIMED)
+def test_the_deepest_timed_joined_part_answers_with_the_host_frames_left(runtime, shape):
+    joined = {
+        "parts": [{"select": [ORDERS], "group_by": [STORE]}, _deepest(shape)],
+        "join": {"on": [[STORE, STORE]]},
+        "time": {"grain": "month"},
+    }
+    joined["parts"][1].pop("time", None)  # a joined call times its parts from its own block
+    assert _with_host_frames(lambda: runtime.validate(joined, now=NOW))["status"] == "ok"
 
 
 @pytest.mark.parametrize("warehouse", sorted(supported_warehouses()))
