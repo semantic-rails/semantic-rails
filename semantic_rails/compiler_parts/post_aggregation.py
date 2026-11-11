@@ -463,7 +463,9 @@ def _compile_post_expr(
             )
         if not expr.args:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
-        rendered = [sub(arg) for arg in expr.args]
+        rendered: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            rendered.append(sub(arg))
         if op == "not":
             if len(rendered) != 1:
                 raise SemanticLayerError(
@@ -487,8 +489,11 @@ def _compile_post_expr(
             return build_negation(rendered[0])
         return boolean_chain(op.upper(), rendered)
     if isinstance(expr, CallExpr):
+        call_args: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            call_args.append(sub(arg))
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
-            expr.name, [sub(arg) for arg in expr.args], distinct=expr.distinct
+            expr.name, call_args, distinct=expr.distinct
         )
     if isinstance(expr, DateAddExpr):
         return dialect_for_warehouse(config.package.warehouse).date_add(

@@ -163,10 +163,11 @@ def _semantic_expr_to_sql(
         )
     if isinstance(expr, BooleanExpr):
         validate_boolean_argument_count(expr.op, len(expr.args))
-        args = [
-            _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
-            for arg in expr.args
-        ]
+        args: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            args.append(
+                _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
+            )
         if not args:
             return SqlLiteral(True)
         if expr.op.lower() == "not":
@@ -178,13 +179,13 @@ def _semantic_expr_to_sql(
             return build_negation(args[0])
         return boolean_chain(expr.op.upper(), args)
     if isinstance(expr, CallExpr):
-        return dialect_for_warehouse(warehouse).scalar_call(
-            expr.name,
-            [
+        call_args: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            call_args.append(
                 _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
-                for arg in expr.args
-            ],
-            distinct=expr.distinct,
+            )
+        return dialect_for_warehouse(warehouse).scalar_call(
+            expr.name, call_args, distinct=expr.distinct
         )
     if isinstance(expr, DateAddExpr):
         return dialect_for_warehouse(warehouse).date_add(

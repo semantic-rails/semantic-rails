@@ -159,12 +159,12 @@ SHAPES: dict[str, Callable[[int], Any]] = {
 NOT_RUN_DEEP = {"divide_right", "nullif", "prior_period", "ratio_denominator"}
 
 
-def _call(expression: Any) -> dict[str, Any]:
+def _call(expression: Any, *, monthly: bool = False) -> dict[str, Any]:
     call: dict[str, Any] = {
         "select": [{"expression": expression, "as": "value"}],
         "group_by": [STORE],
     }
-    if "prior_period" in repr(expression):
+    if monthly:  # a prior period reads the month before
         call["time"] = {"grain": "month"}
     return call
 
@@ -172,9 +172,10 @@ def _call(expression: Any) -> dict[str, Any]:
 def _deepest(shape: str) -> dict[str, Any]:
     """The deepest call of ``shape`` the engine compiles."""
     levels = 1
-    while call_depth(_call(SHAPES[shape](levels + 1)))[0] <= MAX_CALL_DEPTH:
+    monthly = shape == "prior_period"
+    while call_depth(_call(SHAPES[shape](levels + 1), monthly=monthly))[0] <= MAX_CALL_DEPTH:
         levels += 1
-    call = _call(SHAPES[shape](levels))
+    call = _call(SHAPES[shape](levels), monthly=monthly)
     assert call_depth(call)[0] >= MAX_CALL_DEPTH - 2  # a case nested in a case is 3 levels
     return call
 
@@ -285,7 +286,7 @@ def test_every_dialect_renders_the_deepest_call_with_the_host_frames_left(wareho
         # The two that take the most stack a level; every shape peaks alike on every dialect.
         for shape in ("divide_right", "prior_period"):
             try:
-                runtime.compile(_call(SHAPES[shape](2)), now=NOW)
+                runtime.compile(_call(SHAPES[shape](2), monthly=shape == "prior_period"), now=NOW)
             except SemanticLayerError:
                 continue  # the dialect has no form for this shape at any depth
             call = _deepest(shape)

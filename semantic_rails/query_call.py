@@ -411,13 +411,14 @@ class CallContext:
 # The deepest a call nests: the call is level 1, and each object or list inside another is one
 # level more; a boolean's arguments sit as many levels below it as the compiler joins them
 # (``expressions.boolean_chain_depth``), so a boolean nested in a binary one is one level
-# deeper, as an arithmetic in an arithmetic is. Reading, binding and rendering a call recurse; every
-# walk that only copies, converts or searches a call or its plan keeps its own stack
-# (``flat_copy``). So a call costs at most 2.6 Python frames a level (a prior period inside an
-# arithmetic; a plain arithmetic costs 2.1) above about 20 of the engine's and its transports'
-# own: a call this deep peaks near 670 frames on every dialect and transport, leaving 300 of the
-# 1,000 Python allows by default to whatever calls the engine; the tests hold 200 for it. The
-# bound is the stack's, not the call's cost.
+# deeper, as an arithmetic in an arithmetic is. Reading, binding and rendering a call recurse;
+# every walk that only copies, converts or searches a call or its plan keeps its own stack
+# (``flat_copy``). Measured at this depth, cold, on every shape the tests hold: on Python 3.12
+# and later a call costs at most 2.6 frames a level (a prior period inside an arithmetic) and
+# peaks near 650 frames; Python 3.11, which also counts some calls made from C, peaks near 780
+# (a division nested in its divisor, a nested boolean). That leaves at least 220 of the 1,000
+# frames Python allows by default to whatever calls the engine; the tests hold 200 for it on
+# every version and dialect. The bound is the stack's, not the call's cost.
 MAX_CALL_DEPTH = 250
 
 
