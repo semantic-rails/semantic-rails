@@ -56,6 +56,7 @@ from .package_tools import impact_report
 from .route_census import resolve_pairs, route_census, route_changes
 from .schema import PackageConfig, PathPreferenceConfig
 from .sql_identifiers import relation_parts
+from .untimed_measures import calendar_like
 from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
@@ -1443,9 +1444,9 @@ class ArchitectProject:
         if any previous route outcome (including a refusal) would still change. With it,
         ``prefer_this_link=True`` records the new link as the route between its two entities
         instead, both ways (a return and its sale, which met through their shared day), and a
-        moved route whose leg between the two crossed a shared entity's rows walks the link
-        there. Every other route keeps its path; one beyond the pair that answers today and
-        would move anyway is refused, naming it."""
+        moved route whose leg between the two crossed a shared entity's rows, or was their own
+        earlier route, walks the link there. Every other route keeps its path; one beyond the
+        pair that answers today and would move anyway is refused, naming it."""
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
         foreign_key = [column.strip() for column in _as_list(columns)]
@@ -1623,6 +1624,18 @@ class ArchitectProject:
             updates: list[ProjectFileUpdate], source_id: str, target_id: str
         ) -> tuple[list[ProjectFileUpdate], None]:
             """``updates``, plus a row for each pair whose route they move, when asked to keep."""
+            if not (keep_existing_routes or prefer_this_link):
+                transaction = ProjectTransaction(
+                    self.project_path, workspace_root=self.workspace_root
+                )
+                try:
+                    changed = self._proposed_config(transaction, updates)
+                except SemanticLayerError:
+                    return updates, None  # validation reports what is wrong with the write
+                link = _written_link(changed, source_id, target_id, foreign_key, role)
+                held = _held_off_link(changed, link) if link else []
+                if held:
+                    raise _held_off_link_refusal(held, source, target)
             if keep_existing_routes or prefer_this_link:
                 transaction = ProjectTransaction(
                     self.project_path, workspace_root=self.workspace_root
@@ -1636,18 +1649,34 @@ class ArchitectProject:
                 ]
                 # With prefer_this_link, the link is the route between its two entities, both
                 # ways; a kept route that went between them another way walks the link instead.
+                # The pair's own earlier route, where it read no one row of what the link reads
+                # one of (a sale's customer through the sale's returns): a kept route whose leg
+                # between the two was that route walks the link there too, both ways, reading
+                # what the pair now reads.
                 link = _written_link(changed, source_id, target_id, foreign_key, role)
+                preferred = moved if prefer_this_link and link else []
+                ends = _link_ends(changed, link) if preferred else ("", "")
+                pair_routes = {
+                    (change["source_entity"], change["target_entity"]): list(
+                        change["base"]["relationship_path"]
+                    )
+                    for change in preferred
+                    if {change["source_entity"], change["target_entity"]} == set(ends)
+                }
+                forward = pair_routes.get(ends)
+                if forward is None or all((_hops(base, ends[0], forward) or ([], [True]))[1]):
+                    pair_routes = {}
                 replaced = {
                     (change["source_entity"], change["target_entity"]): path
-                    for change in (moved if prefer_this_link and link else [])
-                    if (path := _through_link(changed, change, link))
+                    for change in preferred
+                    if (path := _through_link(changed, change, link, pair_routes))
                     != change["base"]["relationship_path"]
                 }
                 answered = [
                     change
-                    for change in (moved if prefer_this_link and link else [])
+                    for change in preferred
                     if _meets_link_ends(changed, change, link)
-                    and _through_link(changed, change, link) == change["base"]["relationship_path"]
+                    and (change["source_entity"], change["target_entity"]) not in replaced
                 ]
                 if answered:
                     raise _moves_answered_routes(answered)
@@ -2926,13 +2955,15 @@ class ArchitectProject:
         return {"taken": frozenset(taken), "link_model": link, "parents": parents}
 
     def clock_context(self, relation: str) -> dict[str, Any]:
-        """What ``suggest_model`` reads from the package for ``relation``: each entity with a
-        one-column key whose model has a default time that is no as-of clock, with that
-        model's relation and the time's role (``clocks``); and the clock entities the model
-        over ``relation`` already links, by the column it links each with (``clock_links``)."""
+        """What ``suggest_model`` reads from the package for ``relation``: each calendar-like
+        entity (``calendar_like``) with a one-column key whose model has a default time that is
+        no as-of clock, with that model's relation, the time's column (``date_column``) and role,
+        and whether it
+        is ``kind: time`` (``clocks``); and the clock entities the model over ``relation``
+        already links, by the column it links each with (``clock_links``)."""
         raw = self._raw_inventory()
         models = {row.key: row for row in raw["models"]}
-        clocks: list[dict[str, str]] = []
+        clocks: list[dict[str, Any]] = []
         for time_row in raw["times"]:
             model = models.get(str(time_row.model_key))
             if (
@@ -2945,13 +2976,18 @@ class ArchitectProject:
                 raw["entities"], self._primary_entity_for_model(model, raw["entities"])
             )
             keys = _as_list(entity.spec.get("key")) if entity is not None else []
-            if entity is not None and len(keys) == 1:
+            if entity is None or len(keys) != 1:
+                continue
+            kind = str(entity.spec.get("kind") or "")
+            if calendar_like(kind, [str(entity.spec.get("name") or entity.key), str(keys[0])]):
                 clocks.append(
                     {
                         "entity": entity.key,
                         "relation": str(model.spec.get("relation")),
                         "key": str(keys[0]),
+                        "date_column": str(time_row.spec.get("column") or time_row.key),
                         "temporal_role": time_row.object_id,
+                        "calendar": kind == "time",
                     }
                 )
         place = _relation_place(relation)
@@ -2970,18 +3006,21 @@ class ArchitectProject:
         """What ``suggest_links`` reads from the package for ``relation``: each entity with a
         key, with its model's relation (``targets``; a composite key as a list); the entity homed
         on a model over ``relation``, else the row-grain model over it, that a link starts from
-        (``from_entity``); and the entities it already links to (``linked``), in its model's
-        ``entities`` or by a ``graph.relationships`` entry from it."""
+        (``from_entity``), with its key (``source_key``; none for a row-grain model); and the
+        entities it already links to (``linked``), in its model's ``entities`` or by a
+        ``graph.relationships`` entry from it."""
         raw = self._raw_inventory()
 
         models = {row.key: row for row in raw["models"]}
         targets: list[dict[str, Any]] = []
         homed: dict[tuple[str, str], tuple[str, _RawObject]] = {}
+        entity_keys: dict[str, list[str]] = {}
         for row in raw["entities"]:
             model = models.get(str(row.spec.get("model") or row.key))
             keys = _as_list(row.spec.get("key"))
             if model is None:
                 continue
+            entity_keys[row.key] = [str(key) for key in keys]
             homed.setdefault(_relation_place(model.spec.get("relation")), (row.key, model))
             if keys:
                 targets.append(
@@ -3012,7 +3051,12 @@ class ArchitectProject:
                 and len(pair := _as_list(entry.get("entities"))) == 2
                 and pair[0] == from_entity
             }
-        return {"targets": targets, "from_entity": from_entity, "linked": frozenset(linked)}
+        return {
+            "targets": targets,
+            "from_entity": from_entity,
+            "linked": frozenset(linked),
+            "source_key": entity_keys.get(from_entity, []),
+        }
 
     def _entity_names(
         self, raw: dict[str, list[_RawObject]], row_grain: Mapping[str, _RawObject]
@@ -3149,6 +3193,44 @@ def _link_ends(config: Any, link: str) -> tuple[str, str]:
     return rel.source_entity, rel.target_entity
 
 
+def _held_off_link(config: Any, link: str) -> list[dict[str, Any]]:
+    """The recorded routes that keep ``link``'s two entities off it, where the route from the
+    link's source reads no one row of its target (a sale's customer through the sale's
+    returns) while the link reads one: both ways, as recorded; else none."""
+    ends = _link_ends(config, link)
+    pinned = {(row.source_entity, row.target_entity) for row in config.path_preferences}
+    held = resolve_pairs(config, [ends, ends[::-1]])
+    path = list(held[ends].shape().get("relationship_path") or [])
+    walked = _hops(config, ends[0], path) if ends in pinned and path != [link] else None
+    if not path or walked is None or all(walked[1]):
+        return []
+    return [
+        {
+            "source_entity": pair[0],
+            "target_entity": pair[1],
+            "relationship_path": list(held[pair].shape().get("relationship_path") or []),
+        }
+        for pair in (ends, ends[::-1])
+        if pair in pinned
+    ]
+
+
+def _held_off_link_refusal(
+    held: list[dict[str, Any]], source: str, target: str
+) -> SemanticLayerError:
+    """A link a recorded route keeps its own two entities off: refused, with the way out."""
+    route = ", ".join(held[0]["relationship_path"])
+    return SemanticLayerError(
+        "ROUTE_DECISION_NOT_RECORDED",
+        f"A recorded route takes {source} to {target} through other entities' rows ({route}), "
+        f"reading no one {target} for each {source}, and it would keep this link from changing "
+        f"any answer between them; nothing was written. Retry with prefer_this_link=true to "
+        f"make the link the route between {source} and {target}, or with "
+        "keep_existing_routes=true to keep the recorded route.",
+        details={"held_routes": held},
+    )
+
+
 def _moves_answered_routes(changes: list[dict[str, Any]]) -> SemanticLayerError:
     """``prefer_this_link`` refused: the link would move routes outside its pair that answer
     today (their leg between the two entities crosses no shared entity)."""
@@ -3181,29 +3263,46 @@ def _meets_link_ends(config: Any, change: dict[str, Any], link: str) -> bool:
     return ends <= stops
 
 
-def _through_link(config: Any, change: dict[str, Any], link: str) -> list[str]:
+def _hops(config: Any, start: str, path: list[str]) -> tuple[list[str], list[bool]] | None:
+    """The entities a route from ``start`` along ``path`` stops at, and whether each hop reads
+    one row (to-one); None when a relationship of the path is unknown."""
+    relationships = {row.id: row for row in config.relationships}
+    stops, to_one = [start], []
+    for rel_id in path:
+        rel = relationships.get(rel_id)
+        if rel is None:
+            return None
+        forward = rel.source_entity == stops[-1]
+        to_one.append(rel.cardinality == "1:1" or (forward and rel.cardinality == "N:1"))
+        stops.append(rel.target_entity if forward else rel.source_entity)
+    return stops, to_one
+
+
+def _through_link(
+    config: Any,
+    change: dict[str, Any],
+    link: str,
+    pair_routes: Mapping[tuple[str, str], list[str]] | None = None,
+) -> list[str]:
     """A moved pair's earlier route, with ``link`` in place of the leg that went between the
     link's two entities through a shared entity's rows (up to one row of it, then down to its
-    rows): the link alone for the pair it relates. A route that met the two only by to-one or
-    only by to-many hops keeps its path: the link changes no answer it gave."""
-    relationships = {row.id: row for row in config.relationships}
+    rows), or that was their own earlier route (``pair_routes``, by ends): the link alone for
+    the pair it relates. Any other route that met the two only by to-one or only by to-many hops
+    keeps its path: the link changes no answer it gave."""
     ends = set(_link_ends(config, link))
     path = list(change["base"]["relationship_path"])
     if {change["source_entity"], change["target_entity"]} == ends:
         return [link]
-    stops, to_one = [change["source_entity"]], []
-    for rel_id in path:
-        rel = relationships.get(rel_id)
-        if rel is None:
-            return path
-        forward = rel.source_entity == stops[-1]
-        to_one.append(rel.cardinality == "1:1" or (forward and rel.cardinality == "N:1"))
-        stops.append(rel.target_entity if forward else rel.source_entity)
+    walked = _hops(config, change["source_entity"], path)
+    if walked is None:
+        return path
+    stops, to_one = walked
     for i, first in enumerate(stops):
         for j in range(len(stops) - 1, i, -1):
             leg = to_one[i:j]
             crosses = any(up and not down for k, up in enumerate(leg) for down in leg[k + 1 :])
-            if {first, stops[j]} == ends and crosses:
+            was_pair = path[i:j] == list((pair_routes or {}).get((first, stops[j]), []))
+            if {first, stops[j]} == ends and (crosses or was_pair):
                 return [*path[:i], link, *path[j:]]
     return path
 

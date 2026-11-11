@@ -10,13 +10,28 @@ check (``MEASURE_WITHOUT_TIME_ROLE``), from the configuration alone.
 
 from __future__ import annotations
 
+import re
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from .schema import PackageConfig
 
 MEASURE_WITHOUT_TIME_ROLE = "MEASURE_WITHOUT_TIME_ROLE"
+# Words that name a calendar entity or its key (``day``, ``date_key``, ``calendar``).
+_CALENDAR_WORDS = frozenset({"calendar", "date", "day", "week", "month"})
+
+
+def calendar_like(kind: str, names: Iterable[str]) -> bool:
+    """Whether an entity reads as a calendar from the package alone: ``kind: time``, or its
+    name or key column names a date (``day``, ``date_key``, ``calendar``). Another entity's own
+    date (a store's opening day, a version's ``valid_from``) dates none of the rows linked to it."""
+    return kind == "time" or any(
+        word in _CALENDAR_WORDS
+        for name in names
+        for word in re.split(r"[^a-z0-9]+", str(name).lower())
+    )
 
 
 def _role_entities(config: PackageConfig) -> dict[str, str]:
@@ -56,15 +71,23 @@ def _where(config: PackageConfig, measure: Any) -> tuple[str, str]:
 
 def reachable_clocks(config: PackageConfig, measure: Any) -> list[str]:
     """The temporal roles whose entity the measure's rows reach one row of: its own entity's
-    first, then the package's default clocks, each in package order."""
+    first, then the default clocks of the calendars it reaches (``calendar_like``), each in
+    package order."""
     reach = _to_one_reach(config, measure.entity)
     entities = _role_entities(config)
     own = [role for role, entity in entities.items() if entity == measure.entity]
     defaults = {role.id for role in config.temporal_roles if role.default_query_time_axis}
+    calendars = {
+        row.id
+        for row in config.entities
+        if calendar_like(
+            row.kind, [row.name, *(row.key_columns if len(row.key_columns) == 1 else [])]
+        )
+    }
     others = [
         role
         for role, entity in entities.items()
-        if entity != measure.entity and entity in reach and role in defaults
+        if entity != measure.entity and entity in reach and role in defaults and entity in calendars
     ]
     return own + others
 

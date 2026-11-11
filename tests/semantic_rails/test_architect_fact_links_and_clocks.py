@@ -149,7 +149,14 @@ class _Session:
         )
 
 
-def _build(tmp_path: Path, *, prefer: bool = True) -> tuple[Path, list[dict[str, Any]]]:
+def _build(
+    tmp_path: Path,
+    *,
+    prefer: bool = True,
+    seed: str = SEED,
+    models: tuple[str, ...] = ("customers", "returns", "sales"),
+    links: tuple[str, ...] = ("returns", "sales"),
+) -> tuple[Path, list[dict[str, Any]]]:
     """A blind Architect build: create, explore, suggest, write what was suggested (a refused
     link retried as its refusal says first), validate. Returns the package and the log."""
     pkg = tmp_path / "shop"
@@ -173,8 +180,8 @@ def _build(tmp_path: Path, *, prefer: bool = True) -> tuple[Path, list[dict[str,
         assert created["ok"], created
         (pkg / "data").mkdir(exist_ok=True)
         with duckdb.connect(str(pkg / "data" / "shop.duckdb")) as conn:
-            conn.execute(SEED)
-        for relation in ("customers", "returns", "sales"):
+            conn.execute(seed)
+        for relation in models:
             suggestion = await s.call(
                 session,
                 "suggest_model",
@@ -185,10 +192,12 @@ def _build(tmp_path: Path, *, prefer: bool = True) -> tuple[Path, list[dict[str,
             log.append({"suggest_model": relation, **suggestion})
             written = await s.write(session, "upsert_model", **suggestion["upsert_model"])
             assert written["ok"], written
-        for relation in ("returns", "sales"):
-            links = await s.call(session, "suggest_links", project_path=str(pkg), relation=relation)
-            log.append({"suggest_links": relation, **links})
-            for row in links["proposals"]:
+        for relation in links:
+            proposed = await s.call(
+                session, "suggest_links", project_path=str(pkg), relation=relation
+            )
+            log.append({"suggest_links": relation, **proposed})
+            for row in proposed["proposals"]:
                 written = await s.write(
                     session, "upsert_relationship", **row["upsert_relationship"]
                 )
@@ -207,18 +216,19 @@ def _build(tmp_path: Path, *, prefer: bool = True) -> tuple[Path, list[dict[str,
                         **{retry: True},
                     )
                 assert written["ok"], written
-        written = await s.write(
-            session,
-            "upsert_metric",
-            metric_key="total_amount",
-            spec={
-                "kind": "aggregate",
-                "measure": "measure.shop.amount",
-                "value_type": "number",
-                "label": "Sales amount",
-            },
-        )
-        assert written["ok"], written
+        if "sales" in models:
+            written = await s.write(
+                session,
+                "upsert_metric",
+                metric_key="total_amount",
+                spec={
+                    "kind": "aggregate",
+                    "measure": "measure.shop.amount",
+                    "value_type": "number",
+                    "label": "Sales amount",
+                },
+            )
+            assert written["ok"], written
         checked = await s.call(session, "validate_project", project_path=str(pkg), mode="runtime")
         assert checked["ok"], checked
 
@@ -305,7 +315,7 @@ def test_a_two_column_key_is_proposed_with_what_makes_it_safe(tmp_path):
     assert evidence["missing_samples"] == [[60, 3]]
     assert proposal["reason"] == (
         "sales is keyed by (order_id, line_no), never null and never repeated on its 120 rows, "
-        "so each row reads at most one of them; matched on sale_order_id = order_id and "
+        "so each returns row matches at most one sales row; matched on sale_order_id = order_id and "
         "sale_line_no = line_no, 24 of 25 distinct (sale_order_id, sale_line_no) values "
         "(96.0%) are its keys, on 25 of 26 rows with a value in every column; not found: "
         "(60, 3)."
@@ -323,6 +333,7 @@ def test_a_key_that_is_the_reference_links_one_to_one_and_a_repeated_key_is_no_l
             "claims",
             targets=[{"relation": "sales", "key": ["order_id", "line_no"], "entity": "sale"}],
             from_entity="claim",
+            source_key=["claim_order_id", "claim_line_no"],
         )
         repeated = suggest_links(
             warehouse,
@@ -366,7 +377,15 @@ def test_two_day_keys_get_named_roles_and_the_choice_is_stated(tmp_path):
     )
 
 
-CLOCK = [{"entity": "day", "relation": "calendar", "key": "day_key", "temporal_role": ROLE}]
+CLOCK = [
+    {
+        "entity": "day",
+        "relation": "calendar",
+        "key": "day_key",
+        "date_column": "day",
+        "temporal_role": ROLE,
+    }
+]
 
 
 def test_a_sale_is_dated_by_its_own_day_key_and_the_ship_day_is_a_named_role(tmp_path):
@@ -628,3 +647,244 @@ def test_a_preferred_link_replaces_a_recorded_route_for_its_pair(tmp_path):
         from_entity="a", to_entity="b", columns=["direct_b_id"], prefer_this_link=True
     )
     assert _route(project, "a", "b") == ["relationship.as_b"]
+
+
+# The shop again, each return carrying the customer of the sale line it returns; no line is
+# returned twice unless ``RETURNED_TWICE`` adds one.
+RETURN_CUSTOMERS = (
+    SEED
+    + """
+DELETE FROM returns WHERE return_id = 1000;
+ALTER TABLE returns ADD COLUMN customer_key INTEGER;
+UPDATE returns SET customer_key = s.customer_key FROM sales s
+  WHERE s.order_id = returns.sale_order_id AND s.line_no = returns.sale_line_no;
+"""
+)
+RETURNED_TWICE = """
+INSERT INTO returns SELECT 1000, sale_order_id, sale_line_no, return_day_key, 4.0, 'late',
+  customer_key FROM returns WHERE return_id = 3;
+"""
+SALES_BY_CUSTOMER = """
+SELECT c.customer_name, sum(s.amount) FROM sales s
+LEFT JOIN customers c ON c.customer_key = s.customer_key GROUP BY 1
+"""
+
+
+@pytest.mark.parametrize("twice", [False, True], ids=["once", "twice"])
+def test_a_build_in_table_order_reads_a_sale_s_customer_from_the_sale(tmp_path, twice):
+    """Linked in table order, the return reaches its customer and its sale line first. That
+    link is many to one even where no line is returned twice yet, so a sale never reads its
+    return's customer as its own; the sale's own customer link, preferred, then also carries
+    the routes that went from a sale to its customer through its returns. Sales by customer
+    equal the SQL."""
+    seed = RETURN_CUSTOMERS + (RETURNED_TWICE if twice else "")
+    pkg, log = _build(tmp_path, seed=seed)
+    returns = next(row for row in log if row.get("suggest_links") == "returns")
+    (to_sale,) = [row for row in returns["proposals"] if row["target"]["entity"] == "sale"]
+    assert to_sale["cardinality"] == "many_to_one"
+    by_customer = {
+        "select": ["measure.shop.amount"],
+        "group_by": ["dimension.shop_customer_customer_name"],
+    }
+    assert _ask(pkg, by_customer) == _gold(pkg, SALES_BY_CUSTOMER)
+
+
+def test_a_composite_reference_unique_today_is_many_to_one_unless_it_is_the_row_s_key(tmp_path):
+    """No sale line is returned twice yet, but a return is not keyed by the line it returns:
+    many to one. A claim keyed by its line stays one to one (its own key, as the package says)."""
+    path = _warehouse(tmp_path)
+    with duckdb.connect(str(path)) as conn:
+        conn.execute("CREATE TABLE returns_once AS SELECT * FROM returns WHERE return_id < 1000")
+    target = [{"relation": "sales", "key": ["order_id", "line_no"], "entity": "sale"}]
+    with open_duckdb(path) as warehouse:
+        once = suggest_links(warehouse, "returns_once", targets=target, from_entity="return")
+        claims = suggest_links(
+            warehouse,
+            "claims",
+            targets=target,
+            from_entity="claim",
+            source_key=["claim_order_id", "claim_line_no"],
+        )
+    (proposal,) = once["proposals"]
+    assert proposal["evidence"]["column_unique"]
+    assert (proposal["cardinality"], proposal["upsert_relationship"]["cardinality"]) == (
+        "many_to_one",
+        "many_to_one",
+    )
+    assert claims["proposals"][0]["cardinality"] == "one_to_one"
+
+
+def test_a_key_part_is_never_a_column_that_only_starts_like_it(tmp_path):
+    """A return's line quantity (1 or 2) finds line 1 or 2 of every order, and a return line's
+    own line number finds a line of the order it names: neither is proposed as the sale line."""
+    path = _warehouse(tmp_path)
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE quantity_returns AS
+            SELECT return_id, sale_order_id, 'SKU' || sale_line_no AS sku,
+                   (1 + return_id % 2)::INTEGER AS line_qty, refund_amount
+            FROM returns WHERE return_id < 1000;
+            CREATE TABLE return_lines AS
+            SELECT sale_order_id AS return_no,
+                   (row_number() OVER (PARTITION BY sale_order_id ORDER BY sale_line_no DESC))::INTEGER
+                       AS line_no,
+                   sale_order_id, sale_line_no, refund_amount
+            FROM returns WHERE return_id < 1000;
+            ALTER TABLE return_lines ADD PRIMARY KEY (return_no, line_no);
+            """
+        )
+    target = [{"relation": "sales", "key": ["order_id", "line_no"], "entity": "sale"}]
+    with open_duckdb(path) as warehouse:
+        quantities = suggest_links(
+            warehouse, "quantity_returns", targets=target, from_entity="return"
+        )
+        lines = suggest_links(warehouse, "return_lines", targets=target, from_entity="return_line")
+    assert quantities["proposals"] == quantities["below_threshold"] == []
+    (proposal,) = lines["proposals"]
+    assert proposal["columns"] == ["sale_order_id", "sale_line_no"]
+    assert "choice" not in proposal and "name" not in proposal["upsert_relationship"]
+
+
+def test_another_entity_s_own_date_dates_no_row_linked_to_it(tmp_path):
+    """A store's opening day and a customer's signup day are clocks of those entities, not
+    calendars: a clerk is not dated by their store's opening, an invoice not by its customer's
+    signup, and validation suggests neither."""
+    seed = """
+    CREATE TABLE calendar AS SELECT i::INTEGER AS day_key, DATE '2025-01-01' + (i - 1)::INTEGER
+      AS day FROM range(1, 91) t(i);
+    CREATE TABLE stores (store_id INTEGER, store_name VARCHAR, opened_on DATE);
+    INSERT INTO stores VALUES (1, 'North', DATE '2025-01-05'), (2, 'South', DATE '2025-02-10'),
+      (3, 'East', DATE '2025-03-01');
+    CREATE TABLE customers AS SELECT i::INTEGER AS customer_id, 'C' || i AS customer_name,
+      TIMESTAMP '2025-01-01 09:00:00' + to_hours(i * 7) AS created_at FROM range(1, 31) t(i);
+    CREATE TABLE clerks AS SELECT i::INTEGER AS clerk_id, 'K' || i AS clerk_name,
+      (1 + i % 3)::INTEGER AS store_id FROM range(1, 13) t(i);
+    CREATE TABLE invoices AS SELECT i::INTEGER AS invoice_id, (1 + i % 30)::INTEGER AS customer_id,
+      (10.0 + i)::DOUBLE AS amount FROM range(1, 61) t(i);
+    """
+    pkg, log = _build(
+        tmp_path,
+        seed=seed,
+        models=("stores", "customers", "clerks", "invoices"),
+        links=("clerks", "invoices"),
+    )
+    for relation in ("clerks", "invoices"):
+        drafted = next(row for row in log if row.get("suggest_model") == relation)
+        assert "time_roles" not in drafted
+        assert "entities" not in drafted["upsert_model"]
+        assert all("times" not in spec for spec in drafted["upsert_model"]["measures"].values())
+    links = [row for row in log if "suggest_links" in row]
+    assert [len(row["proposals"]) for row in links] == [1, 1]
+    report, _ = parse_config_report(PackageReference(source_path=str(pkg)))
+    assert [row for row in report["warnings"] if row["code"] == "MEASURE_WITHOUT_TIME_ROLE"] == []
+
+
+def test_a_versioned_lookup_s_date_is_no_calendar_beside_the_linked_day(tmp_path):
+    """A consignment links its booked day and a cargo kind version whose model is dated by
+    valid_from: only the calendar's key dates it, the one its model already links."""
+    path = tmp_path / "freight.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE kinds (kind_key INTEGER, kind_code VARCHAR, valid_from DATE);
+            INSERT INTO kinds VALUES (1, 'A', DATE '2024-01-01'), (2, 'A', DATE '2025-02-01'),
+              (3, 'B', DATE '2024-06-01');
+            CREATE TABLE consignments AS SELECT i::INTEGER AS consignment_id,
+              (1 + i % 80)::INTEGER AS booked_day_key, (2 + i % 80)::INTEGER AS dispatched_day_key,
+              (1 + i % 3)::INTEGER AS kind_key, (5.0 * i)::DOUBLE AS charge FROM range(1, 41) t(i);
+            """
+        )
+    kind = {
+        "entity": "kind",
+        "relation": "kinds",
+        "key": "kind_key",
+        "date_column": "valid_from",
+        "temporal_role": "temporal_role.shop_kind_valid_from",
+    }
+    with open_duckdb(path) as warehouse:
+        drafted = suggest_model(
+            warehouse,
+            "consignments",
+            clocks=[*CLOCK, kind],
+            clock_links={"day": "booked_day_key", "kind": "kind_key"},
+        )
+    roles = drafted["time_roles"]
+    assert (roles["status"], roles["default"]) == ("default", "booked_day_key")
+    assert roles["candidates"] == ["booked_day_key", "dispatched_day_key"]
+    assert all(spec["times"] == [ROLE] for spec in drafted["upsert_model"]["measures"].values())
+
+
+def test_a_compound_entity_is_named_by_its_own_noun_never_its_parent_s(tmp_path):
+    """An order payment's order_created_at is the order's date, not the payment's: with paid_at
+    beside it neither is named after the payment, so the choice is stated; payment_date is."""
+    path = tmp_path / "pay.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE order_payments AS SELECT i AS payment_id, i AS order_id,
+              DATE '2025-02-01' + i::INTEGER AS paid_at,
+              DATE '2025-01-01' + i::INTEGER AS order_created_at, 10.0 * i AS amount
+            FROM range(1, 30) t(i);
+            CREATE TABLE order_refunds AS SELECT payment_id AS refund_id, order_id,
+              paid_at AS refund_date, order_created_at, amount FROM order_payments;
+            ALTER TABLE order_payments ADD PRIMARY KEY (payment_id);
+            ALTER TABLE order_refunds ADD PRIMARY KEY (refund_id);
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        payments = suggest_model(warehouse, "order_payments")
+        refunds = suggest_model(warehouse, "order_refunds")
+    assert payments["time_roles"]["status"] == "choose"
+    assert all("default" not in spec for spec in payments["upsert_model"]["times"].values())
+    assert refunds["time_roles"]["default"] == "refund_date"
+    assert refunds["upsert_model"]["times"]["refund_date"]["default"] is True
+
+
+def test_a_calendar_key_is_weighed_beside_an_own_timestamp(tmp_path):
+    """An order's own order_day_key dates it over its shipped_at, linked to the calendar; an
+    order whose own date is a column of its own keeps it, the ship day key left unlinked."""
+    path = tmp_path / "orders.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE fct_orders AS SELECT i AS order_id, (1 + i % 60)::INTEGER AS order_day_key,
+              TIMESTAMP '2025-02-01 10:00:00' + to_days(i::INTEGER) AS shipped_at,
+              5.0 * i AS amount FROM range(1, 30) t(i);
+            CREATE TABLE bookings AS SELECT order_id AS booking_id,
+              DATE '2025-01-01' + order_id::INTEGER AS booking_date,
+              order_day_key AS ship_day_key, amount FROM fct_orders;
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        orders = suggest_model(warehouse, "fct_orders", clocks=CLOCK)
+        bookings = suggest_model(warehouse, "bookings", clocks=CLOCK)
+    roles = orders["time_roles"]
+    assert (roles["status"], roles["default"]) == ("default", "order_day_key")
+    assert roles["message"] == (
+        "fct_orders has date columns of its own (shipped_at) and columns holding keys of day "
+        "(order_day_key). The draft dates each measure by order_day_key, named after the order "
+        "itself: it links order_day_key (entities.day) and lists temporal_role.shop_day_day in "
+        "each measure's `times:`; shipped_at stays a time of the model, none marked `default: "
+        "true`. 29 of 29 distinct order_day_key values (100.0%) are calendar.day_key keys, on 29 "
+        "of 29 rows with a value."
+    )
+    draft = orders["upsert_model"]
+    assert draft["entities"] == {"day": {"expr": "order_day_key"}}
+    assert "default" not in draft["times"]["shipped_at"]
+    assert all(spec["times"] == [ROLE] for spec in draft["measures"].values())
+    booked = bookings["time_roles"]
+    assert (booked["status"], booked["default"]) == ("default", "booking_date")
+    assert booked["message"] == (
+        "bookings has date columns of its own (booking_date) and columns holding keys of day "
+        "(ship_day_key). The draft dates its measures by booking_date, named after the booking "
+        "itself; the other dates stay times of the model, and ship_day_key stays unlinked here. "
+        "If the business reads these rows by another, mark that date `default: true` instead, "
+        "or link that key and list its clock in each measure's `times:`."
+    )
+    assert bookings["upsert_model"]["times"]["booking_date"]["default"] is True
+    assert "entities" not in bookings["upsert_model"]
