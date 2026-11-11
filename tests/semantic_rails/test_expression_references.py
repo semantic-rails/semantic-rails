@@ -1076,6 +1076,38 @@ def test_authored_dependency_cycles_fail_closed(base_config):
     assert exc.value.code == "INVALID_CONFIG"
 
 
+@pytest.mark.parametrize("through", ["itself", "a sum", "another metric"])
+def test_a_timed_call_of_a_metric_that_reads_itself_fails_closed(base_config, through):
+    # The checks of a timed call's clocks keep their own stack: a metric that reads itself is
+    # still a cyclic configuration, not a walk that never ends.
+    from semantic_rails.compiler import bind_query
+
+    first, second = "metric.test.cycle", "metric.test.cycle_other"
+    reads = expressions.MetricRecipeRefExpr(second if through == "another metric" else first)
+    if through == "a sum":
+        reads = expressions.ArithmeticExpr("add", expressions.MeasureRefExpr(MEASURE), reads)
+    recipes = [
+        replace(
+            base_config.metric_recipes[0],
+            id=recipe_id,
+            expression=expression,
+            temporal_role="",
+            compatible_temporal_roles=[],
+        )
+        for recipe_id, expression in (
+            (first, reads),
+            (second, expressions.MetricRecipeRefExpr(first)),
+        )
+    ]
+    config = replace(base_config, metric_recipes=[*base_config.metric_recipes, *recipes])
+    with pytest.raises(SemanticLayerError) as exc:
+        bind_query(config, None, {**_select({"metric": first}), "time": {"temporal_role": ROLE}})
+    assert (exc.value.code, str(exc.value)) == (
+        "INVALID_CONFIG",
+        "Expression dependencies are cyclic or too deep.",
+    )
+
+
 def test_authored_measure_columns_keep_their_owner_for_shared_tables(base_config):
     measure = next(row for row in base_config.measures if row.id == MEASURE)
     owner = next(row for row in base_config.entities if row.id == measure.entity)

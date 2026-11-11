@@ -57,9 +57,11 @@ from ..sql_ast import (
     SqlCall,
     SqlCase,
     SqlCaseWhen,
+    SqlExpr,
     SqlIdentifier,
     SqlIn,
     SqlLiteral,
+    boolean_chain,
     build_comparison_condition,
     build_filter_condition,
     build_negation,
@@ -520,7 +522,9 @@ def _config_expr_to_sql_inner(
         )
     if isinstance(expr, BooleanExpr):
         validate_boolean_argument_count(expr.op, len(expr.args))
-        rendered = [_config_expr_to_sql(arg, measure, config) for arg in expr.args]
+        rendered: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            rendered.append(_config_expr_to_sql(arg, measure, config))
         if not rendered:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
         op = expr.op.lower()
@@ -531,16 +535,14 @@ def _config_expr_to_sql_inner(
                     f"Boolean 'not' expressions require exactly one arg, got {len(rendered)}",
                 )
             return build_negation(rendered[0])
-        current = rendered[0]
-        for item in rendered[1:]:
-            current = SqlBinary(current, op.upper(), item)
-        return current
+        return boolean_chain(op.upper(), rendered)
     if isinstance(expr, CallExpr):
         _refuse_fallible_call(expr)
+        call_args: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            call_args.append(_config_expr_to_sql(arg, measure, config))
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
-            expr.name,
-            [_config_expr_to_sql(arg, measure, config) for arg in expr.args],
-            distinct=expr.distinct,
+            expr.name, call_args, distinct=expr.distinct
         )
     if isinstance(expr, DateAddExpr):
         return dialect_for_warehouse(config.package.warehouse).date_add(

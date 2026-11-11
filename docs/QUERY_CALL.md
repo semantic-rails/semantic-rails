@@ -1515,6 +1515,16 @@ corrected shape to send:
  "recovery_hints": [{"code": "USE_FILTER_WORD", "message": "Write {\"op\": \"missing\", \"value\": true}."}]}
 ```
 
+A call nests at most 250 levels deep. The call is level 1, each object or list inside another
+is one more, and a boolean's arguments sit as many levels down as the engine joins
+them, and one at least: one per argument after the first, up to 16 arguments; a longer boolean joins its halves,
+so a thousand arguments sit 21 levels down. A deeper call is refused at the field where it is
+deepest, with `details.depth` and `details.max_depth`. The bound is what the compiler, which
+reads a call by recursion, fits in Python's default stack with room left for the program
+calling it; every dialect renders a call that deep. A sum of 248 measures, each added to the
+sum before it, is 250 levels deep. A long run of one arithmetic op nests far
+less when grouped in balanced pairs, `(a + b) + (c + d)`, and a list of values is one `in`.
+
 A clarification (`AMBIGUOUS_PATH`, `AMBIGUOUS_CHILD_SCOPE`, `MIXED_TIME_ROLES`,
 `ENTITY_FILTER_PERIOD_UNSTATED`) is a refusal whose options are ready to send: the engine
 never guesses which one the question meant.

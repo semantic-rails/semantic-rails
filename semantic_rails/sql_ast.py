@@ -12,12 +12,13 @@ dialect-portable and inspectable.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
 from . import operators
 from .errors import SemanticLayerError
+from .expressions import CHAIN_WIDTH
 from .sql_preparation import ParameterSlot
 
 SQL_BINARY_OPERATORS = frozenset(
@@ -352,6 +353,19 @@ class SqlBinary:
                 "INVALID_EXPRESSION_AST",
                 "Comparisons with a null literal must use build_comparison_condition",
             )
+
+
+def boolean_chain(op: str, args: Sequence[SqlExpr]) -> SqlExpr:
+    """``args`` (one or more) joined by ``op`` (``AND`` or ``OR``): one after another, as SQL reads
+    ``a AND b AND c``, up to ``CHAIN_WIDTH`` of them, else its two halves joined, nested as deep
+    as :func:`semantic_rails.expressions.boolean_chain_depth` says."""
+    if len(args) > CHAIN_WIDTH:
+        middle = (len(args) + 1) // 2
+        return SqlBinary(boolean_chain(op, args[:middle]), op, boolean_chain(op, args[middle:]))
+    current = args[0]
+    for arg in args[1:]:
+        current = SqlBinary(current, op, arg)
+    return current
 
 
 @dataclass(frozen=True)

@@ -73,29 +73,46 @@ def _time_bound_relationship_ids(query: NormalizedQuery, config: PackageConfig) 
     return set(get_package_analysis(config).temporal_relationship_ids)
 
 
+def _case_parts(expr: CaseExpr) -> list[SemanticExpr]:
+    """A case's parts in the order it reads them: each ``when`` and its ``then``, then ``else``."""
+    parts = [part for item in expr.whens for part in (item.when, item.then)]
+    return parts if expr.else_expr is None else [*parts, expr.else_expr]
+
+
+def _read_through(path: tuple[str, ...], recipe_id: str) -> tuple[str, ...]:
+    """The metrics a walk reads through once it reads ``recipe_id`` too. A metric that reads
+    itself fails as the recursion it would be, which the binder reports as a cyclic
+    configuration."""
+    if recipe_id in path:
+        raise RecursionError(f"cyclic metric recipe reference: {' -> '.join((*path, recipe_id))}")
+    return (*path, recipe_id)
+
+
 def _requires_query_time(expr: SemanticExpr, config: PackageConfig) -> bool:
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_or_raise(config, expr.metric_recipe)
-        return _requires_query_time(recipe.expression, config)
-    if isinstance(expr, OffsetWindowExpr):
-        return True
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _requires_query_time(expr.left, config) or _requires_query_time(expr.right, config)
-    if isinstance(expr, RatioExpr):
-        return _requires_query_time(expr.numerator, config) or _requires_query_time(
-            expr.denominator, config
-        )
-    if isinstance(expr, EntityValueExpr):
-        return _requires_query_time(expr.input, config)
-    if isinstance(expr, DistributionExpr):
-        return _requires_query_time(expr.over, config)
-    if isinstance(expr, (BooleanExpr, CallExpr)):
-        return any(_requires_query_time(arg, config) for arg in expr.args)
-    if isinstance(expr, CaseExpr):
-        return any(
-            _requires_query_time(item.when, config) or _requires_query_time(item.then, config)
-            for item in expr.whens
-        ) or (expr.else_expr is not None and _requires_query_time(expr.else_expr, config))
+    """Whether ``expr`` holds a window, which reads periods. Each walk below keeps its own
+    stack, in the order the expression is written, so a deep call stays off Python's."""
+    stack: list[tuple[SemanticExpr, tuple[str, ...]]] = [(expr, ())]
+    while stack:
+        node, path = stack.pop()
+        parts: list[SemanticExpr] = []
+        if isinstance(node, MetricRecipeRefExpr):
+            parts = [_recipe_or_raise(config, node.metric_recipe).expression]
+            path = _read_through(path, node.metric_recipe)
+        elif isinstance(node, OffsetWindowExpr):
+            return True
+        elif isinstance(node, (ArithmeticExpr, ComparisonExpr)):
+            parts = [node.left, node.right]
+        elif isinstance(node, RatioExpr):
+            parts = [node.numerator, node.denominator]
+        elif isinstance(node, EntityValueExpr):
+            parts = [node.input]
+        elif isinstance(node, DistributionExpr):
+            parts = [node.over]
+        elif isinstance(node, (BooleanExpr, CallExpr)):
+            parts = list(node.args)
+        elif isinstance(node, CaseExpr):
+            parts = _case_parts(node)
+        stack.extend((part, path) for part in reversed(parts))
     return False
 
 
@@ -147,52 +164,60 @@ def _expr_compatible_temporal_roles(
     expr: SemanticExpr, config: PackageConfig, query: NormalizedQuery
 ) -> set[str]:
     measures = _measure_index(config)
-
-    if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
-        measure = measures.get(expr.measure)
-        if measure is None:
-            raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{expr.measure}'")
-        if expr.temporal_role:
-            return {expr.temporal_role}
-        if expr.measure in query.temporal_role_overrides:
-            return {query.temporal_role_overrides[expr.measure]}
-        return set(measure.compatible_temporal_roles)
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_or_raise(config, expr.metric_recipe)
-        return _recipe_compatible_temporal_roles(recipe, config, query)
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _combine_temporal_roles(
-            [
-                _expr_compatible_temporal_roles(expr.left, config, query),
-                _expr_compatible_temporal_roles(expr.right, config, query),
-            ]
-        )
-    if isinstance(expr, RatioExpr):
-        return _combine_temporal_roles(
-            [
-                _expr_compatible_temporal_roles(expr.numerator, config, query),
-                _expr_compatible_temporal_roles(expr.denominator, config, query),
-            ]
-        )
-    if isinstance(expr, DistributionExpr):
-        return _expr_compatible_temporal_roles(expr.over, config, query)
-    if isinstance(expr, (BooleanExpr, CallExpr)):
-        return _combine_temporal_roles(
-            _expr_compatible_temporal_roles(arg, config, query) for arg in expr.args
-        )
-    if isinstance(expr, CaseExpr):
-        role_sets: list[set[str]] = []
-        for item in expr.whens:
-            role_sets.append(_expr_compatible_temporal_roles(item.when, config, query))
-            role_sets.append(_expr_compatible_temporal_roles(item.then, config, query))
-        if expr.else_expr is not None:
-            role_sets.append(_expr_compatible_temporal_roles(expr.else_expr, config, query))
-        return _combine_temporal_roles(role_sets)
-    if isinstance(expr, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
-        return _expr_compatible_temporal_roles(expr.input, config, query)
-    if isinstance(expr, ConversionExpr):
-        return _expr_compatible_temporal_roles(expr.base, config, query)
-    return set()
+    results: list[set[str]] = []
+    # (node, -1, metrics read through) reads a node; (None, n, ()) combines the last n results.
+    stack: list[tuple[Any, int, tuple[str, ...]]] = [(expr, -1, ())]
+    while stack:
+        node, combine, path = stack.pop()
+        if combine >= 0:
+            role_sets = results[len(results) - combine :]
+            del results[len(results) - combine :]
+            results.append(_combine_temporal_roles(role_sets))
+            continue
+        parts: list[SemanticExpr] | None = None
+        through = False  # whether the node's roles are its one part's
+        part: Any = None
+        if isinstance(node, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            measure = measures.get(node.measure)
+            if measure is None:
+                raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{node.measure}'")
+            if node.temporal_role:
+                results.append({node.temporal_role})
+            elif node.measure in query.temporal_role_overrides:
+                results.append({query.temporal_role_overrides[node.measure]})
+            else:
+                results.append(set(measure.compatible_temporal_roles))
+        elif isinstance(node, MetricRecipeRefExpr):
+            recipe = _recipe_or_raise(config, node.metric_recipe)
+            if recipe.compatible_temporal_roles:
+                results.append(set(recipe.compatible_temporal_roles))
+            elif recipe.temporal_role:
+                results.append({recipe.temporal_role})
+            else:
+                through, part = True, recipe.expression
+                path = _read_through(path, recipe.id)
+        elif isinstance(node, (ArithmeticExpr, ComparisonExpr)):
+            parts = [node.left, node.right]
+        elif isinstance(node, RatioExpr):
+            parts = [node.numerator, node.denominator]
+        elif isinstance(node, DistributionExpr):
+            through, part = True, node.over
+        elif isinstance(node, (BooleanExpr, CallExpr)):
+            parts = list(node.args)
+        elif isinstance(node, CaseExpr):
+            parts = _case_parts(node)
+        elif isinstance(node, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
+            through, part = True, node.input
+        elif isinstance(node, ConversionExpr):
+            through, part = True, node.base
+        else:
+            results.append(set())
+        if through:
+            stack.append((part, -1, path))
+        elif parts is not None:
+            stack.append((None, len(parts), ()))
+            stack.extend((item, -1, path) for item in reversed(parts))
+    return results[0]
 
 
 def _window_measure_exprs(
@@ -254,25 +279,6 @@ def _validate_leaf_window_clock(
         )
 
 
-def _metric_ref_leaf_temporal_role_sets(
-    expr: MetricRecipeRefExpr,
-    config: PackageConfig,
-    query: NormalizedQuery,
-    recipe_stack: tuple[str, ...],
-) -> list[set[str]]:
-    recipe = _recipe_or_raise(config, expr.metric_recipe)
-    if recipe.id in recipe_stack:
-        cycle = (*recipe_stack[recipe_stack.index(recipe.id) :], recipe.id)
-        raise SemanticLayerError(
-            "INVALID_QUERY",
-            f"cyclic metric recipe reference: {' -> '.join(cycle)}",
-            details={"metric_recipe_cycle": list(cycle)},
-        )
-    return _expr_leaf_temporal_role_sets(
-        recipe.expression, config, query, (*recipe_stack, recipe.id)
-    )
-
-
 def _expr_leaf_temporal_role_sets(
     expr: SemanticExpr,
     config: PackageConfig,
@@ -280,42 +286,48 @@ def _expr_leaf_temporal_role_sets(
     recipe_stack: tuple[str, ...] = (),
 ) -> list[set[str]]:
     measures = _measure_index(config)
-
-    def visit(child: SemanticExpr) -> list[set[str]]:
-        return _expr_leaf_temporal_role_sets(child, config, query, recipe_stack)
-
-    if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
-        measure = measures.get(expr.measure)
-        if measure is None:
-            raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{expr.measure}'")
-        if expr.temporal_role:
-            return [{expr.temporal_role}]
-        if expr.measure in query.temporal_role_overrides:
-            return [{query.temporal_role_overrides[expr.measure]}]
-        return [set(measure.compatible_temporal_roles)]
-    if isinstance(expr, MetricRecipeRefExpr):
-        return _metric_ref_leaf_temporal_role_sets(expr, config, query, recipe_stack)
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return [*visit(expr.left), *visit(expr.right)]
-    if isinstance(expr, RatioExpr):
-        return [*visit(expr.numerator), *visit(expr.denominator)]
-    if isinstance(expr, DistributionExpr):
-        return visit(expr.over)
-    if isinstance(expr, (BooleanExpr, CallExpr)):
-        return [roles for arg in expr.args for roles in visit(arg)]
-    if isinstance(expr, CaseExpr):
-        case_out: list[set[str]] = []
-        for item in expr.whens:
-            case_out.extend(visit(item.when))
-            case_out.extend(visit(item.then))
-        if expr.else_expr is not None:
-            case_out.extend(visit(expr.else_expr))
-        return case_out
-    if isinstance(expr, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
-        return visit(expr.input)
-    if isinstance(expr, ConversionExpr):
-        return [*visit(expr.base), *visit(expr.converted)]
-    return []
+    out: list[set[str]] = []
+    # Each node with the metrics it is read through, to refuse a metric that reads itself.
+    stack: list[tuple[SemanticExpr, tuple[str, ...]]] = [(expr, recipe_stack)]
+    while stack:
+        node, through = stack.pop()
+        parts: list[SemanticExpr] = []
+        if isinstance(node, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            measure = measures.get(node.measure)
+            if measure is None:
+                raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{node.measure}'")
+            if node.temporal_role:
+                out.append({node.temporal_role})
+            elif node.measure in query.temporal_role_overrides:
+                out.append({query.temporal_role_overrides[node.measure]})
+            else:
+                out.append(set(measure.compatible_temporal_roles))
+        elif isinstance(node, MetricRecipeRefExpr):
+            recipe = _recipe_or_raise(config, node.metric_recipe)
+            if recipe.id in through:
+                cycle = (*through[through.index(recipe.id) :], recipe.id)
+                raise SemanticLayerError(
+                    "INVALID_QUERY",
+                    f"cyclic metric recipe reference: {' -> '.join(cycle)}",
+                    details={"metric_recipe_cycle": list(cycle)},
+                )
+            stack.append((recipe.expression, (*through, recipe.id)))
+        elif isinstance(node, (ArithmeticExpr, ComparisonExpr)):
+            parts = [node.left, node.right]
+        elif isinstance(node, RatioExpr):
+            parts = [node.numerator, node.denominator]
+        elif isinstance(node, DistributionExpr):
+            parts = [node.over]
+        elif isinstance(node, (BooleanExpr, CallExpr)):
+            parts = list(node.args)
+        elif isinstance(node, CaseExpr):
+            parts = _case_parts(node)
+        elif isinstance(node, (OffsetWindowExpr, ShareExpr, TotalExpr, EntityValueExpr)):
+            parts = [node.input]
+        elif isinstance(node, ConversionExpr):
+            parts = [node.base, node.converted]
+        stack.extend((part, through) for part in reversed(parts))
+    return out
 
 
 def _query_allows_metric_time_alignment(
@@ -459,51 +471,33 @@ def _collect_conversion_bindings(
     contract a caller must satisfy. A bare conversion expression (no
     recipe) is bound only by its base anchor's compatible temporal roles.
     """
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_or_raise(config, expr.metric_recipe)
-        _collect_conversion_bindings(
-            recipe.expression, config, out, recipe_id=str(expr.metric_recipe)
-        )
-        return
-    if isinstance(expr, ConversionExpr):
-        out.append((expr, recipe_id))
-        # Note: we do NOT descend further. Conversion is a leaf semantic
-        # form for the temporal-binding check.
-        return
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        _collect_conversion_bindings(expr.left, config, out, recipe_id=recipe_id)
-        _collect_conversion_bindings(expr.right, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, RatioExpr):
-        _collect_conversion_bindings(expr.numerator, config, out, recipe_id=recipe_id)
-        _collect_conversion_bindings(expr.denominator, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, (BooleanExpr, CallExpr)):
-        for arg in expr.args:
-            _collect_conversion_bindings(arg, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, CaseExpr):
-        for item in expr.whens:
-            _collect_conversion_bindings(item.when, config, out, recipe_id=recipe_id)
-            _collect_conversion_bindings(item.then, config, out, recipe_id=recipe_id)
-        if expr.else_expr is not None:
-            _collect_conversion_bindings(expr.else_expr, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(
-        expr,
-        (
-            OffsetWindowExpr,
-            MetricPredicateExpr,
-            ShareExpr,
-            TotalExpr,
-            EntityValueExpr,
-        ),
-    ):
-        _collect_conversion_bindings(expr.input, config, out, recipe_id=recipe_id)
-        return
-    if isinstance(expr, DistributionExpr):
-        _collect_conversion_bindings(expr.over, config, out, recipe_id=recipe_id)
-        return
+    stack: list[tuple[SemanticExpr, str, tuple[str, ...]]] = [(expr, recipe_id, ())]
+    while stack:
+        node, through, path = stack.pop()
+        parts: list[SemanticExpr] = []
+        if isinstance(node, MetricRecipeRefExpr):
+            recipe = _recipe_or_raise(config, node.metric_recipe)
+            read = _read_through(path, node.metric_recipe)
+            stack.append((recipe.expression, str(node.metric_recipe), read))
+        elif isinstance(node, ConversionExpr):
+            # Conversion is a leaf semantic form for the temporal-binding check: no descent.
+            out.append((node, through))
+        elif isinstance(node, (ArithmeticExpr, ComparisonExpr)):
+            parts = [node.left, node.right]
+        elif isinstance(node, RatioExpr):
+            parts = [node.numerator, node.denominator]
+        elif isinstance(node, (BooleanExpr, CallExpr)):
+            parts = list(node.args)
+        elif isinstance(node, CaseExpr):
+            parts = _case_parts(node)
+        elif isinstance(
+            node,
+            (OffsetWindowExpr, MetricPredicateExpr, ShareExpr, TotalExpr, EntityValueExpr),
+        ):
+            parts = [node.input]
+        elif isinstance(node, DistributionExpr):
+            parts = [node.over]
+        stack.extend((part, through, path) for part in reversed(parts))
 
 
 def _conversion_allowed_temporal_roles(
@@ -751,35 +745,46 @@ def _expr_contains_unsafe_bounded(
 ) -> bool:
     """Whether ``expr`` holds a window that would silently truncate when the leaf SQL applies
     a hard ``WHERE t >= start``; ``window`` answers for a node, or ``None`` to look inside it."""
-    found = window(expr)
-    if found is not None:
-        return found
-
-    def walk(child: SemanticExpr) -> bool:
-        return _expr_contains_unsafe_bounded(child, config, window)
-
-    if isinstance(expr, MetricRecipeRefExpr):
-        return walk(_recipe_or_raise(config, expr.metric_recipe).expression)
-    if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return walk(expr.left) or walk(expr.right)
-    if isinstance(expr, (BooleanExpr, CallExpr)):
-        return any(walk(arg) for arg in expr.args)
-    if isinstance(expr, CaseExpr):
-        return any(walk(item.when) or walk(item.then) for item in expr.whens) or (
-            expr.else_expr is not None and walk(expr.else_expr)
-        )
-    if isinstance(
-        expr,
-        (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
-    ):
-        return walk(expr.input)
-    if isinstance(expr, RatioExpr):
-        return walk(expr.numerator) or walk(expr.denominator)
-    if isinstance(expr, DistributionExpr):
-        return walk(expr.over)
-    if isinstance(expr, ConversionExpr):
-        return walk(expr.base) or walk(expr.converted)
+    stack: list[tuple[SemanticExpr, tuple[str, ...]]] = [(expr, ())]
+    while stack:
+        node, path = stack.pop()
+        found = window(node)
+        if found is not None:
+            if found:
+                return True
+            continue
+        parts: list[SemanticExpr] = []
+        if isinstance(node, MetricRecipeRefExpr):
+            parts = [_recipe_or_raise(config, node.metric_recipe).expression]
+            path = _read_through(path, node.metric_recipe)
+        elif isinstance(node, (ArithmeticExpr, ComparisonExpr)):
+            parts = [node.left, node.right]
+        elif isinstance(node, (BooleanExpr, CallExpr)):
+            parts = list(node.args)
+        elif isinstance(node, CaseExpr):
+            parts = _case_parts(node)
+        elif isinstance(node, (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr)):
+            parts = [node.input]
+        elif isinstance(node, RatioExpr):
+            parts = [node.numerator, node.denominator]
+        elif isinstance(node, DistributionExpr):
+            parts = [node.over]
+        elif isinstance(node, ConversionExpr):
+            parts = [node.base, node.converted]
+        stack.extend((part, path) for part in reversed(parts))
     return False
+
+
+_LOOKBACK_PARTS = (
+    "input",
+    "left",
+    "right",
+    "numerator",
+    "denominator",
+    "over",
+    "base",
+    "converted",
+)
 
 
 def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict[str, Any] | None:
@@ -790,47 +795,39 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
     node is found — callers should already have established that
     ``_expr_contains_unsafe_bounded`` found a lookback window.
     """
-    if isinstance(expr, MetricRecipeRefExpr):
-        recipe = _recipe_index(config).get(expr.metric_recipe)
-        if recipe is None:
-            return None
-        return _unsafe_windowed_lookback(recipe.expression, config)
-    if isinstance(expr, OffsetWindowExpr) and expr.kind in {
-        "rolling",
-        "prior_period",
-        "period_to_date",
-    }:
-        # OffsetWindowExpr carries unit/value directly; period_to_date
-        # variant uses the period grain instead.
-        if expr.kind == "period_to_date":
+    stack: list[tuple[Any, tuple[str, ...]]] = [(expr, ())]
+    while stack:
+        node, path = stack.pop()
+        if isinstance(node, MetricRecipeRefExpr):
+            recipe = _recipe_index(config).get(node.metric_recipe)
+            if recipe is not None:
+                stack.append((recipe.expression, _read_through(path, node.metric_recipe)))
+            continue
+        if isinstance(node, OffsetWindowExpr) and node.kind in {
+            "rolling",
+            "prior_period",
+            "period_to_date",
+        }:
+            # OffsetWindowExpr carries unit/value directly; period_to_date
+            # variant uses the period grain instead.
+            if node.kind == "period_to_date":
+                return {
+                    "kind": "OffsetWindowExpr[period_to_date]",
+                    "unit": str(node.period or ""),
+                    "value": 1,
+                }
             return {
-                "kind": "OffsetWindowExpr[period_to_date]",
-                "unit": str(expr.period or ""),
-                "value": 1,
+                "kind": f"OffsetWindowExpr[{node.kind}]",
+                "unit": str(node.unit or ""),
+                "value": int(node.value or 0),
             }
-        return {
-            "kind": f"OffsetWindowExpr[{expr.kind}]",
-            "unit": str(expr.unit or ""),
-            "value": int(expr.value or 0),
-        }
-    walkable = getattr(expr, "__dict__", {})
-    for attr in ("input", "left", "right", "numerator", "denominator", "over", "base", "converted"):
-        child = walkable.get(attr) if isinstance(walkable, dict) else None
-        if child is None:
+        walkable = getattr(node, "__dict__", {})
+        if not isinstance(walkable, dict):
             continue
-        if isinstance(child, SemanticExpr):
-            found = _unsafe_windowed_lookback(child, config)
-            if found is not None:
-                return found
-    for collection_attr in ("args", "whens"):
-        children = walkable.get(collection_attr) if isinstance(walkable, dict) else None
-        if not children:
-            continue
-        for child in children:
-            if isinstance(child, SemanticExpr):
-                found = _unsafe_windowed_lookback(child, config)
-                if found is not None:
-                    return found
+        parts = [walkable.get(attr) for attr in _LOOKBACK_PARTS]
+        for collection_attr in ("args", "whens"):
+            parts.extend(walkable.get(collection_attr) or ())
+        stack.extend((part, path) for part in reversed(parts) if isinstance(part, SemanticExpr))
     return None
 
 

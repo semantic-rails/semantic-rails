@@ -193,6 +193,20 @@ def validate_boolean_argument_count(op: str, count: int) -> None:
         raise SemanticLayerError("INVALID_EXPRESSION_AST", "and/or need at least two arguments")
 
 
+# The most arguments a boolean's SQL joins one after another (``sql_ast.boolean_chain``); a longer
+# one joins its two halves, so the SQL the compiler copies, aliases and renders by recursion
+# nests with the logarithm of a boolean's width rather than the width.
+CHAIN_WIDTH = 16
+
+
+def boolean_chain_depth(count: int) -> int:
+    """How many ``AND`` or ``OR`` levels the SQL of a boolean of ``count`` arguments puts above its
+    deepest argument."""
+    if count > CHAIN_WIDTH:
+        return 1 + boolean_chain_depth((count + 1) // 2)
+    return max(count - 1, 0)
+
+
 @dataclass(frozen=True)
 class CallExpr:
     name: str
@@ -2424,64 +2438,43 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
 
 
 def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
+    """Every column ``expr`` reads, in the order they are written. One walk with its own stack,
+    so a deep expression takes no more of Python's than a shallow one."""
     refs: list[ColumnRefExpr] = []
-
-    def _walk(node: SemanticExpr) -> None:
+    stack: list[SemanticExpr] = [expr]
+    while stack:
+        node = stack.pop()
+        parts: list[SemanticExpr | None]
         if isinstance(node, ColumnRefExpr):
             refs.append(node)
-            return
+            continue
         if isinstance(
             node,
             (MeasureRefExpr, AggregateExpr, MetricRecipeRefExpr, LiteralExpr, ScopedAggregateExpr),
         ):
-            return
+            continue
         if isinstance(node, (ArithmeticExpr, ComparisonExpr)):
-            _walk(node.left)
-            _walk(node.right)
-            return
-        if isinstance(node, (BooleanExpr, CallExpr)):
-            for arg in node.args:
-                _walk(arg)
-            return
-        if isinstance(node, DateAddExpr):
-            _walk(node.value)
-            _walk(node.date)
-            return
-        if isinstance(node, InExpr):
-            _walk(node.expr)
-            for value in node.values:
-                _walk(value)
-            return
-        if isinstance(node, CaseExpr):
-            for item in node.whens:
-                _walk(item.when)
-                _walk(item.then)
-            if node.else_expr is not None:
-                _walk(node.else_expr)
-            return
-        if isinstance(
-            node,
-            (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
-        ):
-            _walk(node.input)
-            return
-        if isinstance(node, RatioExpr):
-            _walk(node.numerator)
-            _walk(node.denominator)
-            return
-        if isinstance(node, DistributionExpr):
-            _walk(node.over)
-            return
-        if isinstance(node, ConversionExpr):
-            _walk(node.base)
-            _walk(node.converted)
-            return
-        if isinstance(node, ConditionalAggregateExpr):
-            for part in (node.condition, node.value):
-                if part is not None:
-                    _walk(part)
-            return
-        raise TypeError(f"Unsupported expression node: {type(node)!r}")
-
-    _walk(expr)
+            parts = [node.left, node.right]
+        elif isinstance(node, (BooleanExpr, CallExpr)):
+            parts = list(node.args)
+        elif isinstance(node, DateAddExpr):
+            parts = [node.value, node.date]
+        elif isinstance(node, InExpr):
+            parts = [node.expr, *node.values]
+        elif isinstance(node, CaseExpr):
+            parts = [part for item in node.whens for part in (item.when, item.then)]
+            parts.append(node.else_expr)
+        elif isinstance(node, (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr)):
+            parts = [node.input]
+        elif isinstance(node, RatioExpr):
+            parts = [node.numerator, node.denominator]
+        elif isinstance(node, DistributionExpr):
+            parts = [node.over]
+        elif isinstance(node, ConversionExpr):
+            parts = [node.base, node.converted]
+        elif isinstance(node, ConditionalAggregateExpr):
+            parts = [node.condition, node.value]
+        else:
+            raise TypeError(f"Unsupported expression node: {type(node)!r}")
+        stack.extend(part for part in reversed(parts) if part is not None)
     return refs
