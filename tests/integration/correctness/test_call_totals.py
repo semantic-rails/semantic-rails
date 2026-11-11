@@ -521,16 +521,6 @@ CHECKED_AS_BEFORE = {
         },
         {("a",): 0.6, ("b",): 0.4},
     ),
-    # "Each store's share of orders from customers who have spent at least $10 overall."
-    "orders-share-of-big-customers": (
-        STORE,
-        {
-            "select": [ORDERS, _share(ORDERS, [STORE])],
-            "group_by": [STORE],
-            "where": [_having("customer", REVENUE, "all_time")],
-        },
-        {(None,): 0.2, ("a",): 0.6, ("b",): 0.2},
-    ),
     # Each store's quarters, of customers with an order that quarter.
     "share-over-the-period-of-buyers": (
         STORE,
@@ -582,6 +572,25 @@ def test_a_call_with_an_entity_filter_or_routes_is_checked_as_before(revenue_per
     assert {tuple(row[column] for column in call["group_by"]): row["part"] for row in rows} == {
         group: pytest.approx(value) for group, value in expected.items()
     }
+
+
+def test_an_entity_filter_reading_revenue_across_the_required_grouping_is_refused(revenue_per):
+    # "Each store's share of orders from customers who have spent at least $10 overall": the
+    # filter reads each customer's revenue across stores, which revenue grouped by store keeps
+    # apart, so the call is refused rather than answered.
+    with pytest.raises(SemanticLayerError) as raised:
+        revenue_per(STORE).query(
+            {
+                "select": [ORDERS, _share(ORDERS, [STORE])],
+                "group_by": [STORE],
+                "where": [_having("customer", REVENUE, "all_time")],
+            }
+        )
+    assert raised.value.code == "POLICY_DENIED"
+    assert (
+        f"{REVENUE} can only be read grouped by {STORE}, and the entity filter on "
+        "entity.shop_customer reads it across them"
+    ) in str(raised.value)
 
 
 SEATS = "measure.shop.seats"

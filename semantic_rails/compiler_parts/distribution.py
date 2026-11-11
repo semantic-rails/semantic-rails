@@ -51,6 +51,7 @@ from .bind import (
 )
 from .dependencies import (
     binding_cut,
+    inner_call,
     owning,
     project_is_cut,
     recipe_objects,
@@ -183,7 +184,11 @@ def _distribution_select(
     # refunded nothing), NULL where it has none. The entities stay those with rows of the input's
     # measures in the period. The settled values are internal: no NO_DATA_IN_SCOPE output of their
     # own, and a refusal to settle them names this output.
-    with recording_zero_outputs(), unobserved_as(value_alias, alias):
+    with (
+        recording_zero_outputs(),
+        unobserved_as(value_alias, alias),
+        inner_call(f"the distribution over {expr.over.entity}"),
+    ):
         sql_ast = nested.query_sql(
             config,
             entity_value_query,

@@ -75,6 +75,7 @@ from .bind import (
 from .dependencies import (
     binding_cut,
     capture_objects,
+    inner_call,
     leaf_predicate_roles,
     project_is_cut,
     recipe_objects,
@@ -651,7 +652,7 @@ def _minimal_predicate_set_ctes(
 
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    with reading_source(windowed=False):
+    with reading_source(windowed=False), inner_call(f"the entity filter on {predicate.entity}"):
         predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name = f"{_semantic_set_name(predicate, index)}_source"
     set_name = _semantic_set_name(predicate, index)

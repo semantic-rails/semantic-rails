@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -29,7 +30,7 @@ from .compiler_parts.binding import query_route_rows as query_route_rows
 from .compiler_parts.binding import read_routes as read_routes
 from .compiler_parts.conversion import _conversion_sources as _conversion_sources
 from .compiler_parts.conversion import _conversion_supported as _conversion_supported
-from .compiler_parts.dependencies import candidate_planning, plan_bindings
+from .compiler_parts.dependencies import candidate_planning, plan_bindings, recording_inner_call
 from .compiler_parts.empty_groups import recording_zero_outputs
 from .compiler_parts.lowering_common import _query_key_aliases
 from .compiler_parts.paths import dimension_filter, inner_lookups
@@ -102,9 +103,15 @@ def _compile_query_sql_ast(
             config, None, normalize_query(payload, config=config), collapse_window=standalone
         )
     config = resolve_compile_config(plan, config)
-    with plan_bindings(
-        plan, project_cut=project_cut, standalone=standalone, entity_values=entity_values
-    ) as leaves:
+    # A total's coarser call is held to the policies as a call of its own (``coarser_calls``);
+    # every other nested call is an inner call, grouped as the call itself may not be.
+    recording = nullcontext() if standalone else recording_inner_call(plan.group_by, plan.query)
+    with (
+        recording,
+        plan_bindings(
+            plan, project_cut=project_cut, standalone=standalone, entity_values=entity_values
+        ) as leaves,
+    ):
         _record_bound_plan(plan, config, leaves.leaves)
         select = attach_relation_ctes(config, lower_to_sql(plan, config, default_order=False))
         return limit_order(select, _query_key_aliases(plan))[0]

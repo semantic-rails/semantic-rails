@@ -62,9 +62,11 @@ from .bind import (
 from .dependencies import (
     binding_cut,
     cut_owners,
+    inner_call,
     leaf_objects,
     recipe_objects,
     record_bound_object,
+    record_inner_call,
     record_temporal_role,
 )
 from .indexes import (
@@ -666,7 +668,10 @@ def _conversion_predicate_set_ctes(
     with cut_owners():
         with binding_cut():
             _entity_index(config)[predicate.entity]
-        with reading_source(windowed=_reads_window_as_filters(scope)):
+        with (
+            reading_source(windowed=_reads_window_as_filters(scope)),
+            inner_call(f"the entity filter on {predicate.entity}"),
+        ):
             predicate_sql = nested.predicate_source_sql(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
@@ -934,6 +939,7 @@ def _conversion_leaf_cte(
         base_group_where.extend(_source_time_window(raw_expr, plan.time, config))
 
     base_where_dims: list[str] = []
+    side_where: dict[str, list[dict[str, Any]]] = {"base": [], "converted": []}
     for item in refuse_child_groups(query.where, "in a conversion metric"):
         where_target = (
             converted_group_where
@@ -942,9 +948,30 @@ def _conversion_leaf_cte(
         )
         if where_target is base_group_where:
             base_where_dims.append(str(item.field))
+        side = "base" if where_target is base_group_where else "converted"
+        side_where[side].append({"field": item.field, "op": item.op, "value": item.value})
         dim_expr, _ = _resolve_dimension_expr(str(item.field), config)
         where_target.append(
             dimension_filter(dim_expr, str(item.field), item.op, item.value, config)
+        )
+    # Each operand's events are read at the call's grain under only the filters routed to it:
+    # the converted events skip the call's where on the base side's dimensions. Each side reads
+    # its own operand (a package metric's included), never the other's.
+    for side, source, operand in (
+        ("base", base_source, expr.base),
+        ("converted", converted_source, expr.converted),
+    ):
+        recipe = {operand.metric_recipe} if isinstance(operand, MetricRecipeRefExpr) else set()
+        record_inner_call(
+            f"the conversion over {match_entity}",
+            plan.group_by,
+            {
+                "select": [{"expression": {"measure": source["measure"].id}, "as": "__events"}],
+                "where": side_where[side],
+                **({"time": dict(plan.time)} if plan.time else {}),
+            },
+            {source["measure"].id, *recipe},
+            owned=False,
         )
 
     base_cte_name = f"conversion_base_{index + 1}"

@@ -32,7 +32,9 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     measure_column_ref,
 )
-from .compiler_parts.paths import dimensions_over_column
+from .compiler_parts.lowering_common import _stock_row_key
+from .compiler_parts.paths import dimensions_over_column, display_key
+from .compiler_parts.post_aggregation import share_over
 from .compiler_parts.totals import coarser_calls
 from .errors import SemanticLayerError
 from .expressions import (
@@ -45,6 +47,7 @@ from .expressions import (
     MetricPredicateExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    ShareExpr,
     collect_column_refs,
     parse_semantic_expression,
     resolve_filter_dimension,
@@ -323,7 +326,8 @@ def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLay
             actions.append(f"Remove {names} from the call." if objects else "")
         for violation in violations:
             line, action, fragment = _constraint_cut(violation)
-            lines.append(f"{names} {line}")
+            # An inner call's violation names the object it groups or filters.
+            lines.append(f"{violation.get('object') or names} {line}")
             actions.append(action)
             for key, value in fragment.items():
                 merge[key] = (
@@ -359,6 +363,8 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
     kind = violation.get("kind")
     disallowed = _listed(violation.get("disallowed") or [])
     allowed = list(violation.get("allowed") or [])
+    if violation.get("inside"):
+        return _inner_cut(violation)
     if kind == "missing_required_group_by" and violation.get("total") == "totals":
         missing = _listed(violation.get("missing") or [])
         return (
@@ -471,6 +477,47 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
         "Remove the having, entity filter or inline filter that reads it.",
         {},
     )
+
+
+def _inner_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """What a violation of an inner call (``inside``) says: the grouping or filter it reads
+    the object with, what the policy allows, and the fix (the call without it)."""
+    inside = str(violation.get("inside") or "")
+    action = f"Remove {inside} from the call."
+    if violation.get("kind") == "disallowed_group_by":
+        allowed = list(violation.get("allowed") or [])
+        can = (
+            f"it can be grouped only by {_listed(allowed, 'or')}"
+            if allowed
+            else "it can't be grouped"
+        )
+        disallowed = _listed(violation.get("disallowed") or [])
+        if aggregation := violation.get("aggregation"):
+            # A statistic that returns single rows' values, in place of the measure's own.
+            default = violation.get("default_aggregation")
+            action = (
+                f"Read {violation.get('object')} with its default aggregation ({default}) in "
+                f"place of {aggregation}."
+                if default
+                else f"Use sum, avg or count in place of {aggregation}."
+            )
+        return f"can't be grouped by {disallowed}, as {inside} groups it; {can}", action, {}
+    if violation.get("kind") == "missing_required_group_by":
+        missing = _listed(violation.get("missing") or [])
+        return (
+            f"can only be read grouped by {missing}, and {inside} reads it across them",
+            (action),
+            {},
+        )
+    said = " and ".join(
+        operators.describe(
+            spec["field"],
+            operators.operator_word(spec.get("op", "is"), path="required_where.op"),
+            spec.get("value", "<value>"),
+        )
+        for spec in violation.get("missing") or []
+    )
+    return f"can only be read where {said}, and {inside} reads it without that filter", action, {}
 
 
 def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> None:
@@ -930,9 +977,15 @@ def _metric_constraint_effect(
 def _period_is(dimension_id: str, bound: BoundQuery) -> bool:
     """Whether the bound query's period is ``dimension_id``: the clock's own date dimension,
     under a grain at or below that dimension's own (its finest supported grain)."""
-    time = normalize_query(bound.plan.query, config=bound.config).time
+    return _period_in(
+        dimension_id, normalize_query(bound.plan.query, config=bound.config).time, bound.config
+    )
+
+
+def _period_in(dimension_id: str, time: Any, config: PackageConfig) -> bool:
+    """Whether the period of a query's ``time`` block is ``dimension_id`` (see ``_period_is``)."""
     role = next(
-        (r for r in bound.config.temporal_roles if r.id == getattr(time, "temporal_role", "")), None
+        (r for r in config.temporal_roles if r.id == getattr(time, "temporal_role", "")), None
     )
     if time is None or not time.grain or role is None or role.dimension != dimension_id:
         return False
@@ -1122,7 +1175,333 @@ def _metric_constraint_violations(
                 }
             )
 
+    if INNER_CONSTRAINTS.intersection(policy_config):
+        for violation in _inner_call_violations(
+            policy_config, query, bound, object_id, outer=violations
+        ):
+            if violation not in violations:
+                violations.append(violation)
+    if "required_group_by" in policy_config:
+        violations.extend(_share_violations(policy_config, query_payload, query, bound, object_id))
     return violations
+
+
+def _cuts(field: str, config: PackageConfig) -> set[str]:
+    """``field`` and the dimensions that cut a measure the same way: an entity's one key
+    column and each column a one-column relationship joins to it (an order's store id and
+    the store's own id), which hold the same values."""
+    dimension = next((row for row in config.dimensions if row.id == field), None)
+    if dimension is None:
+        return {field}
+    keys = {row.id: list(row.key_columns) for row in config.entities}
+    here = (dimension.entity, dimension.column)
+    out = {field}
+    for row in config.relationships:
+        source = list(row.source_columns or [row.source_column])
+        target = list(row.target_columns or [row.target_column])
+        if len(source) != 1 or target != keys.get(row.target_entity):
+            continue
+        ends = [(row.source_entity, source[0]), (row.target_entity, target[0])]
+        if here in ends:
+            entity, column = ends[1 - ends.index(here)]
+            out.update(item.id for item in dimensions_over_column(entity, column, config))
+    return out
+
+
+# The statistics that return single rows' values (one row's, or one between two rows').
+ROW_STATISTICS = frozenset({"min", "max", "median", "percentile"})
+_MEASURE_NODE_KINDS = frozenset({"", "measure", "aggregate", "semi_additive", "scoped_aggregate"})
+
+
+def _row_statistics(
+    binding: BoundQuery, object_id: str
+) -> list[tuple[str, str, list[tuple[str, list[str]]]]]:
+    """Each statistic the call reads ``object_id`` with that returns single rows' values in
+    place of the measure's own aggregation, as ``(aggregation, entity, grain)``: read so, the
+    measure is grouped by its row key, one row's value per group. ``grain`` names each key
+    column with the dimensions over it (the entity itself when there are none); a stock's rows
+    are its series' snapshots, so its key is the series key. A caller's aggregate over columns
+    has no aggregation of its own (it returns rows' values when its value reads a column); a
+    package metric's are its author's definition."""
+    config = binding.config
+    synthetic = binding.plan.synthetic_measures.get(object_id)
+    measure = synthetic or next((row for row in config.measures if row.id == object_id), None)
+    if measure is None:
+        return []
+    if synthetic is not None:
+        body = synthetic.expr
+        values = (
+            [*(when.then for when in body.whens), body.else_expr]
+            if isinstance(body, CaseExpr)
+            else [body]
+        )
+        # A literal under a condition (``max`` of 1) says only whether a row matched.
+        reads = any(collect_column_refs(value) for value in values if value is not None)
+        aggregations = [synthetic.default_aggregation] if reads else []
+    else:
+        # Stripped as the parser strips them, which reads a nested predicate's input later.
+        aggregations = [
+            str(node.get("aggregation") or "").strip().lower()
+            for node in _measure_nodes(binding.plan.query)
+            if str(node["measure"]).strip() == object_id
+        ]
+    picked = [
+        aggregation
+        for aggregation in dict.fromkeys(aggregations)
+        if aggregation in ROW_STATISTICS
+        and (synthetic is not None or aggregation != measure.default_aggregation)
+    ]
+    if not picked:
+        return []
+    columns = _stock_row_key(measure, config)
+    stock = measure.measure_class == "semi_additive"
+    if stock:
+        # Each clock the call reads it on orders its snapshots: the series key is the row key
+        # without that clock's column (``_snapshot_series_columns``), across every such clock.
+        dimensions = {row.id: row for row in config.dimensions}
+        roles = {row.id: row for row in config.temporal_roles}
+        series: list[str] = []
+        for role_id in sorted(binding.temporal_roles.get(object_id) or ()) or [
+            measure.default_temporal_role
+        ]:
+            role = roles.get(role_id)
+            clock = dimensions.get(role.dimension) if role is not None else None
+            series.extend(column for column in columns if clock is None or column != clock.column)
+        columns = list(dict.fromkeys(series))
+    grain: list[tuple[str, list[str]]] = []
+    for column in columns:
+        over = sorted(
+            dimensions_over_column(measure.entity, column, config),
+            key=lambda row: row.semantic_kind != "id",
+        )
+        ids = [row.id for row in over]
+        grain.append((ids[0] if ids else measure.entity, ids))
+    if not columns and not stock:
+        # Rows no key tells apart: no listed cut groups by them.
+        grain.append((measure.entity, []))
+    return [(aggregation, measure.entity, grain) for aggregation in picked]
+
+
+def _measure_nodes(node: Any) -> Iterator[Mapping[str, Any]]:
+    """Every measure read a call writes, at any depth (a distribution's input, ``having``,
+    an entity filter's input included); a literal's value is data."""
+    if isinstance(node, Mapping):
+        kind = str(node.get("kind") or "").strip()
+        if kind == "literal":
+            return
+        if isinstance(node.get("measure"), str) and kind in _MEASURE_NODE_KINDS:
+            yield node
+        for value in node.values():
+            yield from _measure_nodes(value)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _measure_nodes(item)
+
+
+def _share_violations(
+    policy_config: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    query: NormalizedQuery,
+    bound: Callable[[], BoundQuery],
+    object_id: str,
+) -> list[dict[str, Any]]:
+    """A share's total reads its input across its ``over`` columns, so a required column in
+    them is dropped there. The share's denominator is held as a call of its own where it can be
+    (``coarser_calls``); every other share, one under an entity filter or route decision or in
+    a package metric, is held here: by the share's own columns."""
+    binding = bound()
+    config = binding.config
+    recipes = {row.id: row for row in config.metric_recipes}
+    checked = {alias for kind, alias, _ in coarser_calls(config, payload) if kind == "share"}
+    synthetic = object_id in binding.plan.synthetic_measures
+    required = _config_str_list(policy_config, "required_group_by")
+
+    def reads(expr: Any, seen: frozenset[str] = frozenset()) -> bool:
+        if isinstance(expr, ConditionalAggregateExpr) and synthetic:
+            return True
+        if getattr(expr, "measure", None) == object_id:
+            return True
+        if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
+            recipe = recipes.get(expr.metric_recipe)
+            if expr.metric_recipe == object_id or (
+                recipe is not None and reads(recipe.expression, seen | {expr.metric_recipe})
+            ):
+                return True
+        return any(reads(child, seen) for child in _child_exprs(expr))
+
+    def shares(expr: Any, seen: frozenset[str]) -> Iterator[tuple[ShareExpr, frozenset[str]]]:
+        """Each share with the package metrics it is part of (``seen``)."""
+        if isinstance(expr, ShareExpr):
+            yield expr, seen
+        if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
+            recipe = recipes.get(expr.metric_recipe)
+            if recipe is not None:
+                yield from shares(recipe.expression, seen | {expr.metric_recipe})
+        for child in _child_exprs(expr):
+            yield from shares(child, seen)
+
+    found: list[dict[str, Any]] = []
+    for row in query.select:
+        for share, within in shares(row.expression, frozenset()):
+            if row.as_ in checked and not within:
+                continue
+            # A package metric reads every share in its definition.
+            if object_id not in within and not reads(share.input):
+                continue
+            across = share_over(share.over, config)
+            missing = [
+                field
+                for field in required
+                if _cuts(field, config) & set(across)
+                or ("period" in across and _period_is(field, binding))
+            ]
+            if missing:
+                found.append(
+                    {
+                        "kind": "missing_required_group_by",
+                        "missing": missing,
+                        "present_group_by": list(query.group_by),
+                        "share": row.as_,
+                        **({} if synthetic else {"object": object_id}),
+                    }
+                )
+    return found
+
+
+# The constraints an inner call's grouping and filters are held to, beside the call's own.
+INNER_CONSTRAINTS = frozenset({"allowed_group_by", "required_group_by", "required_where"})
+
+
+def _inner_call_violations(
+    policy_config: Mapping[str, Any],
+    query: NormalizedQuery,
+    bound: Callable[[], BoundQuery],
+    object_id: str,
+    *,
+    outer: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The cuts an inner call makes of ``object_id`` that the call itself doesn't: a
+    distribution's per-entity values, an entity filter's per-entity values or a lookup
+    measure's per-parent values read it grouped by the entity's keys, which a constraint
+    allows or requires the same way as the call's own ``group_by``; an inner call that reads
+    it without a required filter the call has escapes that filter. Each violation names the
+    inner call (``inside``) and the object (``object``); what the call itself misses is named
+    once, for the call."""
+    binding = bound()
+    config = binding.config
+    # Only a measure's or a package metric's values are read per entity; a package-wide
+    # policy reaches the call's dimensions and entities too, which an inner call only groups.
+    recipes = {row.id for row in config.metric_recipes}
+    if not (
+        object_id in recipes
+        or object_id in binding.plan.synthetic_measures
+        or any(row.id == object_id for row in config.measures)
+    ):
+        return []
+    # The call as the engine groups it: a name that labels an entity's rows brings its key.
+    own_group_by = set(binding.plan.group_by) | set(query.group_by)
+    own_where = [
+        {"field": item.field, "op": item.op, "value": item.value}
+        for item in plain_filters(query.where)
+    ]
+    allowed = set(_config_str_list(policy_config, "allowed_group_by"))
+    required = [
+        field
+        for field in _config_str_list(policy_config, "required_group_by")
+        if field in own_group_by or _period_is(field, binding)
+    ]
+    # An entity filter's required filter is already refused for the call's own predicates.
+    escaped = any(row["kind"] == "required_where_outside_entity_filter" for row in outer)
+    required_where = [
+        spec
+        for spec in _normalize_where_specs(policy_config.get("required_where"))
+        if not escaped and any(_where_spec_matches(row, spec) for row in own_where)
+    ]
+    # A caller's aggregate over columns is named by the measures whose columns it reads.
+    named = {} if object_id in binding.plan.synthetic_measures else {"object": object_id}
+    found: list[dict[str, Any]] = []
+    # A listed name that labels an entity's rows allows grouping one row per entity: its key.
+    cuts = allowed | {key for field in allowed if (key := display_key(config, field))}
+    if "allowed_group_by" in policy_config:
+        for aggregation, entity, grain in _row_statistics(binding, object_id):
+            disallowed = [
+                label
+                for label, over in grain
+                if not any(_cuts(field, config) & (cuts | own_group_by) for field in over)
+            ]
+            if disallowed:
+                # A caller's aggregate over columns has no default to read it with.
+                measure = next((row for row in config.measures if row.id == object_id), None)
+                default = measure.default_aggregation if measure and named else ""
+                found.append(
+                    {
+                        "kind": "disallowed_group_by",
+                        "disallowed": disallowed,
+                        "allowed": sorted(allowed),
+                        "inside": f"the {aggregation} over {entity}'s rows",
+                        "aggregation": aggregation,
+                        **({"default_aggregation": default} if default else {}),
+                        **named,
+                    }
+                )
+    for call in binding.inner_calls:
+        # A package metric reads every inner call lowered for the root leaves computing it.
+        computes = object_id in recipes and any(
+            object_id in binding.leaf_objects.get(alias, ()) for alias in call.owners or ()
+        )
+        if object_id not in call.objects and not computes:
+            continue
+        inside = call.inside or "a query inside the call"
+        inner = normalize_query(call.query, config=config)
+        disallowed = [
+            field for field in call.group_by if not _cuts(field, config) & (cuts | own_group_by)
+        ]
+        if "allowed_group_by" in policy_config and disallowed:
+            found.append(
+                {
+                    "kind": "disallowed_group_by",
+                    "disallowed": disallowed,
+                    "allowed": sorted(allowed),
+                    "inside": inside,
+                    **named,
+                }
+            )
+        missing = [
+            field
+            for field in required
+            if not _cuts(field, config) & set(call.group_by)
+            and not _period_in(field, inner.time, config)
+        ]
+        if missing:
+            found.append(
+                {
+                    "kind": "missing_required_group_by",
+                    "missing": missing,
+                    "present_group_by": list(call.group_by),
+                    "inside": inside,
+                    **named,
+                }
+            )
+        inner_where = [
+            {"field": item.field, "op": item.op, "value": item.value}
+            for item in plain_filters(inner.where)
+        ]
+        missing_where = [
+            spec
+            for spec in required_where
+            if not any(_where_spec_matches(row, spec) for row in inner_where)
+        ]
+        if missing_where:
+            found.append(
+                {
+                    "kind": "missing_required_where",
+                    "missing": missing_where,
+                    "present_where": inner_where,
+                    "inside": inside,
+                    **named,
+                }
+            )
+    return found
 
 
 def _normalize_where_specs(value: Any) -> list[dict[str, Any]]:
