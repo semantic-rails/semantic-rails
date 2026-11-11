@@ -323,7 +323,8 @@ def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLay
             actions.append(f"Remove {names} from the call." if objects else "")
         for violation in violations:
             line, action, fragment = _constraint_cut(violation)
-            lines.append(f"{names} {line}")
+            # An inner call's violation names the object it groups or filters.
+            lines.append(f"{violation.get('object') or names} {line}")
             actions.append(action)
             for key, value in fragment.items():
                 merge[key] = (
@@ -1188,7 +1189,8 @@ def _inner_call_violations(
     measure's per-parent values read it grouped by the entity's keys, which a constraint
     allows or requires the same way as the call's own ``group_by``; an inner call that reads
     it without a required filter the call has escapes that filter. Each violation names the
-    inner call (``inside``); what the call itself misses is named once, for the call."""
+    inner call (``inside``) and the object (``object``); what the call itself misses is named
+    once, for the call."""
     binding = bound()
     config = binding.config
     own_group_by = set(query.group_by)
@@ -1225,6 +1227,7 @@ def _inner_call_violations(
                     "disallowed": disallowed,
                     "allowed": sorted(allowed),
                     "inside": inside,
+                    "object": object_id,
                 }
             )
         missing = [
@@ -1239,6 +1242,7 @@ def _inner_call_violations(
                     "missing": missing,
                     "present_group_by": list(call.group_by),
                     "inside": inside,
+                    "object": object_id,
                 }
             )
         inner_where = [
@@ -1257,6 +1261,7 @@ def _inner_call_violations(
                     "missing": missing_where,
                     "present_where": inner_where,
                     "inside": inside,
+                    "object": object_id,
                 }
             )
     return found

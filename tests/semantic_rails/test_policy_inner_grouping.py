@@ -133,6 +133,7 @@ def test_a_distribution_over_customers_is_refused_like_a_cut_by_customer(engine,
             "disallowed": [CUSTOMER_ID],
             "allowed": [STORE],
             "inside": f"the distribution over {CUSTOMER}",
+            "object": REVENUE,
         }
     ]
     hints = runtime.validate(_distribution(function))["errors"][0]["recovery_hints"]
