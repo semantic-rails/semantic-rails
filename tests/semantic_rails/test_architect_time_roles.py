@@ -823,6 +823,9 @@ def test_a_day_key_in_the_row_s_key_wins_over_a_linked_second_key(tmp_path):
               PRIMARY KEY (day_key, product_key));
             INSERT INTO fct_inventory SELECT 1 + i // 2, 1 + i % 2, 1 + i // 2, 100.0
               FROM range(0, 62) t(i);
+            CREATE TABLE fct_stock AS SELECT day_key AS date_key, product_key, reported_day_key,
+              quantity_on_hand FROM fct_inventory;
+            ALTER TABLE fct_stock ADD PRIMARY KEY (date_key, product_key);
             CREATE TABLE fct_balances (day_key INTEGER, account_key INTEGER, balance DOUBLE,
               PRIMARY KEY (day_key, account_key));
             INSERT INTO fct_balances SELECT 20250101 + i // 2, 1 + i % 2, 100.0
@@ -845,6 +848,11 @@ def test_a_day_key_in_the_row_s_key_wins_over_a_linked_second_key(tmp_path):
         inventory = suggest_model(
             warehouse, "fct_inventory", clocks=CLOCK, clock_links={"day": "reported_day_key"}
         )
+        # Named unlike the calendar's day_key, a date_key in the row's key holds its keys all the
+        # same.
+        stock = suggest_model(
+            warehouse, "fct_stock", clocks=CLOCK, clock_links={"day": "reported_day_key"}
+        )
         balances = suggest_model(warehouse, "fct_balances", clocks=CLOCK)
         monthly = suggest_model(warehouse, "fct_monthly_balances", clocks=[month])
     roles = inventory["time_roles"]
@@ -853,7 +861,12 @@ def test_a_day_key_in_the_row_s_key_wins_over_a_linked_second_key(tmp_path):
         "fct_inventory has no date column of its own; day_key holds keys of day and is part of "
         "its key (day_key, product_key), so it has one row per product_key and day."
     )
-    for drafted in (inventory, balances, monthly):
+    assert stock["time_roles"]["status"] == "choose"
+    assert stock["time_roles"]["message"].startswith(
+        "fct_stock has no date column of its own; date_key holds keys of day and is part of "
+        "its key (date_key, product_key)"
+    )
+    for drafted in (inventory, stock, balances, monthly):
         draft = drafted["upsert_model"]
         assert "entities" not in draft
         assert all("times" not in spec for spec in draft["measures"].values())

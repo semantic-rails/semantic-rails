@@ -978,8 +978,8 @@ def _date_keys(
     distinct values found, on a key that names one row; a column under that, one named like a
     snapshot's as-of day or on a snapshot table, or a key named for a date but not like the
     calendar's key, is ``doubtful``: it dates nothing, but beside another key it makes the
-    choice the author's). One the calendar confirms that is part of the row's ``key_columns``
-    is ``in_key``: one row per something per day, a stock or a daily total, which only the
+    choice the author's). One whose values the calendar holds that is part of the row's
+    ``key_columns``, whatever its name, is ``in_key``: one row per something per day, a stock or a daily total, which only the
     author can tell apart, so it states the choice even alone. A clock that is no calendar dates
     nothing here: one is unless its entity is ``kind: time``, or named for a day, date, week,
     month or calendar with rows that read as one (``_one_row_per_day``). A customer's home store
@@ -1044,15 +1044,15 @@ def _date_keys(
             # A key mostly missing from the calendar, or a snapshot's as-of day (by the column's
             # name or the table's), dates nothing by itself; beside another key it still makes
             # the choice the author's.
-            confirmed = named and evidence["coverage"] >= DEFAULT_LINK_COVERAGE
-            doubtful = not confirmed or _snapshot_clock_like(name) or snapshot_table
+            covered = evidence["coverage"] >= DEFAULT_LINK_COVERAGE
+            doubtful = not (named and covered) or _snapshot_clock_like(name) or snapshot_table
             found.append(
                 {
                     **clock,
                     "column": name,
                     "reason": words,
                     **({"doubtful": True} if doubtful else {}),
-                    **({"in_key": True} if confirmed and name in key_columns else {}),
+                    **({"in_key": True} if covered and name in key_columns else {}),
                 }
             )
     return found
