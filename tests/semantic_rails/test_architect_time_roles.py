@@ -880,6 +880,50 @@ def test_a_day_key_in_the_row_s_key_wins_over_a_linked_second_key(tmp_path):
     assert "counts once per month, or a total per month;" in by_month["message"]
 
 
+def test_a_day_key_needed_to_tell_rows_apart_is_part_of_the_grain(tmp_path):
+    """An inventory with one row per product per store per day and no declared key: no set of
+    its other columns is unique, but product, store and day are, as with a date of its own there,
+    so its day key dates nothing and the choice is stated. An order fact keyed by a surrogate key
+    keeps its day key as the date, even where its customer and day happen to be unique."""
+    path = tmp_path / "grain.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE fct_inventory AS SELECT (1 + i // 6)::INTEGER AS date_key,
+              1 + i % 3 AS product_key, 1 + (i // 3) % 2 AS store_key,
+              100.0 + i % 3 AS quantity_on_hand FROM range(0, 360) t(i);
+            CREATE TABLE fct_orders AS SELECT 1000 + i AS order_sk,
+              (1 + i // 2)::INTEGER AS day_key, 1 + i % 2 AS customer_key, 10.0 * i AS amount
+              FROM range(0, 120) t(i);
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        inventory = suggest_model(warehouse, "fct_inventory", clocks=CLOCK)
+        orders = suggest_model(warehouse, "fct_orders", clocks=CLOCK)
+    assert inventory["primary_key"] is None
+    assert inventory["time_roles"]["status"] == "choose"
+    assert inventory["time_roles"]["candidates"] == ["date_key"]
+    assert inventory["time_roles"]["message"].startswith(
+        "fct_inventory has no date column of its own; date_key holds keys of day and is part of "
+        "its key (product_key, store_key, date_key), so it has one row per product_key and "
+        "store_key and day. A measure of it is either a stock"
+    )
+    assert inventory["time_roles"]["options"] == [
+        {"column": "date_key", "entities": {"day": {"expr": "date_key"}}, "times": [ROLE]}
+    ]
+    draft = inventory["upsert_model"]
+    assert "entities" not in draft
+    assert all("times" not in spec for spec in draft["measures"].values())
+    assert orders["primary_key"]["columns"] == ["order_sk"]
+    assert (orders["time_roles"]["status"], orders["time_roles"]["default"]) == (
+        "default",
+        "day_key",
+    )
+    assert all(spec["times"] == [ROLE] for spec in orders["upsert_model"]["measures"].values())
+
+
 def test_a_doubtful_key_beside_an_own_date_is_a_choice(tmp_path):
     """A stock snapshot with its own recorded_at and the snapshot's day key, and a booking with its
     own booked_on beside a snapshot day key: which one dates the rows is the author's choice,

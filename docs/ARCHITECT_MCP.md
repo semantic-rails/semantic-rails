@@ -298,12 +298,16 @@ never create, seed or change it.
   key (`ship_date_key` beside a `day_key` calendar, unless it is declared a foreign key of
   another table), dates nothing by itself, but beside another such column or a date column of
   the table's own it makes the choice yours. A column whose values the calendar holds that is
-  part of the table's key, declared or confirmed by the key search (`day_key` of an inventory
-  keyed by `day_key` and `product_key`: one row per product per day), dates nothing either, whatever the table is called or the package links: a measure
-  there is a stock, which a sum by month counts once per day, or a daily total, and
-  `time_roles` (`status: choose`) says so even when it is the only such column. On a table with
-  no date column of its own, one such column dates the measures, or of several the one the package's model over
-  the table already links: the draft links it in `entities` and lists the clock's role in each
+  part of the table's grain dates nothing either, whatever the table is called or the package
+  links. It is part of the grain when it is in the table's key, declared or confirmed by the
+  key search (`day_key` of an inventory keyed by `day_key` and `product_key`: one row per
+  product per day), or, when the search finds no key, when one or two key-like columns with it
+  are unique, as the search tries them with a date column of the table's own (`date_key` of an
+  inventory with one row per product, store and day). A measure there is a stock, which
+  a sum by month counts once per day, or a daily total, and `time_roles` (`status: choose`)
+  says so even when it is the only such column. On a table with no date column of its own, one
+  such column dates the measures, or of several the one the package's model over the table
+  already links: the draft links it in `entities` and lists the clock's role in each
   measure's `times:`, and `time_roles` says so, with `other_keys` holding the
   `upsert_relationship` that adds each other date key as a named role and keeps that one the
   default route. Several such columns that the package doesn't settle, or one beside a date
