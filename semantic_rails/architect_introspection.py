@@ -983,6 +983,11 @@ def _date_keys(
     found: list[dict[str, Any]] = []
     table = _split_relation(described["relation"])[1]
     snapshot_table = _snapshot_clock_like(table) or _has_word(table, ("snapshots",))
+    declared = {
+        str(fk["columns"][0]): _split_relation(str(fk["references"]["relation"]))
+        for fk in described["foreign_keys"]
+        if len(fk["columns"]) == 1
+    }
     for clock in clocks:
         if _split_relation(clock["relation"]) == _split_relation(described["relation"]):
             continue
@@ -993,7 +998,8 @@ def _date_keys(
         key_types = {str(column["name"]): str(column["type"]) for column in target["columns"]}
         if clock["key"] not in key_types:
             continue
-        qualified = _qualified(warehouse, *_split_relation(clock["relation"]))
+        clock_place = _split_relation(clock["relation"])
+        qualified = _qualified(warehouse, *clock_place)
         if not clock.get("calendar") and not (
             calendar_like("", [clock["entity"], clock["key"]])
             and _one_row_per_day(
@@ -1013,8 +1019,13 @@ def _date_keys(
             named = _names_link(name, clock["key"], clock["entity"])
             # A key named for a date but not like this calendar's key (``ship_date_key`` beside
             # a ``day_key`` calendar) may be a second date of the row: it dates nothing by
-            # itself, but it makes the choice the author's.
-            if not named and not (_key_like(name) and calendar_like("", [name])):
+            # itself, but it makes the choice the author's. One declared a foreign key of
+            # another table (``day_part_code``) is that table's.
+            if not named and not (
+                _key_like(name)
+                and calendar_like("", [name])
+                and declared.get(name, clock_place) == clock_place
+            ):
                 continue
             evidence = _link_evidence(warehouse, source, name, qualified, clock["key"], deadline)
             if not evidence["target_key_unique"] or (
@@ -1097,7 +1108,9 @@ def _time_roles(
 ) -> dict[str, Any] | None:
     """What dates a drafted model's measures once a calendar key is among the candidates: the
     ``time_roles`` block, or None when there is none (the relation's own dates, as before)."""
-    if all(row.get("doubtful") for row in keyed):
+    # Doubtful keys alone date nothing (the relation's own dates, as before); beside an own
+    # date or another key they make the choice the author's.
+    if not keyed or (not own and all(row.get("doubtful") for row in keyed)):
         return None
     columns = [str(row["column"]) for row in keyed]
     listed, clocks = ", ".join(columns), ", ".join(sorted({str(row["entity"]) for row in keyed}))

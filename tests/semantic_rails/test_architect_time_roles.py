@@ -758,3 +758,62 @@ def test_a_snapshot_table_s_day_key_dates_nothing(tmp_path):
     assert "time_roles" not in drafted
     assert "entities" not in drafted["upsert_model"]
     assert all("times" not in spec for spec in drafted["upsert_model"]["measures"].values())
+
+
+def test_a_doubtful_key_beside_an_own_date_is_a_choice(tmp_path):
+    """A stock snapshot with its own recorded_at and the snapshot's day key, and a booking with its
+    own booked_on beside a snapshot day key: which one dates the rows is the author's choice,
+    and neither draft marks a time `default: true`."""
+    path = tmp_path / "counts.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE inventory_snapshots AS SELECT 1 + i % 2 AS product_id,
+              (1 + i // 2)::INTEGER AS day_key,
+              TIMESTAMP '2025-01-02 00:05:00' + to_minutes(i::INTEGER) AS recorded_at,
+              10.0 + i % 7 AS quantity FROM range(0, 120) t(i);
+            ALTER TABLE inventory_snapshots ADD PRIMARY KEY (product_id, day_key);
+            CREATE TABLE bookings AS SELECT i AS booking_id,
+              DATE '2025-01-01' + i::INTEGER AS booked_on,
+              (1 + i % 60)::INTEGER AS snapshot_day_key, 10.0 * i AS amount FROM range(1, 40) t(i);
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        drafted = {
+            relation: suggest_model(warehouse, relation, clocks=CLOCK)
+            for relation in ("inventory_snapshots", "bookings")
+        }
+    for relation, own in (("inventory_snapshots", "recorded_at"), ("bookings", "booked_on")):
+        roles = drafted[relation]["time_roles"]
+        assert roles["status"] == "choose"
+        assert roles["candidates"][0] == own
+        draft = drafted[relation]["upsert_model"]
+        assert all("default" not in spec for spec in draft["times"].values())
+        assert all("times" not in spec for spec in draft["measures"].values())
+
+
+def test_a_day_named_foreign_key_of_another_table_is_no_date(tmp_path):
+    """A sale's day_part_code is declared a key of day_parts: it is no second date, so the
+    order day key alone dates the sale."""
+    path = tmp_path / "parts.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar (day_key INTEGER PRIMARY KEY, day DATE);
+            INSERT INTO calendar SELECT i, DATE '2025-01-01' + (i - 1)::INTEGER
+              FROM range(1, 91) t(i);
+            CREATE TABLE day_parts (day_part_code INTEGER PRIMARY KEY, label VARCHAR);
+            INSERT INTO day_parts VALUES (1, 'morning'), (2, 'evening');
+            CREATE TABLE sales (sale_id INTEGER PRIMARY KEY,
+              order_day_key INTEGER REFERENCES calendar (day_key),
+              day_part_code INTEGER REFERENCES day_parts (day_part_code), amount DOUBLE);
+            INSERT INTO sales SELECT i, 1 + i % 60, 1 + i % 2, 10.0 * i FROM range(1, 40) t(i);
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        sales = suggest_model(warehouse, "sales", clocks=CLOCK)
+    roles = sales["time_roles"]
+    assert (roles["status"], roles["candidates"]) == ("default", ["order_day_key"])
+    assert all(spec["times"] == [ROLE] for spec in sales["upsert_model"]["measures"].values())

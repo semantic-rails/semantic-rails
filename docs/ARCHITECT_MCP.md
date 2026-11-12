@@ -295,8 +295,9 @@ never create, seed or change it.
   due day past the calendar's last day), one named like a snapshot's as-of day
   (`snapshot_day_key`, whose stocks a sum by month would count once per snapshot) or on a
   snapshot table (`inventory_snapshots`), or a key named for a date but not like the calendar's
-  key (`ship_date_key` beside a `day_key` calendar), dates nothing by itself, but beside another
-  such column it makes the choice yours. On a table with
+  key (`ship_date_key` beside a `day_key` calendar, unless it is declared a foreign key of
+  another table), dates nothing by itself, but beside another such column or a date column of
+  the table's own it makes the choice yours. On a table with
   no date column of its own, one such column dates the measures, or of several the one the package's model over
   the table already links: the draft links it in `entities` and lists the clock's role in each
   measure's `times:`, and `time_roles` says so, with `other_keys` holding the
