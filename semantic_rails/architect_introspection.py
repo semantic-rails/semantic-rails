@@ -751,8 +751,7 @@ def _key_candidates(
         *(list(pair) for pair in pairs),
     ]
     if day_key is not None:
-        others = [name for name in usable if _key_like(name) and name != day_key]
-        others = others[:MAX_SUGGESTION_KEY_COLUMNS] if day_key in usable else []
+        others = [name for name in links if name != day_key] if day_key in usable else []
         ordered = [
             *([name, day_key] for name in others),
             *([*pair, day_key] for pair in itertools.combinations(others, 2)),
