@@ -17,7 +17,7 @@
   "architect.page.validate_project_parse_tokens": 2735,
   "architect.page.validate_project_runtime_tokens": 3018,
   "architect.tools_list.largest_tool_tokens": 685,
-  "architect.tools_list.model_visible_tokens": 6477,
+  "architect.tools_list.model_visible_tokens": 6620,
   "architect.tools_list.tools": 30,
   "architect.tools_list.wire_tokens": 14657,
   "query.error.discover_unknown_argument_tokens": 1687,

@@ -79,6 +79,8 @@ SWITCHED = {
     ("runtime_parts/answer_warnings.py", "_history_result_warnings"),
     ("schema.py", "EntityConfig.is_row_grain"),
     ("schema.py", "EntityConfig.key"),
+    # A calendar is told by its name or its one key column; a row-grain model has neither key.
+    ("untimed_measures.py", "reachable_clocks"),
 }
 # Reads that need a key by meaning, or that a row-grain model can't reach: they refuse.
 REFUSES = {

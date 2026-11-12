@@ -2809,6 +2809,52 @@ class ArchitectProject:
         taken = {row.key for row in raw["entities"]} | {row.key for row in raw["models"]}
         return {"taken": frozenset(taken), "link_model": link, "parents": parents}
 
+    def clock_context(self, relation: str) -> dict[str, Any]:
+        """What ``suggest_model`` reads from the package for ``relation``: each entity with a
+        one-column key whose model has a default time that is no as-of clock, with that
+        model's relation, the time's column (``date_column``) and role, and whether the entity
+        is ``kind: time`` (``clocks``; suggest_model reads the others' rows to tell a calendar);
+        and the clock entities the model over ``relation`` already links, by the column it
+        links each with (``clock_links``)."""
+        raw = self._raw_inventory()
+        models = {row.key: row for row in raw["models"]}
+        clocks: list[dict[str, Any]] = []
+        for time_row in raw["times"]:
+            model = models.get(str(time_row.model_key))
+            if (
+                model is None
+                or time_row.spec.get("default") is not True
+                or time_row.spec.get("class") == "as_of_time"
+            ):
+                continue
+            entity = self._find_raw(
+                raw["entities"], self._primary_entity_for_model(model, raw["entities"])
+            )
+            keys = _as_list(entity.spec.get("key")) if entity is not None else []
+            if entity is None or len(keys) != 1:
+                continue
+            clocks.append(
+                {
+                    "entity": entity.key,
+                    "relation": str(model.spec.get("relation")),
+                    "key": str(keys[0]),
+                    "date_column": str(time_row.spec.get("column") or time_row.key),
+                    "temporal_role": time_row.object_id,
+                    "calendar": entity.spec.get("kind") == "time",
+                }
+            )
+        place = _relation_place(relation)
+        clock_links: dict[str, str] = {}
+        for model in raw["models"]:
+            if _relation_place(model.spec.get("relation")) != place:
+                continue
+            for name, spec in dict(model.spec.get("entities") or {}).items():
+                clock = next((row for row in clocks if row["entity"] == name), None)
+                if clock is not None:
+                    columns = _as_list(dict(spec or {}).get("expr")) or [clock["key"]]
+                    clock_links[str(name)] = str(columns[0])
+        return {"clocks": clocks, "clock_links": clock_links}
+
     def link_context(self, relation: str) -> dict[str, Any]:
         """What ``suggest_links`` reads from the package for ``relation``: each entity with a
         one-column key, with its model's relation (``targets``); the entity homed on a model over
