@@ -3376,7 +3376,7 @@
         "readOnlyHint": true,
         "title": "Suggest a model"
       },
-      "description": "Propose a key, times, dimensions, measures and foreign keys for a relation, with confidences, reasons and draft upsert_model arguments. Pages hold times, then dimensions, then measures, and a draft of those; drafts merge, and full_report: true gives one. Read-only.",
+      "description": "Propose a key, times, dimensions, measures and foreign keys for a relation, with confidences, reasons and draft upsert_model arguments. With project_path, a calendar key can date the measures; time_roles says which date the draft picked or that the choice is yours. Pages hold times, then dimensions, then measures, and a draft of those; drafts merge, and full_report: true gives one. Read-only.",
       "inputSchema": {
         "properties": {
           "duckdb_path": {

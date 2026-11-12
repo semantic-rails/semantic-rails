@@ -2649,7 +2649,9 @@ def create_architect_mcp_server(
         annotations=_read_only_annotations("Suggest a model"),
         description=(
             "Propose a key, times, dimensions, measures and foreign keys for a relation, with "
-            "confidences, reasons and draft upsert_model arguments. Pages hold times, then "
+            "confidences, reasons and draft upsert_model arguments. With project_path, a "
+            "calendar key can date the measures; time_roles says which date the draft picked "
+            "or that the choice is yours. Pages hold times, then "
             "dimensions, then measures, and a draft of those; drafts merge, and full_report: true "
             "gives one. Read-only."
         ),
@@ -2664,8 +2666,16 @@ def create_architect_mcp_server(
     ) -> dict[str, Any]:
         try:
             _check_list_paging(offset, full_report, "suggestion")
+            context = (
+                ArchitectProject(project_path, workspace_root=root).clock_context(relation)
+                if project_path
+                else {}
+            )
             with introspection.open_duckdb(_warehouse_path(project_path, duckdb_path)) as warehouse:
-                suggestion = {"ok": True, **introspection.suggest_model(warehouse, relation)}
+                suggestion = {
+                    "ok": True,
+                    **introspection.suggest_model(warehouse, relation, **context),
+                }
             return _paged_suggestion(suggestion, offset, limit, full_report)
         except Exception as exc:
             return _report_error(exc)

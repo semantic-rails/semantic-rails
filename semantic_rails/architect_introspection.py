@@ -40,6 +40,7 @@ from .db_parts.duckdb_setup import connect_duckdb
 from .errors import SemanticLayerError
 from .naming import slug
 from .sql_identifiers import quote_identifier, relation_parts
+from .untimed_measures import calendar_like
 
 MAX_SAMPLE_VALUES = 20
 MAX_SAMPLE_CHARS = 200
@@ -874,12 +875,29 @@ def _foreign_keys(
     return links
 
 
-def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
+def suggest_model(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    *,
+    clocks: list[dict[str, str]] | None = None,
+    clock_links: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Propose a model over ``relation``, each choice with a confidence and a reason.
 
     The key is a declared one, or one the whole relation confirms (``key_search`` says how the
     search went); without one the draft is a row-grain model that counts its rows. Nothing is
     written: ``upsert_model`` holds draft arguments to review.
+
+    What dates the measures: the relation's own date columns, as before, when it holds no key
+    of one of the package's ``clocks`` (``{entity, relation, key, date_column, temporal_role,
+    calendar}``: an entity and its model's default date). A column holding such a key, named
+    like it and confirmed by its values, dates them through that link when it is the only such
+    column and the relation has no date of its own, or when the package's model over
+    ``relation`` already links it (``clock_links``: clock entity to column). A clock is a
+    calendar only where its entity is ``kind: time``, or is named for a day, date, week, month
+    or calendar and its rows say so (``_one_row_per_day``).
+    Several such columns, or one beside a date of the relation's own, date nothing:
+    ``time_roles`` states the choice, the author's.
     """
     described = describe_table(warehouse, relation)
     schema, name = _split_relation(relation)
@@ -912,6 +930,24 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         for column in unmodeled
         if _is_container_type(str(column["type"]))
     ]
+    own = [item for item in roles["times"] if item["confidence"] != "low"]
+    keyed = []
+    if clocks:
+        with contextlib.suppress(_OutOfTime):  # out of time: no date key, as before
+            keyed = _date_keys(warehouse, described, source, clocks)
+        # A date column that is also a calendar's key is one candidate: its own date.
+        keyed = [row for row in keyed if row["column"] not in {item["column"] for item in own}]
+    time_roles = _time_roles(described["relation"], entity, own, keyed, dict(clock_links or {}))
+    draft = upsert_model_draft(
+        entity=entity, relation=described["relation"], key_columns=key_columns, **roles
+    )
+    if time_roles and time_roles["status"] == "choose":
+        for spec in draft["times"].values():
+            spec.pop("default", None)
+    if time_roles and time_roles["status"] == "default":
+        draft["entities"] = dict(time_roles["entities"])
+        for spec in draft["measures"].values():
+            spec["times"] = [time_roles["temporal_role"]]
     return {
         "relation": described["relation"],
         "entity": entity,
@@ -922,10 +958,229 @@ def suggest_model(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
         **roles,
         "foreign_keys": links,
         **({"unsupported_columns": unsupported_columns} if unsupported_columns else {}),
-        "upsert_model": upsert_model_draft(
-            entity=entity, relation=described["relation"], key_columns=key_columns, **roles
-        ),
+        **({"time_roles": time_roles} if time_roles else {}),
+        "upsert_model": draft,
     }
+
+
+def _date_keys(
+    warehouse: DuckDBWarehouse,
+    described: dict[str, Any],
+    source: str,
+    clocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The columns of a relation that hold a calendar's key: named like the key, of a
+    compatible type, and confirmed by their values (at least ``DEFAULT_LINK_COVERAGE`` of the
+    distinct values found, on a key that names one row; a column under that, or named like a
+    snapshot's as-of day, is ``doubtful``: it dates nothing, but beside another key it makes the
+    choice the author's). A clock that is no calendar dates
+    nothing here: one is unless its entity is ``kind: time``, or named for a day, date, week,
+    month or calendar with rows that read as one (``_one_row_per_day``). A customer's home store
+    has an opening date, and a daily exchange rate a date per row: neither dates the rows that
+    name it."""
+    deadline = time.monotonic() + KEY_SEARCH_SECONDS
+    found: list[dict[str, Any]] = []
+    for clock in clocks:
+        if _split_relation(clock["relation"]) == _split_relation(described["relation"]):
+            continue
+        try:
+            target = describe_table(warehouse, clock["relation"])
+        except SemanticLayerError:
+            continue  # a clock over a missing relation dates nothing here
+        key_types = {str(column["name"]): str(column["type"]) for column in target["columns"]}
+        if clock["key"] not in key_types:
+            continue
+        qualified = _qualified(warehouse, *_split_relation(clock["relation"]))
+        if not clock.get("calendar") and not (
+            calendar_like("", [clock["entity"], clock["key"]])
+            and _one_row_per_day(
+                warehouse,
+                qualified,
+                clock["key"],
+                str(clock.get("date_column") or ""),
+                _scalar_family(key_types[clock["key"]]) == "numeric",
+                deadline,
+            )
+        ):
+            continue
+        for column in described["columns"]:
+            name = str(column["name"])
+            if not _fk_types_compatible(str(column["type"]), key_types[clock["key"]]):
+                continue
+            if not _names_link(name, clock["key"], clock["entity"]):
+                continue
+            evidence = _link_evidence(warehouse, source, name, qualified, clock["key"], deadline)
+            if not evidence["target_key_unique"]:
+                continue
+            words = _link_words(
+                name, {"relation": clock["relation"], "key": clock["key"]}, evidence
+            )
+            # A key mostly missing from the calendar, or a snapshot's as-of day, dates nothing
+            # by itself; beside another key it still makes the choice the author's.
+            doubtful = evidence["coverage"] < DEFAULT_LINK_COVERAGE or _snapshot_clock_like(name)
+            found.append(
+                {
+                    **clock,
+                    "column": name,
+                    "reason": words,
+                    **({"doubtful": True} if doubtful else {}),
+                }
+            )
+    return found
+
+
+def _one_row_per_day(
+    warehouse: DuckDBWarehouse,
+    relation: str,
+    key: str,
+    column: str,
+    numeric_key: bool,
+    deadline: float,
+) -> bool:
+    """Whether ``relation`` reads as a calendar: on its rows of known days, ``key`` and the date
+    in ``column`` each name one row, on consecutive days, two rows at least. A row of an unknown
+    member (a NULL date, a date before 1901, a NULL key, or a number key that is not positive,
+    such as ``-1``) is left out of that test."""
+    if not column:
+        return False
+    _in_time(deadline)
+    ref, day = quote_identifier(key), f"CAST({quote_identifier(column)} AS DATE)"
+    known = f"{day} >= DATE '1901-01-01' AND {ref} IS NOT NULL" + (
+        f" AND {ref} > 0" if numeric_key else ""
+    )
+    try:
+        rows, keys, days, span = warehouse.execute(
+            f"SELECT system.main.count(*), system.main.count(DISTINCT {ref}), "
+            f"system.main.count(DISTINCT {day}), "
+            f"system.main.date_diff('day', system.main.min({day}), system.main.max({day})) + 1 "
+            f"FROM {relation} WHERE {known}"
+        )[1][0]
+    except (duckdb.Error, SemanticLayerError):
+        return False  # a time that is no date column (an expression, a number) is no calendar
+    return int(rows) >= 2 and int(rows) == int(keys) == int(days) == int(span or 0)
+
+
+def _role_name(entity: str, columns: list[str]) -> str:
+    """A named role's name: the entity and its columns without a key suffix
+    (``sale_ship_day`` for ``ship_day_key`` on a sale)."""
+    stem = "_".join(columns).lower()
+    for suffix in _KEY_SUFFIXES:
+        stem = stem.removesuffix(suffix)
+    return slug(f"{entity}_{stem}", fallback="role")
+
+
+def _plural(count: int, one: str, many: str) -> str:
+    return one if count == 1 else many
+
+
+def _time_roles(
+    relation: str,
+    entity: str,
+    own: list[dict[str, Any]],
+    keyed: list[dict[str, Any]],
+    linked: dict[str, str],
+) -> dict[str, Any] | None:
+    """What dates a drafted model's measures once a calendar key is among the candidates: the
+    ``time_roles`` block, or None when there is none (the relation's own dates, as before)."""
+    if all(row.get("doubtful") for row in keyed):
+        return None
+    columns = [str(row["column"]) for row in keyed]
+    listed, clocks = ", ".join(columns), ", ".join(sorted({str(row["entity"]) for row in keyed}))
+    holding = (
+        f"{_plural(len(columns), 'a column', f'{len(columns)} columns')} holding keys of "
+        f"{clocks} ({listed})"
+    )
+    options = [
+        {"column": row["column"], "entities": _clock_link(row), "times": [row["temporal_role"]]}
+        for row in keyed
+    ]
+    if own:
+        dates = [str(item["column"]) for item in own]
+        return {
+            "status": "choose",
+            "candidates": dates + columns,
+            "message": (
+                f"{relation} has {_plural(len(dates), 'a date column', 'date columns')} of its "
+                f"own ({', '.join(dates)}) and {holding}, so which one dates its rows is a "
+                "business choice, and the draft dates no measure. Mark the date the business "
+                "reads them by `default: true` in the draft's times, or choose one of "
+                "`options`: add its `entities` to the draft and its `times` to each measure."
+            ),
+            "options": options,
+        }
+    chosen = [
+        row
+        for row in keyed
+        if linked.get(row["entity"]) == row["column"] and not row.get("doubtful")
+    ]
+    if not chosen and len(keyed) == 1:
+        chosen = keyed
+    if len(chosen) != 1:
+        return {
+            "status": "choose",
+            "candidates": columns,
+            "message": (
+                f"{relation} has no date column of its own and {holding}, so which one dates "
+                "its rows is a business choice, and the draft dates no measure. Choose one of "
+                "`options`: add its `entities` to the draft and its `times` to each measure; "
+                "then add each other one as a named role (upsert_relationship with a name)."
+            ),
+            "options": options,
+        }
+    (row,) = chosen
+    others = [other for other in keyed if other is not row]
+    block: dict[str, Any] = {
+        "status": "default",
+        "candidates": columns,
+        "default": row["column"],
+        "temporal_role": row["temporal_role"],
+        "entities": _clock_link(row),
+    }
+    if not others:
+        why = (
+            " and the package's model already links it"
+            if linked.get(row["entity"]) == row["column"]
+            else ""
+        )
+        block["message"] = (
+            f"{relation} has no date column of its own; {row['column']} holds keys of "
+            f"{row['entity']}{why}, so the draft links it (entities.{row['entity']}) and dates "
+            f"each measure by {row['temporal_role']}. {row['reason']}"
+        )
+        return block
+    block["message"] = (
+        f"{relation} has no date column of its own and {holding}. The draft dates each "
+        f"measure by {row['column']}, which the package's model already links: it links "
+        f"{row['column']} (entities.{row['entity']}) and lists {row['temporal_role']} in each "
+        f"measure's `times:`. {', '.join(str(other['column']) for other in others)} "
+        f"{_plural(len(others), 'stays', 'stay')} unlinked here: each of `other_keys` adds one "
+        f"as a named role and keeps {row['column']} the default route."
+    )
+    block["other_keys"] = _other_keys(entity, others)
+    return block
+
+
+def _clock_link(row: dict[str, Any]) -> dict[str, Any]:
+    """The draft's ``entities`` entry that links a date key column to its calendar."""
+    return {row["entity"]: {} if row["column"] == row["key"] else {"expr": row["column"]}}
+
+
+def _other_keys(entity: str, others: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Draft named roles for the date key columns the draft leaves unlinked."""
+    return [
+        {
+            "column": other["column"],
+            "upsert_relationship": {
+                "from_entity": entity,
+                "to_entity": other["entity"],
+                "columns": [other["column"]],
+                "cardinality": "many_to_one",
+                "name": _role_name(entity, [str(other["column"])]),
+                "keep_existing_routes": True,
+            },
+        }
+        for other in others
+    ]
 
 
 # Candidate keys a one-per-key search tries, singles first; the first this many by naming order.

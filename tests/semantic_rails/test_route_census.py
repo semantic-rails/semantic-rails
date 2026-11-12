@@ -540,7 +540,11 @@ def test_status_setup_and_promotion_point_at_the_pairs_a_query_needs(tmp_path):
 
 
 def _route_advisories(promotion: dict[str, Any]) -> list[dict[str, Any]]:
-    return [row for row in promotion["advisories"] if row["code"] != "REVIEW_METADATA_MISSING"]
+    return [
+        row
+        for row in promotion["advisories"]
+        if row["code"] not in {"REVIEW_METADATA_MISSING", "MEASURE_WITHOUT_TIME_ROLE"}
+    ]
 
 
 # ---------------------------------------------------------------------------

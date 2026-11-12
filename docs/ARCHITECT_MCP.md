@@ -282,6 +282,27 @@ never create, seed or change it.
   A time column named like a snapshot's as-of time (`snapshot`, `as_of` or `asof` in its name)
   is drafted `class: as_of_time`, so a stock on it whose key lacks the column is refused rather
   than summing snapshots; other times are drafted `event_time`.
+  **What dates the measures.** A table's own date and time columns are drafted as they always
+  were, the first of them the `default: true` time. With `project_path`, a column holding a key
+  of one of the package's calendars counts too: an entity with a one-column key whose model has
+  a `default: true` time, that is `kind: time`, or that is named for a day, date, week, month or
+  calendar (by its name or key) and whose rows name one row per key and per date on consecutive
+  days. Rows of an unknown member (a NULL date, a date before 1901, or a number key that is not
+  positive, such as `-1`) are left out of that test. Another entity's own date (a store's
+  opening day, a version's `valid_from`, a daily exchange rate's date) dates no row linked to
+  it. The column is named like the key, of a compatible type, and confirmed by its values (at
+  least 95% of its distinct values found, on a key that names one row). A column under that (a
+  due day past the calendar's last day), or named like a snapshot's as-of day
+  (`snapshot_day_key`, whose stocks a sum by month would count once per snapshot), dates
+  nothing by itself, but beside another such column it makes the choice yours. On a table with
+  no date column of its own, one such column dates the measures, or of several the one the package's model over
+  the table already links: the draft links it in `entities` and lists the clock's role in each
+  measure's `times:`, and `time_roles` says so, with `other_keys` holding the
+  `upsert_relationship` that adds each other date key as a named role and keeps that one the
+  default route. Several such columns that the package doesn't settle, or one beside a date
+  column of the table's own, are a choice no name settles: the draft dates no measure and marks
+  no time `default: true`, and `time_roles` (`status: choose`) holds each key column's
+  `entities` and `times` in `options` for you to choose.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
@@ -534,7 +555,8 @@ Which route between two entities a question means is a business definition (see
   a question asks about one. `create_project` and `setup_project_dialog` say to decide the ones
   the examples need once entities are related.
 - `promotion_check` lists the needed ones under `advisories` (`ROUTES_UNDECIDED`), never as a
-  blocker. Its `advisories` also name each public measure or curated metric missing review
+  blocker, with each measure that can't be asked by month although its rows reach a clock
+  (`MEASURE_WITHOUT_TIME_ROLE`). Its `advisories` also name each public measure or curated metric missing review
   metadata (`REVIEW_METADATA_MISSING`: `meta.owner_team`, `meta.review_priority`,
   `meta.change_risk`), which parse and validate no longer report.
 - Before writing, the transaction compares the package with the change applied. A change that
