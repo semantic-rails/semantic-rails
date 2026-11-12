@@ -896,7 +896,8 @@ def suggest_model(
     ``relation`` already links it (``clock_links``: clock entity to column). A clock is a
     calendar only where its entity is ``kind: time``, or is named for a day, date, week, month
     or calendar and its rows say so (``_one_row_per_day``).
-    Several such columns, or one beside a date of the relation's own, date nothing:
+    Several such columns, one beside a date of the relation's own, or one that is part of the
+    row's key (one row per something per day: a stock or a daily total), date nothing:
     ``time_roles`` states the choice, the author's.
     """
     described = describe_table(warehouse, relation)
@@ -935,9 +936,17 @@ def suggest_model(
     if clocks:
         with contextlib.suppress(_OutOfTime):  # out of time: no date key, as before
             keyed = _date_keys(warehouse, described, source, clocks)
-        # A date column that is also a calendar's key is one candidate: its own date.
-        keyed = [row for row in keyed if row["column"] not in {item["column"] for item in own}]
-    time_roles = _time_roles(described["relation"], entity, own, keyed, dict(clock_links or {}))
+        # A date column that is also a calendar's key is one candidate: its own date. A key
+        # that is part of the row's key gives one row per something per day, a stock or a
+        # daily total, which only the author can tell apart: it dates nothing by itself.
+        keyed = [
+            {**row, "doubtful": True, "in_key": True} if row["column"] in key_columns else row
+            for row in keyed
+            if row["column"] not in {item["column"] for item in own}
+        ]
+    time_roles = _time_roles(
+        described["relation"], entity, own, keyed, dict(clock_links or {}), key_columns
+    )
     draft = upsert_model_draft(
         entity=entity, relation=described["relation"], key_columns=key_columns, **roles
     )
@@ -972,17 +981,15 @@ def _date_keys(
     """The columns of a relation that hold a calendar's key: named like the key, of a
     compatible type, and confirmed by their values (at least ``DEFAULT_LINK_COVERAGE`` of the
     distinct values found, on a key that names one row; a column under that, one named like a
-    snapshot's as-of day or on a snapshot table, or a key named for a date but not like the
-    calendar's key, is ``doubtful``: it dates nothing, but beside another key it makes the
-    choice the author's). A clock that is no calendar dates
+    snapshot's as-of day, or a key named for a date but not like the calendar's key, is
+    ``doubtful``: it dates nothing, but beside another key it makes the choice the author's).
+    A clock that is no calendar dates
     nothing here: one is unless its entity is ``kind: time``, or named for a day, date, week,
     month or calendar with rows that read as one (``_one_row_per_day``). A customer's home store
     has an opening date, and a daily exchange rate a date per row: neither dates the rows that
     name it."""
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
     found: list[dict[str, Any]] = []
-    table = _split_relation(described["relation"])[1]
-    snapshot_table = _snapshot_clock_like(table) or _has_word(table, ("snapshots",))
     declared = {
         str(fk["columns"][0]): _split_relation(str(fk["references"]["relation"]))
         for fk in described["foreign_keys"]
@@ -1035,14 +1042,12 @@ def _date_keys(
             words = _link_words(
                 name, {"relation": clock["relation"], "key": clock["key"]}, evidence
             )
-            # A key mostly missing from the calendar, or a snapshot's as-of day (by the column's
-            # name or the table's), dates nothing by itself; beside another key it still makes
-            # the choice the author's.
+            # A key mostly missing from the calendar, or a snapshot's as-of day, dates nothing
+            # by itself; beside another key it still makes the choice the author's.
             doubtful = (
                 not named
                 or evidence["coverage"] < DEFAULT_LINK_COVERAGE
                 or _snapshot_clock_like(name)
-                or snapshot_table
             )
             found.append(
                 {
@@ -1105,12 +1110,16 @@ def _time_roles(
     own: list[dict[str, Any]],
     keyed: list[dict[str, Any]],
     linked: dict[str, str],
+    key_columns: list[str],
 ) -> dict[str, Any] | None:
     """What dates a drafted model's measures once a calendar key is among the candidates: the
     ``time_roles`` block, or None when there is none (the relation's own dates, as before)."""
     # Doubtful keys alone date nothing (the relation's own dates, as before); beside an own
-    # date or another key they make the choice the author's.
-    if not keyed or (not own and all(row.get("doubtful") for row in keyed)):
+    # date or another key they make the choice the author's. A key in the row's key states
+    # that choice even alone.
+    if not keyed or (
+        not own and all(row.get("doubtful") and not row.get("in_key") for row in keyed)
+    ):
         return None
     columns = [str(row["column"]) for row in keyed]
     listed, clocks = ", ".join(columns), ", ".join(sorted({str(row["entity"]) for row in keyed}))
@@ -1141,6 +1150,23 @@ def _time_roles(
         for row in keyed
         if linked.get(row["entity"]) == row["column"] and not row.get("doubtful")
     ]
+    if not chosen and len(keyed) == 1 and keyed[0].get("in_key"):
+        (row,) = keyed
+        rest = [column for column in key_columns if column != row["column"]]
+        return {
+            "status": "choose",
+            "candidates": columns,
+            "message": (
+                f"{relation} has no date column of its own; {row['column']} holds keys of "
+                f"{row['entity']} and is part of its key ({', '.join(key_columns)}), so it has "
+                f"one row per {' and '.join([*rest, 'day'])}. A measure of it is either a stock "
+                "(on hand, a balance), which a sum by month counts once per day, or a daily "
+                "total; which one is a business choice, and the draft dates no measure. To "
+                f"date a daily total by {row['column']}, add the `entities` of its entry in "
+                "`options` to the draft and its `times` to each measure."
+            ),
+            "options": options,
+        }
     if not chosen and len(keyed) == 1:
         chosen = keyed
     if len(chosen) != 1:

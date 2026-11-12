@@ -740,24 +740,69 @@ def test_a_date_key_named_unlike_the_calendar_s_key_still_makes_the_choice(tmp_p
     assert "time_roles" not in shipped
 
 
-def test_a_snapshot_table_s_day_key_dates_nothing(tmp_path):
-    """An inventory snapshot keyed by a plain day_key: a sum of its stock by month would count
-    every day's snapshot, so its day key dates nothing by itself."""
-    path = tmp_path / "snap.duckdb"
+def test_a_day_key_in_the_row_s_key_dates_nothing_and_states_the_choice(tmp_path):
+    """A periodic snapshot keyed by day and product (or account), whatever its table is called:
+    a sum of its stock by month would count every day, so its day key dates nothing and the
+    choice is stated. An order's day key, which is no part of its key, still dates it."""
+    path = tmp_path / "periodic.duckdb"
     with duckdb.connect(str(path)) as conn:
         conn.execute(
             """
             CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
               DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
-            CREATE TABLE inventory_snapshots AS SELECT 1 + i % 3 AS product_id,
-              (1 + i % 60)::INTEGER AS day_key, 10.0 + i % 7 AS quantity FROM range(1, 60) t(i);
+            CREATE TABLE fct_inventory AS SELECT (1 + i // 3)::INTEGER AS day_key,
+              1 + i % 3 AS product_key, 100.0 + i % 3 AS quantity_on_hand FROM range(0, 180) t(i);
+            CREATE TABLE fct_daily_account_balances (day_key INTEGER, account_key INTEGER,
+              balance DOUBLE, PRIMARY KEY (day_key, account_key));
+            INSERT INTO fct_daily_account_balances SELECT 1 + i // 2, 1 + i % 2, 1000.0 + i % 2
+              FROM range(0, 120) t(i);
+            CREATE TABLE inventory_snapshots AS SELECT (1 + i)::INTEGER AS day_key,
+              10.0 + i % 7 AS quantity FROM range(0, 59) t(i);
+            CREATE TABLE fct_orders AS SELECT i AS order_id, (1 + i % 60)::INTEGER AS day_key,
+              10.0 * i AS amount FROM range(1, 40) t(i);
             """
         )
     with open_duckdb(path) as warehouse:
-        drafted = suggest_model(warehouse, "inventory_snapshots", clocks=CLOCK)
-    assert "time_roles" not in drafted
-    assert "entities" not in drafted["upsert_model"]
-    assert all("times" not in spec for spec in drafted["upsert_model"]["measures"].values())
+        drafted = {
+            relation: suggest_model(warehouse, relation, clocks=CLOCK)
+            for relation in (
+                "fct_inventory",
+                "fct_daily_account_balances",
+                "inventory_snapshots",
+                "fct_orders",
+            )
+        }
+    inventory = drafted["fct_inventory"]
+    assert inventory["primary_key"]["columns"] == ["day_key", "product_key"]
+    assert inventory["time_roles"] == {
+        "status": "choose",
+        "candidates": ["day_key"],
+        "message": (
+            "fct_inventory has no date column of its own; day_key holds keys of day and is part "
+            "of its key (day_key, product_key), so it has one row per product_key and day. A "
+            "measure of it is either a stock (on hand, a balance), which a sum by month counts "
+            "once per day, or a daily total; which one is a business choice, and the draft dates "
+            "no measure. To date a daily total by day_key, add the `entities` of its entry in "
+            "`options` to the draft and its `times` to each measure."
+        ),
+        "options": [{"column": "day_key", "entities": {"day": {}}, "times": [ROLE]}],
+    }
+    balances = drafted["fct_daily_account_balances"]["time_roles"]
+    assert (balances["status"], balances["candidates"]) == ("choose", ["day_key"])
+    assert "one row per account_key and day" in balances["message"]
+    snapshots = drafted["inventory_snapshots"]["time_roles"]
+    assert (snapshots["status"], snapshots["candidates"]) == ("choose", ["day_key"])
+    assert "so it has one row per day. A measure" in snapshots["message"]
+    for relation in ("fct_inventory", "fct_daily_account_balances", "inventory_snapshots"):
+        draft = drafted[relation]["upsert_model"]
+        assert "entities" not in draft
+        assert all("times" not in spec for spec in draft["measures"].values())
+    orders = drafted["fct_orders"]
+    assert (orders["time_roles"]["status"], orders["time_roles"]["default"]) == (
+        "default",
+        "day_key",
+    )
+    assert all(spec["times"] == [ROLE] for spec in orders["upsert_model"]["measures"].values())
 
 
 def test_a_doubtful_key_beside_an_own_date_is_a_choice(tmp_path):
