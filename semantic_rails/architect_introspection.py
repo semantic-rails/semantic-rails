@@ -971,8 +971,9 @@ def _date_keys(
 ) -> list[dict[str, Any]]:
     """The columns of a relation that hold a calendar's key: named like the key, of a
     compatible type, and confirmed by their values (at least ``DEFAULT_LINK_COVERAGE`` of the
-    distinct values found, on a key that names one row; a column under that, or named like a
-    snapshot's as-of day, is ``doubtful``: it dates nothing, but beside another key it makes the
+    distinct values found, on a key that names one row; a column under that, one named like a
+    snapshot's as-of day or on a snapshot table, or a key named for a date but not like the
+    calendar's key, is ``doubtful``: it dates nothing, but beside another key it makes the
     choice the author's). A clock that is no calendar dates
     nothing here: one is unless its entity is ``kind: time``, or named for a day, date, week,
     month or calendar with rows that read as one (``_one_row_per_day``). A customer's home store
@@ -980,6 +981,8 @@ def _date_keys(
     name it."""
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
     found: list[dict[str, Any]] = []
+    table = _split_relation(described["relation"])[1]
+    snapshot_table = _snapshot_clock_like(table) or _has_word(table, ("snapshots",))
     for clock in clocks:
         if _split_relation(clock["relation"]) == _split_relation(described["relation"]):
             continue
@@ -1007,17 +1010,29 @@ def _date_keys(
             name = str(column["name"])
             if not _fk_types_compatible(str(column["type"]), key_types[clock["key"]]):
                 continue
-            if not _names_link(name, clock["key"], clock["entity"]):
+            named = _names_link(name, clock["key"], clock["entity"])
+            # A key named for a date but not like this calendar's key (``ship_date_key`` beside
+            # a ``day_key`` calendar) may be a second date of the row: it dates nothing by
+            # itself, but it makes the choice the author's.
+            if not named and not (_key_like(name) and calendar_like("", [name])):
                 continue
             evidence = _link_evidence(warehouse, source, name, qualified, clock["key"], deadline)
-            if not evidence["target_key_unique"]:
+            if not evidence["target_key_unique"] or (
+                not named and evidence["coverage"] < DEFAULT_LINK_COVERAGE
+            ):
                 continue
             words = _link_words(
                 name, {"relation": clock["relation"], "key": clock["key"]}, evidence
             )
-            # A key mostly missing from the calendar, or a snapshot's as-of day, dates nothing
-            # by itself; beside another key it still makes the choice the author's.
-            doubtful = evidence["coverage"] < DEFAULT_LINK_COVERAGE or _snapshot_clock_like(name)
+            # A key mostly missing from the calendar, or a snapshot's as-of day (by the column's
+            # name or the table's), dates nothing by itself; beside another key it still makes
+            # the choice the author's.
+            doubtful = (
+                not named
+                or evidence["coverage"] < DEFAULT_LINK_COVERAGE
+                or _snapshot_clock_like(name)
+                or snapshot_table
+            )
             found.append(
                 {
                     **clock,

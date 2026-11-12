@@ -712,3 +712,49 @@ def test_a_date_that_is_also_a_calendar_key_is_one_candidate(tmp_path):
         orders = suggest_model(warehouse, "orders", clocks=[clock])
     assert "time_roles" not in orders
     assert orders["upsert_model"]["times"]["order_date"]["default"] is True
+
+
+def test_a_date_key_named_unlike_the_calendar_s_key_still_makes_the_choice(tmp_path):
+    """A sale's ship_date_key is not named like the calendar's day_key, but it holds its keys:
+    beside the order day key the choice is stated, and alone it dates nothing."""
+    path = tmp_path / "named.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE sales AS SELECT i AS sale_id, (1 + i % 30)::INTEGER AS order_day_key,
+              (32 + i % 30)::INTEGER AS ship_date_key, 10.0 * i AS amount FROM range(1, 40) t(i);
+            CREATE TABLE shipped AS SELECT sale_id, ship_date_key, amount FROM sales;
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        sales = suggest_model(warehouse, "sales", clocks=CLOCK)
+        shipped = suggest_model(warehouse, "shipped", clocks=CLOCK)
+    roles = sales["time_roles"]
+    assert (roles["status"], roles["candidates"]) == ("choose", ["order_day_key", "ship_date_key"])
+    for drafted in (sales, shipped):
+        draft = drafted["upsert_model"]
+        assert "entities" not in draft
+        assert all("times" not in spec for spec in draft["measures"].values())
+    assert "time_roles" not in shipped
+
+
+def test_a_snapshot_table_s_day_key_dates_nothing(tmp_path):
+    """An inventory snapshot keyed by a plain day_key: a sum of its stock by month would count
+    every day's snapshot, so its day key dates nothing by itself."""
+    path = tmp_path / "snap.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE inventory_snapshots AS SELECT 1 + i % 3 AS product_id,
+              (1 + i % 60)::INTEGER AS day_key, 10.0 + i % 7 AS quantity FROM range(1, 60) t(i);
+            """
+        )
+    with open_duckdb(path) as warehouse:
+        drafted = suggest_model(warehouse, "inventory_snapshots", clocks=CLOCK)
+    assert "time_roles" not in drafted
+    assert "entities" not in drafted["upsert_model"]
+    assert all("times" not in spec for spec in drafted["upsert_model"]["measures"].values())

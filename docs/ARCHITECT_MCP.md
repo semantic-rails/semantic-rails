@@ -292,9 +292,11 @@ never create, seed or change it.
   opening day, a version's `valid_from`, a daily exchange rate's date) dates no row linked to
   it. The column is named like the key, of a compatible type, and confirmed by its values (at
   least 95% of its distinct values found, on a key that names one row). A column under that (a
-  due day past the calendar's last day), or named like a snapshot's as-of day
-  (`snapshot_day_key`, whose stocks a sum by month would count once per snapshot), dates
-  nothing by itself, but beside another such column it makes the choice yours. On a table with
+  due day past the calendar's last day), one named like a snapshot's as-of day
+  (`snapshot_day_key`, whose stocks a sum by month would count once per snapshot) or on a
+  snapshot table (`inventory_snapshots`), or a key named for a date but not like the calendar's
+  key (`ship_date_key` beside a `day_key` calendar), dates nothing by itself, but beside another
+  such column it makes the choice yours. On a table with
   no date column of its own, one such column dates the measures, or of several the one the package's model over
   the table already links: the draft links it in `entities` and lists the clock's role in each
   measure's `times:`, and `time_roles` says so, with `other_keys` holding the
