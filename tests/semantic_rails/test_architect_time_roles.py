@@ -780,10 +780,10 @@ def test_a_day_key_in_the_row_s_key_dates_nothing_and_states_the_choice(tmp_path
         "message": (
             "fct_inventory has no date column of its own; day_key holds keys of day and is part "
             "of its key (day_key, product_key), so it has one row per product_key and day. A "
-            "measure of it is either a stock (on hand, a balance), which a sum by month counts "
-            "once per day, or a daily total; which one is a business choice, and the draft dates "
-            "no measure. To date a daily total by day_key, add the `entities` of its entry in "
-            "`options` to the draft and its `times` to each measure."
+            "measure of it is either a stock (on hand, a balance), which a sum over a longer "
+            "period counts once per day, or a total per day; which one is a business choice, and "
+            "the draft dates no measure. To date a total per day, choose one of `options`: add "
+            "its `entities` to the draft and its `times` to each measure."
         ),
         "options": [{"column": "day_key", "entities": {"day": {}}, "times": [ROLE]}],
     }
@@ -803,6 +803,68 @@ def test_a_day_key_in_the_row_s_key_dates_nothing_and_states_the_choice(tmp_path
         "day_key",
     )
     assert all(spec["times"] == [ROLE] for spec in orders["upsert_model"]["measures"].values())
+
+
+def test_a_day_key_in_the_row_s_key_wins_over_a_linked_second_key(tmp_path):
+    """A daily inventory keyed by day and product with a second day key the package already
+    links: the row is still one per product per day, so neither key dates its stock. A key in
+    the row's key that the calendar doesn't hold (yyyymmdd against a 1..N calendar) is no key
+    of it, and a monthly calendar's key in the row's key names months, not days."""
+    path = tmp_path / "periodic.duckdb"
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE calendar AS SELECT i::INTEGER AS day_key,
+              DATE '2025-01-01' + (i - 1)::INTEGER AS day FROM range(1, 91) t(i);
+            CREATE TABLE months AS SELECT i::INTEGER AS month_key,
+              DATE '2025-01-01' + to_months((i - 1)::INTEGER) AS month_start FROM range(1, 13) t(i);
+            CREATE TABLE fct_inventory (day_key INTEGER, product_key INTEGER,
+              reported_day_key INTEGER, quantity_on_hand DOUBLE,
+              PRIMARY KEY (day_key, product_key));
+            INSERT INTO fct_inventory SELECT 1 + i // 2, 1 + i % 2, 1 + i // 2, 100.0
+              FROM range(0, 62) t(i);
+            CREATE TABLE fct_balances (day_key INTEGER, account_key INTEGER, balance DOUBLE,
+              PRIMARY KEY (day_key, account_key));
+            INSERT INTO fct_balances SELECT 20250101 + i // 2, 1 + i % 2, 100.0
+              FROM range(0, 62) t(i);
+            CREATE TABLE fct_monthly_balances (month_key INTEGER, account_key INTEGER,
+              balance DOUBLE, PRIMARY KEY (month_key, account_key));
+            INSERT INTO fct_monthly_balances SELECT 1 + i // 2, 1 + i % 2, 100.0
+              FROM range(0, 24) t(i);
+            """
+        )
+    month = {
+        "entity": "month",
+        "relation": "months",
+        "key": "month_key",
+        "date_column": "month_start",
+        "temporal_role": "temporal_role.shop_month_month_start",
+        "calendar": True,
+    }
+    with open_duckdb(path) as warehouse:
+        inventory = suggest_model(
+            warehouse, "fct_inventory", clocks=CLOCK, clock_links={"day": "reported_day_key"}
+        )
+        balances = suggest_model(warehouse, "fct_balances", clocks=CLOCK)
+        monthly = suggest_model(warehouse, "fct_monthly_balances", clocks=[month])
+    roles = inventory["time_roles"]
+    assert (roles["status"], roles["candidates"]) == ("choose", ["day_key", "reported_day_key"])
+    assert roles["message"].startswith(
+        "fct_inventory has no date column of its own; day_key holds keys of day and is part of "
+        "its key (day_key, product_key), so it has one row per product_key and day."
+    )
+    for drafted in (inventory, balances, monthly):
+        draft = drafted["upsert_model"]
+        assert "entities" not in draft
+        assert all("times" not in spec for spec in draft["measures"].values())
+    assert "time_roles" not in balances
+    by_month = monthly["time_roles"]
+    assert by_month["status"] == "choose"
+    assert (
+        "one row per account_key and month. A measure of it is either a stock"
+        in (by_month["message"])
+    )
+    assert "counts once per month, or a total per month;" in by_month["message"]
 
 
 def test_a_doubtful_key_beside_an_own_date_is_a_choice(tmp_path):
