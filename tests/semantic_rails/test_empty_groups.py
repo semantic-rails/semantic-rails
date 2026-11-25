@@ -207,14 +207,16 @@ def test_an_ungrouped_population_over_no_rows_reads_null_and_says_so(
     """A population has no value for nothing, in either scope: one total over no customer is
     NULL, as a group of none is, and the answer says nothing in scope holds a value. A count
     beside it follows its own rule: 0 across the dataset, NULL inside the filters."""
+    both = {"kind": "arithmetic", "op": "add", "left": CUSTOMERS, "right": ORDERS}
     query = {
-        "select": _select(customers=CUSTOMERS, orders=ORDERS),
+        "select": _select(customers=CUSTOMERS, orders=ORDERS, both=both),
         "where": [{"field": CUSTOMER_ID, "op": "is", "value": "no such customer"}],
         "observation_scope": scope,
     }
     response = runtime.query(query)
     orders = 0 if scope == "dataset" else None
-    assert response["rows"] == [{"customers": None, "orders": orders}]
+    assert response["rows"] == [{"customers": None, "orders": orders, "both": None}]
+    # A sum of the population and a count follows neither rule alone, so it isn't named.
     (warning,) = _warnings(response)
     assert warning["details"]["outputs"] == (
         ["customers"] if scope == "dataset" else ["customers", "orders"]
@@ -931,6 +933,33 @@ def test_a_window_total_without_coverage_reads_only_its_window(
     assert _refund_months(shop_package, {"start": "2024-06-01", "end": "2024-09-01"}) == [
         (None, 14, None, None, None)
     ]
+
+
+def test_a_joined_part_without_coverage_reads_only_its_window(
+    shop_package: Path, coverage_for_named_windows_only: None
+) -> None:
+    """A joined call's periods come from every part's clock: June to August come from the
+    orders, past the last close, which only coverage tells. Without it, closed orders read
+    NULL there, never 0."""
+    by_store = ["dimension.shop_order_store_id"]
+    rt = Runtime.from_path(str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "parts": [
+                    {"select": ["measure.shop.order_count"], "group_by": by_store},
+                    {"select": ["metric.shop.closed_orders"], "group_by": by_store},
+                ],
+                "join": {"on": [[by_store[0], by_store[0]]]},
+                "time": {"grain": "month", "start": "2024-06-01"},
+            },
+            now=SHOP_NOW,
+        )
+    finally:
+        rt.close()
+    assert [(row["order_count"], row["closed_orders"]) for row in response["rows"]] == [
+        (1, None)
+    ] * 3
 
 
 def test_a_predicate_over_several_measures_keeps_explicit_else_zero(shop: Runtime) -> None:

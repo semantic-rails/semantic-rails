@@ -108,6 +108,7 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
+from .part_domain import part_domain
 from .paths import (
     _apply_role_timezone,
     _column_ref,
@@ -375,8 +376,9 @@ def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
 
     A window hides a measure's rows outside it, so the guard looks for them there: on DuckDB
     and Postgres in every window, and on the other warehouses that read coverage in a series.
-    A series' periods there either hold some measure's rows or are bounded by coverage, so
-    they lie inside the data; a window total can lie past the data's edge, which only coverage
+    A series' periods there either lie between rows of its own clock or are bounded by
+    coverage, so they lie inside the data. A window total, or a joined call's part, whose
+    periods come from another part's clock, can lie past the data's edge, which only coverage
     tells, so it keeps the in-window test."""
     time = plan.time or {}
     dialect = _dialect(config)
@@ -384,7 +386,12 @@ def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
         (time.get("start") or time.get("end"))
         and (
             dialect.has_time_coverage
-            or (dialect.reads_coverage and time.get("grain") and not time.get("window_total"))
+            or (
+                dialect.reads_coverage
+                and time.get("grain")
+                and not time.get("window_total")
+                and part_domain() is None
+            )
         )
     )
 

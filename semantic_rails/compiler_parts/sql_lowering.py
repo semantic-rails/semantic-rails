@@ -704,11 +704,14 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             )
         elif settled and (lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)):
             record_zero_output(alias, lookups)
-        elif base_reads(compiled_output) & populations and expr_resolves_to_zero(
-            _parse_public_expr(post_expr), config, {*ZERO_MEASURE_CLASSES, POPULATION}
+        elif (
+            (reads := base_reads(compiled_output) & set(measure_aliases))
+            and reads <= populations
+            and expr_resolves_to_zero(
+                _parse_public_expr(post_expr), config, {*ZERO_MEASURE_CLASSES, POPULATION}
+            )
         ):
             # An ungrouped population that read no rows is NULL: no data in scope, as a count.
-            reads = base_reads(compiled_output) & (populations | zero.keys())
             record_zero_output(
                 alias,
                 (

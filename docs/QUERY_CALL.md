@@ -1860,9 +1860,10 @@ Databricks and Athena, an empty period of an open window's series reads `0` wher
 has data in scope, inside the window or outside it: "revenue and refunds until mid-November"
 reads `0` refunds in a month with none when refunds were recorded later, and their average
 `NULL`, since an average of nothing has no value. Each of those periods lies between rows of
-the call's measures, so it is inside the data. A window total there can lie past the data's
-edge, which only coverage tells, so it reads `0` only while the measure has data inside the
-window, as every empty period on ClickHouse does. These five warehouses read the stored
+the call's measures, so it is inside the data. A window total there, and a part of a joined
+call (whose periods can come from another part's clock), can lie past the data's edge, which
+only coverage tells, so they read `0` only while the measure has data inside the window, as
+every empty period on ClickHouse does. These five warehouses read the stored
 timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 
