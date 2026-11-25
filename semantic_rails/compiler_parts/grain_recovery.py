@@ -43,10 +43,11 @@ from typing import Any
 from ..ast import NormalizedQuery, every_filter
 from ..errors import SemanticLayerError
 from ..expressions import MetricPredicateExpr
-from ..fanout import analyze_fanout, resolve_path
+from ..fanout import analyze_fanout, package_route_result, query_route
 from ..schema import DimensionConfig, MeasureConfig, PackageConfig
 from .bind import _collect_measure_refs
 from .indexes import (
+    RouteResolution,
     _dimension_index,
     _entity_index,
     _measure_index,
@@ -111,11 +112,11 @@ def _chosen_path(config: PackageConfig, *, start: str, target: str) -> list[str]
     Swallows PATH_NOT_FOUND / AMBIGUOUS_PATH — for enrichment an
     unreachable or ambiguous pairing is simply incompatible, not an error.
     """
-    try:
-        chosen, _candidates = resolve_path(config, start=start, target=target)
-    except SemanticLayerError:
-        return None
-    return list(chosen)
+    chosen = query_route(start, target)
+    if chosen is not None:
+        return list(chosen)
+    result = package_route_result(config, start=start, target=target)
+    return list(result.routes[0]) if isinstance(result, RouteResolution) else None
 
 
 def _pairing_is_clean(

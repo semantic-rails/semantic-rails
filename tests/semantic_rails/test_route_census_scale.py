@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
 from collections import Counter
 
+import semantic_rails.fanout as fanout
+from semantic_rails.cli.app import main
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.route_census import census_pairs, resolve_pairs
 from tests.semantic_rails.campus_package import write_campus_package
+from tests.semantic_rails.test_route_groups import _facilities
 
 # The fork each example question hits that no lookup default answers, from its fact to the
 # entity it groups by. A lookup answers the other four (award and event attendance by school,
@@ -110,3 +114,36 @@ def test_opening_reverse_hops_keeps_every_answer_a_forward_only_package_gives(tm
         "colocated_key": 119,
         "only_route": 30,
     }
+
+
+def test_human_validation_skips_unwalked_route_questions(tmp_path, monkeypatch, capsys):
+    """Forty facts each join four shared dimensions and two private ones (124 entities).
+    The package's only metric counts departments and never asks how to reach another entity.
+    """
+    relationships = {}
+    for index in range(40):
+        fact = f"activity_{index}"
+        for dim in ("department", "building", "region", "team", f"area_{index}", f"type_{index}"):
+            relationships[f"{fact}_{dim}"] = (fact, dim, f"{dim}_id")
+    package = _facilities(tmp_path, relationships)
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
+    calls = []
+    build = fanout.route_clarification
+
+    def counted(config, start, target, routes):
+        calls.append((start, target))
+        return build(config, start, target, routes)
+
+    monkeypatch.setattr(fanout, "route_clarification", counted)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["semantic-rails", "project", "validate", "--path", str(package), "--mode", "parse"],
+    )
+    started = time.perf_counter()
+    main()
+    seconds = time.perf_counter() - started
+    assert "entities=124" in capsys.readouterr().out
+    assert len(calls) == 0
+    # The exact work assertion above also holds on a slow runner.
+    assert seconds < 60

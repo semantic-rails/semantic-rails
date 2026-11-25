@@ -18,6 +18,7 @@ from ..errors import SemanticLayerError
 from ..local_config import local_profile_report
 from ..package_tools import check_package_report, run_examples_report, run_package_tests_report
 from ..planner import plan_payload
+from ..route_census import defer_census_questions
 from ..runtime import Runtime
 from .common import (
     _EXCLUDED_DISCOVERY_DIRS,
@@ -471,6 +472,7 @@ def _registered_package_rows(*, with_status: bool) -> list[dict[str, Any]]:
     return rows
 
 
+@defer_census_questions()
 def _package_row_from_source(
     source_path: str | Path,
     *,
@@ -578,6 +580,7 @@ def _uv_check() -> dict[str, Any]:
     }
 
 
+@defer_census_questions()
 def _parse_check(ref: PackageReference) -> dict[str, Any]:
     report, _ = parse_config_report(ref, progress=lambda _: None)
     return {
@@ -588,6 +591,7 @@ def _parse_check(ref: PackageReference) -> dict[str, Any]:
     }
 
 
+@defer_census_questions()
 def _runtime_check(ref: PackageReference) -> dict[str, Any]:
     report = validate_config_report(ref, progress=lambda _: None)
     return {
@@ -597,6 +601,7 @@ def _runtime_check(ref: PackageReference) -> dict[str, Any]:
     }
 
 
+@defer_census_questions()
 def _full_check(ref: PackageReference) -> dict[str, Any]:
     report = check_package_report(ref)
     return {

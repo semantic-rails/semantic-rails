@@ -11,6 +11,7 @@ from ...config_validation import PackageReference
 from ...errors import SemanticLayerError
 from ...local_config import init_local_profile, local_profile_report
 from ...naming import slug
+from ...route_census import defer_census_questions
 from ...upgrade.service import legacy_form_hint, upgrade_project
 from ..common import (
     _add_optional_reference_args,
@@ -547,12 +548,13 @@ def cmd_project_status(args: argparse.Namespace) -> None:
 
 def cmd_project_validate(args: argparse.Namespace) -> None:
     ref = _ref_from_args(args, interactive=_prompts_allowed(args))
-    report = project_validation_report(
-        ref,
-        mode=args.mode,
-        compare_path=args.compare_path,
-        base_ref=args.base_ref,
-    )
+    with defer_census_questions(not args.json):
+        report = project_validation_report(
+            ref,
+            mode=args.mode,
+            compare_path=args.compare_path,
+            base_ref=args.base_ref,
+        )
     if args.json:
         _print_json(report)
     else:

@@ -1,15 +1,16 @@
 """YAML editing equivalence and byte preservation over authored package sources."""
 
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.upgrade.edits import apply_edits
-from semantic_rails.upgrade.model import Edit
+from semantic_rails.yaml_edits import YamlPath, apply_edits
 from semantic_rails.yaml_loader import Yaml12SafeLoader, safe_load
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,16 @@ YAML_FILES = sorted(
         for file in ([ROOT / name] if (ROOT / name).is_file() else (ROOT / name).rglob("*.yml"))
     }
 )
+
+
+@dataclass(frozen=True)
+class Edit:
+    file: str
+    op: str
+    path: YamlPath = ()
+    key: str = ""
+    value: Any = None
+    after: str = ""
 
 
 @pytest.mark.parametrize(

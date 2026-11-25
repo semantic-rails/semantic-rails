@@ -27,7 +27,7 @@ LAYERS = [
     " contracts.generation",
     "architect_service architect_transactions architect_introspection architect_scaffold"
     " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop"
-    " operations",
+    " operations yaml_edits",
     "planner",
     "metadata metadata_parts catalog_service lookalike_models discover_listing",
     "runtime runtime_parts runtime_parts.answer_warnings answer manifest segments caveats resource_access policies cache"
