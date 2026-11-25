@@ -507,7 +507,7 @@ TOOL_MAX_BYTES = {
     "inspect": 1_123,
     "valid-values": 1_388,
     "plan": 1_887,
-    "execute": 6_853,  # the joined call (parts, join)
+    "execute": 6_935,  # the joined call (parts, join); the end-of-period clause
     "segment": 1_300,
 }
 
@@ -522,7 +522,7 @@ def test_each_tool_definition_fits_its_byte_budget() -> None:
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= 14_298  # the joined call
+    assert len(json_text({"tools": list_tool_definitions()})) <= 14_379  # the joined call
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without

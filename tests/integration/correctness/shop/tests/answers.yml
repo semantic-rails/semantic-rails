@@ -217,6 +217,23 @@ tests:
     now: '2023-12-04T00:00:00+00:00'
     expected_rows: *conditional_window_rows
     reference_sql: *conditional_window_sql
+  shop/iso-week-total-observes-a-conditional-count-outside-the-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: ISO week 47 of 2023 counts store b's November 20 order and excludes store a's December 1 order in week 48.
+    cites: *conditional_window_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      <<: *conditional_window
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-W47', end: '2023-W48'}
+    now: '2023-12-04T00:00:00+00:00'
+    expected_rows: [{a: 0, b: 1, net: -1}]
+    reference_sql: |
+      SELECT a, b, a - b FROM (
+        SELECT COUNT(CASE WHEN store_id = 'a' THEN order_id END) AS a,
+          COUNT(CASE WHEN store_id = 'b' THEN order_id END) AS b
+        FROM orders WHERE ordered_at >= TIMESTAMP '2023-11-20' AND ordered_at < TIMESTAMP '2023-11-27'
+      ) counts
   shop/top-stores-with-cutoff-ties:
     kind: query_matches_snapshot
     expect: answer

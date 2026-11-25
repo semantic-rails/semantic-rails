@@ -13,12 +13,14 @@ returns and validates; :meth:`Call.from_call` reads a caller's seed.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
 from .. import operators
 from ..clock import Window, resolve_window
+from ..errors import SemanticLayerError
 from ..naming import last_token
 from ..query_call import (
     EXPRESSION_KEYS,
@@ -26,6 +28,7 @@ from ..query_call import (
     TIME_AXIS,
     ordered_column,
     own_measure,
+    read_time_bound,
     refusal,
 )
 
@@ -169,15 +172,19 @@ def _window_fields(window: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def time_of(raw: Mapping[str, Any] | None) -> Time | None:
-    """A time block in the call's spelling as a :class:`Time`; an empty block stays one, for
-    validation to refuse rather than the draft to drop."""
+    """Read a :class:`Time` and expand periods. Keep empty blocks and invalid bounds for validation."""
     if raw is None:
         return None
+    window = _window_fields(raw)
+    for key in ("start", "end"):
+        if key in raw:
+            with suppress(SemanticLayerError):
+                window[key] = read_time_bound(raw[key], key) or ""
     return Time(
         temporal_role=str(raw.get("temporal_role") or ""),
         grain=str(raw.get("grain") or ""),
         fill=bool(raw.get("fill")),
-        **_window_fields(raw),
+        **window,
     )
 
 

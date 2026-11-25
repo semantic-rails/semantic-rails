@@ -16,7 +16,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from difflib import get_close_matches
 from typing import Any
 
@@ -1845,6 +1845,75 @@ def _having(raw: Any, aliases: Mapping[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _check_explicit_time_bound(text: str) -> None:
+    # Require a full date. Python's datetime parser also accepts weeks without a weekday.
+    day = re.fullmatch(
+        r"(?:([0-9]{4})([-/])([0-9]{1,2})\2([0-9]{1,2})"
+        r"|([0-9]{4}(?:[0-9]{4}|-W[0-9]{2}-[1-7]|W[0-9]{2}[1-7])))"
+        r"(?:(?:[Tt]\s*|\s+)(.*))?",
+        text,
+    )
+    if day is None:
+        raise ValueError
+    year, _, month, day_of_month, iso_day, timestamp = day.groups()
+    if iso_day is None:
+        date(int(year), int(month), int(day_of_month))
+    else:
+        date.fromisoformat(iso_day)
+    if timestamp is None:
+        return
+    stamp = re.fullmatch(
+        r"([0-9]{1,2}(?::[0-9]{1,2}){1,2}|[0-9]{2}(?:[0-9]{2}){0,2})(?:[.,]([0-9]*))?"
+        r"(?:[Zz]|\s+[A-Za-z][A-Za-z0-9_/+\-]*"
+        r"|\s*[+-]([0-9]{1,2})(?::?([0-9]{2}))?(?::?([0-9]{2}))?(?:[.,][0-9]+)?)?",
+        timestamp,
+    )
+    if stamp is None:
+        raise ValueError
+    clock, fraction, *offset = stamp.groups()
+    parts = clock.split(":") if ":" in clock else re.findall(r"[0-9]{2}", clock)
+    hour, minute, second = (int(part) for part in (parts + ["0", "0"])[:3])
+    if minute >= 60 or second >= 60 or hour > 24:
+        raise ValueError
+    # DuckDB accepts 24:00 as the following midnight at microsecond precision.
+    if hour == 24 and (minute or second or (fraction or "")[:6].strip("0")):
+        raise ValueError
+    hours, minutes, seconds = (int(part or 0) for part in offset)
+    if hours >= 24 or minutes >= 60 or seconds >= 60:
+        raise ValueError
+
+
+def read_time_bound(value: Any, key: str) -> str | None:
+    """Use the first day of a period for either bound. The end stays exclusive."""
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return str(value)
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            period = re.fullmatch(r"([0-9]{4})(?:-(?:([0-9]{2})|Q([1-4])|W([0-9]{2})))?", text)
+            if period is None:
+                _check_explicit_time_bound(text)
+                return value
+            year_text, month, quarter, week = period.groups()
+            year = int(year_text)
+            if week is not None:
+                start = date.fromisocalendar(year, int(week), 1)
+            elif quarter is not None:
+                start = date(year, 3 * (int(quarter) - 1) + 1, 1)
+            else:
+                start = date(year, int(month or 1), 1)
+            return start.isoformat()
+        except ValueError:
+            pass  # Invalid dates, date-times and periods use the same refusal.
+    raise refusal(
+        f"time.{key}",
+        "Use a valid ISO date, date-time or period, such as '2025-03'.",
+        fix=f'Write "{key}": "2025-03".',
+    )
+
+
 def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[str, Any] | None:
     if raw is None:
         return None
@@ -1939,8 +2008,12 @@ def _time(raw: Any, select: list[dict[str, Any]], context: CallContext) -> dict[
             fix='Add "temporal_role": "temporal_role.<id>" to time, one of the package\'s clocks.',
         )
     timezone = _role_timezone(role, context.config)
+    spec = dict(raw)
+    for key in ("start", "end"):
+        if key in spec:
+            spec[key] = read_time_bound(spec[key], key)
     try:
-        window = resolve_window(dict(raw), now=context.now, timezone=timezone)
+        window = resolve_window(spec, now=context.now, timezone=timezone)
     except (ValueError, OverflowError) as exc:
         raise _off_calendar(raw, context.now, timezone) from exc
     time: dict[str, Any] = {"temporal_role": role}
