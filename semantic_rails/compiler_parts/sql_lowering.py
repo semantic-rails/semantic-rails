@@ -57,6 +57,8 @@ from .dependencies import (
 from .distribution import _lower_agent_dag_to_sql
 from .empty_groups import (
     GUARDED_BASE,
+    POPULATION,
+    ZERO_MEASURE_CLASSES,
     LeafScope,
     absent_marker,
     base_reads,
@@ -73,6 +75,7 @@ from .empty_groups import (
     refuse_shared_names,
     refuse_unsettled,
     require_time_scopes,
+    settle_ungrouped_populations,
     skips_rows,
     zero_aliases,
 )
@@ -97,6 +100,7 @@ from .lowering_common import (
     _refuse_varying_time_key,
     _require_filtered_series_operand,
     _retained_filtered_series,
+    _series_probe_reads_coverage,
     _time_alias_for_plan,
 )
 from .lowering_common import _apply_role_timezone as _apply_role_timezone
@@ -339,6 +343,8 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # What rows each leaf reads (its table, joins, conditions and grouping): two leaves that
     # read the same rows hold the same groups.
     leaf_rows: list[tuple[Any, ...]] = []
+    # The distinct populations an ungrouped leaf reads NULL over no rows, by measure alias.
+    populations: set[str] = set()
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -353,6 +359,12 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                    # Beside a distribution, each output's branch is such a query of its own.
+                    if guard_empty and not plan.time and not _query_metric_predicates(plan):
+                        leaf_select, settled_now = settle_ungrouped_populations(
+                            leaf_select, measure_group, config
+                        )
+                        populations |= settled_now
                     for row in measure_group:
                         if row.bound_measure.alias in retained:
                             _require_filtered_series_operand(leaf_select, row, config)
@@ -693,6 +705,22 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             )
         elif settled and (lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)):
             record_zero_output(alias, lookups)
+        elif (
+            (reads := base_reads(compiled_output) & set(measure_aliases))
+            and reads <= populations
+            and expr_resolves_to_zero(
+                _parse_public_expr(post_expr), config, {*ZERO_MEASURE_CLASSES, POPULATION}
+            )
+        ):
+            # An ungrouped population that read no rows is NULL: no data in scope, as a count.
+            record_zero_output(
+                alias,
+                (
+                    row.bound_measure.measure_id
+                    for row in plan.measure_plans
+                    if row.bound_measure.alias in reads
+                ),
+            )
         reads = base_reads(compiled_output)
         record_output_reads(alias, reads)
         record_balance_output(
@@ -720,6 +748,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     if drops_rows_below_root(_measure_index(config)[row.bound_measure.measure_id])
                 },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
+                probe_key=time_alias if _series_probe_reads_coverage(plan, config) else "",
                 dialect=_dialect(config),
                 observed=observed,
                 observed_buckets=retained,
