@@ -291,7 +291,7 @@ def _without_primary(monkeypatch: pytest.MonkeyPatch, draft: Any = None) -> None
                     "temporal_role": ORDER_TIME,
                     "grain": "year",
                     "start": "2017",
-                    "end": "2017",
+                    "end": "2018",
                 }
             },
             "ok",

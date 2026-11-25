@@ -169,7 +169,7 @@ def _replace_entries(runtime, entries):
 
 def test_a_package_example_reads_period_literals_as_explicit_bounds(subscriptions):
     question = QUESTION.replace("today", "in September 2026")
-    time = {"temporal_role": ROLE, "grain": "day", "start": "2026-09", "end": "2026-09"}
+    time = {"temporal_role": ROLE, "grain": "day", "start": "2026-09", "end": "2026-10"}
     query = {**QUERY, "time": time}
     _replace_entries(subscriptions, {"top_mrr": {"question": question, "query": query}})
     result = _plan(subscriptions, question)

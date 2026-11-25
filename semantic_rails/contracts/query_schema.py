@@ -247,14 +247,17 @@ def query_call_schema_document() -> dict[str, Any]:
                     "start": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Inclusive ISO date, date-time, or period such as 2025-W05.",
+                        "description": (
+                            "ISO date, date-time, or period. The inclusive start uses the first "
+                            "day of a period such as 2025-W05."
+                        ),
                     },
                     "end": {
                         "type": "string",
                         "minLength": 1,
                         "description": (
-                            "Exclusive ISO date or date-time. A period such as 2025-W05 "
-                            "ends at the start of the next period."
+                            "ISO date, date-time, or period. The exclusive end uses the first "
+                            "day of a period such as 2025-W05."
                         ),
                     },
                     "last": window,

@@ -169,6 +169,7 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
     published_time = load_contract("query.v2.json")["properties"]["time"]["properties"]
     assert "exclusive" in published_time["end"]["description"]
+    assert "exclusive end uses the first day of a period" in published_time["end"]["description"]
     # A total's over is what it rolls up, not the grain it keeps.
     total_over = load_contract("query.v2.json")["$defs"]["Kind_total"]["properties"]["over"]
     assert total_over["description"].startswith(
@@ -194,6 +195,15 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     assert "time.end is exclusive" in tools["execute"]["description"]
     assert "$defs" in tools["execute"]["inputSchema"]
     assert tools["execute"]["inputSchema"]["required"] == ["query"]
+
+
+def test_mcp_guidance_explains_exclusive_period_ends() -> None:
+    execute = next(
+        tool for tool in load_contract("query_mcp.v2.json")["tools"] if tool["name"] == "execute"
+    )
+    for text in (MCP_SERVER_INSTRUCTIONS, execute["description"]):
+        assert "exclusive and uses the first day of any period" in text
+        assert "start 2017-06 and end 2017-07 cover June" in text
 
 
 def _descriptions(node: Any) -> Iterator[str]:
