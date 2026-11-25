@@ -200,8 +200,8 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
 
 TIME_ROLE_RULE = (
     "time.temporal_role: omit it when the selected ids share one default_temporal_role, else "
-    "give one in each id's compatible_temporal_roles; an id with none takes no time (filter or "
-    "group on a date dimension)."
+    "give one from their cards; a measure whose card lists no time role takes no time (filter "
+    "or group on a date dimension)."
 )
 
 
@@ -209,3 +209,32 @@ TIME_ROLE_RULE = (
 def test_execute_says_when_to_give_a_time_role(plan):
     (execute,) = [tool for tool in list_tool_definitions(plan=plan) if tool["name"] == "execute"]
     assert TIME_ROLE_RULE in execute["description"]
+
+
+def test_the_time_role_rule_is_what_execute_does(runtime_factory):
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    march = {"grain": "month", "start": "2017-03-01", "end": "2017-04-01"}
+    orders, sessions = "measure.jaffle.order_count", "measure.jaffle.session_starts"
+    untimed = "measure.jaffle.supply_component_count"
+    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+
+    def refused(select, time=None):
+        query = {"select": select, **({"time": time} if time else {})}
+        response = adapter.call_tool("execute", {"mode": "validate", "query": query})
+        return [error["code"] for error in response.get("errors") or []]
+
+    try:
+        assert adapter.call_tool("inspect", {"object_id": untimed})["card"].get(
+            "compatible_temporal_roles"
+        ) in (None, [])
+        # One shared default: left out. Different defaults: refused until one is given.
+        assert refused(["measure.jaffle.revenue_usd"], march) == []
+        assert refused([orders, sessions], march) == ["MIXED_TIME_ROLES"]
+        role = {**march, "temporal_role": "temporal_role.jaffle_order_time"}
+        assert refused([orders, sessions], role) == []
+        # A measure with no time role answers without time, and with any clock is refused.
+        assert refused([untimed]) == []
+        assert refused([untimed], role) == ["INCOMPATIBLE_TEMPORAL_ROLE"]
+    finally:
+        adapter.close()

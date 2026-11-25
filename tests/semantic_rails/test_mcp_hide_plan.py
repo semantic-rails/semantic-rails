@@ -32,7 +32,7 @@ PLAN = re.compile(r"\bplan\b", re.IGNORECASE)
 # description says when to give a time role.
 DEFAULT_SURFACE_SHA256 = {
     "instructions": "2ef8432647e908ff17b12d32cef623189a35fdb39e0be2a69c272e73773e92b8",
-    "tools": "2a15c57f2cc51630ac23b69850cc1e757fba1ea05eb31d0075898744a6c407cd",
+    "tools": "2849b1f8d192a53f9b5d15dcdd47291f15ed625007121909ea5c52869fbc14bd",
     "prompts": "bb6cabd6d00e3b2b7f8367522fdfd3dcf4efe0d0c04cf999dd1436053fd4cdae",
     "prompt_text": "6458d5136efb7a93d1fc66c2486627688010b38939af5ec85a8555f9cabcd6f0",
 }

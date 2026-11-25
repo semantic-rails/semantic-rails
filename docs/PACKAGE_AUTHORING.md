@@ -1183,10 +1183,10 @@ compare from another period, leave a slice out, or name the caveat beside the nu
 `owner` (optional) names who to ask. The warning's `details` carry `so_what` at every
 verbosity whenever the caveat sets it, so an agent reading the smallest answer (the query
 MCP's default) still sees what to do; `owner` comes at the default `compact` verbosity and at
-`full`. `minimal` keeps only the caveat's id, kind, match reasons and `so_what` beside its
-message. `so_what` must be a string; any other value is refused with `INVALID_CONFIG`
-(`caveat '<id>' so_what must be a string`). A package test of kind `caveat_applies` pins
-where a caveat reaches (see [package tests](#examples-and-tests)).
+`full`. `minimal` keeps only the caveat's id, kind, match reasons, `agent_action` and
+`so_what` beside its message. `so_what` must be a string; any other value is refused with
+`INVALID_CONFIG` (`caveat '<id>' so_what must be a string`). A package test of kind
+`caveat_applies` pins where a caveat reaches (see [package tests](#examples-and-tests)).
 
 The only caveat kinds are `business_event`, `definition_change`, and
 `data_quality`; use `time.at`, `time.from`/`time.to`, `entity_values`, and

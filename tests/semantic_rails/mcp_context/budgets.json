@@ -51,7 +51,7 @@
   "query.v2.hide_plan.tools_list.largest_tool_tokens": 1760,
   "query.v2.hide_plan.tools_list.model_visible_tokens": 2757,
   "query.v2.hide_plan.tools_list.tools": 5,
-  "query.v2.hide_plan.tools_list.wire_tokens": 3356,
+  "query.v2.hide_plan.tools_list.wire_tokens": 3357,
   "query.v2.instructions_tokens": 456,
   "query.v2.session.by_the_book.max_step_structured_tokens": 1636,
   "query.v2.session.by_the_book.structured_tokens": 9890,
@@ -59,9 +59,9 @@
   "query.v2.session.lean.max_step_structured_tokens": 881,
   "query.v2.session.lean.structured_tokens": 4640,
   "query.v2.session.lean.text_tokens": 4640,
-  "query.v2.tools_list.largest_tool_tokens": 1761,
-  "query.v2.tools_list.model_visible_tokens": 3044,
+  "query.v2.tools_list.largest_tool_tokens": 1762,
+  "query.v2.tools_list.model_visible_tokens": 3045,
   "query.v2.tools_list.tools": 6,
-  "query.v2.tools_list.wire_tokens": 3859
+  "query.v2.tools_list.wire_tokens": 3860
  }
 }
