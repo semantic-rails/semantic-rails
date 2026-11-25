@@ -134,6 +134,109 @@ def test_the_echoed_query_is_the_call(runtime, entry):
     assert "query" not in runtime.query(call, now=NOW, verbosity="minimal")
 
 
+@pytest.mark.parametrize(
+    ("period", "start", "end"),
+    [
+        ("2017", "2017-01-01", "2018-01-01"),
+        ("2017-08", "2017-08-01", "2017-09-01"),
+        ("2024-02", "2024-02-01", "2024-03-01"),
+        ("2025-Q4", "2025-10-01", "2026-01-01"),
+        ("2025-W01", "2024-12-30", "2025-01-06"),
+        ("2025-W05", "2025-01-27", "2025-02-03"),
+        ("2020-W53", "2020-12-28", "2021-01-04"),
+    ],
+)
+def test_period_literals_echo_explicit_bounds(runtime, period, start, end):
+    call = {"select": ["measure.jaffle.order_count"]}
+    short = runtime.validate({**call, "time": {"start": period, "end": period}}, now=NOW)
+    explicit = runtime.validate({**call, "time": {"start": start, "end": end}}, now=NOW)
+    assert short["ok"] and explicit["ok"]
+    assert short["window"] == explicit["window"]
+    assert (short["window"]["start"], short["window"]["end"]) == (start, end)
+
+
+@pytest.mark.parametrize(
+    ("bounds", "start", "end"),
+    [
+        ({"start": "2017-08"}, "2017-08-01", "2017-08-15T00:00:00Z"),
+        ({"end": "2017-07"}, None, "2017-08-01"),
+        (
+            {"start": "2017-07-31T12:00:00+00:00", "end": "2017-08"},
+            "2017-07-31T12:00:00+00:00",
+            "2017-09-01",
+        ),
+    ],
+)
+def test_period_bounds_work_alone_or_with_an_explicit_bound(runtime, bounds, start, end):
+    call = {"select": ["measure.jaffle.order_count"], "time": bounds}
+    window = runtime.query(call, now=NOW)["window"]
+    assert (window.get("start"), window["end"]) == (start, end)
+
+
+def test_joined_answer_echoes_period_bounds_in_each_part(runtime):
+    call = {
+        "parts": [
+            {"select": ["measure.jaffle.order_count"], "group_by": [STORE]},
+            {"select": ["measure.jaffle.revenue_usd"], "group_by": [STORE]},
+        ],
+        "join": {"on": [[STORE, STORE]]},
+        "time": {"start": "2017-08", "end": "2017-08"},
+    }
+    answer = runtime.query(call, now=NOW)
+    assert answer["rows"]
+    assert [(part["window"]["start"], part["window"]["end"]) for part in answer["parts"]] == [
+        ("2017-08-01", "2017-09-01"),
+        ("2017-08-01", "2017-09-01"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stamp", "equivalent"),
+    [
+        ("2017-08-07 12:00:00 UTC", "2017-08-07T12:00:00Z"),
+        ("2017-08-07T24:00:00", "2017-08-08T00:00:00"),
+    ],
+)
+def test_period_bound_support_preserves_explicit_warehouse_timestamps(runtime, stamp, equivalent):
+    call = {"group_by": [STORE], "order_by": [{"field": STORE, "direction": "asc"}]}
+    time = {"temporal_role": ORDER_TIME, "end": "2017-08-14"}
+    out = runtime.query({**call, "time": {**time, "start": stamp}}, now=NOW)
+    expected = runtime.query({**call, "time": {**time, "start": equivalent}}, now=NOW)
+    assert out["rows"] and out["rows"] == expected["rows"]
+    assert out["window"]["start"] == stamp
+
+
+@pytest.mark.parametrize(
+    ("field", "literal"),
+    [
+        ("start", "2025-Q5"),
+        ("end", "2025-W53"),
+        ("start", "2025-W54"),
+        ("end", "2025-W5"),
+        ("end", "2017-W32-03"),
+        ("start", "2025W05"),
+        ("start", "2025-13"),
+        ("end", "0000"),
+        ("end", "9999-12"),
+        ("end", "9999-W52"),
+        ("start", "last 3 months"),
+        ("end", "2017-08-07T12:00:00+00:60"),
+    ],
+)
+def test_invalid_period_bounds_refuse_with_a_field_and_example(runtime, field, literal):
+    report = runtime.validate(
+        {"select": ["measure.jaffle.order_count"], "time": {field: literal}}, now=NOW
+    )
+    assert report["ok"] is False
+    (error,) = report["errors"]
+    assert error["code"] == "INVALID_QUERY"
+    assert (
+        error["message"]
+        == f"time.{field}: Use a valid ISO date, date-time or period, such as '2025-03'."
+    )
+    assert error["details"]["path"] == f"time.{field}"
+
+
 # --- Error and warning objects ------------------------------------------------------------
 
 REFUSED = {

@@ -167,6 +167,17 @@ def _replace_entries(runtime, entries):
     runtime.reload()
 
 
+def test_a_package_example_reads_period_literals_as_explicit_bounds(subscriptions):
+    question = QUESTION.replace("today", "in September 2026")
+    time = {"temporal_role": ROLE, "grain": "day", "start": "2026-09", "end": "2026-09"}
+    query = {**QUERY, "time": time}
+    _replace_entries(subscriptions, {"top_mrr": {"question": question, "query": query}})
+    result = _plan(subscriptions, question)
+    assert result["status"] == "ok", result.get("why")
+    assert result["best"]["pattern"] == "package_example"
+    assert result["best"]["query"]["time"] == {**time, "start": "2026-09-01", "end": "2026-10-01"}
+
+
 YESTERDAY = QUESTION.replace("today", "yesterday")
 WEEK = {**QUERY, "time": {**QUERY["time"], "range": {"last": {"unit": "day", "value": 7}}}}
 

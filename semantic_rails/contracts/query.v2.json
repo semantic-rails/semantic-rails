@@ -1453,7 +1453,7 @@
       },
       "properties": {
         "end": {
-          "description": "ISO date or date-time, exclusive: [start, end).",
+          "description": "Exclusive ISO date or date-time. A period such as 2025-W05 ends at the start of the next period.",
           "minLength": 1,
           "type": "string"
         },
@@ -1493,6 +1493,7 @@
           "type": "object"
         },
         "start": {
+          "description": "Inclusive ISO date, date-time, or period such as 2025-W05.",
           "minLength": 1,
           "type": "string"
         },

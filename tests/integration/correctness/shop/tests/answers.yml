@@ -217,6 +217,18 @@ tests:
     now: '2023-12-04T00:00:00+00:00'
     expected_rows: *conditional_window_rows
     reference_sql: *conditional_window_sql
+  shop/iso-week-total-observes-a-conditional-count-outside-the-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: ISO week 48 of 2023 spans Monday November 27 through Sunday December 3.
+    cites: *conditional_window_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      <<: *conditional_window
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-W48', end: '2023-W48'}
+    now: '2023-12-04T00:00:00+00:00'
+    expected_rows: *conditional_window_rows
+    reference_sql: *conditional_window_sql
   shop/top-stores-with-cutoff-ties:
     kind: query_matches_snapshot
     expect: answer

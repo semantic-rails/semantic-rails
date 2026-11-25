@@ -26,6 +26,7 @@ from ..query_call import (
     TIME_AXIS,
     ordered_column,
     own_measure,
+    read_time_bound,
     refusal,
 )
 
@@ -173,11 +174,15 @@ def time_of(raw: Mapping[str, Any] | None) -> Time | None:
     validation to refuse rather than the draft to drop."""
     if raw is None:
         return None
+    window = _window_fields(raw)
+    for key in ("start", "end"):
+        if key in raw:
+            window[key] = read_time_bound(raw[key], key) or ""
     return Time(
         temporal_role=str(raw.get("temporal_role") or ""),
         grain=str(raw.get("grain") or ""),
         fill=bool(raw.get("fill")),
-        **_window_fields(raw),
+        **window,
     )
 
 

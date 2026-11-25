@@ -284,6 +284,21 @@ def _without_primary(monkeypatch: pytest.MonkeyPatch, draft: Any = None) -> None
             None,
             YEAR_2017,
         ),
+        pytest.param(
+            LONG + "in 2017",
+            {
+                "time": {
+                    "temporal_role": ORDER_TIME,
+                    "grain": "year",
+                    "start": "2017",
+                    "end": "2017",
+                }
+            },
+            "ok",
+            None,
+            YEAR_2017,
+            id="period-literal-seed",
+        ),
     ],
 )
 def test_plan_keeps_the_window_it_resolves_and_reports_the_rest(

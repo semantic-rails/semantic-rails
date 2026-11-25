@@ -244,11 +244,18 @@ def query_call_schema_document() -> dict[str, Any]:
                 "properties": {
                     "temporal_role": {"type": "string", "minLength": 1},
                     "grain": {"enum": list(GRAINS)},
-                    "start": {"type": "string", "minLength": 1},
+                    "start": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Inclusive ISO date, date-time, or period such as 2025-W05.",
+                    },
                     "end": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "ISO date or date-time, exclusive: [start, end).",
+                        "description": (
+                            "Exclusive ISO date or date-time. A period such as 2025-W05 "
+                            "ends at the start of the next period."
+                        ),
                     },
                     "last": window,
                     "this": {"enum": list(GRAINS)},

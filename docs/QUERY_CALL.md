@@ -712,7 +712,10 @@ A result threshold filters result rows; to filter which entities count toward a 
 | no window | all time | `{"grain": "year"}` |
 
 - Units and grains: `day`, `week`, `month`, `quarter`, `year`. Weeks start on Monday (ISO).
-  Bounds are ISO dates or date-times; a date-time bound may cut inside a day.
+  `start` and `end` take ISO dates, date-times, or period strings (`"2025"`, `"2025-03"`,
+  `"2025-Q1"`, `"2025-W05"`). A date-time bound can cut inside a day. The answer's `window`
+  echoes the bounds it used, with a period in `start` resolved to its first day and a period
+  in `end` to the first day after it.
 - `grain` gives one row per period in a `period` column, an ISO date (the period's first day).
   Without `grain` the answer is one total per group over the window, with no time column; the
   answer says so in `assumptions` (`WINDOW_TOTAL`). A call with only `group_by` lists each
