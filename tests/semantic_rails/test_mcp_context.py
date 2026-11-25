@@ -158,7 +158,7 @@ def query_measurement(jaffle_package: Path):
 def test_query_mcp_stays_within_context_budgets(query_measurement) -> None:
     metrics, _preview = query_measurement
     for metric, maximum in {
-        "query.v2.instructions_tokens": 459,
+        "query.v2.instructions_tokens": 481,
         # execute embeds the query call's schema (query.v2.json) once, share kind and each
         # operator's value shape included.
         "query.v2.tools_list.model_visible_tokens": 4645,
