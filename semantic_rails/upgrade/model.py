@@ -250,7 +250,7 @@ class PackageFiles:
         """The 1-based line of the key or item at ``path``, else of its nearest ancestor."""
         from yaml.nodes import MappingNode
 
-        from .edits import _document, _entries, _node
+        from ..yaml_edits import _document, _entries, _node
 
         _, root = _document(self.contents[file].decode("utf-8"))
         for depth in range(len(path), 0, -1):
@@ -280,7 +280,7 @@ class Plan:
 
 def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str]) -> Plan:
     """Plan one conflict-free edit pass and refuse any new finding on its result."""
-    from .edits import apply_edits
+    from ..yaml_edits import apply_edits
 
     rules = tuple(rules)
     findings = tuple(finding for rule in rules for finding in rule.find(files))

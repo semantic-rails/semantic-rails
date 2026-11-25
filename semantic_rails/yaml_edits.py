@@ -11,9 +11,9 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import AliasToken, AnchorToken
 
-from ..architect_scaffold import _NoAliasDumper, dump_project_yaml
-from ..errors import SemanticLayerError
-from ..yaml_loader import Yaml12SafeLoader, safe_load
+from .architect_scaffold import _NoAliasDumper, dump_project_yaml
+from .errors import SemanticLayerError
+from .yaml_loader import Yaml12SafeLoader, safe_load
 
 YamlPath = tuple[str | int, ...]
 

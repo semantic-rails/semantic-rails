@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 
-from .edits import _get
+from ..yaml_edits import _get
 from .model import Edit, Finding, PackageFiles, Rule, YamlPath, _walk
 from .rules_calls import rewritten
 
