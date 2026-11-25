@@ -16,6 +16,7 @@ from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 
@@ -747,6 +748,8 @@ def package_route_result(
         except SemanticLayerError as exc:
             cached = RouteRefusal(exc.code, str(exc), exc.details)
         analysis.path_cache[(start, target)] = cached
+    if isinstance(cached, RouteRefusal) and cached.code == "PATH_NOT_FOUND":
+        return cached._replace(details=deepcopy(cached.details))
     return cached
 
 
