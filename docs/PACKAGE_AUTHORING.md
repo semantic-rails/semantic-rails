@@ -833,9 +833,11 @@ kind names must match exactly.
   under either a package-wide or an inherited measure constraint. Its value can pick
   rows too, so it is read the same way: a `case` in the value is a condition like the
   `aggregate_if`'s own, and any other column the value computes with (arithmetic or a
-  call, 0 for every customer but one) counts as the dimensions over it. A column the
-  value returns as it is (the whole value, or what a `case` branch returns) is what is
-  aggregated, and filters nothing. With revenue limited to store filters, a `sum` of
+  call, 0 for every customer but one) counts as the dimensions over it (on its entity,
+  or, when it declares none, on another entity over the same table). A column the value
+  returns as it is (the whole value, or what a `case` branch returns) is what is
+  aggregated, as a measure's column is: it counts as no filter, though a count counts
+  only the rows where it has a value. With revenue limited to store filters, a `sum` of
   `case when customer_id = '…' then order_total_cents else 0 end` by store is refused
   as its condition form is: "measure.jaffle.revenue_usd can't be filtered by
   dimension.jaffle_order_customer_id inside an expression". Its condition and value

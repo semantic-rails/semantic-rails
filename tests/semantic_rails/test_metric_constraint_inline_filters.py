@@ -1,5 +1,6 @@
 """A metric constraint governs the filters a caller writes inside an expression."""
 
+import json
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date
@@ -457,6 +458,54 @@ def test_a_filter_in_a_conditional_aggregate_value_is_refused_like_its_condition
     )
 
 
+def test_a_case_in_a_value_on_a_column_no_dimension_declares_is_refused(config, monkeypatch):
+    """As in the condition: no allowed_where lists a column no dimension declares."""
+    subtotal = {"kind": "column", "entity": ORDER, "column": "subtotal_cents"}
+    over = {"kind": "comparison", "op": ">", "left": subtotal, "right": ZERO}
+    query = _select(_summed(_case(over, TOTAL, ZERO)), group_by=[STORE_NAME])
+    engine = _constrained(config, BY_STORE_OR_SIZE, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [f"{ORDER}.subtotal_cents"],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_a_column_computed_with_through_another_entity_of_its_table_is_its_dimension(
+    config, monkeypatch
+):
+    """A second entity over the orders table declares no dimension over the customer id: the
+    column is still the order's customer id dimension."""
+    twin = "entity.test_order_twin"
+    order = next(row for row in config.entities if row.id == ORDER)
+    package = replace(config, entities=[*config.entities, replace(order, id=twin)])
+    total, customer = ({**column, "entity": twin} for column in (TOTAL, ORDER_CUSTOMER))
+    only_the_customer = json.loads(json.dumps(ONLY_THE_CUSTOMER).replace(ORDER, twin))
+    assert only_the_customer["right"]["left"]["args"][0]["args"][0] == customer
+    query = _select(_summed(_times(total, only_the_customer)))
+    _compiles(package, query)
+    engine = _constrained(package, BY_STORE_OR_SIZE, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [ORDER_CUSTOMER_ID],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
 # A value that picks rows only by an allowed field, computes only with columns no dimension
 # declares, or returns a column as it is (what is aggregated) filters by nothing else.
 VALUE_NEIGHBOURS = {
@@ -482,6 +531,14 @@ VALUE_NEIGHBOURS = {
             "kind": "aggregate_if",
             "aggregation": "count_distinct",
             "value": _case(IS_LARGE, ORDER_CUSTOMER),
+        },
+    ),
+    "returned_by_an_else_branch": (
+        "measure.jaffle.ordering_customer_count",
+        {
+            "kind": "aggregate_if",
+            "aggregation": "count_distinct",
+            "value": _case(IS_LARGE, {"kind": "literal", "value": None}, ORDER_CUSTOMER),
         },
     ),
 }

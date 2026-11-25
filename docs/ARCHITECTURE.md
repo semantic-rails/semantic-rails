@@ -447,8 +447,8 @@ including normalized `entity_count` measures, because any other form can recover
 row count. `aggregate_if` conditions have no authored field and cannot satisfy
 `allowed_where`; other unrelated source columns remain independent. An `aggregate_if`
 value's filters are read as its condition's (`_condition_fields`): each `case` condition in
-it, and each column it computes with that a dimension is over; a column it returns as it is
-filters nothing.
+it, and each column it computes with that a dimension is over (on another entity over the
+same table when its own declares none); a column it returns as it is counts as no filter.
 Column binding and caveat temporal-shape inspection retain their specialized views.
 
 ### Query-Time
