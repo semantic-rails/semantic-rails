@@ -42,7 +42,7 @@ from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import package_release_labels
 from .renderer import _quote_ident
 from .result_values import result_rows
-from .route_census import route_change_lines, route_changes
+from .route_census import defer_census_questions, route_change_lines, route_changes
 from .runtime import Runtime, _time_zone
 from .runtime_parts.joined_call import joined_output_columns
 from .runtime_parts.responses import output_columns
@@ -344,7 +344,8 @@ def _run_entries_report(
     """Run each ``kind`` entry (example or test) of the package and summarize the results."""
     plural = f"{kind}s"
     if report is None or config is None:
-        report, config = parse_config_report(ref)
+        with defer_census_questions():
+            report, config = parse_config_report(ref)
     if not report["ok"] or config is None:
         return {
             "ok": False,
@@ -538,7 +539,8 @@ def check_warehouse_column_reachability_report(
     """
     report = parse_report
     if report is None or config is None:
-        report, config = parse_config_report(ref)
+        with defer_census_questions():
+            report, config = parse_config_report(ref)
     if not report["ok"] or config is None:
         return {
             "ok": False,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import weakref
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -51,6 +52,9 @@ class RouteRefusal(NamedTuple):
     message: str
     details: dict[str, Any]
 
+    # Routes still in contention, before a reader requests the clarification.
+    routes: tuple[tuple[str, ...], ...] = ()
+
     def error(self) -> SemanticLayerError:
         """The refusal raised again. Its details stay the cache's: the error copies them when a
         caller first reads them, so a caller that only reads the code copies nothing."""
@@ -65,6 +69,7 @@ class PackageAnalysis:
     recipes: dict[str, MetricConfig]
     temporal_roles: dict[str, TemporalRoleConfig]
     relationships: dict[str, RelationshipConfig]
+    relationship_pairs: Counter[frozenset[str]]
     table_to_entities: dict[str, tuple[str, ...]]
     graph: GraphIndex
     path_preferences: dict[tuple[str, str], list[str]]
@@ -117,6 +122,9 @@ class PackageAnalysis:
             recipes={row.id: row for row in config.metric_recipes},
             temporal_roles={row.id: row for row in config.temporal_roles},
             relationships=relationships,
+            relationship_pairs=Counter(
+                frozenset((rel.source_entity, rel.target_entity)) for rel in relationships.values()
+            ),
             table_to_entities={table: tuple(sorted(ids)) for table, ids in tables.items()},
             graph=graph,
             path_preferences={
