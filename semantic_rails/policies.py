@@ -1538,14 +1538,48 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
 
 
 def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> list[str]:
-    """The fields a conditional aggregate's condition reads: the dimensions over each column,
-    or ``<entity>.<column>`` for a column no dimension declares (which no allowed_where lists)."""
+    """The fields a conditional aggregate reads to pick rows. Each column of its condition, and
+    of each CASE condition in its value, is the dimensions over it, or ``<entity>.<column>`` for
+    a column no dimension declares (which no allowed_where lists). A value also picks rows by
+    the columns it computes with (0 for every customer but one), so each such column with a
+    dimension over it, on its entity or else on another entity over the same table, is that
+    dimension; a column the value returns as it is (the whole value, or what a CASE branch
+    returns) is what is aggregated."""
+    conditions = [expr.condition] if expr.condition is not None else []
+    computed: list[ColumnRefExpr] = []
+    stack: list[tuple[Any, bool]] = [(expr.value, True)] if expr.value is not None else []
+    while stack:
+        node, returned = stack.pop()
+        if isinstance(node, CaseExpr):
+            conditions.extend(when.when for when in node.whens)
+            branches = [*(when.then for when in node.whens), node.else_expr]
+            stack.extend((item, returned) for item in reversed(branches) if item is not None)
+        elif isinstance(node, ColumnRefExpr):
+            if not returned:
+                computed.append(node)
+        else:
+            stack.extend((child, False) for child in reversed(list(_child_exprs(node))))
+
+    def table(entity_id: str) -> str:
+        # Matched as governed sources are (``_synthetic_constraint_sources``).
+        relation = next((row.table for row in config.entities if row.id == entity_id), "")
+        return relation.split(".")[-1].strip('"`[]').casefold()
+
     out: list[str] = []
-    refs = collect_column_refs(expr.condition) if expr.condition is not None else []
-    for ref in refs:
+    for ref, declared in [
+        *((ref, False) for condition in conditions for ref in collect_column_refs(condition)),
+        *((ref, True) for ref in computed),
+    ]:
         entity = _resolve_column_entity(ref, config)
         over = [row.id for row in dimensions_over_column(entity, ref.column, config)]
-        out.extend(over or [f"{entity}.{ref.column}"])
+        if declared and not over:
+            over = [
+                row.id
+                for other in config.entities
+                if other.id != entity and table(other.id) == table(entity)
+                for row in dimensions_over_column(other.id, ref.column, config)
+            ]
+        out.extend(over or ([] if declared else [f"{entity}.{ref.column}"]))
     return out
 
 
