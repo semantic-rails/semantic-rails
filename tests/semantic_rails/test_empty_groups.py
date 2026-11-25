@@ -221,6 +221,15 @@ def test_an_ungrouped_population_over_no_rows_reads_null_and_says_so(
     )
     assert warning["message"].startswith("No data in scope for customers")
     assert "measure.jaffle.customer_count" in warning["object_ids"]
+    # Beside a distribution, whose own branch reads it, it settles as it does alone.
+    median = {
+        "kind": "distribution",
+        "function": "median",
+        "over": {"kind": "entity_value", "entity": "entity.jaffle_customer", "input": ORDERS},
+    }
+    beside = runtime.query({**query, "select": _select(customers=CUSTOMERS, median=median)})
+    assert beside["rows"] == [{"customers": None, "median": None}]
+    assert [item["details"]["outputs"] for item in _warnings(beside)] == [["customers"]]
 
 
 def test_an_ungrouped_population_whose_rows_fail_its_condition_reads_zero(

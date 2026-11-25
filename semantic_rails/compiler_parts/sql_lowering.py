@@ -358,12 +358,8 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
-                    if (
-                        guard_empty
-                        and settles_as_a_call()
-                        and not plan.time
-                        and not _query_metric_predicates(plan)
-                    ):
+                    # Beside a distribution, each output's branch is such a query of its own.
+                    if guard_empty and not plan.time and not _query_metric_predicates(plan):
                         leaf_select, settled_now = settle_ungrouped_populations(
                             leaf_select, measure_group, config
                         )
