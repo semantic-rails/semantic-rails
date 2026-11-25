@@ -366,6 +366,7 @@ def guard_empty_groups(
     keep: Iterable[str] = (),
     names: Mapping[str, Sequence[str]] | None = None,
     absent: Mapping[str, str] | None = None,
+    probe_key: str = "",
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -397,8 +398,12 @@ def guard_empty_groups(
     ``absent`` names, for a measure alias, a column reading 1 in each group its own rows never
     reached (``absent_marker``) and 0 elsewhere: what the answer's ``ZERO_FILLED_GROUPS``
     counts. It changes no value.
+    ``probe_key``, where no ``time_key`` gates the output (an open series on a warehouse that
+    reads coverage only for a named window), names the time key whose bucket a scope's own
+    loaded coverage must hold before its outside-the-window probe settles it: rows before the
+    window never make a period past the measure's last row read 0.
     """
-    if (scopes or time_key) and not (dialect is not None and dialect.reads_coverage):
+    if (scopes or time_key or probe_key) and not (dialect is not None and dialect.reads_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     rows = rows or {}
     measures = list(measures)
@@ -429,6 +434,16 @@ def guard_empty_groups(
             ctes.extend(_dataset_probe_ctes(name, probe))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
+
+    def covered(scope: LeafScope) -> str:
+        """The coverage CTE of the scope's base relation and bucket, read once."""
+        loaded = repr((scope.from_table, scope.raw_time, scope.storage_zone, scope.bucket))
+        name = coverage.get(loaded)
+        if name is None:
+            name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
+            ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
+            joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
+        return name
 
     markers: list[SqlField] = []
     for alias in measures:
@@ -497,21 +512,11 @@ def guard_empty_groups(
                     # Where EXISTS may not sit in a select (Snowflake, Spark), the probe is read
                     # through plain CTEs instead.
                     found = outside if dialect.exists_in_select else probed(outside.query)
+                    if probe_key and not gated and scope.bucket is not None:
+                        found = SqlBinary(found, "AND", _loaded_bucket(probe_key, covered(scope)))
                     seen = SqlBinary(seen, "OR", found)
                 if gated:
-                    loaded = repr(
-                        (
-                            scope.from_table,
-                            scope.raw_time,
-                            scope.storage_zone,
-                            scope.bucket,
-                        )
-                    )
-                    name = coverage.get(loaded)
-                    if name is None:
-                        name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
-                        ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
-                        joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
+                    name = covered(scope)
                     if scope.edge is None:
                         seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
                     else:

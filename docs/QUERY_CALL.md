@@ -1856,14 +1856,17 @@ reads `0` in a week the orders' load log covers with no order and `NULL` before 
 and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
 read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
 not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery,
-Databricks and Athena, an empty period of an open window's series reads `0` where the measure
-has data in scope, inside the window or outside it: "revenue and refunds until mid-November"
-reads `0` refunds in a month with none when refunds were recorded later, and their average
-`NULL`, since an average of nothing has no value. Each of those periods lies between rows of
-the call's measures, so it is inside the data. A window total there, and a part of a joined
-call (whose periods can come from another part's clock), can lie past the data's edge, which
-only coverage tells, so they read `0` only while the measure has data inside the window, as
-every empty period on ClickHouse does. These five warehouses read the stored
+Databricks and Athena, an empty period of a series whose periods come from its rows (an open
+window's, or a named window's grouped by a date or time dimension) reads `0` where the
+measure has data in scope, inside the window or outside it, and the period lies inside the
+measure's own loaded range, as on DuckDB and Postgres: "revenue and refunds until
+mid-November" reads `0` refunds in a month with none when refunds were recorded later, and
+their average `NULL`, since an average of nothing has no value. Past the measure's own last
+row the period reads `NULL` with `NO_DATA_YET`, however many rows came before: orders and
+shipment scans since July read `NULL` scans when the scans, on their own clock, stop in June.
+A window total there, and a part of a joined call (whose periods can come from another part's
+clock), read `0` only while the measure has data inside the window, as every empty period on
+ClickHouse does. These five warehouses read the stored
 timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 
@@ -1883,8 +1886,9 @@ after the load log, as revenue beside it does.
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
 `prior_period`, ratio or rolling output never does, since it can be `NULL` while its measure
 has data, and neither does a truncated answer. A distinct-population count with no `group_by`
-and no `time` reads `NULL` with the warning when its filters keep no row, as a count does
-("customers" of a misspelled customer id). One that read rows keeps its count, `0` included
+and no `time` reads `NULL` with the warning when its filters keep no row ("customers" of a
+misspelled customer id), in either scope; a count reads `NULL` there only under
+`observation_scope: "query"`. One that read rows keeps its count, `0` included
 ("repeat customers" among one-time customers), and one beside an entity filter counts the
 entities the filter keeps, which it judges one by one, with rows or none: `0` when it keeps
 none.

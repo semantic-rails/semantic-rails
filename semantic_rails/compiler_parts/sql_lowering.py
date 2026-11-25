@@ -100,6 +100,7 @@ from .lowering_common import (
     _refuse_varying_time_key,
     _require_filtered_series_operand,
     _retained_filtered_series,
+    _series_probe_reads_coverage,
     _time_alias_for_plan,
 )
 from .lowering_common import _apply_role_timezone as _apply_role_timezone
@@ -747,6 +748,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     if drops_rows_below_root(_measure_index(config)[row.bound_measure.measure_id])
                 },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
+                probe_key=time_alias if _series_probe_reads_coverage(plan, config) else "",
                 dialect=_dialect(config),
                 observed=observed,
                 observed_buckets=retained,

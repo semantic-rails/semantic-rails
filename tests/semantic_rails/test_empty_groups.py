@@ -925,6 +925,52 @@ def test_an_open_series_reads_zero_where_a_measure_has_rows_only_outside_its_win
     assert _refund_months(shop_package, time) == expected
 
 
+SHOP_SCANS = {"kind": "measure", "measure": "measure.shop.scan_count"}
+
+
+@pytest.mark.parametrize(
+    ("time", "group_by"),
+    [
+        ({"grain": "month", "start": "2024-07-01"}, []),
+        (
+            {"grain": "month", "start": "2024-07-01", "end": "2024-09-01"},
+            ["dimension.shop_order_ordered_at"],
+        ),
+    ],
+    ids=["since_july", "july_and_august_by_order_time"],
+)
+def test_rows_before_the_window_never_make_a_stale_feed_read_zero(
+    shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], group_by: list
+) -> None:
+    """Scans, on their own clock, stop in June; orders go on. July and August hold orders and no
+    scan, and the earlier scans don't make those months 0: past the scans' last row they read
+    NULL with NO_DATA_YET, on every warehouse that reads coverage, as on DuckDB."""
+
+    def months() -> tuple[list[tuple[Any, ...]], list[Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(orders=SHOP_ORDERS, scans=SHOP_SCANS),
+                    "group_by": group_by,
+                    "time": {"temporal_role": SHOP_ROLE, **time},
+                },
+                now=SHOP_NOW,
+            )
+        finally:
+            rt.close()
+        rows = [
+            (row["period"].strftime("%Y-%m"), row["orders"], row["scans"])
+            for row in typed_rows(response)
+        ]
+        return rows, [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")]
+
+    expected = ([("2024-07", 1, None), ("2024-08", 1, None)], [["scans"]])
+    assert months() == expected
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert months() == expected
+
+
 def test_a_window_total_without_coverage_reads_only_its_window(
     shop_package: Path, coverage_for_named_windows_only: None
 ) -> None:
