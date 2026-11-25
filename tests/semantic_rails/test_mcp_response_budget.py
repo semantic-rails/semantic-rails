@@ -507,7 +507,7 @@ TOOL_MAX_BYTES = {
     "inspect": 1_123,
     "valid-values": 1_388,
     "plan": 1_887,
-    "execute": 7_061,  # when to give time.temporal_role
+    "execute": 7_078,  # which time.temporal_role to give
     "segment": 1_300,
 }
 
@@ -522,7 +522,7 @@ def test_each_tool_definition_fits_its_byte_budget() -> None:
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= 14_505  # execute's time role
+    assert len(json_text({"tools": list_tool_definitions()})) <= 14_522  # execute's time role
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without

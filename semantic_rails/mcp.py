@@ -583,9 +583,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] "
             "and entity filters, time (time.end is exclusive), order_by (period: time column), "
             "limit inside it; max_rows and row_format go beside query. time.temporal_role: "
-            "omit it when the selected ids share one default_temporal_role, else give one from "
-            "their cards; a measure whose card lists no time role takes no time (filter or "
-            "group on a date dimension). Calls side by side, "
+            "with time, set it to the role the question names, else to the selected ids' "
+            "default_temporal_role from inspect; a measure whose card lists no time role takes "
+            "no time (filter or group on a date dimension). Calls side by side, "
             "each with its own where: {parts: [call, ...], join: {on: [[id per part]]}}."
         ),
         input_schema={
