@@ -1125,7 +1125,11 @@ def _metric_constraint_violations(
             violations.append(
                 {"kind": "disallowed_where", "disallowed": disallowed, "allowed": sorted(allowed)}
             )
-        disallowed = [field for field in inline() if field not in allowed]
+        # A column no dimension declares (``<entity>.<column>``) is allowed by no list.
+        dimensions = {row.id for row in bound().config.dimensions}
+        disallowed = [
+            field for field in inline() if field not in allowed or field not in dimensions
+        ]
         if disallowed:
             violations.append(
                 {
@@ -1574,7 +1578,7 @@ def _condition_fields(
     whole value, or what a CASE branch returns) is what is aggregated. A constraint passes
     ``operands`` (``_counted_operands``): then a count or an average of a returned column other
     than an operand picks the rows where it has a value, and a column meets its dimensions as the
-    warehouse matches names (``_dimensions_over``). ``filterable: false``, which every caller
+    warehouse reads names (``_dimensions_over``). ``filterable: false``, which every caller
     meets, passes none and reads neither."""
     whens, columns = _value_reads(expr.value)
     conditions = [expr.condition, *whens] if expr.condition is not None else whens
@@ -1584,11 +1588,8 @@ def _condition_fields(
     def picks(ref: ColumnRefExpr, returned: bool) -> bool:
         if not returned:
             return True
-        entity = _resolve_column_entity(ref, config)
-        return counted is not None and not any(
-            entity == owner and _same_column(column, ref.column, config)
-            for owner, column in counted
-        )
+        column = (_resolve_column_entity(ref, config), _column_key(ref.column, config))
+        return counted is not None and column not in counted
 
     def table(entity_id: str) -> str:
         # Matched as governed sources are (``_synthetic_constraint_sources``).
@@ -1636,7 +1637,7 @@ def _counted_operands(
     policy: SemanticPolicyConfig, binding: BoundQuery, object_id: str
 ) -> frozenset[tuple[str, str]]:
     """The columns a count may count for ``object_id`` under ``policy`` without picking rows, as
-    ``(entity, column)``: each entity's key, and each column the governed measure's value reads
+    ``(entity, _column_key)``: each entity's key, and each column the governed measure's value reads
     outside its CASE conditions. A caller's aggregate is governed by each measure the policy
     governs (every one, package-wide) that it reads (``_synthetic_constraint_sources``): the
     columns all of them read."""
@@ -1652,37 +1653,38 @@ def _counted_operands(
         owners = _synthetic_constraint_sources(config, binding, governed).get(object_id, set())
     reads = [
         {
-            (_resolve_expr_entity(ref, measures[owner], config), ref.column)
+            (_resolve_expr_entity(ref, measures[owner], config), _column_key(ref.column, config))
             for ref, _ in _value_reads(measures[owner].expr)[1]
         }
         for owner in sorted(owners)
     ]
-    keys = {(row.id, key) for row in config.entities for key in row.key_columns}
+    keys = {
+        (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
+    }
     return frozenset(keys.union(set.intersection(*reads) if reads else set()))
 
 
 def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[Any]:
-    """The dimensions over ``column`` (``dimensions_over_column``), or failing that over a
-    spelling of it the warehouse reads as the same column (``_same_column``)."""
-    return dimensions_over_column(entity, column, config) or [
+    """The dimensions of ``entity`` over every spelling of ``column`` the warehouse reads as that
+    column (``_column_key``), so each spelling meets the same ones."""
+    key = _column_key(column, config)
+    return [
         row
         for row in config.dimensions
-        if row.entity == entity and _same_column(row.column, column, config)
+        if row.entity == entity and _column_key(row.column, config) == key
     ]
 
 
-def _same_column(authored: str, written: str, config: PackageConfig) -> bool:
-    """Whether two spellings name one column as the warehouse reads names: the same name, or
-    one in another ASCII case that the SQL leaves unquoted (every warehouse but ClickHouse folds
-    it) or quotes on a warehouse that folds quoted names too. Never a Unicode casefold."""
-    if authored == written:
-        return True
-    if authored.translate(_ASCII_LOWER) != written.translate(_ASCII_LOWER):
-        return False
+def _column_key(name: str, config: PackageConfig) -> str:
+    """A column name as the warehouse reads it: in ASCII lower case when the SQL leaves it
+    unquoted (every warehouse but ClickHouse folds it) or quotes it on a warehouse that folds
+    quoted names too, else as it is. Never a Unicode casefold."""
     dialect = dialect_for_warehouse(config.package.warehouse)
-    if _quote_ident(authored) != authored:
-        return not dialect.quoted_identifiers_case_sensitive
-    return not dialect.identifiers_case_sensitive
+    if _quote_ident(name) != name:
+        sensitive = dialect.quoted_identifiers_case_sensitive
+    else:
+        sensitive = dialect.identifiers_case_sensitive
+    return name if sensitive else name.translate(_ASCII_LOWER)
 
 
 def _child_exprs(expr: Any) -> Iterator[Any]:

@@ -807,6 +807,84 @@ def test_a_count_of_a_governed_column_is_held_by_every_measure_that_governs_it(c
     ]
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        _counted("count", SUBTOTAL),
+        {
+            "kind": "aggregate_if",
+            "aggregation": "count",
+            "condition": {"kind": "comparison", "op": ">", "left": SUBTOTAL, "right": ZERO},
+        },
+    ],
+    ids=["counted", "condition"],
+)
+def test_a_list_naming_a_column_no_dimension_declares_does_not_allow_it(
+    config, monkeypatch, expression
+):
+    """``<entity>.<column>`` names the column in a refusal; listing it allows nothing."""
+    query = _select(expression, group_by=[STORE_NAME])
+    engine = _constrained(config, {"allowed_where": [STORE_NAME, UNDECLARED_SUBTOTAL]}, ORDERS)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [UNDECLARED_SUBTOTAL],
+            "allowed": [STORE_NAME, UNDECLARED_SUBTOTAL],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_every_dimension_over_one_column_meets_each_spelling(config, monkeypatch):
+    """Two dimensions over the order's customer id spelled in two cases name one DuckDB column:
+    either spelling meets both, so allowing one of them allows neither spelling."""
+    customer = next(row for row in config.dimensions if row.id == ORDER_CUSTOMER_ID)
+    upper = replace(
+        customer, id="dimension.test_upper_customer_id", column="CUSTOMER_ID", name="upper_id"
+    )
+    package = replace(config, dimensions=[*config.dimensions, upper])
+    for column in ["customer_id", "CUSTOMER_ID"]:
+        ref = {"kind": "column", "entity": ORDER, "column": column}
+        query = _select(_counted("count_distinct", ref), group_by=[STORE_NAME])
+        engine = _constrained(package, {"allowed_where": [STORE_NAME, upper.id]}, ORDERS)
+        try:
+            result = engine.validate(query)
+        finally:
+            engine.close()
+        assert result["policy_effects"][0]["violations"] == [
+            {
+                "kind": "disallowed_where",
+                "disallowed": [ORDER_CUSTOMER_ID],
+                "allowed": [STORE_NAME, upper.id],
+                "source": "inline_expression",
+            }
+        ], column
+
+
+def test_a_count_exemption_meets_each_governed_spelling_of_its_column(config):
+    """Two governed measures read the order total in two cases: one DuckDB column, which a count
+    of it counts as each measure's own."""
+    revenue = next(row for row in config.measures if row.id == REVENUE)
+    upper = replace(
+        revenue,
+        id="measure.test.upper_revenue",
+        name="upper_revenue",
+        expr=replace(revenue.expr, left=replace(revenue.expr.left, column="ORDER_TOTAL_CENTS")),
+    )
+    package = replace(config, measures=[*config.measures, upper])
+    query = _select(_counted("count", TOTAL), group_by=[STORE_NAME])
+    engine = _constrained(package, BY_STORE_OR_SIZE, [REVENUE, upper.id])
+    try:
+        result = engine.validate(query)
+    finally:
+        engine.close()
+    assert result["ok"], result["errors"]
+
+
 CUSTOMER_REF = "dimension.test_order_customer_ref"
 
 
@@ -884,7 +962,8 @@ def test_a_column_spelling_meets_its_dimension_as_the_warehouse_reads_names(
     config, warehouse, authored, written, same
 ):
     package = replace(config, package=replace(config.package, warehouse=warehouse))
-    assert policies._same_column(authored, written, package) is same
+    key = policies._column_key
+    assert (key(authored, package) == key(written, package)) is same
 
 
 @pytest.mark.parametrize("placement", ["select", "having"])
