@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from semantic_rails.mcp import list_tool_definitions
 
 LOOP_KEYWORDS = ("after", "before", "step", "first")
@@ -192,5 +194,46 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
             "shape-related validate errors when wrapped as Query IR. "
             f"Failures: {failures}"
         )
+    finally:
+        adapter.close()
+
+
+TIME_ROLE_RULE = (
+    "time.temporal_role: with time, set it to the role the question names, else to the selected "
+    "ids' default_temporal_role from inspect; a measure whose card lists no time role takes no "
+    "time (filter or group on a date dimension)."
+)
+
+
+@pytest.mark.parametrize("plan", [True, False])
+def test_execute_says_when_to_give_a_time_role(plan):
+    (execute,) = [tool for tool in list_tool_definitions(plan=plan) if tool["name"] == "execute"]
+    assert TIME_ROLE_RULE in execute["description"]
+    assert "omit it" not in execute["description"]
+
+
+def test_the_time_role_rule_is_what_execute_does(runtime_factory):
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    march = {"grain": "month", "start": "2017-03-01", "end": "2017-04-01"}
+    revenue, untimed = "measure.jaffle.revenue_usd", "measure.jaffle.supply_component_count"
+    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+
+    def card(object_id):
+        return adapter.call_tool("inspect", {"object_id": object_id})["card"]
+
+    def refused(select, time=None):
+        query = {"select": select, **({"time": time} if time else {})}
+        response = adapter.call_tool("execute", {"mode": "validate", "query": query})
+        return [error["code"] for error in response.get("errors") or []]
+
+    try:
+        # The card's default_temporal_role, set explicitly, is a clock the call reads.
+        role = {**march, "temporal_role": card(revenue)["default_temporal_role"]}
+        assert refused([revenue], role) == []
+        # A measure with no time role answers without time, and with any clock is refused.
+        assert card(untimed).get("compatible_temporal_roles") in (None, [])
+        assert refused([untimed]) == []
+        assert refused([untimed], role) == ["INCOMPATIBLE_TEMPORAL_ROLE"]
     finally:
         adapter.close()
