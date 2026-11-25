@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from semantic_rails.mcp import list_tool_definitions
 
 LOOP_KEYWORDS = ("after", "before", "step", "first")
@@ -194,3 +196,16 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
         )
     finally:
         adapter.close()
+
+
+TIME_ROLE_RULE = (
+    "time.temporal_role: omit it when the selected ids share one default_temporal_role, else "
+    "give one in each id's compatible_temporal_roles; an id with none takes no time (filter or "
+    "group on a date dimension)."
+)
+
+
+@pytest.mark.parametrize("plan", [True, False])
+def test_execute_says_when_to_give_a_time_role(plan):
+    (execute,) = [tool for tool in list_tool_definitions(plan=plan) if tool["name"] == "execute"]
+    assert TIME_ROLE_RULE in execute["description"]
