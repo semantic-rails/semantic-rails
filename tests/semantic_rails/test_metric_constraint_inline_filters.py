@@ -324,6 +324,204 @@ def test_a_condition_on_a_column_no_dimension_declares_is_refused(config, monkey
     ]
 
 
+# Revenue is order totals; a policy lets it be filtered by store and by large orders only.
+TOTAL = {"kind": "column", "entity": ORDER, "column": "order_total_cents"}
+ORDER_CUSTOMER = {"kind": "column", "entity": ORDER, "column": "customer_id"}
+ORDER_CUSTOMER_ID = "dimension.jaffle_order_customer_id"
+LARGE_ORDER = "dimension.jaffle_order_is_large_order"
+BY_STORE_OR_SIZE = {"allowed_where": [STORE_NAME, LARGE_ORDER]}
+ONE_CUSTOMER = {
+    "kind": "comparison",
+    "op": "=",
+    "left": ORDER_CUSTOMER,
+    "right": {"kind": "literal", "value": "96c8937f-d99c-4515-acec-db24d07768f9"},
+}
+IS_LARGE = {
+    "kind": "comparison",
+    "op": "=",
+    "left": {"kind": "column", "entity": ORDER, "column": "is_large_order"},
+    "right": {"kind": "literal", "value": True},
+}
+ZERO = {"kind": "literal", "value": 0}
+
+
+def _summed(value, condition=None):
+    expression = {"kind": "aggregate_if", "aggregation": "sum", "value": value}
+    return {**expression, "condition": condition} if condition else expression
+
+
+def _case(when, then, otherwise=None):
+    case = {"kind": "case", "whens": [{"when": when, "then": then}]}
+    return {**case, "else": otherwise} if otherwise else case
+
+
+def _times(left, right):
+    return {"kind": "arithmetic", "op": "*", "left": left, "right": right}
+
+
+# 1 for the one customer's orders and 0 for every other's (ids are 36 characters): no CASE.
+ONLY_THE_CUSTOMER = {
+    "kind": "arithmetic",
+    "op": "-",
+    "left": {"kind": "literal", "value": 1},
+    "right": {
+        "kind": "arithmetic",
+        "op": "/",
+        "left": {
+            "kind": "call",
+            "name": "LENGTH",
+            "args": [
+                {
+                    "kind": "call",
+                    "name": "REPLACE",
+                    "args": [
+                        ORDER_CUSTOMER,
+                        ONE_CUSTOMER["right"],
+                        {"kind": "literal", "value": ""},
+                    ],
+                }
+            ],
+        },
+        "right": {"kind": "literal", "value": 36},
+    },
+}
+CUSTOMER_REVENUE = _summed(_case(ONE_CUSTOMER, TOTAL, ZERO))
+# Each reads one customer's revenue per store through an aggregate_if value, not its condition.
+VALUE_FILTERS = {
+    "case": _select(CUSTOMER_REVENUE, group_by=[STORE_NAME]),
+    "case_without_else": _select(_summed(_case(ONE_CUSTOMER, TOTAL)), group_by=[STORE_NAME]),
+    "case_in_arithmetic": _select(
+        _summed(_times(TOTAL, _case(ONE_CUSTOMER, {"kind": "literal", "value": 1}, ZERO))),
+        group_by=[STORE_NAME],
+    ),
+    "case_in_a_case_branch": _select(
+        _summed(_case(IS_LARGE, _case(ONE_CUSTOMER, TOTAL))), group_by=[STORE_NAME]
+    ),
+    "arithmetic": _select(_summed(_times(TOTAL, ONLY_THE_CUSTOMER)), group_by=[STORE_NAME]),
+    "ratio": _select(
+        {"kind": "ratio", "numerator": CUSTOMER_REVENUE, "denominator": REVENUE},
+        group_by=[STORE_NAME],
+    ),
+    "entity_filter_input": _select(
+        {"measure": ORDERS},
+        metric_filters=[
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": "entity.jaffle_store",
+                    "input": CUSTOMER_REVENUE,
+                    "op": ">",
+                    "value": 100000,
+                    "scope_mode": "entity_only",
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(VALUE_FILTERS))
+def test_a_filter_in_a_conditional_aggregate_value_is_refused_like_its_condition(
+    config, monkeypatch, shape
+):
+    """A value that is the order total for one customer's orders and 0 (or nothing) for the
+    rest filters revenue by customer as its condition would: the same refusal."""
+    query = VALUE_FILTERS[shape]
+    _compiles(config, query)
+    by_condition = _select(_summed(TOTAL, ONE_CUSTOMER), group_by=[STORE_NAME])
+    engine = _constrained(config, BY_STORE_OR_SIZE, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        validate = engine.validate_internal if "metric_filters" in query else engine.validate
+        message = validate(query)["errors"][0]["message"]
+        condition_message = engine.validate(by_condition)["errors"][0]["message"]
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [ORDER_CUSTOMER_ID],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+    assert (
+        message
+        == condition_message
+        == (
+            f"{REVENUE} can't be filtered by {ORDER_CUSTOMER_ID} inside an expression; it can be "
+            f"filtered only by {LARGE_ORDER} or {STORE_NAME}."
+        )
+    )
+
+
+# A value that picks rows only by an allowed field, computes only with columns no dimension
+# declares, or returns a column as it is (what is aggregated) filters by nothing else.
+VALUE_NEIGHBOURS = {
+    "case_on_an_allowed_field": (REVENUE, _summed(_case(IS_LARGE, TOTAL, ZERO))),
+    "arithmetic_on_value_columns": (
+        REVENUE,
+        _summed(
+            {
+                "kind": "arithmetic",
+                "op": "-",
+                "left": TOTAL,
+                "right": {"kind": "column", "entity": ORDER, "column": "tax_paid_cents"},
+            }
+        ),
+    ),
+    "returned_key": (
+        "measure.jaffle.ordering_customer_count",
+        {"kind": "aggregate_if", "aggregation": "count_distinct", "value": ORDER_CUSTOMER},
+    ),
+    "returned_by_a_case_branch": (
+        "measure.jaffle.ordering_customer_count",
+        {
+            "kind": "aggregate_if",
+            "aggregation": "count_distinct",
+            "value": _case(IS_LARGE, ORDER_CUSTOMER),
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(VALUE_NEIGHBOURS))
+def test_a_conditional_aggregate_value_that_filters_by_nothing_disallowed_answers(config, shape):
+    governed, expression = VALUE_NEIGHBOURS[shape]
+    query = _select(expression, group_by=[STORE_NAME])
+    engine = _constrained(config, BY_STORE_OR_SIZE, governed)
+    try:
+        result = engine.validate(query)
+        assert result["ok"], result["errors"]
+        assert engine.compile(query)["rendered_sql"]
+    finally:
+        engine.close()
+
+
+def test_a_case_on_an_allowed_field_in_a_value_returns_its_revenue(tmp_path):
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    config = replace(load_package_config(str(package)), semantic_policies=[])
+    query = _select(_summed(_case(IS_LARGE, TOTAL, ZERO)), group_by=[STORE_NAME])
+    engine = _constrained(config, BY_STORE_OR_SIZE, REVENUE, source_path=str(package))
+    try:
+        rows = engine.query(query)["rows"]
+        db_path = engine.db_path
+    finally:
+        engine.close()
+    with duckdb.connect(db_path, read_only=True) as connection:
+        reference = connection.execute(
+            """
+            SELECT s.store_name, SUM(CASE WHEN o.is_large_order THEN o.order_total_cents ELSE 0 END)
+            FROM jaffle_order o JOIN jaffle_store s USING (store_id)
+            GROUP BY 1
+            """
+        ).fetchall()
+    assert len(reference) > 1
+    assert {row[STORE_NAME]: row["value"] for row in rows} == dict(reference)
+
+
 @pytest.mark.parametrize("placement", ["select", "having"])
 def test_an_inline_filter_on_a_sibling_counts_when_query_wide(config, monkeypatch, placement):
     """A select sibling keeps its own cut; having on it governs the whole query."""
