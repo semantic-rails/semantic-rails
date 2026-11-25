@@ -15,10 +15,11 @@ cuts could still be read per customer or per order inside a call, because a dist
 entity filter or one row's statistic grouped it more finely than the policy allows. Those calls
 are now refused with `POLICY_DENIED`. If you query as a role a metric constraint applies to,
 some calls 0.3.5 answered are refused. If no constraint applies to you, your calls answer as
-before, with the same SQL. No query answer changes: a call that still answers returns what
+before, with the same SQL. No query answer changes: a call that still answers returns the rows
 0.3.5 returned. No contract field is removed or changes type, and no dependency range changes.
-Run `semantic-rails check` on each package with 0.3.6 before you deploy: an example or a test
-that makes such a call under a constrained role fails there.
+Run `semantic-rails check` on each package with 0.3.6 before you deploy: an example, or a test
+that expects such a call to answer, fails there when it runs as a role the constraint applies
+to.
 
 - **Newly refused for a caller under a metric constraint**, where 0.3.5 answered from a
   grouping the policy doesn't allow. The code is `POLICY_DENIED`; a caller under a resource
@@ -39,34 +40,42 @@ that makes such a call under a constrained role fails there.
     hint says to read the measure with its default aggregation (`sum`) in place of `max`.
     `sum`, `avg` and the measure's default still answer, and so does `count` where the measure
     allows it.
-  - Under a constraint that allows metric filters: an entity filter, a scoped-aggregate
-    predicate or an aggregate's `filter` predicate on the measure ("as the entity filter on
-    entity.jaffle_customer groups it"), and a lookup measure read from it ("as the lookup
-    measure … groups it"). A package metric that holds one of these is refused the same way,
-    and so is a call that reads one inside a package metric a constraint names. Each part of a
-    joined call is held the same way.
+  - A lookup measure read from the measure ("as the lookup measure … groups it"), and, under a
+    constraint that allows metric filters, an entity filter, a scoped-aggregate predicate or an
+    aggregate's `filter` predicate on the measure, also through an `aggregate_if` over its
+    columns ("as the entity filter on entity.jaffle_customer groups it"). A package metric
+    that holds one of these is refused the same way, and so is a call that reads one inside a
+    package metric a constraint names. Each part of a joined call is held the same way.
   - Under `required_group_by` or `required_where`, an inner read that drops the required
-    grouping or filter (`missing_required_group_by`, `missing_required_where`): a conversion
-    operand read without the call's filter on the other operand's side, a lookup whose source
-    is read without the required filter, and a share beside an entity filter, under a route
-    decision or inside a package metric.
+    grouping or filter (`missing_required_group_by`, `missing_required_where`): an entity
+    filter over all time that reads each customer across stores when the measure must be
+    grouped by store, a package metric's own entity filter read without a required filter, a
+    conversion operand read without the call's filter on the other operand's side, a lookup
+    whose source is read without the required filter, and a share beside an entity filter,
+    under a route decision or inside a package metric.
 
   To let a role read a per-customer statistic, add the entity's key
   (`dimension.jaffle_customer_id`) to the measure's `allowed_group_by`. A listed name that
   labels an entity's rows (its `display`) allows the inner grouping by that entity's key, such
   as a distribution over it; a `group_by` on the key itself still needs the key listed.
 - **Refusals and offers that read differently.**
-  - A call 0.3.5 already refused can name the inner grouping too, beside or in place of the cut
-    0.3.5 named, and its hint says to remove it. An entity filter on revenue under the `sales`
-    role adds "measure.jaffle.revenue_usd can't be grouped by dimension.jaffle_customer_id, as
-    the entity filter on entity.jaffle_customer groups it; …" after the sentence 0.3.5 gave.
+  - A call 0.3.5 already refused can now be refused for the inner grouping, beside or in place
+    of what 0.3.5 named (another cut, a total's or a share's grouping, or another code such as
+    `EMPTY_GROUPS_UNSETTLED`), with a hint that says how to change the call. An entity filter
+    on revenue under the `sales` role adds "measure.jaffle.revenue_usd can't be grouped by
+    dimension.jaffle_customer_id, as the entity filter on entity.jaffle_customer groups it; …"
+    after the sentence 0.3.5 gave.
   - What the engine offers a constrained caller is checked the same way. A clarification
     (`AMBIGUOUS_CHILD_SCOPE`) with a reading that is now refused becomes `MIXED_GRAIN_INVALID`,
     naming that reading. A `PATH_NOT_FOUND` no longer lists a same-named measure in
-    `details.lookalike_measures` when the call on it would be refused. `valid-values` with
-    counts counts by the next measure the policy allows, so its counts can come from another
-    measure. The `UNKNOWN_ROWS_KEPT` warning, which the engine counts with a call of its own,
-    is left out when the policy refuses that call.
+    `details.lookalike_measures` when the call on it would be refused. `plan` checks its drafts
+    the same way, so a draft that would be refused is not offered ready to run (under a
+    resource grant, `plan` can answer `NO_AUTHORIZED_PLAN`), and segment previews and
+    explanations check the calls they make. `valid-values` reads its values with a call of its
+    own: it reads them through the next measure the policy allows, so its values and counts
+    can come from another measure, and it refuses with `POLICY_DENIED` when none is allowed.
+    The `UNKNOWN_ROWS_KEPT` warning, which the engine counts with a call of its own, is left
+    out when the policy refuses that call.
   - `INCOMPATIBLE_TEMPORAL_ROLE` for a measure with no time role gives the line that dates it:
     "'measure.shop.amount' has no time role declared, so it can't be placed on
     'temporal_role.shop_day_day'. Its rows reach that clock by to-one links: if it dates them,
@@ -84,7 +93,8 @@ that makes such a call under a constrained role fails there.
 - **Package authors.** `suggest_model` with `project_path` dates a fact's measures through its
   one calendar key (`order_date_key` into `dim_date`), and `time_roles` says when the choice is
   yours. Validation and `promotion_check` warn `MEASURE_WITHOUT_TIME_ROLE` for a measure with no
-  time role whose rows reach a clock. It is a warning: the package still loads.
+  time role whose rows reach a clock of its own model or a calendar's. It is a warning: the
+  package still loads.
 
 ### Added
 
