@@ -183,6 +183,35 @@ def absent_marker(alias: str, aggregation: str, rows: Mapping[str, str]) -> SqlI
     return None
 
 
+POPULATION = "distinct_population"
+
+
+def settle_ungrouped_populations(
+    leaf: SqlSelect, rows: Iterable[MeasurePlan], config: PackageConfig
+) -> tuple[SqlSelect, set[str]]:
+    """A leaf with no GROUP BY answers one row even when it reads none, where a distinct
+    population's count is 0: it reads NULL there, as a group with no rows does. A leaf that
+    read rows keeps its count, 0 included (rows its condition fails). Returns the leaf and the
+    aliases it settled."""
+    measures = _measure_index(config)
+    settled = {
+        row.bound_measure.alias
+        for row in rows
+        if not row.aggregate_relation_id
+        and getattr(measures.get(row.bound_measure.measure_id), "measure_class", "") == POPULATION
+    }
+    if leaf.group_by or not settled:
+        return leaf, set()
+    read = SqlBinary(SqlCall("COUNT", [SqlLiteral(1)]), ">", SqlLiteral(0))
+    fields = [
+        SqlField(SqlCase([SqlCaseWhen(read, field.expression)]), field.alias)
+        if field.alias in settled
+        else field
+        for field in leaf.select
+    ]
+    return replace(leaf, select=fields), settled
+
+
 def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str, str]:
     measures = _measure_index(config)
     zero: dict[str, str] = {}

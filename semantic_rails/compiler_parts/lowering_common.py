@@ -371,11 +371,21 @@ def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
 
 
 def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
-    """Whether base leaves record their scope: for coverage, or a window's observation."""
+    """Whether base leaves record their scope: for coverage, or a window's observation.
+
+    A window hides a measure's rows outside it, so the guard looks for them there: on DuckDB
+    and Postgres in every window, and on the other warehouses that read coverage in a series.
+    A series' periods there either hold some measure's rows or are bounded by coverage, so
+    they lie inside the data; a window total can lie past the data's edge, which only coverage
+    tells, so it keeps the in-window test."""
+    time = plan.time or {}
+    dialect = _dialect(config)
     return _emits_time_coverage(plan, config) or bool(
-        plan.time
-        and (plan.time.get("start") or plan.time.get("end"))
-        and _dialect(config).has_time_coverage
+        (time.get("start") or time.get("end"))
+        and (
+            dialect.has_time_coverage
+            or (dialect.reads_coverage and time.get("grain") and not time.get("window_total"))
+        )
     )
 
 
