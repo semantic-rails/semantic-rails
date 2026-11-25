@@ -797,7 +797,8 @@ kind names must match exactly.
   governed object.
   A filter the caller writes inside an expression (an aggregate's or
   `semi_additive` expression's `filter`, a scoped aggregate's `where`, an
-  `aggregate_if` condition, at any depth in `select`, predicate inputs included)
+  `aggregate_if` condition or a filter in its value (below), at any depth in `select`,
+  predicate inputs included)
   is checked like a `where` filter when it
   counts for the governed object, by the same leaf rule: its field, read by the
   id a name or alias binds to, must be in `allowed_where` (a violation carries
@@ -829,8 +830,16 @@ kind names must match exactly.
   to govern it too. An `aggregate_if` condition reads
   columns: each counts as the dimensions over it, and a column no dimension declares
   (named `<entity>.<column>`) is in no `allowed_where`, so a condition on it is refused
-  under either a package-wide or an inherited measure constraint. Its condition also
-  counts as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
+  under either a package-wide or an inherited measure constraint. Its value can pick
+  rows too, so it is read the same way: a `case` in the value is a condition like the
+  `aggregate_if`'s own, and any other column the value computes with (arithmetic or a
+  call, 0 for every customer but one) counts as the dimensions over it. A column the
+  value returns as it is (the whole value, or what a `case` branch returns) is what is
+  aggregated, and filters nothing. With revenue limited to store filters, a `sum` of
+  `case when customer_id = '…' then order_total_cents else 0 end` by store is refused
+  as its condition form is: "measure.jaffle.revenue_usd can't be filtered by
+  dimension.jaffle_order_customer_id inside an expression". Its condition and value
+  also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to
   aggregate by time.
