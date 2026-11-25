@@ -11,6 +11,7 @@ effects to execution unchanged; responses carry ``visible_view.public_effects``.
 from __future__ import annotations
 
 import json
+import string
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
@@ -29,6 +30,7 @@ from .clock import UNITS
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.bind import (
     _resolve_column_entity,
+    _resolve_expr_entity,
     _scoped_predicate_expr_payload,
     measure_column_ref,
 )
@@ -36,6 +38,7 @@ from .compiler_parts.lowering_common import _stock_row_key
 from .compiler_parts.paths import dimensions_over_column, display_key
 from .compiler_parts.post_aggregation import share_over
 from .compiler_parts.totals import coarser_calls
+from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -60,6 +63,7 @@ from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .policy_rules import visible_only_listed as _visible_only_listed
 from .query_call import refusal
+from .renderer import _quote_ident
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, base_of, require_base
@@ -459,6 +463,20 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
                 else f"it can't be {base}"
             )
         )
+        # A column no dimension declares is named ``<entity>.<column>`` (``_condition_fields``).
+        undeclared = [
+            str(field)
+            for field in violation.get("disallowed") or []
+            if inline and kind == "disallowed_where" and str(field).startswith("entity.")
+        ]
+        if undeclared:
+            one = len(undeclared) == 1
+            it, column = ("it", "the column") if one else ("them", "each column")
+            line += (
+                f". No dimension declares {_listed(undeclared)}, so no policy can allow {it} "
+                f"inside an expression: the package author can declare a dimension over {column} "
+                f"and, if this role may use {it}, list {it} in allowed_where"
+            )
         return line, action, {}
     if kind == "unresolved_metric_filter":
         return (
@@ -1063,7 +1081,7 @@ def _metric_constraint_violations(
     # for the governed object, including whole-query attribution for nested filters.
     inline = cache(
         lambda: _governed_inline_fields(
-            _inline_filters(query, bound().config),
+            _inline_filters(query, bound().config, _counted_operands(policy, bound().config)),
             bound,
             object_id,
             package_wide=not policy.object_ids,
@@ -1537,28 +1555,40 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
         return False
 
 
-def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> list[str]:
-    """The fields a conditional aggregate reads to pick rows. Each column of its condition, and
-    of each CASE condition in its value, is the dimensions over it, or ``<entity>.<column>`` for
-    a column no dimension declares (which no allowed_where lists). A value also picks rows by
-    the columns it computes with (0 for every customer but one), so each such column with a
-    dimension over it, on its entity or else on another entity over the same table, is that
-    dimension; a column the value returns as it is (the whole value, or what a CASE branch
-    returns) is what is aggregated."""
-    conditions = [expr.condition] if expr.condition is not None else []
-    computed: list[ColumnRefExpr] = []
-    stack: list[tuple[Any, bool]] = [(expr.value, True)] if expr.value is not None else []
-    while stack:
-        node, returned = stack.pop()
-        if isinstance(node, CaseExpr):
-            conditions.extend(when.when for when in node.whens)
-            branches = [*(when.then for when in node.whens), node.else_expr]
-            stack.extend((item, returned) for item in reversed(branches) if item is not None)
-        elif isinstance(node, ColumnRefExpr):
-            if not returned:
-                computed.append(node)
-        else:
-            stack.extend((child, False) for child in reversed(list(_child_exprs(node))))
+# The aggregations that count the rows where their value has a value (an average divides by that
+# count), so a column the value returns as it is picks those rows.
+_COUNTING = frozenset({"count", "count_distinct", "avg"})
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def _condition_fields(
+    expr: ConditionalAggregateExpr,
+    config: PackageConfig,
+    operands: frozenset[tuple[str, str]] | None = None,
+) -> list[str]:
+    """The fields a conditional aggregate reads to pick rows: each column of its condition and
+    of each CASE condition in its value, and each column the value computes with (0 for every
+    customer but one), as the dimensions over it (a computed column's on its entity or, when it
+    declares none, on another entity over the same table), or ``<entity>.<column>`` for a column
+    no dimension declares, which no allowed_where lists. A column the value returns as it is (the
+    whole value, or what a CASE branch returns) is what is aggregated. A constraint passes
+    ``operands`` (``_counted_operands``): then a count or an average of a returned column other
+    than an operand picks the rows where it has a value, and a column meets its dimensions as the
+    warehouse matches names (``_dimensions_over``). ``filterable: false``, which every caller
+    meets, passes none and reads neither."""
+    whens, columns = _value_reads(expr.value)
+    conditions = [expr.condition, *whens] if expr.condition is not None else whens
+    counted = operands if expr.aggregation.lower() in _COUNTING else None
+    lookup = dimensions_over_column if operands is None else _dimensions_over
+
+    def picks(ref: ColumnRefExpr, returned: bool) -> bool:
+        if not returned:
+            return True
+        entity = _resolve_column_entity(ref, config)
+        return counted is not None and not any(
+            entity == owner and _same_column(column, ref.column, config)
+            for owner, column in counted
+        )
 
     def table(entity_id: str) -> str:
         # Matched as governed sources are (``_synthetic_constraint_sources``).
@@ -1566,21 +1596,87 @@ def _condition_fields(expr: ConditionalAggregateExpr, config: PackageConfig) -> 
         return relation.split(".")[-1].strip('"`[]').casefold()
 
     out: list[str] = []
-    for ref, declared in [
+    for ref, in_value in [
         *((ref, False) for condition in conditions for ref in collect_column_refs(condition)),
-        *((ref, True) for ref in computed),
+        *((ref, True) for ref, returned in columns if picks(ref, returned)),
     ]:
         entity = _resolve_column_entity(ref, config)
-        over = [row.id for row in dimensions_over_column(entity, ref.column, config)]
-        if declared and not over:
+        over = [row.id for row in lookup(entity, ref.column, config)]
+        if in_value and not over:
             over = [
                 row.id
                 for other in config.entities
                 if other.id != entity and table(other.id) == table(entity)
-                for row in dimensions_over_column(other.id, ref.column, config)
+                for row in lookup(other.id, ref.column, config)
             ]
-        out.extend(over or ([] if declared else [f"{entity}.{ref.column}"]))
+        out.extend(over or [f"{entity}.{ref.column}"])
     return out
+
+
+def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]]]:
+    """The CASE conditions in a value, and each other column it reads with whether the value
+    returns it as it is (the whole value, or what a CASE branch returns)."""
+    whens: list[Any] = []
+    columns: list[tuple[ColumnRefExpr, bool]] = []
+    stack: list[tuple[Any, bool]] = [(value, True)] if value is not None else []
+    while stack:
+        node, returned = stack.pop()
+        if isinstance(node, CaseExpr):
+            whens.extend(when.when for when in node.whens)
+            branches = [*(when.then for when in node.whens), node.else_expr]
+            stack.extend((item, returned) for item in reversed(branches) if item is not None)
+        elif isinstance(node, ColumnRefExpr):
+            columns.append((node, returned))
+        else:
+            stack.extend((child, False) for child in reversed(list(_child_exprs(node))))
+    return whens, columns
+
+
+def _counted_operands(
+    policy: SemanticPolicyConfig, config: PackageConfig
+) -> frozenset[tuple[str, str]]:
+    """The columns a count may count under ``policy`` without picking rows, as ``(entity,
+    column)``: each entity's key, and each column the value of a measure the policy governs
+    (every measure, package-wide) reads outside its CASE conditions."""
+    governed = [
+        row
+        for row in config.measures
+        if not row.lookup_from and (not policy.object_ids or row.id in policy.object_ids)
+    ]
+    return frozenset(
+        [
+            *((row.id, key) for row in config.entities for key in row.key_columns),
+            *(
+                (_resolve_expr_entity(ref, row, config), ref.column)
+                for row in governed
+                for ref, _ in _value_reads(row.expr)[1]
+            ),
+        ]
+    )
+
+
+def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[Any]:
+    """The dimensions over ``column`` (``dimensions_over_column``), or failing that over a
+    spelling of it the warehouse reads as the same column (``_same_column``)."""
+    return dimensions_over_column(entity, column, config) or [
+        row
+        for row in config.dimensions
+        if row.entity == entity and _same_column(row.column, column, config)
+    ]
+
+
+def _same_column(authored: str, written: str, config: PackageConfig) -> bool:
+    """Whether two spellings name one column as the warehouse reads names: the same name, or
+    one in another ASCII case that the SQL leaves unquoted (every warehouse but ClickHouse folds
+    it) or quotes on a warehouse that folds quoted names too. Never a Unicode casefold."""
+    if authored == written:
+        return True
+    if authored.translate(_ASCII_LOWER) != written.translate(_ASCII_LOWER):
+        return False
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if _quote_ident(authored) != authored:
+        return not dialect.quoted_identifiers_case_sensitive
+    return not dialect.identifiers_case_sensitive
 
 
 def _child_exprs(expr: Any) -> Iterator[Any]:
@@ -1592,12 +1688,17 @@ def _child_exprs(expr: Any) -> Iterator[Any]:
                 yield child
 
 
-def _inline_filters(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str | None, str]]:
+def _inline_filters(
+    query: NormalizedQuery,
+    config: PackageConfig,
+    operands: frozenset[tuple[str, str]] | None = None,
+) -> list[tuple[str | None, str]]:
     """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
     expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
     predicate inputs included. A conditional aggregate's condition has no declared measure:
-    each field it reads is ``("", field)``. ``measure=None`` marks whole-query attribution
-    under predicates, metric filters and conversion operands. Recipes are not read here.
+    each field it reads is ``("", field)`` (``_condition_fields``, given ``operands``).
+    ``measure=None`` marks whole-query attribution under predicates, metric filters and
+    conversion operands. Recipes are not read here.
     """
     found: list[tuple[str | None, str]] = []
 
@@ -1629,7 +1730,8 @@ def _inline_filters(query: NormalizedQuery, config: PackageConfig) -> list[tuple
             )
         elif isinstance(expr, ConditionalAggregateExpr):
             found.extend(
-                (None if whole_query else "", field) for field in _condition_fields(expr, config)
+                (None if whole_query else "", field)
+                for field in _condition_fields(expr, config, operands)
             )
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"), whole_query=True)

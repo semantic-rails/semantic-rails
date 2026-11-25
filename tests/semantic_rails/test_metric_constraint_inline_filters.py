@@ -8,7 +8,7 @@ from datetime import date
 import duckdb
 import pytest
 
-from semantic_rails import compiler
+from semantic_rails import compiler, policies
 from semantic_rails.compiler_parts import bind
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
@@ -423,6 +423,14 @@ VALUE_FILTERS = {
 }
 
 
+UNDECLARED_TOTAL = f"{ORDER}.order_total_cents"
+# The shapes that multiply the order total, a column no dimension declares, also name it.
+COMPUTES_TOTAL = {
+    "arithmetic": [UNDECLARED_TOTAL, ORDER_CUSTOMER_ID],
+    "case_in_arithmetic": [ORDER_CUSTOMER_ID, UNDECLARED_TOTAL],
+}
+
+
 @pytest.mark.parametrize("shape", sorted(VALUE_FILTERS))
 def test_a_filter_in_a_conditional_aggregate_value_is_refused_like_its_condition(
     config, monkeypatch, shape
@@ -443,11 +451,13 @@ def test_a_filter_in_a_conditional_aggregate_value_is_refused_like_its_condition
     assert violations == [
         {
             "kind": "disallowed_where",
-            "disallowed": [ORDER_CUSTOMER_ID],
+            "disallowed": COMPUTES_TOTAL.get(shape, [ORDER_CUSTOMER_ID]),
             "allowed": [LARGE_ORDER, STORE_NAME],
             "source": "inline_expression",
         }
     ]
+    if shape in COMPUTES_TOTAL:
+        return  # its message also names the total (test_a_column_no_dimension_declares_…)
     assert (
         message
         == condition_message
@@ -499,27 +509,35 @@ def test_a_column_computed_with_through_another_entity_of_its_table_is_its_dimen
     assert violations == [
         {
             "kind": "disallowed_where",
-            "disallowed": [ORDER_CUSTOMER_ID],
+            # The total it multiplies is a column no dimension declares, on either entity.
+            "disallowed": [f"{twin}.order_total_cents", ORDER_CUSTOMER_ID],
             "allowed": [LARGE_ORDER, STORE_NAME],
             "source": "inline_expression",
         }
     ]
 
 
-# A value that picks rows only by an allowed field, computes only with columns no dimension
-# declares, or returns a column as it is (what is aggregated) filters by nothing else.
+# A value that picks rows only by an allowed field, or returns a column as it is (what is
+# aggregated, by a count only its governed measure's own column or a key), filters by nothing
+# else.
 VALUE_NEIGHBOURS = {
     "case_on_an_allowed_field": (REVENUE, _summed(_case(IS_LARGE, TOTAL, ZERO))),
-    "arithmetic_on_value_columns": (
+    "returned_total": (REVENUE, _summed(TOTAL)),
+    "average_of_the_governed_column": (
         REVENUE,
-        _summed(
-            {
-                "kind": "arithmetic",
-                "op": "-",
-                "left": TOTAL,
-                "right": {"kind": "column", "entity": ORDER, "column": "tax_paid_cents"},
-            }
-        ),
+        {"kind": "aggregate_if", "aggregation": "avg", "value": TOTAL},
+    ),
+    "count_of_the_key": (
+        ORDERS,
+        {
+            "kind": "aggregate_if",
+            "aggregation": "count",
+            "value": {"kind": "column", "entity": ORDER, "column": "order_id"},
+        },
+    ),
+    "sum_under_a_count_constraint": (
+        ORDERS,
+        _summed({"kind": "column", "entity": ORDER, "column": "subtotal_cents"}),
     ),
     "returned_key": (
         "measure.jaffle.ordering_customer_count",
@@ -577,6 +595,268 @@ def test_a_case_on_an_allowed_field_in_a_value_returns_its_revenue(tmp_path):
         ).fetchall()
     assert len(reference) > 1
     assert {row[STORE_NAME]: row["value"] for row in rows} == dict(reference)
+
+
+SUBTOTAL = {"kind": "column", "entity": ORDER, "column": "subtotal_cents"}
+UNDECLARED_SUBTOTAL = f"{ORDER}.subtotal_cents"
+UNDECLARED_TAX = f"{ORDER}.tax_paid_cents"
+ONLY = f"it can be filtered only by {LARGE_ORDER} or {STORE_NAME}"
+ONE_UNDECLARED = (
+    "so no policy can allow it inside an expression: the package author can declare a "
+    "dimension over the column and, if this role may use it, list it in allowed_where."
+)
+SEVERAL_UNDECLARED = (
+    "so no policy can allow them inside an expression: the package author can declare a "
+    "dimension over each column and, if this role may use them, list them in allowed_where."
+)
+
+
+def _text(value):
+    return {
+        "kind": "call",
+        "name": "CAST",
+        "args": [value, {"kind": "literal", "value": "VARCHAR"}],
+    }
+
+
+# 1 for an order whose subtotal is 4800 and less for every other (subtotals have 4 digits).
+ONLY_THE_SUBTOTAL = {
+    "kind": "arithmetic",
+    "op": "-",
+    "left": {"kind": "literal", "value": 1},
+    "right": {
+        "kind": "arithmetic",
+        "op": "/",
+        "left": {
+            "kind": "call",
+            "name": "LENGTH",
+            "args": [
+                {
+                    "kind": "call",
+                    "name": "REPLACE",
+                    "args": [
+                        _text(SUBTOTAL),
+                        {"kind": "literal", "value": "4800"},
+                        {"kind": "literal", "value": ""},
+                    ],
+                }
+            ],
+        },
+        "right": {"kind": "call", "name": "LENGTH", "args": [_text(SUBTOTAL)]},
+    },
+}
+# Each computes revenue with a column no dimension declares, which no policy can list: the first
+# weights each order by its subtotal; the others are ordinary arithmetic, refused as its price.
+UNDECLARED_VALUES = {
+    "weighted_by_a_column": (
+        _summed(_times(TOTAL, ONLY_THE_SUBTOTAL)),
+        f"{REVENUE} can't be filtered by {UNDECLARED_TOTAL} and {UNDECLARED_SUBTOTAL} inside an "
+        f"expression; {ONLY}. No dimension declares {UNDECLARED_TOTAL} and "
+        f"{UNDECLARED_SUBTOTAL}, {SEVERAL_UNDECLARED}",
+    ),
+    "in_dollars": (
+        _summed(
+            {
+                "kind": "arithmetic",
+                "op": "/",
+                "left": TOTAL,
+                "right": {"kind": "literal", "value": 100.0},
+            }
+        ),
+        f"{REVENUE} can't be filtered by {UNDECLARED_TOTAL} inside an expression; {ONLY}. No "
+        f"dimension declares {UNDECLARED_TOTAL}, {ONE_UNDECLARED}",
+    ),
+    "net_of_tax": (
+        _summed(
+            {
+                "kind": "arithmetic",
+                "op": "-",
+                "left": TOTAL,
+                "right": {"kind": "column", "entity": ORDER, "column": "tax_paid_cents"},
+            }
+        ),
+        f"{REVENUE} can't be filtered by {UNDECLARED_TOTAL} and {UNDECLARED_TAX} inside an "
+        f"expression; {ONLY}. No dimension declares {UNDECLARED_TOTAL} and {UNDECLARED_TAX}, "
+        f"{SEVERAL_UNDECLARED}",
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNDECLARED_VALUES))
+def test_a_column_no_dimension_declares_in_a_value_is_refused(config, monkeypatch, shape):
+    """A value that computes with a column no dimension declares is refused, as a condition on
+    it is, and the refusal says what the package author can do."""
+    expression, message = UNDECLARED_VALUES[shape]
+    query = _select(expression, group_by=[STORE_NAME])
+    _compiles(config, query)
+    engine = _constrained(config, BY_STORE_OR_SIZE, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        error = engine.validate(query)["errors"][0]
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": message.split(" can't be filtered by ")[1]
+            .split(" inside")[0]
+            .split(" and "),
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+    assert error["message"] == message
+
+
+def test_a_column_no_dimension_declares_in_a_value_is_a_metric_filter(config, monkeypatch):
+    query = _select(UNDECLARED_VALUES["in_dollars"][0], group_by=[STORE_NAME])
+    engine = _constrained(config, {"allow_metric_filters": False}, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "metric_filters_not_allowed",
+            "metric_filter_refs": {},
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_a_constraint_on_grouping_alone_reads_undeclared_columns_as_before(config):
+    """Without allowed_where a caller may filter by any field, so nothing lists what to refuse."""
+    query = _select(UNDECLARED_VALUES["weighted_by_a_column"][0], group_by=[STORE_NAME])
+    engine = _constrained(config, {"allowed_group_by": [STORE_NAME]}, REVENUE)
+    try:
+        result = engine.validate(query)
+    finally:
+        engine.close()
+    assert result["ok"], result["errors"]
+
+
+def _counted(aggregation, value):
+    return {"kind": "aggregate_if", "aggregation": aggregation, "value": value}
+
+
+# Each counts orders by store under a constraint on the order count, through a column that is
+# neither the count's own nor a key: it counts only the orders where that column has a value (an
+# average divides by that count).
+COUNTED_COLUMNS = {
+    "count": (_counted("count", ORDER_CUSTOMER), [ORDER_CUSTOMER_ID]),
+    "count_distinct": (_counted("count_distinct", ORDER_CUSTOMER), [ORDER_CUSTOMER_ID]),
+    "count_of_a_case_branch": (
+        _counted("count", _case(IS_LARGE, ORDER_CUSTOMER)),
+        [ORDER_CUSTOMER_ID],
+    ),
+    "count_of_an_undeclared_column": (_counted("count", SUBTOTAL), [UNDECLARED_SUBTOTAL]),
+    "average": (_counted("avg", SUBTOTAL), [UNDECLARED_SUBTOTAL]),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(COUNTED_COLUMNS))
+def test_a_count_of_a_column_filters_by_its_presence(config, monkeypatch, shape):
+    expression, disallowed = COUNTED_COLUMNS[shape]
+    query = _select(expression, group_by=[STORE_NAME])
+    _compiles(config, query)
+    engine = _constrained(config, BY_STORE_OR_SIZE, ORDERS)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": disallowed,
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+    line = f"{ORDERS} can't be filtered by {disallowed[0]} inside an expression; {ONLY}."
+    if disallowed == [UNDECLARED_SUBTOTAL]:
+        line = f"{line[:-1]}. No dimension declares {UNDECLARED_SUBTOTAL}, {ONE_UNDECLARED}"
+    assert message == line
+
+
+CUSTOMER_REF = "dimension.test_order_customer_ref"
+
+
+@pytest.fixture(scope="module")
+def quoted(config):
+    """The orders with a dimension over a column whose name the SQL quotes (it has a space)."""
+    customer = next(row for row in config.dimensions if row.id == ORDER_CUSTOMER_ID)
+    reference = replace(
+        customer, id=CUSTOMER_REF, column="Customer Ref", name="customer_ref", aliases=[]
+    )
+    return replace(config, dimensions=[*config.dimensions, reference])
+
+
+def _spelled(column):
+    """A read of the customer reference spelled ``column``: in a condition, computed with, and
+    counted."""
+    ref = {"kind": "column", "entity": ORDER, "column": column}
+    one = {"kind": "comparison", "op": "=", "left": ref, "right": {"kind": "literal", "value": "x"}}
+    lower = {"kind": "call", "name": "LOWER", "args": [ref]}
+    return {
+        "condition": (REVENUE, _summed(_case(one, TOTAL, ZERO))),
+        "computed": (ORDERS, _counted("count_distinct", lower)),
+        "counted": (ORDERS, _counted("count", ref)),
+    }
+
+
+@pytest.mark.parametrize("column", ["Customer Ref", "customer ref", "CUSTOMER REF"])
+@pytest.mark.parametrize("read", ["condition", "computed", "counted"])
+def test_a_quoted_column_in_another_case_is_its_dimension(quoted, monkeypatch, read, column):
+    """DuckDB reads a quoted name in any ASCII case as one column: the spelling meets the
+    dimension over it, refused or allowed as the dimension's own spelling is."""
+    governed, expression = _spelled(column)[read]
+    query = _select(expression, group_by=[STORE_NAME])
+    _compiles(quoted, query)
+    engine = _constrained(quoted, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, governed)
+    try:
+        result = engine.validate(query)
+    finally:
+        engine.close()
+    assert result["ok"], result["errors"]
+    engine = _constrained(quoted, BY_STORE_OR_SIZE, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [CUSTOMER_REF],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "authored", "written", "same"),
+    [
+        *((name, "Customer Ref", "customer ref", True) for name in ("duckdb", "bigquery")),
+        *((name, "Customer Ref", "CUSTOMER REF", True) for name in ("databricks", "athena")),
+        *((name, "Customer Ref", "customer ref", False) for name in ("postgres", "snowflake")),
+        ("clickhouse", "Customer Ref", "customer ref", False),
+        # An unquoted name folds everywhere but ClickHouse; a reserved word is quoted.
+        ("postgres", "Customer_Ref", "customer_ref", True),
+        ("clickhouse", "Customer_Ref", "customer_ref", False),
+        ("postgres", "Order", "order", False),
+        ("duckdb", "Order", "order", True),
+        # Only ASCII letters fold: "Größe" is "GRößE", never "GRÖSSE".
+        ("duckdb", "Größe", "GRößE", True),
+        ("duckdb", "Größe", "GRÖSSE", False),
+        ("duckdb", "customer ref", "customer_ref", False),
+    ],
+)
+def test_a_column_spelling_meets_its_dimension_as_the_warehouse_reads_names(
+    config, warehouse, authored, written, same
+):
+    package = replace(config, package=replace(config.package, warehouse=warehouse))
+    assert policies._same_column(authored, written, package) is same
 
 
 @pytest.mark.parametrize("placement", ["select", "having"])
