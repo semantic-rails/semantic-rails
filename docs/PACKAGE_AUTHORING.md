@@ -834,13 +834,28 @@ kind names must match exactly.
   rows too, so it is read the same way: a `case` in the value is a condition like the
   `aggregate_if`'s own, and any other column the value computes with (arithmetic or a
   call, 0 for every customer but one) counts as the dimensions over it (on its entity,
-  or, when it declares none, on another entity over the same table). A column the value
+  or, when it declares none, on another entity over the same table), or as
+  `<entity>.<column>` when no dimension declares it. A column the value
   returns as it is (the whole value, or what a `case` branch returns) is what is
-  aggregated, as a measure's column is: it counts as no filter, though a count counts
-  only the rows where it has a value. With revenue limited to store filters, a `sum` of
+  aggregated, as a measure's column is, and counts as no filter, except that a `count`,
+  `count_distinct` or `avg` counts only the rows where it has a value: there it counts
+  as the dimensions over it unless it is its entity's key or a column the value of a
+  measure the constraint governs reads (any measure's, for a package-wide constraint).
+  A column meets its dimension as the warehouse reads names: a spelling in another
+  ASCII case is the same column when the SQL leaves it unquoted (every warehouse but
+  ClickHouse) or quotes it on DuckDB, BigQuery, Databricks or Athena. With revenue
+  limited to store filters, a `sum` of
   `case when customer_id = '…' then order_total_cents else 0 end` by store is refused
   as its condition form is: "measure.jaffle.revenue_usd can't be filtered by
-  dimension.jaffle_order_customer_id inside an expression". Its condition and value
+  dimension.jaffle_order_customer_id inside an expression". Because no policy can list a
+  column no dimension declares, any use of one inside an expression other than
+  returning it as it is gets that refusal under `allowed_where`, ordinary arithmetic
+  included: `sum(order_total_cents / 100.0)` and a net-of-tax
+  `sum(order_total_cents - tax_paid_cents)` are refused, and the refusal says the package
+  author can declare a dimension over the column and list it in `allowed_where` if the
+  role may use it. A caller no constraint applies to reads such columns as before, and a
+  constraint with `allowed_group_by` but no `allowed_where` lets a caller filter by any
+  field, so it refuses none of them. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to
