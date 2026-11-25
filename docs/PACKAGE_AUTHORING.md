@@ -839,18 +839,21 @@ kind names must match exactly.
   returns as it is (the whole value, or what a `case` branch returns) is what is
   aggregated, as a measure's column is, and counts as no filter, except that a `count`,
   `count_distinct` or `avg` counts only the rows where it has a value: there it counts
-  as the dimensions over it unless it is its entity's key or a column the value of a
-  measure the constraint governs reads (any measure's, for a package-wide constraint).
-  A column meets its dimension as the warehouse reads names: a spelling in another
-  ASCII case is the same column when the SQL leaves it unquoted (every warehouse but
-  ClickHouse) or quotes it on DuckDB, BigQuery, Databricks or Athena. With revenue
+  as the dimensions over it unless it is its entity's key or a column the value of each
+  governed measure the aggregate reads also reads. So a `count_distinct` of the order's
+  customer id answers under a constraint on the ordering-customer count (its own column)
+  but not under one on the order count or a package-wide one, where it counts only the
+  orders with a customer. A column meets every dimension over it as the warehouse reads
+  names: a spelling in another ASCII case is the same column when the SQL leaves it
+  unquoted (every warehouse but ClickHouse) or quotes it on DuckDB, BigQuery, Databricks
+  or Athena. With revenue
   limited to store filters, a `sum` of
   `case when customer_id = '…' then order_total_cents else 0 end` by store is refused
   as its condition form is: "measure.jaffle.revenue_usd can't be filtered by
-  dimension.jaffle_order_customer_id inside an expression". Because no policy can list a
-  column no dimension declares, any use of one inside an expression other than
-  returning it as it is gets that refusal under `allowed_where`, ordinary arithmetic
-  included: `sum(order_total_cents / 100.0)` and a net-of-tax
+  dimension.jaffle_order_customer_id inside an expression". Because no policy can allow a
+  column no dimension declares (listing its `<entity>.<column>` name allows nothing), any
+  use of one inside an expression other than returning it as it is gets that refusal
+  under `allowed_where`, ordinary arithmetic included: `sum(order_total_cents / 100.0)` and a net-of-tax
   `sum(order_total_cents - tax_paid_cents)` are refused, and the refusal says the package
   author can declare a dimension over the column and list it in `allowed_where` if the
   role may use it. A caller no constraint applies to reads such columns as before, and a
