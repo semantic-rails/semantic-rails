@@ -1081,7 +1081,7 @@ def _metric_constraint_violations(
     # for the governed object, including whole-query attribution for nested filters.
     inline = cache(
         lambda: _governed_inline_fields(
-            _inline_filters(query, bound().config, _counted_operands(policy, bound().config)),
+            _inline_filters(query, bound().config, _counted_operands(policy, bound(), object_id)),
             bound,
             object_id,
             package_wide=not policy.object_ids,
@@ -1633,26 +1633,32 @@ def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]
 
 
 def _counted_operands(
-    policy: SemanticPolicyConfig, config: PackageConfig
+    policy: SemanticPolicyConfig, binding: BoundQuery, object_id: str
 ) -> frozenset[tuple[str, str]]:
-    """The columns a count may count under ``policy`` without picking rows, as ``(entity,
-    column)``: each entity's key, and each column the value of a measure the policy governs
-    (every measure, package-wide) reads outside its CASE conditions."""
-    governed = [
-        row
+    """The columns a count may count for ``object_id`` under ``policy`` without picking rows, as
+    ``(entity, column)``: each entity's key, and each column the governed measure's value reads
+    outside its CASE conditions. A caller's aggregate is governed by each measure the policy
+    governs (every one, package-wide) that it reads (``_synthetic_constraint_sources``): the
+    columns all of them read."""
+    config = binding.config
+    measures = {
+        row.id: row
         for row in config.measures
-        if not row.lookup_from and (not policy.object_ids or row.id in policy.object_ids)
+        if not row.lookup_from and row.id not in binding.plan.synthetic_measures
+    }
+    owners = {object_id} & set(measures)
+    if object_id in binding.plan.synthetic_measures:
+        governed = set(policy.object_ids or measures) & set(measures)
+        owners = _synthetic_constraint_sources(config, binding, governed).get(object_id, set())
+    reads = [
+        {
+            (_resolve_expr_entity(ref, measures[owner], config), ref.column)
+            for ref, _ in _value_reads(measures[owner].expr)[1]
+        }
+        for owner in sorted(owners)
     ]
-    return frozenset(
-        [
-            *((row.id, key) for row in config.entities for key in row.key_columns),
-            *(
-                (_resolve_expr_entity(ref, row, config), ref.column)
-                for row in governed
-                for ref, _ in _value_reads(row.expr)[1]
-            ),
-        ]
-    )
+    keys = {(row.id, key) for row in config.entities for key in row.key_columns}
+    return frozenset(keys.union(set.intersection(*reads) if reads else set()))
 
 
 def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[Any]:

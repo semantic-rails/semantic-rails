@@ -38,11 +38,11 @@ def config():
 
 
 def _constrained(config, constraint, governed, source_path=PACKAGE):
-    """``governed=None`` makes the policy package-wide."""
+    """``governed=None`` makes the policy package-wide; a list governs each id in it."""
     policy = SemanticPolicyConfig(
         id="policy.test.inline_filters",
         kind="metric_constraint",
-        object_ids=[governed] if governed else [],
+        object_ids=governed if isinstance(governed, list) else [governed] if governed else [],
         config=constraint,
     )
     return Runtime.from_config(replace(config, semantic_policies=[policy]), source_path=source_path)
@@ -754,12 +754,14 @@ COUNTED_COLUMNS = {
 }
 
 
+@pytest.mark.parametrize("governed", [ORDERS, None])
 @pytest.mark.parametrize("shape", sorted(COUNTED_COLUMNS))
-def test_a_count_of_a_column_filters_by_its_presence(config, monkeypatch, shape):
+def test_a_count_of_a_column_filters_by_its_presence(config, monkeypatch, shape, governed):
+    """Under a package-wide constraint too: the caller's own aggregate is no governed measure."""
     expression, disallowed = COUNTED_COLUMNS[shape]
     query = _select(expression, group_by=[STORE_NAME])
     _compiles(config, query)
-    engine = _constrained(config, BY_STORE_OR_SIZE, ORDERS)
+    engine = _constrained(config, BY_STORE_OR_SIZE, governed)
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
         message = engine.validate(query)["errors"][0]["message"]
@@ -773,10 +775,36 @@ def test_a_count_of_a_column_filters_by_its_presence(config, monkeypatch, shape)
             "source": "inline_expression",
         }
     ]
-    line = f"{ORDERS} can't be filtered by {disallowed[0]} inside an expression; {ONLY}."
+    subject = ORDERS if governed else "This query"
+    line = f"{subject} can't be filtered by {disallowed[0]} inside an expression; {ONLY}."
     if disallowed == [UNDECLARED_SUBTOTAL]:
         line = f"{line[:-1]}. No dimension declares {UNDECLARED_SUBTOTAL}, {ONE_UNDECLARED}"
     assert message == line
+
+
+def test_a_count_of_a_governed_column_is_held_by_every_measure_that_governs_it(config, monkeypatch):
+    """Revenue sums the order total, so a count of it counts revenue's own rows; the order count
+    counts every order, so for it the same count is the orders with a total."""
+    query = _select(_counted("count", TOTAL), group_by=[STORE_NAME])
+    engine = _constrained(config, BY_STORE_OR_SIZE, REVENUE)
+    try:
+        result = engine.validate(query)
+    finally:
+        engine.close()
+    assert result["ok"], result["errors"]
+    engine = _constrained(config, BY_STORE_OR_SIZE, [REVENUE, ORDERS])
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [UNDECLARED_TOTAL],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
 
 
 CUSTOMER_REF = "dimension.test_order_customer_ref"
