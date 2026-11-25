@@ -253,7 +253,7 @@ def test_the_census_asks_the_resolver_once_per_pair_and_reuses_its_cache(tmp_pat
     config = load_package_config(str(_write_package(tmp_path)))
     asked: list[tuple[str, str]] = []
     enumerated: list[tuple[str, str]] = []
-    resolve, uncached = census_module.package_route, fanout_module._resolve_uncached
+    resolve, uncached = census_module.package_route_result, fanout_module._resolve_uncached
 
     def counted_resolve(config, *, start, target):
         asked.append((start, target))
@@ -263,7 +263,7 @@ def test_the_census_asks_the_resolver_once_per_pair_and_reuses_its_cache(tmp_pat
         enumerated.append((start, target))
         return uncached(config, start, target)
 
-    monkeypatch.setattr(census_module, "package_route", counted_resolve)
+    monkeypatch.setattr(census_module, "package_route_result", counted_resolve)
     monkeypatch.setattr(fanout_module, "_resolve_uncached", counted_uncached)
     census = route_census(config)
     pairs = census_pairs(config)

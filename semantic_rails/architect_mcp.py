@@ -16,6 +16,7 @@ import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -63,6 +64,7 @@ from .package_tools import (
     run_examples_report,
     run_package_tests_report,
 )
+from .route_census import UndecidedPair, defer_census_questions
 from .route_groups import route_groups
 from .upgrade.service import legacy_form_hint
 from .upgrade.service import upgrade_project as upgrade_project_service
@@ -451,7 +453,8 @@ def _first_pairs(
     do, marked (``_fit_pair``), so a route is never chosen from a list that looks whole."""
     rows: list[Any] = []
     used = 0
-    for index, pair in enumerate(pairs[:SUMMARY_UNDECIDED_ROUTES]):
+    for index in range(min(len(pairs), SUMMARY_UNDECIDED_ROUTES)):
+        pair = _report_row(pairs[index])
         room = cut.pairs_chars - used
         if rows and _json_size(pair) > room:
             break
@@ -934,15 +937,7 @@ def _report_page(
 ) -> dict[str, Any]:
     """One page of the list at ``page`` (dotted keys and list indexes) in ``report``: its items
     as the summary shows rows, and the lists each of them leaves rows out of in ``pages``."""
-    target: Any = report
-    for part in page.split("."):
-        if isinstance(target, dict) and part in target:
-            target = target[part]
-        elif isinstance(target, list) and part.isdigit() and int(part) < len(target):
-            target = target[int(part)]
-        else:
-            target = None
-            break
+    target = _at_path(report, page)
     if not isinstance(target, list):
         # The pages the summary of this report lists, at the cut the summary fits in.
         shown = _full_or_summary({**report, "revision": envelope.get("revision")}, False)
@@ -968,16 +963,17 @@ def _report_page(
     room, used = PAGE_CHARS - _json_size(head) - 200, 0
     items: list[Any] = []
     pages: dict[str, Any] = {}
-    for index in range(offset, len(target)):
+    for index in range(offset, min(offset + limit, len(target))):
+        row = _report_row(target[index])
         nested: dict[str, Any] = {}
         if census and not items:
-            item = _fit_pair(target[index], room, f"{page}.{index}.", nested)
+            item = _fit_pair(row, room, f"{page}.{index}.", nested)
         elif census or pair_path:
-            item = target[index]
+            item = row
         else:
-            item = _summary(target[index], nested, f"{page}.{index}.")
+            item = _summary(row, nested, f"{page}.{index}.")
         size = _json_size(item) + _json_size(nested)
-        if len(items) >= limit or (items and used + size > room):
+        if items and used + size > room:
             break
         items.append(item)
         pages.update(nested)
@@ -997,6 +993,8 @@ _PAIR_KEYS = ("source_entity", "target_entity")
 
 def _at_path(report: Any, path: str) -> Any:
     for part in path.split("."):
+        if part == "details":
+            report = _report_row(report)
         if isinstance(report, dict):
             report = report.get(part)
         elif isinstance(report, list) and part.isdigit() and int(part) < len(report):
@@ -1072,15 +1070,25 @@ def _package_ref(project: Path) -> PackageReference:
     return PackageReference(source_path=str(project))
 
 
-def _parse_report(project: Path) -> dict[str, Any]:
-    """The package's parse report, its route census's undecided pairs grouped as a refusal
-    shows them (``route_groups``)."""
-    report, snapshot = parse_config_report(_package_ref(project))
+def _report_row(row: Any) -> Any:
+    return row.render() if isinstance(row, UndecidedPair) else row
+
+
+def _grouped_details(config: Any, pair: UndecidedPair) -> dict[str, Any]:
+    return _with_groups(config, pair.render())["details"]
+
+
+def _parse_report(project: Path, *, full_report: bool = True) -> dict[str, Any]:
+    """Group the undecided pairs a full parse, a summary or a page actually shows."""
+    with defer_census_questions():
+        report, config = parse_config_report(_package_ref(project))
     census = report.get("route_census")
-    if isinstance(census, dict) and snapshot is not None:
-        census["undecided"] = [
-            _with_groups(snapshot, pair) for pair in census.get("undecided") or []
+    if census is not None:
+        rows = [
+            UndecidedPair(pair, partial(_grouped_details, config, pair))
+            for pair in census["undecided"]
         ]
+        census["undecided"] = [row.render() for row in rows] if full_report else rows
     return report
 
 
@@ -1943,7 +1951,7 @@ def create_architect_mcp_server(
             _check_report_paging(page, offset, full_report)
             project = _resolve_project_path(project_path, workspace_root=root)
             revision = _read_revision(project, expected_revision)
-            parse = _parse_report(project)
+            parse = _parse_report(project, full_report=full_report)
             census = parse.pop("route_census", None)
             needed = sum(bool(row["needed_by"]) for row in census["undecided"]) if census else 0
             lookalikes = sum(
@@ -1992,7 +2000,8 @@ def create_architect_mcp_server(
                 ],
             }
             if include_runtime_checks:
-                out["runtime"] = validate_config_report(_package_ref(project))
+                with defer_census_questions(not full_report):
+                    out["runtime"] = validate_config_report(_package_ref(project))
                 out["examples"] = run_examples_report(_package_ref(project))
                 out["tests"] = run_package_tests_report(_package_ref(project))
                 out["ok"] = bool(
@@ -2919,9 +2928,10 @@ def create_architect_mcp_server(
             ref = _package_ref(project)
             check = str(mode or "parse").strip().lower()
             if check == "parse":
-                report = _parse_report(project)
+                report = _parse_report(project, full_report=full_report)
             elif check == "runtime":
-                report = validate_config_report(ref)
+                with defer_census_questions(not full_report):
+                    report = validate_config_report(ref)
             elif check == "examples":
                 report = run_examples_report(ref)
             elif check == "tests":
@@ -2937,12 +2947,13 @@ def create_architect_mcp_server(
                     raise SemanticLayerError(
                         "INVALID_CONFIG", "environment is required for release validation"
                     )
-                report = promote_package_report(
-                    ref,
-                    environment=environment,
-                    compare_path=_resolve_compare_path(compare_path, workspace_root=root),
-                    base_ref=base_ref,
-                )
+                with defer_census_questions(not full_report):
+                    report = promote_package_report(
+                        ref,
+                        environment=environment,
+                        compare_path=_resolve_compare_path(compare_path, workspace_root=root),
+                        base_ref=base_ref,
+                    )
             else:
                 raise SemanticLayerError(
                     "INVALID_CONFIG", "Unsupported validation mode", details={"mode": mode}

@@ -28,9 +28,16 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any, NamedTuple
 
-from ..compiler_parts.indexes import get_package_analysis
+from ..compiler_parts.indexes import RouteRefusal, get_package_analysis
 from ..errors import SemanticLayerError
-from ..fanout import analyze_fanout, query_routes_active, resolve_path, route_label
+from ..fanout import (
+    analyze_fanout,
+    package_route_result,
+    query_route,
+    query_routes_active,
+    resolve_path,
+    route_label,
+)
 from ..schema import PackageConfig
 
 
@@ -99,6 +106,13 @@ def _path_reach(config: PackageConfig, root_entity: str, target_entity: str) -> 
     pair = (root_entity, target_entity)
     cache = None if query_routes_active() else get_package_analysis(config).path_reach
     reach = cache.get(pair) if cache is not None else None
+    if reach is None and query_route(root_entity, target_entity) is None:
+        result = package_route_result(config, start=root_entity, target=target_entity)
+        if isinstance(result, RouteRefusal):
+            reason = "route decision required" if result.routes else result.message
+            reach = PathReach(False, reason, ())
+            if cache is not None:
+                cache[pair] = reach
     if reach is None:
         try:
             availability = _resolved_availability(config, root_entity, target_entity)

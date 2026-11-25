@@ -19,11 +19,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .compiler_parts.indexes import get_package_analysis
+from .compiler_parts.indexes import RouteRefusal, get_package_analysis
 from .compiler_parts.paths import _reaches_at_most_one
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError
-from .fanout import package_route
+from .fanout import package_route_result
 from .policy_rules import policy_matches
 from .relation_pipelines import pipeline_cte_names
 from .row_filters import (
@@ -75,14 +75,11 @@ def _coverage(base: PackageConfig, entity_id: str) -> Coverage:
         if relation_key(entity.table) == target:
             filtered.append(model)
             continue
-        try:
-            resolution = package_route(base, start=model, target=entity_id)
-        except SemanticLayerError as exc:
-            options = (exc.details.get("clarification") or {}).get("options") or []
-            if exc.code == "AMBIGUOUS_PATH" and any(
-                _route_ownership(analysis, model, option.get("relationship_path") or ())[0]
-                != "uncovered"
-                for option in options
+        resolution = package_route_result(base, start=model, target=entity_id)
+        if isinstance(resolution, RouteRefusal):
+            if any(
+                _route_ownership(analysis, model, path)[0] != "uncovered"
+                for path in resolution.routes
             ):
                 unsupported_models[model] = "its route to the filtered model is undecided"
             else:

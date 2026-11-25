@@ -15,8 +15,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import semantic_rails.fanout as fanout
 from semantic_rails.architect_mcp import _summary, create_architect_mcp_server
 from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.test_route_groups import _hub
 
 FIRST_WARNINGS = 10
 FIRST_UNDECIDED = 3
@@ -174,3 +176,31 @@ def test_status_lists_package_files_not_internal_state(tmp_path: Path) -> None:
 
     assert full - compact == {".semantic-rails/receipt.json"}
     assert {"package.yml", ".gitignore"} <= compact
+
+
+def test_a_nested_census_page_only_builds_the_requested_question(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
+    package = _hub(tmp_path, 10)
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    args = {"project_path": str(package)}
+    full = _call(server, "validate_project", {**args, "full_report": True})
+    pairs = full["route_census"]["undecided"]
+    index = len(pairs) - 1
+    assert index > FIRST_UNDECIDED
+    pair = pairs[index]
+    calls = []
+    build = fanout.route_clarification
+
+    def counted(config, start, target, routes):
+        calls.append((start, target))
+        return build(config, start, target, routes)
+
+    monkeypatch.setattr(fanout, "route_clarification", counted)
+    page = f"route_census.undecided.{index}.details.clarification.options"
+    answer = _call(server, "validate_project", {**args, "page": page, "limit": 1})
+    assert answer["items"] == pair["details"]["clarification"]["options"][:1]
+    assert calls == [(pair["source_entity"], pair["target_entity"])]
+    calls.clear()
+    names = f"route_census.undecided.{index}.needed_by"
+    assert _call(server, "validate_project", {**args, "page": names})["items"] == pair["needed_by"]
+    assert calls == []

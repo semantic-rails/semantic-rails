@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections import Counter, deque
+from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -240,15 +240,12 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
     else by its foreign-key columns; a one-to-many hop reads "any of the …", and a hop into a
     validity window "the … valid at the time" (``hop_reach``), or "at the end of the day"."""
     analysis = get_package_analysis(config)
-    pairs = Counter(
-        frozenset((rel.source_entity, rel.target_entity)) for rel in analysis.relationships.values()
-    )
     phrase = ""
     for rel_id, reached, reach in route_hops(config, start, path):
         rel = analysis.relationships[rel_id]
         forward = reached == rel.target_entity
         noun, qualifier = entity_label(config, reached), ""
-        if pairs[frozenset((rel.source_entity, rel.target_entity))] > 1:
+        if analysis.relationship_pairs[frozenset((rel.source_entity, rel.target_entity))] > 1:
             default = (
                 f"{entity_label(config, rel.source_entity)} to "
                 f"{entity_label(config, rel.target_entity)}"
@@ -431,6 +428,12 @@ def _route_decision_required(
     )
 
 
+def route_decision_details(
+    config: PackageConfig, start: str, target: str, routes: Sequence[Sequence[str]]
+) -> dict[str, Any]:
+    return _route_decision_required(config, start, target, routes).details
+
+
 def route_label(config: PackageConfig, start: str, target: str, path: Sequence[str]) -> str:
     """The ``label`` of the package row deciding the pair, when ``path`` is its route."""
     return next(
@@ -458,9 +461,8 @@ def route_decision_basis(config: PackageConfig, start: str, target: str) -> str:
     resolves it (``decided``, ``colocated_key``, ``inherited``, ``default`` or ``only_route``,
     as the caller's view states it: ``caller_basis``), or ``undecided`` when the package
     refuses it."""
-    try:
-        resolution = package_route(config, start=start, target=target)
-    except SemanticLayerError:
+    resolution = package_route_result(config, start=start, target=target)
+    if isinstance(resolution, RouteRefusal):
         return "undecided"
     return caller_basis(config, start, target, resolution)
 
@@ -702,16 +704,36 @@ def resolve_path(
 def resolve_route(config: PackageConfig, *, start: str, target: str) -> RouteResolution:
     """``resolve_path``'s resolution of the pair: every route considered, the chosen first,
     and the rung that chose it. Raises the pair's refusal."""
-    chosen = (_query_routes.get() or {}).get((start, target))
+    chosen = query_route(start, target)
     if chosen is not None:
         return RouteResolution((chosen,), "query")
     return package_route(config, start=start, target=target)
 
 
+def query_route(start: str, target: str) -> tuple[str, ...] | None:
+    """The current query's own row for this exact pair."""
+    return (_query_routes.get() or {}).get((start, target))
+
+
 def package_route(config: PackageConfig, *, start: str, target: str) -> RouteResolution:
     """Rungs 1-6 of ``resolve_path``: the package's resolution of the pair, whatever a query
     decides. A caller's visible view answers by the whole package's route (``_visible_route``)."""
-    analysis = get_package_analysis(config)
+    result = package_route_result(config, start=start, target=target)
+    if isinstance(result, RouteRefusal):
+        if result.routes:
+            raise _route_decision_required(config, start, target, result.routes)
+        raise result.error()
+    return result
+
+
+def package_route_result(
+    config: PackageConfig, *, start: str, target: str
+) -> RouteResolution | RouteRefusal:
+    """The package ladder's result, including the surviving routes of an undecided pair."""
+    try:
+        analysis = get_package_analysis(config)
+    except SemanticLayerError as exc:
+        return RouteRefusal(exc.code, str(exc), exc.details)
     pinned = analysis.path_preferences.get((start, target))
     if pinned is not None:
         return RouteResolution((tuple(pinned),), "decided")
@@ -724,10 +746,10 @@ def package_route(config: PackageConfig, *, start: str, target: str) -> RouteRes
                 else _visible_route(config, start, target)
             )
         except SemanticLayerError as exc:
-            cached = RouteRefusal(exc.code, str(exc), deepcopy(exc.details))
+            cached = RouteRefusal(exc.code, str(exc), exc.details)
         analysis.path_cache[(start, target)] = cached
-    if isinstance(cached, RouteRefusal):
-        raise cached.error()
+    if isinstance(cached, RouteRefusal) and cached.code == "PATH_NOT_FOUND":
+        return cached._replace(details=deepcopy(cached.details))
     return cached
 
 
@@ -753,7 +775,7 @@ def _no_route(config: PackageConfig, start: str, target: str) -> SemanticLayerEr
     return SemanticLayerError("PATH_NOT_FOUND", message, details=details)
 
 
-def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolution:
+def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolution | RouteRefusal:
     """A view's resolution of the pair: the whole package's, never re-chosen for the caller.
 
     Routes through a hidden object are dropped from those considered. When the package's chosen
@@ -766,17 +788,11 @@ def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolut
     def visible(path: Sequence[str]) -> bool:
         return visible_route(base, start, path, hidden)
 
-    try:
-        resolution = package_route(base, start=start, target=target)
-    except SemanticLayerError as exc:
-        options = exc.details.get("clarification", {}).get("options", [])
-        routes = [
-            option["relationship_path"]
-            for option in options
-            if visible(option["relationship_path"])
-        ]
-        if exc.code == "AMBIGUOUS_PATH" and routes:
-            raise _route_decision_required(view, start, target, routes) from None
+    resolution = package_route_result(base, start=start, target=target)
+    if isinstance(resolution, RouteRefusal):
+        routes = tuple(path for path in resolution.routes if visible(path))
+        if routes:
+            return RouteRefusal("AMBIGUOUS_PATH", "", {}, routes)
         try:
             _resolve_uncached(view, start, target)
         except SemanticLayerError as own:
@@ -794,7 +810,9 @@ def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolut
     )
 
 
-def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteResolution:
+def _resolve_uncached(
+    config: PackageConfig, start: str, target: str
+) -> RouteResolution | RouteRefusal:
     """Rungs 2-6 of ``resolve_path``, for a pair with no row of its own."""
     analysis = get_package_analysis(config)
     hop_limit = package_hop_limit(config)
@@ -853,7 +871,7 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
                 tuple(sorted(excluded_by)),
                 by,
             )
-        raise _route_decision_required(config, start, target, kept)
+        return RouteRefusal("AMBIGUOUS_PATH", "", {}, tuple(kept))
     rows = [route_pin(*pair, analysis.path_preferences[pair]) for pair in sorted(excluded_by)]
     raise SemanticLayerError(
         "PATH_NOT_FOUND",
@@ -1111,11 +1129,7 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
 
 
 def _resolves(config: PackageConfig, start: str, target: str) -> bool:
-    try:
-        package_route(config, start=start, target=target)
-    except SemanticLayerError:
-        return False
-    return True
+    return isinstance(package_route_result(config, start=start, target=target), RouteResolution)
 
 
 def build_hop_profile(
