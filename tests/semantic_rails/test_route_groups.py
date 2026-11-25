@@ -316,6 +316,8 @@ def test_a_package_author_decides_a_fork_by_one_of_its_parts_for_the_asked_pair_
     for head in moved.values():  # each along the row, either way
         path = head["relationship_path"]
         assert any(way[n : n + len(path)] == path for way in (TASKS, TASKS[::-1]) for n in range(3))
+    # Along the row, so no move is marked as answered by a route the row didn't choose.
+    assert len(moved) == 4 and not any("note" in c for c in preview["route_changes"])
     assert project.record_route_decision(**tasks).report["ok"] is True
     config = load_package_config(str(pkg))
     assert package_route(config, start=DEPARTMENT, target=BUILDING).basis == "decided"
