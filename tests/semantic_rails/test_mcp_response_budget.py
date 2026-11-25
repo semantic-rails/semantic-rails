@@ -522,7 +522,7 @@ def test_each_tool_definition_fits_its_byte_budget() -> None:
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= 14_379  # the joined call; the end-of-period clause
+    assert len(json_text({"tools": list_tool_definitions()})) <= 14_379  # the joined call
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without
