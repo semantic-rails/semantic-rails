@@ -34,7 +34,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from ..clock import current_time, engine_window, local_now
+from ..clock import current_time, engine_window, known_zone, local_now
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
@@ -501,7 +501,14 @@ def guard_empty_groups(
                 # An unbounded answer sees every matching row itself, but not the source rows
                 # a declared edge observes without its authored filter.
                 unfiltered = declared and scope.source_where is not None
-                if (scope.bounded or unfiltered) and not dataset:
+                # A probe bounded by coverage (``probe_key``) reads stamps in its clock's zone:
+                # with no known zone it isn't added, and the window's own rows decide.
+                bounded_probe = bool(probe_key) and not gated and scope.bucket is not None
+                if (
+                    (scope.bounded or unfiltered)
+                    and not dataset
+                    and (not bounded_probe or known_zone(scope.storage_zone))
+                ):
                     outside = _seen_outside_window(
                         scope,
                         source_rows=source_rows
@@ -512,7 +519,7 @@ def guard_empty_groups(
                     # Where EXISTS may not sit in a select (Snowflake, Spark), the probe is read
                     # through plain CTEs instead.
                     found = outside if dialect.exists_in_select else probed(outside.query)
-                    if probe_key and not gated and scope.bucket is not None:
+                    if bounded_probe:
                         found = SqlBinary(found, "AND", _loaded_bucket(probe_key, covered(scope)))
                     seen = SqlBinary(seen, "OR", found)
                 if gated:
