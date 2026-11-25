@@ -65,6 +65,7 @@ from ..sql_ast import (
     sql_nodes,
 )
 from .bind import (
+    _bound_metric_predicates,
     _measure_count_distinct_key_columns,
     _parse_public_expr,
     earlier_settlement_applies,
@@ -191,13 +192,16 @@ def settle_ungrouped_populations(
 ) -> tuple[SqlSelect, set[str]]:
     """A leaf with no GROUP BY answers one row even when it reads none, where a distinct
     population's count is 0: it reads NULL there, as a group with no rows does. A leaf that
-    read rows keeps its count, 0 included (rows its condition fails). Returns the leaf and the
-    aliases it settled."""
+    read rows keeps its count, 0 included (rows its condition fails). An entity filter judges
+    every entity, with rows or none, so the count of those it keeps is observed even when it
+    keeps none: a measure under one of its own is left as it is, as the caller leaves a call
+    under one. Returns the leaf and the aliases it settled."""
     measures = _measure_index(config)
     settled = {
         row.bound_measure.alias
         for row in rows
         if not row.aggregate_relation_id
+        and not _bound_metric_predicates(row.bound_measure)
         and getattr(measures.get(row.bound_measure.measure_id), "measure_class", "") == POPULATION
     }
     if leaf.group_by or not settled:

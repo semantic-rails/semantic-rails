@@ -171,6 +171,33 @@ def test_extra_reads_are_emitted_only_where_they_can_change_results(
         assert compiled["sql"].count("FROM jaffle_order") == 1
 
 
+def _probes_read(compiled):
+    guard = _cte(compiled, "guarded_base")
+    return {
+        node.parts[0]
+        for field in guard.select
+        for node in sql_nodes(field.expression)
+        if isinstance(node, SqlIdentifier) and node.parts[0].startswith("observed_")
+    }
+
+
+@pytest.mark.parametrize("warehouse", sorted(NAMED_ONLY | {"clickhouse"}))
+def test_an_open_series_looks_outside_its_window_wherever_coverage_reads(
+    package_config_factory, warehouse
+):
+    # Revenue beside items, monthly until May: a month with no rows of one of them reads 0
+    # where that measure has rows outside the window too, so each guard reads a probe of its
+    # own, through plain CTEs. ClickHouse, which reads no coverage, keeps the in-window test.
+    config = _config(package_config_factory, warehouse)
+    series = _compile(config, {"end": "2017-05-01"}, (REVENUE, ITEMS))
+    expected = set() if warehouse == "clickhouse" else {"observed_1", "observed_2"}
+    assert _probes_read(series) == expected
+    assert not any(isinstance(n, SqlExists) for n in sql_nodes(series["sql_ast"]))
+    # One total can lie past the data's edge, which only coverage tells: no probe there.
+    total = _compile(config, {**BOUNDS, "grain": ""}, (REVENUE, ITEMS))
+    assert _probes_read(total) == set()
+
+
 def test_an_unrecognized_observation_aggregate_refuses(package_config_factory, monkeypatch):
     config, _ = package_config_factory("jaffle_shop")
     original = lowering_common.record_leaf_scope
