@@ -114,6 +114,11 @@ to.
   (`details.declare`), and validation and `promotion_check` warn `MEASURE_WITHOUT_TIME_ROLE` for
   such a measure whose rows reach a clock. See [suggest_model](docs/ARCHITECT_MCP.md).
 
+### Fixed
+
+- Project validation is faster on packages where many entities share dimensions. A validation
+  summary builds the route questions it displays, and the full report lists every option.
+
 ### Security
 
 - A metric constraint now holds inside the call, not only in its own `group_by` and `where`. A
