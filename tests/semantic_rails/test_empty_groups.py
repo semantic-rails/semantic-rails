@@ -1001,9 +1001,10 @@ def test_a_week_past_the_load_log_reads_null_on_every_warehouse(
     """The load log says tickets are loaded through September 29. Ticket 4 (October 9) came in
     after that, and the same table read with no load log shows its week. Tickets opened and
     their minutes read NULL that week, never 0, on every warehouse that reads coverage, as on
-    DuckDB: neither the tickets before the window nor those inside it say that week is loaded."""
+    DuckDB: neither the tickets before the window nor those inside it say that week is loaded.
+    The answer says why, with NO_DATA_YET."""
 
-    def weeks() -> list[tuple[Any, ...]]:
+    def weeks() -> tuple[list[tuple[Any, ...]], list[Any]]:
         rt = Runtime.from_path(str(shop_package))
         try:
             response = rt.query(
@@ -1017,14 +1018,16 @@ def test_a_week_past_the_load_log_reads_null_on_every_warehouse(
             )
         finally:
             rt.close()
-        return [
+        rows = [
             (row["period"].strftime("%Y-%m-%d"), row["opened"], row["minutes"], row["rows"])
             for row in typed_rows(response)
         ]
+        return rows, [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")]
 
-    assert weeks() == expected
+    answer = (expected, [["opened", "minutes"]])
+    assert weeks() == answer
     request.getfixturevalue("coverage_for_named_windows_only")
-    assert weeks() == expected
+    assert weeks() == answer
 
 
 def test_a_window_total_without_coverage_reads_only_its_window(
