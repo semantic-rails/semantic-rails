@@ -2519,7 +2519,7 @@ def test_a_distinct_count_of_part_of_a_key_is_refused(config, monkeypatch, shape
         expected = [_inline_disallowed([ITEM_ORDER_ID], [PRODUCT])]
     elif shape == "having":  # having cuts the rows, a metric filter the head already refuses
         cut = {"kind": "metric_filters_not_allowed", "metric_filter_refs": {"entities": [ITEM]}}
-        expected = [{"kind": "disallowed_expression", "read": HAVING}, cut]
+        expected = [cut]
     else:
         refs = {"metric_filter_refs": {}, "source": "inline_expression"}
         expected = [{"kind": "metric_filters_not_allowed", **refs}]

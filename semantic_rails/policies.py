@@ -230,9 +230,10 @@ def query_policy_effects(
         if existing_violations:
             deduped[key]["violations"] = existing_violations
     for effect in deduped.values():
-        # A shape refusal stands aside for an inline check's refusal of the same call.
+        # A shape refusal stands aside for another check's refusal of the same call, which names
+        # the field or the entity.
         rows = list(effect.get("violations") or [])
-        if any(row.get("source") == "inline_expression" for row in rows):
+        if any(row.get("kind") != _SHAPE for row in rows):
             effect["violations"] = [row for row in rows if row.get("kind") != _SHAPE]
     return list(deduped.values())
 
