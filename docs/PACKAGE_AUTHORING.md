@@ -835,7 +835,8 @@ kind names must match exactly.
   - **A column the value computes with** (arithmetic or a call, 0 for every customer
     but one) counts as the dimensions over it, on its entity or, when it declares none,
     on another entity over the same relation, named in full (a dimension over
-    `live.orders` allows nothing on `archive.orders`). With revenue limited to store
+    `live.orders` allows nothing on `archive.orders`, while `main.orders` is
+    `MAIN.ORDERS` wherever unquoted names fold). With revenue limited to store
     filters, a `sum` of `case when customer_id = '…' then order_total_cents else 0 end`
     by store is refused as its condition form is: "measure.jaffle.revenue_usd can't be
     filtered by dimension.jaffle_order_customer_id inside an expression".
@@ -851,11 +852,13 @@ kind names must match exactly.
     `count_distinct` of the order's customer id answers under a constraint on the
     ordering-customer count (that column, with no expression) but not under one on the
     order count or a package-wide one, where it counts only the orders with a customer.
-    Each aggregate is held to the measures that govern it, so two averages that answer
-    alone also answer side by side.
-  - **A spelling** in another ASCII case meets every dimension over the column wherever
-    the warehouse reads it as that column: when the SQL leaves it unquoted (every
-    warehouse but ClickHouse), or quotes it on DuckDB, BigQuery, Databricks or Athena.
+  - **A spelling.** A column meets a dimension only when the SQL reads it as that
+    dimension, with the dimension's unknown values: spelled as the dimension spells it
+    or, for a name the SQL leaves unquoted, in another ASCII case (every warehouse but
+    ClickHouse). It then meets every dimension over the same warehouse column. A quoted
+    name in another case, `"CUSTOMER REF"` for a dimension over `"Customer Ref"`, reads
+    as a column no dimension declares, even on a warehouse that reads both spellings as
+    one column.
   - **A column no dimension declares** is named `<entity>.<column>` and no policy can
     allow it: listing that name allows nothing, even when a dimension's id reads the
     same. Any use of it inside an expression other than returning it as it is is
@@ -864,7 +867,11 @@ kind names must match exactly.
     author can declare a dimension over the column and list it in `allowed_where` if the
     role may use it, and lists only the dimensions that can allow a filter there.
 
-  A caller no constraint applies to reads such columns as before, and a constraint with
+  Each aggregate is held only by the constraints on the measures that govern it. Two
+  averages that answer alone also answer side by side, under one constraint or one each,
+  and another aggregate's condition beside a governed one counts for it only when it cuts
+  the whole query (in `having`, say). A caller no constraint applies to reads such
+  columns as before, and a constraint with
   `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so it
   refuses none of them. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated

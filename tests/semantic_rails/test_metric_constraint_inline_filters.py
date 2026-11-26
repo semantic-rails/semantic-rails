@@ -1411,6 +1411,41 @@ def test_an_inline_filter_on_a_sibling_counts_when_query_wide(config, monkeypatc
         engine.close()
 
 
+@pytest.mark.parametrize("placement", ["select", "having"])
+def test_a_sibling_conditional_aggregate_counts_only_when_query_wide(
+    config, monkeypatch, placement
+):
+    """Revenue's constraint governs the order total's sum, not a count of one customer's orders
+    beside it: that count's condition cuts only its own rows, unless having on it cuts the
+    groups."""
+    one_customers_orders = {
+        "kind": "aggregate_if",
+        "aggregation": "count",
+        "condition": ONE_CUSTOMER,
+    }
+    query = _select(_summed(TOTAL), group_by=[STORE_NAME])
+    query["select"].append({"expression": one_customers_orders, "as": "orders"})
+    if placement == "having":
+        query["having"] = [{"field": "orders", "op": "gt", "value": 0}]
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
+    try:
+        if placement == "select":
+            result = engine.validate(query)
+            assert result["ok"], result["errors"]
+            return
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [ORDER_CUSTOMER_ID],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
 FILTERED_ORDERS = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}}
 RETURNING_CUSTOMER = {
     "kind": "metric_predicate",
