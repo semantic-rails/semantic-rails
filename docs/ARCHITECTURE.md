@@ -643,8 +643,10 @@ rename their internal value until it differs from every projected join column, g
 and row-count alias, using case-insensitive comparison. Base time coverage
 bounds only zero
 substitution on filled, dense, combined or retained filtered leaves. One predicate decides
-both coverage and rollup refusal, on DuckDB and Postgres only. Populated values pass through;
-routed queries keep the window test and never scan a shadow raw leaf.
+both coverage and rollup refusal, on DuckDB and Postgres only. On Snowflake, BigQuery,
+Databricks and Athena, a series' combined leaves read their own coverage and refuse rollups by
+one rule too (`_gates_by_own_range`). Populated values pass through; routed queries keep the
+window test and never scan a shadow raw leaf.
 On those warehouses, plain filtered additive leaves on a local clock retain source buckets by
 evaluating authored dimension filters in conditional operands. One rule names the retained
 leaves for lowering and the guard, and a plan with one emits coverage, filled or not. The
