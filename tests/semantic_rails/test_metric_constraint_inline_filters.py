@@ -953,6 +953,30 @@ def test_two_averages_each_under_its_own_constraint_answer_side_by_side(bare, mo
     ]
 
 
+def test_a_constraint_matches_governed_sources_once_per_request(bare, monkeypatch):
+    """The check holds each count to its own governed measures, matched once for the request:
+    a dashboard of many counts matches them as often as one count does."""
+    calls = []
+    match = policies._synthetic_constraint_sources
+
+    def counted(*args):
+        calls.append(args)
+        return match(*args)
+
+    monkeypatch.setattr(policies, "_synthetic_constraint_sources", counted)
+    counts = [
+        _counted("count", _case(IS_LARGE, {"kind": "literal", "value": index}))
+        for index in range(6)
+    ]
+    matched = []
+    for expressions in [counts[:1], counts]:
+        calls.clear()
+        result = _validated(bare, BY_STORE_OR_SIZE, [ORDERS, TOTAL_CENTS], *expressions)
+        assert result["ok"], result["errors"]
+        matched.append(len(calls))
+    assert matched[0] == matched[1], matched
+
+
 def test_a_package_wide_constraint_reads_an_average_by_its_own_measures(config):
     """Every object a package-wide constraint meets, the store dimension included, holds the
     average stock to the measures over its column, which read it as it is."""
@@ -987,6 +1011,47 @@ def test_a_dimension_over_a_relation_of_the_same_name_allows_nothing(config, mon
         {
             "kind": "disallowed_where",
             "disallowed": [f"{archive}.customer_id"],
+            "allowed": [ORDER_CUSTOMER_ID, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "allowed"), [("duckdb", True), ("postgres", True), ("clickhouse", False)]
+)
+def test_a_relation_spelled_in_another_case_is_the_same_relation(
+    config, monkeypatch, warehouse, allowed
+):
+    """Two entities over the orders, named ``main.jaffle_order`` and ``MAIN.JAFFLE_ORDER``: one
+    table wherever unquoted names fold (every warehouse but ClickHouse), so the order's customer
+    id dimension, allowed here, allows the other entity's column."""
+    twin = "entity.test_upper_order"
+    order = next(row for row in config.entities if row.id == ORDER)
+    package = replace(
+        config,
+        package=replace(config.package, warehouse=warehouse),
+        entities=[
+            *(row for row in config.entities if row.id != ORDER),
+            replace(order, table="main.jaffle_order"),
+            replace(order, id=twin, table="MAIN.JAFFLE_ORDER"),
+        ],
+    )
+    customer = {"kind": "column", "entity": twin, "column": "customer_id"}
+    query = _select(_counted("count_distinct", customer))
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, ORDER_CUSTOMER_ID]}, ORDERS)
+    try:
+        if allowed:
+            result = engine.validate(query)
+            assert result["ok"], result["errors"]
+            return
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [f"{twin}.customer_id"],
             "allowed": [ORDER_CUSTOMER_ID, STORE_NAME],
             "source": "inline_expression",
         }

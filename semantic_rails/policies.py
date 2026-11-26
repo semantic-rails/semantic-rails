@@ -122,6 +122,16 @@ def query_policy_effects(
         lambda: binding if binding is not None else bind_query(config, None, dict(query or {}))
     )
     metric_filter_refs = cache(lambda object_id: _metric_filter_refs(config, bound(), object_id))
+    # Each constraint's inline filters, read once per request (the policies outlive it).
+    inline_reads: dict[int, list[tuple[str | None, str | _Undeclared]]] = {}
+
+    def inline_filters(policy: SemanticPolicyConfig) -> list[tuple[str | None, str | _Undeclared]]:
+        if id(policy) not in inline_reads:
+            normalized = normalize_query(dict(query or {}))
+            operands = _counted_operands(policy, bound())
+            inline_reads[id(policy)] = _inline_filters(normalized, bound().config, operands)
+        return inline_reads[id(policy)]
+
     for object_id in list(dict.fromkeys(str(item) for item in object_ids if str(item).strip())):
         for policy in config.semantic_policies:
             if not _policy_matches(
@@ -137,7 +147,9 @@ def query_policy_effects(
                 continue
             if policy.kind == "metric_constraint" and query is not None:
                 effects.append(
-                    _metric_constraint_effect(policy, query, metric_filter_refs, bound, object_id)
+                    _metric_constraint_effect(
+                        policy, query, metric_filter_refs, bound, object_id, inline_filters
+                    )
                 )
             else:
                 effects.append(_base_policy_effect(policy, action=action))
@@ -167,7 +179,7 @@ def query_policy_effects(
                 if sources.intersection(policy.object_ids):
                     effects.append(
                         _metric_constraint_effect(
-                            policy, query, metric_filter_refs, bound, synthetic_id
+                            policy, query, metric_filter_refs, bound, synthetic_id, inline_filters
                         )
                     )
     # Dedupe by (policy_id, kind, action). Package-wide policies — e.g.
@@ -984,9 +996,10 @@ def _metric_constraint_effect(
     metric_filter_refs: Callable[[str], dict[str, list[str]]],
     bound: Callable[[], BoundQuery],
     object_id: str,
+    inline_filters: Callable[[SemanticPolicyConfig], list[tuple[str | None, str | _Undeclared]]],
 ) -> dict[str, Any]:
     violations = _metric_constraint_violations(
-        policy, query_payload, metric_filter_refs, bound, object_id
+        policy, query_payload, metric_filter_refs, bound, object_id, inline_filters
     )
     effect = _base_policy_effect(policy, action="deny" if violations else "constrain")
     if violations:
@@ -1034,6 +1047,7 @@ def _metric_constraint_violations(
     metric_filter_refs: Callable[[str], dict[str, list[str]]],
     bound: Callable[[], BoundQuery],
     object_id: str,
+    inline_filters: Callable[[SemanticPolicyConfig], list[tuple[str | None, str | _Undeclared]]],
 ) -> list[dict[str, Any]]:
     policy_config = policy.config
     query = normalize_query(dict(query_payload or {}))
@@ -1083,9 +1097,7 @@ def _metric_constraint_violations(
     # for the governed object, including whole-query attribution for nested filters.
     inline = cache(
         lambda: _governed_inline_fields(
-            _inline_filters(
-                query, bound().config, lambda expr: _counted_operands(policy, bound(), expr)
-            ),
+            inline_filters(policy),
             bound,
             object_id,
             package_wide=not policy.object_ids,
@@ -1588,7 +1600,7 @@ def _condition_fields(
     returned column other than one of its operands picks the rows where it has a value, a column
     the SQL binds to a dimension meets its dimensions as the warehouse reads names
     (``_dimensions_over``), and another entity's dimension grants a column only over the same
-    relation, named in full.
+    relation, named in full (each part as the warehouse reads it).
     ``filterable: false``, which every caller meets and which only refuses, passes none and reads
     columns as it always has: no count rule, the spelling as written, relations matched by their
     last name part, and no value column that no dimension declares."""
@@ -1601,9 +1613,12 @@ def _condition_fields(
     relations = {row.id: row.table for row in config.entities}
 
     def relation(entity_id: str) -> str:
-        # A dimension over ``live.orders`` grants nothing on ``archive.orders``.
-        table = relations.get(entity_id, "")
-        return table if governed else table.split(".")[-1].strip('"`[]').casefold()
+        # A dimension over ``live.orders`` grants nothing on ``archive.orders``; each part of
+        # the name is read as the warehouse reads it (``main.orders`` is ``MAIN.ORDERS``).
+        parts = relations.get(entity_id, "").split(".")
+        if governed:
+            return ".".join(_column_key(part, config) for part in parts)
+        return parts[-1].strip('"`[]').casefold()
 
     def picks(ref: ColumnRefExpr, returned: bool) -> bool:
         if not returned:
@@ -1661,35 +1676,39 @@ def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]
 
 
 def _counted_operands(
-    policy: SemanticPolicyConfig, binding: BoundQuery, expr: ConditionalAggregateExpr
-) -> frozenset[tuple[str, str]]:
-    """The columns a count or an average ``expr`` may count under ``policy`` without picking
-    rows, as ``(entity, _column_key)``: each entity's key and, when every measure the policy
-    governs that governs ``expr`` (``_synthetic_constraint_sources``; every measure, package-wide)
-    is one column as it is, that column. A measure that wraps its column (``COALESCE(customer_id,
-    'guest')``, a division) reads rows where the column has no value, so it exempts nothing. Each
-    aggregate is read by its own measures, never by a sibling's."""
+    policy: SemanticPolicyConfig, binding: BoundQuery
+) -> Callable[[ConditionalAggregateExpr], frozenset[tuple[str, str]]]:
+    """The columns a count or an average may count under ``policy`` without picking rows, as
+    ``(entity, _column_key)``: each entity's key and, when every measure the policy governs that
+    governs the aggregate (``_synthetic_constraint_sources``, matched once per lookup; every
+    measure, package-wide) is one column as it is, that column. A measure that wraps its column
+    (``COALESCE(customer_id, 'guest')``, a division) reads rows where the column has no value, so
+    it exempts nothing. Each aggregate is read by its own measures, never by a sibling's."""
     config = binding.config
-    keys = {
+    keys = frozenset(
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
-    }
+    )
     measures = {
         row.id: row for row in config.measures if row.id not in binding.plan.synthetic_measures
     }
     governed = set(policy.object_ids or measures) & set(measures)
-    sources = _synthetic_constraint_sources(config, binding, governed)
-    owners = sources.get(_synthetic_conditional_measure(expr, config)[0], set())
-    own = {
-        (
-            (_resolve_expr_entity(row.expr, row, config), _column_key(row.expr.column, config))
-            if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from
-            else None
-        )
-        for row in (measures[owner] for owner in owners)
-    }
-    if len(own) == 1 and None not in own:
-        keys.update(item for item in own if item is not None)
-    return frozenset(keys)
+    sources = cache(lambda: _synthetic_constraint_sources(config, binding, governed))
+
+    def operands(expr: ConditionalAggregateExpr) -> frozenset[tuple[str, str]]:
+        owners = sources().get(_synthetic_conditional_measure(expr, config)[0], set())
+        own = {
+            (
+                (_resolve_expr_entity(row.expr, row, config), _column_key(row.expr.column, config))
+                if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from
+                else None
+            )
+            for row in (measures[owner] for owner in owners)
+        }
+        if len(own) == 1 and None not in own:
+            return keys.union(item for item in own if item is not None)
+        return keys
+
+    return operands
 
 
 def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[Any]:
