@@ -1030,6 +1030,46 @@ def test_a_week_past_the_load_log_reads_null_on_every_warehouse(
     assert weeks() == answer
 
 
+def test_months_before_the_first_ticket_read_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest
+) -> None:
+    """Orders show every month from November 2023; the first ticket opened in September 2024.
+    Before it, tickets opened read NULL, not 0, on every warehouse that reads coverage, as on
+    DuckDB: a load log says how far the tickets are loaded, not where they start."""
+
+    def opened() -> list[tuple[str, Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(opened=TICKETS_OPENED, orders=SHOP_ORDERS),
+                    "time": {
+                        "temporal_role": "temporal_role.shop_ticket_opened_at",
+                        "grain": "month",
+                    },
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        return [(row["period"].strftime("%Y-%m"), row["opened"]) for row in typed_rows(response)]
+
+    before = [
+        "2023-11",
+        "2023-12",
+        "2024-01",
+        "2024-03",
+        "2024-05",
+        "2024-06",
+        "2024-07",
+        "2024-08",
+    ]
+    expected = [*((month, None) for month in before), ("2024-09", 3)]
+    assert opened() == expected
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert opened() == expected
+
+
 def test_a_window_total_without_coverage_reads_only_its_window(
     shop_package: Path, coverage_for_named_windows_only: None
 ) -> None:
