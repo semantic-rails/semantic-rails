@@ -1285,7 +1285,8 @@ def _shape_refusal(
     allowed = set(_config_str_list(policy.config, "allowed_where"))
     allowed &= {row.id for row in config.dimensions}
     measures = {row.id: row for row in config.measures if row.id not in synthetic}
-    sources = _synthetic_constraint_sources(config, binding, set(policy.object_ids or measures))
+    governed = set(policy.object_ids or measures) & set(measures)
+    sources = _synthetic_constraint_sources(config, binding, governed)
     known = {*measures, *synthetic, *(row.id for row in config.metric_recipes)}
     ids = set(policy.object_ids or known - set(synthetic))
     ids |= {key for key, owners in sources.items() if owners}
@@ -1337,15 +1338,17 @@ def _shape_refusal(
     def own_statistic(expr: MeasureRefExpr | AggregateExpr) -> bool:
         """Its measure's statistic, or another of one column as it is (as ``counted`` reads)."""
         row, aggregation = measures.get(expr.measure), expr.aggregation.lower()
-        if row is None or aggregation in {"", row.default_aggregation.lower()}:
-            return not aggregation or row is not None
+        if row is None:  # a measure the call itself makes (an aggregate_if) is no id
+            return False
+        if aggregation in {"", row.default_aggregation.lower()}:
+            return True
         own = row.expr if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from else None
         if own is None or aggregation == "percentile":
             return False
         return aggregation != "count_distinct" or column(own, row) in keys
 
     def by_id(expr: Any) -> bool:
-        """A metric, or a measure with its own statistic, by id."""
+        """A metric, or a package measure with its own statistic (``own_statistic``), by id."""
         measure = isinstance(expr, MeasureRefExpr) and own_statistic(expr)
         return measure or isinstance(expr, MetricRecipeRefExpr)
 
@@ -1396,17 +1399,15 @@ def _shape_refusal(
 
 
 def _predicate_inputs(expr: Any) -> list[Any]:
-    """What the predicates in ``expr`` (an entity filter, an aggregate filter's or a scoped
-    aggregate's) read, in order: each input and percentile threshold's measure, not what the
-    predicates inside them read."""
+    """The inputs of the predicates in ``expr`` (an entity filter, an aggregate filter's or a
+    scoped aggregate's), in order, not those of the predicates inside them."""
     parse = partial(parse_semantic_expression, context="query")
     found: list[Any] = []
     stack = [expr]
     while stack:
         node = stack.pop()
         if isinstance(node, MetricPredicateExpr):
-            threshold = node.value.get("measure") if isinstance(node.value, Mapping) else None
-            found += [node.input, *([MeasureRefExpr(str(threshold))] if threshold else [])]
+            found.append(node.input)
             continue
         clauses = node.filter.get("all", []) if isinstance(node, AggregateExpr) else []
         rows = node.predicates if isinstance(node, ScopedAggregateExpr) else []

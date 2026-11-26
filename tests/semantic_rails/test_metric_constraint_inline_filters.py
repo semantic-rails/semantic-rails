@@ -12,7 +12,12 @@ from semantic_rails import compiler, policies
 from semantic_rails.compiler_parts import bind
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import CallExpr, ColumnRefExpr, LiteralExpr
+from semantic_rails.expressions import (
+    CallExpr,
+    ColumnRefExpr,
+    LiteralExpr,
+    parse_semantic_expression,
+)
 from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -2408,6 +2413,23 @@ def test_another_statistic_of_a_measure_of_one_column_answers(bare):
     }
     result = _validated(bare, STORE_ONLY, TOTAL_CENTS, average, filtered, _counted("avg", TOTAL))
     assert result["ok"], result["errors"]
+
+
+def test_a_constraint_naming_a_measure_the_call_makes_still_decides(config, monkeypatch):
+    """A constraint may list any id, a measure an aggregate_if makes included: the order total's
+    sum under revenue is still refused as off the list, and a reference to that made measure by
+    its id is no measure by id."""
+    total = _summed(TOTAL)
+    made, _ = bind._synthetic_conditional_measure(
+        parse_semantic_expression(total, context="query"), config
+    )
+    query = _shown(total)
+    engine = _constrained(config, STORE_ONLY, [REVENUE, made])
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [_off_the_list(OFF_THE_LIST_VALUE, "value_0")]
 
 
 ITEM = "entity.jaffle_item"

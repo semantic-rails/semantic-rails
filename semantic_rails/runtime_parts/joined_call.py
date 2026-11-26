@@ -469,7 +469,8 @@ def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: lis
 
 def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
     """Under a metric constraint with allowed_where, a limit keeps the joined rows its order picks,
-    so the order names a key or a part's measure or metric by id, as a call's does."""
+    so the order names a key or a part's measure or metric by id with no statistic written, as a
+    call's does (``policies._shape_refusal``, which also takes a measure's own statistic)."""
     constrained = any(
         effect.get("kind") == "metric_constraint" and "allowed_where" in effect["constraints"]
         for part in parts
