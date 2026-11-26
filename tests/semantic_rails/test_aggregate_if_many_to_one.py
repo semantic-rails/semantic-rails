@@ -814,7 +814,13 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
 
     assert any("entity.shop_customer" in cut for cut in bind_query(config, None, query).cuts)
     if allowed:
-        assert result["ok"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list, and
+        # with no allowed_where no condition inside an expression is allowed. The entity check
+        # passes it: the allow-list's refusal is its only violation.
+        assert result["errors"][0]["code"] == "POLICY_DENIED"
+        assert [row["kind"] for row in result["policy_effects"][0]["violations"]] == [
+            "disallowed_expression"
+        ]
     else:
         assert result["errors"][0]["code"] == "POLICY_DENIED"
         assert result["policy_effects"][0]["violations"][0]["disallowed"] == [

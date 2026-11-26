@@ -141,6 +141,9 @@ class SqlDialect:
     # Whether names the SQL leaves unquoted are case-sensitive (ClickHouse); elsewhere a warehouse
     # reads them in any ASCII case.
     identifiers_case_sensitive = False
+    # Whether quoted names are case-sensitive (Postgres, Snowflake, ClickHouse); DuckDB, BigQuery,
+    # Databricks and Athena read a quoted name in any ASCII case as one column.
+    quoted_identifiers_case_sensitive = True
     # How a text word folds both its column and its text ("{}" is the operand), so the two always
     # fold alike: one Unicode-aware lowercase function on every warehouse.
     case_fold = "LOWER({})"
@@ -553,6 +556,7 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
 class DuckDbDialect(_NestedTimezone, SqlDialect):
     subquery_in_join_on = True
     name: str = "duckdb"
+    quoted_identifiers_case_sensitive = False
     session_zone = True
     call_names = PORTABLE_CALL_NAMES | {
         "DATE_PART",
@@ -890,6 +894,7 @@ class BigQueryDialect(SqlDialect):
     like_escape_clause = False
     reads_coverage = True
     boolean_bounds = ("LOGICAL_AND", "LOGICAL_OR")
+    quoted_identifiers_case_sensitive = False
     call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
     # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
     case_fold = "LOWER(COLLATE({}, ''))"
@@ -1112,6 +1117,7 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     """
 
     name: str = "databricks"
+    quoted_identifiers_case_sensitive = False
     reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
     # A column's own collation (UNICODE, UTF8_LCASE) is set aside: LIKE reads binary text.
@@ -1223,6 +1229,7 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+    quoted_identifiers_case_sensitive = False
     reads_coverage = True
     offset_before_limit = True
     boolean_bounds = ("BOOL_AND", "BOOL_OR")

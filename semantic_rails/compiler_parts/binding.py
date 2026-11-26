@@ -4,8 +4,9 @@ for the policy check and the answer's disclosures.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import suppress
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
 from ..acceleration.routing import (
@@ -29,9 +30,12 @@ from ..config_parts.route_rows import (
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
+    ConditionalAggregateExpr,
     ConversionExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    expr_to_dict,
+    parse_semantic_expression,
     validate_expression_shapes,
 )
 from ..fanout import (
@@ -64,6 +68,7 @@ from ..sql_ast import (
 )
 from .bind import (
     _expression_alias,
+    _synthetic_conditional_measure,
     refusing_fallible_calls,
 )
 from .dependencies import (
@@ -185,6 +190,9 @@ class BoundQuery:
     # Every query compiled inside this one, with how it groups what it reads (the policy
     # check holds each grouping to the constraints on what it reads).
     inner_calls: tuple[InnerCall, ...] = ()
+    # Every caller aggregate over columns the SQL reads, by synthetic measure id: the plan's own
+    # and each nested compile's (an entity filter's input, at any depth).
+    synthetic_measures: dict[str, Any] = field(default_factory=dict)
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """The cuts the caller added that count for ``object_id``: whole-query cuts plus the
@@ -671,6 +679,44 @@ def _authored_leaves(plan: LogicalPlan, config: PackageConfig) -> frozenset[str]
     return frozenset(leaves[True] - leaves[False])
 
 
+def _caller_aggregates(
+    plan: LogicalPlan, config: PackageConfig, nested: dict[str, Any]
+) -> dict[str, Any]:
+    """The caller's aggregates over columns, by synthetic measure id: the plan's own, and each
+    nested compile's (an entity filter's input, at any depth) but one that only package
+    metrics' definitions write. That one is its author's: the policy check holds the metric
+    and the objects its definition binds. Any other one, including one the caller also writes
+    or one the call carries for a segment, is the caller's."""
+    if not nested.keys() - plan.synthetic_measures.keys():
+        return dict(plan.synthetic_measures)
+
+    def written(*roots: Any) -> set[str]:
+        ids: set[str] = set()
+        stack = list(roots)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, list | tuple):
+                stack.extend(node)
+            elif isinstance(node, Mapping):
+                kind = str(node.get("kind", "")).strip()
+                # A literal's value is data, never an expression. A mapping with any other
+                # key is read whatever its kind: a reader may ignore the tag (a case arm).
+                literal = kind == "literal" and not node.keys() - {"kind", "value"}
+                stack.extend(() if literal else node.values())
+                # One the engine can't identify adds no id: no nested compile planned it.
+                if kind == "aggregate_if":
+                    with suppress(SemanticLayerError, KeyError):
+                        expr = parse_semantic_expression(node, context="query")
+                        assert isinstance(expr, ConditionalAggregateExpr)
+                        ids.add(_synthetic_conditional_measure(expr, config)[0])
+        return ids
+
+    recipes = [expr_to_dict(row.expression) for row in config.metric_recipes]
+    authored = written(*recipes) - written(plan.query)
+    kept = {key: row for key, row in nested.items() if key not in authored}
+    return {**kept, **plan.synthetic_measures}
+
+
 def _bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> BoundQuery:
@@ -724,4 +770,5 @@ def _bind_query(
         closing_reads=closing_reads_by_output(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
         inner_calls=tuple(dependencies.inner_calls),
+        synthetic_measures=_caller_aggregates(plan, config, dependencies.synthetic_measures),
     )
