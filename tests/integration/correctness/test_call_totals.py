@@ -361,16 +361,27 @@ def test_a_total_beside_a_governed_item_is_held_to_its_policy(per_store_revenue)
     assert plain.value.code == "POLICY_DENIED"
 
 
+def _held(raised: Any, item: str, word: str) -> None:
+    """Now refused (by design): every metric constraint holds a call to the allow-list, which
+    reads a share or a total of a governed number nowhere, so the call is refused before its
+    coarser call is checked, in the allow-list's words."""
+    assert raised.value.code == "POLICY_DENIED"
+    assert str(raised.value).startswith(
+        f"{REVENUE} can't be read this way: select item '{item}' holds a {word}. Under its "
+        "constraint,"
+    )
+
+
 def test_a_total_over_a_required_grouping_is_refused(per_store_revenue):
-    """The total's coarser call reads revenue across stores, which the policy forbids."""
+    """The total's coarser call reads revenue across stores, which the policy forbids. Over the
+    period each store's total is still grouped by store, and it is now refused too (``_held``)."""
     call = {"select": [REVENUE, _total(REVENUE, [STORE])], "group_by": [STORE], "time": QUARTER}
     with pytest.raises(SemanticLayerError) as raised:
         per_store_revenue.query(call)
-    assert raised.value.code == "POLICY_DENIED"
-    assert "the total in 'total' reads it across them" in str(raised.value)
-    # Over the period, each store's total is still grouped by store.
-    allowed = per_store_revenue.query({**call, "select": [REVENUE, _total(REVENUE, ["period"])]})
-    assert allowed["rows"]
+    _held(raised, "total", "total")
+    with pytest.raises(SemanticLayerError) as over_the_period:
+        per_store_revenue.query({**call, "select": [REVENUE, _total(REVENUE, ["period"])]})
+    _held(over_the_period, "total", "total")
 
 
 SHARE_OF_STORES = {"kind": "share", "input": REVENUE, "over": [STORE]}
@@ -385,8 +396,9 @@ PERCENT_OF_STORES = {
 @pytest.mark.parametrize("form", ["bare", "nested", "padded-kind"])
 def test_a_share_over_a_required_grouping_is_refused_as_its_total_is(per_store_revenue, form):
     """A share's denominator is its input across the ``over`` columns: revenue across stores,
-    the total the policy refuses. The share is refused with the total's code and words, bare,
-    inside another expression or with its kind padded, at validate as at execute."""
+    the total the policy refuses. The share is refused as the total is, bare, inside another
+    expression or with its kind padded, at validate as at execute, now in the allow-list's words
+    (``_held``)."""
     share, total = dict(SHARE_OF_STORES), _total(REVENUE, [STORE], "part")
     if form == "nested":
         share = {**PERCENT_OF_STORES, "left": share}
@@ -396,13 +408,10 @@ def test_a_share_over_a_required_grouping_is_refused_as_its_total_is(per_store_r
         call = {"select": [REVENUE, item], "group_by": [STORE]}
         with pytest.raises(SemanticLayerError) as raised:
             per_store_revenue.query(call)
-        assert raised.value.code == "POLICY_DENIED"
-        assert (
-            f"{REVENUE} can only be read grouped by {STORE}, and the {word} in 'part' reads it "
-            "across them" in str(raised.value)
-        )
+        _held(raised, "part", word)
         assert raised.value.details["recovery_hints"][0]["message"] == (
-            f"Take {STORE} out of the {word}'s over, or remove the {word}."
+            "Write that part of the call in one of these shapes, or ask the package author for "
+            "a measure that answers it."
         )
         assert [row["code"] for row in per_store_revenue.validate(call)["errors"]] == [
             "POLICY_DENIED"
@@ -411,24 +420,16 @@ def test_a_share_over_a_required_grouping_is_refused_as_its_total_is(per_store_r
 
 def test_a_share_that_keeps_the_required_grouping_answers(per_store_revenue):
     """Over the period, each store's denominator is that store's revenue, still grouped by
-    store. A share of orders across stores reads no revenue there, so it answers beside
-    revenue."""
+    store: now refused (by design, ``_held``). A share of orders across stores reads no revenue
+    there, so it answers beside revenue."""
     call = {
         "select": [REVENUE, {"expression": {**SHARE_OF_STORES, "over": ["period"]}, "as": "part"}],
         "group_by": [STORE],
         "time": QUARTER,
     }
-    rows = per_store_revenue.query(call)["rows"]
-    stores = {row[STORE]: Decimal(0) for row in rows}
-    for row in rows:
-        stores[row[STORE]] += Decimal(row["revenue"] or 0)
-    assert len(stores) > 1
-    assert [row["part"] for row in rows] == [
-        None
-        if row["revenue"] is None
-        else pytest.approx(float(Decimal(row["revenue"]) / stores[row[STORE]]))
-        for row in rows
-    ]
+    with pytest.raises(SemanticLayerError) as raised:
+        per_store_revenue.query(call)
+    _held(raised, "part", "share")
     orders = {"expression": {"kind": "share", "input": ORDERS, "over": [STORE]}, "as": "part"}
     answer = per_store_revenue.query({"select": [REVENUE, orders], "group_by": [STORE]})
     assert sum(row["part"] for row in answer["rows"]) == pytest.approx(1)
@@ -483,16 +484,13 @@ DENOMINATORS = {
 @pytest.mark.parametrize("case", DENOMINATORS)
 def test_a_denominator_is_checked_as_the_call_computes_it(revenue_per, case):
     """The check reads a share's denominator as its window takes it: without the ``over``
-    columns and each ``over`` name's key, never a key the window doesn't keep."""
-    required, call, refused = DENOMINATORS[case]
-    runtime = revenue_per(required)
-    if not refused:
-        _assert_parts_make_wholes(runtime.query(call)["rows"], call)
-        return
+    columns and each ``over`` name's key, never a key the window doesn't keep. Each share of
+    revenue is now refused first by the allow-list (by design, ``_held``), the one the denominator
+    check answers (``refused`` false) included."""
+    required, call, _refused = DENOMINATORS[case]
     with pytest.raises(SemanticLayerError) as raised:
-        runtime.query(call)
-    assert raised.value.code == "POLICY_DENIED"
-    assert "the share in 'part' reads it across them" in str(raised.value)
+        revenue_per(required).query(call)
+    _held(raised, "part", "share")
 
 
 def _assert_parts_make_wholes(rows: list[dict[str, Any]], call: dict[str, Any]) -> None:
@@ -562,9 +560,18 @@ CHECKED_AS_BEFORE = {
 }
 
 
+# Now refused (by design, ``_held``): a share of revenue under revenue's constraint.
+SHARES_OF_REVENUE = {"share-over-the-period-of-buyers"}
+
+
 @pytest.mark.parametrize("case", CHECKED_AS_BEFORE)
 def test_a_call_with_an_entity_filter_or_routes_is_checked_as_before(revenue_per, case):
     required, call, expected = CHECKED_AS_BEFORE[case]
+    if case in SHARES_OF_REVENUE:
+        with pytest.raises(SemanticLayerError) as raised:
+            revenue_per(required).query(call)
+        _held(raised, "part", "share")
+        return
     rows = revenue_per(required).query(call)["rows"]
     if expected is None:
         _assert_parts_make_wholes(rows, call)
