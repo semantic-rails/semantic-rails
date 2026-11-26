@@ -758,6 +758,17 @@ COUNTED_COLUMNS = {
     ),
     "count_of_an_undeclared_column": (_counted("count", SUBTOTAL), [UNDECLARED_SUBTOTAL]),
     "average": (_counted("avg", SUBTOTAL), [UNDECLARED_SUBTOTAL]),
+    "ratio_of_a_count": (
+        {"kind": "ratio", "numerator": _counted("count", SUBTOTAL), "denominator": ORDERS},
+        [UNDECLARED_SUBTOTAL],
+    ),
+    "count_of_the_key_or_a_column": (
+        _counted(
+            "count",
+            _case(IS_LARGE, {"kind": "column", "entity": ORDER, "column": "order_id"}, SUBTOTAL),
+        ),
+        [UNDECLARED_SUBTOTAL],
+    ),
 }
 
 
@@ -797,6 +808,10 @@ TAX = {"kind": "column", "entity": ORDER, "column": "tax_paid_cents"}
 
 @pytest.fixture(scope="module")
 def bare(config):
+    return _with_bare_measures(config)
+
+
+def _with_bare_measures(config):
     """The orders with two measures that sum a column as it is (the order total and the tax, in
     cents), and a customer count that counts each order with no customer as one guest."""
     measures = {row.id: row for row in config.measures}
@@ -1706,3 +1721,274 @@ def test_an_inline_filter_on_an_allowed_field_still_answers(tmp_path):
     actual = dict((date.fromisoformat(row["period"]), row["inventory"]) for row in rows)
     expected = {date.fromisoformat(str(month)[:10]): float(value) for month, value in reference}
     assert actual == pytest.approx(expected)
+
+
+ORDER_KEY = {"kind": "column", "entity": ORDER, "column": "order_id"}
+# Each returns a column as it is under an aggregation that is not a count, or counts the key.
+MORE_VALUE_NEIGHBOURS = {
+    "largest_subtotal": (REVENUE, _counted("max", SUBTOTAL)),
+    "smallest_subtotal": (REVENUE, _counted("min", SUBTOTAL)),
+    "median_subtotal": (REVENUE, _counted("median", SUBTOTAL)),
+    "count_of_the_key_in_upper_case": (
+        ORDERS,
+        _counted("count", {**ORDER_KEY, "column": "ORDER_ID"}),
+    ),
+    "count_of_the_key_if_large": (ORDERS, {**_counted("count", ORDER_KEY), "condition": IS_LARGE}),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(MORE_VALUE_NEIGHBOURS))
+def test_a_returned_column_or_a_counted_key_answers(config, shape):
+    """A column no dimension declares returned under max, min or median, and the orders' key
+    counted in another case or under a condition on an allowed field."""
+    governed, expression = MORE_VALUE_NEIGHBOURS[shape]
+    result = _validated(config, BY_STORE_OR_SIZE, governed, expression)
+    assert result["ok"], result["errors"]
+
+
+COUNT_OF_THE_SUBTOTAL = _counted("count", SUBTOTAL)
+# A count of the subtotal as a second select item beside a count of the key, and as the input of
+# a store filter on the order count.
+COUNTS_BESIDE = {
+    "beside_a_count_of_the_key": {
+        "select": [
+            {"expression": _counted("count", ORDER_KEY), "as": "orders"},
+            {"expression": COUNT_OF_THE_SUBTOTAL, "as": "with_a_subtotal"},
+        ],
+        "group_by": [STORE_NAME],
+    },
+    "entity_filter_input": _select(
+        {"measure": ORDERS},
+        group_by=[STORE_NAME],
+        metric_filters=[
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": "entity.jaffle_store",
+                    "input": COUNT_OF_THE_SUBTOTAL,
+                    "op": ">",
+                    "value": 0,
+                    "scope_mode": "entity_only",
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("governed", [ORDERS, None])
+@pytest.mark.parametrize("shape", sorted(COUNTS_BESIDE))
+def test_a_count_of_a_column_beside_others_filters_by_its_presence(
+    config, monkeypatch, shape, governed
+):
+    query = COUNTS_BESIDE[shape]
+    _compiles(config, query)
+    engine = _constrained(config, BY_STORE_OR_SIZE, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [UNDECLARED_SUBTOTAL],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_a_measure_that_wraps_the_column_beside_one_that_does_not_exempts_nothing(
+    bare, monkeypatch
+):
+    """Under one constraint on the order total as it is and revenue, which divides it, each must
+    be the column for a count of it to count freely."""
+    query = _select(_counted("count", TOTAL), group_by=[STORE_NAME])
+    engine = _constrained(bare, BY_STORE_OR_SIZE, [TOTAL_CENTS, REVENUE])
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [UNDECLARED_TOTAL],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "governed", [[AOV], [AOV, TOTAL_CENTS]], ids=["recipe", "recipe_and_total"]
+)
+def test_having_on_an_average_beside_a_metric_reads_its_column(bare, monkeypatch, governed):
+    """The average order value beside the average order total answers under a constraint on the
+    metric; having on the average decides which stores appear, so it reads the total, even when
+    the constraint also governs the measure that sums it as it is."""
+    select = [{"expression": AOV, "as": "aov"}, {"expression": _counted("avg", TOTAL), "as": "a"}]
+    query = {"select": select, "group_by": [STORE_NAME]}
+    constraint = {"allowed_where": [STORE_NAME]}
+    engine = _constrained(bare, constraint, governed)
+    try:
+        result = engine.validate(query)
+        assert result["ok"], result["errors"]
+        having = {**query, "having": [{"field": "a", "op": "gt", "value": 0}]}
+        violations = _assert_denied_before_output(engine, monkeypatch, having)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [UNDECLARED_TOTAL],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_two_averages_under_their_own_constraints_return_their_values(tmp_path):
+    """The average order total and the average tax by store, each under its own constraint, in
+    one call, with some taxes missing: each matches its own average over the orders."""
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
+    with duckdb.connect(str(package / "jaffle_shop.duckdb")) as connection:
+        connection.execute(
+            "UPDATE jaffle_order SET tax_paid_cents = NULL WHERE hash(order_id) % 3 = 0"
+        )
+        reference = {
+            store: (total, tax)
+            for store, total, tax in connection.execute(
+                """
+                SELECT s.store_name, AVG(o.order_total_cents), AVG(o.tax_paid_cents)
+                FROM jaffle_order o JOIN jaffle_store s USING (store_id) GROUP BY 1
+                """
+            ).fetchall()
+        }
+        assert connection.execute(
+            "SELECT COUNT(*) FROM jaffle_order WHERE tax_paid_cents IS NULL"
+        ).fetchone()[0]
+    loaded = replace(load_package_config(str(package)), semantic_policies=[])
+    constraints = [
+        SemanticPolicyConfig(
+            id=f"policy.test.{name}",
+            kind="metric_constraint",
+            object_ids=[governed],
+            config={"allowed_where": [STORE_NAME]},
+        )
+        for name, governed in [("total", TOTAL_CENTS), ("tax", TAX_CENTS)]
+    ]
+    engine = Runtime.from_config(
+        replace(_with_bare_measures(loaded), semantic_policies=constraints),
+        source_path=str(package),
+    )
+    query = {
+        "select": [
+            {"expression": _counted("avg", TOTAL), "as": "total"},
+            {"expression": _counted("avg", TAX), "as": "tax"},
+        ],
+        "group_by": [STORE_NAME],
+    }
+    try:
+        rows = engine.query(query)["rows"]
+    finally:
+        engine.close()
+    assert len(reference) > 1
+    answered = {row[STORE_NAME]: (row["total"], row["tax"]) for row in rows}
+    assert answered.keys() == reference.keys()
+    for store, values in reference.items():
+        assert answered[store] == pytest.approx(values), store
+
+
+def test_a_role_scoped_constraint_decides_each_request_alone(config):
+    """One runtime, a constraint on revenue for analysts only, and the cohort-gated revenue asked
+    in turn by an analyst and by finance: each request gets its own role's decision."""
+    policy = SemanticPolicyConfig(
+        id="policy.test.analysts",
+        kind="metric_constraint",
+        object_ids=[REVENUE],
+        roles=["analyst"],
+        config={"allowed_where": [STORE_NAME]},
+    )
+    engine = Runtime.from_config(replace(config, semantic_policies=[policy]), source_path=PACKAGE)
+    query = _select(GATED_TOTALS["customer_cohort_case"][0], group_by=[STORE_NAME])
+    try:
+        decisions = [
+            engine.validate(query, context={"roles": [role]})
+            for role in ["analyst", "finance", "analyst", "finance"]
+        ]
+    finally:
+        engine.close()
+    assert [result["ok"] for result in decisions] == [False, True, False, True]
+    for result in decisions[::2]:
+        assert result["errors"][0]["code"] == "POLICY_DENIED"
+        assert result["policy_effects"][0]["violations"] == [
+            {
+                "kind": "disallowed_where",
+                "disallowed": [ORDER_CUSTOMER_ID],
+                "allowed": [STORE_NAME],
+                "source": "inline_expression",
+            }
+        ]
+
+
+@pytest.mark.parametrize("read", ["counted", "computed"])
+def test_a_dimension_over_a_relation_spelled_in_another_case_allows_nothing(
+    config, monkeypatch, read
+):
+    """Relation names compare as written: an entity over ``JAFFLE_ORDER`` doesn't borrow the
+    order's customer id dimension, so a pipeline output and a stored table whose names differ only
+    in case never share a dimension. Refused, never answered."""
+    upper = "entity.test_upper_order"
+    order = next(row for row in config.entities if row.id == ORDER)
+    package = replace(
+        config, entities=[*config.entities, replace(order, id=upper, table="JAFFLE_ORDER")]
+    )
+    customer = {"kind": "column", "entity": upper, "column": "customer_id"}
+    value = customer if read == "counted" else {"kind": "call", "name": "LOWER", "args": [customer]}
+    query = _select(_counted("count_distinct", value))
+    _compiles(package, query)
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, ORDER_CUSTOMER_ID]}, ORDERS)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [f"{upper}.customer_id"],
+            "allowed": [ORDER_CUSTOMER_ID, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_a_text_word_on_a_quoted_column_reads_only_its_own_spelling(quoted):
+    """``contains`` on the customer reference in its dimension's spelling is a filter on that
+    dimension, allowed when it is listed; in another case it compares the column of no dimension
+    and is refused."""
+
+    def revenue_containing(column):
+        ref = {"kind": "column", "entity": ORDER, "column": column}
+        word = {
+            "kind": "comparison",
+            "op": "contains",
+            "left": ref,
+            "right": {"kind": "literal", "value": "C-"},
+        }
+        return _select(_summed(TOTAL, word), group_by=[STORE_NAME])
+
+    engine = _constrained(quoted, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, REVENUE)
+    try:
+        own = engine.validate(revenue_containing("Customer Ref"))
+        other = engine.validate(revenue_containing("CUSTOMER REF"))
+    finally:
+        engine.close()
+    assert own["ok"], own["errors"]
+    error = other["errors"][0]
+    assert error["code"] == "INVALID_QUERY"
+    assert (
+        f"'contains' compares a dimension's text; {ORDER}.CUSTOMER REF is the column of no"
+        in (error["message"])
+    )

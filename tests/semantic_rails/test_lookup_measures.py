@@ -532,6 +532,58 @@ def test_a_filter_beside_a_lookup_in_one_select_item_counts_for_its_source(
     ]
 
 
+@pytest.mark.parametrize("aggregation", ["count", "avg"])
+@pytest.mark.parametrize(
+    ("governed", "answers"),
+    [
+        (["premium_amount"], True),
+        (["premium_amount", "average_premium"], True),
+        (["coverage_premium"], False),
+        (["coverage_premium", "premium_amount"], False),
+    ],
+    ids=["amount", "amount_and_average", "carried", "carried_and_amount"],
+)
+def test_a_count_of_a_carried_column_is_held_by_its_lookup(
+    package_dir: Path, engine, aggregation: str, governed: list[str], answers: bool
+) -> None:
+    """A count or average of the premium amount counts freely under measures that are that
+    column as it is; a lookup that carries it onto claims is no such measure, so under a
+    constraint on the lookup, alone or beside one, the count filters by the amount's presence."""
+    config = _policy(
+        package_dir,
+        id="policy.test.carried",
+        kind="metric_constraint",
+        object_ids=[_measure(key) for key in governed],
+        config={"allowed_where": [COVERAGE_KEY]},
+    )
+    amount = {"kind": "column", "entity": f"entity.{NS}_premium", "column": "amount"}
+    query = {
+        "version": 1,
+        "select": [
+            {
+                "expression": {"kind": "aggregate_if", "aggregation": aggregation, "value": amount},
+                "as": "n",
+            }
+        ],
+        "group_by": [COVERAGE_KEY],
+    }
+    result = engine(package_dir, config).validate(query)
+    if answers:
+        assert result["ok"], result["errors"]
+        return
+    assert result["errors"][0]["code"] == "POLICY_DENIED"
+    assert [row["violations"] for row in result["policy_effects"] if row["action"] == "deny"] == [
+        [
+            {
+                "kind": "disallowed_where",
+                "disallowed": [f"entity.{NS}_premium.amount"],
+                "allowed": [COVERAGE_KEY],
+                "source": "inline_expression",
+            }
+        ]
+    ]
+
+
 # The query's filters and time select claims; the carried total never changes.
 def test_child_filters_select_claims_not_the_total(runtime: Runtime) -> None:
     every = _rows(runtime, _query())
