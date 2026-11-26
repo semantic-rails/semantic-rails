@@ -827,38 +827,47 @@ kind names must match exactly.
   other form (a count, `avg`, another aggregation, or a literal, arithmetic, call or
   `case` value) follows the count measure's constraints. A column whose values happen
   to be constant cannot be told apart from a count, so constrain a measure reading it
-  to govern it too. An `aggregate_if` condition reads
-  columns: each counts as the dimensions over it, and a column no dimension declares
-  (named `<entity>.<column>`) is in no `allowed_where`, so a condition on it is refused
-  under either a package-wide or an inherited measure constraint. Its value can pick
-  rows too, so it is read the same way: a `case` in the value is a condition like the
-  `aggregate_if`'s own, and any other column the value computes with (arithmetic or a
-  call, 0 for every customer but one) counts as the dimensions over it (on its entity,
-  or, when it declares none, on another entity over the same table), or as
-  `<entity>.<column>` when no dimension declares it. A column the value
-  returns as it is (the whole value, or what a `case` branch returns) is what is
-  aggregated, as a measure's column is, and counts as no filter, except that a `count`,
-  `count_distinct` or `avg` counts only the rows where it has a value: there it counts
-  as the dimensions over it unless it is its entity's key or a column the value of each
-  governed measure the aggregate reads also reads. So a `count_distinct` of the order's
-  customer id answers under a constraint on the ordering-customer count (its own column)
-  but not under one on the order count or a package-wide one, where it counts only the
-  orders with a customer. A column meets every dimension over it as the warehouse reads
-  names: a spelling in another ASCII case is the same column when the SQL leaves it
-  unquoted (every warehouse but ClickHouse) or quotes it on DuckDB, BigQuery, Databricks
-  or Athena. With revenue
-  limited to store filters, a `sum` of
-  `case when customer_id = '…' then order_total_cents else 0 end` by store is refused
-  as its condition form is: "measure.jaffle.revenue_usd can't be filtered by
-  dimension.jaffle_order_customer_id inside an expression". Because no policy can allow a
-  column no dimension declares (listing its `<entity>.<column>` name allows nothing), any
-  use of one inside an expression other than returning it as it is gets that refusal
-  under `allowed_where`, ordinary arithmetic included: `sum(order_total_cents / 100.0)` and a net-of-tax
-  `sum(order_total_cents - tax_paid_cents)` are refused, and the refusal says the package
-  author can declare a dimension over the column and list it in `allowed_where` if the
-  role may use it. A caller no constraint applies to reads such columns as before, and a
-  constraint with `allowed_group_by` but no `allowed_where` lets a caller filter by any
-  field, so it refuses none of them. Its condition and value
+  to govern it too. An `aggregate_if` reads columns in its condition and its value,
+  and under `allowed_where` each read below counts as a filter field:
+  - **A condition**, and each `case` condition in the value: each column counts as the
+    dimensions over it, so a condition on a field the policy doesn't list is refused
+    under either a package-wide or an inherited measure constraint.
+  - **A column the value computes with** (arithmetic or a call, 0 for every customer
+    but one) counts as the dimensions over it, on its entity or, when it declares none,
+    on another entity over the same relation, named in full (a dimension over
+    `live.orders` allows nothing on `archive.orders`). With revenue limited to store
+    filters, a `sum` of `case when customer_id = '…' then order_total_cents else 0 end`
+    by store is refused as its condition form is: "measure.jaffle.revenue_usd can't be
+    filtered by dimension.jaffle_order_customer_id inside an expression".
+  - **A column the value returns as it is** (the whole value, or what a `case` branch
+    returns) is what is aggregated, as a measure's column is, and counts as no filter.
+  - **A count of a column.** A `count`, `count_distinct` or `avg` of a returned column
+    counts only the rows where it has a value, so the column counts as a filter unless
+    it is its entity's key or the column each governed measure over the aggregate is as
+    it is. A measure that wraps its column, such as
+    `count_distinct(coalesce(customer_id, 'guest'))` or revenue's
+    `order_total_cents / 100.0`, reads rows where the column has no value, so it
+    exempts nothing; declare a measure for a count you want callers to read. So a
+    `count_distinct` of the order's customer id answers under a constraint on the
+    ordering-customer count (that column as it is) but not under one on the order count
+    or a package-wide one, where it counts only the orders with a customer. Each
+    aggregate is held to the measures that govern it, so two averages that answer
+    alone also answer side by side.
+  - **A spelling** in another ASCII case meets every dimension over the column wherever
+    the warehouse reads it as that column: when the SQL leaves it unquoted (every
+    warehouse but ClickHouse), or quotes it on DuckDB, BigQuery, Databricks or Athena.
+  - **A column no dimension declares** is named `<entity>.<column>` and no policy can
+    allow it: listing that name allows nothing, even when a dimension's id reads the
+    same. Any use of it inside an expression other than returning it as it is is
+    refused, ordinary arithmetic included: `sum(order_total_cents / 100.0)` and a
+    net-of-tax `sum(order_total_cents - tax_paid_cents)`. The refusal says the package
+    author can declare a dimension over the column and list it in `allowed_where` if the
+    role may use it, and lists only the dimensions that can allow a filter there.
+  - A caller no constraint applies to reads such columns as before, and a constraint
+    with `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so
+    it refuses none of them.
+
+  Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to

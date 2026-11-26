@@ -1653,18 +1653,20 @@ def _counted_operands(
     policy: SemanticPolicyConfig, binding: BoundQuery, expr: ConditionalAggregateExpr
 ) -> frozenset[tuple[str, str]]:
     """The columns a count or an average ``expr`` may count under ``policy`` without picking
-    rows, as ``(entity, _column_key)``: each entity's key, and the column of the measures the
-    policy governs that govern ``expr`` (``_synthetic_constraint_sources``, every measure
-    package-wide) when each of them is that one column as it is. A measure that wraps its column
-    (``COALESCE(customer_id, 'guest')``, a division) counts rows where the column has no value,
-    so it adds none. Each aggregate takes its own, so a sibling's never moves it."""
+    rows, as ``(entity, _column_key)``: each entity's key and, when every measure the policy
+    governs that governs ``expr`` (``_synthetic_constraint_sources``; every measure, package-wide)
+    is one column as it is, that column. A measure that wraps its column (``COALESCE(customer_id,
+    'guest')``, a division) reads rows where the column has no value, so it exempts nothing. Each
+    aggregate is read by its own measures, never by a sibling's."""
     config = binding.config
     keys = {
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
     }
-    measures = {row.id: row for row in config.measures}
-    governed = set(policy.object_ids or measures) - set(binding.plan.synthetic_measures)
-    sources = _synthetic_constraint_sources(config, binding, governed & set(measures))
+    measures = {
+        row.id: row for row in config.measures if row.id not in binding.plan.synthetic_measures
+    }
+    governed = set(policy.object_ids or measures) & set(measures)
+    sources = _synthetic_constraint_sources(config, binding, governed)
     owners = sources.get(_synthetic_conditional_measure(expr, config)[0], set())
     own = {
         (
