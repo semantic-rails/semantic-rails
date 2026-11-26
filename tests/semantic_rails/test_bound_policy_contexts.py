@@ -167,7 +167,7 @@ def test_rejected_relationship_candidates_are_not_bound(config, reverse):
 @pytest.mark.parametrize("kind", ["scoped_aggregate", "aggregate"])
 @pytest.mark.parametrize("reference", ["metric.sales.aov_usd", "entity.jaffle_store"])
 @pytest.mark.parametrize("as_list", [False, True])
-def test_metric_constraint_filter_values_are_data(config, kind, reference, as_list):
+def test_metric_constraint_filter_values_are_data(config, monkeypatch, kind, reference, as_list):
     constraint = (
         "allowed_metric_filter_metrics"
         if reference.startswith("metric.")
@@ -208,9 +208,10 @@ def test_metric_constraint_filter_values_are_data(config, kind, reference, as_li
     )
     engine = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
     try:
-        assert engine.compile(filtered_on("new"))["rendered_sql"]
-        assert engine.validate(query)["ok"]
-        assert engine.compile(query)["rendered_sql"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list. The
+        # value that names a metric or an entity is data, so the field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, filtered_on("new")) == HAVING_READ
+        assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
     finally:
         engine.close()
 
@@ -408,6 +409,24 @@ def _assert_denied_before_output(engine, monkeypatch, query, **call):
     return result["policy_effects"][0]["violations"]
 
 
+# The parts the allow-list names (``policies._shape_refusal``).
+HAVING_READ = "having reads other than a number it governs, by id"
+ENTITY_FILTER_READ = "an entity filter reads other than a number it governs, by id"
+CUT_CONDITION_READ = (
+    "select item 'cut' holds an aggregate_if whose condition reads more than allowed fields"
+)
+ANOTHER_STATISTIC_READ = "select item 'value' holds a measure read with another statistic"
+
+
+def _held_to_the_list(engine, monkeypatch, query, **call):
+    """Now refused (by design): every metric constraint holds a call to the allow-list. The field
+    checks pass the call, so the allow-list's refusal is its only violation; returns the part it
+    names."""
+    violations = _assert_denied_before_output(engine, monkeypatch, query, **call)
+    assert [row["kind"] for row in violations] == ["disallowed_expression"], violations
+    return violations[0]["read"]
+
+
 @pytest.mark.parametrize("constraint", ["allowed_metric_filter_entities", "allow_metric_filters"])
 @pytest.mark.parametrize("spelling", sorted(FILTER_SPELLINGS))
 def test_metric_filter_spellings_count_as_their_entities(config, monkeypatch, spelling, constraint):
@@ -432,32 +451,42 @@ def test_metric_filter_spellings_count_as_their_entities(config, monkeypatch, sp
 
 
 @pytest.mark.parametrize("spelling", sorted(FILTER_SPELLINGS))
-def test_metric_filter_spellings_pass_when_their_entities_are_allowed(config, spelling):
+def test_metric_filter_spellings_pass_when_their_entities_are_allowed(
+    config, monkeypatch, spelling
+):
     expression, spelled, others = FILTER_SPELLINGS[spelling]
     query = _customer_query(expression)
     engine = _constrained(config, {"allowed_metric_filter_entities": [CUSTOMER, spelled, *others]})
     try:
-        result = engine.validate(query)
-        assert result["ok"], result["errors"]
-        assert engine.compile(query)["rendered_sql"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == (
+            ENTITY_FILTER_READ if spelling == "predicate_input" else HAVING_READ
+        )
     finally:
         engine.close()
 
 
 @pytest.mark.parametrize("spelling", sorted(CUSTOMER_FILTERS))
-def test_metric_filters_on_allowed_entities_compile(config, spelling):
+def test_metric_filters_on_allowed_entities_compile(config, monkeypatch, spelling):
     query = _customer_query(CUSTOMER_FILTERS[spelling])
     engine = _constrained(config, {"allowed_metric_filter_entities": [CUSTOMER]})
     try:
-        result = engine.validate(query)
-        assert result["ok"], result["errors"]
-        assert engine.compile(query)["rendered_sql"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == (
+            {
+                "entity_column": CUT_CONDITION_READ,
+                "table_column": CUT_CONDITION_READ,
+                "predicate": ENTITY_FILTER_READ,
+            }.get(spelling, HAVING_READ)
+        )
     finally:
         engine.close()
 
 
 @pytest.mark.parametrize("timed", [False, True])
-def test_metric_filter_entities_exclude_the_constrained_cut(config, timed):
+def test_metric_filter_entities_exclude_the_constrained_cut(config, monkeypatch, timed):
     """The select, grouping and time axis are governed by their own constraint keys."""
     query = {
         "select": [{"expression": MEASURE, "as": "revenue"}],
@@ -470,9 +499,9 @@ def test_metric_filter_entities_exclude_the_constrained_cut(config, timed):
     assert {ENTITY, STORE} <= bound
     engine = _constrained(config, {"allowed_metric_filter_entities": [CUSTOMER]}, MEASURE)
     try:
-        result = engine.validate(query)
-        assert result["ok"], result["errors"]
-        assert engine.compile(query)["rendered_sql"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == ENTITY_FILTER_READ
     finally:
         engine.close()
 
@@ -501,8 +530,9 @@ def test_literal_metric_filters_resolve_without_object_reads(config, monkeypatch
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations == [{"kind": "metric_filters_not_allowed", "metric_filter_refs": {}}]
         else:
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
     finally:
         engine.close()
 
@@ -534,8 +564,9 @@ def test_metric_filter_entities_follow_package_entity_ids(tmp_path, monkeypatch,
     )
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["disallowed"] == ["orders"]
@@ -559,7 +590,16 @@ def test_embedded_cuts_use_bound_entities(config, monkeypatch, allowed, placemen
     )
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == (
+                "select item 'value' holds "
+                + (
+                    "a scoped_aggregate"
+                    if placement == "scoped"
+                    else "an aggregate filtered by something other than allowed fields"
+                )
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["disallowed"] == [CUSTOMER]
@@ -600,7 +640,9 @@ def test_effective_ordering_role_constrained_without_time(config, monkeypatch, a
     )
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == ANOTHER_STATISTIC_READ
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["temporal_role"] == prepared
@@ -665,7 +707,11 @@ def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, a
     )
     try:
         if allowed:
-            assert engine.validate_internal(query)["ok"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query, internal=True) == (
+                ENTITY_FILTER_READ
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
             assert CUSTOMER in violations[0]["disallowed"]
@@ -705,8 +751,9 @@ def test_cut_metric_allowlists_count_direct_and_nested_recipes(
     engine = _constrained(config, {"allowed_metric_filter_metrics": permitted})
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["disallowed"] == [METRIC]
@@ -762,8 +809,18 @@ def test_embedded_cuts_obey_allow_false(config, monkeypatch, allowed, recipe, ki
     engine = _constrained(config, {"allow_metric_filters": allowed}, governed)
     try:
         # A package metric's own filter is its author's definition, never the caller's cut.
-        if allowed or recipe:
+        if recipe:
             assert engine.validate(query)["ok"]
+        elif allowed:
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == (
+                "select item 'cut' holds "
+                + {
+                    "aggregate": "an aggregate filtered by something other than allowed fields",
+                    "conditional": "an aggregate_if whose condition reads more than allowed fields",
+                }.get(kind, "a scoped_aggregate")
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["kind"] == "metric_filters_not_allowed"
@@ -955,8 +1012,21 @@ def test_effective_temporal_roles_follow_governed_leaves(
         governed,
     )
     try:
-        if allowed:
+        if allowed and placement in {"recipe", "recipe_policy"}:
             assert engine.validate(query)["ok"]
+        elif allowed:
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == (
+                "select item 'value' holds "
+                + (
+                    "a coalesce"
+                    if placement == "nested"
+                    else "a scoped_aggregate"
+                    if shape == "scoped_aggregate"
+                    else "a measure read with another statistic"
+                )
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["temporal_role"] == prepared
@@ -1003,7 +1073,7 @@ def test_foreign_query_clock_uses_leaf_effective_role(config, monkeypatch, allow
         engine.close()
 
 
-def test_aligned_window_filter_binds_in_real_context(config):
+def test_aligned_window_filter_binds_in_real_context(config, monkeypatch):
     query = {
         "select": [
             {"expression": CUSTOMER_COUNT, "as": "customers"},
@@ -1019,14 +1089,14 @@ def test_aligned_window_filter_binds_in_real_context(config):
         config, {"allowed_metric_filter_entities": [row.id for row in config.entities]}
     )
     try:
-        result = engine.validate(query)
-        assert result["ok"], result["errors"]
-        assert engine.compile(query)["rendered_sql"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
     finally:
         engine.close()
 
 
-def test_cut_entities_exclude_attachment_path(config):
+def test_cut_entities_exclude_attachment_path(config, monkeypatch):
     item = "entity.jaffle_item"
     query = _customer_query(
         _count_where_not_zero({"kind": "column", "entity": item, "column": "item_id"})
@@ -1036,7 +1106,9 @@ def test_cut_entities_exclude_attachment_path(config):
     assert ENTITY not in set().union(*bound.cuts)
     engine = _constrained(config, {"allowed_metric_filter_entities": [CUSTOMER, item]})
     try:
-        assert engine.validate(query)["ok"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
     finally:
         engine.close()
 
@@ -1227,7 +1299,11 @@ def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, co
     engine = _constrained(config, policy, measure_id)
     try:
         if allowed:
-            assert engine.validate_internal(query)["ok"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query, internal=True) == (
+                "select item 'ratio' holds a scoped_aggregate"
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
             assert violations[0]["kind"] in {
@@ -1255,7 +1331,9 @@ def test_conversion_cut_records_operand_entities(config, monkeypatch, allowed):
     engine = _constrained(config, {"allowed_metric_filter_entities": entities})
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["disallowed"] == [ENTITY]
@@ -1263,12 +1341,14 @@ def test_conversion_cut_records_operand_entities(config, monkeypatch, allowed):
         engine.close()
 
 
-def test_timeless_count_does_not_consume_default_role(config):
+def test_timeless_count_does_not_consume_default_role(config, monkeypatch):
     query = _customer_query("measure.jaffle.item_count")
     query.pop("group_by")
     engine = _constrained(config, {"allowed_metric_filter_entities": ["entity.jaffle_item"]})
     try:
-        assert engine.validate(query)["ok"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == HAVING_READ
     finally:
         engine.close()
 
@@ -1388,7 +1468,12 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     )
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == (
+                "select item 'value' holds "
+                + ("a conversion" if shape == "conversion" else "a scoped_aggregate")
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["temporal_role"] == other_role.id
@@ -1468,8 +1553,11 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
     engine = _constrained(config, policy, MEASURE)
     try:
         if allowed:
-            assert engine.validate_internal(query)["ok"]
-            assert engine.compile_internal(query)["rendered_sql"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query, internal=True) == (
+                ENTITY_FILTER_READ
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
             assert violations[0]["disallowed"] == [
@@ -1494,8 +1582,11 @@ def test_distribution_cut_binds_its_own_entity_grain(config, monkeypatch, allowe
     )
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == (
+                "select item 'distribution' holds a distribution"
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
             assert violations[0]["disallowed"] == [CUSTOMER]
@@ -1503,7 +1594,7 @@ def test_distribution_cut_binds_its_own_entity_grain(config, monkeypatch, allowe
         engine.close()
 
 
-def test_distribution_cut_excludes_attachment_entities(config):
+def test_distribution_cut_excludes_attachment_entities(config, monkeypatch):
     item = "entity.jaffle_item"
     distribution = _customer_distribution("measure.jaffle.item_count")
     query = {"select": [{"expression": distribution, "as": "distribution"}]}
@@ -1515,18 +1606,26 @@ def test_distribution_cut_excludes_attachment_entities(config):
         config, {"allowed_metric_filter_entities": [CUSTOMER, item]}, "measure.jaffle.item_count"
     )
     try:
-        assert engine.validate(query)["ok"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == (
+            "select item 'distribution' holds a distribution"
+        )
     finally:
         engine.close()
 
 
-def test_unfiltered_distribution_has_no_cut(config):
+def test_unfiltered_distribution_has_no_cut(config, monkeypatch):
     distribution = _customer_distribution("measure.jaffle.order_count", filtered=False)
     query = {"select": [{"expression": distribution, "as": "distribution"}]}
     assert not compiler.bind_query(config, None, _engine(query)).cuts
     engine = _constrained(config, {"allow_metric_filters": False}, "measure.jaffle.order_count")
     try:
-        assert engine.validate(query)["ok"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == (
+            "select item 'distribution' holds a distribution"
+        )
     finally:
         engine.close()
 
@@ -1562,8 +1661,11 @@ def test_distribution_projection_inherits_parent_cut(config, monkeypatch, allowe
     )
     try:
         if allowed:
-            assert engine.validate_internal(query)["ok"]
-            assert engine.compile_internal(query)["rendered_sql"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query, internal=True) == (
+                ENTITY_FILTER_READ
+            )
         else:
             violations = _assert_denied_before_output(engine, monkeypatch, query, internal=True)
             assert violations[0]["disallowed"] == [CUSTOMER]
@@ -1663,7 +1765,9 @@ def test_recipe_roles_include_owned_predicates(
 
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("placement", ["sibling", "outer_predicate", "outer_time"])
-def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested, placement):
+def test_recipe_roles_exclude_unowned_predicates(
+    recipe_predicate_config, monkeypatch, nested, placement
+):
     """Predicates aligned to each query period, outside the recipe: the engine's own form."""
     delivered = "temporal_role.jaffle_lifecycle_delivered_at"
     prepared = "temporal_role.jaffle_lifecycle_prepared_at"
@@ -1717,8 +1821,15 @@ def test_recipe_roles_exclude_unowned_predicates(recipe_predicate_config, nested
     )
     engine = _constrained(config, {"allowed_temporal_roles": sorted(allowed_roles)}, recipe)
     try:
-        assert engine.validate_internal(query)["ok"]
-        assert engine.compile_internal(query)["rendered_sql"]
+        if placement == "outer_predicate":
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query, internal=True) == (
+                ENTITY_FILTER_READ
+            )
+        else:
+            assert engine.validate_internal(query)["ok"]
+            assert engine.compile_internal(query)["rendered_sql"]
         bound = compiler.bind_query(config, None, query)
         assert set(bound.temporal_roles[recipe]) == expected_roles
     finally:
@@ -1887,8 +1998,11 @@ def test_conditional_aggregate_else_condition_is_a_cut(config, monkeypatch, allo
     )
     try:
         if allowed:
-            assert engine.validate(query)["ok"]
-            assert engine.compile(query)["rendered_sql"]
+            # Now refused (by design): every metric constraint holds a call to the allow-list; the
+            # field checks pass it.
+            assert _held_to_the_list(engine, monkeypatch, query) == (
+                "select item 'conditional_value' holds an aggregate_if whose condition reads more than allowed fields"
+            )
             bound = compiler.bind_query(config, None, _engine(query))
             assert any(ENTITY in cut for cut in bound.cuts)
         else:
@@ -1899,7 +2013,7 @@ def test_conditional_aggregate_else_condition_is_a_cut(config, monkeypatch, allo
 
 
 @pytest.mark.parametrize("reference_in_else", [False, True])
-def test_conditional_aggregate_nested_value_is_not_a_cut(config, reference_in_else):
+def test_conditional_aggregate_nested_value_is_not_a_cut(config, monkeypatch, reference_in_else):
     query = _aggregate_if_nested_case("value", reference_in_else=reference_in_else)
     query["select"][0]["expression"]["value"]["whens"][0]["when"] = {
         "kind": "comparison",
@@ -1910,8 +2024,11 @@ def test_conditional_aggregate_nested_value_is_not_a_cut(config, reference_in_el
     query["select"].append({"expression": MEASURE, "as": "revenue"})
     engine = _constrained(config, {"allowed_metric_filter_entities": []}, None)
     try:
-        assert engine.validate(query)["ok"]
-        assert engine.compile(query)["rendered_sql"]
+        # Now refused (by design): every metric constraint holds a call to the allow-list; the
+        # field checks pass it.
+        assert _held_to_the_list(engine, monkeypatch, query) == (
+            "select item 'conditional_value' holds an aggregate_if whose value isn't its measure's own column or a key it counts"
+        )
         bound = compiler.bind_query(config, None, _engine(query))
         assert ENTITY in bound.object_ids
         assert all(ENTITY not in cut for cut in bound.cuts)

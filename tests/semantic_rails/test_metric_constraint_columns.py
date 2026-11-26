@@ -573,12 +573,31 @@ def test_allowed_and_unconstrained_columns_match_reference_sql(tmp_path, constra
     query = _query(
         expression, group_by=[STORE], where=[{"field": STORE, "op": "=", "value": "Brooklyn"}]
     )
+    if constrained:
+        # Now refused (by design): every metric constraint holds a call to the allow-list, and
+        # with no allowed_where no condition inside an expression is allowed. The other keys
+        # pass it: the allow-list's refusal is its only violation.
+        try:
+            violations = engine.validate(query)["policy_effects"][0]["violations"]
+            with pytest.raises(SemanticLayerError) as refused:
+                engine.query(query)
+        finally:
+            engine.close()
+        assert refused.value.code == "POLICY_DENIED"
+        assert violations == [
+            {
+                "kind": "disallowed_expression",
+                "read": "select item 'value' holds an aggregate_if whose condition reads more "
+                "than allowed fields",
+            }
+        ]
+        return
     try:
         actual = engine.query(query)["rows"]
         db_path = engine.db_path
     finally:
         engine.close()
-    column = "order_total_cents" if constrained else "order_cost_cents"
+    column = "order_cost_cents"
     with duckdb.connect(db_path, read_only=True) as connection:
         expected = connection.execute(
             f"SELECT s.store_name, SUM(CASE WHEN o.{column} > 0 THEN o.{column} END) "
