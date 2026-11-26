@@ -1,13 +1,20 @@
-- Under a metric constraint with `allowed_where`, a call reads a governed measure or metric only
-  in a short list of shapes: by id, with its own statistic; an `aggregate` filtered by listed
-  dimensions; an `aggregate_if` whose condition reads listed dimensions and that counts a whole
-  key or aggregates its governed measure's own column; and a `ratio` or `+ - * /` of these and
-  numbers. `having` and entity filters read only a governed measure or metric by id, and with a
-  `limit`, `order_by` (a joined call's too) names only an id, a dimension or the period. Anything
-  else over a governed number, such as `case`, `nullif`, `coalesce`, a window kind, `share` or
-  `scoped_aggregate`, is refused with `POLICY_DENIED` and a `disallowed_expression` violation
-  whose message names the shapes allowed. Callers no such constraint applies to get the same
-  answers as before.
+- Under any metric constraint, a call reads a governed measure or metric only in a short list
+  of shapes: by id, with its own statistic; an `aggregate` filtered by dimensions `allowed_where`
+  lists; an `aggregate_if` whose condition reads listed dimensions and that counts a whole key or
+  aggregates its governed measure's own column; and a `ratio` or `+ - * /` of these and numbers.
+  A constraint with no `allowed_where` (`allow_metric_filters: false`, or only grouping keys)
+  lists no dimension, so it allows no filter inside an expression; its `where` is free as before.
+  No condition inside an expression uses a dimension that declares `unknown_values`. `having` and
+  entity filters read only a governed measure or metric by id with its declared statistic, and
+  with a `limit` or a row cap (`max_rows`, which every MCP `execute` run passes), `order_by` names
+  only such an id, a dimension or the period. A joined call with a part under a metric
+  constraint keeps every part's keys, and under a limit or a row cap it ranks only by a key or by
+  an id in a part with no `where` of its own. A constrained call's output names never differ only
+  in case, since DuckDB and other warehouses read quoted names in any case and would order, filter
+  or show one column by another. Anything else over a governed number, such as
+  `case`, `nullif`, `coalesce`, a window kind, `share` or `scoped_aggregate`, is refused with
+  `POLICY_DENIED` and a `disallowed_expression` violation whose message names the shapes
+  allowed. Callers no constraint applies to get the same answers as before.
 - Under a metric constraint with `allowed_where` (or `allow_metric_filters: false`), a column no
   dimension declares is refused wherever an `aggregate_if` value computes with it, not only in
   a condition, with the same `POLICY_DENIED` and `disallowed_where` violation, naming

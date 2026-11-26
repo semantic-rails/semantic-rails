@@ -18,6 +18,7 @@ from semantic_rails.expressions import (
     LiteralExpr,
     parse_semantic_expression,
 )
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -585,11 +586,25 @@ OFF_THE_LIST_NEIGHBOURS = {
     "returned_by_an_else_branch",
 }
 OFF_THE_LIST_VALUE = "an aggregate_if whose value isn't its measure's own column or a key it counts"
+UNKNOWN_CONDITION = "an aggregate_if whose condition reads a field with unknown values"
+# A distinct count of a column that is no whole one-column key is refused by the field check too,
+# whose violation names the column it counts (the customer id, never the orders' key).
+COUNTED_CUSTOMERS = {"returned_key", "returned_by_a_case_branch", "returned_by_an_else_branch"}
 
 
 def _off_the_list(holds, alias="value"):
     """The allow-list's refusal of select item ``alias``, which holds ``holds``."""
     return {"kind": "disallowed_expression", "read": f"select item '{alias}' holds {holds}"}
+
+
+def _inline_disallowed(disallowed, allowed):
+    """The field check's refusal of ``disallowed`` read inside an expression."""
+    return {
+        "kind": "disallowed_where",
+        "disallowed": disallowed,
+        "allowed": allowed,
+        "source": "inline_expression",
+    }
 
 
 @pytest.mark.parametrize("shape", sorted(VALUE_NEIGHBOURS))
@@ -602,7 +617,9 @@ def test_a_conditional_aggregate_value_that_filters_by_nothing_disallowed_answer
     try:
         if shape in OFF_THE_LIST_NEIGHBOURS:
             violations = _assert_denied_before_output(engine, monkeypatch, query)
-            assert violations == [_off_the_list(OFF_THE_LIST_VALUE)]
+            customers = _inline_disallowed([ORDER_CUSTOMER_ID], [LARGE_ORDER, STORE_NAME])
+            off = customers if shape in COUNTED_CUSTOMERS else _off_the_list(OFF_THE_LIST_VALUE)
+            assert violations == [off]
             return
         result = engine.validate(query)
         assert result["ok"], result["errors"]
@@ -766,15 +783,25 @@ def test_a_column_no_dimension_declares_in_a_value_is_a_metric_filter(config, mo
     ]
 
 
-def test_a_constraint_on_grouping_alone_reads_undeclared_columns_as_before(config):
-    """Without allowed_where a caller may filter by any field, so nothing lists what to refuse."""
+def test_a_constraint_on_grouping_alone_holds_a_call_to_the_list(config, monkeypatch):
+    """Every metric constraint holds a call to the allow-list (now refused, by design): with no
+    allowed_where it allows no field inside an expression, and the weighted total is off the list.
+    Revenue by id by store and a plain where still answer."""
     query = _select(UNDECLARED_VALUES["weighted_by_a_column"][0], group_by=[STORE_NAME])
+    plain = _shown(REVENUE, where=[{"field": CUSTOMER_TYPE, "op": "is", "value": "repeat"}])
     engine = _constrained(config, {"allowed_group_by": [STORE_NAME]}, REVENUE)
     try:
-        result = engine.validate(query)
+        answered = engine.validate(plain)
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
     finally:
         engine.close()
-    assert result["ok"], result["errors"]
+    assert violations == [_off_the_list(OFF_THE_LIST_VALUE)]
+    assert message == (
+        f"{REVENUE} can't be read this way: select item 'value' holds {OFF_THE_LIST_VALUE}. "
+        f"Under its constraint, {policies._ALLOWED_SHAPES}."
+    )
+    assert answered["ok"], answered["errors"]
 
 
 def _counted(aggregation, value):
@@ -1516,8 +1543,10 @@ def test_a_quoted_column_in_another_case_is_no_dimension(quoted, monkeypatch, re
 
 def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypatch):
     """The order total by store for the orders with no customer reference, where the dimension over the
-    reference reads UNKNOWN as no value. Its own spelling counts the UNKNOWN orders; another case,
-    which the SQL reads as the bare column, is refused rather than leaving them out."""
+    reference reads UNKNOWN as no value. With no constraint its own spelling counts the UNKNOWN
+    orders. Under one, a condition inside an expression on a field with unknown values is refused
+    in every spelling (now refused, by design): another case, which the SQL reads as the bare
+    column, is no dimension's, and the dimension's own declares unknown values."""
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     missing = 'CASE WHEN o."Customer Ref" IS NULL OR o."Customer Ref" = \'UNKNOWN\''
     with duckdb.connect(str(package / "jaffle_shop.duckdb")) as connection:
@@ -1562,6 +1591,11 @@ def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypa
         no_value = {"kind": "comparison", "op": "missing", "left": ref, "right": yes}
         return _select(_summed(TOTAL, no_value), group_by=[STORE_NAME])
 
+    free = Runtime.from_config(package_config, source_path=str(package))
+    try:
+        rows = free.query(revenue_with_no("Customer Ref"))["rows"]
+    finally:
+        free.close()
     engine = _constrained(
         package_config,
         {"allowed_where": [STORE_NAME, CUSTOMER_REF]},
@@ -1569,13 +1603,14 @@ def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypa
         source_path=str(package),
     )
     try:
-        rows = engine.query(revenue_with_no("Customer Ref"))["rows"]
+        own = _assert_denied_before_output(engine, monkeypatch, revenue_with_no("Customer Ref"))
         violations = _assert_denied_before_output(
             engine, monkeypatch, revenue_with_no("CUSTOMER REF")
         )
     finally:
         engine.close()
     assert {row[STORE_NAME]: row["value"] for row in rows} == reference
+    assert own == [_off_the_list(UNKNOWN_CONDITION)]
     assert violations == [
         {
             "kind": "disallowed_where",
@@ -2310,11 +2345,6 @@ REFUSED_SHAPES = {
         ),
         "a scoped_aggregate",
     ),
-    "distinct_count_of_no_key": (
-        _shown(_counted("count_distinct", ORDER_CUSTOMER)),
-        OFF_THE_LIST_VALUE,
-        "measure.jaffle.ordering_customer_count",
-    ),
 }
 
 
@@ -2480,8 +2510,9 @@ def test_a_joined_top_n_by_a_forbidden_count_is_refused(config):
         engine.close()
     assert refused["errors"][0]["code"] == "POLICY_DENIED"
     assert refused["errors"][0]["message"] == (
-        "order_by[0].field: 'value' picks the rows the limit keeps, and under a metric "
-        "constraint a joined call ranks only by a key or by a measure or metric by id"
+        "order_by[0].field: 'value' picks the rows the limit or row cap keeps, and under a metric "
+        "constraint a joined call ranks only by a key or by a measure or metric by id in a part "
+        "with no where or having"
     )
     assert by_revenue["ok"], by_revenue["errors"]
     assert unlimited["ok"], unlimited["errors"]
@@ -2548,11 +2579,13 @@ def test_a_constraint_naming_a_measure_the_call_makes_still_decides(config, monk
 ITEM = "entity.jaffle_item"
 ITEM_REVENUE = "measure.jaffle.item_revenue_usd"
 PRODUCT = "dimension.jaffle_item_product_name"
+ITEM_ORDER_ID = "dimension.jaffle_item_order_id"
 DISTINCT_ORDERS = _counted(
     "count_distinct", {"kind": "column", "entity": ITEM, "column": "order_id"}
 )
 # Product revenue shown only for products enough distinct orders bought, on order lines keyed by
-# order and item: the order id is part of the key, never the whole key.
+# order and item: the order id is part of the key, never the whole key. The field check refuses
+# each too, naming the order id it counts.
 PART_OF_A_KEY = {
     "gate": (
         ITEM_REVENUE,
@@ -2560,7 +2593,6 @@ PART_OF_A_KEY = {
             _case(_more_than(2, DISTINCT_ORDERS), {"kind": "measure", "measure": ITEM_REVENUE}),
             group_by=[PRODUCT],
         ),
-        _off_the_list("a case"),
     ),
     "having": (
         ITEM_REVENUE,
@@ -2572,29 +2604,39 @@ PART_OF_A_KEY = {
             "group_by": [PRODUCT],
             "having": [{"field": "orders", "op": "gt", "value": 2}],
         },
-        {"kind": "disallowed_expression", "read": HAVING},
     ),
     "counted": (
         "measure.jaffle.item_count",
         _select(DISTINCT_ORDERS, group_by=[PRODUCT]),
-        _off_the_list(OFF_THE_LIST_VALUE),
     ),
 }
 
 
+@pytest.mark.parametrize("listed", [True, False], ids=["allowed_where", "no_metric_filters"])
 @pytest.mark.parametrize("shape", sorted(PART_OF_A_KEY))
-def test_a_distinct_count_of_part_of_a_key_is_refused(config, monkeypatch, shape):
+def test_a_distinct_count_of_part_of_a_key_is_refused(config, monkeypatch, shape, listed):
+    """Under allowed_where, and under allow_metric_filters: false alone, which gave each column of
+    a key the count exemption: a distinct count reads as no filter only a whole one-column key."""
     item = next(row for row in config.entities if row.id == ITEM)
     lines = replace(item, key_columns=["order_id", "item_id"])
     package = replace(config, entities=[lines if row is item else row for row in config.entities])
-    governed, query, violation = PART_OF_A_KEY[shape]
+    governed, query = PART_OF_A_KEY[shape]
     _compiles(package, query)
-    engine = _constrained(package, {"allowed_where": [PRODUCT]}, governed)
+    constraint = {"allowed_where": [PRODUCT]} if listed else {"allow_metric_filters": False}
+    engine = _constrained(package, constraint, governed)
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
     finally:
         engine.close()
-    assert violations == [violation]
+    if listed:
+        expected = [_inline_disallowed([ITEM_ORDER_ID], [PRODUCT])]
+    elif shape == "having":  # having cuts the rows, a metric filter the head already refuses
+        cut = {"kind": "metric_filters_not_allowed", "metric_filter_refs": {"entities": [ITEM]}}
+        expected = [cut]
+    else:
+        refs = {"metric_filter_refs": {}, "source": "inline_expression"}
+        expected = [{"kind": "metric_filters_not_allowed", **refs}]
+    assert violations == expected
 
 
 @pytest.mark.parametrize("governed", [REVENUE, TOTAL_CENTS])
@@ -2612,13 +2654,14 @@ def test_a_total_gating_itself_through_nullif_is_refused(bare, monkeypatch, gove
 
 
 def test_the_average_order_value_dashboard_answers_with_its_numbers(tmp_path):
-    """Revenue and the order count, each filtered to returning customers inside its aggregate, and
-    their ratio, under one constraint on both that allows store and customer type filters."""
+    """Revenue and the order count, each filtered to repeat customers inside its aggregate (the
+    seed's customer types are new and repeat), and their ratio, under one constraint on both that
+    allows store and customer type filters. Every number has a value."""
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
     loaded = replace(load_package_config(str(package)), semantic_policies=[])
-    returning = {"all": [RETURNING]}
-    revenue = {"kind": "aggregate", "measure": REVENUE, "filter": returning}
-    orders = {"kind": "aggregate", "measure": ORDERS, "filter": returning}
+    repeat = {"all": [{"field": CUSTOMER_TYPE, "op": "=", "value": "repeat"}]}
+    revenue = {"kind": "aggregate", "measure": REVENUE, "filter": repeat}
+    orders = {"kind": "aggregate", "measure": ORDERS, "filter": repeat}
     query = _shown(revenue, {"kind": "ratio", "numerator": revenue, "denominator": orders}, AOV)
     constraint = {"allowed_where": [STORE_NAME, CUSTOMER_TYPE]}
     engine = _constrained(loaded, constraint, [REVENUE, ORDERS], source_path=str(package))
@@ -2631,9 +2674,9 @@ def test_the_average_order_value_dashboard_answers_with_its_numbers(tmp_path):
         reference = connection.execute(
             """
             SELECT s.store_name,
-                SUM(o.order_total_cents) FILTER (WHERE c.customer_type = 'returning') / 100.0,
-                SUM(o.order_total_cents) FILTER (WHERE c.customer_type = 'returning') / 100.0
-                    / COUNT(DISTINCT o.order_id) FILTER (WHERE c.customer_type = 'returning'),
+                SUM(o.order_total_cents) FILTER (WHERE c.customer_type = 'repeat') / 100.0,
+                SUM(o.order_total_cents) FILTER (WHERE c.customer_type = 'repeat') / 100.0
+                    / COUNT(DISTINCT o.order_id) FILTER (WHERE c.customer_type = 'repeat'),
                 SUM(o.order_total_cents) / 100.0 / COUNT(DISTINCT o.order_id)
             FROM jaffle_order o JOIN jaffle_store s USING (store_id)
                 LEFT JOIN jaffle_customer c USING (customer_id)
@@ -2644,4 +2687,428 @@ def test_the_average_order_value_dashboard_answers_with_its_numbers(tmp_path):
     answered = {row[STORE_NAME]: (row["value_0"], row["value_1"], row["value_2"]) for row in rows}
     assert answered.keys() == {row[0] for row in reference}
     for store, *values in reference:
+        assert None not in values and None not in answered[store], store
         assert answered[store] == pytest.approx(tuple(values)), store
+
+
+NO_METRIC_FILTERS = {"allow_metric_filters": False}
+FLAG = {"kind": "column", "entity": ORDER, "column": "is_large_order"}
+KEPT_BY_THE_COUNT = "order_by on 'value_1' picks the rows kept"
+# Each answered under allow_metric_filters: false alone, which held no call to the list: the top
+# five stores by one customer's order count (the total inline, or revenue by id), a total gating
+# itself through nullif, and a sum of a 0/1 flag under the order count (its large orders).
+UNLISTED_SHAPES = {
+    "top_n_inline": (
+        TOTAL_CENTS,
+        _shown(_summed(TOTAL), ONE_CUSTOMERS_ORDERS, order_by=[{"field": "value_1"}], limit=5),
+        {"kind": "disallowed_expression", "read": KEPT_BY_THE_COUNT},
+    ),
+    "top_n_by_id": (
+        REVENUE,
+        _shown(REVENUE, ONE_CUSTOMERS_ORDERS, order_by=[{"field": "value_1"}], limit=5),
+        {"kind": "disallowed_expression", "read": KEPT_BY_THE_COUNT},
+    ),
+    "nullif": (
+        REVENUE,
+        _shown({"kind": "nullif", "value": _summed(TOTAL), "null_value": ZERO}),
+        _off_the_list("a nullif", "value_0"),
+    ),
+    "flag_sum": (ORDERS, _shown(_summed(FLAG)), _off_the_list(OFF_THE_LIST_VALUE, "value_0")),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNLISTED_SHAPES))
+def test_without_allowed_where_a_constraint_holds_a_call_to_the_list(bare, monkeypatch, shape):
+    """Every metric constraint holds a call to the allow-list: with no allowed_where, no field is
+    allowed inside an expression. (A distinct count of part of a key is in
+    ``test_a_distinct_count_of_part_of_a_key_is_refused``.)"""
+    governed, query, violation = UNLISTED_SHAPES[shape]
+    _compiles(bare, query)
+    engine = _constrained(bare, NO_METRIC_FILTERS, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
+    finally:
+        engine.close()
+    assert violations == [violation]
+    assert message == (
+        f"{governed} can't be read this way: {violation['read']}. Under its constraint, "
+        f"{policies._ALLOWED_SHAPES}."
+    )
+
+
+def test_without_allowed_where_ids_a_dimension_and_where_answer_with_their_numbers(tmp_path):
+    """Under allow_metric_filters: false alone: revenue and the order count by id, by store, for
+    repeat customers in where, all stores, the first by name (a dimension under a limit) and
+    the top one by revenue (an id under a limit), each as the warehouse computes it."""
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    loaded = replace(load_package_config(str(package)), semantic_policies=[])
+    repeat = [{"field": CUSTOMER_TYPE, "op": "is", "value": "repeat"}]
+    calls = {
+        "every_store": _shown(REVENUE, ORDERS, where=repeat),
+        "first_by_name": _shown(
+            REVENUE, ORDERS, where=repeat, order_by=[{"field": STORE_NAME}], limit=1
+        ),
+        "top_by_revenue": _shown(
+            REVENUE,
+            ORDERS,
+            where=repeat,
+            order_by=[{"field": "value_0", "direction": "desc"}],
+            limit=1,
+        ),
+    }
+    engine = _constrained(loaded, NO_METRIC_FILTERS, [REVENUE, ORDERS], source_path=str(package))
+    try:
+        answers = {
+            name: [
+                (row[STORE_NAME], row["value_0"], row["value_1"])
+                for row in engine.query(call)["rows"]
+            ]
+            for name, call in calls.items()
+        }
+        db_path = engine.db_path
+    finally:
+        engine.close()
+    with duckdb.connect(db_path, read_only=True) as connection:
+        reference = connection.execute(
+            """
+            SELECT s.store_name, SUM(o.order_total_cents) / 100.0, COUNT(DISTINCT o.order_id)
+            FROM jaffle_order o JOIN jaffle_store s USING (store_id)
+                JOIN jaffle_customer c USING (customer_id)
+            WHERE c.customer_type = 'repeat'
+            GROUP BY 1
+            """
+        ).fetchall()
+    assert len(reference) > 1
+
+    def same(rows, expected):
+        assert [row[0] for row in rows] == [row[0] for row in expected]
+        assert [row[1:] for row in rows] == [pytest.approx(row[1:]) for row in expected]
+
+    same(sorted(answers["every_store"]), sorted(reference))
+    same(answers["first_by_name"], sorted(reference)[:1])
+    same(answers["top_by_revenue"], sorted(reference, key=lambda row: row[1], reverse=True)[:1])
+
+
+MAX_TOTAL = {"kind": "measure", "measure": TOTAL_CENTS, "aggregation": "max"}
+# The largest single order total, a statistic the order total doesn't declare (it sums one column
+# as it is): shown, it answers; where it decides which rows appear, it is refused.
+ANOTHER_STATISTIC_CUTS = {
+    "order_by_with_a_limit": (
+        _shown(TOTAL_CENTS, MAX_TOTAL, order_by=[{"field": "value_1"}], limit=3),
+        KEPT_BY_THE_COUNT,
+    ),
+    "having": (
+        _shown(TOTAL_CENTS, MAX_TOTAL, having=[{"field": "value_1", "op": "gt", "value": 100}]),
+        HAVING,
+    ),
+}
+
+
+@pytest.mark.parametrize("cut", sorted(ANOTHER_STATISTIC_CUTS))
+def test_another_statistic_decides_no_rows(bare, monkeypatch, cut):
+    """In a position that reads only an id (order_by under a limit, having, a joined call's rank)
+    a measure keeps its own statistic; shown, or ordered with no limit, another one answers."""
+    query, read = ANOTHER_STATISTIC_CUTS[cut]
+    _compiles(bare, query)
+    joined = {
+        "parts": [
+            {"select": [TOTAL_CENTS], "group_by": [STORE_NAME]},
+            _select(MAX_TOTAL, group_by=[STORE_NAME]),
+        ],
+        "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": "all"},
+        "order_by": [{"field": "value", "direction": "desc"}],
+        "limit": 3,
+    }
+    engine = _constrained(bare, STORE_ONLY, TOTAL_CENTS)
+    try:
+        shown = engine.validate(_shown(TOTAL_CENTS, MAX_TOTAL, order_by=[{"field": "value_1"}]))
+        ranked = engine.validate(joined)
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [{"kind": "disallowed_expression", "read": read}]
+    assert shown["ok"], shown["errors"]
+    assert ranked["errors"][0]["code"] == "POLICY_DENIED"
+    assert ranked["errors"][0]["message"].startswith("order_by[0].field: 'value' picks the rows")
+
+
+def _joined(part, **call):
+    """Revenue by store beside ``part`` by store, every part's stores kept unless ``call`` says."""
+    return {
+        "parts": [{"select": [REVENUE], "group_by": [STORE_NAME]}, part],
+        "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": "all"},
+        **call,
+    }
+
+
+ORDERS_BY_STORE = {"select": [ORDERS], "group_by": [STORE_NAME]}
+THE_CUSTOMER = ONE_CUSTOMER["right"]["value"]
+RANKED_BY_A_FILTERED_PART = (
+    "order_by[0].field: 'order_count' picks the rows the limit or row cap keeps, and under a "
+    "metric constraint a joined call ranks only by a key or by a measure or metric by id in a "
+    "part with no where or having"
+)
+KEPT_BY_SOME_PARTS = (
+    "join.keep: keeps only the keys some parts have, and under a metric constraint a joined call "
+    "keeps every part's keys"
+)
+# Each picks the stores whose revenue appears by one customer's orders, a part's own filter.
+FILTERED_RANKS_AND_KEEPS = {
+    "ranked_by_a_part_with_where": (
+        _joined(
+            {
+                **ORDERS_BY_STORE,
+                "where": [{"field": ORDER_CUSTOMER_ID, "op": "is", "value": THE_CUSTOMER}],
+            },
+            order_by=[{"field": "order_count", "direction": "desc"}],
+            limit=5,
+        ),
+        RANKED_BY_A_FILTERED_PART,
+    ),
+    # Now refused (by design): any where of the ranking part, an allowed field's too. (A part has
+    # no having, and an entity filter in a part needs keep.)
+    "ranked_by_a_part_with_an_allowed_where": (
+        _joined(
+            {**ORDERS_BY_STORE, "where": [{"field": STORE_NAME, "op": "is", "value": "Brooklyn"}]},
+            order_by=[{"field": "order_count", "direction": "desc"}],
+            limit=5,
+        ),
+        RANKED_BY_A_FILTERED_PART,
+    ),
+    "kept_by_a_filtered_part": (
+        {
+            **_joined(
+                {
+                    **ORDERS_BY_STORE,
+                    "where": [{"field": ORDER_CUSTOMER_ID, "op": "is", "value": THE_CUSTOMER}],
+                }
+            ),
+            "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": [1]},
+        },
+        KEPT_BY_SOME_PARTS,
+    ),
+    # Now refused (by design): keep is refused for every part under a constraint.
+    "kept_by_the_governed_part": (
+        {**_joined(ORDERS_BY_STORE), "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": [0]}},
+        KEPT_BY_SOME_PARTS,
+    ),
+}
+
+
+@pytest.mark.parametrize("call", sorted(FILTERED_RANKS_AND_KEEPS))
+def test_a_joined_call_ranked_or_kept_by_a_part_s_own_filter_is_refused(config, call):
+    """A joined part's own where picks which revenue appears when the part ranks the rows under
+    a limit or decides by keep which keys stay. Ranked by revenue, or by a part with no
+    filter of its own, or with every key kept and no limit, the same parts answer."""
+    query, message = FILTERED_RANKS_AND_KEEPS[call]
+    filtered = query["parts"][1]
+    answering = [
+        _joined(filtered, order_by=[{"field": "revenue_usd", "direction": "desc"}], limit=5),
+        _joined(ORDERS_BY_STORE, order_by=[{"field": "order_count", "direction": "desc"}], limit=5),
+        _joined(filtered, order_by=[{"field": "order_count", "direction": "desc"}]),
+    ]
+    engine = _constrained(config, STORE_ONLY, REVENUE)
+    free = Runtime.from_config(config, source_path=PACKAGE)
+    try:
+        refused = engine.validate(query)
+        unconstrained = free.validate(query)
+        answers = [engine.validate(row) for row in answering]
+    finally:
+        engine.close()
+        free.close()
+    assert refused["errors"][0]["code"] == "POLICY_DENIED"
+    assert refused["errors"][0]["message"] == message
+    assert unconstrained["ok"], unconstrained["errors"]
+    for answer in answers:
+        assert answer["ok"], answer["errors"]
+
+
+def test_a_row_cap_keeps_the_rows_its_order_picks_as_a_limit_does(tmp_path, monkeypatch):
+    """The stores ordered by their Brooklyn order count, or by one customer's in a joined part,
+    with the rows cut by max_rows instead of a limit (MCP's execute passes a cap on every run): the
+    order picks which revenue appears, so each is refused through the runtime and MCP, with and
+    without a max_rows argument. With no cap it answers, and ordered by revenue under a cap."""
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    loaded = replace(load_package_config(str(package)), semantic_policies=[])
+    ordered = _shown(REVENUE, BROOKLYN_ORDERS, order_by=[{"field": "value_1"}])
+    joined = _joined(
+        _select(ONE_CUSTOMERS_ORDERS, group_by=[STORE_NAME]), order_by=[{"field": "value"}]
+    )
+    by_revenue = {**ordered, "order_by": [{"field": "value_0", "direction": "desc"}]}
+    engine = _constrained(loaded, STORE_ONLY, REVENUE, source_path=str(package))
+    adapter = SemanticLayerMCPAdapter(engine)
+    try:
+        uncapped = [engine.query(call)["row_count"] for call in (ordered, joined)]
+        capped = engine.query(by_revenue, limits={"max_rows": 1})
+        through_mcp = adapter.call_tool("execute", {"query": by_revenue, "max_rows": 1})
+        monkeypatch.setattr(engine, "_get_adapter", lambda *a, **k: pytest.fail("ran"))
+        refusals = []
+        for call in (ordered, joined):
+            with pytest.raises(SemanticLayerError) as exc:
+                engine.query(call, limits={"max_rows": 1})
+            refusals.append((exc.value.code, str(exc.value)))
+            for arguments in ({"query": call, "max_rows": 1}, {"query": call}):
+                error = adapter.call_tool("execute", arguments)["error"]
+                refusals.append((error["code"], error["message"]))
+    finally:
+        engine.close()
+    assert all(count > 1 for count in uncapped)
+    assert capped["row_count"] == 1 and through_mcp["ok"], through_mcp
+    single = (
+        f"{REVENUE} can't be read this way: {KEPT_BY_THE_COUNT}. Under its constraint, "
+        f"{policies._ALLOWED_SHAPES}."
+    )
+    ranked = RANKED_BY_A_FILTERED_PART.replace("'order_count'", "'value'")
+    assert refusals == [("POLICY_DENIED", single)] * 3 + [("POLICY_DENIED", ranked)] * 3
+
+
+@pytest.fixture(scope="module")
+def sentinel(bare):
+    """The orders' customer id dimension reads the source's UNKNOWN as no value."""
+    return replace(
+        bare,
+        dimensions=[
+            replace(row, unknown_values=["UNKNOWN"]) if row.id == ORDER_CUSTOMER_ID else row
+            for row in bare.dimensions
+        ],
+    )
+
+
+UNKNOWN = {"kind": "literal", "value": "UNKNOWN"}
+YES = {"kind": "literal", "value": True}
+# The orders whose customer id is the source's UNKNOWN, each operator a condition can use.
+SENTINEL_CONDITIONS = {
+    "=": {"kind": "comparison", "op": "=", "left": ORDER_CUSTOMER, "right": UNKNOWN},
+    "!=": {"kind": "comparison", "op": "!=", "left": ORDER_CUSTOMER, "right": UNKNOWN},
+    "in": {"kind": "in", "expr": ORDER_CUSTOMER, "values": [UNKNOWN]},
+    "missing": {"kind": "comparison", "op": "missing", "left": ORDER_CUSTOMER, "right": YES},
+}
+BY_STORE_OR_CUSTOMER = {"allowed_where": [STORE_NAME, ORDER_CUSTOMER_ID]}
+
+
+@pytest.mark.parametrize("op", sorted(SENTINEL_CONDITIONS))
+def test_a_condition_inside_an_expression_on_a_field_with_unknown_values_is_refused(
+    sentinel, bare, monkeypatch, op
+):
+    """A condition inside an aggregate_if reads the raw column, so it could isolate the orders
+    whose customer id is the UNKNOWN the dimension reads as no value: refused under a constraint
+    that lists the dimension, for every operator, as is an aggregate filtered by that dimension.
+    The same condition answers on a dimension with no unknown values, and where, which reads the
+    dimension with its unknown values, answers."""
+    inline = _shown(_summed(TOTAL, SENTINEL_CONDITIONS[op]))
+    _compiles(sentinel, inline)
+    filtered = _shown(
+        {
+            "kind": "aggregate",
+            "measure": TOTAL_CENTS,
+            "filter": {"all": [{"field": ORDER_CUSTOMER_ID, "op": "in", "value": ["UNKNOWN"]}]},
+        }
+    )
+    where = _shown(
+        TOTAL_CENTS, where=[{"field": ORDER_CUSTOMER_ID, "op": "in", "value": [THE_CUSTOMER]}]
+    )
+    plain = _constrained(bare, BY_STORE_OR_CUSTOMER, TOTAL_CENTS)
+    engine = _constrained(sentinel, BY_STORE_OR_CUSTOMER, TOTAL_CENTS)
+    try:
+        without_unknown_values = plain.validate(inline)
+        by_where = engine.validate(where)
+        message = engine.validate(inline)["errors"][0]["message"]
+        violations = _assert_denied_before_output(engine, monkeypatch, inline)
+        by_filter = _assert_denied_before_output(engine, monkeypatch, filtered)
+    finally:
+        engine.close()
+        plain.close()
+    assert violations == [_off_the_list(UNKNOWN_CONDITION, "value_0")]
+    assert by_filter == [
+        _off_the_list("an aggregate filtered by a field with unknown values", "value_0")
+    ]
+    assert message == (
+        f"{TOTAL_CENTS} can't be read this way: select item 'value_0' holds {UNKNOWN_CONDITION}. "
+        f"Under its constraint, {policies._ALLOWED_SHAPES}."
+    )
+    assert without_unknown_values["ok"], without_unknown_values["errors"]
+    assert by_where["ok"], by_where["errors"]
+
+
+# The orders of one customer, who ordered at one store only, beside every store's order count:
+# two output names that differ only in case, which DuckDB reads as one in the statement's own
+# common table expressions, so a rank, a filter or a shown column by one could read the other.
+PICKS = {
+    "Pick": ONE_CUSTOMERS_ORDERS,
+    "pick": {"kind": "measure", "measure": ORDERS},
+}
+TWINS = "the output names 'Pick' and 'pick' differ only in case"
+
+
+@pytest.mark.parametrize("totals", [False, True], ids=["plain", "totals"])
+def test_output_names_that_differ_only_in_case_are_refused(bare, monkeypatch, totals):
+    """Ordered by 'pick' (every store's orders) under a limit, the store kept could be picked by
+    'Pick' (one customer's orders, a filter the constraint doesn't allow). Under a constraint the
+    call is refused whatever its order; with no constraint, and with names that differ in more
+    than case, it answers."""
+    select = [{"expression": REVENUE, "as": "revenue"}]
+    select += [{"expression": expression, "as": alias} for alias, expression in PICKS.items()]
+    query = {
+        "select": select,
+        "group_by": [STORE_NAME],
+        "order_by": [{"field": "pick", "direction": "desc"}],
+        "limit": 1,
+        **({"totals": [STORE_NAME]} if totals else {}),
+    }
+    _compiles(bare, query)
+    apart = {**query, "select": [*select[:2], {**select[2], "as": "every_order"}]}
+    apart["order_by"] = [{"field": "every_order", "direction": "desc"}]
+    engine = _constrained(bare, STORE_ONLY, REVENUE)
+    try:
+        answered = engine.validate(apart)
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
+    finally:
+        engine.close()
+    assert answered["ok"], answered["errors"]
+    assert violations == [{"kind": "disallowed_expression", "read": TWINS}]
+    assert message == (
+        f"{REVENUE} can't be read this way: {TWINS}. Under its constraint, "
+        f"{policies._ALLOWED_SHAPES}."
+    )
+
+
+def test_a_joined_call_whose_output_names_differ_only_in_case_is_refused(config):
+    """One customer's order count as 'Pick' in a part with its own where, every store's as 'pick'
+    beside revenue in another, ranked by 'pick' under a limit: refused under a constraint on
+    revenue, and answered with no constraint."""
+    one = [{"field": ORDER_CUSTOMER_ID, "op": "is", "value": THE_CUSTOMER}]
+    query = {
+        "parts": [
+            {
+                "select": [{"expression": {"kind": "measure", "measure": ORDERS}, "as": "Pick"}],
+                "group_by": [STORE_NAME],
+                "where": one,
+            },
+            {
+                "select": [
+                    {"expression": REVENUE_MEASURE, "as": "revenue"},
+                    {"expression": {"kind": "measure", "measure": ORDERS}, "as": "pick"},
+                ],
+                "group_by": [STORE_NAME],
+            },
+        ],
+        "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": "all"},
+        "order_by": [{"field": "pick", "direction": "desc"}],
+        "limit": 1,
+    }
+    engine = _constrained(config, {"allow_metric_filters": False}, REVENUE)
+    free = Runtime.from_config(config, source_path=PACKAGE)
+    try:
+        refused = engine.validate(query)
+        unconstrained = free.validate(query)
+    finally:
+        engine.close()
+        free.close()
+    assert refused["errors"][0]["code"] == "POLICY_DENIED"
+    assert refused["errors"][0]["message"] == (
+        f"parts: {TWINS}, and under a metric constraint a joined call names each column once in "
+        "any case"
+    )
+    assert unconstrained["ok"], unconstrained["errors"]

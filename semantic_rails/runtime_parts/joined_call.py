@@ -47,7 +47,7 @@ from ..db_parts.base import QueryRows
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import MeasureRefExpr, MetricRecipeRefExpr
-from ..policies import enforce_query_policies
+from ..policies import case_twins, enforce_query_policies, row_capped
 from ..query_call import in_part, refusal
 from ..request_context import policy_identity
 from ..top_n import limit_order
@@ -313,7 +313,7 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
     _refuse_over_select_limit(config, [part.statement for part in parts], keys)
     _check_order(payload.get("order_by") or [], keys, parts)
-    _refuse_inline_rank(payload, parts)
+    _refuse_inline_rank(payload, parts, keys)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
     statement = joined_statement(
@@ -467,30 +467,55 @@ def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: lis
             )
 
 
-def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
-    """Under a metric constraint with allowed_where, a limit keeps the joined rows its order picks,
-    so the order names a key or a part's measure or metric by id with no statistic written, as a
-    call's does (``policies._shape_refusal``, which also takes a measure's own statistic)."""
-    constrained = any(
-        effect.get("kind") == "metric_constraint" and "allowed_where" in effect["constraints"]
+def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part], keys: list[JoinKey]) -> None:
+    """Under any metric constraint on a part, a joined call names each column once in any case
+    (``policies.case_twins``), keeps every part's keys (``keep``
+    would pick the rows that appear by a part's own filters), and a limit or a row cap keeps the
+    joined rows its order picks, so the order names a key or, in a part with no where or having
+    of its own, a measure or metric by id with no statistic written (``policies._shape_refusal``
+    holds each part alone)."""
+    if not any(
+        effect.get("kind") == "metric_constraint"
         for part in parts
         for effect in part.policy_effects
-    )
-    if payload.get("limit") is None or not constrained:
+    ):
+        return
+    names = [key.name for key in keys] + [name for part in parts for name in part.statement.outputs]
+    if twins := case_twins(names):
+        raise refusal(
+            "parts",
+            f"{twins}, and under a metric constraint a joined call names each column once in any "
+            "case",
+            fix='Name one of them another way with "as".',
+            code="POLICY_DENIED",
+        )
+    if payload["join"]["keep"] != "all":
+        raise refusal(
+            "join.keep",
+            "keeps only the keys some parts have, and under a metric constraint a joined call "
+            "keeps every part's keys",
+            fix='Write "keep": "all", or ask for each part in a call of its own.',
+            code="POLICY_DENIED",
+        )
+    if payload.get("limit") is None and not row_capped(payload):
         return
     # Each part's select items under the names its answer gives them (a key or a dimension is none).
-    shown = {
-        row.as_: row.expression for part in parts for row in normalize_query(part.payload).select
-    }
+    calls = [normalize_query(part.payload) for part in parts]
+    shown = {row.as_: (row.expression, call) for call in calls for row in call.select}
     for index, item in enumerate(payload.get("order_by") or []):
-        expression = shown.get(item["field"])
+        expression, call = shown.get(item["field"], (None, None))
         measure = isinstance(expression, MeasureRefExpr) and not expression.aggregation
-        if item["field"] in shown and not (measure or isinstance(expression, MetricRecipeRefExpr)):
+        by_id = measure or isinstance(expression, MetricRecipeRefExpr)
+        if call is not None and not (by_id and not call.where and not call.metric_filters):
             raise refusal(
                 f"order_by[{index}].field",
-                f"'{item['field']}' picks the rows the limit keeps, and under a metric constraint "
-                "a joined call ranks only by a key or by a measure or metric by id",
-                fix="Order by a key or by a measure or metric by its id, or remove the limit.",
+                f"'{item['field']}' picks the rows the limit or row cap keeps, and under a metric "
+                "constraint a joined call ranks only by a key or by a measure or metric by id "
+                "in a part with no where or having",
+                fix=(
+                    "Order by a key or by a measure or metric by its id in a part with no where "
+                    "or having, or remove the order_by."
+                ),
                 code="POLICY_DENIED",
             )
 

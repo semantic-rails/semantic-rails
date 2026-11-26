@@ -772,13 +772,13 @@ kind names must match exactly.
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
   `where`, temporal role, `having` and entity filters.
-  **Under `allowed_where`, a call reads a governed number only in these shapes.** Each
-  select item and predicate input that reads a measure or metric the constraint governs
+  **Under every metric constraint, a call reads a governed number only in these shapes.**
+  Each select item and predicate input that reads a measure or metric the constraint governs
   (directly, through a metric, through a predicate inside it, or through an
   `aggregate_if` over a column a governed measure reads) must be one of:
   - the measure or metric by id, a measure with its own statistic;
   - an `aggregate` (or `semi_additive`) whose `filter` uses only dimensions the
-    constraint lists, with no window and no predicate;
+    constraint's `allowed_where` lists, with no window and no predicate;
   - an `aggregate_if` whose condition reads only listed dimensions' columns
     (comparisons, `in`, `and`, `or`, `not`) and whose value is nothing (a count), the column
     each governing measure is with no expression around it, or, when each governing
@@ -786,19 +786,32 @@ kind names must match exactly.
     one-column key;
   - a `ratio`, or `arithmetic` (`+ - * /`), of these and numbers.
 
-  `having` and entity filters read only a measure or metric the constraint governs, by
-  id; with a `limit`, `order_by` names only a measure or metric by id, a dimension or the
-  period, in a joined call too; a predicate inside another predicate's input reads only
-  an id; and `where` uses only listed dimensions. Anything else is refused with
+  A constraint with no `allowed_where` (with `allow_metric_filters: false`, or only
+  grouping and `required_where` keys) lists no dimension, so a call reads its numbers only
+  by id, in an unfiltered `aggregate`, in an `aggregate_if` with no condition, and in
+  ratios and arithmetic of these; its `where` is free as before. A condition inside an
+  expression never uses a dimension that declares `unknown_values`, whatever the operator,
+  since it reads the raw column: filter by that dimension in `where`, which reads its
+  unknown values. `having` and entity filters read only a measure or metric the constraint
+  governs, by id with its declared statistic; with a `limit` or a row cap (`max_rows`, which
+  every MCP `execute` run passes), `order_by` names only a measure or metric by id with its
+  declared statistic, a dimension or the period; a predicate inside another predicate's
+  input reads only such an id; and `where` uses only listed dimensions. A joined call with
+  any part under a metric constraint keeps every part's keys (`keep: all`), and under a
+  limit or a row cap it ranks only by a key or by a measure or metric by id in a part with
+  no `where` of its own. Two output names of a constrained call (select aliases, `group_by`
+  ids, the period, and a joined call's keys and part items) never differ only in case: a
+  warehouse that reads quoted names in any case would order, filter or show one by the
+  other. Anything else is refused with
   `POLICY_DENIED` and a `disallowed_expression` violation that names the part and these
   shapes: a measure with another statistic, `case`, `nullif`, `coalesce` and other calls,
   `share`, `total`, `rolling`,
   `cumulative` and other window kinds, `scoped_aggregate`, `having` on an inline
-  aggregate or another measure, a count of a column that is no key, and a sum of
-  `order_total_cents` under revenue, which divides it. When a filter inside an expression
-  also uses a field the constraint doesn't list, the refusal names that field instead (the
-  checks below). A constraint with no `allowed_where`, and a caller no constraint applies
-  to, read calls as before.
+  aggregate or another measure, a count of a column that is no key, a sum of a 0/1 flag
+  under a count, and a sum of `order_total_cents` under revenue, which divides it. When a
+  filter inside an expression also uses a field the constraint doesn't list, the refusal
+  names that field instead (the checks below). A caller no constraint applies to reads
+  calls as before.
   A package metric's own `filter:` is the package author's governed definition and is
   trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
   caller adds (its `where`, the conditions in its entity filters, and the filters inside
@@ -876,10 +889,10 @@ kind names must match exactly.
     expression around it (each governed measure over the aggregate, when several are).
     A measure over `coalesce(customer_id, 'guest')` counts the orders with no customer
     id, and revenue's `order_total_cents / 100.0` is an expression too, so neither
-    exempts a column; declare a measure for a count you want callers to read. So a
-    `count_distinct` of the order's customer id answers under a constraint on the
-    ordering-customer count (that column, with no expression) but not under one on the
-    order count or a package-wide one, where it counts only the orders with a customer.
+    exempts a column; declare a measure for a count you want callers to read. A
+    `count_distinct` is exempt only for a whole one-column key: the order's customer id
+    counts as a filter even under a constraint on the ordering-customer count, and so does
+    the order id on order lines keyed by order and item, which has fewer values than rows.
   - **A spelling.** A column meets a dimension only when the SQL reads it as that
     dimension, with the dimension's unknown values: spelled as the dimension spells it
     or, for a name the SQL leaves unquoted, in another ASCII case (every warehouse but
@@ -907,9 +920,9 @@ kind names must match exactly.
   but a key it counts: `case when max(is_large_order) = true then <revenue> end` is
   refused. The same aggregates as separate select items answer, and a measure in place of
   the `aggregate_if` reads no column. A caller no constraint applies to reads such
-  columns as before, and a constraint with
-  `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so it
-  refuses none of them. Its condition and value
+  columns as before. A constraint with `allowed_group_by` but no `allowed_where` names no
+  field to refuse here, and its allow-list (above) lists no dimension, so a condition or a
+  value that picks rows is refused there as a shape. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to

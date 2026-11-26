@@ -11,7 +11,11 @@ under only the filters routed to their side), a share's total beside an entity f
 statistic the caller asks in place of the measure's own that returns single rows' values (a
 min, max, median or percentile: a grouping by the measure's row key). Groupings that only
 aggregate the call's own groups (a total, a share, a conversion's event matching) read nothing
-finer and still answer, and a listed name that labels an entity's rows allows its key.
+finer and pass these checks, and a listed name that labels an entity's rows allows its key.
+Every metric constraint also holds a call to the allow-list (``policies._shape_refusal``), which
+reads a distribution, a total, a conversion, an entity filter on another measure and a statistic
+other than the measure's own only by id: those calls are now refused (by design), the allow-list's
+refusal their only violation (``_held``).
 """
 
 from __future__ import annotations
@@ -43,6 +47,9 @@ CUSTOMER_ID = "dimension.jaffle_customer_id"
 STORE = "dimension.jaffle_store_name"
 STORE_ID = "dimension.jaffle_store_id"
 BY_STORE = {"allowed_group_by": [STORE]}
+DISTRIBUTION = "select item 'value' holds a distribution"
+SUMMED = "select item 'v' holds an aggregate_if whose value isn't its measure's own column or a key it counts"
+FLAGGED = "select item 'v' holds an aggregate_if whose condition reads more than allowed fields"
 
 
 @pytest.fixture(scope="module")
@@ -121,6 +128,13 @@ def _answers(runtime: Runtime, call: dict[str, Any]) -> None:
     assert runtime.compile(call)["rendered_sql"]
 
 
+def _held(runtime: Runtime, call: dict[str, Any], read: str) -> None:
+    """Now refused (by design): the call passes the inner-grouping checks, and the allow-list,
+    which holds every metric constraint, refuses ``read``, its only violation."""
+    _, violations = _refused(runtime, call)
+    assert violations == [{"kind": "disallowed_expression", "read": read}]
+
+
 # The distribution's per-entity values -------------------------------------------------------
 
 
@@ -160,7 +174,7 @@ def test_a_distribution_over_an_entity_keyed_finer_than_the_allowed_cut_is_refus
 
 
 def test_a_distribution_answers_when_the_entity_key_is_an_allowed_cut(engine):
-    _answers(engine({"allowed_group_by": [STORE, CUSTOMER_ID]}), _distribution())
+    _held(engine({"allowed_group_by": [STORE, CUSTOMER_ID]}), _distribution(), DISTRIBUTION)
 
 
 ORDER_STORE_ID = "dimension.jaffle_order_store_id"
@@ -168,7 +182,11 @@ ORDER_STORE_ID = "dimension.jaffle_order_store_id"
 
 def test_an_order_store_id_and_the_store_key_are_the_same_cut(engine):
     # The order's store id joins to the store's one key column: both hold the same values.
-    _answers(engine({"allowed_group_by": [ORDER_STORE_ID]}), _distribution(entity=STORE_ENTITY))
+    _held(
+        engine({"allowed_group_by": [ORDER_STORE_ID]}),
+        _distribution(entity=STORE_ENTITY),
+        DISTRIBUTION,
+    )
     by_store = {
         "select": [ORDERS],
         "group_by": [ORDER_STORE_ID],
@@ -208,7 +226,8 @@ def test_an_entity_filter_on_the_measure_is_refused(engine, over):
 def test_the_measure_cut_by_an_entity_filter_on_another_measure_answers(engine):
     # Revenue by store for customers with two orders: only order counts are read per customer.
     call = _entity_filter("all_time", measure=ORDERS, select=REVENUE)
-    _answers(engine(BY_STORE), {**call, "group_by": [STORE]})
+    read = "an entity filter reads other than a number it governs, by id"
+    _held(engine(BY_STORE), {**call, "group_by": [STORE]}, read)
 
 
 def test_a_scoped_aggregate_predicate_on_the_measure_is_refused(engine):
@@ -310,7 +329,7 @@ def test_a_required_group_is_kept_by_an_entity_filter_or_refused(engine):
     )
     assert violations[0]["kind"] == "missing_required_group_by"
     # A distribution keeps the call's groups beside the entity's keys.
-    _answers(runtime, _distribution(group_by=[STORE]))
+    _held(runtime, _distribution(group_by=[STORE]), DISTRIBUTION)
 
 
 # A statistic that returns single rows' values ------------------------------------------------
@@ -442,10 +461,7 @@ def test_a_conditional_statistic_over_the_measure_columns_is_refused(engine):
     )
     assert errors[0]["recovery_hints"][0]["message"] == "Use sum, avg or count in place of max."
     summed = {"kind": "aggregate_if", "aggregation": "sum", "value": total}
-    answered = engine(BY_STORE).validate_internal(
-        {**call, "select": [{"expression": summed, "as": "v"}]}
-    )
-    assert not answered.get("errors"), answered
+    _held(engine(BY_STORE), {**call, "select": [{"expression": summed, "as": "v"}]}, SUMMED)
     # The largest of a literal says only whether an order matched, as a count would.
     flag = {
         "kind": "aggregate_if",
@@ -458,10 +474,7 @@ def test_a_conditional_statistic_over_the_measure_columns_is_refused(engine):
         },
         "value": {"kind": "literal", "value": 1},
     }
-    answered = engine(BY_STORE).validate_internal(
-        {**call, "select": [{"expression": flag, "as": "v"}]}
-    )
-    assert not answered.get("errors"), answered
+    _held(engine(BY_STORE), {**call, "select": [{"expression": flag, "as": "v"}]}, FLAGGED)
 
 
 def test_a_statistic_of_rows_no_dimension_keys_names_their_entity(engine, config):
@@ -539,7 +552,7 @@ def test_a_name_that_labels_an_entity_s_rows_allows_its_key(engine, config):
     # Allowing the name allows that grouping: one row per store, labelled by its name.
     runtime = engine(BY_STORE, package=(named, PACKAGE))
     _answers(runtime, {"select": [REVENUE], "group_by": [STORE]})
-    _answers(runtime, _distribution(entity=STORE_ENTITY))
+    _held(runtime, _distribution(entity=STORE_ENTITY), DISTRIBUTION)
     # The key itself is still not a listed cut, and customers are another entity.
     _, violations = _refused(runtime, {"select": [REVENUE], "group_by": [STORE_ID]})
     assert [row["kind"] for row in violations] == ["disallowed_group_by"]
@@ -620,7 +633,8 @@ def test_a_policy_on_a_conversion_operand_reads_only_its_own_side(engine, config
     }
     call = {"select": [{"expression": conversion, "as": "rate"}], "where": [brooklyn]}
     # The base sessions are read where the store is Brooklyn; the converted orders are not.
-    _answers(engine({"required_where": [brooklyn]}, governed=sessions, package=package), call)
+    runtime = engine({"required_where": [brooklyn]}, governed=sessions, package=package)
+    _held(runtime, call, "select item 'rate' holds a conversion")
     message, _ = _refused(
         engine({"required_where": [brooklyn]}, governed=ORDERS, package=package), call
     )
@@ -667,7 +681,7 @@ def test_a_lookup_that_reads_the_measure_without_its_required_filter_is_refused(
     assert violations[0]["kind"] == "missing_required_where"
     # The distribution's per-entity values keep the call's where.
     call = _distribution(measure=PREMIUM, entity=lookups.COVERAGE, where=[required])
-    _answers(runtime, call)
+    _held(runtime, call, DISTRIBUTION)
 
 
 # What reads nothing finer than the call ------------------------------------------------------
@@ -676,7 +690,7 @@ def test_a_lookup_that_reads_the_measure_without_its_required_filter_is_refused(
 def test_a_total_beside_allowed_groups_answers(engine):
     total = {"kind": "total", "input": REVENUE, "over": [STORE]}
     call = {"select": [REVENUE, {"expression": total, "as": "all_stores"}], "group_by": [STORE]}
-    _answers(engine(BY_STORE), call)
+    _held(engine(BY_STORE), call, "select item 'all_stores' holds a total")
 
 
 def test_a_conversion_matches_events_per_customer_without_reading_a_value(engine):
