@@ -23,21 +23,28 @@ PreparedQuery(_, column_mapping=, parameters=)
 RequestContext()
 RequestContext(actor=, attributes=, audience=, dimension_allowlist=, environment=, metric_allowlist=, project=, request_id=, roles=, tenant=)
 RequestContext(actor=, environment=, project=, request_id=, roles=, tenant=)
+RequestContext(audience=)
+RequestContext(environment=)
 RequestContext(tenant=)
 Runtime().adapter
+Runtime().catalog()
 Runtime().close()
+Runtime().compile(_)
 Runtime().compile(_, **)
+Runtime().compile(_, context=)
 Runtime().config
 Runtime().package_config
 Runtime().package_id
 Runtime().query(_)
 Runtime().set_adapter(_)
+Runtime().validate(_)
 Runtime().validate(_, **)
 Runtime.from_path(_)
 Runtime.from_snapshot
 Runtime.set_adapter
 SNOWFLAKE_ADBC_CONNECTION_OPTIONS
 SNOWFLAKE_CLI_CONNECTION_OPTIONS
+SNOWFLAKE_NATIVE_CONNECTION_OPTIONS
 SemanticHTTPService().exception_payload
 SemanticHTTPService().handle(_, _, _)
 SemanticHTTPService().package_id
@@ -49,10 +56,12 @@ SemanticLayerError().details
 SemanticLayerError(_, _)
 SemanticLayerError(_, _, details=)
 SemanticLayerMCPAdapter()._tool_handlers
+SemanticLayerMCPAdapter().call_tool(_, _)
 SemanticLayerMCPAdapter().call_tool(_, _, request_context=)
 SemanticLayerMCPAdapter().close()
 SemanticLayerMCPAdapter().instructions
 SemanticLayerMCPAdapter(_, interface=)
+SemanticLayerMCPAdapter.call_tool
 SemanticLayerMCPAdapter.from_path(_, hide_plan=)
 SnowflakeCliAdapter(_, options=)
 SnowflakeNativeAdapter(credential_provider=, options=)
@@ -69,12 +78,14 @@ handle_jsonrpc_message(*, **)
 handle_jsonrpc_message(_, _)
 handle_jsonrpc_message(_, _, request_context=)
 handle_streamable_http_request(_, headers=, method=)
+impact_report(_, compare_path=)
 impact_report(_, compare_path=, snapshot=)
 load_package_snapshot(_)
 parse_config_report(_)
 project_revision(_)
 request_context_payload(_)
 run_examples_report(_, config=, parse_report=, runtime=)
+run_package_tests_report(_)
 run_package_tests_report(_, config=, parse_report=, runtime=)
 set_audit_sink(_)
 set_policy_context_resolver(_)
