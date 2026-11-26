@@ -988,8 +988,12 @@ TICKETS_BY_LAST_ROW = {"kind": "measure", "measure": "measure.shop.tickets_by_la
             {"grain": "week", "end": "2024-10-21"},
             [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
         ),
+        (
+            {"grain": "week"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
     ],
-    ids=["since_october", "since_september", "until_october_21"],
+    ids=["since_october", "since_september", "until_october_21", "every_week"],
 )
 def test_a_week_past_the_load_log_reads_null_on_every_warehouse(
     shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], expected: list

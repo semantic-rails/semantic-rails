@@ -375,12 +375,17 @@ def _series_probe_reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bo
     """Whether a series' guard looks outside its window on a warehouse that reads coverage only
     for a named window (``reads_coverage`` without ``has_time_coverage``), and so bounds that
     probe by each measure's own loaded coverage (``guard_empty_groups``' ``probe_key``), as
-    DuckDB and Postgres bound every settled period. A window total, or a joined call's part,
+    DuckDB and Postgres bound every settled period. A measure's declared edge bounds its
+    periods there too, with or without a window. A window total, or a joined call's part,
     whose periods can come from another part's clock, keeps the in-window test there."""
     time = plan.time or {}
     dialect = _dialect(config)
+    declared = any(
+        _measure_index(config)[row.bound_measure.measure_id].zero_through is not None
+        for row in plan.measure_plans
+    )
     return bool(
-        (time.get("start") or time.get("end"))
+        (time.get("start") or time.get("end") or declared)
         and time.get("grain")
         and not time.get("window_total")
         and dialect.reads_coverage
