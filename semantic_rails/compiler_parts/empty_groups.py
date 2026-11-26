@@ -404,8 +404,8 @@ def guard_empty_groups(
     loaded coverage must hold before its outside-the-window probe settles it: rows before the
     window never make a period past the measure's last row read 0. A scope with a declared
     edge is gated there as under ``time_key``: only a period its edge certifies reads 0. With
-    ``own_range`` (another measure's rows or a fill can show a period, ``_shows_unread_periods``),
-    every scope is: a period outside its own loaded range never reads 0.
+    ``own_range`` (another leaf's rows can show a period, ``_combines_leaves``), every scope
+    is: a period outside its own loaded range never reads 0.
     """
     if (scopes or time_key or probe_key) and not (dialect is not None and dialect.reads_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})

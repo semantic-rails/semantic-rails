@@ -123,9 +123,10 @@ ROUTING_CASES = {
     ),
     "combined-unbounded": ((REVENUE, REFUNDS), {}, "duckdb", False),
     "postgres-fill": ((REVENUE,), {"fill": True}, "postgres", False),
-    # No coverage without execution evidence: routing and the in-window test stay as they were.
+    # One leaf without coverage: routing and the in-window test stay as they were.
     "snowflake-fill": ((REVENUE,), {"fill": True}, "snowflake", True),
-    "snowflake-combined": ((REVENUE, REFUNDS), {}, "snowflake", True),
+    # Combined leaves: each reads 0 only inside its own loaded range, from the base.
+    "snowflake-combined": ((REVENUE, REFUNDS), {}, "snowflake", False),
 }
 
 
@@ -159,7 +160,7 @@ def test_a_refused_route_keeps_the_leafs_own_strategy(tmp_path):
         strategies[warehouse] = (revenue.rewrite_strategy, revenue.aggregate_relation_id)
     assert strategies == {
         "duckdb": ("leaf_preaggregate_join", ""),
-        "snowflake": ("aggregate_relation", "aggregate_relation.orders_monthly"),
+        "snowflake": ("leaf_preaggregate_join", ""),
     }
 
 
