@@ -857,8 +857,8 @@ kind names must match exactly.
   Direct leaf filters retain the leaf rule above. A caller-created aggregate
   inherits every applicable constraint on any measure reading one of its source
   columns, whether the column appears in its value or condition, and at any depth: one
-  an entity filter reads inside another entity filter is held as it is in `select`
-  (refused or answered alike). Matching uses
+  an entity filter reads inside another entity filter inherits them as one in `select`
+  does, and its value is a filter there (below). Matching uses
   the relation and column SQL actually reads, including measure relation overrides,
   joined columns, lookup sources and entities sharing a relation name. Identifier
   case and quoting differences count as the same source, and only the last part of

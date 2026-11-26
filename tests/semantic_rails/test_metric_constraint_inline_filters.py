@@ -1884,17 +1884,29 @@ def test_an_aggregate_in_a_nested_entity_filter_is_refused_as_in_the_select(
 
 @pytest.mark.parametrize("placement", sorted(NESTED_FILTERS))
 @pytest.mark.parametrize("read", ["order_total", "stock"])
-def test_an_aggregate_in_a_nested_entity_filter_counts_by_its_own_measures(bare, placement, read):
+def test_an_aggregate_in_a_nested_entity_filter_filters_by_its_column(bare, placement, read):
     """The order-total measure sums the total as it is, and every measure over the stock reads it
-    as it is: an average of either answers in a nested entity filter as in the select."""
+    as it is: an average of either answers in the select. In an entity filter it decides which
+    stores are kept, so its column is a filter there, as in a predicate's input at any depth."""
     value, governed = (TOTAL, [TOTAL_CENTS, STOCK_SOP]) if read == "order_total" else (STOCK, None)
+    column = (
+        UNDECLARED_TOTAL if read == "order_total" else f"{INVENTORY_SNAPSHOT}.inventory_on_hand"
+    )
     engine = _constrained(bare, {"allowed_where": [STORE_NAME]}, governed)
     try:
-        for query in [_select(_counted("avg", value)), _nested(placement, _counted("avg", value))]:
-            result = _checked(engine, query)
-            assert result["ok"], (query, result["errors"])
+        assert _checked(engine, _select(_counted("avg", value)))["ok"]
+        result = _checked(engine, _nested(placement, _counted("avg", value)))
     finally:
         engine.close()
+    assert result["errors"][0]["code"] == "POLICY_DENIED"
+    assert result["policy_effects"][0]["violations"] == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [column],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
 
 
 def test_an_inline_filter_on_an_allowed_field_still_answers(tmp_path):
