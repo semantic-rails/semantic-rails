@@ -419,8 +419,9 @@ the resolved request context scopes visibility, access and metric-constraint pol
 instant relative windows (`time.last`, `time.this`) resolve against; `plan` takes `options.now`
 beside `intent` and its seed `query`.
 
-- `time.start` is inclusive and `time.end` exclusive: the window is `[start, end)`. The
-  example covers September through November 2016.
+- `time.start` is inclusive and `time.end` is exclusive. The window `[start, end)`
+  above covers September through November 2016. For “as of March 31, 2024” or
+  “through March 31, 2024”, set `time.end` to `2024-04-01`.
 - A window with no `time.grain` is one total per `group_by` group, with no time column; the
   response says so in `assumptions` (`WINDOW_TOTAL`). With a grain, the
   time axis is the `period` column (an ISO date) and each row carries `period_partial`.

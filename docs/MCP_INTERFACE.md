@@ -185,9 +185,11 @@ is a compact form of the call's generated schema (`query.v2.json`), with its `$d
 schema root: the same fields, words and rules, with each expression kind's keys as one line of a
 table (the description of `$defs/Expression`), and `$defs/Op` listing the filter words and the
 SQL aliases read as them, in lower case and capitals, with each word's values in one sentence. `query.v2.json` keeps a schema per kind, and the parser
-refuses what the table rules out at its path. `plan` and the metadata tools take a partial call
-to start from. `tests/semantic_rails/test_mcp_response_budget.py` caps each tool's definition
-and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call without running it;
+refuses what the table rules out at its path. `plan`, `discover`, `inspect`, and `valid-values`
+take a partial call to start from. Each of these tools and `execute` describes `query.time.end`
+as exclusive. For “as of March 31, 2024” or “through March 31, 2024”, pass `2024-04-01`.
+`tests/semantic_rails/test_mcp_response_budget.py` caps each tool's definition and
+`tools/list` in bytes, and a cap may only shrink. `validate` checks a call without running it;
 a run checks the call too, so a call to answer is run directly, never validated first.
 
 ### Writing Tool Descriptions
@@ -1078,16 +1080,18 @@ one day: the last complete day before the `now` argument in the clock's zone whe
 has no time words or says "now", "right now", "currently", "current" or "at the moment"; the closing
 day of the period an "end of" or "as of" phrase names ("at the end of last month" on 2026-10-05
 is 2026-09-30); a day the question states; or the closing day of one stated period ("MRR last
-month"; the opening day for a `start_of_period` stock). The draft carries `time.grain: day` on
-that clock with the day as `start` and `end`, and `assumptions`
-names the day. A generated building-block stock measure is answered with the metric governing
+month"; the opening day for a `start_of_period` stock). The draft uses `time.grain: day` on
+that clock. For a dated balance as of March 31, 2024, it uses `start: 2024-03-31` and the
+exclusive `end: 2024-04-01`. For the last complete day, it uses
+`time.last: {unit: day, value: 1}`. The `assumptions` name the day.
+A generated building-block stock measure is answered with the metric governing
 it, as for any draft on that metric's clock; a caller's select, expression and alias are kept.
 A generated governed balance must be named in full: "pro accounts" cannot stand for "Paying
 accounts". Time words without a single-day reading ("all time", "ever", "to date", "since
 launch", "trend") keep the `stock_as_of_unrealized` hold. A day that isn't complete (today,
 the end of this week) isn't ready to execute, and no earlier day stands in for one. A
-day-grain balance window is read only when both bounds are whole days and it ends on or
-before the last complete day; otherwise `stock_as_of_unrealized`. This includes a caller's
+day-grain balance window is read only when both bounds are whole days and the last included
+day is complete. Otherwise, `plan` returns `stock_as_of_unrealized`. This includes a caller's
 `query.time`; the gap hints at the last complete day. When that day has no snapshot,
 `execute` reads it as `NULL`. When a `metric_constraint` requires the
 clock's date dimension in `group_by`, `plan` adds it (beside the day grain it adds no row) and
@@ -1100,10 +1104,8 @@ day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
 weeks are allowed), a stock on an event clock, a ratio, a balance beside a flow, or a metric
 that wraps a balance (`COALESCE(<filtered balance>, 0)`, arithmetic over one, a scoped
-aggregate) keep the holds above, and a window in `query.time` is used as passed: a day-grain
-balance window is read
-only when both bounds are whole days and it ends on or before the last complete day;
-otherwise `stock_as_of_unrealized`.
+aggregate) keep the holds above. A window in `query.time` is used as passed, subject to
+the same whole-day rule for day-grain balance windows.
 **How plan answers which, who, by, each and top N.** A term that names an entity by its label or
 a synonym (plurals allowed, never its description), after "by", "each", "every" or "for each",
 the noun a ranking ranks ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the

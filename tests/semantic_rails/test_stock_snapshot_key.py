@@ -17,12 +17,14 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from jsonschema import Draft202012Validator
 
 from semantic_rails.compiler import bind_query
 from semantic_rails.compiler_parts.sql_lowering import _snapshot_series_columns
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 
@@ -127,6 +129,65 @@ def test_compound_key_takes_one_snapshot_per_series(tmp_path: Path) -> None:
     assert _weekly(runtime, "stars") == [1]
     assert WARNING not in _warning_codes(package)
     assert WARNING not in _query_warning_codes(runtime, "measure.f4stock.stars")
+
+
+def test_mcp_as_of_day_guidance_matches_stock_close(tmp_path: Path) -> None:
+    package = _package(
+        tmp_path,
+        key="[repo, snapshot_date]",
+        clock_class="as_of_time",
+        rows=(
+            "('a@2024-03-30', 'a', date '2024-03-30', timestamp '2024-03-30 06:00', 2, 7), "
+            "('a@2024-03-31', 'a', date '2024-03-31', timestamp '2024-03-31 06:00', 3, 11)"
+        ),
+    )
+    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(package)), hide_plan=False)
+    try:
+        for end, closing_day, close in (
+            ("2024-03-31", "2024-03-30", 7),
+            ("2024-04-01", "2024-03-31", 11),
+        ):
+            query = {"select": ["metric.f4stock.stars"], "time": {"end": end}}
+            result = adapter.call_tool("execute", {"query": query})
+            assert result["ok"], result.get("errors")
+            assert result["rows"] == [{"stars": close}]
+            closing = next(a for a in result["assumptions"] if a["code"] == "BALANCE_CLOSING_DAY")
+            assert closing["closing_day"] == closing_day
+
+        response = handle_jsonrpc_message(
+            adapter, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )
+        assert response is not None
+        tools = {
+            tool["name"]: tool
+            for tool in response["result"]["tools"]
+            if "query" in tool["inputSchema"]["properties"]
+        }
+        assert set(tools) == {"execute", "plan", "discover", "inspect", "valid-values"}
+        required_args = {
+            "plan": {"intent": "daily balance"},
+            "inspect": {"object_id": "metric.f4stock.stars"},
+            "valid-values": {"dimension_id": "dimension.f4stock_repo"},
+        }
+        example = (
+            "exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01"
+        )
+        for name, tool in tools.items():
+            schema = tool["inputSchema"]
+            query_schema = schema.get("properties", {}).get("query", {})
+            time_schema = query_schema.get("properties", {}).get("time", {})
+            end_schema = time_schema.get("properties", {}).get("end", {})
+            assert example in end_schema.get("description", ""), f"guidance missing on {name}"
+            if name == "execute":
+                assert "time.end is exclusive." in tool.get("description", "")
+            grain_only = {**required_args.get(name, {}), "query": {"time": {"grain": "day"}}}
+            assert Draft202012Validator(schema).is_valid(grain_only), name
+
+        execute_schema = tools["execute"]["inputSchema"]
+        empty_end = {"query": {"time": {"end": ""}}}
+        assert not Draft202012Validator(execute_schema).is_valid(empty_end)
+    finally:
+        adapter.close()
 
 
 def test_surrogate_key_on_an_as_of_clock_refuses(tmp_path: Path) -> None:
