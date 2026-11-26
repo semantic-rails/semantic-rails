@@ -772,6 +772,32 @@ kind names must match exactly.
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
   `where`, temporal role, `having` and entity filters.
+  **Under `allowed_where`, a call reads a governed number only in these shapes.** Each
+  select item and predicate input that reads a measure or metric the constraint governs
+  (directly, through a metric, or through an `aggregate_if` over a column a governed
+  measure reads) must be one of:
+  - the measure or metric by id;
+  - an `aggregate` (or `semi_additive`) whose `filter` uses only dimensions the
+    constraint lists, with no window and no predicate;
+  - an `aggregate_if` whose condition compares only listed dimensions' columns with
+    values (`and`, `or`, `not`, `in`) and whose value is nothing (a count), the column
+    each governing measure is with no expression around it, or, when each governing
+    measure counts, a one-column key it counts; `count_distinct` counts only a whole
+    one-column key;
+  - a `ratio`, or `arithmetic` (`+ - * /`), of these and numbers.
+
+  `having` and entity filters read only a measure or metric the constraint governs, by
+  id; with a `limit`, `order_by` names only a measure or metric by id, a dimension or the
+  period, in a joined call too; a predicate inside another predicate's input reads only
+  an id; and `where` uses only listed dimensions. Anything else is refused with
+  `POLICY_DENIED` and a `disallowed_expression` violation that names the part and these
+  shapes: `case`, `nullif`, `coalesce` and other calls, `share`, `total`, `rolling`,
+  `cumulative` and other window kinds, `scoped_aggregate`, `having` on an inline
+  aggregate or another measure, a count of a column that is no key, and a sum of
+  `order_total_cents` under revenue, which divides it. When a filter inside an expression
+  also uses a field the constraint doesn't list, the refusal names that field instead (the
+  checks below). A constraint with no `allowed_where`, and a caller no constraint applies
+  to, read calls as before.
   A package metric's own `filter:` is the package author's governed definition and is
   trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
   caller adds (its `where`, the conditions in its entity filters, and the filters inside
