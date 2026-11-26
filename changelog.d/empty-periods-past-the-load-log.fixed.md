@@ -5,4 +5,5 @@
   week" read `0` tickets opened for a week after the last load because a late ticket from that
   week was already in the table. 0.3.6 did this when the measure had rows elsewhere in the
   answer, and 0.3.7 also when it had rows only before the window. This holds with `start` or
-  `end` alone and with no window. Periods the load log covers read as before.
+  `end` alone and with no window. A period before the measure's first row now reads `NULL`
+  there too, as on DuckDB and Postgres; other periods the load log covers read as before.
