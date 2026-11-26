@@ -1375,9 +1375,11 @@ def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypa
         ("duckdb", "customer ref", "customer_ref", False),
     ],
 )
-def test_a_column_spelling_meets_its_dimension_as_the_warehouse_reads_names(
+def test_two_spellings_name_one_column_as_the_warehouse_reads_names(
     config, warehouse, authored, written, same
 ):
+    """The column key a count exemption and the dimensions over one column compare by; a
+    spelling the SQL binds to no dimension still meets none (``_dimensions_over``)."""
     package = replace(config, package=replace(config.package, warehouse=warehouse))
     key = policies._column_key
     assert (key(authored, package) == key(written, package)) is same
