@@ -1101,7 +1101,9 @@ whole package, so hiding an object never removes or changes a `deny`,
   caller (`PATH_NOT_FOUND`); an ambiguous pair offers only its visible routes.
 - **Raw columns:** while anything is hidden from a caller, that caller cannot aggregate raw
   columns anywhere in a call, inside an entity filter included (`POLICY_DENIED`, naming
-  nothing).
+  nothing). A metric whose own definition aggregates raw columns still answers: the policies
+  hold the metric and what its definition reads, and the same aggregate written in the call
+  is the caller's.
 - **Governance holds read the whole package:** a [building
   block](#building-block-measures) stays one when its metric is hidden, and `plan` still
   holds a draft over a measure that a metric narrows when that metric is hidden only because

@@ -440,7 +440,8 @@ Caller-created synthetic aggregates inherit the applicable constraints of every
 measure reading any of their source columns, including condition columns. The binding
 holds every one the SQL reads (`BoundQuery.synthetic_measures`): the plan's own and each
 nested compile's, so one an entity filter reads at any depth is checked as one in `select`
-is. Source resolution is shared with measure SQL lowering, and the existing constraint
+is. One that only package metrics' definitions write is not the caller's: the check holds
+the metric and the objects its definition binds. Source resolution is shared with measure SQL lowering, and the existing constraint
 evaluator checks each synthetic aggregate's own cuts. Relation and column identifiers match
 conservatively across case and quoting differences, using only the last relation-name
 part even across schemas. Every synthetic aggregate except `sum`, `min` or `max` of

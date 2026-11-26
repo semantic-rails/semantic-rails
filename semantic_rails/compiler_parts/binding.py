@@ -5,6 +5,7 @@ for the policy check and the answer's disclosures.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
@@ -33,6 +34,7 @@ from ..expressions import (
     ConversionExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    expr_to_dict,
     parse_semantic_expression,
     validate_expression_shapes,
 )
@@ -681,25 +683,33 @@ def _caller_aggregates(
     plan: LogicalPlan, config: PackageConfig, nested: dict[str, Any]
 ) -> dict[str, Any]:
     """The caller's aggregates over columns, by synthetic measure id: the plan's own, and each
-    nested compile's that the caller's expressions write (an entity filter's input, at any
-    depth). One only a package metric's definition writes is its author's: the policy check
-    holds the metric and the objects its definition binds."""
+    nested compile's (an entity filter's input, at any depth) but one that only package
+    metrics' definitions write. That one is its author's: the policy check holds the metric
+    and the objects its definition binds. One the caller also writes stays the caller's."""
     if not nested.keys() - plan.synthetic_measures.keys():
         return dict(plan.synthetic_measures)
-    written: set[str] = set()
-    stack: list[Any] = [plan.query]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, list):
-            stack.extend(node)
-        elif isinstance(node, dict):
-            stack.extend(node.values())
-            if str(node.get("kind", "")).strip() == "aggregate_if":
-                expr = parse_semantic_expression(node, context="query")
-                assert isinstance(expr, ConditionalAggregateExpr)
-                written.add(_synthetic_conditional_measure(expr, config)[0])
-    own = {key: row for key, row in nested.items() if key in written}
-    return {**own, **plan.synthetic_measures}
+
+    def written(*roots: Any) -> set[str]:
+        ids: set[str] = set()
+        stack = list(roots)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, list):
+                stack.extend(node)
+            elif isinstance(node, dict):
+                stack.extend(node.values())
+                # One that can't be planned has no id, so no nested compile planned it.
+                if str(node.get("kind", "")).strip() == "aggregate_if":
+                    with suppress(SemanticLayerError):
+                        expr = parse_semantic_expression(node, context="query")
+                        assert isinstance(expr, ConditionalAggregateExpr)
+                        ids.add(_synthetic_conditional_measure(expr, config)[0])
+        return ids
+
+    recipes = [expr_to_dict(row.expression) for row in config.metric_recipes]
+    authored = written(*recipes) - written(plan.query)
+    kept = {key: row for key, row in nested.items() if key not in authored}
+    return {**kept, **plan.synthetic_measures}
 
 
 def _bind_query(
