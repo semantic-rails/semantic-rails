@@ -9,7 +9,9 @@
   with a `limit` or a row cap (`max_rows`, which every MCP `execute` run passes), `order_by` names
   only such an id, a dimension or the period. A joined call with a part under a metric
   constraint keeps every part's keys, and under a limit or a row cap it ranks only by a key or by
-  an id in a part with no `where` of its own. Anything else over a governed number, such as
+  an id in a part with no `where` of its own. A constrained call's output names never differ only
+  in case, since DuckDB and other warehouses read quoted names in any case and would order, filter
+  or show one column by another. Anything else over a governed number, such as
   `case`, `nullif`, `coalesce`, a window kind, `share` or `scoped_aggregate`, is refused with
   `POLICY_DENIED` and a `disallowed_expression` violation whose message names the shapes
   allowed. Callers no constraint applies to get the same answers as before.

@@ -799,7 +799,10 @@ kind names must match exactly.
   input reads only such an id; and `where` uses only listed dimensions. A joined call with
   any part under a metric constraint keeps every part's keys (`keep: all`), and under a
   limit or a row cap it ranks only by a key or by a measure or metric by id in a part with
-  no `where` of its own. Anything else is refused with
+  no `where` of its own. Two output names of a constrained call (select aliases, `group_by`
+  ids, the period, and a joined call's keys and part items) never differ only in case: a
+  warehouse that reads quoted names in any case would order, filter or show one by the
+  other. Anything else is refused with
   `POLICY_DENIED` and a `disallowed_expression` violation that names the part and these
   shapes: a measure with another statistic, `case`, `nullif`, `coalesce` and other calls,
   `share`, `total`, `rolling`,
