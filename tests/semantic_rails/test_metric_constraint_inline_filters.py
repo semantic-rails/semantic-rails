@@ -2056,3 +2056,313 @@ def test_a_text_word_on_a_quoted_column_reads_only_its_own_spelling(quoted):
         f"'contains' compares a dimension's text; {ORDER}.CUSTOMER REF is the column of no"
         in (error["message"])
     )
+
+
+# The allow-list. Under a constraint with allowed_where, a select item, having, entity filter or
+# predicate input that reads a number it governs is answered only in a shape on the list; the
+# refusal of anything else names the shapes.
+STORE_ONLY = {"allowed_where": [STORE_NAME]}
+IN_BROOKLYN = {"all": [{"field": STORE_NAME, "op": "is", "value": "Brooklyn"}]}
+BROOKLYN_REVENUE = {"kind": "aggregate", "measure": REVENUE, "filter": IN_BROOKLYN}
+BROOKLYN_ORDERS = {"kind": "aggregate", "measure": ORDERS, "filter": IN_BROOKLYN}
+ORDER_MONTHS = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
+HAVING = "having reads other than a number it governs, by id"
+ENTITY_FILTER = "an entity filter reads other than a number it governs, by id"
+
+
+def _shown(*expressions, **call):
+    """A call by store showing ``expressions`` as ``value_0``, ``value_1``, …"""
+    select = [
+        {"expression": expression, "as": f"value_{index}"}
+        for index, expression in enumerate(expressions)
+    ]
+    return {"select": select, "group_by": [STORE_NAME], **call}
+
+
+def _predicate(expression):
+    return {"entity": CUSTOMER, "input": expression, "op": "gt", "value": 0, "over": "all_time"}
+
+
+# Each refused family, with the part it names: under revenue's constraint (store filters only)
+# unless a governed measure is given.
+REFUSED_SHAPES = {
+    "case": (_shown(_case(_more_than(0, REVENUE_MEASURE), REVENUE_MEASURE)), "a case"),
+    "nullif": (_shown({"kind": "nullif", "value": REVENUE, "null_value": ZERO}), "a nullif"),
+    "coalesce": (
+        _shown({"kind": "call", "name": "COALESCE", "args": [REVENUE, ZERO]}),
+        "a coalesce",
+    ),
+    "rolling": (
+        _shown(
+            {"kind": "rolling", "input": BROOKLYN_REVENUE, "window": {"unit": "month", "value": 3}},
+            time=ORDER_MONTHS,
+        ),
+        "a rolling",
+    ),
+    "cumulative": (
+        _shown({"kind": "cumulative", "input": BROOKLYN_REVENUE}, time=ORDER_MONTHS),
+        "a cumulative",
+    ),
+    "share": (_shown({"kind": "share", "input": REVENUE, "over": [STORE_NAME]}), "a share"),
+    "scoped_aggregate": (
+        _shown({"kind": "scoped_aggregate", "measure": REVENUE, "where": [IN_BROOKLYN["all"][0]]}),
+        "a scoped_aggregate",
+    ),
+    "nested_predicate": (
+        _shown(
+            {
+                "kind": "scoped_aggregate",
+                "measure": ORDERS,
+                "predicates": [
+                    _predicate(
+                        {
+                            "kind": "scoped_aggregate",
+                            "measure": ORDERS,
+                            "predicates": [_predicate(BROOKLYN_REVENUE)],
+                        }
+                    )
+                ],
+            }
+        ),
+        "a predicate inside another predicate's input",
+    ),
+    "distinct_count_of_no_key": (
+        _shown(_counted("count_distinct", ORDER_CUSTOMER)),
+        OFF_THE_LIST_VALUE,
+        "measure.jaffle.ordering_customer_count",
+    ),
+}
+
+
+@pytest.mark.parametrize("family", sorted(REFUSED_SHAPES))
+def test_each_shape_off_the_list_is_refused_naming_it(config, monkeypatch, family):
+    """Each answers with no constraint; under one it is refused, and the message names the part
+    and the shapes the constraint allows."""
+    query, holds, *governed = REFUSED_SHAPES[family]
+    _compiles(config, query)
+    engine = _constrained(config, STORE_ONLY, governed or REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
+    finally:
+        engine.close()
+    assert violations == [_off_the_list(holds, "value_0")]
+    assert message == (
+        f"{(governed or [REVENUE])[0]} can't be read this way: select item 'value_0' holds "
+        f"{holds}. Under its constraint, {policies._ALLOWED_SHAPES}."
+    )
+
+
+# Each picks the rows that appear by something other than a governed number by id.
+REFUSED_CUTS = {
+    "having_on_an_aggregate": (
+        _shown(BROOKLYN_REVENUE, having=[{"field": "value_0", "op": "gt", "value": 0}]),
+        HAVING,
+    ),
+    "having_on_another_measure": (
+        _shown(REVENUE, ORDERS, having=[{"field": "value_1", "op": "gt", "value": 5}]),
+        HAVING,
+    ),
+    "entity_filter_on_another_measure": (
+        _shown(
+            REVENUE,
+            where=[
+                {
+                    "entity": CUSTOMER,
+                    "having": [{"field": ORDERS, "op": "gt", "value": 5}],
+                    "over": "all_time",
+                }
+            ],
+        ),
+        ENTITY_FILTER,
+    ),
+    "order_by_an_aggregate_with_a_limit": (
+        _shown(REVENUE, BROOKLYN_ORDERS, order_by=[{"field": "value_1"}], limit=3),
+        "order_by on 'value_1' picks the rows kept",
+    ),
+}
+
+
+@pytest.mark.parametrize("cut", sorted(REFUSED_CUTS))
+def test_a_cut_by_anything_but_a_governed_id_is_refused(config, monkeypatch, cut):
+    query, read = REFUSED_CUTS[cut]
+    _compiles(config, query)
+    engine = _constrained(config, STORE_ONLY, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [{"kind": "disallowed_expression", "read": read}]
+
+
+# Each is on the list, under revenue's constraint (store filters only).
+ON_THE_LIST = {
+    "ids": _shown(REVENUE, ORDERS, AOV),
+    "aggregates_and_their_ratio": _shown(
+        BROOKLYN_REVENUE,
+        {"kind": "ratio", "numerator": BROOKLYN_REVENUE, "denominator": BROOKLYN_ORDERS},
+    ),
+    "arithmetic": _shown(
+        {
+            "kind": "arithmetic",
+            "op": "-",
+            "left": {"kind": "ratio", "numerator": REVENUE, "denominator": ORDERS},
+            "right": {"kind": "literal", "value": 1},
+        }
+    ),
+    "having_on_revenue": _shown(REVENUE, having=[{"field": "value_0", "op": "gt", "value": 0}]),
+    "entity_filter_on_revenue": _shown(
+        ORDERS,
+        where=[
+            {
+                "entity": CUSTOMER,
+                "having": [{"field": REVENUE, "op": "gt", "value": 5}],
+                "over": "all_time",
+            }
+        ],
+    ),
+    "order_by_revenue_with_a_limit": _shown(
+        REVENUE, BROOKLYN_ORDERS, order_by=[{"field": "value_0"}], limit=3
+    ),
+    "order_by_an_aggregate_without_a_limit": _shown(
+        REVENUE, BROOKLYN_ORDERS, order_by=[{"field": "value_1"}]
+    ),
+    "a_case_beside_it_on_another_number": _shown(
+        REVENUE, _case(_more_than(0, {"kind": "measure", "measure": ORDERS}), ORDERS)
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(ON_THE_LIST))
+def test_each_shape_on_the_list_answers(config, shape):
+    engine = _constrained(config, STORE_ONLY, REVENUE)
+    try:
+        result = engine.validate(ON_THE_LIST[shape])
+    finally:
+        engine.close()
+    assert result["ok"], result["errors"]
+
+
+@pytest.mark.parametrize("total", ["inline", "by_id"])
+def test_a_top_n_by_a_forbidden_count_is_refused(bare, monkeypatch, total):
+    """The stores ranked by one customer's order count, showing the top five stores' totals: the
+    count decides which totals appear. Ordered without a limit the same call answers, and with
+    one by the total only when it is the measure by id: an inline total ranks by an inline
+    aggregate too."""
+    governed, shown = (TOTAL_CENTS, _summed(TOTAL)) if total == "inline" else (REVENUE, REVENUE)
+    ranked = _shown(shown, ONE_CUSTOMERS_ORDERS, order_by=[{"field": "value_1"}], limit=5)
+    _compiles(bare, ranked)
+    engine = _constrained(bare, STORE_ONLY, governed)
+    try:
+        unlimited = engine.validate({key: ranked[key] for key in ranked if key != "limit"})
+        by_total = engine.validate({**ranked, "order_by": [{"field": "value_0"}]})
+        violations = _assert_denied_before_output(engine, monkeypatch, ranked)
+    finally:
+        engine.close()
+    assert violations == [
+        {"kind": "disallowed_expression", "read": "order_by on 'value_1' picks the rows kept"}
+    ]
+    assert unlimited["ok"], unlimited["errors"]
+    assert by_total["ok"] is (total == "by_id"), by_total["errors"]
+
+
+ITEM = "entity.jaffle_item"
+ITEM_REVENUE = "measure.jaffle.item_revenue_usd"
+PRODUCT = "dimension.jaffle_item_product_name"
+DISTINCT_ORDERS = _counted(
+    "count_distinct", {"kind": "column", "entity": ITEM, "column": "order_id"}
+)
+# Product revenue shown only for products enough distinct orders bought, on order lines keyed by
+# order and item: the order id is part of the key, never the whole key.
+PART_OF_A_KEY = {
+    "gate": (
+        ITEM_REVENUE,
+        _select(
+            _case(_more_than(2, DISTINCT_ORDERS), {"kind": "measure", "measure": ITEM_REVENUE}),
+            group_by=[PRODUCT],
+        ),
+        _off_the_list("a case"),
+    ),
+    "having": (
+        ITEM_REVENUE,
+        {
+            "select": [
+                {"expression": ITEM_REVENUE, "as": "revenue"},
+                {"expression": DISTINCT_ORDERS, "as": "orders"},
+            ],
+            "group_by": [PRODUCT],
+            "having": [{"field": "orders", "op": "gt", "value": 2}],
+        },
+        {"kind": "disallowed_expression", "read": HAVING},
+    ),
+    "counted": (
+        "measure.jaffle.item_count",
+        _select(DISTINCT_ORDERS, group_by=[PRODUCT]),
+        _off_the_list(OFF_THE_LIST_VALUE),
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(PART_OF_A_KEY))
+def test_a_distinct_count_of_part_of_a_key_is_refused(config, monkeypatch, shape):
+    item = next(row for row in config.entities if row.id == ITEM)
+    lines = replace(item, key_columns=["order_id", "item_id"])
+    package = replace(config, entities=[lines if row is item else row for row in config.entities])
+    governed, query, violation = PART_OF_A_KEY[shape]
+    _compiles(package, query)
+    engine = _constrained(package, {"allowed_where": [PRODUCT]}, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [violation]
+
+
+@pytest.mark.parametrize("governed", [REVENUE, TOTAL_CENTS])
+def test_a_total_gating_itself_through_nullif_is_refused(bare, monkeypatch, governed):
+    """A dashboard blanking stores with no order total: nullif reads the total once, as a case
+    that tests and returns it reads it twice; both are off the list."""
+    query = _shown({"kind": "nullif", "value": _summed(TOTAL), "null_value": ZERO})
+    _compiles(bare, query)
+    engine = _constrained(bare, STORE_ONLY, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [_off_the_list("a nullif", "value_0")]
+
+
+def test_the_average_order_value_dashboard_answers_with_its_numbers(tmp_path):
+    """Revenue and the order count, each filtered to returning customers inside its aggregate, and
+    their ratio, under one constraint on both that allows store and customer type filters."""
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    loaded = replace(load_package_config(str(package)), semantic_policies=[])
+    returning = {"all": [RETURNING]}
+    revenue = {"kind": "aggregate", "measure": REVENUE, "filter": returning}
+    orders = {"kind": "aggregate", "measure": ORDERS, "filter": returning}
+    query = _shown(revenue, {"kind": "ratio", "numerator": revenue, "denominator": orders}, AOV)
+    constraint = {"allowed_where": [STORE_NAME, CUSTOMER_TYPE]}
+    engine = _constrained(loaded, constraint, [REVENUE, ORDERS], source_path=str(package))
+    try:
+        rows = engine.query(query)["rows"]
+        db_path = engine.db_path
+    finally:
+        engine.close()
+    with duckdb.connect(db_path, read_only=True) as connection:
+        reference = connection.execute(
+            """
+            SELECT s.store_name,
+                SUM(o.order_total_cents) FILTER (WHERE c.customer_type = 'returning') / 100.0,
+                SUM(o.order_total_cents) FILTER (WHERE c.customer_type = 'returning') / 100.0
+                    / COUNT(DISTINCT o.order_id) FILTER (WHERE c.customer_type = 'returning'),
+                SUM(o.order_total_cents) / 100.0 / COUNT(DISTINCT o.order_id)
+            FROM jaffle_order o JOIN jaffle_store s USING (store_id)
+                LEFT JOIN jaffle_customer c USING (customer_id)
+            GROUP BY 1
+            """
+        ).fetchall()
+    assert len(reference) > 1
+    answered = {row[STORE_NAME]: (row["value_0"], row["value_1"], row["value_2"]) for row in rows}
+    assert answered.keys() == {row[0] for row in reference}
+    for store, *values in reference:
+        assert answered[store] == pytest.approx(tuple(values)), store
