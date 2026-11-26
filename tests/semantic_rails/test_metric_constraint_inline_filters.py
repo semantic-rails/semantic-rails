@@ -2369,6 +2369,47 @@ def test_a_joined_top_n_by_a_forbidden_count_is_refused(config):
     assert unlimited["ok"], unlimited["errors"]
 
 
+@pytest.mark.parametrize("alias", [" orders ", None])
+def test_an_engine_form_joined_top_n_reads_the_names_its_answer_gives(config, alias):
+    """The engine form names a part's item as its answer does: a padded alias by its trimmed
+    name, a missing one by its generated name. Ranked by either under a limit, it is refused."""
+    count = {"expression": ONE_CUSTOMERS_ORDERS, **({"as": alias} if alias else {})}
+    ranked = {
+        "parts": [
+            {
+                "select": [{"expression": REVENUE_MEASURE, "as": "revenue"}],
+                "group_by": [STORE_NAME],
+            },
+            {"select": [count], "group_by": [STORE_NAME]},
+        ],
+        "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": "all"},
+        "order_by": [{"field": alias.strip() if alias else "expr_1", "direction": "DESC"}],
+        "limit": 1,
+    }
+    engine = _constrained(config, STORE_ONLY, REVENUE)
+    try:
+        refused = engine.validate_internal(ranked)
+        by_revenue = engine.validate_internal({**ranked, "order_by": [{"field": "revenue"}]})
+    finally:
+        engine.close()
+    assert refused["errors"][0]["code"] == "POLICY_DENIED", refused
+    assert by_revenue["ok"], by_revenue["errors"]
+
+
+def test_another_statistic_of_a_measure_of_one_column_answers(bare):
+    """The average of a measure that sums one column as it is, written as the measure with avg,
+    alone or filtered by an allowed field, reads that column as an aggregate_if of it does."""
+    average = {"kind": "measure", "measure": TOTAL_CENTS, "aggregation": "avg"}
+    filtered = {
+        "kind": "aggregate",
+        "measure": TOTAL_CENTS,
+        "aggregation": "avg",
+        "filter": IN_BROOKLYN,
+    }
+    result = _validated(bare, STORE_ONLY, TOTAL_CENTS, average, filtered, _counted("avg", TOTAL))
+    assert result["ok"], result["errors"]
+
+
 ITEM = "entity.jaffle_item"
 ITEM_REVENUE = "measure.jaffle.item_revenue_usd"
 PRODUCT = "dimension.jaffle_item_product_name"

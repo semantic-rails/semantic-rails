@@ -1335,8 +1335,14 @@ def _shape_refusal(
             return ""
 
     def own_statistic(expr: MeasureRefExpr | AggregateExpr) -> bool:
-        row = measures.get(expr.measure)
-        return expr.aggregation.lower() in {"", row.default_aggregation.lower() if row else ""}
+        """Its measure's statistic, or another of one column as it is (as ``counted`` reads)."""
+        row, aggregation = measures.get(expr.measure), expr.aggregation.lower()
+        if row is None or aggregation in {"", row.default_aggregation.lower()}:
+            return not aggregation or row is not None
+        own = row.expr if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from else None
+        if own is None or aggregation == "percentile":
+            return False
+        return aggregation != "count_distinct" or column(own, row) in keys
 
     def by_id(expr: Any) -> bool:
         """A metric, or a measure with its own statistic, by id."""

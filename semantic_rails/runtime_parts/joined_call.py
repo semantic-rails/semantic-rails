@@ -25,7 +25,7 @@ from ..answer import (
     finish,
     minimal_route,
 )
-from ..ast import PERIOD_PARTIAL, TIME_AXIS
+from ..ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
 from ..compiler import _prepare, compile_query
 from ..compiler_parts.joined_parts import (
     IN,
@@ -46,6 +46,7 @@ from ..compiler_parts.part_domain import PRESENT, reading_part_domain
 from ..db_parts.base import QueryRows
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
+from ..expressions import MeasureRefExpr, MetricRecipeRefExpr
 from ..policies import enforce_query_policies
 from ..query_call import in_part, refusal
 from ..request_context import policy_identity
@@ -476,16 +477,14 @@ def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
     )
     if payload.get("limit") is None or not constrained:
         return
+    # Each part's select items under the names its answer gives them (a key or a dimension is none).
     shown = {
-        row.get("as"): row.get("expression")
-        for part in parts
-        for row in part.payload.get("select") or []
+        row.as_: row.expression for part in parts for row in normalize_query(part.payload).select
     }
     for index, item in enumerate(payload.get("order_by") or []):
-        expression = shown.get(item["field"], {"kind": "measure"})
-        # A measure or metric by id with no statistic, as the call spells it.
-        by_id = isinstance(expression, dict) and set(expression) <= {"kind", "measure", "metric"}
-        if not by_id or expression.get("kind", "measure") not in {"measure", "metric"}:
+        expression = shown.get(item["field"])
+        measure = isinstance(expression, MeasureRefExpr) and not expression.aggregation
+        if item["field"] in shown and not (measure or isinstance(expression, MetricRecipeRefExpr)):
             raise refusal(
                 f"order_by[{index}].field",
                 f"'{item['field']}' picks the rows the limit keeps, and under a metric constraint "
