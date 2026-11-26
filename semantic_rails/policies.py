@@ -1582,19 +1582,27 @@ def _condition_fields(
     customer but one), as the dimensions over it (a computed column's on its entity or, when it
     declares none, on another entity over the same relation), or as ``_Undeclared`` for a column
     no dimension declares, which no allowed_where lists. A column the value returns as it is (the
-    whole value, or what a CASE branch returns) is what is aggregated. A constraint passes
-    ``operands`` (``_counted_operands``): then a count or an average of a returned column other
-    than one of its operands picks the rows where it has a value, and a column meets its
-    dimensions as the warehouse reads names (``_dimensions_over``). ``filterable: false``, which
-    every caller meets, passes none and reads neither."""
+    whole value, or what a CASE branch returns) is what is aggregated.
+
+    A constraint passes ``operands`` (``_counted_operands``): then a count or an average of a
+    returned column other than one of its operands picks the rows where it has a value, a column
+    meets its dimensions as the warehouse reads names (``_dimensions_over``), and another
+    entity's dimension grants a column only over the same relation, named in full.
+    ``filterable: false``, which every caller meets and which only refuses, passes none and reads
+    columns as it always has: no count rule, the spelling as written, relations matched by their
+    last name part, and no value column that no dimension declares."""
+    governed = operands is not None
     whens, columns = _value_reads(expr.value)
     conditions = [expr.condition, *whens] if expr.condition is not None else whens
     counting = expr.aggregation.lower() in _COUNTING
     counted = operands(expr) if operands is not None and counting else None
-    lookup = dimensions_over_column if operands is None else _dimensions_over
-    # Granting a column another entity's dimension takes the same relation, named in full: a
-    # dimension over ``live.orders`` allows nothing on ``archive.orders``.
+    lookup = _dimensions_over if governed else dimensions_over_column
     relations = {row.id: row.table for row in config.entities}
+
+    def relation(entity_id: str) -> str:
+        # A dimension over ``live.orders`` grants nothing on ``archive.orders``.
+        table = relations.get(entity_id, "")
+        return table if governed else table.split(".")[-1].strip('"`[]').casefold()
 
     def picks(ref: ColumnRefExpr, returned: bool) -> bool:
         if not returned:
@@ -1613,10 +1621,11 @@ def _condition_fields(
             over = [
                 row.id
                 for other in config.entities
-                if other.id != entity and other.table == relations.get(entity)
+                if other.id != entity and relation(other.id) == relation(entity)
                 for row in lookup(other.id, ref.column, config)
             ]
-        out.extend(over or [_Undeclared(entity, ref.column)])
+        if over or governed or not in_value:
+            out.extend(over or [_Undeclared(entity, ref.column)])
     return out
 
 

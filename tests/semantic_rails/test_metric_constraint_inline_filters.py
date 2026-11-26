@@ -985,24 +985,62 @@ def test_a_list_naming_a_column_no_dimension_declares_does_not_allow_it(
         )
 
 
-def test_filterable_false_reads_a_column_no_dimension_declares_as_before(config):
-    """Every caller meets ``filterable: false``, policy or none, so it reads names as it did: a
-    condition on a column named like a dimension that isn't filterable is refused."""
-    store = next(row for row in config.dimensions if row.id == "dimension.jaffle_order_store_id")
-    alias = replace(
-        store, id=UNDECLARED_SUBTOTAL, name="test_subtotal", aliases=[], filterable=False
+def _not_filterable(config, read):
+    """The package with one dimension that isn't filterable, and a call reading a column of the
+    orders: a dimension over the store id named like the undeclared subtotal, or the order's
+    customer id with an archive of the orders in another schema."""
+    if read in {"condition_on_a_named_column", "computed_named_column"}:
+        store = next(
+            row for row in config.dimensions if row.id == "dimension.jaffle_order_store_id"
+        )
+        alias = replace(
+            store, id=UNDECLARED_SUBTOTAL, name="test_subtotal", aliases=[], filterable=False
+        )
+        package = replace(config, dimensions=[*config.dimensions, alias])
+        if read == "condition_on_a_named_column":
+            condition = {"kind": "comparison", "op": ">", "left": SUBTOTAL, "right": ZERO}
+            return package, {"kind": "aggregate_if", "aggregation": "count", "condition": condition}
+        return package, _counted("count", {"kind": "call", "name": "ABS", "args": [SUBTOTAL]})
+    archive = "entity.test_archive_order"
+    order = next(row for row in config.entities if row.id == ORDER)
+    customer = next(row for row in config.dimensions if row.id == ORDER_CUSTOMER_ID)
+    package = replace(
+        config,
+        entities=[*config.entities, replace(order, id=archive, table="archive.jaffle_order")],
+        dimensions=[
+            replace(customer, filterable=False) if row is customer else row
+            for row in config.dimensions
+        ],
     )
-    package = replace(config, dimensions=[*config.dimensions, alias])
-    condition = {"kind": "comparison", "op": ">", "left": SUBTOTAL, "right": ZERO}
-    query = _select({"kind": "aggregate_if", "aggregation": "count", "condition": condition})
+    value = {"kind": "call", "name": "LOWER", "args": [{**ORDER_CUSTOMER, "entity": archive}]}
+    return package, _counted("count_distinct", value)
+
+
+@pytest.mark.parametrize(
+    ("read", "refused"),
+    [
+        ("condition_on_a_named_column", UNDECLARED_SUBTOTAL),
+        ("computed_named_column", None),
+        ("computed_in_an_archive", ORDER_CUSTOMER_ID),
+    ],
+)
+def test_filterable_false_reads_inline_columns_as_before(config, read, refused):
+    """Every caller meets ``filterable: false``, policy or none, and it only refuses, so it reads
+    columns as it always has: a condition's undeclared column by its ``<entity>.<column>`` name,
+    no undeclared value column, and another schema's table of the same name as the same table."""
+    package, expression = _not_filterable(config, read)
     engine = Runtime.from_config(package, source_path=PACKAGE)
     try:
-        error = engine.validate(query)["errors"][0]
+        result = engine.validate(_select(expression))
     finally:
         engine.close()
+    if refused is None:
+        assert result["ok"], result["errors"]
+        return
+    error = result["errors"][0]
     assert error["code"] == "POLICY_DENIED"
     assert error["details"]["policy_violations"] == [
-        {"kind": "not_filterable", "disallowed": [UNDECLARED_SUBTOTAL]}
+        {"kind": "not_filterable", "disallowed": [refused]}
     ]
 
 
