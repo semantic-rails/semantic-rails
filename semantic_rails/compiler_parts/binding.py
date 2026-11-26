@@ -29,9 +29,11 @@ from ..config_parts.route_rows import (
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
+    ConditionalAggregateExpr,
     ConversionExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    parse_semantic_expression,
     validate_expression_shapes,
 )
 from ..fanout import (
@@ -64,6 +66,7 @@ from ..sql_ast import (
 )
 from .bind import (
     _expression_alias,
+    _synthetic_conditional_measure,
     refusing_fallible_calls,
 )
 from .dependencies import (
@@ -674,6 +677,31 @@ def _authored_leaves(plan: LogicalPlan, config: PackageConfig) -> frozenset[str]
     return frozenset(leaves[True] - leaves[False])
 
 
+def _caller_aggregates(
+    plan: LogicalPlan, config: PackageConfig, nested: dict[str, Any]
+) -> dict[str, Any]:
+    """The caller's aggregates over columns, by synthetic measure id: the plan's own, and each
+    nested compile's that the caller's expressions write (an entity filter's input, at any
+    depth). One only a package metric's definition writes is its author's: the policy check
+    holds the metric and the objects its definition binds."""
+    if not nested.keys() - plan.synthetic_measures.keys():
+        return dict(plan.synthetic_measures)
+    written: set[str] = set()
+    stack: list[Any] = [plan.query]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+            if str(node.get("kind", "")).strip() == "aggregate_if":
+                expr = parse_semantic_expression(node, context="query")
+                assert isinstance(expr, ConditionalAggregateExpr)
+                written.add(_synthetic_conditional_measure(expr, config)[0])
+    own = {key: row for key, row in nested.items() if key in written}
+    return {**own, **plan.synthetic_measures}
+
+
 def _bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> BoundQuery:
@@ -727,5 +755,5 @@ def _bind_query(
         closing_reads=closing_reads_by_output(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
         inner_calls=tuple(dependencies.inner_calls),
-        synthetic_measures={**dependencies.synthetic_measures, **plan.synthetic_measures},
+        synthetic_measures=_caller_aggregates(plan, config, dependencies.synthetic_measures),
     )
