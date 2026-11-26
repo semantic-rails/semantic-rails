@@ -85,6 +85,13 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the command tree: the built-in commands, then any plugin commands."""
 
     package_choices = list_package_ids()
+    time_end_help = (
+        "time.end is exclusive. For 'as of March 31, 2024' or 'through March 31, 2024', "
+        "pass 2024-04-01."
+    )
+    query_json_help = (
+        f"The query call as JSON, or @path/to/file.json to load from disk. {time_end_help}"
+    )
     parser = argparse.ArgumentParser(
         prog="semantic-rails",
         description=(
@@ -169,7 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover.add_argument(
         "--query-json",
         default="",
-        help="Optional partial query (JSON or @file) to bias ranking against an in-progress build.",
+        help=(
+            "Optional partial query (JSON or @file) to bias ranking against an in-progress build. "
+            f"{time_end_help}"
+        ),
     )
     p_discover.add_argument(
         "--stage",
@@ -204,7 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect.add_argument(
         "--query-json",
         default="",
-        help="Optional partial query (JSON or @file) for path-aware inspection in context.",
+        help=(
+            "Optional partial query (JSON or @file) for path-aware inspection in context. "
+            f"{time_end_help}"
+        ),
     )
     p_inspect.add_argument(
         "--verbosity",
@@ -223,7 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument(
         "--query-json",
         required=True,
-        help="The query call as JSON, or @path/to/file.json to load from disk.",
+        help=query_json_help,
     )
     _add_policy_context_args(p_validate)
     _add_response_detail_args(p_validate)
@@ -238,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_compile.add_argument(
         "--query-json",
         required=True,
-        help="The query call as JSON, or @path/to/file.json to load from disk.",
+        help=query_json_help,
     )
     _add_policy_context_args(p_compile)
     _add_response_detail_args(p_compile)
@@ -449,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_query.add_argument(
         "--query-json",
         required=True,
-        help="The query call as JSON, or @path/to/file.json to load from disk.",
+        help=query_json_help,
     )
     _add_policy_context_args(p_query)
     _add_response_detail_args(p_query)
@@ -514,7 +527,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_values.add_argument(
         "--query-json",
         default="",
-        help="Optional partial query (JSON or @file) to scope value retrieval to the in-progress build.",
+        help=(
+            "Optional partial query (JSON or @file) to scope value retrieval to the in-progress "
+            f"build. {time_end_help}"
+        ),
     )
     p_values.add_argument(
         "--search",
@@ -549,7 +565,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument(
         "--query-json",
         required=True,
-        help="Current query IR payload as JSON, or @path/to/file.json to load from disk.",
+        help=(
+            "Current query IR payload as JSON, or @path/to/file.json to load from disk. "
+            f"{time_end_help}"
+        ),
     )
     p_build.add_argument(
         "--focus-terms",
@@ -604,7 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_plan.add_argument(
         "--query-json",
         default="",
-        help="Optional partial query (JSON or @file) to preserve and plan against.",
+        help=f"Optional partial query (JSON or @file) to preserve and plan against. {time_end_help}",
     )
     p_plan.add_argument(
         "--limit",

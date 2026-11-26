@@ -26,7 +26,7 @@ from typing import Any
 
 from . import operations
 from .audit import emit_audit_event
-from .contracts.query_schema import embedded_query_call_schema
+from .contracts.query_schema import TIME_END_DESCRIPTION, embedded_query_call_schema
 from .diagnostics import (
     enrich_object_not_found,
     exception_issue,
@@ -221,6 +221,7 @@ QUERY_SCHEMA, QUERY_SCHEMA_DEFS = embedded_query_call_schema()
 QUERY_SEED_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": "A partial query call (execute's query schema) to start from.",
+    "properties": {"time": {"properties": {"end": {"description": TIME_END_DESCRIPTION}}}},
 }
 NOW_SCHEMA: dict[str, Any] = {
     "type": "string",
@@ -581,8 +582,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             f"{_EXECUTE_SKIP_VALIDATE[0]} 'sql' adds rendered_sql. 'ok': valid and "
             "ran, not that it answers the question. Call: select ids or {expression, as}, "
             "group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] "
-            "and entity filters, time (time.end is exclusive), order_by (period: time column), "
-            "limit inside it; max_rows and row_format go beside query. time.temporal_role: "
+            "and entity filters, time, order_by (period: time column), limit inside it. "
+            "time.end is exclusive. max_rows and row_format go beside query. time.temporal_role: "
             "with time, set it to the role the question names, else to the selected ids' "
             "default_temporal_role from inspect; a measure whose card lists no time role takes "
             "no time (filter or group on a date dimension). Calls side by side, "

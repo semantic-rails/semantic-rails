@@ -266,6 +266,15 @@
           },
           "query": {
             "description": "A partial query call (execute's query schema) to start from.",
+            "properties": {
+              "time": {
+                "properties": {
+                  "end": {
+                    "description": "exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01."
+                  }
+                }
+              }
+            },
             "type": "object"
           },
           "stage": {
@@ -344,6 +353,15 @@
           },
           "query": {
             "description": "A partial query call (execute's query schema) to start from.",
+            "properties": {
+              "time": {
+                "properties": {
+                  "end": {
+                    "description": "exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01."
+                  }
+                }
+              }
+            },
             "type": "object"
           },
           "verbosity": {
@@ -431,6 +449,15 @@
           },
           "query": {
             "description": "A partial query call (execute's query schema) to start from.",
+            "properties": {
+              "time": {
+                "properties": {
+                  "end": {
+                    "description": "exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01."
+                  }
+                }
+              }
+            },
             "type": "object"
           },
           "search": {
@@ -513,6 +540,15 @@
           },
           "query": {
             "description": "A partial query call (execute's query schema) to start from.",
+            "properties": {
+              "time": {
+                "properties": {
+                  "end": {
+                    "description": "exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01."
+                  }
+                }
+              }
+            },
             "type": "object"
           }
         },
@@ -598,7 +634,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and ran, not that it answers the question. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time (time.end is exclusive), order_by (period: time column), limit inside it; max_rows and row_format go beside query. time.temporal_role: with time, set it to the role the question names, else to the selected ids' default_temporal_role from inspect; a measure whose card lists no time role takes no time (filter or group on a date dimension). Calls side by side, each with its own where: {parts: [call, ...], join: {on: [[id per part]]}}.",
+      "description": "Answer a call; call plan first. Only 'run' reads the warehouse; 'validate' only checks (skip it: run a call directly); 'sql' adds rendered_sql. 'ok': valid and ran, not that it answers the question. Call: select ids or {expression, as}, group_by dimension ids (alone, it lists rows), where/having [{field, op, value}] and entity filters, time, order_by (period: time column), limit inside it. time.end is exclusive. max_rows and row_format go beside query. time.temporal_role: with time, set it to the role the question names, else to the selected ids' default_temporal_role from inspect; a measure whose card lists no time role takes no time (filter or group on a date dimension). Calls side by side, each with its own where: {parts: [call, ...], join: {on: [[id per part]]}}.",
       "inputSchema": {
         "$defs": {
           "Condition": {
@@ -984,7 +1020,9 @@
                 },
                 "properties": {
                   "end": {
-                    "$ref": "#/$defs/Text"
+                    "description": "exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01.",
+                    "minLength": 1,
+                    "type": "string"
                   },
                   "fill": {
                     "type": "boolean"
