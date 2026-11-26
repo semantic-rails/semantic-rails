@@ -843,15 +843,15 @@ kind names must match exactly.
     returns) is what is aggregated, as a measure's column is, and counts as no filter.
   - **A count of a column.** A `count`, `count_distinct` or `avg` of a returned column
     counts only the rows where it has a value, so the column counts as a filter unless
-    it is its entity's key or the column each governed measure over the aggregate is as
-    it is. A measure that wraps its column, such as
-    `count_distinct(coalesce(customer_id, 'guest'))` or revenue's
-    `order_total_cents / 100.0`, reads rows where the column has no value, so it
-    exempts nothing; declare a measure for a count you want callers to read. So a
+    it is its entity's key or the column the governed measure itself aggregates with no
+    expression around it (each governed measure over the aggregate, when several are).
+    A measure over `coalesce(customer_id, 'guest')` counts the orders with no customer
+    id, and revenue's `order_total_cents / 100.0` is an expression too, so neither
+    exempts a column; declare a measure for a count you want callers to read. So a
     `count_distinct` of the order's customer id answers under a constraint on the
-    ordering-customer count (that column as it is) but not under one on the order count
-    or a package-wide one, where it counts only the orders with a customer. Each
-    aggregate is held to the measures that govern it, so two averages that answer
+    ordering-customer count (that column, with no expression) but not under one on the
+    order count or a package-wide one, where it counts only the orders with a customer.
+    Each aggregate is held to the measures that govern it, so two averages that answer
     alone also answer side by side.
   - **A spelling** in another ASCII case meets every dimension over the column wherever
     the warehouse reads it as that column: when the SQL leaves it unquoted (every
@@ -863,11 +863,10 @@ kind names must match exactly.
     net-of-tax `sum(order_total_cents - tax_paid_cents)`. The refusal says the package
     author can declare a dimension over the column and list it in `allowed_where` if the
     role may use it, and lists only the dimensions that can allow a filter there.
-  - A caller no constraint applies to reads such columns as before, and a constraint
-    with `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so
-    it refuses none of them.
 
-  Its condition and value
+  A caller no constraint applies to reads such columns as before, and a constraint with
+  `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so it
+  refuses none of them. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to

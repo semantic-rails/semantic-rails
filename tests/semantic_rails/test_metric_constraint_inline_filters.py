@@ -985,6 +985,27 @@ def test_a_list_naming_a_column_no_dimension_declares_does_not_allow_it(
         )
 
 
+def test_filterable_false_reads_a_column_no_dimension_declares_as_before(config):
+    """Every caller meets ``filterable: false``, policy or none, so it reads names as it did: a
+    condition on a column named like a dimension that isn't filterable is refused."""
+    store = next(row for row in config.dimensions if row.id == "dimension.jaffle_order_store_id")
+    alias = replace(
+        store, id=UNDECLARED_SUBTOTAL, name="test_subtotal", aliases=[], filterable=False
+    )
+    package = replace(config, dimensions=[*config.dimensions, alias])
+    condition = {"kind": "comparison", "op": ">", "left": SUBTOTAL, "right": ZERO}
+    query = _select({"kind": "aggregate_if", "aggregation": "count", "condition": condition})
+    engine = Runtime.from_config(package, source_path=PACKAGE)
+    try:
+        error = engine.validate(query)["errors"][0]
+    finally:
+        engine.close()
+    assert error["code"] == "POLICY_DENIED"
+    assert error["details"]["policy_violations"] == [
+        {"kind": "not_filterable", "disallowed": [UNDECLARED_SUBTOTAL]}
+    ]
+
+
 def test_every_dimension_over_one_column_meets_each_spelling(config, monkeypatch):
     """Two dimensions over the order's customer id spelled in two cases name one DuckDB column:
     either spelling meets both, so allowing one of them allows neither spelling."""

@@ -553,7 +553,8 @@ def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> N
     }
     fields = [
         *(item.field for item in every_filter(query.where)),
-        *(field for _, field in _inline_filters(query, config) if isinstance(field, str)),
+        # Named as before, so every caller's call is refused exactly as it was.
+        *(str(field) for _, field in _inline_filters(query, config)),
     ]
     refused = [field for field in dict.fromkeys(fields) if field in unfilterable]
     if refused:
